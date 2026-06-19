@@ -5,6 +5,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,13 +20,14 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
-class SettingsRepository(private val store: DataStore<Preferences>, scope: CoroutineScope) {
+class SettingsRepository(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
     private val batchLowKey = booleanPreferencesKey("batch_low_priority")
     private val advancedKey = booleanPreferencesKey("advanced_diagnostics")
     private val groupKey = stringPreferencesKey("group_id")
     private val epochKey = intPreferencesKey("route_epoch")
+    private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -48,6 +50,16 @@ class SettingsRepository(private val store: DataStore<Preferences>, scope: Corou
         var next = 1
         store.edit { next = (it[epochKey] ?: 0) + 1; it[epochKey] = next }
         next
+    }
+
+    /** High-water mark of post times we've mirrored — used to gate the listener backfill after a restart. */
+    suspend fun lastSeenPostTime(): Long = store.data.first()[lastSeenPostKey] ?: 0L
+    fun updateLastSeenPostTime(timeMillis: Long) {
+        scope.launch {
+            store.edit { prefs ->
+                if (timeMillis > (prefs[lastSeenPostKey] ?: 0L)) prefs[lastSeenPostKey] = timeMillis
+            }
+        }
     }
 
     private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInEager(scope: CoroutineScope, initial: T): StateFlow<T> =

@@ -3,7 +3,7 @@ package net.extrawdw.notisync.protocol
 import kotlinx.serialization.Serializable
 
 @Serializable
-enum class MirrorImportance { MIN, LOW, DEFAULT, HIGH }
+enum class MirrorImportance { MIN, LOW, DEFAULT, HIGH, NONE } // NONE = blocked; appended to keep CBOR ordinals stable
 
 @Serializable
 enum class MirrorCategory {
@@ -68,6 +68,27 @@ data class CapturedNotification(
     val isClearable: Boolean = true,
     /** True if the platform redacted sensitive content (Android 15+); consumer should signal it. */
     val sensitiveRedacted: Boolean = false,
+
+    // --- Channel / channel-group mirroring (all best-effort; null/false on older producers) ---
+    /** Source NotificationChannel id (Ranking.getChannel().getId()). */
+    val channelId: String? = null,
+    /** Source channel user-visible name; may be redacted for a plain listener. */
+    val channelName: String? = null,
+    /** Source channel's group id (NotificationChannel.getGroup()) — an id, not a name. */
+    val channelGroupId: String? = null,
+    /** Source channel group display name; only available with a CompanionDeviceManager association. */
+    val channelGroupName: String? = null,
+    /** Source channel-level importance/mute; drives the mirrored channel's importance. */
+    val channelImportance: MirrorImportance? = null,
+
+    // --- Conversation notifications ---
+    val isConversation: Boolean = false,
+    /** Source conversation shortcut id (Notification.getShortcutId()). */
+    val shortcutId: String? = null,
+    /** Source conversation channel id (NotificationChannel.getConversationId()). */
+    val conversationId: String? = null,
+    /** Source conversation channel's parent channel id (NotificationChannel.getParentChannelId()). */
+    val parentChannelId: String? = null,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */

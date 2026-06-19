@@ -1,10 +1,13 @@
 package net.extrawdw.apps.notisync.notif
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.content.pm.PackageManager
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -20,10 +23,20 @@ import net.extrawdw.notisync.protocol.NotifStyle
 /** Turns a platform [StatusBarNotification] into the normalized, transport-neutral form. */
 class NotificationNormalizer(private val pm: PackageManager) {
 
-    fun normalize(sbn: StatusBarNotification, sourceClientId: ClientId): CapturedNotification {
+    fun normalize(
+        sbn: StatusBarNotification,
+        ranking: NotificationListenerService.Ranking?,
+        sourceClientId: ClientId,
+    ): CapturedNotification {
         val n = sbn.notification
         val extras = n.extras
         val pkg = sbn.packageName
+
+        // Source channel + conversation metadata (best-effort; redacted/absent for a plain listener).
+        val channel = runCatching { ranking?.channel }.getOrNull()
+        val channelImportance = runCatching { ranking?.importance }.getOrNull()?.let(::mapImportance)
+        val shortcutId = runCatching { n.shortcutId }.getOrNull()
+        val conversation = runCatching { ranking?.isConversation == true }.getOrDefault(false)
 
         val messaging = runCatching {
             NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(n)
@@ -59,7 +72,25 @@ class NotificationNormalizer(private val pm: PackageManager) {
             groupKey = n.group,
             isOngoing = sbn.isOngoing,
             isClearable = sbn.isClearable,
+            channelId = channel?.id,
+            channelName = runCatching { channel?.name?.toString() }.getOrNull(),
+            channelGroupId = runCatching { channel?.group }.getOrNull(),
+            channelGroupName = null, // group display name requires a CompanionDeviceManager association (v1: omit)
+            channelImportance = channelImportance,
+            isConversation = conversation || (shortcutId != null && messages.isNotEmpty()),
+            shortcutId = shortcutId,
+            conversationId = runCatching { channel?.conversationId }.getOrNull(),
+            parentChannelId = runCatching { channel?.parentChannelId }.getOrNull(),
         )
+    }
+
+    private fun mapImportance(importance: Int): MirrorImportance? = when (importance) {
+        NotificationManager.IMPORTANCE_NONE -> MirrorImportance.NONE
+        NotificationManager.IMPORTANCE_MIN -> MirrorImportance.MIN
+        NotificationManager.IMPORTANCE_LOW -> MirrorImportance.LOW
+        NotificationManager.IMPORTANCE_DEFAULT -> MirrorImportance.DEFAULT
+        NotificationManager.IMPORTANCE_HIGH, NotificationManager.IMPORTANCE_MAX -> MirrorImportance.HIGH
+        else -> null // UNSPECIFIED / unknown -> consumer falls back
     }
 
     private fun appLabel(pkg: String): String = runCatching {
@@ -104,48 +135,87 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
     private val mirroredKeys = java.util.Collections.synchronizedSet(HashSet<String>())
 
     /**
-     * Reasons that represent a genuine USER dismissal we should sync (allowlist). Per AOSP: swiping
-     * one notification → REASON_CANCEL; "Clear all" → REASON_CANCEL_ALL; each child of a dismissed
-     * group → REASON_GROUP_SUMMARY_CANCELED. Everything else (app cancel, timeout, package change,
-     * regroup, snooze, and our own REASON_LISTENER_CANCEL echo) is intentionally NOT synced.
+     * Last content signature sent per source key. Lets us skip identical re-posts — listener-reconnect
+     * backfill (onListenerConnected) and source-app updates/replaces both re-fire onNotificationPosted
+     * with unchanged content. Bounded LRU. Cleared on a real user dismissal so a later identical
+     * re-post still re-mirrors.
      */
-    private val syncReasons = setOf(
+    private val lastSentSignature: MutableMap<String, Int> = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, Int>(256, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, Int>): Boolean = size > 512
+        }
+    )
+
+    /**
+     * Reasons under which the source notification is genuinely gone / handled and the mirror should
+     * clear: user swipe (CANCEL/CANCEL_ALL), each child of a dismissed group (GROUP_SUMMARY_CANCELED),
+     * the user opening it (CLICK), the app clearing it because the user read it (APP_CANCEL[_ALL]),
+     * and expiry (TIMEOUT). Explicitly EXCLUDES our own REASON_LISTENER_CANCEL echo, regroup
+     * (GROUP_OPTIMIZATION/UNAUTOBUNDLED), snooze, and package/channel churn.
+     */
+    private val dismissReasons = setOf(
+        REASON_CLICK,
         REASON_CANCEL,
         REASON_CANCEL_ALL,
+        REASON_APP_CANCEL,
+        REASON_APP_CANCEL_ALL,
         REASON_GROUP_SUMMARY_CANCELED,
+        REASON_TIMEOUT,
     )
+
+    /** Debounced dismissals in flight, keyed by source key — cancelled by a re-post (cancel+repost update). */
+    private val pendingDismissals: MutableMap<String, Job> = java.util.Collections.synchronizedMap(HashMap())
 
     override fun onListenerConnected() {
         engine?.originalCanceler = this
-        // Backfill: mirror everything already showing that we'd capture, so reconnects don't miss state.
-        runCatching { activeNotifications }.getOrNull()?.forEach { handlePosted(it) }
+        // Backfill on (re)connect, but don't RE-send notifications we already mirrored before a restart
+        // (e.g. after a NotiSync update). They're still registered so their dismissals sync — only the
+        // SEND is gated by the persisted high-water mark of mirrored post times.
+        app.graph.scope.launch {
+            val cutoff = runCatching { app.graph.settings.lastSeenPostTime() }.getOrDefault(0L)
+            runCatching { activeNotifications }.getOrNull()?.forEach { handlePosted(it, cutoff) }
+        }
     }
 
-    override fun onNotificationPosted(sbn: StatusBarNotification) = handlePosted(sbn)
+    override fun onNotificationPosted(sbn: StatusBarNotification) {
+        // A (re)post cancels any pending debounced dismissal for this key — it's an update, not removal.
+        pendingDismissals.remove(sbn.key)?.cancel()
+        handlePosted(sbn, backfillCutoff = null)
+    }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification, rankingMap: RankingMap?, reason: Int) {
         val wasMirrored = mirroredKeys.remove(sbn.key)
-        if (reason !in syncReasons) return // not a user dismissal (echo / app-cancel / timeout / regroup)
+        if (reason !in dismissReasons) return // echo / regroup / snooze / package churn — leave the mirror
         if (!wasMirrored) {
-            // A user dismissal of something we didn't mirror: a not-enabled app, or a child that was
-            // transiently filtered at post time. Logged to surface the latter during on-device testing.
+            // Removal of something we didn't mirror: a not-enabled app, or a child transiently filtered
+            // at post time. Logged to surface the latter during on-device testing.
             Log.d(TAG, "skip dismissal for unmirrored key reason=$reason pkg=${sbn.packageName}")
             return
         }
         val eng = engine ?: return
         val clientId = app.graph.clientId ?: return
-        app.graph.scope.launch { eng.dismissLocal(clientId, sbn.key) }
+        // Debounce: apps that update by cancel+repost re-post within the window, which cancels this
+        // (see onNotificationPosted). Only a genuine removal commits the dismissal + clears the dedup
+        // signature, so cancel+repost of identical content neither flickers nor leaves a stale mirror.
+        val job = app.graph.scope.launch {
+            delay(DISMISS_DEBOUNCE_MS)
+            pendingDismissals.remove(sbn.key)
+            lastSentSignature.remove(sbn.key)
+            eng.dismissLocal(clientId, sbn.key)
+        }
+        pendingDismissals.put(sbn.key, job)?.cancel()
     }
 
     private companion object {
         const val TAG = "NotiSyncListener"
+        const val DISMISS_DEBOUNCE_MS = 400L
     }
 
     override fun cancel(sourceKey: String) {
         runCatching { cancelNotification(sourceKey) }
     }
 
-    private fun handlePosted(sbn: StatusBarNotification) {
+    private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?) {
         if (sbn.packageName == packageName) return                              // never mirror ourselves
         val n = sbn.notification
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return            // group summaries
@@ -155,9 +225,20 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         if (app.graph.appSelection?.isEnabled(sbn.packageName) != true) return // opt-in: default OFF
         val eng = engine ?: return
         val clientId = app.graph.clientId ?: return
-        val captured = normalizer.normalize(sbn, clientId)
+        val ranking = NotificationListenerService.Ranking()
+        val haveRanking = runCatching { currentRanking?.getRanking(sbn.key, ranking) == true }.getOrDefault(false)
+        val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId)
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
-        mirroredKeys.add(sbn.key) // remember it so we can sync its dismissal later
+
+        val signature = captured.copy(postTime = 0L).hashCode()
+        // Always register (even when we won't re-send) so dismissals still sync and live dedup works.
+        mirroredKeys.add(sbn.key)
+        val unchanged = lastSentSignature.put(sbn.key, signature) == signature
+        // Skip the SEND for identical re-posts, and for backfilled notifications we already mirrored
+        // before a restart (postTime at/under the persisted high-water mark).
+        if (unchanged) return
+        if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
+        app.graph.settings.updateLastSeenPostTime(sbn.postTime)
         app.graph.scope.launch { eng.captureLocal(captured) }
     }
 }

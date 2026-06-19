@@ -24,6 +24,7 @@ import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.PeerRepository
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.domain.MirrorEngine
+import net.extrawdw.apps.notisync.notif.MirrorChannels
 import net.extrawdw.apps.notisync.notif.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.notisync.protocol.Capability
@@ -81,6 +82,9 @@ class AppGraph(private val app: Application) {
             renderer = poster,
             activityLog = activityLog,
         )
+
+        // Prune mirrored channels/groups for devices that are no longer trusted peers.
+        runCatching { MirrorChannels.gc(app, peers.peers.value.map { it.clientId.value }.toSet()) }
 
         // Battery-efficient transport policy:
         //  * Background delivery is via FCM only (Google's shared push connection — no app socket),

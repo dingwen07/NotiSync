@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.notif
 
 import android.app.NotificationChannel
+import android.app.NotificationChannelGroup
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.BroadcastReceiver
@@ -9,70 +10,172 @@ import android.content.Intent
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.content.LocusIdCompat
+import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
 
-/** A channel per source device keeps mirrored notifications grouped and dodges auto-bundling. */
+/**
+ * Mirrors the SOURCE app's channel structure on the receiver: one NotificationChannelGroup per source
+ * app, one NotificationChannel per source channel (importance/mute mirrored at creation), nested in
+ * that group. If the source app uses channel groups, the group's display name is shown in the channel
+ * name (e.g. "alice@gmail.com · Mail") — when available (requires a CompanionDeviceManager
+ * association; v1 falls back to the channel name / category / app label).
+ *
+ * IDs are opaque ASCII keyed by (sourceClientId, package, sourceChannelId); the second ':'-segment is
+ * always the source client id so [gc] can prune channels for unpaired devices.
+ */
 object MirrorChannels {
-    private fun channelId(sourceClientId: ClientId) = "mirror_${sourceClientId.value}"
+    private fun groupId(client: ClientId, pkg: String) = "notigrp:${client.value}:$pkg"
+    private fun channelId(client: ClientId, pkg: String, src: String?) = "notich:${client.value}:$pkg:${src ?: "_default"}"
+    private fun convChannelId(client: ClientId, pkg: String, conv: String) = "notichc:${client.value}:$pkg:$conv"
 
-    fun ensure(context: Context, sourceClientId: ClientId, deviceLabel: String): String {
-        val id = channelId(sourceClientId)
+    /** Create the per-app group + per-source-channel channel; return the channel id to post on. */
+    fun ensure(context: Context, notif: CapturedNotification): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
-        if (mgr.getNotificationChannel(id) == null) {
-            mgr.createNotificationChannel(
-                NotificationChannel(id, "Mirrored from $deviceLabel", NotificationManager.IMPORTANCE_HIGH).apply {
-                    description = "Notifications mirrored from $deviceLabel via NotiSync"
+        val gid = groupId(notif.sourceClientId, notif.packageName)
+        // Group must exist before a channel references it; createNotificationChannel also updates
+        // name/description and lowers importance on an existing channel (never raises — OS contract).
+        mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, notif.appLabel))
+        val cid = channelId(notif.sourceClientId, notif.packageName, notif.channelId)
+        mgr.createNotificationChannel(
+            NotificationChannel(cid, channelName(notif), importanceOf(notif)).apply { group = gid }
+        )
+        return cid
+    }
+
+    /** Create a conversation child channel under [parentChannelId]; return its id. */
+    fun ensureConversation(context: Context, notif: CapturedNotification, parentChannelId: String, shortcutId: String): String {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        val conv = notif.shortcutId ?: notif.sourceKey
+        val cid = convChannelId(notif.sourceClientId, notif.packageName, conv)
+        mgr.createNotificationChannel(
+            NotificationChannel(cid, channelName(notif), importanceOf(notif)).apply {
+                group = groupId(notif.sourceClientId, notif.packageName)
+                setConversationId(parentChannelId, shortcutId)
+            }
+        )
+        return cid
+    }
+
+    /** Prune mirrored groups/channels whose source client is no longer a trusted peer. */
+    fun gc(context: Context, validClientIds: Set<String>) {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        runCatching {
+            mgr.notificationChannels.forEach { c ->
+                if ((c.id.startsWith("notich:") || c.id.startsWith("notichc:")) && clientOf(c.id) !in validClientIds) {
+                    mgr.deleteNotificationChannel(c.id)
                 }
-            )
+            }
+            mgr.notificationChannelGroups.forEach { g ->
+                if (g.id.startsWith("notigrp:") && clientOf(g.id) !in validClientIds) {
+                    mgr.deleteNotificationChannelGroup(g.id)
+                }
+            }
         }
-        return id
+    }
+
+    private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
+
+    private fun channelName(notif: CapturedNotification): String {
+        val base = notif.channelName?.takeIf { it.isNotBlank() } ?: categoryLabel(notif.category) ?: notif.appLabel
+        return notif.channelGroupName?.takeIf { it.isNotBlank() }?.let { "$it · $base" } ?: base
+    }
+
+    private fun importanceOf(notif: CapturedNotification): Int =
+        mapImportance(notif.channelImportance ?: notif.importance)
+
+    private fun mapImportance(importance: MirrorImportance): Int = when (importance) {
+        MirrorImportance.NONE -> NotificationManager.IMPORTANCE_NONE
+        MirrorImportance.MIN -> NotificationManager.IMPORTANCE_MIN
+        MirrorImportance.LOW -> NotificationManager.IMPORTANCE_LOW
+        MirrorImportance.DEFAULT -> NotificationManager.IMPORTANCE_DEFAULT
+        MirrorImportance.HIGH -> NotificationManager.IMPORTANCE_HIGH
+    }
+
+    private fun categoryLabel(c: MirrorCategory): String? = when (c) {
+        MirrorCategory.MESSAGE -> "Messages"
+        MirrorCategory.EMAIL -> "Email"
+        MirrorCategory.CALL -> "Calls"
+        MirrorCategory.ALARM -> "Alarms"
+        MirrorCategory.EVENT -> "Events"
+        MirrorCategory.REMINDER -> "Reminders"
+        MirrorCategory.SOCIAL -> "Social"
+        MirrorCategory.TRANSPORT -> "Media"
+        MirrorCategory.SERVICE -> "Service"
+        else -> null
     }
 }
 
 /**
- * Posts mirrored notifications natively (reconstructing MessagingStyle / BigText as declared by the
- * producer) and clears them on remote dismissal. A delete intent reports local swipes back to the
- * [MirrorEngine] so the dismissal syncs to peers.
+ * Posts mirrored notifications natively, reconstructing MessagingStyle / BigText and — for
+ * conversation notifications — a long-lived shortcut + conversation channel so they file under the
+ * Conversations section. A delete intent reports local swipes back for dismissal sync.
  */
 class RemoteNotificationPoster(private val context: Context) : MirrorRenderer {
 
     override fun render(notif: CapturedNotification) {
-        val channelId = MirrorChannels.ensure(context, notif.sourceClientId, notif.appLabel)
+        val parentChannelId = MirrorChannels.ensure(context, notif)
+        var postChannelId = parentChannelId
+        var shortcutId: String? = null
+
+        if (notif.isConversation) {
+            val conv = notif.shortcutId ?: notif.sourceKey
+            val mirroredShortcut = "noticonv:${notif.sourceClientId.value}:${notif.packageName}:$conv"
+            val published = runCatching { publishConversationShortcut(notif, mirroredShortcut) }.getOrDefault(false)
+            if (published) {
+                shortcutId = mirroredShortcut
+                postChannelId = runCatching {
+                    MirrorChannels.ensureConversation(context, notif, parentChannelId, mirroredShortcut)
+                }.getOrDefault(parentChannelId)
+            }
+        }
+
         val tag = tagOf(notif.sourceClientId, notif.sourceKey)
         val id = tag.hashCode()
 
-        val builder = NotificationCompat.Builder(context, channelId)
+        val builder = NotificationCompat.Builder(context, postChannelId)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
-            .setContentTitle(notif.title ?: notif.appLabel)
-            .setContentText(notif.text)
             .setSubText("via ${notif.appLabel}") // marks the notification as mirrored
             .setAutoCancel(true)
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
+        if (shortcutId != null) builder.setShortcutId(shortcutId)
 
         when (notif.style) {
             NotifStyle.MESSAGING -> {
+                // MessagingStyle owns the title + per-message rendering. Do NOT also setContentTitle —
+                // that would draw a second, redundant bold title line. Set conversationTitle ONLY for
+                // group chats (per Google guidance); for 1:1 the title derives from the sender.
                 val self = Person.Builder().setName("You").build()
                 val style = NotificationCompat.MessagingStyle(self)
-                    .setConversationTitle(notif.conversationTitle)
                     .setGroupConversation(notif.isGroupConversation)
+                if (notif.isGroupConversation) style.setConversationTitle(notif.conversationTitle)
                 notif.messages.forEach { m ->
                     val person = m.sender?.let { Person.Builder().setName(it).build() }
                     style.addMessage(NotificationCompat.MessagingStyle.Message(m.text, m.timestamp, person))
                 }
                 builder.setStyle(style)
             }
-            NotifStyle.BIG_TEXT -> builder.setStyle(NotificationCompat.BigTextStyle().bigText(notif.bigText ?: notif.text))
-            else -> notif.bigText?.let { builder.setStyle(NotificationCompat.BigTextStyle().bigText(it)) }
+            NotifStyle.BIG_TEXT -> {
+                builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
+                builder.setStyle(NotificationCompat.BigTextStyle().bigText(notif.bigText ?: notif.text))
+            }
+            else -> {
+                builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
+                notif.bigText?.let { builder.setStyle(NotificationCompat.BigTextStyle().bigText(it)) }
+            }
         }
 
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
@@ -81,6 +184,26 @@ class RemoteNotificationPoster(private val context: Context) : MirrorRenderer {
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
         NotificationManagerCompat.from(context).cancel(tag, tag.hashCode())
+    }
+
+    /** Publish a long-lived Person shortcut so the mirrored conversation renders as a conversation. */
+    private fun publishConversationShortcut(notif: CapturedNotification, shortcutId: String): Boolean {
+        val label = notif.conversationTitle?.takeIf { it.isNotBlank() }
+            ?: notif.messages.firstOrNull { it.sender != null }?.sender
+            ?: notif.title
+            ?: notif.appLabel
+        val senders = notif.messages.mapNotNull { it.sender }.distinct()
+        val persons = (if (senders.isNotEmpty()) senders else listOf(label))
+            .map { Person.Builder().setName(it).setKey(it).build() }
+        val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW)
+        val shortcut = ShortcutInfoCompat.Builder(context, shortcutId)
+            .setLongLived(true)
+            .setShortLabel(label)
+            .setPersons(persons.toTypedArray())
+            .setLocusId(LocusIdCompat(shortcutId))
+            .setIntent(intent)
+            .build()
+        return ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
     }
 
     private fun deleteIntent(sourceClientId: ClientId, sourceKey: String, id: Int): PendingIntent {
@@ -99,7 +222,7 @@ class RemoteNotificationPoster(private val context: Context) : MirrorRenderer {
         MirrorImportance.HIGH -> NotificationCompat.PRIORITY_HIGH
         MirrorImportance.DEFAULT -> NotificationCompat.PRIORITY_DEFAULT
         MirrorImportance.LOW -> NotificationCompat.PRIORITY_LOW
-        MirrorImportance.MIN -> NotificationCompat.PRIORITY_MIN
+        MirrorImportance.MIN, MirrorImportance.NONE -> NotificationCompat.PRIORITY_MIN
     }
 
     companion object {
