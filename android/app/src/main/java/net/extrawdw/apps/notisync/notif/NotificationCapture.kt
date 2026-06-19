@@ -239,6 +239,11 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
         app.graph.settings.updateLastSeenPostTime(sbn.postTime)
-        app.graph.scope.launch { eng.captureLocal(captured) }
+        // Off the listener thread: extract/upload private graphics (best-effort), then seal + send.
+        val pipeline = app.graph.graphicsPipeline
+        app.graph.scope.launch {
+            val withGraphics = pipeline?.attach(sbn, captured) ?: captured
+            eng.captureLocal(withGraphics)
+        }
     }
 }

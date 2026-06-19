@@ -9,6 +9,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.readRawBytes
+import io.ktor.http.HttpStatusCode
 import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
@@ -71,13 +72,14 @@ class BrokerClient(
             .getOrDefault(SendResult(accepted = false))
     }
 
-    override suspend fun uploadBlob(bytes: ByteArray): String {
-        val resp = client.post("${httpBase()}/v1/blobs") { setBody(bytes) }
-        return ProtocolCodec.decodeFromJson<net.extrawdw.notisync.protocol.BlobUploadResponse>(resp.bodyAsText()).blobId
+    override suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray): Boolean {
+        val resp = client.post("${httpBase()}/v1/assets/${sourceClientId.value}/$assetId") { setBody(ciphertext) }
+        // 200 stored or 409 already-exists both mean the broker holds it.
+        return resp.status.isSuccess() || resp.status == HttpStatusCode.Conflict
     }
 
-    override suspend fun fetchBlob(blobId: String): ByteArray? {
-        val resp = client.get("${httpBase()}/v1/blobs/$blobId")
+    override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? {
+        val resp = client.get("${httpBase()}/v1/assets/${sourceClientId.value}/$assetId")
         return if (resp.status.isSuccess()) resp.readRawBytes() else null
     }
 

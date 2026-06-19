@@ -46,13 +46,19 @@ object Relay : Table("relay") {
     override val primaryKey = PrimaryKey(id)
 }
 
-object Blobs : Table("blobs") {
-    val blobId = varchar("blob_id", 96)
-    val dataB64 = text("data_b64")
-    val sizeBytes = integer("size_bytes")
+/**
+ * Opaque private-asset blobs. Keyed only by the client-chosen random ([sourceClientId], [assetId]) —
+ * NEVER by content hash, package, sender, or role — so the broker cannot correlate who the user is
+ * messaging. The value is AEAD ciphertext the broker cannot read.
+ */
+object PrivateAssets : Table("private_assets") {
+    val sourceClientId = varchar("source_client_id", 64)
+    val assetId = varchar("asset_id", 64)
+    val dataB64 = text("data_b64")          // base64 of the AEAD ciphertext
+    val sizeBytes = integer("size_bytes")   // ciphertext size
     val createdAt = long("created_at")
     val expiresAt = long("expires_at")
-    override val primaryKey = PrimaryKey(blobId)
+    override val primaryKey = PrimaryKey(sourceClientId, assetId)
 }
 
 class NotiSyncDb(private val database: Database) {
@@ -70,7 +76,7 @@ class NotiSyncDb(private val database: Database) {
             })
             val database = Database.connect(ds)
             transaction(database) {
-                SchemaUtils.create(Cards, Routes, Relay, Blobs)
+                SchemaUtils.create(Cards, Routes, Relay, PrivateAssets)
             }
             return NotiSyncDb(database)
         }

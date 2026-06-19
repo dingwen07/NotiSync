@@ -50,4 +50,15 @@ object ClientIds {
 /** Content address (hex SHA-256) of a plaintext asset, computed before encryption for dedup. */
 object AssetHash {
     fun of(plaintext: ByteArray): String = sha256(plaintext).toHex()
+
+    /**
+     * Constant-time check that [plaintext] hashes to [expectedHex]. The receiver runs this after
+     * decrypting a private asset to catch a wrong key, a corrupt blob, a malicious server
+     * substitution, or an id collision — the integrity gate before rendering.
+     */
+    fun matches(plaintext: ByteArray, expectedHex: String): Boolean =
+        MessageDigest.isEqual(
+            of(plaintext).toByteArray(Charsets.US_ASCII),
+            expectedHex.toByteArray(Charsets.US_ASCII),
+        )
 }

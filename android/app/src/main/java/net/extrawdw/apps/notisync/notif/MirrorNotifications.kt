@@ -7,6 +7,11 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.drawable.BitmapDrawable
+import android.graphics.drawable.Drawable
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -17,6 +22,7 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -121,7 +127,10 @@ object MirrorChannels {
  * conversation notifications — a long-lived shortcut + conversation channel so they file under the
  * Conversations section. A delete intent reports local swipes back for dismissal sync.
  */
-class RemoteNotificationPoster(private val context: Context) : MirrorRenderer {
+class RemoteNotificationPoster(
+    private val context: Context,
+    private val assets: AssetCache,
+) : MirrorRenderer {
 
     override fun render(notif: CapturedNotification) {
         val parentChannelId = MirrorChannels.ensure(context, notif)
@@ -178,7 +187,37 @@ class RemoteNotificationPoster(private val context: Context) : MirrorRenderer {
             }
         }
 
+        applyLargeIcon(builder, notif)
+
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
+    }
+
+    /**
+     * Large icon: the mirrored original (a private asset) once it's in the local cache; until then,
+     * nothing (a later re-post fills it in). When the original had no large icon, fall back to the
+     * source app's icon if that app is installed on this device.
+     */
+    private fun applyLargeIcon(builder: NotificationCompat.Builder, notif: CapturedNotification) {
+        val ref = notif.largeIcon
+        val bitmap = if (ref != null) {
+            assets.read(ref.assetHash)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
+        } else {
+            appIconBitmap(notif.packageName)
+        }
+        bitmap?.let { builder.setLargeIcon(it) }
+    }
+
+    private fun appIconBitmap(pkg: String): Bitmap? =
+        runCatching { drawableToBitmap(context.packageManager.getApplicationIcon(pkg)) }.getOrNull()
+
+    private fun drawableToBitmap(drawable: Drawable): Bitmap {
+        if (drawable is BitmapDrawable) drawable.bitmap?.let { return it }
+        val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
+        val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 128
+        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        drawable.setBounds(0, 0, w, h)
+        drawable.draw(Canvas(bitmap))
+        return bitmap
     }
 
     override fun clear(sourceClientId: ClientId, sourceKey: String) {

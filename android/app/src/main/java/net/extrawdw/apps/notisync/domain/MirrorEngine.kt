@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.domain
 
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.Peer
@@ -9,6 +11,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
@@ -29,6 +32,12 @@ fun interface OriginalCanceler {
     fun cancel(sourceKey: String)
 }
 
+/** Fetches referenced private graphics into the local cache (consumer side). */
+interface AssetResolver {
+    /** Fetch + decrypt + verify any [refs] not already cached. Returns true if any newly arrived. */
+    suspend fun ensureLocal(refs: List<PrivateAssetRef>): Boolean
+}
+
 /**
  * Orchestrates the E2E mirror flow:
  *  - capture (provider): seal a [CapturedNotification] to every peer and send it,
@@ -43,6 +52,8 @@ class MirrorEngine(
     private val peersProvider: () -> List<Peer>,
     private val renderer: MirrorRenderer,
     private val activityLog: ActivityLog,
+    private val scope: CoroutineScope,
+    private val assetResolver: AssetResolver? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     @Volatile var originalCanceler: OriginalCanceler? = null
@@ -120,8 +131,15 @@ class MirrorEngine(
         when (envelope.typ) {
             MessageType.NOTIFICATION -> {
                 val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(body)
-                renderer.render(notif)
+                renderer.render(notif) // text + any already-cached graphics, posted immediately
                 activityLog.add(ActivityEvent.Kind.RECEIVED, notif.appLabel, "from ${sender.displayName}", now())
+                // Fetch any missing private graphics in the background, then re-post (same tag/id) with
+                // them attached. The notification is never blocked on asset transfer.
+                val refs = notif.privateRefs()
+                val resolver = assetResolver
+                if (resolver != null && refs.isNotEmpty()) {
+                    scope.launch { if (resolver.ensureLocal(refs)) renderer.render(notif) }
+                }
             }
             MessageType.DISMISSAL -> {
                 val event = ProtocolCodec.decodeFromCbor<DismissEvent>(body)
@@ -137,3 +155,7 @@ class MirrorEngine(
         private const val TAG = "MirrorEngine"
     }
 }
+
+/** Every private graphic referenced by a notification body (large icon, big picture, message avatars). */
+private fun CapturedNotification.privateRefs(): List<PrivateAssetRef> =
+    listOfNotNull(largeIcon, bigPicture) + messages.mapNotNull { it.avatar }

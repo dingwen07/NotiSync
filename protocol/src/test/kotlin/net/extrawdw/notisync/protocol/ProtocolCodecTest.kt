@@ -115,4 +115,60 @@ class ProtocolCodecTest {
         assertEquals("fake-fcm-token", innerClaim.routeRef)
         assertEquals(TransportType.FCM, innerClaim.transport)
     }
+
+    @Test
+    fun capturedNotification_withPrivateAssetsCborRoundTrips() {
+        val largeIcon = PrivateAssetRef(
+            role = AssetRole.LARGE_ICON,
+            assetHash = "abc123",
+            mimeType = "image/webp",
+            sizeBytes = 4096,
+            sourceClientId = ClientId("phone"),
+            assetId = "qkx3opaqueid",
+            assetKey = ByteArray(32) { it.toByte() },
+        )
+        val avatar = largeIcon.copy(role = AssetRole.AVATAR, assetHash = "def456", assetId = "zzz9other")
+        val notif = CapturedNotification(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "0|com.example|1|tag",
+            packageName = "com.example.chat",
+            appLabel = "Chat",
+            largeIcon = largeIcon,
+            style = NotifStyle.MESSAGING,
+            messages = listOf(ConversationMessage(sender = "Alice", text = "Hi", timestamp = 1L, avatar = avatar)),
+            postTime = 1_750_000_000_000L,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
+
+        assertEquals(AssetRole.LARGE_ICON, decoded.largeIcon?.role)
+        assertEquals("abc123", decoded.largeIcon?.assetHash)
+        assertEquals("qkx3opaqueid", decoded.largeIcon?.assetId)
+        assertEquals(CipherSuite.CURRENT_ID, decoded.largeIcon?.suite) // default carried
+        assertArrayEquals(largeIcon.assetKey, decoded.largeIcon?.assetKey)
+        assertEquals(AssetRole.AVATAR, decoded.messages[0].avatar?.role)
+        assertEquals("def456", decoded.messages[0].avatar?.assetHash)
+    }
+
+    @Test
+    fun assetSync_cborRoundTrips() {
+        val sync = AssetSync(
+            kind = AssetSyncKind.ASSET_READY,
+            items = listOf(
+                AssetSyncItem(assetHash = "h1", assetId = "old1"),
+                AssetSyncItem(
+                    assetHash = "h2",
+                    ref = PrivateAssetRef(
+                        role = AssetRole.BIG_PICTURE, assetHash = "h2", mimeType = "image/webp",
+                        sizeBytes = 9, sourceClientId = ClientId("phone"), assetId = "new2",
+                        assetKey = ByteArray(32),
+                    ),
+                ),
+            ),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<AssetSync>(ProtocolCodec.encodeToCbor(sync))
+        assertEquals(AssetSyncKind.ASSET_READY, decoded.kind)
+        assertEquals("old1", decoded.items[0].assetId)
+        assertEquals("new2", decoded.items[1].ref?.assetId)
+        assertEquals(AssetRole.BIG_PICTURE, decoded.items[1].ref?.role)
+    }
 }

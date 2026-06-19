@@ -7,6 +7,7 @@ import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
 import java.util.Base64
@@ -114,24 +115,31 @@ class RelayStore(private val db: NotiSyncDb) {
     }
 }
 
-class BlobStore(private val db: NotiSyncDb) {
-    suspend fun put(blobId: String, bytes: ByteArray, expiresAt: Long) = db.tx {
-        Blobs.upsert {
-            it[Blobs.blobId] = blobId
-            it[dataB64] = b64e.encodeToString(bytes)
-            it[sizeBytes] = bytes.size
+class PrivateAssetStore(private val db: NotiSyncDb) {
+    /**
+     * Store [ciphertext] under ([sourceClientId], [assetId]). Returns false if that key already
+     * exists — overwrite-reject (the id is unguessable random, so first-writer-wins is safe and
+     * keeps an in-flight asset from being clobbered). INSERT OR IGNORE → [insertedCount] is 0 on a
+     * primary-key conflict.
+     */
+    suspend fun putIfAbsent(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray, expiresAt: Long): Boolean = db.tx {
+        PrivateAssets.insertIgnore {
+            it[PrivateAssets.sourceClientId] = sourceClientId.value
+            it[PrivateAssets.assetId] = assetId
+            it[dataB64] = b64e.encodeToString(ciphertext)
+            it[sizeBytes] = ciphertext.size
             it[createdAt] = System.currentTimeMillis()
-            it[Blobs.expiresAt] = expiresAt
-        }
-        Unit
+            it[PrivateAssets.expiresAt] = expiresAt
+        }.insertedCount > 0
     }
 
-    suspend fun get(blobId: String): ByteArray? = db.tx {
-        Blobs.selectAll().where { Blobs.blobId eq blobId }
-            .firstOrNull()?.let { b64d.decode(it[Blobs.dataB64]) }
+    suspend fun get(sourceClientId: ClientId, assetId: String): ByteArray? = db.tx {
+        PrivateAssets.selectAll()
+            .where { (PrivateAssets.sourceClientId eq sourceClientId.value) and (PrivateAssets.assetId eq assetId) }
+            .firstOrNull()?.let { b64d.decode(it[PrivateAssets.dataB64]) }
     }
 
     suspend fun purgeExpired(now: Long): Int = db.tx {
-        Blobs.deleteWhere { Blobs.expiresAt less now }
+        PrivateAssets.deleteWhere { PrivateAssets.expiresAt less now }
     }
 }

@@ -12,6 +12,7 @@ import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import net.extrawdw.notisync.protocol.CapturedNotification
+import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.Envelope
@@ -35,6 +36,7 @@ import net.extrawdw.notisync.protocol.crypto.HpkeKeyPair
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
@@ -154,6 +156,55 @@ class BrokerFlowTest {
             assertEquals("Dinner at 7?", notif.text)
 
             send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = receivedEnv.messageId))))
+        }
+    }
+
+    @Test
+    fun privateAsset_storeFetchOverwriteBadIdOversize() = testApplication {
+        val tmp = File.createTempFile("notisync-assets", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_MAX_ASSET_BYTES", "64")
+        try {
+            application { module() }
+
+            val src = SoftwareIdentitySigner.generate().clientId
+            val assetId = Base32.encode(ByteArray(24) { (it + 1).toByte() }) // 39-char opaque id
+            val ciphertext = ByteArray(40) { it.toByte() }
+
+            // 1. Store succeeds, then fetch returns the exact ciphertext.
+            assertEquals(
+                HttpStatusCode.OK,
+                client.post("/v1/assets/${src.value}/$assetId") { setBody(ciphertext) }.status,
+            )
+            val fetched = client.get("/v1/assets/${src.value}/$assetId")
+            assertEquals(HttpStatusCode.OK, fetched.status)
+            assertArrayEquals(ciphertext, fetched.readRawBytes())
+
+            // 2. Overwrite is rejected (first-writer-wins on an unguessable id) and the original survives.
+            assertEquals(
+                HttpStatusCode.Conflict,
+                client.post("/v1/assets/${src.value}/$assetId") { setBody(ByteArray(8)) }.status,
+            )
+            assertArrayEquals(ciphertext, client.get("/v1/assets/${src.value}/$assetId").readRawBytes())
+
+            // 3. A non-opaque id (not Base32 of 24 bytes) is rejected — the content-derived-id guard.
+            assertEquals(
+                HttpStatusCode.BadRequest,
+                client.post("/v1/assets/${src.value}/notanopaqueid") { setBody(ciphertext) }.status,
+            )
+
+            // 4. Oversize is rejected before buffering (Content-Length guard, max=64).
+            assertEquals(
+                HttpStatusCode.PayloadTooLarge,
+                client.post("/v1/assets/${src.value}/$assetId") { setBody(ByteArray(100)) }.status,
+            )
+
+            // 5. Unknown asset -> 404.
+            val other = Base32.encode(ByteArray(24) { (it + 9).toByte() })
+            assertEquals(HttpStatusCode.NotFound, client.get("/v1/assets/${src.value}/$other").status)
+        } finally {
+            System.clearProperty("NOTISYNC_MAX_ASSET_BYTES")
         }
     }
 }

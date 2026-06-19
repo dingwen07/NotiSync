@@ -39,7 +39,6 @@ object EnvelopeCrypto {
             createdAt = env.createdAt,
             bodyCiphertextSha256 = sha256(env.bodyCiphertext),
             recipientIds = env.recipientIds(),
-            attachments = env.attachments,
         )
         return ProtocolCodec.encodeToCbor(auth)
     }
@@ -56,7 +55,6 @@ object EnvelopeCrypto {
         messageId: String,
         seq: Long,
         createdAt: Long,
-        attachments: List<String> = emptyList(),
         suite: String = CipherSuite.CURRENT_ID,
     ): Envelope {
         val dek = BodyAead.generateDek()
@@ -74,7 +72,6 @@ object EnvelopeCrypto {
                 createdAt = createdAt,
                 bodyCiphertext = bodyCiphertext,
                 recipients = perRecipient,
-                attachments = attachments,
             )
             return unsigned.copy(sig = signer.sign(authBytes(unsigned)))
         } finally {

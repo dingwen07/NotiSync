@@ -24,13 +24,6 @@ data class SendResult(
     /** Recipients whose route the provider rejected as no longer valid — supply a newer claim. */
     val invalidRoutes: List<ClientId> = emptyList(),
     val staleRoutes: List<ClientId> = emptyList(),
-    /** Attachment hashes the broker does not have cached and needs uploaded. */
-    val missingAssets: List<String> = emptyList(),
-)
-
-@Serializable
-data class BlobUploadResponse(
-    val blobId: String,
 )
 
 @Serializable

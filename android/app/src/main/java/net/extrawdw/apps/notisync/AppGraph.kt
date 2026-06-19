@@ -23,8 +23,14 @@ import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.PeerRepository
 import net.extrawdw.apps.notisync.data.SettingsRepository
+import net.extrawdw.apps.notisync.assets.AssetCache
+import net.extrawdw.apps.notisync.assets.AssetManager
+import net.extrawdw.apps.notisync.assets.TicketStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
+import net.extrawdw.apps.notisync.notif.GraphicsExtractor
+import net.extrawdw.apps.notisync.notif.GraphicsPipeline
 import net.extrawdw.apps.notisync.notif.MirrorChannels
+import net.extrawdw.apps.notisync.notif.NotificationRuleEngine
 import net.extrawdw.apps.notisync.notif.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.notisync.protocol.Capability
@@ -62,6 +68,8 @@ class AppGraph(private val app: Application) {
         private set
     var mirrorEngine: MirrorEngine? = null
         private set
+    var graphicsPipeline: GraphicsPipeline? = null
+        private set
 
     val clientId: ClientId? get() = if (::identity.isInitialized) identity.clientId else null
 
@@ -73,7 +81,11 @@ class AppGraph(private val app: Application) {
         peers = PeerRepository(ds, scope)
         appSelection = AppSelectionRepository(ds, scope)
         transport = BrokerClient(identity) { settings.brokerUrl.value }
-        poster = RemoteNotificationPoster(app)
+        val assetsDir = java.io.File(app.filesDir, "assets")
+        val assetCache = AssetCache(assetsDir)
+        val assetManager = AssetManager(transport, assetCache, TicketStore(assetsDir))
+        poster = RemoteNotificationPoster(app, assetCache)
+        graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), GraphicsExtractor(app), assetManager)
         mirrorEngine = MirrorEngine(
             signer = identity,
             myHpkePrivateKeyset = hpke.privateKeyset,
@@ -81,6 +93,8 @@ class AppGraph(private val app: Application) {
             peersProvider = { peers.peers.value },
             renderer = poster,
             activityLog = activityLog,
+            scope = scope,
+            assetResolver = assetManager,
         )
 
         // Prune mirrored channels/groups for devices that are no longer trusted peers.

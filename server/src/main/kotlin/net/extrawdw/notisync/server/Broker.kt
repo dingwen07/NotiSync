@@ -9,9 +9,9 @@ import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.Urgency
+import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.WsKind
 import net.extrawdw.notisync.protocol.WsMessage
-import net.extrawdw.notisync.protocol.crypto.AssetHash
 import org.slf4j.LoggerFactory
 import java.util.Base64
 
@@ -24,7 +24,7 @@ class Broker(
     private val cards: CardStore,
     private val routes: RouteStore,
     private val relay: RelayStore,
-    private val blobs: BlobStore,
+    private val assets: PrivateAssetStore,
     private val hub: WebSocketHub,
     private val push: PushTransport,
     private val config: ServerConfig,
@@ -113,13 +113,24 @@ class Broker(
         }
     }
 
-    suspend fun storeBlob(bytes: ByteArray): String {
-        val id = AssetHash.of(bytes)
-        blobs.put(id, bytes, System.currentTimeMillis() + config.blobTtlMillis)
-        return id
+    /** Outcome of a private-asset upload, surfaced as HTTP status by the route. */
+    enum class AssetStoreOutcome { STORED, EXISTS, TOO_LARGE, BAD_ID }
+
+    /**
+     * Store an opaque private-asset blob under ([sourceClientId], [assetId]). The broker never reads
+     * it; it only enforces an opaque-id floor (random 192-bit Base32), a size cap, and overwrite-
+     * reject. Confidentiality + integrity are the client's (the id+key are E2E-delivered; the
+     * receiver verifies the plaintext hash).
+     */
+    suspend fun storeAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray): AssetStoreOutcome {
+        if (Base32.decode(assetId)?.size != ASSET_ID_BYTES) return AssetStoreOutcome.BAD_ID
+        if (ciphertext.size > config.maxPrivateAssetBytes) return AssetStoreOutcome.TOO_LARGE
+        val expiresAt = System.currentTimeMillis() + config.privateAssetTtlMillis
+        return if (assets.putIfAbsent(sourceClientId, assetId, ciphertext, expiresAt)) AssetStoreOutcome.STORED
+        else AssetStoreOutcome.EXISTS
     }
 
-    suspend fun fetchBlob(id: String): ByteArray? = blobs.get(id)
+    suspend fun fetchAsset(sourceClientId: ClientId, assetId: String): ByteArray? = assets.get(sourceClientId, assetId)
 
     suspend fun flushPending(clientId: ClientId, sendFrame: suspend (String) -> Unit) {
         for (item in relay.pending(clientId)) {
@@ -136,7 +147,11 @@ class Broker(
     suspend fun purgeExpired() {
         val now = System.currentTimeMillis()
         val r = relay.purgeExpired(now)
-        val b = blobs.purgeExpired(now)
-        if (r > 0 || b > 0) log.info("purged expired relay={} blobs={}", r, b)
+        val a = assets.purgeExpired(now)
+        if (r > 0 || a > 0) log.info("purged expired relay={} assets={}", r, a)
+    }
+
+    private companion object {
+        const val ASSET_ID_BYTES = 24 // 192-bit opaque id; rejects content-derived/short ids
     }
 }

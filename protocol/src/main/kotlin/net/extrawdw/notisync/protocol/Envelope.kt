@@ -32,8 +32,6 @@ data class Envelope(
     val createdAt: Long,
     @ByteString val bodyCiphertext: ByteArray,
     val recipients: List<PerRecipientKey>,
-    /** Plaintext SHA-256 hashes of attachments referenced by the body (fetched as encrypted blobs). */
-    val attachments: List<String> = emptyList(),
     /** ECDSA-P256 signature by [signerId] over [EnvelopeAuth] (source authenticity + replay binding). */
     @ByteString val sig: ByteArray = ByteArray(0),
 ) {
@@ -57,5 +55,4 @@ data class EnvelopeAuth(
     val createdAt: Long,
     @ByteString val bodyCiphertextSha256: ByteArray,
     val recipientIds: List<ClientId>,
-    val attachments: List<String>,
 )

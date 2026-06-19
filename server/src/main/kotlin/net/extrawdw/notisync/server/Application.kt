@@ -35,7 +35,6 @@ import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
 import net.extrawdw.notisync.protocol.WsKind
 import net.extrawdw.notisync.protocol.WsMessage
-import net.extrawdw.notisync.protocol.BlobUploadResponse
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
@@ -51,10 +50,10 @@ fun Application.module() {
     val cards = CardStore(db)
     val routes = RouteStore(db)
     val relay = RelayStore(db)
-    val blobs = BlobStore(db)
+    val assets = PrivateAssetStore(db)
     val hub = WebSocketHub()
     val push = FcmPushTransport.createOrNull(config) ?: DisabledPushTransport
-    val broker = Broker(cards, routes, relay, blobs, hub, push, config)
+    val broker = Broker(cards, routes, relay, assets, hub, push, config)
 
     install(DefaultHeaders)
     install(CallLogging)
@@ -119,16 +118,31 @@ fun Application.module() {
             }
         }
 
-        post("/v1/blobs") {
+        // Opaque private-asset blobs keyed by random (sourceClientId, assetId). The body is AEAD
+        // ciphertext the broker cannot read; the id+key are E2E-delivered inside the notification.
+        post("/v1/assets/{sourceClientId}/{assetId}") {
+            val src = ClientId(call.parameters["sourceClientId"].orEmpty())
+            val assetId = call.parameters["assetId"].orEmpty()
+            // Reject oversized uploads before buffering the whole body.
+            val declared = call.request.headers["Content-Length"]?.toLongOrNull()
+            if (declared != null && declared > config.maxPrivateAssetBytes) {
+                return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
+            }
             val bytes = call.receiveStream().readBytes()
-            if (bytes.isEmpty()) call.respond(HttpStatusCode.BadRequest, ErrorResponse("empty_blob"))
-            else call.respond(HttpStatusCode.OK, BlobUploadResponse(broker.storeBlob(bytes)))
+            if (bytes.isEmpty()) return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("empty_asset"))
+            when (broker.storeAsset(src, assetId, bytes)) {
+                Broker.AssetStoreOutcome.STORED -> call.respond(HttpStatusCode.OK, HealthResponse("stored", config.version))
+                Broker.AssetStoreOutcome.EXISTS -> call.respond(HttpStatusCode.Conflict, ErrorResponse("asset_exists"))
+                Broker.AssetStoreOutcome.TOO_LARGE -> call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
+                Broker.AssetStoreOutcome.BAD_ID -> call.respond(HttpStatusCode.BadRequest, ErrorResponse("bad_asset_id"))
+            }
         }
 
-        get("/v1/blobs/{id}") {
-            val bytes = broker.fetchBlob(call.parameters["id"].orEmpty())
-            if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_blob"))
-            else call.respondBytes(bytes, CBOR)
+        get("/v1/assets/{sourceClientId}/{assetId}") {
+            val src = ClientId(call.parameters["sourceClientId"].orEmpty())
+            val bytes = broker.fetchAsset(src, call.parameters["assetId"].orEmpty())
+            if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_asset"))
+            else call.respondBytes(bytes, ContentType.Application.OctetStream)
         }
 
         webSocket("/v1/connect") {

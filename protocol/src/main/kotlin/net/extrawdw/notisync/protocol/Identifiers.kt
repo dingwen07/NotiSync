@@ -48,4 +48,24 @@ object Base32 {
         }
         return sb.toString()
     }
+
+    /** Decode a lowercase, no-padding base32 string, or null if any character is outside the alphabet. */
+    fun decode(text: String): ByteArray? {
+        if (text.isEmpty()) return ByteArray(0)
+        val out = ByteArray(text.length * 5 / 8)
+        var buffer = 0
+        var bitsLeft = 0
+        var i = 0
+        for (c in text) {
+            val v = ALPHABET.indexOf(c)
+            if (v < 0) return null
+            buffer = (buffer shl 5) or v
+            bitsLeft += 5
+            if (bitsLeft >= 8) {
+                out[i++] = (buffer shr (bitsLeft - 8)).toByte()
+                bitsLeft -= 8
+            }
+        }
+        return out
+    }
 }

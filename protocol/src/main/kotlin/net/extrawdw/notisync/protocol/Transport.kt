@@ -28,9 +28,13 @@ interface Transport {
     /** Cold stream of envelopes addressed to this client (push wake or live connection). */
     fun incoming(): Flow<Envelope>
 
-    /** Upload an encrypted blob; returns its broker blob id. */
-    suspend fun uploadBlob(bytes: ByteArray): String
+    /**
+     * Upload an opaque private-asset blob (AEAD ciphertext) under ([sourceClientId], [assetId]).
+     * Returns true if the broker now holds it — including a 409 "already exists" (overwrite-reject),
+     * which the caller treats as success.
+     */
+    suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray): Boolean
 
-    /** Fetch an encrypted blob by id, or null if the broker no longer has it. */
-    suspend fun fetchBlob(blobId: String): ByteArray?
+    /** Fetch an opaque private-asset blob, or null if the broker no longer has it. */
+    suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray?
 }

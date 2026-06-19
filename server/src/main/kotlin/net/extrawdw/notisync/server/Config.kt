@@ -12,8 +12,10 @@ data class ServerConfig(
     val inlineBudgetBytes: Int,
     /** How long the broker retains an undelivered encrypted relay item. */
     val relayTtlMillis: Long,
-    /** How long cached public/encrypted blobs live. */
-    val blobTtlMillis: Long,
+    /** How long an opaque private-asset blob lives before GC. */
+    val privateAssetTtlMillis: Long,
+    /** Max ciphertext bytes accepted for a single private-asset upload. */
+    val maxPrivateAssetBytes: Int,
     val version: String,
 ) {
     companion object {
@@ -28,7 +30,8 @@ data class ServerConfig(
                 fcmProjectId = env("NOTISYNC_FCM_PROJECT_ID") ?: "extrawdw-notifly",
                 inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 3072,
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
-                blobTtlMillis = env("NOTISYNC_BLOB_TTL_MS")?.toLongOrNull() ?: (30L * 24 * 60 * 60 * 1000),
+                privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
+                maxPrivateAssetBytes = env("NOTISYNC_MAX_ASSET_BYTES")?.toIntOrNull() ?: (1024 * 1024),
                 version = VERSION,
             )
         }
