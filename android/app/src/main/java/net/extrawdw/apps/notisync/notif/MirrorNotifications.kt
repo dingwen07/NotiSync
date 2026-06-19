@@ -17,6 +17,7 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.graphics.drawable.IconCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
@@ -172,10 +173,20 @@ class RemoteNotificationPoster(
                     .setGroupConversation(notif.isGroupConversation)
                 if (notif.isGroupConversation) style.setConversationTitle(notif.conversationTitle)
                 notif.messages.forEach { m ->
-                    val person = m.sender?.let { Person.Builder().setName(it).build() }
+                    val person = m.sender?.let { name ->
+                        Person.Builder().setName(name)
+                            .apply { m.avatar?.let { cachedBitmap(it.assetHash) }?.let { setIcon(IconCompat.createWithBitmap(it)) } }
+                            .build()
+                    }
                     style.addMessage(NotificationCompat.MessagingStyle.Message(m.text, m.timestamp, person))
                 }
                 builder.setStyle(style)
+            }
+            NotifStyle.BIG_PICTURE -> {
+                builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
+                val picture = notif.bigPicture?.let { cachedBitmap(it.assetHash) }
+                if (picture != null) builder.setStyle(NotificationCompat.BigPictureStyle().bigPicture(picture))
+                else notif.bigText?.let { builder.setStyle(NotificationCompat.BigTextStyle().bigText(it)) }
             }
             NotifStyle.BIG_TEXT -> {
                 builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
@@ -199,13 +210,12 @@ class RemoteNotificationPoster(
      */
     private fun applyLargeIcon(builder: NotificationCompat.Builder, notif: CapturedNotification) {
         val ref = notif.largeIcon
-        val bitmap = if (ref != null) {
-            assets.read(ref.assetHash)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-        } else {
-            appIconBitmap(notif.packageName)
-        }
+        val bitmap = if (ref != null) cachedBitmap(ref.assetHash) else appIconBitmap(notif.packageName)
         bitmap?.let { builder.setLargeIcon(it) }
     }
+
+    private fun cachedBitmap(assetHash: String): Bitmap? =
+        assets.read(assetHash)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
 
     private fun appIconBitmap(pkg: String): Bitmap? =
         runCatching { drawableToBitmap(context.packageManager.getApplicationIcon(pkg)) }.getOrNull()
@@ -235,12 +245,14 @@ class RemoteNotificationPoster(
         val persons = (if (senders.isNotEmpty()) senders else listOf(label))
             .map { Person.Builder().setName(it).setKey(it).build() }
         val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW)
+        val avatar = notif.messages.firstNotNullOfOrNull { m -> m.avatar?.let { cachedBitmap(it.assetHash) } }
         val shortcut = ShortcutInfoCompat.Builder(context, shortcutId)
             .setLongLived(true)
             .setShortLabel(label)
             .setPersons(persons.toTypedArray())
             .setLocusId(LocusIdCompat(shortcutId))
             .setIntent(intent)
+            .apply { avatar?.let { setIcon(IconCompat.createWithBitmap(it)) } }
             .build()
         return ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
     }

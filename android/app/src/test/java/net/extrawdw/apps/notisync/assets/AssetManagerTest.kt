@@ -72,11 +72,11 @@ class AssetManagerTest {
 
         // A fresh receiver fetches, decrypts, verifies the hash, and caches the plaintext.
         val (receiver, receiverCache) = manager(transport)
-        assertTrue(receiver.ensureLocal(listOf(ref1)))
+        assertTrue(receiver.ensureLocal(listOf(ref1)).newlyAvailable)
         assertArrayEquals(plaintext, receiverCache.read(ref1.assetHash))
 
         // Already cached -> nothing newly available, so no re-render is triggered.
-        assertFalse(receiver.ensureLocal(listOf(ref1)))
+        assertFalse(receiver.ensureLocal(listOf(ref1)).newlyAvailable)
     }
 
     @Test
@@ -89,7 +89,7 @@ class AssetManagerTest {
         transport.corrupt(src, ref.assetId) // simulate a malicious/garbled server substitution
 
         val (receiver, cache) = manager(transport)
-        assertFalse(receiver.ensureLocal(listOf(ref)))
+        assertFalse(receiver.ensureLocal(listOf(ref)).newlyAvailable)
         assertFalse(cache.has(ref.assetHash))
     }
 
@@ -102,7 +102,31 @@ class AssetManagerTest {
         transport.store.clear() // server lost the blob (e.g. TTL expiry)
 
         val (receiver, cache) = manager(transport)
-        assertFalse(receiver.ensureLocal(listOf(ref)))
+        assertFalse(receiver.ensureLocal(listOf(ref)).newlyAvailable)
         assertNull(cache.read(ref.assetHash))
+    }
+
+    @Test
+    fun repair_reUploadsUnderSameId_soReceiverCanFetchAfterServerLoss() = runBlocking {
+        val transport = FakeTransport()
+        val src = ClientId("sender")
+        val plaintext = ByteArray(1500) { (it % 200).toByte() }
+        val (sender, _) = manager(transport)
+        val ref = sender.ensureUploaded(plaintext, AssetRole.LARGE_ICON, "image/webp", src)!!
+
+        transport.store.clear() // server lost the blob (e.g. TTL expiry)
+
+        val (receiver, cache) = manager(transport)
+        val missing = receiver.ensureLocal(listOf(ref))
+        assertFalse(missing.newlyAvailable)
+        assertEquals(listOf(ref.assetId), missing.stillMissing.map { it.assetId })
+
+        // Provider repairs: re-uploads under the SAME opaque id.
+        val repaired = sender.repair(ref.assetHash, src)!!
+        assertEquals(ref.assetId, repaired.assetId)
+
+        // The receiver can now fetch + verify + cache using its original ref.
+        assertTrue(receiver.ensureLocal(listOf(ref)).newlyAvailable)
+        assertArrayEquals(plaintext, cache.read(ref.assetHash))
     }
 }

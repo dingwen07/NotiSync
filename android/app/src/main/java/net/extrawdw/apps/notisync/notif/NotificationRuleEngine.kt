@@ -1,26 +1,59 @@
 package net.extrawdw.apps.notisync.notif
 
 import net.extrawdw.notisync.protocol.CapturedNotification
+import net.extrawdw.notisync.protocol.MirrorCategory
 
-/** How a graphic slot is sourced on the consumer. v1 wires PRIVATE (transfer) and OMIT. */
+/** How the source large icon is handled on the consumer. */
+enum class LargeIconHandling {
+    /** Default: transfer the original large icon and show it in the large-icon slot. */
+    MIRROR,
+
+    /** Treat the original large icon as the conversation/person avatar (e.g. WeChat); the large-icon
+     *  slot then falls back to the source app icon, resolved receiver-side. */
+    AS_AVATAR,
+
+    OMIT,
+}
+
+/** Whether a graphic slot is transferred as a private asset. */
 enum class GraphicsSlot { PRIVATE, OMIT }
 
-/** Per-role plan for one notification's graphics. */
+/** Per-notification plan for how each graphic is sourced. */
 data class GraphicsPlan(
-    val largeIcon: GraphicsSlot,
+    val largeIcon: LargeIconHandling,
     val bigPicture: GraphicsSlot,
     val avatar: GraphicsSlot,
 )
 
+/** A package-specific override applied on top of the default plan. */
+private interface NotificationRule {
+    fun matches(notif: CapturedNotification): Boolean
+    fun apply(base: GraphicsPlan): GraphicsPlan
+}
+
+/**
+ * WeChat conversation/message notifications carry the contact photo as the large icon and aren't
+ * MessagingStyle. We mirror them as conversations: the large icon becomes the private person avatar,
+ * and the large-icon slot shows the WeChat app icon (resolved receiver-side).
+ */
+private object WeChatRule : NotificationRule {
+    override fun matches(notif: CapturedNotification): Boolean =
+        notif.packageName == "com.tencent.mm" &&
+            (notif.isConversation || notif.category == MirrorCategory.MESSAGE)
+
+    override fun apply(base: GraphicsPlan): GraphicsPlan = base.copy(largeIcon = LargeIconHandling.AS_AVATAR)
+}
+
 /**
  * Decides how each graphic is sourced, keeping app-specific overrides out of capture/render code.
- * v1 default: mirror the original large icon / big picture / avatar as private assets when present.
- * App-specific rules (e.g. WeChat) and public/bundled small icons are layered in later phases.
+ * Default: mirror the original large icon / big picture / per-message avatars as private assets when
+ * present. The first matching [NotificationRule] refines the default (single match wins).
  */
 class NotificationRuleEngine {
-    fun plan(notif: CapturedNotification): GraphicsPlan = GraphicsPlan(
-        largeIcon = GraphicsSlot.PRIVATE,
-        bigPicture = GraphicsSlot.PRIVATE,
-        avatar = GraphicsSlot.PRIVATE,
-    )
+    private val rules = listOf(WeChatRule)
+
+    fun plan(notif: CapturedNotification): GraphicsPlan {
+        val base = GraphicsPlan(LargeIconHandling.MIRROR, GraphicsSlot.PRIVATE, GraphicsSlot.PRIVATE)
+        return rules.firstOrNull { it.matches(notif) }?.apply(base) ?: base
+    }
 }

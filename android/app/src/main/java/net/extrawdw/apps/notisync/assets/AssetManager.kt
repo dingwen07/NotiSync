@@ -4,6 +4,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import net.extrawdw.apps.notisync.domain.AssetResolver
+import net.extrawdw.apps.notisync.domain.ResolveResult
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.PrivateAssetRef
@@ -14,9 +15,15 @@ import net.extrawdw.notisync.protocol.crypto.AssetHash
 import java.io.File
 import java.util.Base64
 
-/** Provider-side upload bookkeeping for one asset: its opaque server id, per-asset key, last upload. */
+/** Provider-side upload bookkeeping for one asset: opaque server id, per-asset key, role/mime, last upload. */
 @Serializable
-data class AssetTicket(val assetId: String, val assetKeyB64: String, val lastUploadedAt: Long)
+data class AssetTicket(
+    val assetId: String,
+    val assetKeyB64: String,
+    val role: AssetRole,
+    val mimeType: String,
+    val lastUploadedAt: Long,
+)
 
 /** Persists the assetHash -> [AssetTicket] map as JSON under [baseDir], guarded by a [Mutex]. */
 class TicketStore(baseDir: File) {
@@ -74,22 +81,37 @@ class AssetManager(
         if (!freshlyUploaded) {
             val sealed = AssetAead.seal(ref, plaintext)
             if (!transport.uploadPrivateAsset(sourceClientId, assetId, sealed)) return null
-            tickets.put(assetHash, AssetTicket(assetId, b64e.encodeToString(assetKey), now()))
+            tickets.put(assetHash, AssetTicket(assetId, b64e.encodeToString(assetKey), role, mimeType, now()))
         }
         return ref
     }
 
-    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): Boolean {
+    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
         var newlyAvailable = false
+        val stillMissing = ArrayList<PrivateAssetRef>()
         for (ref in refs) {
             if (cache.has(ref.assetHash)) continue
-            val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId) ?: continue
-            val plaintext = runCatching { AssetAead.open(ref, sealed) }.getOrNull() ?: continue
-            if (!AssetHash.matches(plaintext, ref.assetHash)) continue // wrong key / corrupt / substituted
+            val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
+            val plaintext = sealed?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
+            if (plaintext == null || !AssetHash.matches(plaintext, ref.assetHash)) { // missing / wrong key / corrupt / substituted
+                stillMissing.add(ref)
+                continue
+            }
             cache.write(ref.assetHash, plaintext)
             newlyAvailable = true
         }
-        return newlyAvailable
+        return ResolveResult(newlyAvailable, stillMissing)
+    }
+
+    /** Provider repair: re-seal the cached plaintext under its existing id and re-upload it. */
+    override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? {
+        val plaintext = cache.read(assetHash) ?: return null
+        val ticket = tickets.get(assetHash) ?: return null
+        val ref = PrivateAssetRef(ticket.role, assetHash, ticket.mimeType, plaintext.size, sourceClientId, ticket.assetId, b64d.decode(ticket.assetKeyB64))
+        val sealed = AssetAead.seal(ref, plaintext)
+        if (!transport.uploadPrivateAsset(sourceClientId, ticket.assetId, sealed)) return null
+        tickets.put(assetHash, ticket.copy(lastUploadedAt = now()))
+        return ref
     }
 
     private companion object {

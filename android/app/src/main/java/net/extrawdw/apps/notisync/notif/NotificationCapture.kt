@@ -47,8 +47,10 @@ class NotificationNormalizer(private val pm: PackageManager) {
         } ?: emptyList()
 
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
+        val hasBigPicture = extras.containsKey(Notification.EXTRA_PICTURE) || extras.containsKey(Notification.EXTRA_PICTURE_ICON)
         val style = when {
             messages.isNotEmpty() -> NotifStyle.MESSAGING
+            hasBigPicture -> NotifStyle.BIG_PICTURE
             !bigText.isNullOrBlank() -> NotifStyle.BIG_TEXT
             else -> NotifStyle.DEFAULT
         }

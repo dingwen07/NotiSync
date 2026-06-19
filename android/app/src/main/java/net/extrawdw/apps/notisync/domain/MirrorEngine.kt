@@ -6,6 +6,9 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.Peer
+import net.extrawdw.notisync.protocol.AssetSync
+import net.extrawdw.notisync.protocol.AssetSyncItem
+import net.extrawdw.notisync.protocol.AssetSyncKind
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DismissEvent
@@ -32,10 +35,20 @@ fun interface OriginalCanceler {
     fun cancel(sourceKey: String)
 }
 
-/** Fetches referenced private graphics into the local cache (consumer side). */
+/** The outcome of resolving a batch of private-asset refs on the consumer side. */
+data class ResolveResult(val newlyAvailable: Boolean, val stillMissing: List<PrivateAssetRef>)
+
+/** Fetches/repairs private graphics for the mirror engine (consumer + provider sides). */
 interface AssetResolver {
-    /** Fetch + decrypt + verify any [refs] not already cached. Returns true if any newly arrived. */
-    suspend fun ensureLocal(refs: List<PrivateAssetRef>): Boolean
+    /** Fetch + decrypt + verify any [refs] not already cached (consumer side). */
+    suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult
+
+    /**
+     * Re-seal + re-upload a previously-sent asset under its existing id (provider repair). Returns a
+     * fresh ref to hand back to the requester, or null if this device no longer holds the plaintext
+     * or ticket needed to repair it.
+     */
+    suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef?
 }
 
 /**
@@ -66,6 +79,13 @@ class MirrorEngine(
         java.util.Collections.newSetFromMap(object : java.util.LinkedHashMap<String, Boolean>(256, 0.75f, true) {
             override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>): Boolean = size > 512
         })
+    )
+
+    /** Notifications awaiting a repaired asset, keyed by the missing assetHash (bounded LRU). */
+    private val pendingAssetRenders: MutableMap<String, CapturedNotification> = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, CapturedNotification>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, CapturedNotification>): Boolean = size > 128
+        }
     )
 
     private fun recipients(): List<RecipientKey> = peersProvider().map {
@@ -134,11 +154,22 @@ class MirrorEngine(
                 renderer.render(notif) // text + any already-cached graphics, posted immediately
                 activityLog.add(ActivityEvent.Kind.RECEIVED, notif.appLabel, "from ${sender.displayName}", now())
                 // Fetch any missing private graphics in the background, then re-post (same tag/id) with
-                // them attached. The notification is never blocked on asset transfer.
+                // them attached. The notification is never blocked on asset transfer. Anything still
+                // missing is remembered and repaired over an encrypted DATA_SYNC request to the sender.
                 val refs = notif.privateRefs()
                 val resolver = assetResolver
                 if (resolver != null && refs.isNotEmpty()) {
-                    scope.launch { if (resolver.ensureLocal(refs)) renderer.render(notif) }
+                    scope.launch {
+                        val result = resolver.ensureLocal(refs)
+                        if (result.newlyAvailable) renderer.render(notif)
+                        if (result.stillMissing.isNotEmpty()) {
+                            result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
+                            sendAssetSync(
+                                notif.sourceClientId,
+                                AssetSync(AssetSyncKind.ASSET_MISSING, result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
+                            )
+                        }
+                    }
                 }
             }
             MessageType.DISMISSAL -> {
@@ -147,8 +178,49 @@ class MirrorEngine(
                 originalCanceler?.cancel(event.sourceKey)
                 activityLog.add(ActivityEvent.Kind.DISMISSED, "Dismissed", "by ${sender.displayName}", now())
             }
-            MessageType.DATA_SYNC -> Unit
+            MessageType.DATA_SYNC -> {
+                val sync = runCatching { ProtocolCodec.decodeFromCbor<AssetSync>(body) }.getOrNull() ?: return
+                val resolver = assetResolver ?: return
+                when (sync.kind) {
+                    AssetSyncKind.ASSET_MISSING -> scope.launch { repairAndReply(envelope.signerId, sync.items, resolver) }
+                    AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(sync.items, resolver) }
+                }
+            }
         }
+    }
+
+    /** Provider side: re-upload each requested asset under its existing id and reply ASSET_READY. */
+    private suspend fun repairAndReply(requester: ClientId, items: List<AssetSyncItem>, resolver: AssetResolver) {
+        val ready = ArrayList<PrivateAssetRef>(items.size)
+        for (item in items) resolver.repair(item.assetHash, signer.clientId)?.let { ready.add(it) }
+        if (ready.isEmpty()) return
+        sendAssetSync(requester, AssetSync(AssetSyncKind.ASSET_READY, ready.map { AssetSyncItem(it.assetHash, it.assetId, it) }))
+        activityLog.add(ActivityEvent.Kind.SENT, "Asset repair", "re-sent ${ready.size} to ${requester.shortForm()}", now())
+    }
+
+    /** Consumer side: fetch each repaired asset and re-post the notification that was waiting on it. */
+    private suspend fun applyRepaired(items: List<AssetSyncItem>, resolver: AssetResolver) {
+        for (item in items) {
+            val ref = item.ref ?: continue
+            if (resolver.ensureLocal(listOf(ref)).newlyAvailable) {
+                pendingAssetRenders.remove(ref.assetHash)?.let { renderer.render(it) }
+            }
+        }
+    }
+
+    /** Seal an [AssetSync] to a single peer over DATA_SYNC (FCM NORMAL priority). */
+    private suspend fun sendAssetSync(recipientId: ClientId, sync: AssetSync) {
+        val peer = peersProvider().firstOrNull { it.clientId == recipientId } ?: return
+        val envelope = EnvelopeCrypto.seal(
+            signer = signer,
+            typ = MessageType.DATA_SYNC,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(sync),
+            recipients = listOf(RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))),
+            messageId = UUID.randomUUID().toString(),
+            seq = seq.incrementAndGet(),
+            createdAt = now(),
+        )
+        transport.send(envelope, Urgency.NORMAL)
     }
 
     companion object {
