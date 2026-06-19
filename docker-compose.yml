@@ -1,0 +1,24 @@
+# NotiSync broker — single-container, self-hosted.
+# Build the fat jar first:  ./gradlew :server:buildFatJar
+# Then:                     docker compose up --build
+services:
+  broker:
+    build:
+      context: .
+      dockerfile: server/Dockerfile
+    image: notisync-broker:latest
+    ports:
+      - "8080:8080"
+    volumes:
+      - notisync-data:/data
+      # To enable FCM, mount a service-account key and point ADC at it:
+      # - ./service-account.json:/secrets/sa.json:ro
+    environment:
+      NOTISYNC_DB_PATH: /data/notisync.db
+      NOTISYNC_FCM_PROJECT_ID: extrawdw-notifly
+      NOTISYNC_FCM_ENABLED: "false" # set "true" once GOOGLE_APPLICATION_CREDENTIALS is mounted
+      # GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa.json
+    # (No container healthcheck: the distroless base has no shell/wget. Probe /healthz externally.)
+
+volumes:
+  notisync-data:

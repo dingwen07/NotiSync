@@ -32,3 +32,8 @@ google-services.json
 
 # Android Profiling
 *.hprof
+
+# TLS / credentials (never commit)
+*.pem
+fcm-sa.json
+service-account*.json

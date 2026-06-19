@@ -1,0 +1,26 @@
+[Unit]
+Description=NotiSync broker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/notisync
+# Bind to loopback only; nginx terminates TLS and proxies in. Port/host override application.yaml.
+ExecStart=/usr/bin/java -Dktor.deployment.host=127.0.0.1 -Dktor.deployment.port=8080 -jar /opt/notisync/server-all.jar
+Environment=NOTISYNC_DB_PATH=/var/lib/notisync/notisync.db
+Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
+Environment=NOTISYNC_FCM_ENABLED=false
+# Enable FCM after uploading the service-account key:
+#   Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
+#   Environment=NOTISYNC_FCM_ENABLED=true
+Restart=on-failure
+RestartSec=3
+# Hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/notisync
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

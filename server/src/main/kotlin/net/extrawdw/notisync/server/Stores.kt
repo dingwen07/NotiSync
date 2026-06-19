@@ -1,0 +1,137 @@
+package net.extrawdw.notisync.server
+
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.TransportType
+import org.jetbrains.exposed.v1.core.and
+import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.less
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
+import org.jetbrains.exposed.v1.jdbc.insert
+import org.jetbrains.exposed.v1.jdbc.selectAll
+import org.jetbrains.exposed.v1.jdbc.upsert
+import java.util.Base64
+
+private val b64e: Base64.Encoder = Base64.getEncoder()
+private val b64d: Base64.Decoder = Base64.getDecoder()
+
+class CardStore(private val db: NotiSyncDb) {
+    suspend fun put(clientId: ClientId, signedBlob: ByteArray) = db.tx {
+        Cards.upsert {
+            it[Cards.clientId] = clientId.value
+            it[signedBlobB64] = b64e.encodeToString(signedBlob)
+            it[updatedAt] = System.currentTimeMillis()
+        }
+        Unit
+    }
+
+    suspend fun getSignedBlob(clientId: ClientId): ByteArray? = db.tx {
+        Cards.selectAll().where { Cards.clientId eq clientId.value }
+            .firstOrNull()?.let { b64d.decode(it[Cards.signedBlobB64]) }
+    }
+}
+
+data class StoredRoute(
+    val clientId: ClientId,
+    val transport: TransportType,
+    val routeRef: String,
+    val epoch: Int,
+    val signedBlob: ByteArray,
+)
+
+class RouteStore(private val db: NotiSyncDb) {
+    /** Replace any existing route of the same transport for this client (keeping the latest epoch). */
+    suspend fun put(route: StoredRoute) = db.tx {
+        val existingEpoch = Routes.selectAll()
+            .where { (Routes.clientId eq route.clientId.value) and (Routes.transport eq route.transport.name) }
+            .maxOfOrNull { it[Routes.epoch] }
+        // Only reject strictly-older claims; an equal-epoch re-publish refreshes a rotated/stale token
+        // (e.g. after a reinstall, where the client's epoch counter resets to 1).
+        if (existingEpoch != null && existingEpoch > route.epoch) return@tx
+        Routes.deleteWhere { (Routes.clientId eq route.clientId.value) and (Routes.transport eq route.transport.name) }
+        Routes.insert {
+            it[clientId] = route.clientId.value
+            it[transport] = route.transport.name
+            it[routeRef] = route.routeRef
+            it[epoch] = route.epoch
+            it[state] = "AVAILABLE"
+            it[signedBlobB64] = b64e.encodeToString(route.signedBlob)
+            it[updatedAt] = System.currentTimeMillis()
+        }
+        Unit
+    }
+
+    suspend fun routesFor(clientId: ClientId): List<StoredRoute> = db.tx {
+        Routes.selectAll().where { Routes.clientId eq clientId.value }.map {
+            StoredRoute(
+                clientId = ClientId(it[Routes.clientId]),
+                transport = TransportType.valueOf(it[Routes.transport]),
+                routeRef = it[Routes.routeRef],
+                epoch = it[Routes.epoch],
+                signedBlob = b64d.decode(it[Routes.signedBlobB64]),
+            )
+        }
+    }
+
+    suspend fun invalidate(clientId: ClientId, transport: TransportType) = db.tx {
+        Routes.deleteWhere { (Routes.clientId eq clientId.value) and (Routes.transport eq transport.name) }
+        Unit
+    }
+}
+
+data class RelayItem(val id: Long, val messageId: String, val envelope: ByteArray, val urgency: String)
+
+class RelayStore(private val db: NotiSyncDb) {
+    suspend fun add(recipientId: ClientId, messageId: String, envelope: ByteArray, urgency: String, expiresAt: Long) = db.tx {
+        Relay.insert {
+            it[Relay.recipientId] = recipientId.value
+            it[Relay.messageId] = messageId
+            it[envelopeB64] = b64e.encodeToString(envelope)
+            it[Relay.urgency] = urgency
+            it[createdAt] = System.currentTimeMillis()
+            it[Relay.expiresAt] = expiresAt
+        }
+        Unit
+    }
+
+    suspend fun pending(recipientId: ClientId): List<RelayItem> = db.tx {
+        Relay.selectAll().where { Relay.recipientId eq recipientId.value }.map {
+            RelayItem(it[Relay.id], it[Relay.messageId], b64d.decode(it[Relay.envelopeB64]), it[Relay.urgency])
+        }
+    }
+
+    suspend fun ack(id: Long) = db.tx {
+        Relay.deleteWhere { Relay.id eq id }
+        Unit
+    }
+
+    suspend fun ackByMessage(recipientId: ClientId, messageId: String) = db.tx {
+        Relay.deleteWhere { (Relay.recipientId eq recipientId.value) and (Relay.messageId eq messageId) }
+        Unit
+    }
+
+    suspend fun purgeExpired(now: Long): Int = db.tx {
+        Relay.deleteWhere { Relay.expiresAt less now }
+    }
+}
+
+class BlobStore(private val db: NotiSyncDb) {
+    suspend fun put(blobId: String, bytes: ByteArray, expiresAt: Long) = db.tx {
+        Blobs.upsert {
+            it[Blobs.blobId] = blobId
+            it[dataB64] = b64e.encodeToString(bytes)
+            it[sizeBytes] = bytes.size
+            it[createdAt] = System.currentTimeMillis()
+            it[Blobs.expiresAt] = expiresAt
+        }
+        Unit
+    }
+
+    suspend fun get(blobId: String): ByteArray? = db.tx {
+        Blobs.selectAll().where { Blobs.blobId eq blobId }
+            .firstOrNull()?.let { b64d.decode(it[Blobs.dataB64]) }
+    }
+
+    suspend fun purgeExpired(now: Long): Int = db.tx {
+        Blobs.deleteWhere { Blobs.expiresAt less now }
+    }
+}
