@@ -86,8 +86,8 @@ class MirrorEngine(
     private val onTrustTable: ((sender: ClientId, table: TrustTable) -> IncomingTrustResult)? = null,
     /** Pins a delivered card (first-verified-wins). Returns true if newly stored. */
     private val onCardDelivery: ((ClientId, SignedBlob) -> Boolean)? = null,
-    /** Surfaces a trust decision needing the user (e.g. a local notification). */
-    private val onTrustPrompt: ((ClientId, TrustPrompt) -> Unit)? = null,
+    /** Surfaces a trust decision needing the user (subject id, what, and the introducing/revoking peer's name). */
+    private val onTrustPrompt: ((subject: ClientId, prompt: TrustPrompt, byName: String) -> Unit)? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
     /** Resolves a package name to a user-facing app label; defaults to the package itself. */
     private val appLabelResolver: (String) -> String = { it },
@@ -289,7 +289,7 @@ class MirrorEngine(
                         val table = sync.trust ?: return
                         val result = onTrustTable?.invoke(envelope.signerId, table) ?: return
                         for ((id, prompt) in result.prompts) {
-                            onTrustPrompt?.invoke(id, prompt)
+                            onTrustPrompt?.invoke(id, prompt, sender.displayName)
                             activityLog.add(ActivityEvent.Kind.PAIRED, id.shortForm(), "trust update from ${sender.displayName} ($prompt)", now())
                         }
                         // Repair any device the sender trusts but lacks a key for, that we can vouch for.

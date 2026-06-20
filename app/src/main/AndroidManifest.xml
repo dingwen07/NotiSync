@@ -85,6 +85,11 @@
             android:name=".notif.DismissReceiver"
             android:exported="false" />
 
+        <!-- Handles Approve / Reject actions on a pending-trust notification. -->
+        <receiver
+            android:name=".trust.TrustActionReceiver"
+            android:exported="false" />
+
         <meta-data
             android:name="com.google.firebase.messaging.default_notification_icon"
             android:resource="@drawable/ic_notisync_mirror" />

@@ -4,7 +4,9 @@ import android.Manifest
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Context
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.util.Log
 import androidx.core.app.NotificationCompat
@@ -46,6 +48,7 @@ import net.extrawdw.apps.notisync.notif.MirrorChannels
 import net.extrawdw.apps.notisync.notif.NotificationRuleEngine
 import net.extrawdw.apps.notisync.notif.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
+import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
@@ -183,33 +186,62 @@ class AppGraph(private val app: Application) {
         scope.launch { runCatching { mirrorEngine?.broadcastTrust() } }
     }
 
-    /** Surface a pending trust decision as a local notification; the user resolves it in the Devices screen. */
-    private fun onTrustPrompt(clientId: ClientId, prompt: TrustPrompt) {
+    /** Surface a pending trust decision as a local notification: tap opens Devices; add/re-add carry Approve/Reject. */
+    private fun onTrustPrompt(clientId: ClientId, prompt: TrustPrompt, byName: String) {
+        if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         runCatching {
             val channelId = "notisync.trust"
-            val mgr = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            mgr.createNotificationChannel(
+            (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
                 NotificationChannel(channelId, "Device trust", NotificationManager.IMPORTANCE_DEFAULT),
             )
+            val subject = trust.displayName(clientId) ?: clientId.shortForm()
             val (title, text) = when (prompt) {
-                TrustPrompt.NEW_TRUST -> "Review a new device" to "A trusted device introduced ${clientId.shortForm()}."
-                TrustPrompt.RE_TRUST -> "A device wants to rejoin" to "${clientId.shortForm()} was previously removed."
-                TrustPrompt.NEW_REVOKE -> "A device was removed" to "Confirm removing ${clientId.shortForm()}."
-                TrustPrompt.CONFLICT -> "Trust conflict" to "${clientId.shortForm()} was re-added while being removed."
+                TrustPrompt.NEW_TRUST -> "Review a new device" to "$byName wants to add $subject."
+                TrustPrompt.RE_TRUST -> "A device wants to rejoin" to "$byName wants to re-add $subject, which was previously removed."
+                TrustPrompt.NEW_REVOKE -> "A device was removed" to "$byName removed $subject. Confirm in the app."
+                TrustPrompt.CONFLICT -> "Trust conflict" to "$subject was re-added while being removed. Resolve in the app."
             }
-            if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
-                NotificationManagerCompat.from(app).notify(
-                    "trust-${clientId.value}".hashCode(),
-                    NotificationCompat.Builder(app, channelId)
-                        .setSmallIcon(android.R.drawable.ic_dialog_info)
-                        .setContentTitle(title)
-                        .setContentText(text)
-                        .setAutoCancel(true)
-                        .build(),
-                )
+            val verifiable = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
+            // Expanded text carries the safety number so an inline Approve is still a real check, not a blind tap.
+            val bigText = if (verifiable) {
+                "$text\n\nSafety number\n${clientId.value}\n\nApprove only if it matches the device's own safety number."
+            } else {
+                text
             }
+            val notifId = "trust-${clientId.value}".hashCode()
+            val open = PendingIntent.getActivity(
+                app, notifId,
+                Intent(app, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(MainActivity.EXTRA_OPEN_DEVICES, true)
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val builder = NotificationCompat.Builder(app, channelId)
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle(title)
+                .setContentText(text)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+            if (verifiable) {
+                builder.addAction(0, "Approve", trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
+                builder.addAction(0, "Reject", trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
+            }
+            NotificationManagerCompat.from(app).notify(notifId, builder.build())
         }
     }
+
+    private fun trustActionPi(action: String, clientId: ClientId, notifId: Int): PendingIntent =
+        PendingIntent.getBroadcast(
+            app, (clientId.value + action).hashCode(),
+            Intent(app, TrustActionReceiver::class.java).apply {
+                this.action = action
+                putExtra(TrustActionReceiver.EXTRA_CLIENT_ID, clientId.value)
+                putExtra(TrustActionReceiver.EXTRA_NOTIF_ID, notifId)
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
     /** Background: drop the socket; FCM carries everything from here. */
     private fun stopLiveConnection() {

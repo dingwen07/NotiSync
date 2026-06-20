@@ -33,11 +33,18 @@ data class ProfileOverlay(
     val updatedAt: Long,
 )
 
-/** A device as shown in the Devices UI: its trust [status] and best-known [displayName] (null if keyless). */
+/** A device as shown in the Devices UI. */
 data class RosterDevice(
     val clientId: ClientId,
     val status: TrustStatus,
+    /** Best-known name, or null when we hold no card for it (then it is also keyless). */
     val displayName: String?,
+    /** Whether we hold this device's card (keys); false means it can't yet be mirrored to. */
+    val keyAvailable: Boolean,
+    /** Name of the peer who introduced/revoked it (for pending rows); null for a local action. */
+    val introducedByName: String?,
+    /** When it was revoked (for REVOKED rows), so the UI can gate permanent deletion; null otherwise. */
+    val revokedAt: Long?,
 )
 
 /** What [TrustStore.applyIncomingTable] surfaces back to the caller. */
@@ -90,6 +97,7 @@ class TrustStore(
     val roster: StateFlow<List<RosterDevice>> = _roster
 
     fun cardFor(clientId: ClientId): SignedBlob? = _state.value.cards[clientId]
+    fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
     fun statusOf(clientId: ClientId): TrustStatus? = _state.value.entries[clientId]?.status
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----
@@ -109,6 +117,17 @@ class TrustStore(
     fun revokeLocal(clientId: ClientId, now: Long): Boolean {
         mutate { it.copy(entries = it.entries + (clientId to TrustMachine.localRevoke(clientId, now))) }
         return true // overturn/own-decision -> broadcast now
+    }
+
+    /**
+     * Permanently forget a REVOKED device — drops its tombstone, card, and overlay. Local cleanup only
+     * (not broadcast). Only safe once the tombstone has outlived any lagging peer's stale-trust window,
+     * so the UI gates this on [REVOKE_PURGE_DELAY_MS]; until then a stale re-introduction is re-tombstoned.
+     */
+    fun purgeRevoked(clientId: ClientId): Boolean {
+        if (_state.value.entries[clientId]?.status != TrustStatus.REVOKED) return false
+        mutate { it.copy(entries = it.entries - clientId, cards = it.cards - clientId, overlays = it.overlays - clientId) }
+        return false // purely local — nothing to propagate
     }
 
     /** Approve a PENDING_TRUST. Silent (anti-entropy carries it). */
@@ -231,10 +250,18 @@ class TrustStore(
 
     private fun computeActivePeers(st: State): List<Peer> = st.entries.values.mapNotNull { toPeer(it, st) }
 
-    /** Trusted + pending devices (revoked tombstones hidden), pending first for attention. */
+    /** All known devices — pending at the top, trusted in the middle, revoked tombstones at the bottom. */
     private fun computeRoster(st: State): List<RosterDevice> = st.entries.values
-        .filter { it.status != TrustStatus.REVOKED }
-        .map { RosterDevice(it.clientId, it.status, displayNameFor(it.clientId, st)) }
+        .map {
+            RosterDevice(
+                clientId = it.clientId,
+                status = it.status,
+                displayName = displayNameFor(it.clientId, st),
+                keyAvailable = st.cards.containsKey(it.clientId),
+                introducedByName = it.introducedBy?.let { by -> displayNameFor(by, st) },
+                revokedAt = if (it.status == TrustStatus.REVOKED) it.updatedAt else null,
+            )
+        }
         .sortedWith(compareBy({ statusOrder(it.status) }, { it.displayName ?: it.clientId.value }))
 
     private fun statusOrder(s: TrustStatus): Int = when (s) {
@@ -290,5 +317,14 @@ class TrustStore(
                 it[overlaysKey] = overlaysJson
             }
         }
+    }
+
+    companion object {
+        // How long a revoked tombstone must persist before it can be permanently deleted. Purging drops
+        // the entry, so the LWW staleness guard no longer protects that id: this delay only BOUNDS (it does
+        // not eliminate) resurrection — a peer offline longer than the delay can still re-surface the row
+        // (silently re-tombstoned, or a re-approval prompt). Set it longer than any realistic peer-offline window.
+        // TODO: restore the production value (~30 days) before release; 60s here is for debugging.
+        const val REVOKE_PURGE_DELAY_MS = 60_000L
     }
 }

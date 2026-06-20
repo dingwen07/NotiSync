@@ -61,17 +61,22 @@ import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
 class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
+    private val pendingOpenDevices = MutableStateFlow(false)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         updatePendingPairingPayload(intent)
+        consumeOpenDevices(intent)
         enableEdgeToEdge()
         setContent {
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
+            val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             NotiSyncTheme {
                 NotiSyncRoot(
                     pendingPairingPayload = pairingPayload,
                     onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                    openDevices = openDevices,
+                    onOpenDevicesConsumed = { pendingOpenDevices.value = false },
                 )
             }
         }
@@ -81,6 +86,18 @@ class MainActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         updatePendingPairingPayload(intent)
+        consumeOpenDevices(intent)
+    }
+
+    /** A trust notification asked us to open the Devices tab. */
+    private fun consumeOpenDevices(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_OPEN_DEVICES, false) != true) return
+        pendingOpenDevices.value = true
+        intent.removeExtra(EXTRA_OPEN_DEVICES) // consume so a config change / Recents can't re-trigger it
+    }
+
+    companion object {
+        const val EXTRA_OPEN_DEVICES = "net.extrawdw.apps.notisync.OPEN_DEVICES"
     }
 
     private fun updatePendingPairingPayload(intent: Intent?) {
@@ -118,6 +135,8 @@ private enum class TopLevelDestination(val route: Route, val label: String, val 
 fun NotiSyncRoot(
     pendingPairingPayload: String? = null,
     onPendingPairingPayloadConsumed: () -> Unit = {},
+    openDevices: Boolean = false,
+    onOpenDevicesConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -126,6 +145,13 @@ fun NotiSyncRoot(
     LaunchedEffect(pendingPairingPayload) {
         if (pendingPairingPayload != null) {
             navController.navigate(Route.Pairing) { launchSingleTop = true }
+        }
+    }
+
+    LaunchedEffect(openDevices) {
+        if (openDevices) {
+            navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+            onOpenDevicesConsumed()
         }
     }
 

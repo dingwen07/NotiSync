@@ -101,7 +101,7 @@ class MirrorEngineTrustTest {
             peersProvider = { listOf(peerFor(sender, senderHpke.publicKeyset)) }, renderer = noopRenderer,
             activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined),
             onTrustTable = { s, t -> seenTables.add(s to t); IncomingTrustResult(listOf(ClientId("x") to TrustPrompt.NEW_TRUST), listOf(offered)) },
-            onTrustPrompt = { _, p -> prompts.add(p) },
+            onTrustPrompt = { _, p, _ -> prompts.add(p) },
         )
 
         val table = TrustTable(listOf(TrustTableEntry(ClientId("x"), TrustStatus.TRUSTED, 5L, keyAvailable = false)))

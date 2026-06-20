@@ -25,13 +25,22 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.delay
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.TrustStatus
 
@@ -45,6 +54,16 @@ fun DevicesScreen(
     val graph = rememberGraph()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
+    // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
+    // purge delay elapses without needing to leave and reopen the page.
+    val hasRevoked = roster.any { it.status == TrustStatus.REVOKED }
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(hasRevoked) {
+        while (hasRevoked) {
+            now = System.currentTimeMillis()
+            delay(1000)
+        }
+    }
 
     NotiScaffold("Devices") { modifier ->
         LazyColumn(
@@ -109,12 +128,14 @@ fun DevicesScreen(
                             roster.forEachIndexed { index, device ->
                                 DeviceRow(
                                     device = device,
+                                    now = now,
                                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                                     onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
                                     onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
                                     onRemoveConfirm = { if (graph.trust.confirmRevoke(it, System.currentTimeMillis())) graph.broadcastTrust() },
                                     onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
                                     onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                                    onPurge = { graph.trust.purgeRevoked(it) },
                                 )
                                 if (index < roster.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
                             }
@@ -179,19 +200,29 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
 @Composable
 private fun DeviceRow(
     device: RosterDevice,
+    now: Long,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
     onKeep: (ClientId) -> Unit,
     onRemove: (ClientId) -> Unit,
+    onPurge: (ClientId) -> Unit,
 ) {
     val name = device.displayName ?: "Unknown device"
+    val isRevoked = device.status == TrustStatus.REVOKED
     val statusLabel = when (device.status) {
         TrustStatus.TRUSTED -> "Trusted"
         TrustStatus.PENDING_TRUST -> "Pending approval"
         TrustStatus.PENDING_REVOKE -> "Removal pending"
         TrustStatus.REVOKED -> "Removed"
     }
+    val statusLine = buildList {
+        add(statusLabel)
+        if (!device.keyAvailable) add("Unavailable") // we hold no card for it yet
+        add(device.clientId.shortForm())
+    }.joinToString(" · ")
+    val by = device.introducedByName ?: "another device"
+
     Column(
         Modifier.fillMaxWidth().padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -202,23 +233,40 @@ private fun DeviceRow(
         ) {
             Icon(Icons.Outlined.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f)) {
-                Text(name, style = MaterialTheme.typography.bodyLarge)
                 Text(
-                    "$statusLabel · ${device.clientId.shortForm()}",
+                    name,
+                    style = MaterialTheme.typography.bodyLarge,
+                    // Only a fully-trusted device gets an upright name; everything else is italic.
+                    fontStyle = if (device.status == TrustStatus.TRUSTED) FontStyle.Normal else FontStyle.Italic,
+                    color = if (isRevoked) MaterialTheme.colorScheme.error else Color.Unspecified,
+                    textDecoration = if (isRevoked) TextDecoration.LineThrough else null,
+                )
+                Text(
+                    statusLine,
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
-            if (device.status == TrustStatus.TRUSTED) {
-                IconButton(onClick = { onRemove(device.clientId) }) {
+            when (device.status) {
+                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }) {
                     Icon(Icons.Filled.Delete, contentDescription = "Remove $name")
                 }
+                TrustStatus.REVOKED -> {
+                    // Permanently forgettable only after the tombstone has outlived the stale-trust window.
+                    val canPurge = device.revokedAt != null &&
+                        now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
+                    IconButton(onClick = { onPurge(device.clientId) }, enabled = canPurge) {
+                        Icon(Icons.Filled.Delete, contentDescription = "Permanently delete $name")
+                    }
+                }
+                else -> Unit
             }
         }
         when (device.status) {
             TrustStatus.PENDING_TRUST -> {
+                Text("Added by $by", style = MaterialTheme.typography.bodyMedium)
                 Text("Safety number  ${device.clientId.value}", style = MaterialTheme.typography.bodySmall)
                 Text(
                     "Approve only if it matches the device's own safety number.",
@@ -231,6 +279,7 @@ private fun DeviceRow(
                 }
             }
             TrustStatus.PENDING_REVOKE -> {
+                Text("Removed by $by", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = { onRemoveConfirm(device.clientId) }) { Text("Remove") }
                     OutlinedButton(onClick = { onKeep(device.clientId) }) { Text("Keep") }
