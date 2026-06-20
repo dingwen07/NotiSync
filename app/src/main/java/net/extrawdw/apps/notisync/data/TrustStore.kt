@@ -74,7 +74,7 @@ class TrustStore(
     private val scope: CoroutineScope,
     /** This device's own id — a device is implicitly trusted to itself and ignores external rows about it. */
     private val selfId: ClientId,
-) {
+) : TrustState {
     private val entriesKey = stringPreferencesKey("trust_entries_json")
     private val cardsKey = stringPreferencesKey("trust_cards_json")     // clientId -> base64(CBOR(SignedBlob))
     private val overlaysKey = stringPreferencesKey("trust_overlays_json") // clientId -> ProfileOverlay
@@ -96,13 +96,13 @@ class TrustStore(
     private val _roster = MutableStateFlow(computeRoster(_state.value))
 
     /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. */
-    val activePeers: StateFlow<List<Peer>> = _activePeers
+    override val activePeers: StateFlow<List<Peer>> = _activePeers
 
     /** Everything the user reviews — trusted + pending (revoked tombstones hidden) — for the Devices UI. */
     val roster: StateFlow<List<RosterDevice>> = _roster
 
     fun cardFor(clientId: ClientId): SignedBlob? = _state.value.cards[clientId]
-    fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
+    override fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
     fun statusOf(clientId: ClientId): TrustStatus? = _state.value.entries[clientId]?.status
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----
@@ -162,7 +162,7 @@ class TrustStore(
     // ---- incoming ----
 
     /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
-    fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
+    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
         val prompts = mutableListOf<Pair<ClientId, TrustPrompt>>()
         val offers = mutableListOf<SignedBlob>()
         var needsBroadcast = false
@@ -202,7 +202,7 @@ class TrustStore(
      * so it is safe to accept even before a trust entry exists — that's what lets a card pushed alongside
      * an introduction resolve a still-pending device's name instead of leaving it "Unknown".
      */
-    fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
+    override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
         val card = verifyCard(cardBlob) ?: return false
         if (card.clientId != clientId) return false
         if (_state.value.cards.containsKey(clientId)) return false // already pinned (immutable) — see putCard
@@ -212,12 +212,12 @@ class TrustStore(
 
     /** Cards we hold for every trusted device (own + other) — pushed alongside the roster (to our own
      *  devices only) so a peer can name a still-pending device or repair a keyless one. */
-    fun trustedCards(): List<SignedBlob> = _state.value.let { st ->
+    override fun trustedCards(): List<SignedBlob> = _state.value.let { st ->
         st.entries.values.filter { it.status == TrustStatus.TRUSTED }.mapNotNull { st.cards[it.clientId] }
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
-    fun applyProfile(update: ProfileUpdate): Boolean {
+    override fun applyProfile(update: ProfileUpdate): Boolean {
         val st = _state.value
         if (st.entries[update.clientId]?.status != TrustStatus.TRUSTED) return false // only trusted devices' profiles converge
         val card = st.cards[update.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() } ?: return false
@@ -237,7 +237,7 @@ class TrustStore(
      * (informational — a receiver never acts on a peer's pending, only honours keyAvailable=false to repair
      * a keyless one); "other" rows are always TRUSTED/REVOKED and a receiver applies them immediately.
      */
-    fun buildTrustTable(): TrustTable {
+    override fun buildTrustTable(): TrustTable {
         val st = _state.value
         return TrustTable(
             st.entries.values

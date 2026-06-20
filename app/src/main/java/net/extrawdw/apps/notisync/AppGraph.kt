@@ -41,7 +41,10 @@ import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
+import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.domain.MirrorEngine
+import net.extrawdw.apps.notisync.foundation.FoundationEngine
+import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.notif.GraphicsExtractor
 import net.extrawdw.apps.notisync.notif.GraphicsPipeline
 import net.extrawdw.apps.notisync.notif.MirrorChannels
@@ -83,7 +86,11 @@ class AppGraph(private val app: Application) {
 
     var appSelection: AppSelectionRepository? = null
         private set
+    var secureChannel: SecureChannel? = null
+        private set
     var mirrorEngine: MirrorEngine? = null
+        private set
+    var foundationEngine: FoundationEngine? = null
         private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
@@ -103,23 +110,44 @@ class AppGraph(private val app: Application) {
         val assetManager = AssetManager(transport, assetCache, TicketStore(assetsDir))
         poster = RemoteNotificationPoster(app, assetCache)
         graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), GraphicsExtractor(app), assetManager)
-        mirrorEngine = MirrorEngine(
+        // The generic secure-messaging substrate: seal/sign/dedup/verify/open + per-MessageType routing.
+        // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
+        val channel = SecureChannel(
             signer = identity,
             myHpkePrivateKeyset = hpke.privateKeyset,
             transport = transport,
-            peersProvider = { trust.activePeers.value },
+            directory = TrustPeerDirectory(trust),
+            log = { msg -> Log.w("SecureChannel", msg) },
+            onBadSignature = { id, at ->
+                activityLog.add(ActivityEvent.Kind.ERROR, "Rejected", "bad signature from ${trust.displayName(id) ?: id.shortForm()}", at)
+            },
+        )
+        secureChannel = channel
+        // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
+        val mirror = MirrorEngine(
+            channel = channel,
             renderer = poster,
             activityLog = activityLog,
             scope = scope,
             assetResolver = assetManager,
-            profileUpdater = { trust.applyProfile(it) },
-            trustTableProvider = { trust.buildTrustTable() },
-            trustedCardsProvider = { trust.trustedCards() },
-            onTrustTable = { sender, table -> trust.applyIncomingTable(sender, table) },
-            onCardDelivery = { id, card -> trust.applyCard(id, card) },
-            onTrustPrompt = ::onTrustPrompt,
             appLabelResolver = ::appLabelFor,
+            peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
         )
+        mirrorEngine = mirror
+        // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
+        val foundation = FoundationEngine(
+            channel = channel,
+            trust = trust,
+            activityLog = activityLog,
+            scope = scope,
+            onTrustPrompt = ::onTrustPrompt,
+            onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
+        )
+        foundationEngine = foundation
+        // Register all handlers synchronously now — BEFORE the lifecycle observer or an FCM wake can
+        // reach the channel — or an early cold-start delivery to an unregistered type is dropped.
+        foundation.register() // DATA_SYNC (TRUST/CARD/PROFILE; forwards ASSET)
+        mirror.register()      // NOTIFICATION + DISMISSAL
 
         // Prune mirrored channels/groups for devices that are no longer trusted peers.
         runCatching { MirrorChannels.gc(app, trust.activePeers.value.map { it.clientId.value }.toSet()) }
@@ -161,8 +189,8 @@ class AppGraph(private val app: Application) {
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
             runCatching { transport.publishCard(buildClientCardBlob()) }
-            runCatching { mirrorEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
-            transport.incoming().collect { mirrorEngine?.handleEnvelope(it) }
+            runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
+            transport.incoming().collect { secureChannel?.deliver(it) }
         }
     }
 
@@ -177,14 +205,14 @@ class AppGraph(private val app: Application) {
         stopLiveConnection()
         registerFcmRoute()
         scope.launch {
-            if (settings.deviceNameUpdatedAt.value > 0L) runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) }
-            runCatching { mirrorEngine?.broadcastTrust() }
+            if (settings.deviceNameUpdatedAt.value > 0L) runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate()) }
+            runCatching { foundationEngine?.broadcastTrust() }
         }
     }
 
     /** Re-broadcast our trust roster now (call after a local trust change that should propagate at once). */
     fun broadcastTrust() {
-        scope.launch { runCatching { mirrorEngine?.broadcastTrust() } }
+        scope.launch { runCatching { foundationEngine?.broadcastTrust() } }
     }
 
     /** Surface a pending trust decision as a local notification: tap opens Devices; add/re-add carry Approve/Reject. */
@@ -306,7 +334,7 @@ class AppGraph(private val app: Application) {
             .distinctUntilChanged()
             .onEach {
                 runCatching { transport.publishCard(buildClientCardBlob()) }
-                runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) }
+                runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate()) }
             }
             .launchIn(scope)
     }
