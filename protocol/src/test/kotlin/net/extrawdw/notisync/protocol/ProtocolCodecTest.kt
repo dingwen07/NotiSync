@@ -2,6 +2,7 @@ package net.extrawdw.notisync.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -222,7 +223,7 @@ class ProtocolCodecTest {
             kind = DataSyncKind.TRUST,
             trust = TrustTable(
                 listOf(
-                    TrustTableEntry(ClientId("a"), TrustStatus.TRUSTED, 100L, keyAvailable = true),
+                    TrustTableEntry(ClientId("a"), TrustStatus.TRUSTED, 100L, keyAvailable = true, ownDevice = false),
                     TrustTableEntry(ClientId("b"), TrustStatus.REVOKED, 200L, keyAvailable = false),
                 ),
             ),
@@ -232,6 +233,8 @@ class ProtocolCodecTest {
         assertEquals(2, decoded.trust?.entries?.size)
         assertEquals(TrustStatus.TRUSTED, decoded.trust?.entries?.get(0)?.status)
         assertTrue(decoded.trust?.entries?.get(0)?.keyAvailable == true)
+        assertFalse("the other-device category round-trips on the wire", decoded.trust?.entries?.get(0)?.ownDevice == true)
+        assertTrue("a roster entry defaults to an own device", decoded.trust?.entries?.get(1)?.ownDevice == true)
         assertEquals(200L, decoded.trust?.entries?.get(1)?.updatedAt)
         assertNull(decoded.card)
     }

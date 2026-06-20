@@ -20,9 +20,11 @@ data class TrustEntry(
     val updatedAt: Long,
     val introducedBy: ClientId? = null,
     /**
-     * True if this is one of the user's own devices (the default for a QR pair and for any device learned
-     * via trust propagation). False marks a separately-paired device that only exchanges profile updates —
-     * never notifications, trust tables, or cards. Local-only; never travels on the wire.
+     * True for one of the user's own devices (full mirroring + consensus trust). False marks an "other"
+     * device — someone else's, kept in a private contact list that syncs only across the user's own
+     * devices: it exchanges no notifications, and its trust is applied immediately (no pending) under
+     * last-writer-wins. The classification is reflected on the wire via [TrustTableEntry.ownDevice] so the
+     * user's other own devices learn the same category, but the list itself never leaves the mesh.
      */
     val ownDevice: Boolean = true,
 )
@@ -33,6 +35,9 @@ enum class TrustPrompt {
     RE_TRUST,    // a previously-revoked device is being re-introduced (resurrection — show the fingerprint)
     NEW_REVOKE,  // a peer revoked a device we currently trust (traffic is now paused pending our decision)
     CONFLICT,    // a device is being re-trusted while its removal is still pending — user must resolve
+    // ---- "Other" devices (private contact list): already applied, the prompt is purely informational. ----
+    OTHER_ADDED,    // another of our own devices added an other-device to the shared list
+    OTHER_REMOVED,  // another of our own devices removed an other-device from the shared list
 }
 
 /** Result of folding one incoming assertion: the entry to store, and any prompt to raise. */
@@ -54,7 +59,25 @@ object TrustMachine {
         // Last-writer-wins staleness guard: nothing older-or-equal can change our state.
         if (current != null && incoming.updatedAt <= current.updatedAt) return TrustResolution(current, null)
         val ts = incoming.updatedAt
-        // Anything learned via trust propagation is an own-mesh device; keep an existing local flag if set.
+
+        // An "other" device (someone else's, in our private contact list) skips the consensus/pending
+        // machinery: a newer assertion is applied immediately last-writer-wins, with a purely informational
+        // prompt only when the status actually flips. The category is sticky to whatever we already hold, so
+        // an incoming wire flag can never reclassify a device we already know (own stays own, other stays other).
+        val isOwn = current?.ownDevice ?: incoming.ownDevice
+        if (!isOwn) {
+            fun other(status: TrustStatus, prompt: TrustPrompt?) = TrustResolution(
+                TrustEntry(id, status, ts, introducedBy = current?.introducedBy ?: sender, ownDevice = false), prompt,
+            )
+            return when (incoming.status) {
+                TrustStatus.TRUSTED -> other(TrustStatus.TRUSTED, if (current?.status == TrustStatus.TRUSTED) null else TrustPrompt.OTHER_ADDED)
+                TrustStatus.REVOKED -> other(TrustStatus.REVOKED, if (current?.status == TrustStatus.REVOKED) null else TrustPrompt.OTHER_REMOVED)
+                // PENDING_* never appears on the wire; ignore defensively.
+                else -> TrustResolution(current ?: TrustEntry(id, incoming.status, ts, ownDevice = false), null)
+            }
+        }
+
+        // Anything else is an own-mesh device; keep an existing local flag if set.
         fun res(status: TrustStatus, introducedBy: ClientId?, prompt: TrustPrompt?) =
             TrustResolution(TrustEntry(id, status, ts, introducedBy, ownDevice = current?.ownDevice ?: true), prompt)
 
@@ -90,8 +113,9 @@ object TrustMachine {
     fun localAdd(id: ClientId, now: Long, ownDevice: Boolean = true) =
         TrustEntry(id, TrustStatus.TRUSTED, now, introducedBy = null, ownDevice = ownDevice)
 
-    /** This device's user removes [id] directly. */
-    fun localRevoke(id: ClientId, now: Long) = TrustEntry(id, TrustStatus.REVOKED, now, introducedBy = null)
+    /** This device's user removes [id] directly. [ownDevice] preserves the existing entry's category. */
+    fun localRevoke(id: ClientId, now: Long, ownDevice: Boolean = true) =
+        TrustEntry(id, TrustStatus.REVOKED, now, introducedBy = null, ownDevice = ownDevice)
 
     /** Approve a PENDING_TRUST -> TRUSTED. Agrees with the introducer; not re-broadcast immediately. */
     fun approveTrust(current: TrustEntry, now: Long) = current.copy(status = TrustStatus.TRUSTED, updatedAt = now)

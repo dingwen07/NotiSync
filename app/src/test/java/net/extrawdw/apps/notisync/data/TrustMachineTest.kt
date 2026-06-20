@@ -4,7 +4,9 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.TrustTableEntry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrustMachineTest {
@@ -105,11 +107,78 @@ class TrustMachineTest {
         assertEquals(cur, r.entry)
     }
 
+    // ---- "other" devices (private contact list): no pending, immediate last-writer-wins ----
+
+    private fun entryOther(status: TrustStatus, ts: Long, introducedBy: ClientId? = A) =
+        TrustEntry(C, status, ts, introducedBy, ownDevice = false)
+
+    private fun resolveOther(current: TrustEntry?, status: TrustStatus, ts: Long) =
+        TrustMachine.resolveIncoming(current, TrustTableEntry(C, status, ts, keyAvailable = true, ownDevice = false), sender = A)
+
+    @Test fun other_trustedFromUnknown_isImmediatelyTrusted() {
+        val r = resolveOther(null, TrustStatus.TRUSTED, 10L)
+        assertEquals(TrustStatus.TRUSTED, r.entry.status) // never PENDING_TRUST
+        assertFalse(r.entry.ownDevice)
+        assertEquals(TrustPrompt.OTHER_ADDED, r.prompt)
+    }
+
+    @Test fun other_revokedFromUnknown_isImmediatelyRevoked() {
+        val r = resolveOther(null, TrustStatus.REVOKED, 10L)
+        assertEquals(TrustStatus.REVOKED, r.entry.status)
+        assertFalse(r.entry.ownDevice)
+        assertEquals(TrustPrompt.OTHER_REMOVED, r.prompt)
+    }
+
+    // Re-adding a removed other-device applies at once (no resurrection re-approval, unlike own devices).
+    @Test fun other_reTrustAfterRevoke_appliesImmediately() {
+        val r = resolveOther(entryOther(TrustStatus.REVOKED, 10L), TrustStatus.TRUSTED, 20L)
+        assertEquals(TrustStatus.TRUSTED, r.entry.status)
+        assertEquals(TrustPrompt.OTHER_ADDED, r.prompt)
+    }
+
+    @Test fun other_repeatedTrusted_refreshesNoPrompt() {
+        val r = resolveOther(entryOther(TrustStatus.TRUSTED, 10L), TrustStatus.TRUSTED, 20L)
+        assertEquals(TrustStatus.TRUSTED, r.entry.status)
+        assertEquals(20L, r.entry.updatedAt)
+        assertNull(r.prompt) // same status, newer clock — already known, nothing to announce
+    }
+
+    @Test fun other_staleAssertionIgnored() {
+        val cur = entryOther(TrustStatus.TRUSTED, 100L)
+        assertEquals(cur, resolveOther(cur, TrustStatus.REVOKED, 50L).entry)
+    }
+
+    // Category is sticky: an incoming ownDevice=false row can't downgrade a device we hold as our own.
+    @Test fun ownDevice_notReclassifiedByOtherWireFlag() {
+        val own = entry(TrustStatus.TRUSTED, 10L)
+        val r = resolveOther(own, TrustStatus.REVOKED, 20L) // wire says ownDevice=false
+        assertTrue(r.entry.ownDevice)
+        assertEquals(TrustStatus.PENDING_REVOKE, r.entry.status) // own-mesh consensus path -> pending
+        assertEquals(TrustPrompt.NEW_REVOKE, r.prompt)
+    }
+
+    // ...and the converse: an incoming ownDevice=true row can't promote a device we hold as "other".
+    @Test fun otherDevice_notReclassifiedByOwnWireFlag() {
+        val other = entryOther(TrustStatus.TRUSTED, 10L)
+        val r = TrustMachine.resolveIncoming(
+            other, TrustTableEntry(C, TrustStatus.REVOKED, 20L, keyAvailable = true, ownDevice = true), sender = A,
+        )
+        assertFalse(r.entry.ownDevice)
+        assertEquals(TrustStatus.REVOKED, r.entry.status) // immediate, no pending
+        assertEquals(TrustPrompt.OTHER_REMOVED, r.prompt)
+    }
+
     // ---- local actions ----
 
     @Test fun localAdd_and_localRevoke_areLocalOrigin() {
         assertEquals(TrustEntry(C, TrustStatus.TRUSTED, 5L, null), TrustMachine.localAdd(C, 5L))
         assertEquals(TrustEntry(C, TrustStatus.REVOKED, 5L, null), TrustMachine.localRevoke(C, 5L))
+    }
+
+    // Revoking carries the device's own/other category onto its tombstone (so it isn't reclassified).
+    @Test fun localAdd_and_localRevoke_carryOtherCategory() {
+        assertFalse(TrustMachine.localAdd(C, 5L, ownDevice = false).ownDevice)
+        assertFalse(TrustMachine.localRevoke(C, 5L, ownDevice = false).ownDevice)
     }
 
     @Test fun approveTrust_keepsIntroducerProvenance() {

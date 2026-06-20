@@ -83,7 +83,7 @@ class MirrorEngineOwnDeviceTest {
             profileUpdater = { applied.add(it); true },
         )
 
-        // A NOTIFICATION from a profile-only device is dropped.
+        // A NOTIFICATION from an "other" (not-own) device is dropped.
         engine.handleEnvelope(seal(other, MessageType.NOTIFICATION, ProtocolCodec.encodeToCbor(sampleNotif(other.clientId)), me, myHpke.publicKeyset, "n1"))
         assertEquals("notification from a not-own device must be dropped", 0, renderer.renders)
 

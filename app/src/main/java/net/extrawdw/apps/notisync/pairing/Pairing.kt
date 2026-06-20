@@ -129,7 +129,8 @@ class PairingManager(private val graph: AppGraph) {
 
     /**
      * Accept a scanned peer payload: verify the card, pin its keys, and trust it (local optical add).
-     * [ownDevice] = false adds a profile-only device (no notification mirroring / trust propagation).
+     * [ownDevice] = false adds an "other" device — someone else's, tracked in a private contact list that
+     * syncs across your own devices but exchanges no notifications.
      */
     fun accept(scanned: String, ownDevice: Boolean = true): Result<ClientCard> = runCatching {
         val verified = decodeVerifiedClientCard(PairingDeepLinks.extractPayload(scanned))
@@ -137,8 +138,8 @@ class PairingManager(private val graph: AppGraph) {
         graph.activityLog.add(ActivityEvent.Kind.PAIRED, "Paired", verified.card.displayName, System.currentTimeMillis())
         // Make sure our own card is published so the new peer (and broker) can resolve us.
         graph.scope.launch { runCatching { graph.transport.publishCard(graph.buildClientCardBlob()) } }
-        // Only own-mesh devices propagate; tell existing own devices so they can repair its key on request.
-        if (ownDevice) graph.broadcastTrust()
+        // Tell our own devices about the new device (own or other) so the shared roster + its card converge.
+        graph.broadcastTrust()
         verified.card
     }
 

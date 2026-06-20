@@ -82,8 +82,8 @@ class MirrorEngine(
     private val profileUpdater: ((ProfileUpdate) -> Boolean)? = null,
     /** This device's broadcast trust roster, for anti-entropy + immediate propagation. */
     private val trustTableProvider: (() -> TrustTable)? = null,
-    /** Cards for our own trusted devices, pushed alongside the roster so peers can name pending devices. */
-    private val ownCardsProvider: (() -> List<SignedBlob>)? = null,
+    /** Cards for our trusted devices (own + other), pushed alongside the roster so peers can name pendings. */
+    private val trustedCardsProvider: (() -> List<SignedBlob>)? = null,
     /** Folds a peer's incoming roster into local trust state; returns prompts to raise + cards to offer. */
     private val onTrustTable: ((sender: ClientId, table: TrustTable) -> IncomingTrustResult)? = null,
     /** Pins a delivered card (first-verified-wins). Returns true if newly stored. */
@@ -118,7 +118,7 @@ class MirrorEngine(
     /** Own-mesh recipients — notifications, dismissals, trust tables, cards, and asset repair go only here. */
     private fun recipients(): List<RecipientKey> = peersProvider().filter { it.ownDevice }.map(::rk)
 
-    /** Every trusted recipient (own + profile-only not-own) — only profile updates fan out this wide. */
+    /** Every trusted recipient (own + other) — only profile updates fan out this wide. */
     private fun allRecipients(): List<RecipientKey> = peersProvider().map(::rk)
 
     /**
@@ -174,7 +174,7 @@ class MirrorEngine(
      * is safe to re-send (e.g. on reconnect) to converge peers that were offline when the change landed.
      */
     suspend fun broadcastProfile(update: ProfileUpdate) {
-        val recipients = allRecipients() // profile updates reach own AND profile-only devices
+        val recipients = allRecipients() // profile updates reach own AND other devices
         if (recipients.isEmpty()) return
         val envelope = EnvelopeCrypto.seal(
             signer = signer,
@@ -190,13 +190,14 @@ class MirrorEngine(
     }
 
     /** Broadcast this device's trust roster to every own peer (anti-entropy + immediate propagation), and
-     *  push our own devices' cards alongside so a peer can resolve a newly-introduced (pending) device's name. */
+     *  push our trusted devices' cards (own + other) alongside so a peer can name a newly-introduced
+     *  (pending) device or repair a keyless one. Other-device rows ride along but never leave our own mesh. */
     suspend fun broadcastTrust() {
         val table = trustTableProvider?.invoke() ?: return
         val recipients = recipients() // own only
         if (recipients.isEmpty()) return
         transport.send(sealDataSync(DataSync(DataSyncKind.TRUST, trust = table), recipients), Urgency.NORMAL)
-        ownCardsProvider?.invoke()?.forEach { card ->
+        trustedCardsProvider?.invoke()?.forEach { card ->
             transport.send(sealDataSync(DataSync(DataSyncKind.CARD, card = CardDelivery(card.signerId, card)), recipients), Urgency.NORMAL)
         }
     }
@@ -246,7 +247,7 @@ class MirrorEngine(
             Log.w(TAG, "decrypt failed for ${envelope.messageId}: ${it.message}")
             return
         }
-        // A profile-only (not-own) device may only send profile updates; everything else from it is dropped.
+        // An "other" (not-own) device may only send profile updates inbound; everything else from it is dropped.
         when (envelope.typ) {
             MessageType.NOTIFICATION -> {
                 if (!sender.ownDevice) return

@@ -24,7 +24,7 @@ data class Peer(
     val lastSeenAt: Long = 0L,
     val capabilities: List<Capability> = emptyList(),
     val profileUpdatedAt: Long = 0L,
-    /** One of the user's own devices (full mirroring) vs a profile-only paired device. */
+    /** One of the user's own devices (full mirroring) vs an "other" device in the synced private contact list. */
     val ownDevice: Boolean = true,
 )
 

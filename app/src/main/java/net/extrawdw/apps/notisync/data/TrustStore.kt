@@ -45,7 +45,8 @@ data class RosterDevice(
     val introducedByName: String?,
     /** When it was revoked (for REVOKED rows), so the UI can gate permanent deletion; null otherwise. */
     val revokedAt: Long?,
-    /** One of the user's own devices vs a profile-only paired device (separate UI listing). */
+    /** One of the user's own devices (full mirroring) vs an "other" device in the synced private
+     *  contact list (separate UI listing). */
     val ownDevice: Boolean,
 )
 
@@ -118,15 +119,12 @@ class TrustStore(
         return true
     }
 
-    /** Immediately forget a profile-only (not-own) device — no tombstone, no propagation. */
-    fun deleteNotOwn(clientId: ClientId): Boolean {
-        if (_state.value.entries[clientId]?.ownDevice != false) return false
-        mutate { it.copy(entries = it.entries - clientId, cards = it.cards - clientId, overlays = it.overlays - clientId) }
-        return false // not-own devices don't participate in propagation
-    }
-
     fun revokeLocal(clientId: ClientId, now: Long): Boolean {
-        mutate { it.copy(entries = it.entries + (clientId to TrustMachine.localRevoke(clientId, now))) }
+        // Keep the device's own/other classification on its tombstone — a revoke must never reclassify it.
+        mutate { st ->
+            val ownDevice = st.entries[clientId]?.ownDevice ?: true
+            st.copy(entries = st.entries + (clientId to TrustMachine.localRevoke(clientId, now, ownDevice)))
+        }
         return true // overturn/own-decision -> broadcast now
     }
 
@@ -187,9 +185,10 @@ class TrustStore(
                     }
                     r.prompt?.let { prompts += wire.clientId to it }
                 }
-                // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender lacks it.
+                // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender
+                // lacks it — for own AND other trusted devices, since both now propagate within the mesh.
                 val mine = entries[wire.clientId] // running accumulator, consistent with the fold above
-                if (!wire.keyAvailable && mine?.status == TrustStatus.TRUSTED && mine.ownDevice) {
+                if (!wire.keyAvailable && mine?.status == TrustStatus.TRUSTED) {
                     st.cards[wire.clientId]?.let { offers += it }
                 }
             }
@@ -211,9 +210,10 @@ class TrustStore(
         return true
     }
 
-    /** Cards we hold for our own trusted devices — pushed alongside the trust roster so peers can name pendings. */
-    fun ownCards(): List<SignedBlob> = _state.value.let { st ->
-        st.entries.values.filter { it.ownDevice && it.status == TrustStatus.TRUSTED }.mapNotNull { st.cards[it.clientId] }
+    /** Cards we hold for every trusted device (own + other) — pushed alongside the roster (to our own
+     *  devices only) so a peer can name a still-pending device or repair a keyless one. */
+    fun trustedCards(): List<SignedBlob> = _state.value.let { st ->
+        st.entries.values.filter { it.status == TrustStatus.TRUSTED }.mapNotNull { st.cards[it.clientId] }
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
@@ -232,16 +232,17 @@ class TrustStore(
     }
 
     /**
-     * Our broadcast roster: every own-mesh entry (TRUSTED, REVOKED, and both PENDING_* states), with
-     * key-availability. PENDING_* rows are informational — a receiver never acts on a peer's pending
-     * state, it only honours keyAvailable=false to repair a keyless pending. Not-own devices never propagate.
+     * Our broadcast roster, sent only to our own devices: every entry but our self-row, each tagged with
+     * its [TrustEntry.ownDevice] category and key-availability. Own-mesh rows include both PENDING_* states
+     * (informational — a receiver never acts on a peer's pending, only honours keyAvailable=false to repair
+     * a keyless one); "other" rows are always TRUSTED/REVOKED and a receiver applies them immediately.
      */
     fun buildTrustTable(): TrustTable {
         val st = _state.value
         return TrustTable(
             st.entries.values
-                .filter { it.clientId != selfId && it.ownDevice }
-                .map { TrustTableEntry(it.clientId, it.status, it.updatedAt, keyAvailable = st.cards.containsKey(it.clientId)) },
+                .filter { it.clientId != selfId }
+                .map { TrustTableEntry(it.clientId, it.status, it.updatedAt, keyAvailable = st.cards.containsKey(it.clientId), ownDevice = it.ownDevice) },
         )
     }
 

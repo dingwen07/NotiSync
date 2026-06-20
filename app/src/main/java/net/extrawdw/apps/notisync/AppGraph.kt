@@ -114,7 +114,7 @@ class AppGraph(private val app: Application) {
             assetResolver = assetManager,
             profileUpdater = { trust.applyProfile(it) },
             trustTableProvider = { trust.buildTrustTable() },
-            ownCardsProvider = { trust.ownCards() },
+            trustedCardsProvider = { trust.trustedCards() },
             onTrustTable = { sender, table -> trust.applyIncomingTable(sender, table) },
             onCardDelivery = { id, card -> trust.applyCard(id, card) },
             onTrustPrompt = ::onTrustPrompt,
@@ -201,6 +201,9 @@ class AppGraph(private val app: Application) {
                 TrustPrompt.RE_TRUST -> "A device wants to rejoin" to "$byName wants to re-add $subject, which was previously removed."
                 TrustPrompt.NEW_REVOKE -> "A device was removed" to "$byName removed $subject. Confirm in the app."
                 TrustPrompt.CONFLICT -> "Trust conflict" to "$subject was re-added while being removed. Resolve in the app."
+                // "Other" devices are already applied — these prompts just keep the user informed.
+                TrustPrompt.OTHER_ADDED -> "Device added" to "$byName added $subject to your other devices."
+                TrustPrompt.OTHER_REMOVED -> "Device removed" to "$byName removed $subject from your other devices."
             }
             val showFingerprint = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
             // Expanded text carries the safety number so an inline Approve is still a real check, not a blind tap.
@@ -225,7 +228,8 @@ class AppGraph(private val app: Application) {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
                 .setContentIntent(open)
                 .setAutoCancel(true)
-            // Add/re-add carry Approve/Reject; a removal carries Remove/Keep; only a conflict needs the app.
+            // Add/re-add carry Approve/Reject; a removal carries Remove/Keep; a conflict or an already-
+            // applied "other" change just opens the app (no decision to make).
             when (prompt) {
                 TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST -> {
                     builder.addAction(0, "Approve", trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
@@ -235,7 +239,7 @@ class AppGraph(private val app: Application) {
                     builder.addAction(0, "Remove", trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId))
                     builder.addAction(0, "Keep", trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId))
                 }
-                TrustPrompt.CONFLICT -> Unit // open the app to resolve
+                TrustPrompt.CONFLICT, TrustPrompt.OTHER_ADDED, TrustPrompt.OTHER_REMOVED -> Unit
             }
             NotificationManagerCompat.from(app).notify(notifId, builder.build())
         }

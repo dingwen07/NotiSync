@@ -136,7 +136,8 @@ fun DevicesScreen(
                 }
                 item {
                     Text(
-                        "Profile-only devices: they receive your device name, but never your notifications.",
+                        "Other people's devices. This list stays in sync across your own devices and is never " +
+                            "shared with them; they never receive your notifications.",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -162,7 +163,6 @@ private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.ex
                     onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
                     onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
                     onPurge = { graph.trust.purgeRevoked(it) },
-                    onDeleteNotOwn = { graph.trust.deleteNotOwn(it) },
                 )
                 if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
             }
@@ -230,7 +230,6 @@ private fun DeviceRow(
     onKeep: (ClientId) -> Unit,
     onRemove: (ClientId) -> Unit,
     onPurge: (ClientId) -> Unit,
-    onDeleteNotOwn: (ClientId) -> Unit,
 ) {
     val name = device.displayName ?: "Unknown device"
     val isRevoked = device.status == TrustStatus.REVOKED
@@ -274,10 +273,8 @@ private fun DeviceRow(
                 )
             }
             when (device.status) {
-                // Own device -> revoke (tombstone + propagate); profile-only -> immediate local delete.
-                TrustStatus.TRUSTED -> IconButton(onClick = {
-                    if (device.ownDevice) onRemove(device.clientId) else onDeleteNotOwn(device.clientId)
-                }) {
+                // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
+                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }) {
                     Icon(Icons.Filled.Delete, contentDescription = "Remove $name")
                 }
                 TrustStatus.REVOKED -> {

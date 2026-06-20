@@ -201,10 +201,17 @@ enum class TrustStatus { PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
 @Serializable
 data class TrustTableEntry(
     val clientId: ClientId,
-    /** Only TRUSTED or REVOKED on the wire; PENDING_* are filtered out before broadcast. */
+    /** TRUSTED/REVOKED for any device; an own-mesh device may also carry PENDING_* informationally. */
     val status: TrustStatus,
     val updatedAt: Long,
     val keyAvailable: Boolean,
+    /**
+     * True for one of the broadcaster's own-mesh devices (consensus trust, may carry PENDING_*); false
+     * for an "other" device — a separately-paired entry in the broadcaster's private contact list, which
+     * a receiver applies immediately (no pending, last-writer-wins) and never re-shares outside its own
+     * mesh. Append-only: defaults true so a roster from an older peer (own devices only) decodes unchanged.
+     */
+    val ownDevice: Boolean = true,
 )
 
 /** A device's broadcast trust roster (its TRUSTED + REVOKED decisions). Carried over [DataSyncKind.TRUST]. */

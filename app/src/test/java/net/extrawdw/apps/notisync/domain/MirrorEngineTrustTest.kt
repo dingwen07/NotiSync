@@ -97,7 +97,7 @@ class MirrorEngineTrustTest {
             peersProvider = { listOf(peerFor(peerSigner, peerHpke.publicKeyset)) }, renderer = noopRenderer,
             activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined),
             trustTableProvider = { TrustTable(emptyList()) },
-            ownCardsProvider = { listOf(card) },
+            trustedCardsProvider = { listOf(card) },
         )
 
         engine.broadcastTrust()
