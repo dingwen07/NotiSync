@@ -82,6 +82,8 @@ class MirrorEngine(
     private val profileUpdater: ((ProfileUpdate) -> Boolean)? = null,
     /** This device's broadcast trust roster, for anti-entropy + immediate propagation. */
     private val trustTableProvider: (() -> TrustTable)? = null,
+    /** Cards for our own trusted devices, pushed alongside the roster so peers can name pending devices. */
+    private val ownCardsProvider: (() -> List<SignedBlob>)? = null,
     /** Folds a peer's incoming roster into local trust state; returns prompts to raise + cards to offer. */
     private val onTrustTable: ((sender: ClientId, table: TrustTable) -> IncomingTrustResult)? = null,
     /** Pins a delivered card (first-verified-wins). Returns true if newly stored. */
@@ -187,22 +189,27 @@ class MirrorEngine(
         activityLog.add(ActivityEvent.Kind.SENT, "Device name", "updated on ${recipients.size} device(s)", now())
     }
 
-    /** Broadcast this device's trust roster to every trusted peer (anti-entropy + immediate propagation). */
+    /** Broadcast this device's trust roster to every own peer (anti-entropy + immediate propagation), and
+     *  push our own devices' cards alongside so a peer can resolve a newly-introduced (pending) device's name. */
     suspend fun broadcastTrust() {
         val table = trustTableProvider?.invoke() ?: return
-        val recipients = recipients()
+        val recipients = recipients() // own only
         if (recipients.isEmpty()) return
-        val envelope = EnvelopeCrypto.seal(
-            signer = signer,
-            typ = MessageType.DATA_SYNC,
-            bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = table)),
-            recipients = recipients,
-            messageId = UUID.randomUUID().toString(),
-            seq = seq.incrementAndGet(),
-            createdAt = now(),
-        )
-        transport.send(envelope, Urgency.NORMAL)
+        transport.send(sealDataSync(DataSync(DataSyncKind.TRUST, trust = table), recipients), Urgency.NORMAL)
+        ownCardsProvider?.invoke()?.forEach { card ->
+            transport.send(sealDataSync(DataSync(DataSyncKind.CARD, card = CardDelivery(card.signerId, card)), recipients), Urgency.NORMAL)
+        }
     }
+
+    private fun sealDataSync(body: DataSync, recipients: List<RecipientKey>): Envelope = EnvelopeCrypto.seal(
+        signer = signer,
+        typ = MessageType.DATA_SYNC,
+        bodyPlaintext = ProtocolCodec.encodeToCbor(body),
+        recipients = recipients,
+        messageId = UUID.randomUUID().toString(),
+        seq = seq.incrementAndGet(),
+        createdAt = now(),
+    )
 
     /** Deliver a signed card to one own-mesh peer (keyless repair / card announce). */
     private suspend fun sendCard(recipientId: ClientId, clientId: ClientId, card: SignedBlob) {

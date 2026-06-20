@@ -114,6 +114,7 @@ class AppGraph(private val app: Application) {
             assetResolver = assetManager,
             profileUpdater = { trust.applyProfile(it) },
             trustTableProvider = { trust.buildTrustTable() },
+            ownCardsProvider = { trust.ownCards() },
             onTrustTable = { sender, table -> trust.applyIncomingTable(sender, table) },
             onCardDelivery = { id, card -> trust.applyCard(id, card) },
             onTrustPrompt = ::onTrustPrompt,
@@ -201,9 +202,9 @@ class AppGraph(private val app: Application) {
                 TrustPrompt.NEW_REVOKE -> "A device was removed" to "$byName removed $subject. Confirm in the app."
                 TrustPrompt.CONFLICT -> "Trust conflict" to "$subject was re-added while being removed. Resolve in the app."
             }
-            val verifiable = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
+            val showFingerprint = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
             // Expanded text carries the safety number so an inline Approve is still a real check, not a blind tap.
-            val bigText = if (verifiable) {
+            val bigText = if (showFingerprint) {
                 "$text\n\nSafety number\n${clientId.value}\n\nApprove only if it matches the device's own safety number."
             } else {
                 text
@@ -224,9 +225,17 @@ class AppGraph(private val app: Application) {
                 .setStyle(NotificationCompat.BigTextStyle().bigText(bigText))
                 .setContentIntent(open)
                 .setAutoCancel(true)
-            if (verifiable) {
-                builder.addAction(0, "Approve", trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
-                builder.addAction(0, "Reject", trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
+            // Add/re-add carry Approve/Reject; a removal carries Remove/Keep; only a conflict needs the app.
+            when (prompt) {
+                TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST -> {
+                    builder.addAction(0, "Approve", trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
+                    builder.addAction(0, "Reject", trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
+                }
+                TrustPrompt.NEW_REVOKE -> {
+                    builder.addAction(0, "Remove", trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId))
+                    builder.addAction(0, "Keep", trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId))
+                }
+                TrustPrompt.CONFLICT -> Unit // open the app to resolve
             }
             NotificationManagerCompat.from(app).notify(notifId, builder.build())
         }

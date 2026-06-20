@@ -184,15 +184,22 @@ class TrustStore(
         return IncomingTrustResult(prompts, offers)
     }
 
-    /** Store a card delivered for a known/pending id. First-verified-wins; rejects any key change. */
+    /**
+     * Store a delivered card. Self-verifying (clientId == fingerprint + self-sig) and first-verified-wins,
+     * so it is safe to accept even before a trust entry exists — that's what lets a card pushed alongside
+     * an introduction resolve a still-pending device's name instead of leaving it "Unknown".
+     */
     fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
         val card = verifyCard(cardBlob) ?: return false
         if (card.clientId != clientId) return false
-        val st = _state.value
-        if (st.entries[clientId] == null) return false        // we don't care about this id
-        if (st.cards.containsKey(clientId)) return false       // already pinned (immutable) — see putCard
+        if (_state.value.cards.containsKey(clientId)) return false // already pinned (immutable) — see putCard
         mutate { it.copy(cards = putCard(it.cards, clientId, cardBlob)) }
         return true
+    }
+
+    /** Cards we hold for our own trusted devices — pushed alongside the trust roster so peers can name pendings. */
+    fun ownCards(): List<SignedBlob> = _state.value.let { st ->
+        st.entries.values.filter { it.ownDevice && it.status == TrustStatus.TRUSTED }.mapNotNull { st.cards[it.clientId] }
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */

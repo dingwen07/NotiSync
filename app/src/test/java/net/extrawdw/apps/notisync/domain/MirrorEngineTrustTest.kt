@@ -87,6 +87,31 @@ class MirrorEngineTrustTest {
     }
 
     @Test
+    fun broadcastTrust_pushesOwnCardsAlongsideTable() = runBlocking {
+        val me = SoftwareIdentitySigner.generate(); val myHpke = Hpke.generateKeyPair()
+        val peerSigner = SoftwareIdentitySigner.generate(); val peerHpke = Hpke.generateKeyPair()
+        val transport = CapturingTransport()
+        val card = SignedBlob(typ = SignedType.CLIENT_CARD, signerId = ClientId("x"), payload = byteArrayOf(1), sig = byteArrayOf(2))
+        val engine = MirrorEngine(
+            signer = me, myHpkePrivateKeyset = myHpke.privateKeyset, transport = transport,
+            peersProvider = { listOf(peerFor(peerSigner, peerHpke.publicKeyset)) }, renderer = noopRenderer,
+            activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined),
+            trustTableProvider = { TrustTable(emptyList()) },
+            ownCardsProvider = { listOf(card) },
+        )
+
+        engine.broadcastTrust()
+
+        assertEquals(2, transport.sent.size) // a TRUST table + a CARD push
+        val kinds = transport.sent.map {
+            ProtocolCodec.decodeFromCbor<DataSync>(EnvelopeCrypto.open(it, peerSigner.clientId, peerHpke.privateKeyset)).kind
+        }
+        assertEquals(listOf(DataSyncKind.TRUST, DataSyncKind.CARD), kinds)
+        val pushed = ProtocolCodec.decodeFromCbor<DataSync>(EnvelopeCrypto.open(transport.sent[1], peerSigner.clientId, peerHpke.privateKeyset)).card
+        assertEquals(ClientId("x"), pushed?.clientId)
+    }
+
+    @Test
     fun receivingTrustTable_invokesHandlerAndOffersCards() = runBlocking {
         val me = SoftwareIdentitySigner.generate(); val myHpke = Hpke.generateKeyPair()
         val sender = SoftwareIdentitySigner.generate(); val senderHpke = Hpke.generateKeyPair()
