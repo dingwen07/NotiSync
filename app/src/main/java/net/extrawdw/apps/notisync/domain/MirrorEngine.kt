@@ -11,10 +11,13 @@ import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.PrivateAssetRef
+import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
@@ -67,6 +70,11 @@ class MirrorEngine(
     private val activityLog: ActivityLog,
     private val scope: CoroutineScope,
     private val assetResolver: AssetResolver? = null,
+    /**
+     * Applies a peer's announced [ProfileUpdate] to local roster state (last-writer-wins), returning
+     * true if anything changed. Null in tests / contexts with no roster store.
+     */
+    private val profileUpdater: ((ProfileUpdate) -> Boolean)? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
     /** Resolves a package name to a user-facing app label; defaults to the package itself. */
     private val appLabelResolver: (String) -> String = { it },
@@ -141,6 +149,27 @@ class MirrorEngine(
         activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), "synced to ${recipients.size} device(s)", now())
     }
 
+    /**
+     * Announce a change to this device's own mutable profile (e.g. a rename) to every peer, over the
+     * low-urgency DATA_SYNC channel. Idempotent on the receiver via [ProfileUpdate.updatedAt], so it
+     * is safe to re-send (e.g. on reconnect) to converge peers that were offline when the change landed.
+     */
+    suspend fun broadcastProfile(update: ProfileUpdate) {
+        val recipients = recipients()
+        if (recipients.isEmpty()) return
+        val envelope = EnvelopeCrypto.seal(
+            signer = signer,
+            typ = MessageType.DATA_SYNC,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)),
+            recipients = recipients,
+            messageId = UUID.randomUUID().toString(),
+            seq = seq.incrementAndGet(),
+            createdAt = now(),
+        )
+        transport.send(envelope, Urgency.NORMAL)
+        activityLog.add(ActivityEvent.Kind.SENT, "Device name", "updated on ${recipients.size} device(s)", now())
+    }
+
     /** Handle an envelope received via WebSocket or FCM. Idempotent: duplicates are dropped. */
     fun handleEnvelope(envelope: Envelope) {
         if (!seen.add(envelope.messageId)) return
@@ -192,11 +221,25 @@ class MirrorEngine(
                 activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(event.sourceKey), "by ${sender.displayName}", now())
             }
             MessageType.DATA_SYNC -> {
-                val sync = runCatching { ProtocolCodec.decodeFromCbor<AssetSync>(body) }.getOrNull() ?: return
-                val resolver = assetResolver ?: return
+                val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull() ?: return
                 when (sync.kind) {
-                    AssetSyncKind.ASSET_MISSING -> scope.launch { repairAndReply(envelope.signerId, sync.items, resolver) }
-                    AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(sync.items, resolver) }
+                    DataSyncKind.ASSET -> {
+                        val asset = sync.asset ?: return
+                        val resolver = assetResolver ?: return
+                        when (asset.kind) {
+                            AssetSyncKind.ASSET_MISSING -> scope.launch { repairAndReply(envelope.signerId, asset.items, resolver) }
+                            AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(asset.items, resolver) }
+                        }
+                    }
+                    DataSyncKind.PROFILE -> {
+                        val update = sync.profile ?: return
+                        // The envelope is already signature-verified against this peer's stored identity
+                        // key; require the update to be about that same peer (a peer can't rename another).
+                        if (update.clientId != envelope.signerId) return
+                        if (profileUpdater?.invoke(update) == true) {
+                            activityLog.add(ActivityEvent.Kind.PAIRED, update.displayName, "renamed (was ${sender.displayName})", now())
+                        }
+                    }
                 }
             }
         }
@@ -227,7 +270,7 @@ class MirrorEngine(
         val envelope = EnvelopeCrypto.seal(
             signer = signer,
             typ = MessageType.DATA_SYNC,
-            bodyPlaintext = ProtocolCodec.encodeToCbor(sync),
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.ASSET, asset = sync)),
             recipients = listOf(RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))),
             messageId = UUID.randomUUID().toString(),
             seq = seq.incrementAndGet(),

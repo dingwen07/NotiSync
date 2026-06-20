@@ -17,12 +17,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
 class SettingsRepository(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
+    private val deviceNameUpdatedKey = longPreferencesKey("device_name_updated_at")
     private val batchLowKey = booleanPreferencesKey("batch_low_priority")
     private val advancedKey = booleanPreferencesKey("advanced_diagnostics")
     private val groupKey = stringPreferencesKey("group_id")
@@ -33,13 +35,20 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
     val deviceName: StateFlow<String> =
         store.data.map { it[deviceNameKey] ?: android.os.Build.MODEL }.stateInEager(scope, android.os.Build.MODEL)
+    /** Source-clock stamp of the last device-name change; 0 until the user first renames. Stamped into
+     *  outgoing [ProfileUpdate]s so peers can apply last-writer-wins. */
+    val deviceNameUpdatedAt: StateFlow<Long> =
+        store.data.map { it[deviceNameUpdatedKey] ?: 0L }.stateInEager(scope, 0L)
     val batchLowPriority: StateFlow<Boolean> =
         store.data.map { it[batchLowKey] ?: false }.stateInEager(scope, false)
     val advancedDiagnostics: StateFlow<Boolean> =
         store.data.map { it[advancedKey] ?: false }.stateInEager(scope, false)
 
     suspend fun setBrokerUrl(url: String) = store.edit { it[brokerUrlKey] = url }
-    suspend fun setDeviceName(name: String) = store.edit { it[deviceNameKey] = name }
+    suspend fun setDeviceName(name: String) = store.edit {
+        it[deviceNameKey] = name
+        it[deviceNameUpdatedKey] = System.currentTimeMillis()
+    }
     suspend fun setBatchLowPriority(on: Boolean) = store.edit { it[batchLowKey] = on }
     suspend fun setAdvancedDiagnostics(on: Boolean) = store.edit { it[advancedKey] = on }
 
@@ -96,10 +105,45 @@ class PeerRepository(private val store: DataStore<Preferences>, private val scop
 
     fun get(clientId: ClientId): Peer? = _peers.value.firstOrNull { it.clientId == clientId }
 
+    /**
+     * Apply a peer's announced [ProfileUpdate] to its stored record (last-writer-wins on
+     * [ProfileUpdate.updatedAt]; mutable profile fields only — keys are never touched here). Returns
+     * true if anything changed, so the caller can decide whether to surface it.
+     */
+    fun updateProfile(update: ProfileUpdate): Boolean {
+        val next = applyProfileUpdate(_peers.value, update) ?: return false
+        _peers.value = next
+        persist()
+        return true
+    }
+
     private fun persist() {
         val json = ProtocolCodec.encodeToJson(_peers.value)
         scope.launch { store.edit { it[peersKey] = json } }
     }
+}
+
+/**
+ * Pure merge for a [ProfileUpdate]: returns the updated peer list, or null if it applies to no peer
+ * or is not strictly newer than what we already have. Updates only the mutable profile fields and the
+ * freshness stamp; the immutable trust anchors (identity + HPKE keys) and [Peer.addedAt] are preserved.
+ */
+internal fun applyProfileUpdate(peers: List<Peer>, update: ProfileUpdate): List<Peer>? {
+    var changed = false
+    val next = peers.map { p ->
+        if (p.clientId == update.clientId && update.updatedAt > p.profileUpdatedAt) {
+            changed = true
+            p.copy(
+                displayName = update.displayName,
+                platform = update.platform,
+                capabilities = update.capabilities,
+                profileUpdatedAt = update.updatedAt,
+            )
+        } else {
+            p
+        }
+    }
+    return if (changed) next else null
 }
 
 /**

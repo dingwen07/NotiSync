@@ -2,6 +2,7 @@ package net.extrawdw.notisync.protocol
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -170,5 +171,48 @@ class ProtocolCodecTest {
         assertEquals("old1", decoded.items[0].assetId)
         assertEquals("new2", decoded.items[1].ref?.assetId)
         assertEquals(AssetRole.BIG_PICTURE, decoded.items[1].ref?.role)
+    }
+
+    @Test
+    fun dataSync_profileRoundTrips() {
+        val body = DataSync(
+            kind = DataSyncKind.PROFILE,
+            profile = ProfileUpdate(
+                clientId = ClientId("phone"),
+                displayName = "Living Room Pixel",
+                platform = "android",
+                capabilities = listOf(Capability.CAPTURE, Capability.DISPLAY),
+                updatedAt = 1_750_000_000_000L,
+            ),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(body))
+        assertEquals(DataSyncKind.PROFILE, decoded.kind)
+        assertEquals("Living Room Pixel", decoded.profile?.displayName)
+        assertEquals(ClientId("phone"), decoded.profile?.clientId)
+        assertEquals(listOf(Capability.CAPTURE, Capability.DISPLAY), decoded.profile?.capabilities)
+        assertEquals(1_750_000_000_000L, decoded.profile?.updatedAt)
+        assertNull("asset sub-body must be absent for a profile update", decoded.asset)
+    }
+
+    @Test
+    fun dataSync_assetWrapperRoundTrips() {
+        val body = DataSync(
+            kind = DataSyncKind.ASSET,
+            asset = AssetSync(AssetSyncKind.ASSET_MISSING, listOf(AssetSyncItem(assetHash = "h1", assetId = "old1"))),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(body))
+        assertEquals(DataSyncKind.ASSET, decoded.kind)
+        assertEquals(AssetSyncKind.ASSET_MISSING, decoded.asset?.kind)
+        assertEquals("old1", decoded.asset?.items?.get(0)?.assetId)
+        assertNull("profile sub-body must be absent for an asset sync", decoded.profile)
+    }
+
+    @Test
+    fun dataSync_discriminatorOnlyBodyDecodesToNulls() {
+        // Forward-compat contract: a body carrying only the discriminator must decode cleanly, not throw.
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE)))
+        assertEquals(DataSyncKind.PROFILE, decoded.kind)
+        assertNull(decoded.asset)
+        assertNull(decoded.profile)
     }
 }

@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
@@ -24,6 +25,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -49,7 +51,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = deviceName,
-                    onTextChanged = { scope.launch { graph.settings.setDeviceName(it) } },
+                    onCommit = { scope.launch { graph.settings.setDeviceName(it) } },
                     label = { Text("Device name") },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
@@ -61,7 +63,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = brokerUrl,
-                    onTextChanged = { scope.launch { graph.settings.setBrokerUrl(it) } },
+                    onCommit = { scope.launch { graph.settings.setBrokerUrl(it) } },
                     label = { Text("Broker URL (ws://…)") },
                     supportingText = { Text("Use ws://10.0.2.2:8080 for a local server from the emulator.") },
                     keyboardOptions = KeyboardOptions(
@@ -94,19 +96,28 @@ fun SettingsScreen() {
     }
 }
 
+/**
+ * A settings text field that commits its value only when editing is *done* — when the field loses
+ * focus, or the user presses the IME action (Done commits + dismisses; Next advances focus, which
+ * also triggers the focus-loss commit). Keystrokes only update local state, so a single edit never
+ * fans out a string of partial values (important for [setDeviceName], which propagates to peers).
+ */
 @Composable
 private fun SettingsTextField(
     value: String,
-    onTextChanged: (String) -> Unit,
+    onCommit: (String) -> Unit,
     label: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     supportingText: (@Composable () -> Unit)? = null,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
 ) {
+    val focusManager = LocalFocusManager.current
     var textValue by rememberSaveable(stateSaver = TextFieldValue.Saver) {
         mutableStateOf(TextFieldValue(text = value, selection = TextRange(value.length)))
     }
     var isFocused by remember { mutableStateOf(false) }
+    // The value we just committed, awaiting its round-trip through the StateFlow, so the sync below
+    // doesn't briefly clobber the field back to the pre-commit value (and so we never double-commit).
     var pendingSavedText by rememberSaveable { mutableStateOf<String?>(null) }
 
     LaunchedEffect(value, isFocused) {
@@ -118,21 +129,27 @@ private fun SettingsTextField(
         }
     }
 
+    fun commit() {
+        val edited = textValue.text.trim()
+        // Ignore no-ops and blank input (the sync above reverts a blank field to the stored value).
+        if (edited.isNotEmpty() && edited != value && edited != pendingSavedText) {
+            pendingSavedText = edited
+            onCommit(edited)
+        }
+    }
+
     OutlinedTextField(
         value = textValue,
-        onValueChange = { next ->
-            val textChanged = next.text != textValue.text
-            textValue = next
-            if (textChanged) {
-                pendingSavedText = next.text
-                onTextChanged(next.text)
-            }
-        },
+        onValueChange = { textValue = it }, // local edit only — commit happens on focus loss / IME action
         label = label,
         supportingText = supportingText,
         singleLine = true,
         keyboardOptions = keyboardOptions,
-        modifier = modifier.onFocusChanged { isFocused = it.isFocused },
+        keyboardActions = KeyboardActions(onDone = { commit(); focusManager.clearFocus() }),
+        modifier = modifier.onFocusChanged { state ->
+            if (isFocused && !state.isFocused) commit() // committing on blur covers tap-away and Next-advance
+            isFocused = state.isFocused
+        },
     )
 }
 

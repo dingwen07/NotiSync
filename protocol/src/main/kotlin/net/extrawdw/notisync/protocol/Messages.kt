@@ -144,8 +144,8 @@ enum class AssetSyncKind {
 }
 
 /**
- * The body of a [MessageType.DATA_SYNC] envelope: end-to-end-encrypted, low-urgency (FCM NORMAL
- * priority) repair of missing private graphics. The broker only ever relays it as opaque ciphertext.
+ * Repair of missing private graphics: end-to-end-encrypted, low-urgency, relayed by the broker as
+ * opaque ciphertext. Carried inside a [DataSync] (see [DataSyncKind.ASSET]).
  */
 @Serializable
 data class AssetSync(val kind: AssetSyncKind, val items: List<AssetSyncItem>)
@@ -158,4 +158,43 @@ data class AssetSyncItem(
     val assetId: String? = null,
     /** A fresh ref the consumer can re-fetch from — ASSET_READY only. */
     val ref: PrivateAssetRef? = null,
+)
+
+/** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable. */
+@Serializable
+enum class DataSyncKind { ASSET, PROFILE }
+
+/**
+ * The body of a [MessageType.DATA_SYNC] envelope: the group's low-urgency (FCM NORMAL), end-to-end-
+ * encrypted control channel, which the broker only ever relays as opaque ciphertext. [kind] selects
+ * the populated sub-body — a flat discriminated struct (like [WsMessage]) rather than polymorphic
+ * serialization, so it encodes byte-identically on Android + JVM and a new variant never has to be
+ * told apart by a fragile try-decode.
+ */
+@Serializable
+data class DataSync(
+    val kind: DataSyncKind,
+    /** Private-graphic repair — populated iff [kind] == [DataSyncKind.ASSET]. */
+    val asset: AssetSync? = null,
+    /** A peer's mutable profile changed — populated iff [kind] == [DataSyncKind.PROFILE]. */
+    val profile: ProfileUpdate? = null,
+)
+
+/**
+ * A device announcing a change to the *mutable* part of its own [ClientCard] so the rest of the
+ * group converges (today: a rename; the same channel carries any future mutable field).
+ *
+ * It deliberately carries NO key material: identity and HPKE keys are immutable trust anchors fixed
+ * at pairing, so a profile update can never become a key-rotation vector. Authenticity comes from the
+ * enclosing signed [Envelope]; a receiver must require [clientId] == the envelope's signer before
+ * applying, and resolve ties with [updatedAt] (last-writer-wins).
+ */
+@Serializable
+data class ProfileUpdate(
+    val clientId: ClientId,
+    val displayName: String,
+    val platform: String,
+    val capabilities: List<Capability>,
+    /** Source-clock timestamp of the change. */
+    val updatedAt: Long,
 )

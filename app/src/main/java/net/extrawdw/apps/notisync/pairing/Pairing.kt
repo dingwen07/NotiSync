@@ -140,6 +140,9 @@ class PairingManager(private val graph: AppGraph) {
             identityPublicKeyB64 = encoder.encodeToString(card.identityPublicKey),
             hpkePublicKeysetB64 = encoder.encodeToString(card.hpkePublicKeyset),
             addedAt = System.currentTimeMillis(),
+            capabilities = card.capabilities,
+            // Seed with the card's own clock so a later profile update is only applied if genuinely newer.
+            profileUpdatedAt = card.createdAt,
         )
         graph.peers.add(peer)
         graph.activityLog.add(ActivityEvent.Kind.PAIRED, "Paired", card.displayName, System.currentTimeMillis())

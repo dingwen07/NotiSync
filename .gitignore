@@ -2,6 +2,9 @@
 .gradle/
 build/
 
+# Kotlin compiler daemon session/cache files
+.kotlin/
+
 # Local configuration file (sdk path, etc)
 local.properties
 

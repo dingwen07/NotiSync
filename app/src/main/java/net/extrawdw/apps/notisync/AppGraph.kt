@@ -14,6 +14,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.HpkeKeyManager
@@ -36,6 +41,7 @@ import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
@@ -95,6 +101,7 @@ class AppGraph(private val app: Application) {
             activityLog = activityLog,
             scope = scope,
             assetResolver = assetManager,
+            profileUpdater = { peers.updateProfile(it) },
             appLabelResolver = ::appLabelFor,
         )
 
@@ -109,8 +116,9 @@ class AppGraph(private val app: Application) {
         publishSelf()
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) = startLiveConnection()
-            override fun onStop(owner: LifecycleOwner) = stopLiveConnection()
+            override fun onStop(owner: LifecycleOwner) = onAppBackgrounded()
         })
+        observeProfileChanges()
 
         Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
     }
@@ -132,13 +140,27 @@ class AppGraph(private val app: Application) {
         }
     }
 
-    /** Foreground only: refresh registration (self-heals stale broker state) and stream live updates. */
+    /** Foreground only: refresh our card on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
             runCatching { transport.publishCard(buildClientCardBlob()) }
-            registerFcmRoute()
             transport.incoming().collect { mirrorEngine?.handleEnvelope(it) }
+        }
+    }
+
+    /**
+     * Going to the background: drop the live socket, then do the work that matters precisely *because*
+     * we're about to go dark — refresh the FCM wake route (the only delivery path while idle) and, if
+     * we've been renamed, re-announce our profile so peers that were offline at rename time still
+     * converge via the broker's store-and-forward relay. Both run here rather than on every foreground:
+     * while foregrounded the live WebSocket already delivers, so a per-resume FCM repair is wasted work.
+     */
+    private fun onAppBackgrounded() {
+        stopLiveConnection()
+        registerFcmRoute()
+        if (settings.deviceNameUpdatedAt.value > 0L) {
+            scope.launch { runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) } }
         }
     }
 
@@ -148,6 +170,12 @@ class AppGraph(private val app: Application) {
         liveJob = null
     }
 
+    /** This device's advertised capabilities — shared by the published card and profile updates. */
+    private fun selfCapabilities(): List<Capability> = listOf(
+        Capability.CAPTURE, Capability.DISPLAY, Capability.DISMISS_SYNC,
+        Capability.BACKGROUND_WAKE, Capability.FOREGROUND_CONNECTION,
+    )
+
     /** Build this device's self-signed client card. */
     fun buildClientCardBlob(): SignedBlob {
         val card = ClientCard(
@@ -156,14 +184,39 @@ class AppGraph(private val app: Application) {
             hpkePublicKeyset = hpke.publicKeyset,
             displayName = settings.deviceName.value,
             platform = "android",
-            capabilities = listOf(
-                Capability.CAPTURE, Capability.DISPLAY, Capability.DISMISS_SYNC,
-                Capability.BACKGROUND_WAKE, Capability.FOREGROUND_CONNECTION,
-            ),
+            capabilities = selfCapabilities(),
             createdAt = System.currentTimeMillis(),
         )
         val payload = ProtocolCodec.encodeToCbor(card)
         return SignedBlob(SignedType.CLIENT_CARD, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+    }
+
+    /** This device's current mutable profile, stamped with when the name last changed (no key material). */
+    fun buildProfileUpdate(): ProfileUpdate = ProfileUpdate(
+        clientId = identity.clientId,
+        displayName = settings.deviceName.value,
+        platform = "android",
+        capabilities = selfCapabilities(),
+        updatedAt = settings.deviceNameUpdatedAt.value,
+    )
+
+    /**
+     * Propagate device-profile changes (today: a rename). The Settings field commits only when editing
+     * is done (focus loss / IME action), so this normally fires once per edit; the debounce just
+     * coalesces any rapid back-to-back commits. Each change does both halves of convergence: refresh
+     * the broker's card cache (so a *future* pairing resolves the new name) and push a DATA_SYNC
+     * profile update to *existing* peers (the broker never pushes card changes on its own).
+     */
+    private fun observeProfileChanges() {
+        settings.deviceName
+            .drop(1) // skip the eager StateFlow seed; only react to real edits
+            .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
+            .distinctUntilChanged()
+            .onEach {
+                runCatching { transport.publishCard(buildClientCardBlob()) }
+                runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) }
+            }
+            .launchIn(scope)
     }
 
     private fun signedRouteClaim(token: String, epoch: Int): SignedBlob {
@@ -200,6 +253,9 @@ class AppGraph(private val app: Application) {
 
     companion object {
         private const val TAG = "AppGraph"
+
+        /** Collapse per-keystroke renames in the Settings field into a single broadcast. */
+        private const val PROFILE_BROADCAST_DEBOUNCE_MS = 800L
     }
 }
 
