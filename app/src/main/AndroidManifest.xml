@@ -1,18 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- No foreground service: background delivery is via FCM (Google's shared push connection), so
-         the app holds no persistent socket while idle. The live WebSocket runs only in the foreground. -->
-    <!-- No CAMERA permission needed: pairing uses Google's code scanner, which runs the scan in a
-         Google Play services UI process. -->
-    <!-- Needed to enumerate installed apps for the per-app mirroring picker. A notification mirror
-         is a legitimate use; Play distribution would require a declared justification. -->
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
+
+    <!-- Scoped package visibility instead of QUERY_ALL_PACKAGES -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+
+        <!-- Common notification sources with no launcher entry.
+        Queries explicitly so the receiver can still resolve their label/icon. -->
+        <package android:name="android" />                          <!-- Android System (framework) -->
+        <package android:name="com.android.systemui" />             <!-- System UI -->
+        <package android:name="com.android.phone" />                <!-- Telephony / Phone services -->
+        <package android:name="com.google.android.gms" />           <!-- Google Play services -->
+    </queries>
 
     <application
         android:name=".NotiSyncApp"
