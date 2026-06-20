@@ -1,5 +1,7 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
@@ -28,22 +30,27 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -51,38 +58,52 @@ import java.util.Locale
 
 private const val ICON_PX = 128
 
-private data class InstalledApp(val packageName: String, val label: String, val icon: ImageBitmap?)
+internal data class InstalledApp(val packageName: String, val label: String, val icon: ImageBitmap?)
+
+/**
+ * Loads the launchable installed apps once and caches them. Scoped to the Apps navigation entry, so
+ * with the back stack's saveState/restoreState the list survives tab switches — the expensive
+ * PackageManager scan (labels + icon decode) runs once instead of on every return to the tab.
+ */
+internal class AppsViewModel(app: Application) : AndroidViewModel(app) {
+    // null = still loading; a (possibly empty) list = loaded.
+    private val _apps = MutableStateFlow<List<InstalledApp>?>(null)
+    val apps: StateFlow<List<InstalledApp>?> = _apps.asStateFlow()
+
+    init {
+        viewModelScope.launch {
+            _apps.value = withContext(Dispatchers.IO) { loadLaunchableApps(getApplication()) }
+        }
+    }
+}
+
+private fun loadLaunchableApps(context: Context): List<InstalledApp> {
+    val pm = context.packageManager
+    return pm.getInstalledApplications(0)
+        .asSequence()
+        .filter { it.packageName != context.packageName }
+        .filter { pm.getLaunchIntentForPackage(it.packageName) != null } // user-facing apps
+        .map { info ->
+            InstalledApp(
+                packageName = info.packageName,
+                label = pm.getApplicationLabel(info).toString(),
+                icon = runCatching { pm.getApplicationIcon(info).toImageBitmap(ICON_PX) }.getOrNull(),
+            )
+        }
+        .toList()
+}
 
 @Composable
 fun AppsScreen() {
     val graph = rememberGraph()
-    val context = LocalContext.current
     val selection = graph.appSelection!!
     val enabled by selection.enabled.collectAsStateWithLifecycle()
     val lastSeen by selection.lastSeen.collectAsStateWithLifecycle()
-    val apps = remember { mutableStateListOf<InstalledApp>() }
-    var loading by remember { mutableStateOf(true) }
-    var query by remember { mutableStateOf("") }
+    val loaded by viewModel<AppsViewModel>().apps.collectAsStateWithLifecycle()
+    var query by rememberSaveable { mutableStateOf("") }
 
-    LaunchedEffect(Unit) {
-        val pm = context.packageManager
-        val loaded = withContext(Dispatchers.IO) {
-            pm.getInstalledApplications(0)
-                .asSequence()
-                .filter { it.packageName != context.packageName }
-                .filter { pm.getLaunchIntentForPackage(it.packageName) != null } // user-facing apps
-                .map { info ->
-                    InstalledApp(
-                        packageName = info.packageName,
-                        label = pm.getApplicationLabel(info).toString(),
-                        icon = runCatching { pm.getApplicationIcon(info).toImageBitmap(ICON_PX) }.getOrNull(),
-                    )
-                }
-                .toList()
-        }
-        apps.clear(); apps.addAll(loaded)
-        loading = false
-    }
+    val loading = loaded == null
+    val apps = loaded.orEmpty()
 
     fun norm(s: String) = s.lowercase(Locale.getDefault())
     val q = norm(query.trim())
@@ -107,6 +128,9 @@ fun AppsScreen() {
                 },
                 singleLine = true,
                 shape = CircleShape,
+                // A persistent 8.dp gap (outside the scrolling list) so rows never scroll up flush
+                // against the search bar. Combined with the sticky header's 8.dp top padding, the
+                // resting search-bar-to-header gap is 16.dp — matching the top-app-bar-to-search gap.
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp),
@@ -122,10 +146,10 @@ fun AppsScreen() {
                 }
                 else -> LazyColumn(Modifier.fillMaxSize()) {
                     if (enabledApps.isNotEmpty()) {
-                        item { SectionHeader("Mirroring", enabledApps.size) }
+                        stickyHeader(key = "header:mirroring") { SectionHeader("Mirroring", enabledApps.size) }
                         items(enabledApps, key = { "on:${it.packageName}" }) { AppRow(it, true, lastSeen[it.packageName], fmt, selection) }
                     }
-                    item { SectionHeader(if (q.isEmpty()) "All apps" else "Other results", otherApps.size) }
+                    stickyHeader(key = "header:all") { SectionHeader(if (q.isEmpty()) "All apps" else "Other results", otherApps.size) }
                     items(otherApps, key = { "off:${it.packageName}" }) { AppRow(it, false, lastSeen[it.packageName], fmt, selection) }
                 }
             }
@@ -139,7 +163,12 @@ private fun SectionHeader(title: String, count: Int) {
         "$title ($count)",
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 4.dp),
+        // Opaque background matching the screen so list rows scroll *under* the pinned header
+        // rather than showing through it.
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
     )
 }
 
