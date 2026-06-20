@@ -27,6 +27,7 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.remember
@@ -36,6 +37,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination
@@ -47,6 +49,8 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import kotlinx.serialization.Serializable
+import kotlinx.coroutines.flow.MutableStateFlow
+import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -56,14 +60,31 @@ import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
 class MainActivity : ComponentActivity() {
+    private val pendingPairingPayload = MutableStateFlow<String?>(null)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        updatePendingPairingPayload(intent)
         enableEdgeToEdge()
         setContent {
+            val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             NotiSyncTheme {
-                NotiSyncRoot()
+                NotiSyncRoot(
+                    pendingPairingPayload = pairingPayload,
+                    onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                )
             }
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        updatePendingPairingPayload(intent)
+    }
+
+    private fun updatePendingPairingPayload(intent: Intent?) {
+        PairingDeepLinks.payloadFrom(intent?.data)?.let { pendingPairingPayload.value = it }
     }
 }
 
@@ -85,10 +106,19 @@ private enum class TopLevelDestination(val route: Route, val label: String, val 
 }
 
 @Composable
-fun NotiSyncRoot() {
+fun NotiSyncRoot(
+    pendingPairingPayload: String? = null,
+    onPendingPairingPayloadConsumed: () -> Unit = {},
+) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
+
+    LaunchedEffect(pendingPairingPayload) {
+        if (pendingPairingPayload != null) {
+            navController.navigate(Route.Pairing) { launchSingleTop = true }
+        }
+    }
 
     NavigationSuiteScaffold(
         // Show the navigation suite for the top-level tabs; full-screen flows (pairing) hide it.
@@ -135,7 +165,11 @@ fun NotiSyncRoot() {
                 // reuses the NavHost's horizontal pop transition above).
                 enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start) },
             ) {
-                PairingScreen(onBack = { navController.navigateUp() })
+                PairingScreen(
+                    onBack = { navController.navigateUp() },
+                    initialPairingPayload = pendingPairingPayload,
+                    onInitialPairingPayloadConsumed = onPendingPairingPayloadConsumed,
+                )
             }
         }
     }

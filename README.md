@@ -85,8 +85,11 @@ In **Settings → Broker URL**, point the app at your broker. From the Android e
 
 Pairing is **mutual QR exchange of self-signed client cards**. The QR carries only public key
 material, so the optical channel is the trust anchor (no relay can substitute keys) and the
-`clientId` fingerprint is the human-verifiable safety number. On each device: **Devices → Pair a
-device**, show your code, then scan the other device's code. Both add each other as trusted peers.
+`clientId` fingerprint is the human-verifiable safety number. The QR encodes a verified Android App
+Link (`https://notisync.apps.extrawdw.net/pair?...`), so Camera/QR scanner apps can open NotiSync's
+pairing screen directly and show a trust prompt with the device details. On each device:
+**Devices → Pair a device**, show your code, then trust the other device's signed card. Both add each
+other as trusted peers.
 
 ## Status & scope
 
