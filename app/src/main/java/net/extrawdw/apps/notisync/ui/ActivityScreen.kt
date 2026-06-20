@@ -20,8 +20,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.extrawdw.apps.notisync.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -32,14 +34,14 @@ fun ActivityScreen() {
     val events by graph.activityLog.events.collectAsStateWithLifecycle()
     val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
-    NotiScaffold("Activity") { modifier ->
+    NotiScaffold(stringResource(R.string.tab_activity)) { modifier ->
         if (events.isEmpty()) {
             Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
                 Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.size(12.dp))
-                Text("No activity yet", style = MaterialTheme.typography.titleMedium)
+                Text(stringResource(R.string.activity_empty_title), style = MaterialTheme.typography.titleMedium)
                 Text(
-                    "Pair a device, then notifications you receive will appear here.",
+                    stringResource(R.string.activity_empty_body),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -48,7 +50,7 @@ fun ActivityScreen() {
             LazyColumn(modifier.fillMaxSize()) {
                 items(events) { e ->
                     ListItem(
-                        overlineContent = { Text("${e.kind} · ${fmt.format(Date(e.timestamp))}") },
+                        overlineContent = { Text(stringResource(R.string.activity_event_overline, e.kind.name, fmt.format(Date(e.timestamp)))) },
                         headlineContent = { Text(e.title) },
                         supportingContent = { Text(e.detail) },
                     )

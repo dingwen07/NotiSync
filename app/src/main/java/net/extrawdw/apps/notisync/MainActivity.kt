@@ -11,6 +11,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.annotation.StringRes
 import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
@@ -35,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -124,11 +126,11 @@ private sealed interface Route {
 }
 
 /** The navigation-suite (bottom bar / rail / drawer) destinations, in display order. */
-private enum class TopLevelDestination(val route: Route, val label: String, val icon: ImageVector) {
-    DEVICES(Route.Devices, "Devices", Icons.Outlined.Devices),
-    APPS(Route.Apps, "Apps", Icons.Outlined.Apps),
-    ACTIVITY(Route.Activity, "Activity", Icons.Outlined.History),
-    SETTINGS(Route.Settings, "Settings", Icons.Outlined.Settings),
+private enum class TopLevelDestination(val route: Route, @StringRes val label: Int, val icon: ImageVector) {
+    DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
+    APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
+    ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),
+    SETTINGS(Route.Settings, R.string.tab_settings, Icons.Outlined.Settings),
 }
 
 @Composable
@@ -169,8 +171,8 @@ fun NotiSyncRoot(
                 item(
                     selected = currentDestination.isOn(dest),
                     onClick = { navController.navigateToTopLevel(dest) },
-                    icon = { Icon(dest.icon, contentDescription = dest.label) },
-                    label = { Text(dest.label) },
+                    icon = { Icon(dest.icon, contentDescription = stringResource(dest.label)) },
+                    label = { Text(stringResource(dest.label)) },
                 )
             }
         },

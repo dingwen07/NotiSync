@@ -55,7 +55,7 @@ object MirrorChannels {
         mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, notif.appLabel))
         val cid = channelId(notif.sourceClientId, notif.packageName, notif.channelId)
         mgr.createNotificationChannel(
-            NotificationChannel(cid, channelName(notif), importanceOf(notif)).apply { group = gid }
+            NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply { group = gid }
         )
         return cid
     }
@@ -66,7 +66,7 @@ object MirrorChannels {
         val conv = notif.shortcutId ?: notif.sourceKey
         val cid = convChannelId(notif.sourceClientId, notif.packageName, conv)
         mgr.createNotificationChannel(
-            NotificationChannel(cid, channelName(notif), importanceOf(notif)).apply {
+            NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply {
                 group = groupId(notif.sourceClientId, notif.packageName)
                 setConversationId(parentChannelId, shortcutId)
             }
@@ -93,8 +93,8 @@ object MirrorChannels {
 
     private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
 
-    private fun channelName(notif: CapturedNotification): String {
-        val base = notif.channelName?.takeIf { it.isNotBlank() } ?: categoryLabel(notif.category) ?: notif.appLabel
+    private fun channelName(context: Context, notif: CapturedNotification): String {
+        val base = notif.channelName?.takeIf { it.isNotBlank() } ?: categoryLabel(context, notif.category) ?: notif.appLabel
         return notif.channelGroupName?.takeIf { it.isNotBlank() }?.let { "$it · $base" } ?: base
     }
 
@@ -109,16 +109,16 @@ object MirrorChannels {
         MirrorImportance.HIGH -> NotificationManager.IMPORTANCE_HIGH
     }
 
-    private fun categoryLabel(c: MirrorCategory): String? = when (c) {
-        MirrorCategory.MESSAGE -> "Messages"
-        MirrorCategory.EMAIL -> "Email"
-        MirrorCategory.CALL -> "Calls"
-        MirrorCategory.ALARM -> "Alarms"
-        MirrorCategory.EVENT -> "Events"
-        MirrorCategory.REMINDER -> "Reminders"
-        MirrorCategory.SOCIAL -> "Social"
-        MirrorCategory.TRANSPORT -> "Media"
-        MirrorCategory.SERVICE -> "Service"
+    private fun categoryLabel(context: Context, c: MirrorCategory): String? = when (c) {
+        MirrorCategory.MESSAGE -> context.getString(R.string.category_messages)
+        MirrorCategory.EMAIL -> context.getString(R.string.category_email)
+        MirrorCategory.CALL -> context.getString(R.string.category_calls)
+        MirrorCategory.ALARM -> context.getString(R.string.category_alarms)
+        MirrorCategory.EVENT -> context.getString(R.string.category_events)
+        MirrorCategory.REMINDER -> context.getString(R.string.category_reminders)
+        MirrorCategory.SOCIAL -> context.getString(R.string.category_social)
+        MirrorCategory.TRANSPORT -> context.getString(R.string.category_media)
+        MirrorCategory.SERVICE -> context.getString(R.string.category_service)
         else -> null
     }
 }
@@ -155,7 +155,7 @@ class RemoteNotificationPoster(
 
         val builder = NotificationCompat.Builder(context, postChannelId)
             .setSmallIcon(smallIconForPackage(notif.packageName))
-            .setSubText("via ${notif.appLabel}") // marks the notification as mirrored
+            .setSubText(context.getString(R.string.mirror_via, notif.appLabel)) // marks the notification as mirrored
             .setAutoCancel(true)
             .setWhen(notif.postTime)
             .setShowWhen(true)
@@ -168,7 +168,7 @@ class RemoteNotificationPoster(
                 // MessagingStyle owns the title + per-message rendering. Do NOT also setContentTitle —
                 // that would draw a second, redundant bold title line. Set conversationTitle ONLY for
                 // group chats (per Google guidance); for 1:1 the title derives from the sender.
-                val self = Person.Builder().setName("You").build()
+                val self = Person.Builder().setName(context.getString(R.string.mirror_self_name)).build()
                 val style = NotificationCompat.MessagingStyle(self)
                     .setGroupConversation(notif.isGroupConversation)
                 if (notif.isGroupConversation) style.setConversationTitle(notif.conversationTitle)
@@ -181,6 +181,12 @@ class RemoteNotificationPoster(
                     style.addMessage(NotificationCompat.MessagingStyle.Message(m.text, m.timestamp, person))
                 }
                 builder.setStyle(style)
+                // If the newest message is the user's own (sender == null — e.g. an inline reply sent
+                // from the notification on the source device), post the mirror update silently: the
+                // user sent it, so re-alerting them on this device is just noise.
+                if (notif.messages.isNotEmpty() && notif.messages.last().sender == null) {
+                    builder.setSilent(true)
+                }
             }
             NotifStyle.BIG_PICTURE -> {
                 builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)

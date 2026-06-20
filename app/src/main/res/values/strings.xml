@@ -1,3 +1,126 @@
 <resources>
-    <string name="app_name">NotiSync</string>
+    <string name="app_name" translatable="false">NotiSync</string>
+
+    <!-- Navigation tabs / screen titles -->
+    <string name="tab_devices">Devices</string>
+    <string name="tab_apps">Apps</string>
+    <string name="tab_activity">Activity</string>
+    <string name="tab_settings">Settings</string>
+
+    <!-- Shared actions -->
+    <string name="action_approve">Approve</string>
+    <string name="action_deny">Deny</string>
+    <string name="action_reject">Reject</string>
+    <string name="action_remove">Remove</string>
+    <string name="action_keep">Keep</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="action_back">Back</string>
+    <string name="error_unknown">Unknown error</string>
+
+    <!-- Apps screen -->
+    <string name="apps_search_hint">Search apps</string>
+    <string name="apps_clear_search">Clear</string>
+    <string name="apps_empty">No apps found</string>
+    <string name="apps_no_match">No apps match \"%1$s\"</string>
+    <string name="apps_section_mirroring">Mirroring</string>
+    <string name="apps_section_all">All apps</string>
+    <string name="apps_section_other_results">Other results</string>
+    <string name="section_header">%1$s (%2$d)</string>
+    <string name="apps_last_notification">Last notification %1$s</string>
+
+    <!-- Activity screen -->
+    <string name="activity_empty_title">No activity yet</string>
+    <string name="activity_empty_body">Pair a device, then notifications you receive will appear here.</string>
+    <string name="activity_event_overline">%1$s · %2$s</string>
+
+    <!-- Settings screen -->
+    <string name="settings_device_name">Device name</string>
+    <string name="settings_broker_url">Broker URL (ws://…)</string>
+    <string name="settings_broker_url_hint">Use ws://10.0.2.2:8080 for a local server from the emulator.</string>
+    <string name="settings_batch_low_priority">Batch low-priority notifications</string>
+    <string name="settings_advanced_diagnostics">Advanced diagnostics</string>
+    <string name="settings_diagnostics">Diagnostics</string>
+    <string name="settings_client_id">Client ID: %1$s</string>
+    <string name="settings_key_backing">Key backing: %1$s</string>
+    <string name="settings_transport">Transport: %1$s</string>
+
+    <!-- Devices screen -->
+    <string name="pair_a_device">Pair a device</string>
+    <string name="devices_enable_access_title">Enable notification access</string>
+    <string name="devices_enable_access_body">NotiSync needs notification listener access to mirror this device\'s notifications.</string>
+    <string name="devices_open_settings">Open settings</string>
+    <string name="devices_allow_posting_title">Allow showing notifications</string>
+    <string name="devices_allow_posting_body">Grant notification posting so mirrored notifications can appear on this device.</string>
+    <string name="devices_grant">Grant</string>
+    <string name="devices_my_devices">My devices (%1$d)</string>
+    <string name="devices_my_devices_empty">No paired devices yet. Pair another device to start mirroring notifications between them.</string>
+    <string name="devices_other_devices">Other devices (%1$d)</string>
+    <string name="devices_other_devices_desc">Other people\'s devices. This list stays in sync across your own devices and is never shared with them; they never receive your notifications.</string>
+    <string name="devices_this_device">THIS DEVICE</string>
+    <string name="devices_verification_number">Verification number  %1$s</string>
+    <string name="devices_key_backing">Key backing  %1$s</string>
+    <string name="device_unknown">Unknown device</string>
+    <string name="device_status_trusted">Trusted</string>
+    <string name="device_status_pending_trust">Pending approval</string>
+    <string name="device_status_pending_revoke">Removal pending</string>
+    <string name="device_status_removed">Removed</string>
+    <string name="device_status_unavailable">Unavailable</string>
+    <string name="device_introducer_unknown">another device</string>
+    <string name="device_remove_desc">Remove %1$s</string>
+    <string name="device_permanently_delete_desc">Permanently delete %1$s</string>
+    <string name="device_added_by">Added by %1$s</string>
+    <string name="device_approve_hint">Approve only if it matches the device\'s own verification number.</string>
+    <string name="device_removed_by">Removed by %1$s</string>
+
+    <!-- Pairing screen -->
+    <string name="pair_could_not_pair">Could not pair: %1$s</string>
+    <string name="pair_paired_with">Paired with %1$s</string>
+    <string name="pair_could_not_open_link">Could not open pairing link: %1$s</string>
+    <string name="pair_intro">Show this code to your other device. Its camera can open NotiSync directly, or you can scan from here.</string>
+    <string name="pair_qr_code_desc">Pairing QR code</string>
+    <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
+    <string name="pair_verification_number">Verification number: %1$s</string>
+    <string name="pair_no_code">No code detected</string>
+    <string name="pair_scan_failed">Scan failed: %1$s</string>
+    <string name="pair_scanning">Scanning...</string>
+    <string name="pair_checking">Checking device...</string>
+    <string name="pair_scan_button">Scan the other device\'s code</string>
+    <string name="pair_trust_title">Trust this device?</string>
+    <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>
+    <string name="pair_field_name">Name</string>
+    <string name="pair_field_platform">Platform</string>
+    <string name="pair_field_verification_number">Verification number</string>
+    <string name="pair_field_identity_key">Identity key</string>
+    <string name="pair_field_sync_key">Sync key</string>
+    <string name="pair_trust_other">Other\'s device</string>
+    <string name="pair_trust_own">My device</string>
+
+    <!-- Trust notifications -->
+    <string name="trust_channel_name">Device trust</string>
+    <string name="trust_new_title">Review a new device</string>
+    <string name="trust_new_text">%1$s wants to add %2$s.</string>
+    <string name="trust_retrust_title">A device wants to rejoin</string>
+    <string name="trust_retrust_text">%1$s wants to re-add %2$s, which was previously removed.</string>
+    <string name="trust_revoke_title">A device was removed</string>
+    <string name="trust_revoke_text">%1$s removed %2$s. Confirm in the app.</string>
+    <string name="trust_conflict_title">Trust conflict</string>
+    <string name="trust_conflict_text">%1$s was re-added while being removed. Resolve in the app.</string>
+    <string name="trust_other_added_title">Device added</string>
+    <string name="trust_other_added_text">%1$s added %2$s to your other devices.</string>
+    <string name="trust_other_removed_title">Device removed</string>
+    <string name="trust_other_removed_text">%1$s removed %2$s from your other devices.</string>
+    <string name="trust_expanded_verification">%1$s\n\nVerification number\n%2$s\n\nApprove only if it matches the device\'s own verification number.</string>
+
+    <!-- Mirrored notifications -->
+    <string name="mirror_self_name">You</string>
+    <string name="mirror_via">via %1$s</string>
+    <string name="category_messages">Messages</string>
+    <string name="category_email">Email</string>
+    <string name="category_calls">Calls</string>
+    <string name="category_alarms">Alarms</string>
+    <string name="category_events">Events</string>
+    <string name="category_reminders">Reminders</string>
+    <string name="category_social">Social</string>
+    <string name="category_media">Media</string>
+    <string name="category_service">Service</string>
 </resources>

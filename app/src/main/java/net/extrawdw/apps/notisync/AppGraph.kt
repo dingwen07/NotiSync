@@ -221,22 +221,22 @@ class AppGraph(private val app: Application) {
         runCatching {
             val channelId = "notisync.trust"
             (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
-                NotificationChannel(channelId, "Device trust", NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(channelId, app.getString(R.string.trust_channel_name), NotificationManager.IMPORTANCE_DEFAULT),
             )
             val subject = trust.displayName(clientId) ?: clientId.shortForm()
             val (title, text) = when (prompt) {
-                TrustPrompt.NEW_TRUST -> "Review a new device" to "$byName wants to add $subject."
-                TrustPrompt.RE_TRUST -> "A device wants to rejoin" to "$byName wants to re-add $subject, which was previously removed."
-                TrustPrompt.NEW_REVOKE -> "A device was removed" to "$byName removed $subject. Confirm in the app."
-                TrustPrompt.CONFLICT -> "Trust conflict" to "$subject was re-added while being removed. Resolve in the app."
+                TrustPrompt.NEW_TRUST -> app.getString(R.string.trust_new_title) to app.getString(R.string.trust_new_text, byName, subject)
+                TrustPrompt.RE_TRUST -> app.getString(R.string.trust_retrust_title) to app.getString(R.string.trust_retrust_text, byName, subject)
+                TrustPrompt.NEW_REVOKE -> app.getString(R.string.trust_revoke_title) to app.getString(R.string.trust_revoke_text, byName, subject)
+                TrustPrompt.CONFLICT -> app.getString(R.string.trust_conflict_title) to app.getString(R.string.trust_conflict_text, subject)
                 // "Other" devices are already applied — these prompts just keep the user informed.
-                TrustPrompt.OTHER_ADDED -> "Device added" to "$byName added $subject to your other devices."
-                TrustPrompt.OTHER_REMOVED -> "Device removed" to "$byName removed $subject from your other devices."
+                TrustPrompt.OTHER_ADDED -> app.getString(R.string.trust_other_added_title) to app.getString(R.string.trust_other_added_text, byName, subject)
+                TrustPrompt.OTHER_REMOVED -> app.getString(R.string.trust_other_removed_title) to app.getString(R.string.trust_other_removed_text, byName, subject)
             }
             val showFingerprint = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
             // Expanded text carries the safety number so an inline Approve is still a real check, not a blind tap.
             val bigText = if (showFingerprint) {
-                "$text\n\nSafety number\n${clientId.value}\n\nApprove only if it matches the device's own safety number."
+                app.getString(R.string.trust_expanded_verification, text, clientId.value)
             } else {
                 text
             }
@@ -260,12 +260,12 @@ class AppGraph(private val app: Application) {
             // applied "other" change just opens the app (no decision to make).
             when (prompt) {
                 TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST -> {
-                    builder.addAction(0, "Approve", trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
-                    builder.addAction(0, "Reject", trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
+                    builder.addAction(0, app.getString(R.string.action_approve), trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
+                    builder.addAction(0, app.getString(R.string.action_reject), trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
                 }
                 TrustPrompt.NEW_REVOKE -> {
-                    builder.addAction(0, "Remove", trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId))
-                    builder.addAction(0, "Keep", trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId))
+                    builder.addAction(0, app.getString(R.string.action_remove), trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId))
+                    builder.addAction(0, app.getString(R.string.action_keep), trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId))
                 }
                 TrustPrompt.CONFLICT, TrustPrompt.OTHER_ADDED, TrustPrompt.OTHER_REMOVED -> Unit
             }

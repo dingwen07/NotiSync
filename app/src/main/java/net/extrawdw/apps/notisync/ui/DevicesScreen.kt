@@ -33,12 +33,14 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
@@ -67,7 +69,7 @@ fun DevicesScreen(
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
 
-    NotiScaffold("Devices") { modifier ->
+    NotiScaffold(stringResource(R.string.tab_devices)) { modifier ->
         LazyColumn(
             modifier = modifier.fillMaxSize(),
             // Bottom inset clears the app's bottom navigation bar (this inner scaffold has no bottom bar).
@@ -77,9 +79,9 @@ fun DevicesScreen(
             if (!permissions.listenerEnabled) {
                 item {
                     PermissionCard(
-                        title = "Enable notification access",
-                        body = "NotiSync needs notification listener access to mirror this device's notifications.",
-                        action = "Open settings",
+                        title = stringResource(R.string.devices_enable_access_title),
+                        body = stringResource(R.string.devices_enable_access_body),
+                        action = stringResource(R.string.devices_open_settings),
                         onClick = onOpenListenerSettings,
                     )
                 }
@@ -87,9 +89,9 @@ fun DevicesScreen(
             if (!permissions.postNotificationsGranted) {
                 item {
                     PermissionCard(
-                        title = "Allow showing notifications",
-                        body = "Grant notification posting so mirrored notifications can appear on this device.",
-                        action = "Grant",
+                        title = stringResource(R.string.devices_allow_posting_title),
+                        body = stringResource(R.string.devices_allow_posting_body),
+                        action = stringResource(R.string.devices_grant),
                         onClick = onRequestPostNotifications,
                     )
                 }
@@ -105,12 +107,12 @@ fun DevicesScreen(
                 Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text("Pair a device")
+                    Text(stringResource(R.string.pair_a_device))
                 }
             }
             item {
                 Text(
-                    "My devices (${ownDevices.size})",
+                    stringResource(R.string.devices_my_devices, ownDevices.size),
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(top = 4.dp),
                 )
@@ -118,7 +120,7 @@ fun DevicesScreen(
             if (ownDevices.isEmpty()) {
                 item {
                     Text(
-                        "No paired devices yet. Pair another device to start mirroring notifications between them.",
+                        stringResource(R.string.devices_my_devices_empty),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -129,15 +131,14 @@ fun DevicesScreen(
             if (otherDevices.isNotEmpty()) {
                 item {
                     Text(
-                        "Other devices (${otherDevices.size})",
+                        stringResource(R.string.devices_other_devices, otherDevices.size),
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
                 item {
                     Text(
-                        "Other people's devices. This list stays in sync across your own devices and is never " +
-                            "shared with them; they never receive your notifications.",
+                        stringResource(R.string.devices_other_devices_desc),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -186,15 +187,15 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, keyBacking: Strin
         ) {
             Icon(Icons.Outlined.Smartphone, contentDescription = null, modifier = Modifier.size(40.dp))
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text("THIS DEVICE", style = MaterialTheme.typography.labelMedium)
+                Text(stringResource(R.string.devices_this_device), style = MaterialTheme.typography.labelMedium)
                 Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
-                    "Safety number  $safetyNumber",
+                    stringResource(R.string.devices_verification_number, safetyNumber),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
                 )
                 Text(
-                    "Key backing  $keyBacking",
+                    stringResource(R.string.devices_key_backing, keyBacking),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
                 )
@@ -231,20 +232,21 @@ private fun DeviceRow(
     onRemove: (ClientId) -> Unit,
     onPurge: (ClientId) -> Unit,
 ) {
-    val name = device.displayName ?: "Unknown device"
+    val name = device.displayName ?: stringResource(R.string.device_unknown)
     val isRevoked = device.status == TrustStatus.REVOKED
     val statusLabel = when (device.status) {
-        TrustStatus.TRUSTED -> "Trusted"
-        TrustStatus.PENDING_TRUST -> "Pending approval"
-        TrustStatus.PENDING_REVOKE -> "Removal pending"
-        TrustStatus.REVOKED -> "Removed"
+        TrustStatus.TRUSTED -> stringResource(R.string.device_status_trusted)
+        TrustStatus.PENDING_TRUST -> stringResource(R.string.device_status_pending_trust)
+        TrustStatus.PENDING_REVOKE -> stringResource(R.string.device_status_pending_revoke)
+        TrustStatus.REVOKED -> stringResource(R.string.device_status_removed)
     }
+    val unavailableLabel = stringResource(R.string.device_status_unavailable)
     val statusLine = buildList {
         add(statusLabel)
-        if (!device.keyAvailable) add("Unavailable") // we hold no card for it yet
+        if (!device.keyAvailable) add(unavailableLabel) // we hold no card for it yet
         add(device.clientId.shortForm())
     }.joinToString(" · ")
-    val by = device.introducedByName ?: "another device"
+    val by = device.introducedByName ?: stringResource(R.string.device_introducer_unknown)
 
     Column(
         Modifier.fillMaxWidth().padding(16.dp),
@@ -275,14 +277,14 @@ private fun DeviceRow(
             when (device.status) {
                 // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
                 TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }) {
-                    Icon(Icons.Filled.Delete, contentDescription = "Remove $name")
+                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_remove_desc, name))
                 }
                 TrustStatus.REVOKED -> {
                     // Permanently forgettable only after the tombstone has outlived the stale-trust window.
                     val canPurge = device.revokedAt != null &&
                         now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
                     IconButton(onClick = { onPurge(device.clientId) }, enabled = canPurge) {
-                        Icon(Icons.Filled.Delete, contentDescription = "Permanently delete $name")
+                        Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_permanently_delete_desc, name))
                     }
                 }
                 else -> Unit
@@ -290,23 +292,23 @@ private fun DeviceRow(
         }
         when (device.status) {
             TrustStatus.PENDING_TRUST -> {
-                Text("Added by $by", style = MaterialTheme.typography.bodyMedium)
-                Text("Safety number  ${device.clientId.value}", style = MaterialTheme.typography.bodySmall)
+                Text(stringResource(R.string.device_added_by, by), style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.devices_verification_number, device.clientId.value), style = MaterialTheme.typography.bodySmall)
                 Text(
-                    "Approve only if it matches the device's own safety number.",
+                    stringResource(R.string.device_approve_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onApprove(device.clientId) }) { Text("Approve") }
-                    OutlinedButton(onClick = { onDeny(device.clientId) }) { Text("Deny") }
+                    Button(onClick = { onApprove(device.clientId) }) { Text(stringResource(R.string.action_approve)) }
+                    OutlinedButton(onClick = { onDeny(device.clientId) }) { Text(stringResource(R.string.action_deny)) }
                 }
             }
             TrustStatus.PENDING_REVOKE -> {
-                Text("Removed by $by", style = MaterialTheme.typography.bodyMedium)
+                Text(stringResource(R.string.device_removed_by, by), style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onRemoveConfirm(device.clientId) }) { Text("Remove") }
-                    OutlinedButton(onClick = { onKeep(device.clientId) }) { Text("Keep") }
+                    Button(onClick = { onRemoveConfirm(device.clientId) }) { Text(stringResource(R.string.action_remove)) }
+                    OutlinedButton(onClick = { onKeep(device.clientId) }) { Text(stringResource(R.string.action_keep)) }
                 }
             }
             else -> Unit

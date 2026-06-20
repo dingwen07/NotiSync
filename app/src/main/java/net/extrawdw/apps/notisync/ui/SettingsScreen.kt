@@ -26,12 +26,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.extrawdw.apps.notisync.R
 import kotlinx.coroutines.launch
 
 @Composable
@@ -43,7 +45,7 @@ fun SettingsScreen() {
     val batchLow by graph.settings.batchLowPriority.collectAsStateWithLifecycle()
     val advanced by graph.settings.advancedDiagnostics.collectAsStateWithLifecycle()
 
-    NotiScaffold("Settings") { modifier ->
+    NotiScaffold(stringResource(R.string.tab_settings)) { modifier ->
         LazyColumn(
             modifier.fillMaxSize().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -52,7 +54,7 @@ fun SettingsScreen() {
                 SettingsTextField(
                     value = deviceName,
                     onCommit = { scope.launch { graph.settings.setDeviceName(it) } },
-                    label = { Text("Device name") },
+                    label = { Text(stringResource(R.string.settings_device_name)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
                         imeAction = ImeAction.Next,
@@ -64,8 +66,8 @@ fun SettingsScreen() {
                 SettingsTextField(
                     value = brokerUrl,
                     onCommit = { scope.launch { graph.settings.setBrokerUrl(it) } },
-                    label = { Text("Broker URL (ws://…)") },
-                    supportingText = { Text("Use ws://10.0.2.2:8080 for a local server from the emulator.") },
+                    label = { Text(stringResource(R.string.settings_broker_url)) },
+                    supportingText = { Text(stringResource(R.string.settings_broker_url_hint)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
                         keyboardType = KeyboardType.Uri,
@@ -75,19 +77,19 @@ fun SettingsScreen() {
                 )
             }
             item {
-                ToggleRow("Batch low-priority notifications", batchLow) { scope.launch { graph.settings.setBatchLowPriority(it) } }
+                ToggleRow(stringResource(R.string.settings_batch_low_priority), batchLow) { scope.launch { graph.settings.setBatchLowPriority(it) } }
             }
             item {
-                ToggleRow("Advanced diagnostics", advanced) { scope.launch { graph.settings.setAdvancedDiagnostics(it) } }
+                ToggleRow(stringResource(R.string.settings_advanced_diagnostics), advanced) { scope.launch { graph.settings.setAdvancedDiagnostics(it) } }
             }
             if (advanced) {
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text("Diagnostics", style = MaterialTheme.typography.titleMedium)
-                            Text("Client ID: ${graph.identity.clientId.value}", style = MaterialTheme.typography.bodySmall)
-                            Text("Key backing: ${graph.identity.backing}", style = MaterialTheme.typography.bodySmall)
-                            Text("Transport: ${graph.transport.type}", style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(R.string.settings_diagnostics), style = MaterialTheme.typography.titleMedium)
+                            Text(stringResource(R.string.settings_client_id, graph.identity.clientId.value), style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(R.string.settings_key_backing, graph.identity.backing.toString()), style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(R.string.settings_transport, graph.transport.type.toString()), style = MaterialTheme.typography.bodySmall)
                         }
                     }
                 }

@@ -40,10 +40,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
+import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
 import net.extrawdw.apps.notisync.pairing.QrCodes
@@ -74,7 +76,7 @@ fun PairingScreen(
             withContext(Dispatchers.Default) { pairing.inspect(content) }
                 .fold(
                     onSuccess = { pendingCandidate = it },
-                    onFailure = { result = "Could not pair: ${it.message}" },
+                    onFailure = { result = context.getString(R.string.pair_could_not_pair, it.message) },
                 )
             inspecting = false
         }
@@ -87,8 +89,8 @@ fun PairingScreen(
         scope.launch {
             result = withContext(Dispatchers.Default) {
                 pairing.accept(candidate.payload, ownDevice).fold(
-                    onSuccess = { "Paired with ${it.displayName}" },
-                    onFailure = { "Could not pair: ${it.message}" },
+                    onSuccess = { context.getString(R.string.pair_paired_with, it.displayName) },
+                    onFailure = { context.getString(R.string.pair_could_not_pair, it.message) },
                 )
             }
             inspecting = false
@@ -102,7 +104,7 @@ fun PairingScreen(
         withContext(Dispatchers.Default) { pairing.inspect(payload) }
             .fold(
                 onSuccess = { pendingCandidate = it },
-                onFailure = { result = "Could not open pairing link: ${it.message}" },
+                onFailure = { result = context.getString(R.string.pair_could_not_open_link, it.message) },
             )
         inspecting = false
         onInitialPairingPayloadConsumed()
@@ -115,7 +117,7 @@ fun PairingScreen(
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                PairingCodeState.Error(t.message ?: "Unknown error")
+                PairingCodeState.Error(t.message ?: context.getString(R.string.error_unknown))
             }
         }
     }
@@ -130,9 +132,9 @@ fun PairingScreen(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text("Pair a device") },
+                title = { Text(stringResource(R.string.pair_a_device)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back)) }
                 },
             )
         },
@@ -143,7 +145,7 @@ fun PairingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                "Show this code to your other device. Its camera can open NotiSync directly, or you can scan from here.",
+                stringResource(R.string.pair_intro),
                 style = MaterialTheme.typography.bodyLarge,
             )
 
@@ -159,7 +161,7 @@ fun PairingScreen(
                 is PairingCodeState.Ready -> {
                     Image(
                         bitmap = state.bitmap.asImageBitmap(),
-                        contentDescription = "Pairing QR code",
+                        contentDescription = stringResource(R.string.pair_qr_code_desc),
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                     )
                 }
@@ -169,14 +171,14 @@ fun PairingScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
-                            "Could not prepare pairing code: ${state.message}",
+                            stringResource(R.string.pair_could_not_prepare, state.message),
                             style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.error,
                         )
                     }
                 }
             }
-            Text("Safety number: ${graph.identity.clientId.value}", style = MaterialTheme.typography.bodySmall)
+            Text(stringResource(R.string.pair_verification_number, graph.identity.clientId.value), style = MaterialTheme.typography.bodySmall)
 
             Button(
                 onClick = {
@@ -186,7 +188,7 @@ fun PairingScreen(
                         .addOnSuccessListener { barcode ->
                             val raw = barcode.rawValue
                             if (raw == null) {
-                                result = "No code detected"
+                                result = context.getString(R.string.pair_no_code)
                                 scanning = false
                             } else {
                                 scanning = false
@@ -198,7 +200,7 @@ fun PairingScreen(
                             scanning = false
                         }
                         .addOnFailureListener {
-                            result = "Scan failed: ${it.message}"
+                            result = context.getString(R.string.pair_scan_failed, it.message)
                             scanning = false
                         }
                 },
@@ -213,9 +215,9 @@ fun PairingScreen(
                 Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                 Text(
                     when {
-                        scanning -> "Scanning..."
-                        inspecting -> "Checking device..."
-                        else -> "Scan the other device's code"
+                        scanning -> stringResource(R.string.pair_scanning)
+                        inspecting -> stringResource(R.string.pair_checking)
+                        else -> stringResource(R.string.pair_scan_button)
                     }
                 )
             }
@@ -253,32 +255,31 @@ private fun TrustDeviceDialog(
 ) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Trust this device?") },
+        title = { Text(stringResource(R.string.pair_trust_title)) },
         text = {
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "NotiSync verified this signed pairing card. Add it as one of your own devices to mirror " +
-                            "notifications, or as someone else's device to share only your device name.",
+                        stringResource(R.string.pair_trust_body),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    DeviceInfo("Name", candidate.displayName)
-                    DeviceInfo("Platform", candidate.platform)
-                    DeviceInfo("Safety number", candidate.safetyNumber)
-                    DeviceInfo("Identity key", candidate.identityKeyFingerprint)
-                    DeviceInfo("Sync key", candidate.hpkeKeyFingerprint)
+                    DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)
+                    DeviceInfo(stringResource(R.string.pair_field_platform), candidate.platform)
+                    DeviceInfo(stringResource(R.string.pair_field_verification_number), candidate.safetyNumber)
+                    DeviceInfo(stringResource(R.string.pair_field_identity_key), candidate.identityKeyFingerprint)
+                    DeviceInfo(stringResource(R.string.pair_field_sync_key), candidate.hpkeKeyFingerprint)
                 }
             }
         },
         confirmButton = {
             Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onTrustOther) { Text("Other's device") }
-                TextButton(onClick = onTrustOwn) { Text("My device") }
+                TextButton(onClick = onTrustOther) { Text(stringResource(R.string.pair_trust_other)) }
+                TextButton(onClick = onTrustOwn) { Text(stringResource(R.string.pair_trust_own)) }
             }
         },
         dismissButton = {
             TextButton(onClick = onDismiss) {
-                Text("Cancel")
+                Text(stringResource(R.string.action_cancel))
             }
         },
     )

@@ -26,12 +26,11 @@ android {
 
     buildTypes {
         release {
-            optimization {
-                enable = true
-                keepRules {
-                    includeDefault = true
-                }
-            }
+            isMinifyEnabled = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "src/main/keepRules/rules.keep",
+            )
         }
     }
     compileOptions {

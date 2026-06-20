@@ -1,0 +1,126 @@
+<resources>
+    <!-- app_name is translatable="false" in the default strings; intentionally not overridden here. -->
+
+    <!-- Navigation tabs / screen titles -->
+    <string name="tab_devices">设备</string>
+    <string name="tab_apps">应用</string>
+    <string name="tab_activity">动态</string>
+    <string name="tab_settings">设置</string>
+
+    <!-- Shared actions -->
+    <string name="action_approve">批准</string>
+    <string name="action_deny">拒绝</string>
+    <string name="action_reject">拒绝</string>
+    <string name="action_remove">移除</string>
+    <string name="action_keep">保留</string>
+    <string name="action_cancel">取消</string>
+    <string name="action_back">返回</string>
+    <string name="error_unknown">未知错误</string>
+
+    <!-- Apps screen -->
+    <string name="apps_search_hint">搜索应用</string>
+    <string name="apps_clear_search">清除</string>
+    <string name="apps_empty">未找到应用</string>
+    <string name="apps_no_match">没有与“%1$s”匹配的应用</string>
+    <string name="apps_section_mirroring">镜像中</string>
+    <string name="apps_section_all">所有应用</string>
+    <string name="apps_section_other_results">其他结果</string>
+    <string name="section_header">%1$s (%2$d)</string>
+    <string name="apps_last_notification">最近通知 %1$s</string>
+
+    <!-- Activity screen -->
+    <string name="activity_empty_title">暂无动态</string>
+    <string name="activity_empty_body">配对设备后，您收到的通知将显示在此处。</string>
+    <string name="activity_event_overline">%1$s · %2$s</string>
+
+    <!-- Settings screen -->
+    <string name="settings_device_name">设备名称</string>
+    <string name="settings_broker_url">Broker 地址 (ws://…)</string>
+    <string name="settings_broker_url_hint">从模拟器连接本地服务器时，请使用 ws://10.0.2.2:8080。</string>
+    <string name="settings_batch_low_priority">合并低优先级通知</string>
+    <string name="settings_advanced_diagnostics">高级诊断</string>
+    <string name="settings_diagnostics">诊断</string>
+    <string name="settings_client_id">客户端 ID：%1$s</string>
+    <string name="settings_key_backing">密钥存储：%1$s</string>
+    <string name="settings_transport">传输方式：%1$s</string>
+
+    <!-- Devices screen -->
+    <string name="pair_a_device">配对设备</string>
+    <string name="devices_enable_access_title">启用通知访问权限</string>
+    <string name="devices_enable_access_body">NotiSync 需要通知使用权才能镜像此设备的通知。</string>
+    <string name="devices_open_settings">打开设置</string>
+    <string name="devices_allow_posting_title">允许显示通知</string>
+    <string name="devices_allow_posting_body">授予通知发送权限，以便镜像的通知能在此设备上显示。</string>
+    <string name="devices_grant">授予</string>
+    <string name="devices_my_devices">我的设备 (%1$d)</string>
+    <string name="devices_my_devices_empty">尚无已配对的设备。配对另一台设备即可在设备之间镜像通知。</string>
+    <string name="devices_other_devices">其他设备 (%1$d)</string>
+    <string name="devices_other_devices_desc">其他人的设备。此列表会在您自己的设备之间保持同步，但绝不会共享给他们；他们也不会收到您的通知。</string>
+    <string name="devices_this_device">此设备</string>
+    <string name="devices_verification_number">验证号码  %1$s</string>
+    <string name="devices_key_backing">密钥存储  %1$s</string>
+    <string name="device_unknown">未知设备</string>
+    <string name="device_status_trusted">已信任</string>
+    <string name="device_status_pending_trust">等待批准</string>
+    <string name="device_status_pending_revoke">等待移除</string>
+    <string name="device_status_removed">已移除</string>
+    <string name="device_status_unavailable">不可用</string>
+    <string name="device_introducer_unknown">另一台设备</string>
+    <string name="device_remove_desc">移除 %1$s</string>
+    <string name="device_permanently_delete_desc">永久删除 %1$s</string>
+    <string name="device_added_by">由 %1$s 添加</string>
+    <string name="device_approve_hint">仅当它与该设备自身的验证号码一致时才批准。</string>
+    <string name="device_removed_by">由 %1$s 移除</string>
+
+    <!-- Pairing screen -->
+    <string name="pair_could_not_pair">无法配对：%1$s</string>
+    <string name="pair_paired_with">已与 %1$s 配对</string>
+    <string name="pair_could_not_open_link">无法打开配对链接：%1$s</string>
+    <string name="pair_intro">向您的另一台设备展示此二维码。对方的相机可直接打开 NotiSync，您也可以在此扫描。</string>
+    <string name="pair_qr_code_desc">配对二维码</string>
+    <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
+    <string name="pair_verification_number">验证号码：%1$s</string>
+    <string name="pair_no_code">未检测到二维码</string>
+    <string name="pair_scan_failed">扫描失败：%1$s</string>
+    <string name="pair_scanning">正在扫描…</string>
+    <string name="pair_checking">正在检查设备…</string>
+    <string name="pair_scan_button">扫描另一台设备的二维码</string>
+    <string name="pair_trust_title">信任此设备？</string>
+    <string name="pair_trust_body">NotiSync 已验证此已签名的配对卡。将其添加为您自己的设备以镜像通知，或添加为他人的设备以仅共享您的设备名称。</string>
+    <string name="pair_field_name">名称</string>
+    <string name="pair_field_platform">平台</string>
+    <string name="pair_field_verification_number">验证号码</string>
+    <string name="pair_field_identity_key">身份密钥</string>
+    <string name="pair_field_sync_key">同步密钥</string>
+    <string name="pair_trust_other">他人的设备</string>
+    <string name="pair_trust_own">我的设备</string>
+
+    <!-- Trust notifications -->
+    <string name="trust_channel_name">设备信任</string>
+    <string name="trust_new_title">查看新设备</string>
+    <string name="trust_new_text">%1$s 想要添加 %2$s。</string>
+    <string name="trust_retrust_title">设备申请重新加入</string>
+    <string name="trust_retrust_text">%1$s 想要重新添加之前已移除的 %2$s。</string>
+    <string name="trust_revoke_title">设备已被移除</string>
+    <string name="trust_revoke_text">%1$s 移除了 %2$s。请在应用中确认。</string>
+    <string name="trust_conflict_title">信任冲突</string>
+    <string name="trust_conflict_text">%1$s 在被移除的同时又被重新添加。请在应用中解决。</string>
+    <string name="trust_other_added_title">已添加设备</string>
+    <string name="trust_other_added_text">%1$s 已将 %2$s 添加到您的其他设备。</string>
+    <string name="trust_other_removed_title">已移除设备</string>
+    <string name="trust_other_removed_text">%1$s 已将 %2$s 从您的其他设备中移除。</string>
+    <string name="trust_expanded_verification">%1$s\n\n验证号码\n%2$s\n\n仅当它与该设备自身的验证号码一致时才批准。</string>
+
+    <!-- Mirrored notifications -->
+    <string name="mirror_self_name">你</string>
+    <string name="mirror_via">通过 %1$s</string>
+    <string name="category_messages">消息</string>
+    <string name="category_email">电子邮件</string>
+    <string name="category_calls">通话</string>
+    <string name="category_alarms">闹钟</string>
+    <string name="category_events">日程</string>
+    <string name="category_reminders">提醒</string>
+    <string name="category_social">社交</string>
+    <string name="category_media">媒体</string>
+    <string name="category_service">服务</string>
+</resources>

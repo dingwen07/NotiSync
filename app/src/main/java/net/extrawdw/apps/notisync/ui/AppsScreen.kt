@@ -44,6 +44,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -59,6 +60,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.R
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -183,16 +185,16 @@ fun AppsScreen() {
         .sortedWith(compareByDescending<InstalledApp> { lastSeen[it.packageName] ?: 0L }.thenBy { norm(it.label) })
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
-    NotiScaffold("Apps") { modifier ->
+    NotiScaffold(stringResource(R.string.tab_apps)) { modifier ->
         Column(modifier.fillMaxSize()) {
             OutlinedTextField(
                 value = query,
                 onValueChange = { query = it },
-                placeholder = { Text("Search apps") },
+                placeholder = { Text(stringResource(R.string.apps_search_hint)) },
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, contentDescription = "Clear") }
+                        IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.apps_clear_search)) }
                     }
                 },
                 singleLine = true,
@@ -208,17 +210,17 @@ fun AppsScreen() {
                 loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
                 enabledApps.isEmpty() && otherApps.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Text(
-                        if (q.isEmpty()) "No apps found" else "No apps match \"$query\"",
+                        if (q.isEmpty()) stringResource(R.string.apps_empty) else stringResource(R.string.apps_no_match, query),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
                 else -> LazyColumn(Modifier.fillMaxSize()) {
                     if (enabledApps.isNotEmpty()) {
-                        stickyHeader(key = "header:mirroring") { SectionHeader("Mirroring", enabledApps.size) }
+                        stickyHeader(key = "header:mirroring") { SectionHeader(stringResource(R.string.apps_section_mirroring), enabledApps.size) }
                         items(enabledApps, key = { "on:${it.packageName}" }) { AppRow(it, true, lastSeen[it.packageName], fmt, selection) }
                     }
-                    stickyHeader(key = "header:all") { SectionHeader(if (q.isEmpty()) "All apps" else "Other results", otherApps.size) }
+                    stickyHeader(key = "header:all") { SectionHeader(if (q.isEmpty()) stringResource(R.string.apps_section_all) else stringResource(R.string.apps_section_other_results), otherApps.size) }
                     items(otherApps, key = { "off:${it.packageName}" }) { AppRow(it, false, lastSeen[it.packageName], fmt, selection) }
                 }
             }
@@ -229,7 +231,7 @@ fun AppsScreen() {
 @Composable
 private fun SectionHeader(title: String, count: Int) {
     Text(
-        "$title ($count)",
+        stringResource(R.string.section_header, title, count),
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
         // Opaque background matching the screen so list rows scroll *under* the pinned header
@@ -249,7 +251,7 @@ private fun AppRow(app: InstalledApp, isOn: Boolean, lastSeen: Long?, fmt: Simpl
         headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
-                if (lastSeen != null) "Last notification ${fmt.format(Date(lastSeen))}" else app.packageName,
+                if (lastSeen != null) stringResource(R.string.apps_last_notification, fmt.format(Date(lastSeen))) else app.packageName,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
