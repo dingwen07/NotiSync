@@ -16,8 +16,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
-import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
@@ -79,71 +77,6 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         // Settings with ws://10.0.2.2:8080.
         const val DEFAULT_BROKER = "wss://notisync-api.extrawdw.net"
     }
-}
-
-/** Trusted peers (the group), persisted as a JSON list. */
-class PeerRepository(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
-    private val peersKey = stringPreferencesKey("peers_json")
-    private val _peers = MutableStateFlow(load())
-    val peers: StateFlow<List<Peer>> = _peers
-
-    private fun load(): List<Peer> = runBlocking {
-        store.data.first()[peersKey]?.let {
-            runCatching { ProtocolCodec.decodeFromJson<List<Peer>>(it) }.getOrDefault(emptyList())
-        } ?: emptyList()
-    }
-
-    fun add(peer: Peer) {
-        _peers.value = _peers.value.filterNot { it.clientId == peer.clientId } + peer
-        persist()
-    }
-
-    fun remove(clientId: ClientId) {
-        _peers.value = _peers.value.filterNot { it.clientId == clientId }
-        persist()
-    }
-
-    fun get(clientId: ClientId): Peer? = _peers.value.firstOrNull { it.clientId == clientId }
-
-    /**
-     * Apply a peer's announced [ProfileUpdate] to its stored record (last-writer-wins on
-     * [ProfileUpdate.updatedAt]; mutable profile fields only — keys are never touched here). Returns
-     * true if anything changed, so the caller can decide whether to surface it.
-     */
-    fun updateProfile(update: ProfileUpdate): Boolean {
-        val next = applyProfileUpdate(_peers.value, update) ?: return false
-        _peers.value = next
-        persist()
-        return true
-    }
-
-    private fun persist() {
-        val json = ProtocolCodec.encodeToJson(_peers.value)
-        scope.launch { store.edit { it[peersKey] = json } }
-    }
-}
-
-/**
- * Pure merge for a [ProfileUpdate]: returns the updated peer list, or null if it applies to no peer
- * or is not strictly newer than what we already have. Updates only the mutable profile fields and the
- * freshness stamp; the immutable trust anchors (identity + HPKE keys) and [Peer.addedAt] are preserved.
- */
-internal fun applyProfileUpdate(peers: List<Peer>, update: ProfileUpdate): List<Peer>? {
-    var changed = false
-    val next = peers.map { p ->
-        if (p.clientId == update.clientId && update.updatedAt > p.profileUpdatedAt) {
-            changed = true
-            p.copy(
-                displayName = update.displayName,
-                platform = update.platform,
-                capabilities = update.capabilities,
-                profileUpdatedAt = update.updatedAt,
-            )
-        } else {
-            p
-        }
-    }
-    return if (changed) next else null
 }
 
 /**

@@ -5,6 +5,9 @@ build/
 # Kotlin compiler daemon session/cache files
 .kotlin/
 
+# IDE/compile output dirs
+bin/
+
 # Local configuration file (sdk path, etc)
 local.properties
 

@@ -215,4 +215,49 @@ class ProtocolCodecTest {
         assertNull(decoded.asset)
         assertNull(decoded.profile)
     }
+
+    @Test
+    fun dataSync_trustTableRoundTrips() {
+        val body = DataSync(
+            kind = DataSyncKind.TRUST,
+            trust = TrustTable(
+                listOf(
+                    TrustTableEntry(ClientId("a"), TrustStatus.TRUSTED, 100L, keyAvailable = true),
+                    TrustTableEntry(ClientId("b"), TrustStatus.REVOKED, 200L, keyAvailable = false),
+                ),
+            ),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(body))
+        assertEquals(DataSyncKind.TRUST, decoded.kind)
+        assertEquals(2, decoded.trust?.entries?.size)
+        assertEquals(TrustStatus.TRUSTED, decoded.trust?.entries?.get(0)?.status)
+        assertTrue(decoded.trust?.entries?.get(0)?.keyAvailable == true)
+        assertEquals(200L, decoded.trust?.entries?.get(1)?.updatedAt)
+        assertNull(decoded.card)
+    }
+
+    @Test
+    fun dataSync_cardDeliveryRoundTripsAndDecodesInnerCard() {
+        val card = ClientCard(
+            clientId = ClientId("c"),
+            identityPublicKey = byteArrayOf(1, 2, 3),
+            hpkePublicKeyset = byteArrayOf(4, 5, 6),
+            displayName = "Tablet",
+            platform = "android",
+            capabilities = listOf(Capability.DISPLAY),
+            createdAt = 1L,
+        )
+        val blob = SignedBlob(
+            typ = SignedType.CLIENT_CARD,
+            signerId = ClientId("c"),
+            payload = ProtocolCodec.encodeToCbor(card),
+            sig = byteArrayOf(9),
+        )
+        val body = DataSync(kind = DataSyncKind.CARD, card = CardDelivery(ClientId("c"), blob))
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(body))
+        assertEquals(DataSyncKind.CARD, decoded.kind)
+        assertEquals(ClientId("c"), decoded.card?.clientId)
+        assertEquals("Tablet", decoded.card?.card?.decode<ClientCard>()?.displayName)
+        assertNull(decoded.trust)
+    }
 }

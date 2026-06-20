@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -20,8 +21,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
-import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -29,10 +28,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.TrustStatus
 
 @Composable
 fun DevicesScreen(
@@ -42,14 +43,14 @@ fun DevicesScreen(
     onOpenListenerSettings: () -> Unit,
 ) {
     val graph = rememberGraph()
-    val peers by graph.peers.peers.collectAsStateWithLifecycle()
+    val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
 
     NotiScaffold("Devices") { modifier ->
         LazyColumn(
-            modifier = modifier
-                .fillMaxSize()
-                .padding(start = 16.dp, top = 16.dp, end = 16.dp),
+            modifier = modifier.fillMaxSize(),
+            // Bottom inset clears the app's bottom navigation bar (this inner scaffold has no bottom bar).
+            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (!permissions.listenerEnabled) {
@@ -88,12 +89,12 @@ fun DevicesScreen(
             }
             item {
                 Text(
-                    "Trusted devices (${peers.size})",
+                    "Devices (${roster.size})",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            if (peers.isEmpty()) {
+            if (roster.isEmpty()) {
                 item {
                     Text(
                         "No paired devices yet. Pair another device to start mirroring notifications between them.",
@@ -105,21 +106,17 @@ fun DevicesScreen(
                 item {
                     Card(Modifier.fillMaxWidth()) {
                         Column {
-                            peers.forEachIndexed { index, peer ->
-                                ListItem(
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                                    leadingContent = {
-                                        Icon(Icons.Outlined.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
-                                    },
-                                    headlineContent = { Text(peer.displayName) },
-                                    supportingContent = { Text(peer.clientId.shortForm(), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                                    trailingContent = {
-                                        IconButton(onClick = { graph.peers.remove(peer.clientId) }) {
-                                            Icon(Icons.Filled.Delete, contentDescription = "Remove ${peer.displayName}")
-                                        }
-                                    },
+                            roster.forEachIndexed { index, device ->
+                                DeviceRow(
+                                    device = device,
+                                    // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
+                                    onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                                    onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                                    onRemoveConfirm = { if (graph.trust.confirmRevoke(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                                    onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                                    onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
                                 )
-                                if (index < peers.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
+                                if (index < roster.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
                             }
                         }
                     }
@@ -175,6 +172,71 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
             Text(title, style = MaterialTheme.typography.titleMedium)
             Text(body, style = MaterialTheme.typography.bodyMedium)
             OutlinedButton(onClick = onClick) { Text(action) }
+        }
+    }
+}
+
+@Composable
+private fun DeviceRow(
+    device: RosterDevice,
+    onApprove: (ClientId) -> Unit,
+    onDeny: (ClientId) -> Unit,
+    onRemoveConfirm: (ClientId) -> Unit,
+    onKeep: (ClientId) -> Unit,
+    onRemove: (ClientId) -> Unit,
+) {
+    val name = device.displayName ?: "Unknown device"
+    val statusLabel = when (device.status) {
+        TrustStatus.TRUSTED -> "Trusted"
+        TrustStatus.PENDING_TRUST -> "Pending approval"
+        TrustStatus.PENDING_REVOKE -> "Removal pending"
+        TrustStatus.REVOKED -> "Removed"
+    }
+    Column(
+        Modifier.fillMaxWidth().padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Outlined.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f)) {
+                Text(name, style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    "$statusLabel · ${device.clientId.shortForm()}",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            if (device.status == TrustStatus.TRUSTED) {
+                IconButton(onClick = { onRemove(device.clientId) }) {
+                    Icon(Icons.Filled.Delete, contentDescription = "Remove $name")
+                }
+            }
+        }
+        when (device.status) {
+            TrustStatus.PENDING_TRUST -> {
+                Text("Safety number  ${device.clientId.value}", style = MaterialTheme.typography.bodySmall)
+                Text(
+                    "Approve only if it matches the device's own safety number.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onApprove(device.clientId) }) { Text("Approve") }
+                    OutlinedButton(onClick = { onDeny(device.clientId) }) { Text("Deny") }
+                }
+            }
+            TrustStatus.PENDING_REVOKE -> {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = { onRemoveConfirm(device.clientId) }) { Text("Remove") }
+                    OutlinedButton(onClick = { onKeep(device.clientId) }) { Text("Keep") }
+                }
+            }
+            else -> Unit
         }
     }
 }

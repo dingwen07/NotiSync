@@ -162,7 +162,7 @@ data class AssetSyncItem(
 
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable. */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD }
 
 /**
  * The body of a [MessageType.DATA_SYNC] envelope: the group's low-urgency (FCM NORMAL), end-to-end-
@@ -178,6 +178,49 @@ data class DataSync(
     val asset: AssetSync? = null,
     /** A peer's mutable profile changed — populated iff [kind] == [DataSyncKind.PROFILE]. */
     val profile: ProfileUpdate? = null,
+    /** A peer's trust roster — populated iff [kind] == [DataSyncKind.TRUST]. */
+    val trust: TrustTable? = null,
+    /** A signed client card (key delivery / self-announce) — populated iff [kind] == [DataSyncKind.CARD]. */
+    val card: CardDelivery? = null,
+)
+
+/**
+ * The trust state of one device, in a device's local roster and on the wire. PENDING_* are local-only
+ * UI states (a received change awaiting the user's approval) and are NEVER broadcast; only TRUSTED and
+ * REVOKED travel in a [TrustTable]. Append-only — keep CBOR ordinals stable.
+ */
+@Serializable
+enum class TrustStatus { PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
+
+/**
+ * One row of a broadcast trust roster. [updatedAt] is the source-clock time the asserting device last
+ * (un)trusted this id; receivers resolve concurrent assertions last-writer-wins on it, biased toward
+ * the protective interpretation. [keyAvailable] tells peers whether the broadcaster holds this id's
+ * signed card, so a peer that has it can repair a keyless peer over [DataSyncKind.CARD].
+ */
+@Serializable
+data class TrustTableEntry(
+    val clientId: ClientId,
+    /** Only TRUSTED or REVOKED on the wire; PENDING_* are filtered out before broadcast. */
+    val status: TrustStatus,
+    val updatedAt: Long,
+    val keyAvailable: Boolean,
+)
+
+/** A device's broadcast trust roster (its TRUSTED + REVOKED decisions). Carried over [DataSyncKind.TRUST]. */
+@Serializable
+data class TrustTable(val entries: List<TrustTableEntry>)
+
+/**
+ * Delivery of a signed client card over [DataSyncKind.CARD] — used both to repair a peer that trusts
+ * [clientId] but lacks its keys, and for a device to (re)announce its own card. The card is
+ * self-authenticating (clientId == fingerprint(identityKey) + self-signature), so the receiver verifies
+ * it independently and pins it first-verified-wins; the enclosing signed envelope only attests the relay.
+ */
+@Serializable
+data class CardDelivery(
+    val clientId: ClientId,
+    val card: SignedBlob,
 )
 
 /**

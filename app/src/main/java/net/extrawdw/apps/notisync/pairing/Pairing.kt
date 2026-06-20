@@ -10,7 +10,6 @@ import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.data.ActivityEvent
-import net.extrawdw.apps.notisync.data.Peer
 import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
@@ -106,7 +105,6 @@ class PairingManager(private val graph: AppGraph) {
 
     private val urlEncoder = Base64.getUrlEncoder().withoutPadding()
     private val urlDecoder = Base64.getUrlDecoder()
-    private val encoder = Base64.getEncoder()
 
     /** This device's pairing payload (base64url of CBOR(signed client card)) for display as a QR. */
     fun myPayload(): String = urlEncoder.encodeToString(ProtocolCodec.encodeToCbor(graph.buildClientCardBlob()))
@@ -129,26 +127,16 @@ class PairingManager(private val graph: AppGraph) {
         )
     }
 
-    /** Accept a scanned peer payload: verify the card and add the peer to the trusted group. */
-    fun accept(scanned: String): Result<Peer> = runCatching {
-        val card = decodeVerifiedClientCard(PairingDeepLinks.extractPayload(scanned)).card
-
-        val peer = Peer(
-            clientId = card.clientId,
-            displayName = card.displayName,
-            platform = card.platform,
-            identityPublicKeyB64 = encoder.encodeToString(card.identityPublicKey),
-            hpkePublicKeysetB64 = encoder.encodeToString(card.hpkePublicKeyset),
-            addedAt = System.currentTimeMillis(),
-            capabilities = card.capabilities,
-            // Seed with the card's own clock so a later profile update is only applied if genuinely newer.
-            profileUpdatedAt = card.createdAt,
-        )
-        graph.peers.add(peer)
-        graph.activityLog.add(ActivityEvent.Kind.PAIRED, "Paired", card.displayName, System.currentTimeMillis())
+    /** Accept a scanned peer payload: verify the card, pin its keys, and trust it (local optical add). */
+    fun accept(scanned: String): Result<ClientCard> = runCatching {
+        val verified = decodeVerifiedClientCard(PairingDeepLinks.extractPayload(scanned))
+        require(graph.trust.addLocal(verified.blob, System.currentTimeMillis())) { "card verification failed" }
+        graph.activityLog.add(ActivityEvent.Kind.PAIRED, "Paired", verified.card.displayName, System.currentTimeMillis())
         // Make sure our own card is published so the new peer (and broker) can resolve us.
         graph.scope.launch { runCatching { graph.transport.publishCard(graph.buildClientCardBlob()) } }
-        peer
+        // Tell existing peers we now trust this device (they can repair its key from us on request).
+        graph.broadcastTrust()
+        verified.card
     }
 
     private fun decodeVerifiedClientCard(payload: String): VerifiedClientCard {

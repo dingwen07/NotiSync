@@ -5,8 +5,11 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.data.IncomingTrustResult
 import net.extrawdw.apps.notisync.data.Peer
+import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.notisync.protocol.AssetSync
+import net.extrawdw.notisync.protocol.CardDelivery
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
 import net.extrawdw.notisync.protocol.CapturedNotification
@@ -19,6 +22,8 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.TrustTable
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
@@ -75,6 +80,14 @@ class MirrorEngine(
      * true if anything changed. Null in tests / contexts with no roster store.
      */
     private val profileUpdater: ((ProfileUpdate) -> Boolean)? = null,
+    /** This device's broadcast trust roster, for anti-entropy + immediate propagation. */
+    private val trustTableProvider: (() -> TrustTable)? = null,
+    /** Folds a peer's incoming roster into local trust state; returns prompts to raise + cards to offer. */
+    private val onTrustTable: ((sender: ClientId, table: TrustTable) -> IncomingTrustResult)? = null,
+    /** Pins a delivered card (first-verified-wins). Returns true if newly stored. */
+    private val onCardDelivery: ((ClientId, SignedBlob) -> Boolean)? = null,
+    /** Surfaces a trust decision needing the user (e.g. a local notification). */
+    private val onTrustPrompt: ((ClientId, TrustPrompt) -> Unit)? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
     /** Resolves a package name to a user-facing app label; defaults to the package itself. */
     private val appLabelResolver: (String) -> String = { it },
@@ -170,6 +183,38 @@ class MirrorEngine(
         activityLog.add(ActivityEvent.Kind.SENT, "Device name", "updated on ${recipients.size} device(s)", now())
     }
 
+    /** Broadcast this device's trust roster to every trusted peer (anti-entropy + immediate propagation). */
+    suspend fun broadcastTrust() {
+        val table = trustTableProvider?.invoke() ?: return
+        val recipients = recipients()
+        if (recipients.isEmpty()) return
+        val envelope = EnvelopeCrypto.seal(
+            signer = signer,
+            typ = MessageType.DATA_SYNC,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = table)),
+            recipients = recipients,
+            messageId = UUID.randomUUID().toString(),
+            seq = seq.incrementAndGet(),
+            createdAt = now(),
+        )
+        transport.send(envelope, Urgency.NORMAL)
+    }
+
+    /** Deliver a signed card to one peer (keyless repair / card announce). */
+    private suspend fun sendCard(recipientId: ClientId, clientId: ClientId, card: SignedBlob) {
+        val peer = peersProvider().firstOrNull { it.clientId == recipientId } ?: return
+        val envelope = EnvelopeCrypto.seal(
+            signer = signer,
+            typ = MessageType.DATA_SYNC,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(clientId, card))),
+            recipients = listOf(RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))),
+            messageId = UUID.randomUUID().toString(),
+            seq = seq.incrementAndGet(),
+            createdAt = now(),
+        )
+        transport.send(envelope, Urgency.NORMAL)
+    }
+
     /** Handle an envelope received via WebSocket or FCM. Idempotent: duplicates are dropped. */
     fun handleEnvelope(envelope: Envelope) {
         if (!seen.add(envelope.messageId)) return
@@ -239,6 +284,22 @@ class MirrorEngine(
                         if (profileUpdater?.invoke(update) == true) {
                             activityLog.add(ActivityEvent.Kind.PAIRED, update.displayName, "renamed (was ${sender.displayName})", now())
                         }
+                    }
+                    DataSyncKind.TRUST -> {
+                        val table = sync.trust ?: return
+                        val result = onTrustTable?.invoke(envelope.signerId, table) ?: return
+                        for ((id, prompt) in result.prompts) {
+                            onTrustPrompt?.invoke(id, prompt)
+                            activityLog.add(ActivityEvent.Kind.PAIRED, id.shortForm(), "trust update from ${sender.displayName} ($prompt)", now())
+                        }
+                        // Repair any device the sender trusts but lacks a key for, that we can vouch for.
+                        if (result.cardsToOffer.isNotEmpty()) {
+                            scope.launch { result.cardsToOffer.forEach { sendCard(envelope.signerId, it.signerId, it) } }
+                        }
+                    }
+                    DataSyncKind.CARD -> {
+                        val delivery = sync.card ?: return
+                        onCardDelivery?.invoke(delivery.clientId, delivery.card)
                     }
                 }
             }

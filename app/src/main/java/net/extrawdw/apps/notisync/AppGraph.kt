@@ -1,8 +1,15 @@
 package net.extrawdw.apps.notisync
 
+import android.Manifest
 import android.app.Application
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
+import android.content.pm.PackageManager
 import android.util.Log
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
@@ -26,8 +33,9 @@ import net.extrawdw.apps.notisync.crypto.KeyVault
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
-import net.extrawdw.apps.notisync.data.PeerRepository
 import net.extrawdw.apps.notisync.data.SettingsRepository
+import net.extrawdw.apps.notisync.data.TrustPrompt
+import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
@@ -63,7 +71,7 @@ class AppGraph(private val app: Application) {
         private set
     lateinit var settings: SettingsRepository
         private set
-    lateinit var peers: PeerRepository
+    lateinit var trust: TrustStore
         private set
     lateinit var transport: BrokerClient
         private set
@@ -84,7 +92,7 @@ class AppGraph(private val app: Application) {
         hpke = HpkeKeyManager(app, KeyVault()).apply { loadOrCreate() }
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
-        peers = PeerRepository(ds, scope)
+        trust = TrustStore(ds, scope, identity.clientId)
         appSelection = AppSelectionRepository(ds, scope)
         transport = BrokerClient(identity) { settings.brokerUrl.value }
         val assetsDir = java.io.File(app.filesDir, "assets")
@@ -96,17 +104,21 @@ class AppGraph(private val app: Application) {
             signer = identity,
             myHpkePrivateKeyset = hpke.privateKeyset,
             transport = transport,
-            peersProvider = { peers.peers.value },
+            peersProvider = { trust.activePeers.value },
             renderer = poster,
             activityLog = activityLog,
             scope = scope,
             assetResolver = assetManager,
-            profileUpdater = { peers.updateProfile(it) },
+            profileUpdater = { trust.applyProfile(it) },
+            trustTableProvider = { trust.buildTrustTable() },
+            onTrustTable = { sender, table -> trust.applyIncomingTable(sender, table) },
+            onCardDelivery = { id, card -> trust.applyCard(id, card) },
+            onTrustPrompt = ::onTrustPrompt,
             appLabelResolver = ::appLabelFor,
         )
 
         // Prune mirrored channels/groups for devices that are no longer trusted peers.
-        runCatching { MirrorChannels.gc(app, peers.peers.value.map { it.clientId.value }.toSet()) }
+        runCatching { MirrorChannels.gc(app, trust.activePeers.value.map { it.clientId.value }.toSet()) }
 
         // Battery-efficient transport policy:
         //  * Background delivery is via FCM only (Google's shared push connection — no app socket),
@@ -145,6 +157,7 @@ class AppGraph(private val app: Application) {
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
             runCatching { transport.publishCard(buildClientCardBlob()) }
+            runCatching { mirrorEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
             transport.incoming().collect { mirrorEngine?.handleEnvelope(it) }
         }
     }
@@ -159,8 +172,42 @@ class AppGraph(private val app: Application) {
     private fun onAppBackgrounded() {
         stopLiveConnection()
         registerFcmRoute()
-        if (settings.deviceNameUpdatedAt.value > 0L) {
-            scope.launch { runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) } }
+        scope.launch {
+            if (settings.deviceNameUpdatedAt.value > 0L) runCatching { mirrorEngine?.broadcastProfile(buildProfileUpdate()) }
+            runCatching { mirrorEngine?.broadcastTrust() }
+        }
+    }
+
+    /** Re-broadcast our trust roster now (call after a local trust change that should propagate at once). */
+    fun broadcastTrust() {
+        scope.launch { runCatching { mirrorEngine?.broadcastTrust() } }
+    }
+
+    /** Surface a pending trust decision as a local notification; the user resolves it in the Devices screen. */
+    private fun onTrustPrompt(clientId: ClientId, prompt: TrustPrompt) {
+        runCatching {
+            val channelId = "notisync.trust"
+            val mgr = app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            mgr.createNotificationChannel(
+                NotificationChannel(channelId, "Device trust", NotificationManager.IMPORTANCE_DEFAULT),
+            )
+            val (title, text) = when (prompt) {
+                TrustPrompt.NEW_TRUST -> "Review a new device" to "A trusted device introduced ${clientId.shortForm()}."
+                TrustPrompt.RE_TRUST -> "A device wants to rejoin" to "${clientId.shortForm()} was previously removed."
+                TrustPrompt.NEW_REVOKE -> "A device was removed" to "Confirm removing ${clientId.shortForm()}."
+                TrustPrompt.CONFLICT -> "Trust conflict" to "${clientId.shortForm()} was re-added while being removed."
+            }
+            if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED) {
+                NotificationManagerCompat.from(app).notify(
+                    "trust-${clientId.value}".hashCode(),
+                    NotificationCompat.Builder(app, channelId)
+                        .setSmallIcon(android.R.drawable.ic_dialog_info)
+                        .setContentTitle(title)
+                        .setContentText(text)
+                        .setAutoCancel(true)
+                        .build(),
+                )
+            }
         }
     }
 
