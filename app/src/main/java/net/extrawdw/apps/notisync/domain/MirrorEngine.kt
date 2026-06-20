@@ -312,6 +312,8 @@ class MirrorEngine(
                         if (result.cardsToOffer.isNotEmpty()) {
                             scope.launch { result.cardsToOffer.forEach { sendCard(envelope.signerId, it.signerId, it) } }
                         }
+                        // We just learned a keyless device — advertise it so a card holder repairs us.
+                        if (result.needsBroadcast) scope.launch { broadcastTrust() }
                     }
                     DataSyncKind.CARD -> {
                         if (!sender.ownDevice) return

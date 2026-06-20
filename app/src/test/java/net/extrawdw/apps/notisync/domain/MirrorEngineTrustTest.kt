@@ -148,6 +148,32 @@ class MirrorEngineTrustTest {
     }
 
     @Test
+    fun receivingTrustTable_rebroadcastsWhenFoldNeedsIt() = runBlocking {
+        val me = SoftwareIdentitySigner.generate(); val myHpke = Hpke.generateKeyPair()
+        val sender = SoftwareIdentitySigner.generate(); val senderHpke = Hpke.generateKeyPair()
+        val transport = CapturingTransport()
+        val engine = MirrorEngine(
+            signer = me, myHpkePrivateKeyset = myHpke.privateKeyset, transport = transport,
+            peersProvider = { listOf(peerFor(sender, senderHpke.publicKeyset)) }, renderer = noopRenderer,
+            activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined),
+            trustTableProvider = { TrustTable(emptyList()) },
+            onTrustTable = { _, _ -> IncomingTrustResult(emptyList(), emptyList(), needsBroadcast = true) },
+        )
+
+        val table = TrustTable(listOf(TrustTableEntry(ClientId("x"), TrustStatus.PENDING_TRUST, 5L, keyAvailable = false)))
+        val env = EnvelopeCrypto.seal(
+            sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = table)),
+            listOf(RecipientKey(me.clientId, myHpke.publicKeyset)), "t1", 1L, 1L,
+        )
+        engine.handleEnvelope(env)
+
+        // needsBroadcast -> the engine re-announces its own table so a card holder can repair it.
+        assertEquals(1, transport.sent.size)
+        val kind = ProtocolCodec.decodeFromCbor<DataSync>(EnvelopeCrypto.open(transport.sent.single(), sender.clientId, senderHpke.privateKeyset)).kind
+        assertEquals(DataSyncKind.TRUST, kind)
+    }
+
+    @Test
     fun receivingCardDelivery_invokesHandler() = runBlocking {
         val me = SoftwareIdentitySigner.generate(); val myHpke = Hpke.generateKeyPair()
         val sender = SoftwareIdentitySigner.generate(); val senderHpke = Hpke.generateKeyPair()

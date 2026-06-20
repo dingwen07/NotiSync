@@ -54,6 +54,8 @@ data class IncomingTrustResult(
     val prompts: List<Pair<ClientId, TrustPrompt>>,
     /** Cards the sender advertised it lacks that we hold (and trust) — to repair it over DataSyncKind.CARD. */
     val cardsToOffer: List<SignedBlob>,
+    /** True if we just created a keyless entry — re-broadcast our table so a holder can repair us. */
+    val needsBroadcast: Boolean = false,
 )
 
 /**
@@ -161,27 +163,39 @@ class TrustStore(
 
     // ---- incoming ----
 
-    /** Fold a peer's broadcast roster into ours. Returns prompts to raise + cards to offer the sender. */
+    /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
     fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
         val prompts = mutableListOf<Pair<ClientId, TrustPrompt>>()
         val offers = mutableListOf<SignedBlob>()
+        var needsBroadcast = false
         mutate { st ->
             var entries = st.entries
             for (wire in table.entries) {
                 // Ignore a peer's self-row and any external assertion about THIS device's own trust state.
                 if (wire.clientId == sender || wire.clientId == selfId) continue
-                val r = TrustMachine.resolveIncoming(entries[wire.clientId], wire, sender)
-                if (r.entry != entries[wire.clientId]) entries = entries + (wire.clientId to r.entry)
-                r.prompt?.let { prompts += wire.clientId to it }
-                // Keyless repair: the sender lacks this id's card and we trust it as an own device + hold the card.
-                val mine = entries[wire.clientId] // use the running accumulator, consistent with the fold above
+                // Only TRUSTED/REVOKED assertions change our trust state; a peer's PENDING_* is informational.
+                if (wire.status == TrustStatus.TRUSTED || wire.status == TrustStatus.REVOKED) {
+                    val r = TrustMachine.resolveIncoming(entries[wire.clientId], wire, sender)
+                    if (r.entry != entries[wire.clientId]) {
+                        entries = entries + (wire.clientId to r.entry)
+                        // A new keyless trust/pending entry: re-broadcast so a card holder repairs us.
+                        if (!st.cards.containsKey(wire.clientId) &&
+                            (r.entry.status == TrustStatus.PENDING_TRUST || r.entry.status == TrustStatus.TRUSTED)
+                        ) {
+                            needsBroadcast = true
+                        }
+                    }
+                    r.prompt?.let { prompts += wire.clientId to it }
+                }
+                // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender lacks it.
+                val mine = entries[wire.clientId] // running accumulator, consistent with the fold above
                 if (!wire.keyAvailable && mine?.status == TrustStatus.TRUSTED && mine.ownDevice) {
                     st.cards[wire.clientId]?.let { offers += it }
                 }
             }
             st.copy(entries = entries)
         }
-        return IncomingTrustResult(prompts, offers)
+        return IncomingTrustResult(prompts, offers, needsBroadcast)
     }
 
     /**
@@ -218,14 +232,15 @@ class TrustStore(
     }
 
     /**
-     * Our broadcast roster: own-mesh TRUSTED + REVOKED decisions (PENDING_* and profile-only not-own
-     * devices filtered out), with key-availability. Not-own devices never propagate.
+     * Our broadcast roster: every own-mesh entry (TRUSTED, REVOKED, and both PENDING_* states), with
+     * key-availability. PENDING_* rows are informational — a receiver never acts on a peer's pending
+     * state, it only honours keyAvailable=false to repair a keyless pending. Not-own devices never propagate.
      */
     fun buildTrustTable(): TrustTable {
         val st = _state.value
         return TrustTable(
             st.entries.values
-                .filter { it.clientId != selfId && it.ownDevice && (it.status == TrustStatus.TRUSTED || it.status == TrustStatus.REVOKED) }
+                .filter { it.clientId != selfId && it.ownDevice }
                 .map { TrustTableEntry(it.clientId, it.status, it.updatedAt, keyAvailable = st.cards.containsKey(it.clientId)) },
         )
     }
