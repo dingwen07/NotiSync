@@ -95,6 +95,7 @@ class AppGraph(private val app: Application) {
             activityLog = activityLog,
             scope = scope,
             assetResolver = assetManager,
+            appLabelResolver = ::appLabelFor,
         )
 
         // Prune mirrored channels/groups for devices that are no longer trusted peers.
@@ -113,6 +114,12 @@ class AppGraph(private val app: Application) {
 
         Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
     }
+
+    /** Friendly application label for a package, falling back to the package id when not installed. */
+    private fun appLabelFor(pkg: String): String = runCatching {
+        val pm = app.packageManager
+        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+    }.getOrDefault(pkg)
 
     @Volatile
     private var liveJob: Job? = null

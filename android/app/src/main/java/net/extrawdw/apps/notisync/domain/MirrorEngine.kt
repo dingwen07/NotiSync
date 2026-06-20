@@ -68,6 +68,8 @@ class MirrorEngine(
     private val scope: CoroutineScope,
     private val assetResolver: AssetResolver? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
+    /** Resolves a package name to a user-facing app label; defaults to the package itself. */
+    private val appLabelResolver: (String) -> String = { it },
 ) {
     @Volatile var originalCanceler: OriginalCanceler? = null
 
@@ -90,6 +92,17 @@ class MirrorEngine(
 
     private fun recipients(): List<RecipientKey> = peersProvider().map {
         RecipientKey(it.clientId, b64.decode(it.hpkePublicKeysetB64))
+    }
+
+    /**
+     * Best-effort app name for a dismissal Activity row. A [DismissEvent] carries only the opaque
+     * source key — the origin device's Android notification key, `userId|package|id|tag|uid` — so we
+     * recover the package from it and resolve a friendly label when that app is installed on this
+     * device. Otherwise we fall back to the package (still tells the user which app), then the key.
+     */
+    private fun dismissedAppName(sourceKey: String): String {
+        val pkg = sourceKey.split('|').getOrNull(1)?.takeIf { it.isNotBlank() } ?: return sourceKey
+        return appLabelResolver(pkg)
     }
 
     suspend fun captureLocal(notif: CapturedNotification) {
@@ -125,7 +138,7 @@ class MirrorEngine(
             createdAt = now(),
         )
         transport.send(envelope, Urgency.NORMAL)
-        activityLog.add(ActivityEvent.Kind.DISMISSED, "Dismissal", "synced to ${recipients.size} device(s)", now())
+        activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), "synced to ${recipients.size} device(s)", now())
     }
 
     /** Handle an envelope received via WebSocket or FCM. Idempotent: duplicates are dropped. */
@@ -176,7 +189,7 @@ class MirrorEngine(
                 val event = ProtocolCodec.decodeFromCbor<DismissEvent>(body)
                 renderer.clear(event.sourceClientId, event.sourceKey)
                 originalCanceler?.cancel(event.sourceKey)
-                activityLog.add(ActivityEvent.Kind.DISMISSED, "Dismissed", "by ${sender.displayName}", now())
+                activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(event.sourceKey), "by ${sender.displayName}", now())
             }
             MessageType.DATA_SYNC -> {
                 val sync = runCatching { ProtocolCodec.decodeFromCbor<AssetSync>(body) }.getOrNull() ?: return

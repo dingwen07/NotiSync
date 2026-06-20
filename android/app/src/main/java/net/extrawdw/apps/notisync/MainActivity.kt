@@ -33,6 +33,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -60,11 +63,39 @@ enum class TopDestination(val label: String, val icon: ImageVector) {
     SETTINGS("Settings", Icons.Outlined.Settings),
 }
 
+private object Routes {
+    const val HOME = "home"
+    const val PAIRING = "pairing"
+}
+
 @Composable
 fun NotiSyncRoot() {
+    val navController = rememberNavController()
+
+    NavHost(
+        navController = navController,
+        startDestination = Routes.HOME,
+        modifier = Modifier.fillMaxSize(),
+    ) {
+        composable(Routes.HOME) {
+            NotiSyncHome(
+                onPair = {
+                    navController.navigate(Routes.PAIRING) {
+                        launchSingleTop = true
+                    }
+                },
+            )
+        }
+        composable(Routes.PAIRING) {
+            PairingScreen(onBack = { navController.navigateUp() })
+        }
+    }
+}
+
+@Composable
+private fun NotiSyncHome(onPair: () -> Unit) {
     val context = LocalContext.current
     var current by rememberSaveable { mutableStateOf(TopDestination.DEVICES) }
-    var pairingOpen by rememberSaveable { mutableStateOf(false) }
 
     // Re-check permissions whenever we return to the foreground (e.g. from system settings).
     var refresh by remember { mutableIntStateOf(0) }
@@ -87,11 +118,6 @@ fun NotiSyncRoot() {
         context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
     }
 
-    if (pairingOpen) {
-        PairingScreen(onBack = { pairingOpen = false })
-        return
-    }
-
     NavigationSuiteScaffold(
         navigationSuiteItems = {
             TopDestination.entries.forEach { dest ->
@@ -107,7 +133,7 @@ fun NotiSyncRoot() {
         when (current) {
             TopDestination.DEVICES -> DevicesScreen(
                 permissions = permissions,
-                onPair = { pairingOpen = true },
+                onPair = onPair,
                 onRequestPostNotifications = requestPostNotifications,
                 onOpenListenerSettings = openListenerSettings,
             )
