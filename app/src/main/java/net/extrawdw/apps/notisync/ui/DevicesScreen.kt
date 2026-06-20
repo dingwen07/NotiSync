@@ -64,6 +64,8 @@ fun DevicesScreen(
             delay(1000)
         }
     }
+    val ownDevices = roster.filter { it.ownDevice }
+    val otherDevices = roster.filterNot { it.ownDevice }
 
     NotiScaffold("Devices") { modifier ->
         LazyColumn(
@@ -108,12 +110,12 @@ fun DevicesScreen(
             }
             item {
                 Text(
-                    "Devices (${roster.size})",
+                    "My devices (${ownDevices.size})",
                     style = MaterialTheme.typography.titleMedium,
                     modifier = Modifier.padding(top = 4.dp),
                 )
             }
-            if (roster.isEmpty()) {
+            if (ownDevices.isEmpty()) {
                 item {
                     Text(
                         "No paired devices yet. Pair another device to start mirroring notifications between them.",
@@ -122,26 +124,47 @@ fun DevicesScreen(
                     )
                 }
             } else {
+                item { DeviceListCard(ownDevices, now, graph) }
+            }
+            if (otherDevices.isNotEmpty()) {
                 item {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column {
-                            roster.forEachIndexed { index, device ->
-                                DeviceRow(
-                                    device = device,
-                                    now = now,
-                                    // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
-                                    onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                                    onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                                    onRemoveConfirm = { if (graph.trust.confirmRevoke(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                                    onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                                    onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                                    onPurge = { graph.trust.purgeRevoked(it) },
-                                )
-                                if (index < roster.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
-                            }
-                        }
-                    }
+                    Text(
+                        "Other devices (${otherDevices.size})",
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(top = 4.dp),
+                    )
                 }
+                item {
+                    Text(
+                        "Profile-only devices: they receive your device name, but never your notifications.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                item { DeviceListCard(otherDevices, now, graph) }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.extrawdw.apps.notisync.AppGraph) {
+    Card(Modifier.fillMaxWidth()) {
+        Column {
+            devices.forEachIndexed { index, device ->
+                DeviceRow(
+                    device = device,
+                    now = now,
+                    // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
+                    onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onRemoveConfirm = { if (graph.trust.confirmRevoke(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onPurge = { graph.trust.purgeRevoked(it) },
+                    onDeleteNotOwn = { graph.trust.deleteNotOwn(it) },
+                )
+                if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
             }
         }
     }
@@ -207,6 +230,7 @@ private fun DeviceRow(
     onKeep: (ClientId) -> Unit,
     onRemove: (ClientId) -> Unit,
     onPurge: (ClientId) -> Unit,
+    onDeleteNotOwn: (ClientId) -> Unit,
 ) {
     val name = device.displayName ?: "Unknown device"
     val isRevoked = device.status == TrustStatus.REVOKED
@@ -250,7 +274,10 @@ private fun DeviceRow(
                 )
             }
             when (device.status) {
-                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }) {
+                // Own device -> revoke (tombstone + propagate); profile-only -> immediate local delete.
+                TrustStatus.TRUSTED -> IconButton(onClick = {
+                    if (device.ownDevice) onRemove(device.clientId) else onDeleteNotOwn(device.clientId)
+                }) {
                     Icon(Icons.Filled.Delete, contentDescription = "Remove $name")
                 }
                 TrustStatus.REVOKED -> {

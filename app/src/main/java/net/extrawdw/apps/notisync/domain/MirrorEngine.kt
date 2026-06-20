@@ -111,9 +111,13 @@ class MirrorEngine(
         }
     )
 
-    private fun recipients(): List<RecipientKey> = peersProvider().map {
-        RecipientKey(it.clientId, b64.decode(it.hpkePublicKeysetB64))
-    }
+    private fun rk(peer: Peer) = RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))
+
+    /** Own-mesh recipients — notifications, dismissals, trust tables, cards, and asset repair go only here. */
+    private fun recipients(): List<RecipientKey> = peersProvider().filter { it.ownDevice }.map(::rk)
+
+    /** Every trusted recipient (own + profile-only not-own) — only profile updates fan out this wide. */
+    private fun allRecipients(): List<RecipientKey> = peersProvider().map(::rk)
 
     /**
      * Best-effort app name for a dismissal Activity row. A [DismissEvent] carries only the opaque
@@ -168,7 +172,7 @@ class MirrorEngine(
      * is safe to re-send (e.g. on reconnect) to converge peers that were offline when the change landed.
      */
     suspend fun broadcastProfile(update: ProfileUpdate) {
-        val recipients = recipients()
+        val recipients = allRecipients() // profile updates reach own AND profile-only devices
         if (recipients.isEmpty()) return
         val envelope = EnvelopeCrypto.seal(
             signer = signer,
@@ -200,14 +204,14 @@ class MirrorEngine(
         transport.send(envelope, Urgency.NORMAL)
     }
 
-    /** Deliver a signed card to one peer (keyless repair / card announce). */
+    /** Deliver a signed card to one own-mesh peer (keyless repair / card announce). */
     private suspend fun sendCard(recipientId: ClientId, clientId: ClientId, card: SignedBlob) {
-        val peer = peersProvider().firstOrNull { it.clientId == recipientId } ?: return
+        val peer = peersProvider().firstOrNull { it.clientId == recipientId && it.ownDevice } ?: return
         val envelope = EnvelopeCrypto.seal(
             signer = signer,
             typ = MessageType.DATA_SYNC,
             bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(clientId, card))),
-            recipients = listOf(RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))),
+            recipients = listOf(rk(peer)),
             messageId = UUID.randomUUID().toString(),
             seq = seq.incrementAndGet(),
             createdAt = now(),
@@ -235,8 +239,10 @@ class MirrorEngine(
             Log.w(TAG, "decrypt failed for ${envelope.messageId}: ${it.message}")
             return
         }
+        // A profile-only (not-own) device may only send profile updates; everything else from it is dropped.
         when (envelope.typ) {
             MessageType.NOTIFICATION -> {
+                if (!sender.ownDevice) return
                 val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(body)
                 renderer.render(notif) // text + any already-cached graphics, posted immediately
                 activityLog.add(ActivityEvent.Kind.RECEIVED, notif.appLabel, "from ${sender.displayName}", now())
@@ -260,6 +266,7 @@ class MirrorEngine(
                 }
             }
             MessageType.DISMISSAL -> {
+                if (!sender.ownDevice) return
                 val event = ProtocolCodec.decodeFromCbor<DismissEvent>(body)
                 renderer.clear(event.sourceClientId, event.sourceKey)
                 originalCanceler?.cancel(event.sourceKey)
@@ -269,6 +276,7 @@ class MirrorEngine(
                 val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull() ?: return
                 when (sync.kind) {
                     DataSyncKind.ASSET -> {
+                        if (!sender.ownDevice) return
                         val asset = sync.asset ?: return
                         val resolver = assetResolver ?: return
                         when (asset.kind) {
@@ -286,6 +294,7 @@ class MirrorEngine(
                         }
                     }
                     DataSyncKind.TRUST -> {
+                        if (!sender.ownDevice) return
                         val table = sync.trust ?: return
                         val result = onTrustTable?.invoke(envelope.signerId, table) ?: return
                         for ((id, prompt) in result.prompts) {
@@ -298,6 +307,7 @@ class MirrorEngine(
                         }
                     }
                     DataSyncKind.CARD -> {
+                        if (!sender.ownDevice) return
                         val delivery = sync.card ?: return
                         onCardDelivery?.invoke(delivery.clientId, delivery.card)
                     }
@@ -325,14 +335,14 @@ class MirrorEngine(
         }
     }
 
-    /** Seal an [AssetSync] to a single peer over DATA_SYNC (FCM NORMAL priority). */
+    /** Seal an [AssetSync] to a single own-mesh peer over DATA_SYNC (FCM NORMAL priority). */
     private suspend fun sendAssetSync(recipientId: ClientId, sync: AssetSync) {
-        val peer = peersProvider().firstOrNull { it.clientId == recipientId } ?: return
+        val peer = peersProvider().firstOrNull { it.clientId == recipientId && it.ownDevice } ?: return
         val envelope = EnvelopeCrypto.seal(
             signer = signer,
             typ = MessageType.DATA_SYNC,
             bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.ASSET, asset = sync)),
-            recipients = listOf(RecipientKey(peer.clientId, b64.decode(peer.hpkePublicKeysetB64))),
+            recipients = listOf(rk(peer)),
             messageId = UUID.randomUUID().toString(),
             seq = seq.incrementAndGet(),
             createdAt = now(),

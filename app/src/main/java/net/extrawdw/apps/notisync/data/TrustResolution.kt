@@ -19,6 +19,12 @@ data class TrustEntry(
     val status: TrustStatus,
     val updatedAt: Long,
     val introducedBy: ClientId? = null,
+    /**
+     * True if this is one of the user's own devices (the default for a QR pair and for any device learned
+     * via trust propagation). False marks a separately-paired device that only exchanges profile updates —
+     * never notifications, trust tables, or cards. Local-only; never travels on the wire.
+     */
+    val ownDevice: Boolean = true,
 )
 
 /** A UI signal that an incoming change needs the user's attention. */
@@ -48,8 +54,9 @@ object TrustMachine {
         // Last-writer-wins staleness guard: nothing older-or-equal can change our state.
         if (current != null && incoming.updatedAt <= current.updatedAt) return TrustResolution(current, null)
         val ts = incoming.updatedAt
+        // Anything learned via trust propagation is an own-mesh device; keep an existing local flag if set.
         fun res(status: TrustStatus, introducedBy: ClientId?, prompt: TrustPrompt?) =
-            TrustResolution(TrustEntry(id, status, ts, introducedBy), prompt)
+            TrustResolution(TrustEntry(id, status, ts, introducedBy, ownDevice = current?.ownDevice ?: true), prompt)
 
         return when (incoming.status) {
             TrustStatus.TRUSTED -> when (current?.status) {
@@ -79,8 +86,9 @@ object TrustMachine {
     //      AGREEING with a peer (approve a pending trust / confirm a pending revoke) does not, since
     //      anti-entropy already carries it. ----
 
-    /** This device's user trusts [id] via an optical scan / manual add. */
-    fun localAdd(id: ClientId, now: Long) = TrustEntry(id, TrustStatus.TRUSTED, now, introducedBy = null)
+    /** This device's user trusts [id] via an optical scan / manual add ([ownDevice] chosen at pairing). */
+    fun localAdd(id: ClientId, now: Long, ownDevice: Boolean = true) =
+        TrustEntry(id, TrustStatus.TRUSTED, now, introducedBy = null, ownDevice = ownDevice)
 
     /** This device's user removes [id] directly. */
     fun localRevoke(id: ClientId, now: Long) = TrustEntry(id, TrustStatus.REVOKED, now, introducedBy = null)

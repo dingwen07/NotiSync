@@ -24,6 +24,8 @@ data class Peer(
     val lastSeenAt: Long = 0L,
     val capabilities: List<Capability> = emptyList(),
     val profileUpdatedAt: Long = 0L,
+    /** One of the user's own devices (full mirroring) vs a profile-only paired device. */
+    val ownDevice: Boolean = true,
 )
 
 /** A user-facing record for the Activity screen. Never contains plaintext notification content. */

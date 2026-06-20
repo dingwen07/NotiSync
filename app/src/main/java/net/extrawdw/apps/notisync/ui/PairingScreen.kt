@@ -5,6 +5,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
@@ -79,13 +80,13 @@ fun PairingScreen(
         }
     }
 
-    fun trust(candidate: PairingCandidate) {
+    fun trust(candidate: PairingCandidate, ownDevice: Boolean) {
         pendingCandidate = null
         result = null
         inspecting = true
         scope.launch {
             result = withContext(Dispatchers.Default) {
-                pairing.accept(candidate.payload).fold(
+                pairing.accept(candidate.payload, ownDevice).fold(
                     onSuccess = { "Paired with ${it.displayName}" },
                     onFailure = { "Could not pair: ${it.message}" },
                 )
@@ -230,7 +231,8 @@ fun PairingScreen(
     pendingCandidate?.let { candidate ->
         TrustDeviceDialog(
             candidate = candidate,
-            onTrust = { trust(candidate) },
+            onTrustOwn = { trust(candidate, ownDevice = true) },
+            onTrustOther = { trust(candidate, ownDevice = false) },
             onDismiss = { pendingCandidate = null },
         )
     }
@@ -245,7 +247,8 @@ private sealed interface PairingCodeState {
 @Composable
 private fun TrustDeviceDialog(
     candidate: PairingCandidate,
-    onTrust: () -> Unit,
+    onTrustOwn: () -> Unit,
+    onTrustOther: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     AlertDialog(
@@ -255,7 +258,8 @@ private fun TrustDeviceDialog(
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        "NotiSync verified this signed pairing card. Trust it to exchange notifications with this device.",
+                        "NotiSync verified this signed pairing card. Add it as one of your own devices to mirror " +
+                            "notifications, or as someone else's device to share only your device name.",
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     DeviceInfo("Name", candidate.displayName)
@@ -267,8 +271,9 @@ private fun TrustDeviceDialog(
             }
         },
         confirmButton = {
-            TextButton(onClick = onTrust) {
-                Text("Trust")
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TextButton(onClick = onTrustOther) { Text("Other's device") }
+                TextButton(onClick = onTrustOwn) { Text("My device") }
             }
         },
         dismissButton = {

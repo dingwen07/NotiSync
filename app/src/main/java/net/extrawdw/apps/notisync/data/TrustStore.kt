@@ -45,6 +45,8 @@ data class RosterDevice(
     val introducedByName: String?,
     /** When it was revoked (for REVOKED rows), so the UI can gate permanent deletion; null otherwise. */
     val revokedAt: Long?,
+    /** One of the user's own devices vs a profile-only paired device (separate UI listing). */
+    val ownDevice: Boolean,
 )
 
 /** What [TrustStore.applyIncomingTable] surfaces back to the caller. */
@@ -103,15 +105,22 @@ class TrustStore(
     // ---- local user actions (return true when the change should be broadcast immediately) ----
 
     /** Optical/manual add: pin [cardBlob]'s keys and trust it. Returns false if the card fails verification. */
-    fun addLocal(cardBlob: SignedBlob, now: Long): Boolean {
+    fun addLocal(cardBlob: SignedBlob, now: Long, ownDevice: Boolean = true): Boolean {
         val card = verifyCard(cardBlob) ?: return false
         mutate { st ->
             st.copy(
                 cards = putCard(st.cards, card.clientId, cardBlob),
-                entries = st.entries + (card.clientId to TrustMachine.localAdd(card.clientId, now)),
+                entries = st.entries + (card.clientId to TrustMachine.localAdd(card.clientId, now, ownDevice)),
             )
         }
         return true
+    }
+
+    /** Immediately forget a profile-only (not-own) device — no tombstone, no propagation. */
+    fun deleteNotOwn(clientId: ClientId): Boolean {
+        if (_state.value.entries[clientId]?.ownDevice != false) return false
+        mutate { it.copy(entries = it.entries - clientId, cards = it.cards - clientId, overlays = it.overlays - clientId) }
+        return false // not-own devices don't participate in propagation
     }
 
     fun revokeLocal(clientId: ClientId, now: Long): Boolean {
@@ -164,8 +173,9 @@ class TrustStore(
                 val r = TrustMachine.resolveIncoming(entries[wire.clientId], wire, sender)
                 if (r.entry != entries[wire.clientId]) entries = entries + (wire.clientId to r.entry)
                 r.prompt?.let { prompts += wire.clientId to it }
-                // Keyless repair: the sender lacks this id's card and we trust it + hold the card -> offer it.
-                if (!wire.keyAvailable && st.entries[wire.clientId]?.status == TrustStatus.TRUSTED) {
+                // Keyless repair: the sender lacks this id's card and we trust it as an own device + hold the card.
+                val mine = entries[wire.clientId] // use the running accumulator, consistent with the fold above
+                if (!wire.keyAvailable && mine?.status == TrustStatus.TRUSTED && mine.ownDevice) {
                     st.cards[wire.clientId]?.let { offers += it }
                 }
             }
@@ -200,12 +210,15 @@ class TrustStore(
         return true
     }
 
-    /** Our broadcast roster: TRUSTED + REVOKED decisions (PENDING_* filtered out), with key-availability. */
+    /**
+     * Our broadcast roster: own-mesh TRUSTED + REVOKED decisions (PENDING_* and profile-only not-own
+     * devices filtered out), with key-availability. Not-own devices never propagate.
+     */
     fun buildTrustTable(): TrustTable {
         val st = _state.value
         return TrustTable(
             st.entries.values
-                .filter { it.clientId != selfId && (it.status == TrustStatus.TRUSTED || it.status == TrustStatus.REVOKED) }
+                .filter { it.clientId != selfId && it.ownDevice && (it.status == TrustStatus.TRUSTED || it.status == TrustStatus.REVOKED) }
                 .map { TrustTableEntry(it.clientId, it.status, it.updatedAt, keyAvailable = st.cards.containsKey(it.clientId)) },
         )
     }
@@ -260,6 +273,7 @@ class TrustStore(
                 keyAvailable = st.cards.containsKey(it.clientId),
                 introducedByName = it.introducedBy?.let { by -> displayNameFor(by, st) },
                 revokedAt = if (it.status == TrustStatus.REVOKED) it.updatedAt else null,
+                ownDevice = it.ownDevice,
             )
         }
         .sortedWith(compareBy({ statusOrder(it.status) }, { it.displayName ?: it.clientId.value }))
@@ -288,6 +302,7 @@ class TrustStore(
             addedAt = entry.updatedAt,
             capabilities = overlay?.capabilities ?: card.capabilities,
             profileUpdatedAt = overlay?.updatedAt ?: card.createdAt,
+            ownDevice = entry.ownDevice,
         )
     }
 
