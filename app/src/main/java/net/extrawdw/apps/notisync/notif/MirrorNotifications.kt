@@ -154,7 +154,7 @@ class RemoteNotificationPoster(
         val id = tag.hashCode()
 
         val builder = NotificationCompat.Builder(context, postChannelId)
-            .setSmallIcon(R.drawable.ic_notisync_mirror)
+            .setSmallIcon(smallIconForPackage(notif.packageName))
             .setSubText("via ${notif.appLabel}") // marks the notification as mirrored
             .setAutoCancel(true)
             .setWhen(notif.postTime)
@@ -212,6 +212,13 @@ class RemoteNotificationPoster(
         val ref = notif.largeIcon
         val bitmap = if (ref != null) cachedBitmap(ref.assetHash) else appIconBitmap(notif.packageName)
         bitmap?.let { builder.setLargeIcon(it) }
+    }
+
+    private fun smallIconForPackage(packageName: String): Int = when (packageName) {
+        "com.google.android.apps.messaging" -> R.drawable.ic_google_messages_notification
+        "com.whatsapp" -> R.drawable.ic_whatsapp_notification
+        "com.tencent.mm" -> R.drawable.ic_wechat_notification
+        else -> R.drawable.ic_notisync_mirror
     }
 
     private fun cachedBitmap(assetHash: String): Bitmap? =

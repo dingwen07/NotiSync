@@ -1,30 +1,84 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NotiSync launcher icon foreground.
+  Authored in a 300x300 viewport (rendered into the 108dp adaptive-icon canvas).
+  Compact device pair (tablet upper-left, phone lower-right overlapping deeply),
+  centered and sat slightly below center. The mesh fills the tablet screen; the
+  phone overlaps and hides its right side. Padlock centered on the phone. Arrow
+  tails reach the edge; arrowhead tips are drawn inward so the mask never clips.
+-->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp"
     android:height="108dp"
-    android:viewportWidth="108"
-    android:viewportHeight="108">
-    <path android:pathData="M31,63.928c0,0 6.4,-11 12.1,-13.1c7.2,-2.6 26,-1.4 26,-1.4l38.1,38.1L107,108.928l-32,-1L31,63.928z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:endX="85.84757"
-                android:endY="92.4963"
-                android:startX="42.9492"
-                android:startY="49.59793"
-                android:type="linear">
-                <item
-                    android:color="#44000000"
-                    android:offset="0.0" />
-                <item
-                    android:color="#00000000"
-                    android:offset="1.0" />
-            </gradient>
-        </aapt:attr>
-    </path>
+    android:viewportWidth="300"
+    android:viewportHeight="300">
+
+    <!-- two-way sync arrows, passing under the devices -->
     <path
+        android:pathData="M244,-3.4L79.64,160.96"
+        android:strokeColor="#C9DDFF"
+        android:strokeWidth="22"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M56,303.4L220.36,139.04"
+        android:strokeColor="#C9DDFF"
+        android:strokeWidth="22"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M62.67,177.93L93.78,175.1L65.5,146.82Z"
+        android:fillColor="#C9DDFF" />
+    <path
+        android:pathData="M237.33,122.07L234.5,153.18L206.22,124.9Z"
+        android:fillColor="#C9DDFF" />
+
+    <!-- tablet (back device, upper-left) -->
+    <path
+        android:pathData="M103,96L153,96A14,14 0 0 1 167,110L167,190A14,14 0 0 1 153,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M105,105L151,105A7,7 0 0 1 158,112L158,188A7,7 0 0 1 151,195L105,195A7,7 0 0 1 98,188L98,112A7,7 0 0 1 105,105Z"
         android:fillColor="#FFFFFF"
-        android:fillType="nonZero"
-        android:pathData="M65.3,45.828l3.8,-6.6c0.2,-0.4 0.1,-0.9 -0.3,-1.1c-0.4,-0.2 -0.9,-0.1 -1.1,0.3l-3.9,6.7c-6.3,-2.8 -13.4,-2.8 -19.7,0l-3.9,-6.7c-0.2,-0.4 -0.7,-0.5 -1.1,-0.3C38.8,38.328 38.7,38.828 38.9,39.228l3.8,6.6C36.2,49.428 31.7,56.028 31,63.928h46C76.3,56.028 71.8,49.428 65.3,45.828zM43.4,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2c-0.3,-0.7 -0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C45.3,56.528 44.5,57.328 43.4,57.328L43.4,57.328zM64.6,57.328c-0.8,0 -1.5,-0.5 -1.8,-1.2s-0.1,-1.5 0.4,-2.1c0.5,-0.5 1.4,-0.7 2.1,-0.4c0.7,0.3 1.2,1 1.2,1.8C66.5,56.528 65.6,57.328 64.6,57.328L64.6,57.328z"
-        android:strokeWidth="1"
-        android:strokeColor="#00000000" />
+        android:strokeColor="#16265A"
+        android:strokeWidth="2.5" />
+    <!-- trust mesh filling the tablet screen -->
+    <path
+        android:pathData="M128,114L106,150M128,114L150,150M106,150L150,150M106,150L128,186M150,150L128,186"
+        android:strokeColor="#16265A"
+        android:strokeWidth="3"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M122,114a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM100,150a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM144,150a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM122,186a6,6 0 1 0 12,0a6,6 0 1 0 -12,0Z"
+        android:fillColor="#16265A" />
+
+    <!-- phone (front device, offset lower, overlapping deeply) -->
+    <path
+        android:pathData="M156,118L194,118A15,15 0 0 1 209,133L209,203A15,15 0 0 1 194,218L156,218A15,15 0 0 1 141,203L141,133A15,15 0 0 1 156,118Z"
+        android:fillColor="#FFFFFF"
+        android:strokeColor="#16265A"
+        android:strokeWidth="3.5" />
+    <!-- padlock on the phone screen (centered) -->
+    <path
+        android:pathData="M167,165L167,157A8,8 0 0 1 183,157L183,165"
+        android:strokeColor="#16265A"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M166,165L184,165A4,4 0 0 1 188,169L188,182A4,4 0 0 1 184,186L166,186A4,4 0 0 1 162,182L162,169A4,4 0 0 1 166,165Z"
+        android:fillColor="#16265A" />
+    <path
+        android:pathData="M172,175a3,3 0 1 0 6,0a3,3 0 1 0 -6,0Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M173.5,175L176.5,175L176.5,181L173.5,181Z"
+        android:fillColor="#FFFFFF" />
+    <path
+        android:pathData="M171,210L179,210A2,2 0 0 1 179,214L171,214A2,2 0 0 1 171,210Z"
+        android:fillColor="#16265A" />
+
+    <!-- notification dot, just off the tablet corner -->
+    <path
+        android:pathData="M83,99a8,8 0 1 0 16,0a8,8 0 1 0 -16,0Z"
+        android:fillColor="#FF5A5F"
+        android:strokeColor="#16265A"
+        android:strokeWidth="2" />
 </vector>

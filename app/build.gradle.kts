@@ -18,7 +18,7 @@ android {
     defaultConfig {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
-        targetSdk = 36
+        targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
@@ -27,7 +27,10 @@ android {
     buildTypes {
         release {
             optimization {
-                enable = false
+                enable = true
+                keepRules {
+                    includeDefault = true
+                }
             }
         }
     }

@@ -362,7 +362,6 @@ class TrustStore(
         // the entry, so the LWW staleness guard no longer protects that id: this delay only BOUNDS (it does
         // not eliminate) resurrection — a peer offline longer than the delay can still re-surface the row
         // (silently re-tombstoned, or a re-approval prompt). Set it longer than any realistic peer-offline window.
-        // TODO: restore the production value (~30 days) before release; 60s here is for debugging.
-        const val REVOKE_PURGE_DELAY_MS = 60_000L
+        const val REVOKE_PURGE_DELAY_MS = 30L * 24 * 60 * 60 * 1000
     }
 }

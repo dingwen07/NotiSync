@@ -1,12 +1,22 @@
-# Add project specific R8 rules here.
-# AGP will combine all keep rule files in src/main/keepRules to pass to R8
-#
-# For more details, see
-#   https://d.android.com/r/tools/r8/keep-rules
+# AGP 9 combines all *.keep files in src/main/keepRules and passes them to R8.
+# Dependency rules from AndroidX, Firebase, Tink, and kotlinx.serialization are still included.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# These components are named from AndroidManifest.xml or PendingIntent targets. AGP also derives
+# manifest keep rules, but listing them here keeps app entry points explicit for release review.
+-keep class net.extrawdw.apps.notisync.NotiSyncApp
+-keep class net.extrawdw.apps.notisync.MainActivity
+-keep class net.extrawdw.apps.notisync.fcm.NotiSyncMessagingService
+-keep class net.extrawdw.apps.notisync.notif.NotiSyncListenerService
+-keep class net.extrawdw.apps.notisync.notif.DismissReceiver
+-keep class net.extrawdw.apps.notisync.trust.TrustActionReceiver
+
+# Keep serializable type names stable for cross-version protocol/persistence compatibility while
+# still allowing unused DTOs to be removed and used DTOs to be optimized.
+-keep,allowshrinking,allowoptimization @kotlinx.serialization.Serializable class net.extrawdw.notisync.protocol.**
+-keep,allowshrinking,allowoptimization @kotlinx.serialization.Serializable class net.extrawdw.apps.notisync.data.**
+-keep,allowshrinking,allowoptimization @kotlinx.serialization.Serializable class net.extrawdw.apps.notisync.assets.**
+
+# JSON control-plane and persisted state can carry enum names; keep enum member names stable.
+-keepclassmembernames enum net.extrawdw.notisync.protocol.** { *; }
+-keepclassmembernames enum net.extrawdw.apps.notisync.data.** { *; }
+-keepclassmembernames enum net.extrawdw.apps.notisync.assets.** { *; }

@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Monochrome layer for Android 13+ themed icons. Single-colour line art; the
+  launcher tints it. Devices are drawn as outlines so the overlapping pair stays
+  legible when flattened to one colour. Geometry matches the foreground.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="300"
+    android:viewportHeight="300"
+    android:tint="#000000">
+
+    <!-- two-way sync arrows -->
+    <path
+        android:pathData="M244,-3.4L79.64,160.96"
+        android:strokeColor="#000000"
+        android:strokeWidth="17"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M56,303.4L220.36,139.04"
+        android:strokeColor="#000000"
+        android:strokeWidth="17"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M62.67,177.93L93.78,175.1L65.5,146.82Z"
+        android:fillColor="#000000" />
+    <path
+        android:pathData="M237.33,122.07L234.5,153.18L206.22,124.9Z"
+        android:fillColor="#000000" />
+
+    <!-- tablet outline + mesh -->
+    <path
+        android:pathData="M103,96L153,96A14,14 0 0 1 167,110L167,190A14,14 0 0 1 153,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96Z"
+        android:strokeColor="#000000"
+        android:strokeWidth="5" />
+    <path
+        android:pathData="M128,114L106,150M128,114L150,150M106,150L150,150M106,150L128,186M150,150L128,186"
+        android:strokeColor="#000000"
+        android:strokeWidth="2.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M122.5,114a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM100.5,150a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM144.5,150a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM122.5,186a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0Z"
+        android:fillColor="#000000" />
+
+    <!-- phone outline + padlock -->
+    <path
+        android:pathData="M156,118L194,118A15,15 0 0 1 209,133L209,203A15,15 0 0 1 194,218L156,218A15,15 0 0 1 141,203L141,133A15,15 0 0 1 156,118Z"
+        android:strokeColor="#000000"
+        android:strokeWidth="5" />
+    <path
+        android:pathData="M167,165L167,157A8,8 0 0 1 183,157L183,165"
+        android:strokeColor="#000000"
+        android:strokeWidth="4.5"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M166,165L184,165A4,4 0 0 1 188,169L188,182A4,4 0 0 1 184,186L166,186A4,4 0 0 1 162,182L162,169A4,4 0 0 1 166,165Z"
+        android:fillColor="#000000" />
+
+    <!-- notification dot -->
+    <path
+        android:pathData="M83,99a8,8 0 1 0 16,0a8,8 0 1 0 -16,0Z"
+        android:fillColor="#000000" />
+</vector>
