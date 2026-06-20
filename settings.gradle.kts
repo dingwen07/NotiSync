@@ -29,6 +29,5 @@ include(":protocol")
 include(":protocol-crypto")
 include(":server")
 
-// Android client (kept under android/ to mirror the repo's original layout).
+// Android client.
 include(":app")
-project(":app").projectDir = file("android/app")

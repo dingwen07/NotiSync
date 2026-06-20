@@ -24,7 +24,7 @@ the Kotlin/Ktor broker, so the wire format and signature verification can never 
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
-:app  (android/)  Jetpack Compose + Material 3 Expressive client. Hardware-backed identity
+:app              Jetpack Compose + Material 3 Expressive client. Hardware-backed identity
                   (Keystore P-256, StrongBox→TEE), HPKE keys, NotificationListenerService capture,
                   mirror rendering + dismissal, Ktor WebSocket transport, FCM, QR pairing.
 ```
@@ -74,10 +74,10 @@ To enable real FCM, give the server Application Default Credentials:
 ### Android app
 
 ```bash
-./gradlew :app:assembleDebug        # APK at android/app/build/outputs/apk/debug/
+./gradlew :app:assembleDebug        # APK at app/build/outputs/apk/debug/
 ```
 
-`android/app/google-services.json` (for the `extrawdw-notifly` Firebase project) is already in place.
+`app/google-services.json` (for the `extrawdw-notifly` Firebase project) is already in place.
 In **Settings → Broker URL**, point the app at your broker. From the Android emulator, use
 `ws://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
 
