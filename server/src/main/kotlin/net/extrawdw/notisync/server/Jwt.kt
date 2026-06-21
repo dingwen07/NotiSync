@@ -1,0 +1,244 @@
+package net.extrawdw.notisync.server
+
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
+import net.extrawdw.notisync.protocol.ClientId
+import java.io.File
+import java.math.BigInteger
+import java.security.KeyFactory
+import java.security.KeyPair
+import java.security.KeyPairGenerator
+import java.security.PrivateKey
+import java.security.PublicKey
+import java.security.Signature
+import java.security.interfaces.ECPublicKey
+import java.security.spec.ECGenParameterSpec
+import java.security.spec.PKCS8EncodedKeySpec
+import java.security.spec.X509EncodedKeySpec
+import java.util.Base64
+
+data class AuthPrincipal(val clientId: ClientId, val expiresAtMillis: Long)
+
+class JwtIssuer private constructor(
+    private val issuer: String,
+    private val ttlMillis: Long,
+    private val keyPair: KeyPair,
+) {
+    private val b64 = Base64.getUrlEncoder().withoutPadding()
+    private val b64d = Base64.getUrlDecoder()
+    private val json = Json { encodeDefaults = false; ignoreUnknownKeys = true }
+    private val kid = b64.encodeToString(sha256(keyPair.public.encoded).copyOf(10))
+
+    fun issue(clientId: ClientId, nowMillis: Long = System.currentTimeMillis()): IssuedToken {
+        val expiresAtMillis = nowMillis + ttlMillis
+        val header = JwtHeader(kid = kid)
+        val claims = JwtClaims(
+            iss = issuer,
+            sub = clientId.value,
+            client_id = clientId.value,
+            iat = nowMillis / 1000,
+            exp = expiresAtMillis / 1000,
+        )
+        val signingInput = "${encode(header)}.${encode(claims)}"
+        val signature = sign(signingInput.toByteArray(Charsets.US_ASCII))
+        return IssuedToken("$signingInput.${b64.encodeToString(signature)}", expiresAtMillis)
+    }
+
+    fun verify(token: String, nowMillis: Long = System.currentTimeMillis()): AuthPrincipal? {
+        val parts = token.split('.')
+        if (parts.size != 3) return null
+        val header = runCatching { json.decodeFromString<JwtHeader>(String(b64d.decode(parts[0]), Charsets.UTF_8)) }
+            .getOrNull() ?: return null
+        if (header.alg != "ES256" || header.kid != kid) return null
+        val signature = runCatching { b64d.decode(parts[2]) }.getOrNull() ?: return null
+        val signingInput = "${parts[0]}.${parts[1]}".toByteArray(Charsets.US_ASCII)
+        if (!verifySignature(signingInput, signature)) return null
+        val claims = runCatching { json.decodeFromString<JwtClaims>(String(b64d.decode(parts[1]), Charsets.UTF_8)) }
+            .getOrNull() ?: return null
+        if (claims.iss != issuer || claims.sub != claims.client_id) return null
+        val nowSeconds = nowMillis / 1000
+        if (claims.exp <= nowSeconds || claims.iat > nowSeconds + 60) return null
+        return AuthPrincipal(ClientId(claims.client_id), claims.exp * 1000)
+    }
+
+    fun jwksJson(): String {
+        val ec = keyPair.public as ECPublicKey
+        return json.encodeToString(
+            Jwks(
+                keys = listOf(
+                    Jwk(
+                        kid = kid,
+                        x = b64.encodeToString(ec.w.affineX.toFixedUnsigned(32)),
+                        y = b64.encodeToString(ec.w.affineY.toFixedUnsigned(32)),
+                    )
+                )
+            )
+        )
+    }
+
+    private inline fun <reified T> encode(value: T): String =
+        b64.encodeToString(json.encodeToString(value).toByteArray(Charsets.UTF_8))
+
+    private fun sign(data: ByteArray): ByteArray {
+        val der = Signature.getInstance("SHA256withECDSA").run {
+            initSign(keyPair.private)
+            update(data)
+            sign()
+        }
+        return derToJose(der)
+    }
+
+    private fun verifySignature(data: ByteArray, joseSignature: ByteArray): Boolean {
+        if (joseSignature.size != 64) return false
+        return Signature.getInstance("SHA256withECDSA").run {
+            initVerify(keyPair.public)
+            update(data)
+            verify(joseToDer(joseSignature))
+        }
+    }
+
+    data class IssuedToken(val token: String, val expiresAtMillis: Long)
+
+    companion object {
+        fun load(config: ServerConfig): JwtIssuer =
+            JwtIssuer(config.jwtIssuer, config.jwtTtlMillis, loadOrCreateKeyPair(config.jwtPrivateKeyPath))
+
+        private fun loadOrCreateKeyPair(path: String): KeyPair {
+            val file = File(path)
+            val publicFile = File("$path.pub")
+            if (file.isFile && publicFile.isFile) {
+                val privateKey = readPrivateKey(file.readText())
+                val publicKey = readPublicKey(publicFile.readText())
+                return KeyPair(publicKey, privateKey)
+            }
+            file.absoluteFile.parentFile?.mkdirs()
+            val generated = KeyPairGenerator.getInstance("EC").run {
+                initialize(ECGenParameterSpec("secp256r1"))
+                generateKeyPair()
+            }
+            file.writeText(pem("PRIVATE KEY", generated.private.encoded))
+            publicFile.writeText(pem("PUBLIC KEY", generated.public.encoded))
+            file.setReadable(false, false)
+            file.setReadable(true, true)
+            file.setWritable(false, false)
+            file.setWritable(true, true)
+            publicFile.setReadable(true, false)
+            publicFile.setWritable(false, false)
+            publicFile.setWritable(true, true)
+            return generated
+        }
+
+        private fun readPrivateKey(pem: String): PrivateKey {
+            val body = pem.lineSequence()
+                .filterNot { it.startsWith("-----") }
+                .joinToString("")
+            val bytes = Base64.getMimeDecoder().decode(body)
+            return KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(bytes))
+        }
+
+        private fun readPublicKey(pem: String): PublicKey {
+            val body = pem.lineSequence()
+                .filterNot { it.startsWith("-----") }
+                .joinToString("")
+            val bytes = Base64.getMimeDecoder().decode(body)
+            return KeyFactory.getInstance("EC").generatePublic(X509EncodedKeySpec(bytes))
+        }
+
+        private fun pem(label: String, bytes: ByteArray): String =
+            buildString {
+                append("-----BEGIN ").append(label).append("-----\n")
+                append(Base64.getMimeEncoder(64, "\n".toByteArray()).encodeToString(bytes))
+                append("\n-----END ").append(label).append("-----\n")
+            }
+
+        private fun sha256(bytes: ByteArray): ByteArray =
+            java.security.MessageDigest.getInstance("SHA-256").digest(bytes)
+
+        private fun derToJose(der: ByteArray): ByteArray {
+            var offset = 0
+            require(der[offset++].toInt() == 0x30)
+            val seqLen = derLength(der, offset).also { offset = it.next }.len
+            require(seqLen == der.size - offset)
+            require(der[offset++].toInt() == 0x02)
+            val rLen = derLength(der, offset).also { offset = it.next }.len
+            val r = der.copyOfRange(offset, offset + rLen)
+            offset += rLen
+            require(der[offset++].toInt() == 0x02)
+            val sLen = derLength(der, offset).also { offset = it.next }.len
+            val s = der.copyOfRange(offset, offset + sLen)
+            return r.toJosePart() + s.toJosePart()
+        }
+
+        private fun joseToDer(jose: ByteArray): ByteArray {
+            val r = jose.copyOfRange(0, 32).toDerInteger()
+            val s = jose.copyOfRange(32, 64).toDerInteger()
+            val body = byteArrayOf(0x02) + derLen(r.size) + r + byteArrayOf(0x02) + derLen(s.size) + s
+            return byteArrayOf(0x30) + derLen(body.size) + body
+        }
+
+        private data class DerLen(val len: Int, val next: Int)
+
+        private fun derLength(bytes: ByteArray, offset: Int): DerLen {
+            val first = bytes[offset].toInt() and 0xff
+            if (first < 0x80) return DerLen(first, offset + 1)
+            val count = first and 0x7f
+            var len = 0
+            repeat(count) { len = (len shl 8) or (bytes[offset + 1 + it].toInt() and 0xff) }
+            return DerLen(len, offset + 1 + count)
+        }
+
+        private fun derLen(len: Int): ByteArray =
+            if (len < 0x80) byteArrayOf(len.toByte())
+            else {
+                val bytes = BigInteger.valueOf(len.toLong()).toByteArray().dropWhile { it == 0.toByte() }.toByteArray()
+                byteArrayOf((0x80 or bytes.size).toByte()) + bytes
+            }
+
+        private fun ByteArray.toJosePart(): ByteArray {
+            val stripped = dropWhile { it == 0.toByte() }.toByteArray()
+            return ByteArray(32 - stripped.size.coerceAtMost(32)) + stripped.takeLast(32).toByteArray()
+        }
+
+        private fun ByteArray.toDerInteger(): ByteArray {
+            val nonZero = dropWhile { it == 0.toByte() }.toByteArray()
+            val stripped = if (nonZero.isEmpty()) byteArrayOf(0) else nonZero
+            return if ((stripped[0].toInt() and 0x80) != 0) byteArrayOf(0) + stripped else stripped
+        }
+
+        private fun BigInteger.toFixedUnsigned(size: Int): ByteArray {
+            val raw = toByteArray().dropWhile { it == 0.toByte() }.toByteArray()
+            return ByteArray(size - raw.size.coerceAtMost(size)) + raw.takeLast(size).toByteArray()
+        }
+    }
+}
+
+@Serializable
+private data class JwtHeader(
+    val alg: String = "ES256",
+    val typ: String = "JWT",
+    val kid: String,
+)
+
+@Serializable
+private data class JwtClaims(
+    val iss: String,
+    val sub: String,
+    val client_id: String,
+    val iat: Long,
+    val exp: Long,
+)
+
+@Serializable
+private data class Jwks(val keys: List<Jwk>)
+
+@Serializable
+private data class Jwk(
+    val kty: String = "EC",
+    val use: String = "sig",
+    val alg: String = "ES256",
+    val crv: String = "P-256",
+    val kid: String,
+    val x: String,
+    val y: String,
+)

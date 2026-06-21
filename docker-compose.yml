@@ -11,12 +11,18 @@ services:
       - "8080:8080"
     volumes:
       - notisync-data:/data
-      # To enable FCM, mount a service-account key and point ADC at it:
+      # To enable Play Integrity decode and FCM, mount a service-account key and point ADC at it:
       # - ./service-account.json:/secrets/sa.json:ro
     environment:
       NOTISYNC_DB_PATH: /data/notisync.db
       NOTISYNC_FCM_PROJECT_ID: extrawdw-notifly
       NOTISYNC_FCM_ENABLED: "false" # set "true" once GOOGLE_APPLICATION_CREDENTIALS is mounted
+      NOTISYNC_PLAY_INTEGRITY_PACKAGE: net.extrawdw.apps.notisync
+      NOTISYNC_REQUIRE_APP_LICENSING: LICENSED
+      NOTISYNC_REQUIRE_APP_RECOGNITION: PLAY_RECOGNIZED
+      NOTISYNC_REQUIRE_DEVICE_RECOGNITION: MEETS_DEVICE_INTEGRITY
+      NOTISYNC_ALLOW_DEVICE_ACTIVITY: LEVEL_1,LEVEL_2
+      NOTISYNC_REQUIRE_PLAY_PROTECT: NO_ISSUES
       # GOOGLE_APPLICATION_CREDENTIALS: /secrets/sa.json
     # (No container healthcheck: the distroless base has no shell/wget. Probe /healthz externally.)
 

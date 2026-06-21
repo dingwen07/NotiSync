@@ -3,11 +3,15 @@ package net.extrawdw.notisync.server
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.get
+import io.ktor.client.request.header
 import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.bodyAsText
 import io.ktor.client.statement.readRawBytes
+import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
@@ -18,6 +22,8 @@ import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
+import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
@@ -33,9 +39,12 @@ import net.extrawdw.notisync.protocol.WsMessage
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.HpkeKeyPair
+import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
+import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
+import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -45,6 +54,18 @@ import java.io.File
 import java.util.Base64
 
 class BrokerFlowTest {
+
+    @After
+    fun clearServerProperties() {
+        listOf(
+            "NOTISYNC_DB_PATH",
+            "NOTISYNC_FCM_ENABLED",
+            "NOTISYNC_MAX_ASSET_BYTES",
+            "NOTISYNC_SECURITY_ENABLED",
+            "NOTISYNC_PLAY_INTEGRITY_ENABLED",
+            "NOTISYNC_JWT_PRIVATE_KEY_PATH",
+        ).forEach(System::clearProperty)
+    }
 
     private fun cardBlob(signer: IdentitySigner, hpke: HpkeKeyPair, name: String): SignedBlob {
         val card = ClientCard(
@@ -79,6 +100,7 @@ class BrokerFlowTest {
         val tmp = File.createTempFile("notisync-it", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
         application { module() }
 
         val http = createClient { install(WebSockets) }
@@ -164,6 +186,7 @@ class BrokerFlowTest {
         val tmp = File.createTempFile("notisync-assets", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
         System.setProperty("NOTISYNC_MAX_ASSET_BYTES", "64")
         try {
             application { module() }
@@ -206,5 +229,72 @@ class BrokerFlowTest {
         } finally {
             System.clearProperty("NOTISYNC_MAX_ASSET_BYTES")
         }
+    }
+
+    @Test
+    fun integrityVerificationIssuesJwtForSignedRequests() = testApplication {
+        val tmp = File.createTempFile("notisync-auth", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-jwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { module() }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+        val card = cardBlob(signer, hpke, "Signed")
+        val cardBytes = ProtocolCodec.encodeToCbor(card)
+
+        assertEquals(HttpStatusCode.Unauthorized, client.post("/v1/cards") { setBody(cardBytes) }.status)
+
+        val requestNonce = HttpRequestSigning.newNonce()
+        val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
+        val verifyRequest = PlayIntegrityVerificationRequest(
+            clientId = signer.clientId,
+            requestNonce = requestNonce,
+            requestHash = requestHash,
+            integrityToken = "disabled-in-test",
+            clientCard = card,
+        )
+        val verifyBody = ProtocolCodec.encodeToJson(verifyRequest).toByteArray(Charsets.UTF_8)
+        val verifyResponse = client.post("/v1/integrity/verify") {
+            contentType(ContentType.Application.Json)
+            signedHeaders(signer, "POST", "/v1/integrity/verify", verifyBody)
+            setBody(verifyBody)
+        }
+        assertEquals(HttpStatusCode.OK, verifyResponse.status)
+        val token = ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(verifyResponse.bodyAsText()).token
+
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v1/cards") {
+                signedHeaders(signer, "POST", "/v1/cards", cardBytes, token)
+                setBody(cardBytes)
+            }.status,
+        )
+
+        val fetched = client.get("/v1/cards/${signer.clientId.value}") {
+            signedHeaders(signer, "GET", "/v1/cards/${signer.clientId.value}", ByteArray(0), token)
+        }
+        assertEquals(HttpStatusCode.OK, fetched.status)
+        assertNotNull(Verification.verifyClientCard(ProtocolCodec.decodeFromCbor<SignedBlob>(fetched.readRawBytes())))
+    }
+
+    private fun io.ktor.client.request.HttpRequestBuilder.signedHeaders(
+        signer: IdentitySigner,
+        method: String,
+        pathAndQuery: String,
+        body: ByteArray,
+        bearerToken: String? = null,
+    ) {
+        bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        val signed = HttpRequestSigning.sign(signer, method, pathAndQuery, body)
+        header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
+        header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
+        header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
+        header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
+        header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
     }
 }

@@ -12,6 +12,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receiveStream
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
@@ -29,6 +30,8 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ErrorResponse
 import net.extrawdw.notisync.protocol.HealthResponse
+import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.WsAuth
@@ -54,6 +57,8 @@ fun Application.module() {
     val hub = WebSocketHub()
     val push = FcmPushTransport.createOrNull(config) ?: DisabledPushTransport
     val broker = Broker(cards, routes, relay, assets, hub, push, config)
+    val auth = ServerAuth(config, JwtIssuer.load(config))
+    val integrity = PlayIntegrityVerifier(config)
 
     install(DefaultHeaders)
     install(CallLogging)
@@ -74,14 +79,67 @@ fun Application.module() {
         }
     }
 
-    log.info("NotiSync broker {} starting (db={}, fcm={})", config.version, config.dbPath, push !is DisabledPushTransport)
+    log.info(
+        "NotiSync broker {} starting (db={}, fcm={}, security={}, playIntegrity={})",
+        config.version,
+        config.dbPath,
+        push !is DisabledPushTransport,
+        config.securityEnabled,
+        config.playIntegrityEnabled,
+    )
 
     routing {
         get("/healthz") { call.respond(HealthResponse("ok", config.version)) }
         get("/readyz") { call.respond(HealthResponse("ready", config.version)) }
+        get("/.well-known/jwks.json") { call.respondText(auth.jwksJson(), ContentType.Application.Json) }
+
+        post("/v1/integrity/verify") {
+            val body = call.receiveStream().readBytes()
+            val req = runCatching {
+                ProtocolCodec.decodeFromJson<PlayIntegrityVerificationRequest>(body.toString(Charsets.UTF_8))
+            }.getOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_integrity_request"))
+
+            val verifiedCard = req.clientCard?.let { Verification.verifyClientCard(it) }
+            if (req.clientCard != null && verifiedCard == null) {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_card"))
+            }
+            if (verifiedCard != null && verifiedCard.clientId != req.clientId) {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("card_client_mismatch"))
+            }
+            val signerSpki = verifiedCard?.identityPublicKey ?: broker.clientSpki(req.clientId)
+                ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_client"))
+            when (val sig = auth.verifySignedRequest(call, body, req.clientId, signerSpki)) {
+                SignatureCheck.Accepted -> Unit
+                is SignatureCheck.Rejected -> return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse(sig.reason))
+            }
+
+            when (val decision = integrity.verify(req)) {
+                is IntegrityDecision.Rejected -> return@post call.respond(
+                    if (decision.retryable) HttpStatusCode.TooManyRequests else HttpStatusCode.Forbidden,
+                    ErrorResponse(decision.reason),
+                )
+                is IntegrityDecision.Accepted -> {
+                    req.clientCard?.let { broker.uploadCard(it) }
+                    val issued = auth.issue(req.clientId)
+                    call.respond(
+                        HttpStatusCode.OK,
+                        PlayIntegrityVerificationResponse(
+                            token = issued.token,
+                            clientId = req.clientId,
+                            expiresAt = issued.expiresAtMillis,
+                        ),
+                    )
+                }
+            }
+        }
 
         post("/v1/cards") {
-            val blob = runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(call.receiveStream().readBytes()) }.getOrNull()
+            val body = call.receiveStream().readBytes()
+            val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
+            val blob = runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(body) }.getOrNull()
+            if (config.securityEnabled && blob?.signerId != principal.clientId) {
+                return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
+            }
             if (blob == null || !broker.uploadCard(blob)) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_card"))
             } else {
@@ -90,6 +148,7 @@ fun Application.module() {
         }
 
         get("/v1/cards/{clientId}") {
+            auth.requireJwtSigned(call, ByteArray(0), broker) ?: return@get
             val id = ClientId(call.parameters["clientId"].orEmpty())
             val bytes = broker.getCardBlob(id)
             if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_client"))
@@ -97,11 +156,15 @@ fun Application.module() {
         }
 
         post("/v1/routes") {
+            val body = call.receiveStream().readBytes()
+            val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
             val list = runCatching {
-                ProtocolCodec.decodeFromCbor<List<SignedBlob>>(call.receiveStream().readBytes())
+                ProtocolCodec.decodeFromCbor<List<SignedBlob>>(body)
             }.getOrNull()
             if (list == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_routes"))
+            } else if (config.securityEnabled && list.any { it.signerId != principal.clientId }) {
+                call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 val accepted = broker.uploadRoutes(list)
                 call.respond(HttpStatusCode.OK, HealthResponse("accepted:$accepted", config.version))
@@ -110,9 +173,12 @@ fun Application.module() {
 
         post("/v1/send") {
             val bytes = call.receiveStream().readBytes()
+            val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
             val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(bytes) }.getOrNull()
             if (envelope == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_envelope"))
+            } else if (config.securityEnabled && envelope.signerId != principal.clientId) {
+                call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 call.respond(HttpStatusCode.OK, broker.send(bytes, envelope))
             }
@@ -129,6 +195,10 @@ fun Application.module() {
                 return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             }
             val bytes = call.receiveStream().readBytes()
+            val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
+            if (config.securityEnabled && src != principal.clientId) {
+                return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
+            }
             if (bytes.isEmpty()) return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("empty_asset"))
             when (broker.storeAsset(src, assetId, bytes)) {
                 Broker.AssetStoreOutcome.STORED -> call.respond(HttpStatusCode.OK, HealthResponse("stored", config.version))
@@ -139,6 +209,7 @@ fun Application.module() {
         }
 
         get("/v1/assets/{sourceClientId}/{assetId}") {
+            auth.requireJwtSigned(call, ByteArray(0), broker) ?: return@get
             val src = ClientId(call.parameters["sourceClientId"].orEmpty())
             val bytes = broker.fetchAsset(src, call.parameters["assetId"].orEmpty())
             if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_asset"))
@@ -146,13 +217,19 @@ fun Application.module() {
         }
 
         webSocket("/v1/connect") {
+            val principal = when (val result = auth.authenticateJwtSigned(call, ByteArray(0), broker)) {
+                is AuthResult.Accepted -> result.principal
+                is AuthResult.Rejected -> return@webSocket close(
+                    CloseReason(CloseReason.Codes.VIOLATED_POLICY, result.reason)
+                )
+            }
             // 1. Challenge the client to prove control of its identity key.
             val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(18).also { random.nextBytes(it) })
             send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge(nonce))))
 
             val authFrame = incoming.receiveCatching().getOrNull() as? Frame.Text
             val auth = authFrame?.let { runCatching { ProtocolCodec.decodeFromJson<WsAuth>(it.readText()) }.getOrNull() }
-            if (auth == null || auth.nonce != nonce) {
+            if (auth == null || auth.nonce != nonce || (config.securityEnabled && auth.clientId != principal.clientId)) {
                 return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth_failed"))
             }
             val spki = broker.clientSpki(auth.clientId)

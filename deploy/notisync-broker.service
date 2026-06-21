@@ -11,9 +11,19 @@ ExecStart=/usr/bin/java -Dktor.deployment.host=127.0.0.1 -Dktor.deployment.port=
 Environment=NOTISYNC_DB_PATH=/var/lib/notisync/notisync.db
 Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
 Environment=NOTISYNC_FCM_ENABLED=false
-# Enable FCM after uploading the service-account key:
+# Security is enabled by default. The JWT ES256 key is generated under /var/lib/notisync unless
+# NOTISYNC_JWT_PRIVATE_KEY_PATH is set. Public key: /.well-known/jwks.json
+Environment=NOTISYNC_PLAY_INTEGRITY_PACKAGE=net.extrawdw.apps.notisync
+Environment=NOTISYNC_REQUIRE_APP_LICENSING=LICENSED
+Environment=NOTISYNC_REQUIRE_APP_RECOGNITION=PLAY_RECOGNIZED
+Environment=NOTISYNC_REQUIRE_DEVICE_RECOGNITION=MEETS_DEVICE_INTEGRITY
+Environment=NOTISYNC_ALLOW_DEVICE_ACTIVITY=LEVEL_1,LEVEL_2
+Environment=NOTISYNC_REQUIRE_PLAY_PROTECT=NO_ISSUES
+# Enable Play Integrity decode and FCM after uploading the service-account key:
 #   Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
 #   Environment=NOTISYNC_FCM_ENABLED=true
+# Debug sideload builds may set NOTISYNC_DEBUG_KEY from local.properties to bypass only licensing
+# and app-recognition verdicts; leave it unset in production.
 Restart=on-failure
 RestartSec=3
 # Hardening

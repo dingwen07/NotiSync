@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     // AGP 9.2.x compiles Kotlin via built-in Kotlin (bundled KGP 2.2.10) — do NOT apply
@@ -8,6 +10,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
 }
+
+val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.isFile) file.inputStream().use(::load)
+}
+
+fun String.asBuildConfigString(): String =
+    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
 
 android {
     namespace = "net.extrawdw.apps.notisync"
@@ -22,11 +32,19 @@ android {
         versionCode = 1
         versionName = "0.1.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+        val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
+            ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")
+            ?: "0"
+        buildConfigField("long", "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER", "${cloudProjectNumber.trim()}L")
     }
 
     buildTypes {
+        debug {
+            buildConfigField("String", "DEBUG_KEY", (localProperties.getProperty("DEBUG_KEY") ?: "").asBuildConfigString())
+        }
         release {
             isMinifyEnabled = true
+            buildConfigField("String", "DEBUG_KEY", "".asBuildConfigString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "src/main/keepRules/rules.keep",
@@ -107,6 +125,7 @@ dependencies {
     implementation(libs.firebase.messaging)
 
     // QR pairing — Google code scanner (no CAMERA permission) + ZXing for QR generation
+    implementation(libs.play.integrity)
     implementation(libs.play.services.code.scanner)
     implementation(libs.zxing.core)
 

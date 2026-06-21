@@ -37,6 +37,8 @@ dependencies {
     implementation(libs.hikari)
 
     implementation(libs.firebase.admin)
+    implementation(libs.google.api.services.playintegrity)
+    implementation(libs.google.auth.library.oauth2.http)
     implementation(libs.logback.classic)
 
     testImplementation(platform(libs.ktor.bom))

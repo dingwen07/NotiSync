@@ -18,6 +18,8 @@ postgresql = "42.7.7"
 hikari = "6.3.0"
 logback = "1.5.18"
 firebaseAdmin = "9.9.0"
+playIntegrityApi = "v1-rev20250828-2.0.0"
+googleAuth = "1.43.0"
 
 # Android core
 coreKtx = "1.19.0"
@@ -38,6 +40,7 @@ work = "2.11.2"
 
 # Pairing (QR)
 playServicesCodeScanner = "16.1.0"
+playIntegrityClient = "1.6.0"
 zxing = "3.5.3"
 
 # Firebase (client)
@@ -87,6 +90,8 @@ logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.
 
 # --- Server: FCM ---
 firebase-admin = { group = "com.google.firebase", name = "firebase-admin", version.ref = "firebaseAdmin" }
+google-api-services-playintegrity = { group = "com.google.apis", name = "google-api-services-playintegrity", version.ref = "playIntegrityApi" }
+google-auth-library-oauth2-http = { group = "com.google.auth", name = "google-auth-library-oauth2-http", version.ref = "googleAuth" }
 
 # --- Android: Compose / Material 3 Expressive ---
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -139,6 +144,7 @@ firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging
 
 # --- Android: QR pairing (Google code scanner needs no CAMERA permission) ---
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "playServicesCodeScanner" }
+play-integrity = { group = "com.google.android.play", name = "integrity", version.ref = "playIntegrityClient" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 # --- Test ---

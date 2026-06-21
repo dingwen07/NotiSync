@@ -45,6 +45,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
+import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
 import net.extrawdw.apps.notisync.notification.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.GraphicsPipeline
 import net.extrawdw.apps.notisync.notification.MirrorChannels
@@ -104,7 +105,13 @@ class AppGraph(private val app: Application) {
         settings = SettingsRepository(ds, scope)
         trust = TrustStore(ds, scope, identity.clientId)
         appSelection = AppSelectionRepository(ds, scope)
-        transport = BrokerClient(identity) { settings.brokerUrl.value }
+        transport = BrokerClient(
+            signer = identity,
+            baseUrlProvider = { settings.brokerUrl.value },
+            integrity = PlayIntegrityAttestor(app, BuildConfig.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER),
+            clientCardProvider = ::buildClientCardBlob,
+            debugKey = BuildConfig.DEBUG_KEY,
+        )
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)
         val assetManager = AssetManager(transport, assetCache, TicketStore(assetsDir))

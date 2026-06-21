@@ -32,6 +32,29 @@ data class ErrorResponse(
     val detail: String? = null,
 )
 
+/** Request body for POST /v1/integrity/verify. */
+@Serializable
+data class PlayIntegrityVerificationRequest(
+    val clientId: ClientId,
+    /** Client-generated nonce bound into [requestHash]. */
+    val requestNonce: String,
+    /** Play Integrity Standard API requestHash: hash("notisync-play-integrity-v1\\n<clientId>\\n<requestNonce>"). */
+    val requestHash: String,
+    val integrityToken: String,
+    /** Present on first verification or key refresh so the broker can learn the client's public key. */
+    val clientCard: SignedBlob? = null,
+    /** Debug-only HMAC proof over the attestation binding; never send the raw debug key. */
+    val debugProof: String? = null,
+)
+
+@Serializable
+data class PlayIntegrityVerificationResponse(
+    val token: String,
+    val tokenType: String = "Bearer",
+    val clientId: ClientId,
+    val expiresAt: Long,
+)
+
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */
 @Serializable
 data class WsChallenge(val nonce: String)

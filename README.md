@@ -55,7 +55,8 @@ Prerequisites: JDK 21, Android SDK (platform 37), Gradle wrapper (bundled).
 ### Broker server
 
 ```bash
-# Run locally (FCM auto-disables without credentials; the WebSocket transport works either way):
+# Run locally. Play Integrity enforcement is on by default; for local-only protocol tests set
+# NOTISYNC_SECURITY_ENABLED=false.
 ./gradlew :server:run
 
 # Or build a deployable fat jar and container:
@@ -65,9 +66,15 @@ curl http://localhost:8080/healthz  # {"status":"ok","version":"0.1.0"}
 ```
 
 Configuration (environment variables): `NOTISYNC_DB_PATH`, `NOTISYNC_FCM_ENABLED`,
-`NOTISYNC_FCM_PROJECT_ID`, `NOTISYNC_INLINE_BUDGET`, `NOTISYNC_RELAY_TTL_MS`, `NOTISYNC_BLOB_TTL_MS`.
+`NOTISYNC_FCM_PROJECT_ID`, `NOTISYNC_INLINE_BUDGET`, `NOTISYNC_RELAY_TTL_MS`,
+`NOTISYNC_ASSET_TTL_MS`, `NOTISYNC_SECURITY_ENABLED`, `NOTISYNC_PLAY_INTEGRITY_ENABLED`,
+`NOTISYNC_PLAY_INTEGRITY_PACKAGE`, `NOTISYNC_REQUIRE_APP_LICENSING`,
+`NOTISYNC_REQUIRE_APP_RECOGNITION`, `NOTISYNC_REQUIRE_DEVICE_RECOGNITION`,
+`NOTISYNC_ALLOW_DEVICE_ACTIVITY`, `NOTISYNC_REQUIRE_PLAY_PROTECT`, `NOTISYNC_DEBUG_KEY`,
+`NOTISYNC_JWT_PRIVATE_KEY_PATH`, and `NOTISYNC_JWT_TTL_MS`. The broker exposes its JWT
+verification key at `/.well-known/jwks.json`.
 
-To enable real FCM, give the server Application Default Credentials:
+To enable Play Integrity token decoding and real FCM, give the server Application Default Credentials:
 `gcloud auth application-default login` (local), or mount a service-account key and set
 `GOOGLE_APPLICATION_CREDENTIALS` + `NOTISYNC_FCM_ENABLED=true`.
 
