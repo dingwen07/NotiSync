@@ -126,7 +126,7 @@ private sealed interface Route {
 }
 
 /** The navigation-suite (bottom bar / rail / drawer) destinations, in display order. */
-private enum class TopLevelDestination(val route: Route, @StringRes val label: Int, val icon: ImageVector) {
+private enum class TopLevelDestination(val route: Route, @param:StringRes val label: Int, val icon: ImageVector) {
     DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
     APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
     ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),

@@ -21,6 +21,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.debounce
@@ -338,6 +339,7 @@ class AppGraph(private val app: Application) {
      * the broker's card cache (so a *future* pairing resolves the new name) and push a DATA_SYNC
      * profile update to *existing* peers (the broker never pushes card changes on its own).
      */
+    @OptIn(FlowPreview::class) // debounce() is a preview API; used only to coalesce rapid renames
     private fun observeProfileChanges() {
         settings.deviceName
             .drop(1) // skip the eager StateFlow seed; only react to real edits
@@ -364,6 +366,11 @@ class AppGraph(private val app: Application) {
         return SignedBlob(SignedType.ROUTE_CLAIM, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
     }
 
+    // getToken()/onNewToken() are deprecated for the FID-based register()/onRegistered() model
+    // (firebase_messaging_installation_id_enabled), which addresses by Firebase Installation ID
+    // instead of the FCM registration token and needs a coordinated broker send-path change. We
+    // stay on the token API for now; see NotiSyncMessagingService.onNewToken.
+    @Suppress("DEPRECATION")
     fun registerFcmRoute() {
         FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
             scope.launch {

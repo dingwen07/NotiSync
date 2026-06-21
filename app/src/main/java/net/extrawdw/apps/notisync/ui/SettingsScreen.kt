@@ -13,12 +13,14 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -66,7 +68,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = deviceName,
-                    onCommit = { scope.launch { graph.settings.setDeviceName(it) } },
+                    onCommit = { graph.scope.launch { graph.settings.setDeviceName(it) } },
                     label = { Text(stringResource(R.string.settings_device_name)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
@@ -78,7 +80,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = brokerUrl,
-                    onCommit = { scope.launch { graph.settings.setBrokerUrl(it) } },
+                    onCommit = { graph.scope.launch { graph.settings.setBrokerUrl(it) } },
                     label = { Text(stringResource(R.string.settings_broker_url)) },
                     supportingText = { Text(stringResource(R.string.settings_broker_url_hint)) },
                     keyboardOptions = KeyboardOptions(
@@ -154,6 +156,11 @@ private fun SettingsTextField(
             pendingSavedText = edited
             onCommit(edited)
         }
+    }
+
+    val commitOnDispose by rememberUpdatedState(::commit)
+    DisposableEffect(Unit) {
+        onDispose { commitOnDispose() }
     }
 
     OutlinedTextField(

@@ -20,6 +20,7 @@ import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -274,6 +275,7 @@ class BrokerClient(
      * Live envelope stream over an authenticated WebSocket. Reconnects with backoff. The broker
      * challenges with a nonce; we prove control of the identity key by signing it.
      */
+    @OptIn(DelicateCoroutinesApi::class) // for isClosedForSend on the channelFlow producer scope
     override fun incoming(): Flow<Envelope> = channelFlow {
         var backoffMs = 1_000L
         var consecutiveFailures = 0
