@@ -20,11 +20,13 @@ import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
@@ -50,6 +52,7 @@ import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import java.net.URI
 import java.util.Base64
+import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Ktor-based client implementing the transport-neutral [Transport]. The control plane is plain HTTP
@@ -62,6 +65,8 @@ class BrokerClient(
     private val integrity: PlayIntegrityAttestor,
     private val clientCardProvider: () -> SignedBlob,
     private val debugKey: String,
+    private val tokenStore: AuthTokenStore,
+    private val scope: CoroutineScope,
 ) : Transport {
 
     override val type: TransportType = TransportType.WEBSOCKET
@@ -75,6 +80,14 @@ class BrokerClient(
     private var cachedAuth: PlayIntegrityVerificationResponse? = null
     @Volatile
     private var lastAuthFailure: AuthFailure? = null
+    private val refreshInFlight = AtomicBoolean(false)
+
+    init {
+        // The JWT is just a cached proof of Play Integrity (valid for days), so reuse a still-valid one
+        // across process death — a force-stop/relaunch shouldn't force a fresh attestation. Ignore a token
+        // minted for a different identity (signing key regenerated); it would only earn a 401 and re-attest.
+        cachedAuth = runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
+    }
 
     private fun wsBase(): String = baseUrlProvider().trimEnd('/')
     private fun httpBase(): String = wsBase().replaceFirst("ws://", "http://").replaceFirst("wss://", "https://")
@@ -144,7 +157,7 @@ class BrokerClient(
     private suspend fun authedGet(url: String): HttpResponse {
         var resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), bearerTokenOrNull()) }
         if (resp.status == HttpStatusCode.Unauthorized) {
-            cachedAuth = null
+            storeAuth(null)
             val token = bearerToken()
             resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), token) }
         }
@@ -158,7 +171,7 @@ class BrokerClient(
             setBody(body)
         }
         if (resp.status == HttpStatusCode.Unauthorized) {
-            cachedAuth = null
+            storeAuth(null)
             val token = bearerToken()
             resp = client.post(url) {
                 contentType?.let { contentType(it) }
@@ -182,9 +195,11 @@ class BrokerClient(
     }
 
     /** Best-effort bearer: cached, else attempt attestation but return null (not throw) on failure or
-     *  cooldown, so the request still goes out signed and a security-disabled broker accepts it. */
+     *  cooldown, so the request still goes out signed and a security-disabled broker accepts it. A cached
+     *  token nearing expiry is served as-is while a background refresh renews it (stale-while-revalidate). */
     private suspend fun bearerTokenOrNull(): String? =
-        cachedBearerOrNull() ?: runCatching { bearerToken() }.getOrNull()
+        cachedBearerOrNull()?.also { maybeProactiveRefresh() }
+            ?: runCatching { bearerToken() }.getOrNull()
 
     private suspend fun bearerToken(): String {
         cachedBearerOrNull()?.let { return it }
@@ -192,27 +207,65 @@ class BrokerClient(
         return authMutex.withLock {
             cachedBearerOrNull()?.let { return@withLock it }
             throwIfCoolingDown()
-            runCatching { verifyIntegrity() }
-                .onSuccess { lastAuthFailure = null }
-                .onFailure {
-                    // Transient failures (network, server 429/5xx) get a short cooldown so a blip
-                    // doesn't block all transport for a minute; only definitive rejects back off long.
-                    val retryable = (it as? IntegrityException)?.retryable ?: true
-                    val cooldown = if (retryable) AUTH_RETRYABLE_COOLDOWN_MS else AUTH_FAILURE_COOLDOWN_MS
-                    lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown)
-                }
-                .getOrThrow()
-                .also { cachedAuth = it }
-                .token
+            reverifyLocked().token
         }
     }
 
-    private fun throwIfCoolingDown() {
-        lastAuthFailure?.let {
-            if (System.currentTimeMillis() - it.atMillis < it.cooldownMs) {
-                error("Play Integrity verification cooling down after ${it.message}")
+    /**
+     * Stale-while-revalidate: when the cached token is still usable but within [AUTH_PROACTIVE_REFRESH_MS]
+     * of expiry, kick off a background re-attestation so the token is renewed well before it lapses and no
+     * caller ever blocks on Play Integrity. Deduplicated via [refreshInFlight] and best-effort — a failure
+     * just records the usual cooldown and the still-valid token keeps serving. Covers every authed path
+     * (HTTP sends, the live socket, and FCM/notification background work) since they all fetch here.
+     */
+    private fun maybeProactiveRefresh() {
+        val auth = cachedAuth ?: return
+        if (auth.expiresAt - System.currentTimeMillis() > AUTH_PROACTIVE_REFRESH_MS) return
+        if (isCoolingDown()) return
+        if (!refreshInFlight.compareAndSet(false, true)) return
+        scope.launch {
+            try {
+                authMutex.withLock {
+                    // Another path may have refreshed (or started cooling down) while this was queued.
+                    val current = cachedAuth
+                    if (current != null && current.expiresAt - System.currentTimeMillis() > AUTH_PROACTIVE_REFRESH_MS) return@withLock
+                    if (isCoolingDown()) return@withLock
+                    runCatching { reverifyLocked() }
+                }
+            } finally {
+                refreshInFlight.set(false)
             }
         }
+    }
+
+    /** Attest, then atomically cache and persist the new token. Caller holds [authMutex]; records a
+     *  cooldown and rethrows on failure. */
+    private suspend fun reverifyLocked(): PlayIntegrityVerificationResponse =
+        runCatching { verifyIntegrity() }
+            .onSuccess { lastAuthFailure = null }
+            .onFailure {
+                // Transient failures (network, server 429/5xx) get a short cooldown so a blip
+                // doesn't block all transport for a minute; only definitive rejects back off long.
+                val retryable = (it as? IntegrityException)?.retryable ?: true
+                val cooldown = if (retryable) AUTH_RETRYABLE_COOLDOWN_MS else AUTH_FAILURE_COOLDOWN_MS
+                lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown)
+            }
+            .getOrThrow()
+            .also { storeAuth(it) }
+
+    /** Write-through: update the in-memory token and mirror it to encrypted storage (best-effort). */
+    private fun storeAuth(value: PlayIntegrityVerificationResponse?) {
+        cachedAuth = value
+        runCatching { tokenStore.save(value) }
+    }
+
+    private fun isCoolingDown(): Boolean {
+        val failure = lastAuthFailure ?: return false
+        return System.currentTimeMillis() - failure.atMillis < failure.cooldownMs
+    }
+
+    private fun throwIfCoolingDown() {
+        if (isCoolingDown()) error("Play Integrity verification cooling down after ${lastAuthFailure?.message}")
     }
 
     private suspend fun verifyIntegrity(): PlayIntegrityVerificationResponse {
@@ -307,7 +360,7 @@ class BrokerClient(
                 // A run of failed handshakes while we still hold a cached token may mean the broker
                 // rotated its JWT key; drop it so the next attempt re-attests. (HTTP calls self-heal on 401.)
                 if (++consecutiveFailures >= WS_REAUTH_AFTER_FAILURES) {
-                    cachedAuth = null
+                    storeAuth(null)
                     consecutiveFailures = 0
                 }
             }
@@ -321,6 +374,9 @@ class BrokerClient(
 
     private companion object {
         const val AUTH_REFRESH_SKEW_MS = 60_000L
+        // Refresh a still-valid token once it's within a day of expiry (stale-while-revalidate), so the
+        // multi-day JWT is renewed in the background long before any request would have to block to re-attest.
+        const val AUTH_PROACTIVE_REFRESH_MS = 24L * 60 * 60 * 1000
         const val AUTH_FAILURE_COOLDOWN_MS = 60_000L
         const val AUTH_RETRYABLE_COOLDOWN_MS = 5_000L
         const val WS_REAUTH_AFTER_FAILURES = 3

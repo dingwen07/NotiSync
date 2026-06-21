@@ -33,6 +33,7 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.HpkeKeyManager
 import net.extrawdw.apps.notisync.crypto.KeyVault
+import net.extrawdw.apps.notisync.crypto.KeyVaultAuthTokenStore
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
@@ -101,7 +102,8 @@ class AppGraph(private val app: Application) {
 
     fun init() {
         identity = AndroidIdentitySigner.loadOrCreate()
-        hpke = HpkeKeyManager(app, KeyVault()).apply { loadOrCreate() }
+        val vault = KeyVault()
+        hpke = HpkeKeyManager(app, vault).apply { loadOrCreate() }
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
         trust = TrustStore(ds, scope, identity.clientId)
@@ -112,6 +114,8 @@ class AppGraph(private val app: Application) {
             integrity = PlayIntegrityAttestor(app, BuildConfig.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER),
             clientCardProvider = ::buildClientCardBlob,
             debugKey = BuildConfig.DEBUG_KEY,
+            tokenStore = KeyVaultAuthTokenStore(app, vault),
+            scope = scope,
         )
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)

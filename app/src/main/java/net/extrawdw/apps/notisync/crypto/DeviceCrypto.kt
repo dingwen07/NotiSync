@@ -6,7 +6,10 @@ import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
+import net.extrawdw.apps.notisync.transport.AuthTokenStore
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.crypto.ClientIds
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
@@ -169,6 +172,37 @@ class HpkeKeyManager(context: Context, private val vault: KeyVault) {
             privateKeyset = pair.privateKeyset
             publicFile.writeBytes(publicKeyset)
             privateFile.writeBytes(vault.wrap(privateKeyset))
+        }
+    }
+}
+
+/**
+ * Persists the broker auth token (the cached proof of Play Integrity) wrapped with [KeyVault], so the
+ * JWT never sits in plaintext on disk and survives process death — a force-stop/relaunch can reuse a
+ * still-valid token instead of re-attesting. Self-healing: an unreadable blob simply reads as absent and
+ * the next request re-attests.
+ */
+class KeyVaultAuthTokenStore(context: Context, private val vault: KeyVault) : AuthTokenStore {
+    private val file = File(context.filesDir, "auth_token.wrapped")
+
+    @Synchronized
+    override fun load(): PlayIntegrityVerificationResponse? {
+        if (!file.exists()) return null
+        return runCatching {
+            ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(
+                vault.unwrap(file.readBytes()).toString(Charsets.UTF_8),
+            )
+        }.getOrNull()
+    }
+
+    @Synchronized
+    override fun save(token: PlayIntegrityVerificationResponse?) {
+        if (token == null) {
+            file.delete()
+            return
+        }
+        runCatching {
+            file.writeBytes(vault.wrap(ProtocolCodec.encodeToJson(token).toByteArray(Charsets.UTF_8)))
         }
     }
 }
