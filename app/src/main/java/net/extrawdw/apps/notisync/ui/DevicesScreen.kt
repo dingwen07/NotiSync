@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.Contactless
 import androidx.compose.material.icons.outlined.QrCode2
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
@@ -107,6 +108,8 @@ fun DevicesScreen(
             item {
                 Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) {
                     Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Spacer(Modifier.size(4.dp))
+                    Icon(Icons.Outlined.Contactless, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                     Text(stringResource(R.string.pair_a_device))
                 }

@@ -62,7 +62,7 @@
     <string name="devices_other_devices">其他设备 (%1$d)</string>
     <string name="devices_other_devices_desc">其他人的设备。此列表会在您自己的设备之间保持同步，但绝不会共享给他们；他们也不会收到您的通知。</string>
     <string name="devices_this_device">此设备</string>
-    <string name="devices_verification_number">验证号码  %1$s</string>
+    <string name="devices_verification_number">验证码  %1$s</string>
     <string name="device_unknown">未知设备</string>
     <string name="device_status_trusted">已信任</string>
     <string name="device_status_pending_trust">等待批准</string>
@@ -73,17 +73,20 @@
     <string name="device_remove_desc">移除 %1$s</string>
     <string name="device_permanently_delete_desc">永久删除 %1$s</string>
     <string name="device_added_by">由 %1$s 添加</string>
-    <string name="device_approve_hint">仅当它与该设备自身的验证号码一致时才批准。</string>
+    <string name="device_approve_hint">仅当它与该设备自身的验证码一致时才批准。</string>
     <string name="device_removed_by">由 %1$s 移除</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>
     <string name="pair_paired_with">已与 %1$s 配对</string>
     <string name="pair_could_not_open_link">无法打开配对链接：%1$s</string>
-    <string name="pair_intro">向您的另一台设备展示此二维码。对方的相机可直接打开 NotiSync，您也可以在此扫描。</string>
+    <string name="pair_intro">在另一台设备上，使用 NotiSync 或相机应用扫描下面的二维码。</string>
+    <string name="pair_intro_nfc">你也可以通过将另一台设备贴在此设备的背面来配对。</string>
     <string name="pair_qr_code_desc">配对二维码</string>
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
-    <string name="pair_verification_number">验证号码：%1$s</string>
+    <string name="pair_verification_number">验证码：%1$s</string>
+    <string name="pair_share_title">NotiSync Pairing Link</string>
+    <string name="pair_nfc_service_description">NotiSync 设备配对</string>
     <string name="pair_no_code">未检测到二维码</string>
     <string name="pair_scan_failed">扫描失败：%1$s</string>
     <string name="pair_scanning">正在扫描…</string>
@@ -93,7 +96,7 @@
     <string name="pair_trust_body">NotiSync 已验证此已签名的配对卡。将其添加为您自己的设备以镜像通知，或添加为他人的设备以仅共享您的设备名称。</string>
     <string name="pair_field_name">名称</string>
     <string name="pair_field_platform">平台</string>
-    <string name="pair_field_verification_number">验证号码</string>
+    <string name="pair_field_verification_number">验证码</string>
     <string name="pair_field_identity_key">身份密钥</string>
     <string name="pair_field_sync_key">同步密钥</string>
     <string name="pair_trust_other">他人的设备</string>
@@ -113,7 +116,7 @@
     <string name="trust_other_added_text">%1$s 已将 %2$s 添加到您的其他设备。</string>
     <string name="trust_other_removed_title">已移除设备</string>
     <string name="trust_other_removed_text">%1$s 已将 %2$s 从您的其他设备中移除。</string>
-    <string name="trust_expanded_verification">%1$s\n\n验证号码\n%2$s\n\n仅当它与该设备自身的验证号码一致时才批准。</string>
+    <string name="trust_expanded_verification">%1$s\n\n验证码\n%2$s\n\n仅当它与该设备自身的验证码一致时才批准。</string>
 
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">你</string>

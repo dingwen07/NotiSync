@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.content.Intent
 import android.graphics.Bitmap
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
@@ -16,6 +17,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -42,12 +44,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
+import net.extrawdw.apps.notisync.pairing.PairingNfcController
 import net.extrawdw.apps.notisync.pairing.QrCodes
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -113,13 +117,32 @@ fun PairingScreen(
     val codeState by produceState<PairingCodeState>(PairingCodeState.Loading, pairing) {
         value = withContext(Dispatchers.Default) {
             try {
-                PairingCodeState.Ready(QrCodes.encode(pairing.myLink()))
+                val pairingUrl = pairing.myLink()
+                PairingCodeState.Ready(pairingUrl, QrCodes.encode(pairingUrl))
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
                 PairingCodeState.Error(t.message ?: context.getString(R.string.error_unknown))
             }
         }
+    }
+    val pairingUrl = (codeState as? PairingCodeState.Ready)?.url
+
+    fun sharePairingUrl() {
+        val url = pairingUrl ?: return
+        val title = context.getString(R.string.pair_share_title)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, url)
+            putExtra(Intent.EXTRA_TITLE, title)
+            putExtra(Intent.EXTRA_SUBJECT, title)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, title))
+    }
+
+    LifecycleResumeEffect(pairingUrl) {
+        if (pairingUrl != null) PairingNfcController.enable(context, pairingUrl)
+        onPauseOrDispose { PairingNfcController.disable(context) }
     }
 
     val scannerOptions = remember {
@@ -136,6 +159,11 @@ fun PairingScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back)) }
                 },
+                actions = {
+                    IconButton(onClick = ::sharePairingUrl, enabled = pairingUrl != null) {
+                        Icon(Icons.Outlined.Share, contentDescription = stringResource(R.string.pair_share_title))
+                    }
+                },
             )
         },
     ) { padding ->
@@ -147,6 +175,11 @@ fun PairingScreen(
             Text(
                 stringResource(R.string.pair_intro),
                 style = MaterialTheme.typography.bodyLarge,
+            )
+            Text(
+                stringResource(R.string.pair_intro_nfc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
             when (val state = codeState) {
@@ -242,7 +275,7 @@ fun PairingScreen(
 
 private sealed interface PairingCodeState {
     data object Loading : PairingCodeState
-    data class Ready(val bitmap: Bitmap) : PairingCodeState
+    data class Ready(val url: String, val bitmap: Bitmap) : PairingCodeState
     data class Error(val message: String) : PairingCodeState
 }
 
