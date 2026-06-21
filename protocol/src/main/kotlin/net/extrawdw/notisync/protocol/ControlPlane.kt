@@ -55,6 +55,20 @@ data class PlayIntegrityVerificationResponse(
     val expiresAt: Long,
 )
 
+/** Response body for GET /v1/status — unauthenticated discovery of the broker's auth posture. */
+@Serializable
+data class VerificationStatusResponse(
+    val version: String,
+    /** Whether the broker requires Play Integrity attestation + signed/JWT auth at all. */
+    val playIntegrityRequired: Boolean,
+    /** True iff this request carried a currently-valid bearer token. */
+    val verified: Boolean,
+    /** The authenticated client id, present iff [verified]. */
+    val clientId: ClientId? = null,
+    /** Bearer token expiry (epoch millis), present iff [verified]. */
+    val expiresAt: Long? = null,
+)
+
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */
 @Serializable
 data class WsChallenge(val nonce: String)

@@ -6,14 +6,21 @@ import kotlinx.serialization.json.Json
 import net.extrawdw.notisync.protocol.ClientId
 import java.io.File
 import java.math.BigInteger
+import java.nio.file.Files
+import java.nio.file.attribute.PosixFilePermission
+import java.nio.file.attribute.PosixFilePermissions
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.Signature
+import java.security.interfaces.ECPrivateKey
 import java.security.interfaces.ECPublicKey
+import java.security.spec.ECFieldFp
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.ECPoint
+import java.security.spec.ECPublicKeySpec
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
 import java.util.Base64
@@ -27,7 +34,10 @@ class JwtIssuer private constructor(
 ) {
     private val b64 = Base64.getUrlEncoder().withoutPadding()
     private val b64d = Base64.getUrlDecoder()
-    private val json = Json { encodeDefaults = false; ignoreUnknownKeys = true }
+    // RFC 7517 (JWKS) requires kty; RFC 7515 requires the JWT header alg. Encode defaults so the
+    // published JWKS and issued tokens are accepted by standards-compliant external verifiers.
+    // Backward-compatible: tokens are verified over their literal received header/claims bytes.
+    private val json = Json { encodeDefaults = true; ignoreUnknownKeys = true }
     private val kid = b64.encodeToString(sha256(keyPair.public.encoded).copyOf(10))
 
     fun issue(clientId: ClientId, nowMillis: Long = System.currentTimeMillis()): IssuedToken {
@@ -107,9 +117,19 @@ class JwtIssuer private constructor(
         private fun loadOrCreateKeyPair(path: String): KeyPair {
             val file = File(path)
             val publicFile = File("$path.pub")
-            if (file.isFile && publicFile.isFile) {
-                val privateKey = readPrivateKey(file.readText())
-                val publicKey = readPublicKey(publicFile.readText())
+            if (file.isFile) {
+                // The private key is the source of truth and is NEVER overwritten. If the public
+                // sidecar is missing, derive it from the private key rather than regenerating — a lost
+                // .pub must not silently rotate the key and invalidate every outstanding JWT.
+                val privateKey = readPrivateKey(file.readText()) as ECPrivateKey
+                val publicKey = if (publicFile.isFile) {
+                    readPublicKey(publicFile.readText())
+                } else {
+                    derivePublicKey(privateKey).also {
+                        publicFile.writeText(pem("PUBLIC KEY", it.encoded))
+                        restrictPublicFile(publicFile)
+                    }
+                }
                 return KeyPair(publicKey, privateKey)
             }
             file.absoluteFile.parentFile?.mkdirs()
@@ -117,16 +137,82 @@ class JwtIssuer private constructor(
                 initialize(ECGenParameterSpec("secp256r1"))
                 generateKeyPair()
             }
-            file.writeText(pem("PRIVATE KEY", generated.private.encoded))
+            // Create the private file owner-only BEFORE writing the secret, so it is never briefly
+            // world-readable (umask) in the window between writing and chmod.
+            writePrivatePem(file, pem("PRIVATE KEY", generated.private.encoded))
             publicFile.writeText(pem("PUBLIC KEY", generated.public.encoded))
-            file.setReadable(false, false)
-            file.setReadable(true, true)
+            restrictPublicFile(publicFile)
+            return generated
+        }
+
+        private fun writePrivatePem(file: File, content: String) {
+            val nioPath = file.toPath()
+            Files.deleteIfExists(nioPath)
+            val createdRestricted = runCatching {
+                Files.createFile(
+                    nioPath,
+                    PosixFilePermissions.asFileAttribute(
+                        setOf(PosixFilePermission.OWNER_READ, PosixFilePermission.OWNER_WRITE),
+                    ),
+                )
+            }.isSuccess
+            if (!createdRestricted) {
+                // Non-POSIX filesystem: best-effort create-then-restrict (small exposure window).
+                file.createNewFile()
+                file.setReadable(false, false); file.setReadable(true, true)
+                file.setWritable(false, false); file.setWritable(true, true)
+            }
+            file.writeText(content) // writes into the already-created, owner-only file
+        }
+
+        private fun restrictPublicFile(file: File) {
+            file.setReadable(true, false) // world-readable: it is the public key
             file.setWritable(false, false)
             file.setWritable(true, true)
-            publicFile.setReadable(true, false)
-            publicFile.setWritable(false, false)
-            publicFile.setWritable(true, true)
-            return generated
+        }
+
+        /** Recompute the EC public key W = s·G from the private scalar (pure JCA + BigInteger). */
+        private fun derivePublicKey(priv: ECPrivateKey): ECPublicKey {
+            val params = priv.params
+            val p = (params.curve.field as ECFieldFp).p
+            val w = scalarMultiply(priv.s, params.generator, params.curve.a, p)
+            return KeyFactory.getInstance("EC").generatePublic(ECPublicKeySpec(w, params)) as ECPublicKey
+        }
+
+        private fun scalarMultiply(k: BigInteger, g: ECPoint, a: BigInteger, p: BigInteger): ECPoint {
+            var result = ECPoint.POINT_INFINITY
+            var addend = g
+            var n = k
+            while (n.signum() > 0) {
+                if (n.testBit(0)) result = pointAdd(result, addend, a, p)
+                addend = pointDouble(addend, a, p)
+                n = n.shiftRight(1)
+            }
+            return result
+        }
+
+        private fun pointAdd(p1: ECPoint, p2: ECPoint, a: BigInteger, p: BigInteger): ECPoint {
+            if (p1 == ECPoint.POINT_INFINITY) return p2
+            if (p2 == ECPoint.POINT_INFINITY) return p1
+            val x1 = p1.affineX; val y1 = p1.affineY; val x2 = p2.affineX; val y2 = p2.affineY
+            if (x1 == x2) {
+                return if ((y1 + y2).mod(p).signum() == 0) ECPoint.POINT_INFINITY else pointDouble(p1, a, p)
+            }
+            val lambda = ((y2 - y1).mod(p) * (x2 - x1).mod(p).modInverse(p)).mod(p)
+            val x3 = (lambda * lambda - x1 - x2).mod(p)
+            val y3 = (lambda * (x1 - x3) - y1).mod(p)
+            return ECPoint(x3, y3)
+        }
+
+        private fun pointDouble(pt: ECPoint, a: BigInteger, p: BigInteger): ECPoint {
+            if (pt == ECPoint.POINT_INFINITY) return pt
+            val x = pt.affineX; val y = pt.affineY
+            if (y.signum() == 0) return ECPoint.POINT_INFINITY
+            val two = BigInteger.TWO; val three = BigInteger.valueOf(3)
+            val lambda = ((three * x * x + a).mod(p) * (two * y).mod(p).modInverse(p)).mod(p)
+            val x3 = (lambda * lambda - two * x).mod(p)
+            val y3 = (lambda * (x - x3) - y).mod(p)
+            return ECPoint(x3, y3)
         }
 
         private fun readPrivateKey(pem: String): PrivateKey {

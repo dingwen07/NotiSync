@@ -29,6 +29,7 @@ import kotlinx.coroutines.sync.withLock
 import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
+import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -37,6 +38,7 @@ import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.Transport
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.Urgency
+import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
 import net.extrawdw.notisync.protocol.WsKind
@@ -44,6 +46,7 @@ import net.extrawdw.notisync.protocol.WsMessage
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
+import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import java.net.URI
 import java.util.Base64
 
@@ -106,27 +109,56 @@ class BrokerClient(
         return if (resp.status.isSuccess()) resp.readRawBytes() else null
     }
 
+    /**
+     * Query the broker's auth posture and this client's current token validity. Unauthenticated; sends
+     * the cached token (if any) so the broker can report `verified`, but never triggers attestation —
+     * safe for a UI/status poll. Returns null if the broker is unreachable.
+     */
+    suspend fun fetchVerificationStatus(): VerificationStatusResponse? {
+        val resp = runCatching {
+            client.get("${httpBase()}/v1/status") {
+                cachedBearerForRefresh()?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+            }
+        }.getOrNull() ?: return null
+        return if (resp.status.isSuccess()) {
+            runCatching { ProtocolCodec.decodeFromJson<VerificationStatusResponse>(resp.bodyAsText()) }.getOrNull()
+        } else {
+            null
+        }
+    }
+
+    /** Liveness probe: GET /healthz, or null if the broker is unreachable or unhealthy. */
+    suspend fun fetchHealth(): HealthResponse? {
+        val resp = runCatching { client.get("${httpBase()}/healthz") }.getOrNull() ?: return null
+        return if (resp.status.isSuccess()) {
+            runCatching { ProtocolCodec.decodeFromJson<HealthResponse>(resp.bodyAsText()) }.getOrNull()
+        } else {
+            null
+        }
+    }
+
+    // Auth is lazy: send the signed request with a best-effort token (none if attestation is
+    // unavailable — a broker with Play Integrity disabled still accepts it), and only attest-or-throw
+    // on a real 401. So the client works against an attestation-disabled broker without Play Integrity.
     private suspend fun authedGet(url: String): HttpResponse {
-        var token = bearerToken()
-        var resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), token) }
+        var resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), bearerTokenOrNull()) }
         if (resp.status == HttpStatusCode.Unauthorized) {
             cachedAuth = null
-            token = bearerToken()
+            val token = bearerToken()
             resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), token) }
         }
         return resp
     }
 
     private suspend fun authedPost(url: String, body: ByteArray, contentType: ContentType? = null): HttpResponse {
-        var token = bearerToken()
         var resp = client.post(url) {
             contentType?.let { contentType(it) }
-            signedHeaders("POST", url, body, token)
+            signedHeaders("POST", url, body, bearerTokenOrNull())
             setBody(body)
         }
         if (resp.status == HttpStatusCode.Unauthorized) {
             cachedAuth = null
-            token = bearerToken()
+            val token = bearerToken()
             resp = client.post(url) {
                 contentType?.let { contentType(it) }
                 signedHeaders("POST", url, body, token)
@@ -136,24 +168,49 @@ class BrokerClient(
         return resp
     }
 
-    private suspend fun bearerToken(): String {
+    /** Cached token if comfortably unexpired (else null). Never does network. */
+    private fun cachedBearerOrNull(): String? {
         val now = System.currentTimeMillis()
-        cachedAuth?.takeIf { it.expiresAt - now > AUTH_REFRESH_SKEW_MS }?.let { return it.token }
-        lastAuthFailure?.takeIf { now - it.atMillis < AUTH_FAILURE_COOLDOWN_MS }?.let {
-            error("Play Integrity verification cooling down after ${it.message}")
-        }
+        return cachedAuth?.takeIf { it.expiresAt - now > AUTH_REFRESH_SKEW_MS }?.token
+    }
+
+    /** Cached token while still valid at all (even inside the refresh window) — proves a token refresh. */
+    private fun cachedBearerForRefresh(): String? {
+        val now = System.currentTimeMillis()
+        return cachedAuth?.takeIf { it.expiresAt - now > 0 }?.token
+    }
+
+    /** Best-effort bearer: cached, else attempt attestation but return null (not throw) on failure or
+     *  cooldown, so the request still goes out signed and a security-disabled broker accepts it. */
+    private suspend fun bearerTokenOrNull(): String? =
+        cachedBearerOrNull() ?: runCatching { bearerToken() }.getOrNull()
+
+    private suspend fun bearerToken(): String {
+        cachedBearerOrNull()?.let { return it }
+        throwIfCoolingDown()
         return authMutex.withLock {
-            val lockedNow = System.currentTimeMillis()
-            cachedAuth?.takeIf { it.expiresAt - lockedNow > AUTH_REFRESH_SKEW_MS }?.let { return@withLock it.token }
-            lastAuthFailure?.takeIf { lockedNow - it.atMillis < AUTH_FAILURE_COOLDOWN_MS }?.let {
-                error("Play Integrity verification cooling down after ${it.message}")
-            }
+            cachedBearerOrNull()?.let { return@withLock it }
+            throwIfCoolingDown()
             runCatching { verifyIntegrity() }
                 .onSuccess { lastAuthFailure = null }
-                .onFailure { lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName) }
+                .onFailure {
+                    // Transient failures (network, server 429/5xx) get a short cooldown so a blip
+                    // doesn't block all transport for a minute; only definitive rejects back off long.
+                    val retryable = (it as? IntegrityException)?.retryable ?: true
+                    val cooldown = if (retryable) AUTH_RETRYABLE_COOLDOWN_MS else AUTH_FAILURE_COOLDOWN_MS
+                    lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown)
+                }
                 .getOrThrow()
                 .also { cachedAuth = it }
                 .token
+        }
+    }
+
+    private fun throwIfCoolingDown() {
+        lastAuthFailure?.let {
+            if (System.currentTimeMillis() - it.atMillis < it.cooldownMs) {
+                error("Play Integrity verification cooling down after ${it.message}")
+            }
         }
     }
 
@@ -171,24 +228,39 @@ class BrokerClient(
         )
         val body = ProtocolCodec.encodeToJson(request).toByteArray(Charsets.UTF_8)
         val url = "${httpBase()}/v1/integrity/verify"
+        // A still-valid token lets the broker treat this as a refresh (re-attests, skips proof of work).
+        val refreshToken = cachedBearerForRefresh()
+        val signed = HttpRequestSigning.sign(signer, "POST", pathAndQuery(url), body)
         val resp = client.post(url) {
             contentType(ContentType.Application.Json)
-            signedHeaders("POST", url, body, bearerToken = null)
+            applySigned(signed, bearerToken = refreshToken)
+            if (refreshToken == null) {
+                // First contact: solve the proof of work, bound to this request's signature.
+                val powTimestamp = System.currentTimeMillis()
+                val powNonce = ProofOfWork.solve(signed.signature, powTimestamp)
+                header(ProofOfWork.HEADER_NONCE, powNonce)
+                header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
+            }
             setBody(body)
         }
-        if (!resp.status.isSuccess()) error("Play Integrity verification failed: ${resp.status} ${resp.bodyAsText()}")
+        if (!resp.status.isSuccess()) {
+            val retryable = resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
+            throw IntegrityException("Play Integrity verification failed: ${resp.status} ${resp.bodyAsText()}", retryable)
+        }
         return ProtocolCodec.decodeFromJson(resp.bodyAsText())
     }
 
-    private fun HttpRequestBuilder.signedHeaders(method: String, url: String, body: ByteArray, bearerToken: String?) {
+    private fun HttpRequestBuilder.applySigned(signed: HttpRequestSigning.Headers, bearerToken: String?) {
         bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }
-        val signed = HttpRequestSigning.sign(signer, method, pathAndQuery(url), body)
         header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
         header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
         header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
         header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
         header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
     }
+
+    private fun HttpRequestBuilder.signedHeaders(method: String, url: String, body: ByteArray, bearerToken: String?) =
+        applySigned(HttpRequestSigning.sign(signer, method, pathAndQuery(url), body), bearerToken)
 
     private fun pathAndQuery(url: String): String =
         URI(url).let { uri ->
@@ -204,10 +276,11 @@ class BrokerClient(
      */
     override fun incoming(): Flow<Envelope> = channelFlow {
         var backoffMs = 1_000L
+        var consecutiveFailures = 0
         while (!isClosedForSend) {
             try {
                 val url = "${wsBase()}/v1/connect"
-                val token = bearerToken()
+                val token = bearerTokenOrNull()
                 client.webSocket(url, request = {
                     signedHeaders("GET", url, ByteArray(0), token)
                 }) {
@@ -215,6 +288,7 @@ class BrokerClient(
                     val sig = Base64.getEncoder().encodeToString(signer.sign(challenge.nonce.toByteArray()))
                     send(Frame.Text(ProtocolCodec.encodeToJson(WsAuth(signer.clientId, challenge.nonce, sig))))
                     backoffMs = 1_000L
+                    consecutiveFailures = 0
                     for (frame in incoming) {
                         if (frame !is Frame.Text) continue
                         val msg = runCatching { ProtocolCodec.decodeFromJson<WsMessage>(frame.readText()) }.getOrNull() ?: continue
@@ -228,7 +302,12 @@ class BrokerClient(
                     }
                 }
             } catch (_: Exception) {
-                // fall through to backoff/reconnect
+                // A run of failed handshakes while we still hold a cached token may mean the broker
+                // rotated its JWT key; drop it so the next attempt re-attests. (HTTP calls self-heal on 401.)
+                if (++consecutiveFailures >= WS_REAUTH_AFTER_FAILURES) {
+                    cachedAuth = null
+                    consecutiveFailures = 0
+                }
             }
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
@@ -241,7 +320,11 @@ class BrokerClient(
     private companion object {
         const val AUTH_REFRESH_SKEW_MS = 60_000L
         const val AUTH_FAILURE_COOLDOWN_MS = 60_000L
+        const val AUTH_RETRYABLE_COOLDOWN_MS = 5_000L
+        const val WS_REAUTH_AFTER_FAILURES = 3
     }
 
-    private data class AuthFailure(val atMillis: Long, val message: String)
+    private data class AuthFailure(val atMillis: Long, val message: String, val cooldownMs: Long)
+
+    private class IntegrityException(message: String, val retryable: Boolean) : Exception(message)
 }

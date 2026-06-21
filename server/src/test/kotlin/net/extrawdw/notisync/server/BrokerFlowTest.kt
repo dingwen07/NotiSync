@@ -19,11 +19,13 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
@@ -42,6 +44,7 @@ import net.extrawdw.notisync.protocol.crypto.HpkeKeyPair
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
+import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
 import org.junit.After
@@ -61,7 +64,6 @@ class BrokerFlowTest {
             "NOTISYNC_DB_PATH",
             "NOTISYNC_FCM_ENABLED",
             "NOTISYNC_MAX_ASSET_BYTES",
-            "NOTISYNC_SECURITY_ENABLED",
             "NOTISYNC_PLAY_INTEGRITY_ENABLED",
             "NOTISYNC_JWT_PRIVATE_KEY_PATH",
         ).forEach(System::clearProperty)
@@ -100,7 +102,7 @@ class BrokerFlowTest {
         val tmp = File.createTempFile("notisync-it", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
-        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
         application { module() }
 
         val http = createClient { install(WebSockets) }
@@ -186,7 +188,7 @@ class BrokerFlowTest {
         val tmp = File.createTempFile("notisync-assets", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
-        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
         System.setProperty("NOTISYNC_MAX_ASSET_BYTES", "64")
         try {
             application { module() }
@@ -237,10 +239,24 @@ class BrokerFlowTest {
         val jwtKey = File.createTempFile("notisync-jwt", ".pem").also { it.delete() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
-        System.setProperty("NOTISYNC_SECURITY_ENABLED", "true")
-        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
         System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
-        application { module() }
+        // Fake decoder so the full verdict pipeline runs without a real Google call; it echoes the
+        // requestHash carried in the (test-supplied) integrity token and reports all-good verdicts.
+        val decoder = object : PlayIntegrityDecoder {
+            override suspend fun decode(integrityToken: String) = IntegrityPayload(
+                requestPackageName = "net.extrawdw.apps.notisync",
+                requestHash = integrityToken,
+                timestampMillis = System.currentTimeMillis(),
+                appLicensingVerdict = "LICENSED",
+                appRecognitionVerdict = "PLAY_RECOGNIZED",
+                appPackageName = "net.extrawdw.apps.notisync",
+                deviceRecognitionVerdict = listOf("MEETS_DEVICE_INTEGRITY"),
+                deviceActivityLevel = "LEVEL_1",
+                playProtectVerdict = "NO_ISSUES",
+            )
+        }
+        application { brokerModule(decoder) }
 
         val signer = SoftwareIdentitySigner.generate()
         val hpke = Hpke.generateKeyPair()
@@ -249,23 +265,35 @@ class BrokerFlowTest {
 
         assertEquals(HttpStatusCode.Unauthorized, client.post("/v1/cards") { setBody(cardBytes) }.status)
 
+        // Unauthenticated status discovery: attestation required, not yet verified.
+        val statusBefore = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(client.get("/v1/status").bodyAsText())
+        assertEquals(true, statusBefore.playIntegrityRequired)
+        assertEquals(false, statusBefore.verified)
+
         val requestNonce = HttpRequestSigning.newNonce()
         val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
         val verifyRequest = PlayIntegrityVerificationRequest(
             clientId = signer.clientId,
             requestNonce = requestNonce,
             requestHash = requestHash,
-            integrityToken = "disabled-in-test",
+            integrityToken = requestHash, // the fake decoder echoes this back as the token's requestHash
             clientCard = card,
         )
         val verifyBody = ProtocolCodec.encodeToJson(verifyRequest).toByteArray(Charsets.UTF_8)
         val verifyResponse = client.post("/v1/integrity/verify") {
             contentType(ContentType.Application.Json)
-            signedHeaders(signer, "POST", "/v1/integrity/verify", verifyBody)
+            signedHeaders(signer, "POST", "/v1/integrity/verify", verifyBody, pow = true)
             setBody(verifyBody)
         }
         assertEquals(HttpStatusCode.OK, verifyResponse.status)
         val token = ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(verifyResponse.bodyAsText()).token
+
+        // With the bearer presented, status now reports this client as verified.
+        val statusAfter = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(
+            client.get("/v1/status") { header(HttpHeaders.Authorization, "Bearer $token") }.bodyAsText()
+        )
+        assertEquals(true, statusAfter.verified)
+        assertEquals(signer.clientId, statusAfter.clientId)
 
         assertEquals(
             HttpStatusCode.OK,
@@ -282,12 +310,33 @@ class BrokerFlowTest {
         assertNotNull(Verification.verifyClientCard(ProtocolCodec.decodeFromCbor<SignedBlob>(fetched.readRawBytes())))
     }
 
+    @Test
+    fun jwtKeyPairSurvivesMissingPublicSidecar() {
+        val keyFile = File.createTempFile("notisync-jwtrec", ".pem").also { it.delete() }
+        val pubFile = File("${keyFile.absolutePath}.pub")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", keyFile.absolutePath)
+        try {
+            val first = JwtIssuer.load(ServerConfig.fromEnv())
+            val token = first.issue(ClientId("abc")).token
+            assertTrue(pubFile.delete()) // lose the public sidecar
+
+            val second = JwtIssuer.load(ServerConfig.fromEnv()) // must reuse the private key, not regenerate
+            assertNotNull(second.verify(token)) // same key => the previously issued token still verifies
+            assertTrue(pubFile.isFile) // sidecar re-derived from the private key
+        } finally {
+            System.clearProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH")
+            keyFile.delete()
+            pubFile.delete()
+        }
+    }
+
     private fun io.ktor.client.request.HttpRequestBuilder.signedHeaders(
         signer: IdentitySigner,
         method: String,
         pathAndQuery: String,
         body: ByteArray,
         bearerToken: String? = null,
+        pow: Boolean = false,
     ) {
         bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }
         val signed = HttpRequestSigning.sign(signer, method, pathAndQuery, body)
@@ -296,5 +345,11 @@ class BrokerFlowTest {
         header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
         header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
         header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
+        if (pow) {
+            val powTimestamp = System.currentTimeMillis()
+            val powNonce = ProofOfWork.solve(signed.signature, powTimestamp)
+            header(ProofOfWork.HEADER_NONCE, powNonce)
+            header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
+        }
     }
 }

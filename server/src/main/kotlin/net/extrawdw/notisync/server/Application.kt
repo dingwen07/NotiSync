@@ -4,6 +4,7 @@ import io.ktor.http.ContentType
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.plugins.calllogging.CallLogging
 import io.ktor.server.plugins.contentnegotiation.ContentNegotiation
@@ -33,6 +34,7 @@ import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
@@ -45,7 +47,29 @@ import java.util.Base64
 private val CBOR = ContentType("application", "cbor")
 private val random = SecureRandom()
 
-fun Application.module() {
+private const val MAX_VERIFY_BODY_BYTES = 64 * 1024
+private const val MAX_CONTROL_BODY_BYTES = 1024 * 1024
+
+/**
+ * Read the request body, refusing (returning null) if it exceeds [maxBytes] — bounds pre-auth memory
+ * use. Checks the declared Content-Length first, then hard-caps the actual read so a lying or chunked
+ * client can't exceed the cap either.
+ */
+private suspend fun ApplicationCall.receiveCapped(maxBytes: Int): ByteArray? {
+    val declared = request.headers["Content-Length"]?.toLongOrNull()
+    if (declared != null && declared > maxBytes) return null
+    val bytes = receiveStream().readNBytes(maxBytes + 1)
+    return if (bytes.size > maxBytes) null else bytes
+}
+
+fun Application.module() = brokerModule()
+
+/**
+ * The broker application. [decoder] is a test seam for the Play Integrity decoder; production passes
+ * null and uses the real Google-backed decoder. It is kept off [module] so Ktor's reflective module
+ * loader (application.yaml) binds the no-arg entry point.
+ */
+fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     val log = LoggerFactory.getLogger("NotiSyncBroker")
     val config = ServerConfig.fromEnv()
     val db = NotiSyncDb.connect(config)
@@ -58,7 +82,7 @@ fun Application.module() {
     val push = FcmPushTransport.createOrNull(config) ?: DisabledPushTransport
     val broker = Broker(cards, routes, relay, assets, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
-    val integrity = PlayIntegrityVerifier(config)
+    val integrity = if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config)
 
     install(DefaultHeaders)
     install(CallLogging)
@@ -80,11 +104,10 @@ fun Application.module() {
     }
 
     log.info(
-        "NotiSync broker {} starting (db={}, fcm={}, security={}, playIntegrity={})",
+        "NotiSync broker {} starting (db={}, fcm={}, playIntegrity={})",
         config.version,
         config.dbPath,
         push !is DisabledPushTransport,
-        config.securityEnabled,
         config.playIntegrityEnabled,
     )
 
@@ -93,8 +116,24 @@ fun Application.module() {
         get("/readyz") { call.respond(HealthResponse("ready", config.version)) }
         get("/.well-known/jwks.json") { call.respondText(auth.jwksJson(), ContentType.Application.Json) }
 
+        // Unauthenticated discovery: a client learns whether attestation is required, and — if it
+        // presents a bearer — whether that token is currently valid (so it can decide to re-attest).
+        get("/v1/status") {
+            val principal = auth.bearerPrincipal(call)
+            call.respond(
+                VerificationStatusResponse(
+                    version = config.version,
+                    playIntegrityRequired = config.playIntegrityEnabled,
+                    verified = principal != null,
+                    clientId = principal?.clientId,
+                    expiresAt = principal?.expiresAtMillis,
+                )
+            )
+        }
+
         post("/v1/integrity/verify") {
-            val body = call.receiveStream().readBytes()
+            val body = call.receiveCapped(MAX_VERIFY_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val req = runCatching {
                 ProtocolCodec.decodeFromJson<PlayIntegrityVerificationRequest>(body.toString(Charsets.UTF_8))
             }.getOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_integrity_request"))
@@ -111,6 +150,16 @@ fun Application.module() {
             when (val sig = auth.verifySignedRequest(call, body, req.clientId, signerSpki)) {
                 SignatureCheck.Accepted -> Unit
                 is SignatureCheck.Rejected -> return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse(sig.reason))
+            }
+
+            // First-contact verification must carry a proof of work; this gates the billed Play
+            // Integrity decode against unauthenticated floods. A refresh that presents a still-valid
+            // bearer for this client skips PoW but is still re-attested below.
+            val refreshing = auth.bearerPrincipal(call)?.clientId == req.clientId
+            if (!refreshing) {
+                auth.checkProofOfWork(call)?.let {
+                    return@post call.respond(HttpStatusCode.TooManyRequests, ErrorResponse(it))
+                }
             }
 
             when (val decision = integrity.verify(req)) {
@@ -134,10 +183,11 @@ fun Application.module() {
         }
 
         post("/v1/cards") {
-            val body = call.receiveStream().readBytes()
+            val body = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
             val blob = runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(body) }.getOrNull()
-            if (config.securityEnabled && blob?.signerId != principal.clientId) {
+            if (config.playIntegrityEnabled && blob?.signerId != principal.clientId) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             }
             if (blob == null || !broker.uploadCard(blob)) {
@@ -156,14 +206,15 @@ fun Application.module() {
         }
 
         post("/v1/routes") {
-            val body = call.receiveStream().readBytes()
+            val body = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
             val list = runCatching {
                 ProtocolCodec.decodeFromCbor<List<SignedBlob>>(body)
             }.getOrNull()
             if (list == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_routes"))
-            } else if (config.securityEnabled && list.any { it.signerId != principal.clientId }) {
+            } else if (config.playIntegrityEnabled && list.any { it.signerId != principal.clientId }) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 val accepted = broker.uploadRoutes(list)
@@ -172,12 +223,13 @@ fun Application.module() {
         }
 
         post("/v1/send") {
-            val bytes = call.receiveStream().readBytes()
+            val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
             val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(bytes) }.getOrNull()
             if (envelope == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_envelope"))
-            } else if (config.securityEnabled && envelope.signerId != principal.clientId) {
+            } else if (config.playIntegrityEnabled && envelope.signerId != principal.clientId) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 call.respond(HttpStatusCode.OK, broker.send(bytes, envelope))
@@ -196,7 +248,7 @@ fun Application.module() {
             }
             val bytes = call.receiveStream().readBytes()
             val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
-            if (config.securityEnabled && src != principal.clientId) {
+            if (config.playIntegrityEnabled && src != principal.clientId) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             }
             if (bytes.isEmpty()) return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("empty_asset"))
@@ -229,7 +281,7 @@ fun Application.module() {
 
             val authFrame = incoming.receiveCatching().getOrNull() as? Frame.Text
             val auth = authFrame?.let { runCatching { ProtocolCodec.decodeFromJson<WsAuth>(it.readText()) }.getOrNull() }
-            if (auth == null || auth.nonce != nonce || (config.securityEnabled && auth.clientId != principal.clientId)) {
+            if (auth == null || auth.nonce != nonce || (config.playIntegrityEnabled && auth.clientId != principal.clientId)) {
                 return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth_failed"))
             }
             val spki = broker.clientSpki(auth.clientId)

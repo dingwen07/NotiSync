@@ -132,10 +132,10 @@ class PlayIntegrityVerifier(
         if (!config.requiredDeviceRecognitionVerdicts.acceptsAll(payload.deviceRecognitionVerdict)) {
             return reject("bad_device_integrity", payload)
         }
-        if (!(debugBypass && payload.deviceActivityLevel == "UNEVALUATED")) {
-            requireAllowed("deviceActivityLevel", payload.deviceActivityLevel, config.allowedDeviceActivityLevels)
-                ?.let { return reject(it, payload) }
-        }
+        // Device activity is an allow-list over the 5 known levels; the default permits all but LEVEL_4
+        // (>50 token requests/hour — a strong abuse signal). UNEVALUATED is allowed; null/unknown reject.
+        requireAllowed("deviceActivityLevel", payload.deviceActivityLevel, config.allowedDeviceActivityLevels)
+            ?.let { return reject(it, payload) }
         if (!(debugBypass && payload.playProtectVerdict == "UNEVALUATED")) {
             requireAllowed("playProtectVerdict", payload.playProtectVerdict, config.requiredPlayProtectVerdicts)
                 ?.let { return reject(it, payload) }

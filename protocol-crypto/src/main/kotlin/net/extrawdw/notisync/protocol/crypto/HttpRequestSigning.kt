@@ -119,3 +119,57 @@ object PlayIntegrityBinding {
         return Base64.getUrlEncoder().withoutPadding().encodeToString(mac)
     }
 }
+
+/**
+ * Lightweight hashcash-style proof of work, used to make the unauthenticated /v1/integrity/verify
+ * endpoint costly to flood (each accepted request gates a billed Play Integrity decode). The proof is
+ * bound to the request's signature, so it can't be precomputed without first signing the request, and
+ * to a timestamp so the server can bound and replay-protect it. Verifying is one SHA-256; solving is
+ * ~16^difficulty hashes (difficulty 3 ≈ 4096, sub-millisecond on a phone).
+ */
+object ProofOfWork {
+    const val HEADER_NONCE = "X-PoW-Nonce"
+    const val HEADER_TIMESTAMP = "X-PoW-Timestamp"
+    const val DEFAULT_DIFFICULTY = 4
+
+    private val HEX = "0123456789abcdef".toCharArray()
+
+    /** A solved proof: the winning [nonce] and how many hashes were tried to find it. */
+    data class Solution(val nonce: String, val hashes: Long)
+
+    /** Lowercase-hex SHA-256 over "signature\nnonce\ntimestamp". */
+    fun hashHex(signature: String, nonce: String, timestampMillis: Long): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+            .digest("$signature\n$nonce\n$timestampMillis".toByteArray(Charsets.UTF_8))
+        val out = CharArray(digest.size * 2)
+        for (i in digest.indices) {
+            val v = digest[i].toInt() and 0xff
+            out[i * 2] = HEX[v ushr 4]
+            out[i * 2 + 1] = HEX[v and 0x0f]
+        }
+        return String(out)
+    }
+
+    /** True when [hashHex] begins with [difficulty] hex zeros. */
+    fun satisfies(hashHex: String, difficulty: Int): Boolean {
+        if (difficulty <= 0) return true
+        if (hashHex.length < difficulty) return false
+        for (i in 0 until difficulty) if (hashHex[i] != '0') return false
+        return true
+    }
+
+    /** Grind a counter nonce until the hash meets [difficulty], returning the winning nonce and the
+     *  number of hashes tried (winning counter + 1). */
+    fun solveCounted(signature: String, timestampMillis: Long, difficulty: Int = DEFAULT_DIFFICULTY): Solution {
+        var n = 0L
+        while (true) {
+            val nonce = n.toString()
+            if (satisfies(hashHex(signature, nonce, timestampMillis), difficulty)) return Solution(nonce, n + 1)
+            n++
+        }
+    }
+
+    /** Convenience wrapper returning just the winning nonce. */
+    fun solve(signature: String, timestampMillis: Long, difficulty: Int = DEFAULT_DIFFICULTY): String =
+        solveCounted(signature, timestampMillis, difficulty).nonce
+}

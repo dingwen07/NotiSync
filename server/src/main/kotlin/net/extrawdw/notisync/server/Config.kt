@@ -16,7 +16,10 @@ data class ServerConfig(
     val privateAssetTtlMillis: Long,
     /** Max ciphertext bytes accepted for a single private-asset upload. */
     val maxPrivateAssetBytes: Int,
-    val securityEnabled: Boolean,
+    /**
+     * Master switch: when on, the broker enforces signed + JWT auth AND real Play Integrity
+     * attestation. When off, all of that is bypassed (local protocol testing only).
+     */
     val playIntegrityEnabled: Boolean,
     val playIntegrityPackageName: String,
     val playIntegrityMaxTokenAgeMillis: Long,
@@ -27,9 +30,16 @@ data class ServerConfig(
     val requiredAppLicensingVerdicts: Set<String>,
     val requiredAppRecognitionVerdicts: Set<String>,
     val requiredDeviceRecognitionVerdicts: Set<String>,
+    /**
+     * Allow-list over the 5 known device-activity levels (LEVEL_1..LEVEL_4, UNEVALUATED). The default
+     * permits everything except LEVEL_4 (>50 token requests/hour — a strong abuse signal); null and any
+     * future/unknown level fail closed.
+     */
     val allowedDeviceActivityLevels: Set<String>,
     val requiredPlayProtectVerdicts: Set<String>,
     val signedRequestMaxSkewMillis: Long,
+    /** Leading-hex-zero difficulty required of the /v1/integrity/verify proof of work (0 disables). */
+    val powDifficulty: Int,
     val version: String,
 ) {
     companion object {
@@ -45,6 +55,9 @@ data class ServerConfig(
             }
             fun env(k: String) = (System.getProperty(k) ?: System.getenv(k) ?: localProperties.getProperty(k))
                 ?.takeIf { it.isNotBlank() }
+            // Security-critical switches must NOT be sourceable from a stray local.properties (the Android
+            // build keeps one, with DEBUG_KEY, at the repo root). They come from env / system property only.
+            fun secureEnv(k: String) = (System.getProperty(k) ?: System.getenv(k))?.takeIf { it.isNotBlank() }
             fun csv(k: String, default: String): Set<String> =
                 (env(k) ?: default).split(',')
                     .map { it.trim() }
@@ -55,6 +68,9 @@ data class ServerConfig(
                 ?.resolve("jwt-es256-private.pem")
                 ?.path
                 ?: "data/jwt-es256-private.pem"
+            // Single master switch: on => enforce signed + JWT auth AND real Play Integrity attestation;
+            // off => all of that is bypassed (local protocol testing only). Read from env/sysprop only.
+            val playIntegrityEnabled = secureEnv("NOTISYNC_PLAY_INTEGRITY_ENABLED")?.toBooleanStrictOrNull() ?: true
             return ServerConfig(
                 dbPath = dbPath,
                 fcmEnabled = env("NOTISYNC_FCM_ENABLED")?.toBooleanStrictOrNull() ?: true,
@@ -63,21 +79,21 @@ data class ServerConfig(
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
                 privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
                 maxPrivateAssetBytes = env("NOTISYNC_MAX_ASSET_BYTES")?.toIntOrNull() ?: (1024 * 1024),
-                securityEnabled = env("NOTISYNC_SECURITY_ENABLED")?.toBooleanStrictOrNull() ?: true,
-                playIntegrityEnabled = env("NOTISYNC_PLAY_INTEGRITY_ENABLED")?.toBooleanStrictOrNull() ?: true,
+                playIntegrityEnabled = playIntegrityEnabled,
                 playIntegrityPackageName = env("NOTISYNC_PLAY_INTEGRITY_PACKAGE") ?: "net.extrawdw.apps.notisync",
                 playIntegrityMaxTokenAgeMillis = env("NOTISYNC_PLAY_INTEGRITY_MAX_AGE_MS")?.toLongOrNull() ?: (5L * 60 * 1000),
-                debugKey = env("NOTISYNC_DEBUG_KEY") ?: env("DEBUG_KEY").orEmpty(),
+                debugKey = secureEnv("NOTISYNC_DEBUG_KEY").orEmpty(),
                 jwtIssuer = env("NOTISYNC_JWT_ISSUER") ?: "notisync-broker",
-                jwtTtlMillis = env("NOTISYNC_JWT_TTL_MS")?.toLongOrNull() ?: (6L * 60 * 60 * 1000),
+                jwtTtlMillis = env("NOTISYNC_JWT_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
                 jwtPrivateKeyPath = env("NOTISYNC_JWT_PRIVATE_KEY_PATH") ?: jwtDefaultPath,
                 requiredAppLicensingVerdicts = csv("NOTISYNC_REQUIRE_APP_LICENSING", "LICENSED"),
                 requiredAppRecognitionVerdicts = csv("NOTISYNC_REQUIRE_APP_RECOGNITION", "PLAY_RECOGNIZED"),
                 requiredDeviceRecognitionVerdicts = csv("NOTISYNC_REQUIRE_DEVICE_RECOGNITION", "MEETS_DEVICE_INTEGRITY"),
-                allowedDeviceActivityLevels = csv("NOTISYNC_ALLOW_DEVICE_ACTIVITY", "LEVEL_1,LEVEL_2"),
+                allowedDeviceActivityLevels = csv("NOTISYNC_ALLOW_DEVICE_ACTIVITY", "LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED"),
                 requiredPlayProtectVerdicts = csv("NOTISYNC_REQUIRE_PLAY_PROTECT", "NO_ISSUES"),
                 signedRequestMaxSkewMillis = env("NOTISYNC_SIGNED_REQUEST_MAX_SKEW_MS")?.toLongOrNull()
                     ?: (5L * 60 * 1000),
+                powDifficulty = env("NOTISYNC_POW_DIFFICULTY")?.toIntOrNull() ?: 4,
                 version = VERSION,
             )
         }

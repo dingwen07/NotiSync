@@ -1,7 +1,6 @@
 package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -9,7 +8,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
@@ -17,6 +15,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -44,6 +43,20 @@ fun SettingsScreen() {
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     val batchLow by graph.settings.batchLowPriority.collectAsStateWithLifecycle()
     val advanced by graph.settings.advancedDiagnostics.collectAsStateWithLifecycle()
+
+    // Diagnostics probe, hoisted to screen scope so it loads once when the Settings tab is opened (and
+    // on manual refresh) — not on every list-scroll recomposition of the card item, and never on a timer.
+    var probe by remember { mutableStateOf<ServerProbe>(ServerProbe.Idle) }
+    var probeKey by remember { mutableIntStateOf(0) }
+    var benchmark by remember { mutableStateOf<BenchmarkState>(BenchmarkState.Idle) }
+    LaunchedEffect(advanced, probeKey) {
+        if (!advanced) {
+            probe = ServerProbe.Idle
+            return@LaunchedEffect
+        }
+        probe = ServerProbe.Loading
+        probe = probeServer(graph)
+    }
 
     NotiScaffold(stringResource(R.string.tab_settings)) { modifier ->
         LazyColumn(
@@ -84,14 +97,17 @@ fun SettingsScreen() {
             }
             if (advanced) {
                 item {
-                    Card(Modifier.fillMaxWidth()) {
-                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                            Text(stringResource(R.string.settings_diagnostics), style = MaterialTheme.typography.titleMedium)
-                            Text(stringResource(R.string.settings_client_id, graph.identity.clientId.value), style = MaterialTheme.typography.bodySmall)
-                            Text(stringResource(R.string.settings_key_backing, keyBackingLabel(graph.identity.backing)), style = MaterialTheme.typography.bodySmall)
-                            Text(stringResource(R.string.settings_transport, graph.transport.type.toString()), style = MaterialTheme.typography.bodySmall)
-                        }
-                    }
+                    DiagnosticsCard(
+                        graph = graph,
+                        probe = probe,
+                        benchmark = benchmark,
+                        onRefresh = { probeKey++ },
+                        onBenchmark = {
+                            if (benchmark !is BenchmarkState.Running) {
+                                scope.launch { runPowBenchmark { benchmark = it } }
+                            }
+                        },
+                    )
                 }
             }
         }

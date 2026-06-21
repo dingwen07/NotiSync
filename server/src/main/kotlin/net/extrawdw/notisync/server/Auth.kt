@@ -9,17 +9,41 @@ import io.ktor.server.response.respond
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ErrorResponse
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
-import java.util.concurrent.ConcurrentHashMap
+import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import kotlin.math.abs
 
 class ServerAuth(
     private val config: ServerConfig,
     private val jwt: JwtIssuer,
     private val nonces: RequestNonceCache = RequestNonceCache(),
+    private val powReplay: RequestNonceCache = RequestNonceCache(),
 ) {
     fun issue(clientId: ClientId): JwtIssuer.IssuedToken = jwt.issue(clientId)
 
     fun jwksJson(): String = jwt.jwksJson()
+
+    /** The JWT principal carried by an Authorization: Bearer header, or null if absent/invalid. */
+    fun bearerPrincipal(call: ApplicationCall): AuthPrincipal? = authenticateBearer(call)
+
+    /**
+     * Validates the hashcash proof of work on /v1/integrity/verify. Returns null when valid, else a
+     * rejection reason. The proof is bound to the request signature (so it can't be precomputed) and
+     * to [ProofOfWork.HEADER_TIMESTAMP] (bounded by the signed-request skew window and replay-cached).
+     */
+    fun checkProofOfWork(call: ApplicationCall): String? {
+        if (config.powDifficulty <= 0) return null
+        val signature = call.request.headers[HttpRequestSigning.HEADER_SIGNATURE]?.takeIf { it.isNotBlank() }
+            ?: return "pow_required"
+        val nonce = call.request.headers[ProofOfWork.HEADER_NONCE]?.takeIf { it.isNotBlank() } ?: return "pow_required"
+        val timestamp = call.request.headers[ProofOfWork.HEADER_TIMESTAMP]?.toLongOrNull() ?: return "pow_required"
+        val now = System.currentTimeMillis()
+        val skew = config.signedRequestMaxSkewMillis
+        if (timestamp < now - skew || timestamp > now + skew) return "pow_timestamp_skew"
+        val hash = ProofOfWork.hashHex(signature, nonce, timestamp)
+        if (!ProofOfWork.satisfies(hash, config.powDifficulty)) return "pow_insufficient"
+        if (!powReplay.accept(ClientId("pow"), hash, now, skew)) return "pow_replay"
+        return null
+    }
 
     suspend fun requireJwtSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthPrincipal? =
         when (val result = authenticateJwtSigned(call, body, broker)) {
@@ -31,8 +55,8 @@ class ServerAuth(
         }
 
     suspend fun authenticateJwtSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
-        if (!config.securityEnabled) {
-            return AuthResult.Accepted(AuthPrincipal(ClientId("security-disabled"), Long.MAX_VALUE))
+        if (!config.playIntegrityEnabled) {
+            return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))
         }
         val principal = authenticateBearer(call) ?: return AuthResult.Rejected("auth_required")
         val spki = broker.clientSpki(principal.clientId) ?: return AuthResult.Rejected("unknown_client")
@@ -46,7 +70,7 @@ class ServerAuth(
         expectedClientId: ClientId,
         signerSpki: ByteArray,
     ): SignatureCheck {
-        if (!config.securityEnabled) return SignatureCheck.Accepted
+        if (!config.playIntegrityEnabled) return SignatureCheck.Accepted
         val headers = signedHeaders(call) ?: return SignatureCheck.Rejected("signature_required")
         if (headers.clientId != expectedClientId) return SignatureCheck.Rejected("signature_client_mismatch")
         val now = System.currentTimeMillis()
@@ -104,17 +128,23 @@ sealed class SignatureCheck {
         }
 }
 
-class RequestNonceCache {
-    private val values = ConcurrentHashMap<String, Long>()
-
-    fun accept(clientId: ClientId, nonce: String, nowMillis: Long, ttlMillis: Long): Boolean {
-        if (values.size > 10_000) purge(nowMillis)
-        val key = "${clientId.value}:$nonce"
-        val expiresAt = nowMillis + ttlMillis
-        return values.putIfAbsent(key, expiresAt) == null
+/**
+ * Replay guard for signed-request / proof-of-work nonces. Memory is hard-bounded at [maxEntries]: a
+ * fixed-capacity insertion-ordered map evicts the oldest entry (which, since every entry shares the
+ * same TTL, is also the soonest to expire) once full — so a flood of distinct nonces can never grow
+ * it without bound. A still-valid duplicate is rejected as a replay; an expired one is reaccepted.
+ */
+class RequestNonceCache(private val maxEntries: Int = 100_000) {
+    private val values = object : LinkedHashMap<String, Long>(1024, 0.75f, false) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>): Boolean = size > maxEntries
     }
 
-    private fun purge(nowMillis: Long) {
-        values.entries.removeIf { it.value <= nowMillis }
+    @Synchronized
+    fun accept(clientId: ClientId, nonce: String, nowMillis: Long, ttlMillis: Long): Boolean {
+        val key = "${clientId.value}:$nonce"
+        val existing = values[key]
+        if (existing != null && existing > nowMillis) return false // unexpired -> replay
+        values[key] = nowMillis + ttlMillis
+        return true
     }
 }
