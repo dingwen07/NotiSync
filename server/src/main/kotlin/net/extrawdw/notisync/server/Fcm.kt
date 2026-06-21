@@ -18,29 +18,34 @@ enum class PushOutcome { DELIVERED, ROUTE_INVALID, TRANSIENT_FAILURE, DISABLED }
 
 /** A wake + small-message transport. Trusted only to wake and carry opaque ciphertext, never plaintext. */
 interface PushTransport {
-    suspend fun wake(token: String, data: Map<String, String>, urgency: Urgency): PushOutcome
+    suspend fun wake(routeRef: String, data: Map<String, String>, urgency: Urgency): PushOutcome
 }
 
 /** No-op transport used when FCM credentials are absent (dev runs rely on the WebSocket path). */
 object DisabledPushTransport : PushTransport {
-    override suspend fun wake(token: String, data: Map<String, String>, urgency: Urgency) = PushOutcome.DISABLED
+    override suspend fun wake(routeRef: String, data: Map<String, String>, urgency: Urgency) = PushOutcome.DISABLED
 }
 
 /**
- * FCM HTTP v1 adapter via firebase-admin. Sends DATA-ONLY messages (the client decides how to surface
- * them) at HIGH priority for user-visible mirrors and NORMAL for background sync/repair. Maps provider
- * error codes so the broker can retire invalid routes and back off on transient failures.
+ * FCM HTTP v1 adapter via firebase-admin. Sends DATA-ONLY messages (the client decides how to
+ * surface them) at HIGH priority for user-visible mirrors and NORMAL for background sync/repair.
+ * Maps provider error codes so the broker can retire invalid routes and back off on transient
+ * failures.
+ *
+ * routeRef is the FCM direct-send target produced by FirebaseMessagingService.onRegistered().
+ * firebase-admin 9.9.0 has not grown a first-class FID setter yet, so use setToken(routeRef) while
+ * FCM keeps that transition bridge. When Admin exposes a FID target, switch this call over.
  */
 class FcmPushTransport private constructor(private val app: FirebaseApp) : PushTransport {
     private val log = LoggerFactory.getLogger(javaClass)
 
-    override suspend fun wake(token: String, data: Map<String, String>, urgency: Urgency): PushOutcome =
+    override suspend fun wake(routeRef: String, data: Map<String, String>, urgency: Urgency): PushOutcome =
         withContext(Dispatchers.IO) {
             val android = AndroidConfig.builder()
                 .setPriority(if (urgency == Urgency.HIGH) AndroidConfig.Priority.HIGH else AndroidConfig.Priority.NORMAL)
                 .build()
             val message = Message.builder()
-                .setToken(token)
+                .setToken(routeRef)
                 .putAllData(data)
                 .setAndroidConfig(android)
                 .build()

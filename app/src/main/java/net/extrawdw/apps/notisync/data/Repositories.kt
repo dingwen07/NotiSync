@@ -27,6 +27,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     private val advancedKey = booleanPreferencesKey("advanced_diagnostics")
     private val groupKey = stringPreferencesKey("group_id")
     private val epochKey = intPreferencesKey("route_epoch")
+    private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
     private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
 
     val brokerUrl: StateFlow<String> =
@@ -52,11 +53,18 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
 
     suspend fun groupId(): String? = store.data.first()[groupKey]
     suspend fun setGroupId(id: String) = store.edit { it[groupKey] = id }
-    suspend fun routeEpoch(): Int = store.data.first()[epochKey] ?: 1
-    suspend fun bumpRouteEpoch(): Int = run {
-        var next = 1
-        store.edit { next = (it[epochKey] ?: 0) + 1; it[epochKey] = next }
-        next
+    suspend fun epochForFcmRoute(routeRef: String): Int {
+        var epoch = 1
+        store.edit { prefs ->
+            if (prefs[fcmRouteRefKey] == routeRef) {
+                epoch = prefs[epochKey] ?: 1
+            } else {
+                epoch = (prefs[epochKey] ?: 0) + 1
+                prefs[epochKey] = epoch
+                prefs[fcmRouteRefKey] = routeRef
+            }
+        }
+        return epoch
     }
 
     /** High-water mark of post times we've mirrored — used to gate the listener backfill after a restart. */

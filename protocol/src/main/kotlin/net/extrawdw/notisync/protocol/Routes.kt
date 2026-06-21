@@ -29,7 +29,7 @@ data class RouteClaim(
     val clientId: ClientId,
     val transport: TransportType,
     val environment: RouteEnvironment,
-    /** Opaque transport endpoint: an FCM registration token, a WS session id, etc. */
+    /** Opaque transport endpoint: an FCM direct-send target, a WS session id, etc. */
     val routeRef: String,
     val capabilities: RouteCapabilities,
     val epoch: Int,

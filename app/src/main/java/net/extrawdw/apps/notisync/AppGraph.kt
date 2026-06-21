@@ -352,12 +352,12 @@ class AppGraph(private val app: Application) {
             .launchIn(scope)
     }
 
-    private fun signedRouteClaim(token: String, epoch: Int): SignedBlob {
+    private fun signedRouteClaim(routeRef: String, epoch: Int): SignedBlob {
         val claim = RouteClaim(
             clientId = identity.clientId,
             transport = TransportType.FCM,
             environment = RouteEnvironment.PRODUCTION,
-            routeRef = token,
+            routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
             epoch = epoch,
             issuedAt = System.currentTimeMillis(),
@@ -366,26 +366,29 @@ class AppGraph(private val app: Application) {
         return SignedBlob(SignedType.ROUTE_CLAIM, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
     }
 
-    // getToken()/onNewToken() are deprecated for the FID-based register()/onRegistered() model
-    // (firebase_messaging_installation_id_enabled), which addresses by Firebase Installation ID
-    // instead of the FCM registration token and needs a coordinated broker send-path change. We
-    // stay on the token API for now; see NotiSyncMessagingService.onNewToken.
-    @Suppress("DEPRECATION")
+    /**
+     * Register this app instance with FCM. The result is delivered through
+     * [NotiSyncMessagingService.onRegistered], which provides the current direct-send target.
+     */
     fun registerFcmRoute() {
-        FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
-            scope.launch {
-                runCatching {
-                    transport.publishRoutes(listOf(signedRouteClaim(token, settings.routeEpoch())))
-                    activityLog.add(ActivityEvent.Kind.ROUTE_REPAIR, "FCM route", "registered", System.currentTimeMillis())
-                }
+        FirebaseMessaging.getInstance().register()
+            .addOnFailureListener { e ->
+                activityLog.add(
+                    ActivityEvent.Kind.ERROR,
+                    "FCM route",
+                    "registration failed: ${e.message ?: e.javaClass.simpleName}",
+                    System.currentTimeMillis(),
+                )
             }
-        }
     }
 
-    fun onNewFcmToken(token: String) {
+    fun onFcmRegistered(routeRef: String) {
         scope.launch {
-            val epoch = settings.bumpRouteEpoch()
-            runCatching { transport.publishRoutes(listOf(signedRouteClaim(token, epoch))) }
+            val epoch = settings.epochForFcmRoute(routeRef)
+            runCatching {
+                transport.publishRoutes(listOf(signedRouteClaim(routeRef, epoch)))
+                activityLog.add(ActivityEvent.Kind.ROUTE_REPAIR, "FCM route", "registered", System.currentTimeMillis())
+            }
         }
     }
 

@@ -28,11 +28,7 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
         // Wake-only messages ("typ"="wake") are reconciled by the WebSocket transport's relay flush.
     }
 
-    // onNewToken() is deprecated for onRegistered(), which surfaces the Firebase Installation ID
-    // rather than the FCM registration token. Switching addressing models is a broker-coordinated
-    // migration (see AppGraph.registerFcmRoute), so we keep the token callback for now.
-    @Suppress("OVERRIDE_DEPRECATION")
-    override fun onNewToken(token: String) {
-        (applicationContext as NotiSyncApp).graph.onNewFcmToken(token)
+    override fun onRegistered(installationId: String) {
+        (applicationContext as NotiSyncApp).graph.onFcmRegistered(installationId)
     }
 }

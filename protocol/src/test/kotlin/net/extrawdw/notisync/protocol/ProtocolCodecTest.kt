@@ -99,7 +99,7 @@ class ProtocolCodecTest {
             clientId = ClientId("client-aaa"),
             transport = TransportType.FCM,
             environment = RouteEnvironment.PRODUCTION,
-            routeRef = "fake-fcm-token",
+            routeRef = "fake-fcm-route",
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
             epoch = 1,
             issuedAt = 1_750_000_000_000L,
@@ -114,7 +114,7 @@ class ProtocolCodecTest {
         val decoded = ProtocolCodec.decodeFromCbor<SignedBlob>(ProtocolCodec.encodeToCbor(signed))
         assertEquals(SignedType.ROUTE_CLAIM, decoded.typ)
         val innerClaim = decoded.decode<RouteClaim>()
-        assertEquals("fake-fcm-token", innerClaim.routeRef)
+        assertEquals("fake-fcm-route", innerClaim.routeRef)
         assertEquals(TransportType.FCM, innerClaim.transport)
     }
 

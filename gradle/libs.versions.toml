@@ -88,7 +88,7 @@ postgresql = { group = "org.postgresql", name = "postgresql", version.ref = "pos
 hikari = { group = "com.zaxxer", name = "HikariCP", version.ref = "hikari" }
 logback-classic = { group = "ch.qos.logback", name = "logback-classic", version.ref = "logback" }
 
-# --- Server: FCM ---
+# --- Server: FCM / Google APIs ---
 firebase-admin = { group = "com.google.firebase", name = "firebase-admin", version.ref = "firebaseAdmin" }
 google-api-services-playintegrity = { group = "com.google.apis", name = "google-api-services-playintegrity", version.ref = "playIntegrityApi" }
 google-auth-library-oauth2-http = { group = "com.google.auth", name = "google-auth-library-oauth2-http", version.ref = "googleAuth" }

@@ -83,12 +83,12 @@ class BrokerFlowTest {
         return SignedBlob(SignedType.CLIENT_CARD, signerId = signer.clientId, payload = payload, sig = signer.sign(payload))
     }
 
-    private fun routeBlob(signer: IdentitySigner, token: String): SignedBlob {
+    private fun routeBlob(signer: IdentitySigner, routeRef: String): SignedBlob {
         val claim = RouteClaim(
             clientId = signer.clientId,
             transport = TransportType.FCM,
             environment = RouteEnvironment.PRODUCTION,
-            routeRef = token,
+            routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
             epoch = 1,
             issuedAt = 1_750_000_000_000L,

@@ -1,0 +1,29 @@
+[Unit]
+Description=NotiSync broker (TEST — notisync-api-test.extrawdw.net)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/notisync-test
+# Test instance: loopback :8081 (prod is :8080); nginx routes the test vhost here.
+ExecStart=/usr/bin/java -Dktor.deployment.host=127.0.0.1 -Dktor.deployment.port=8081 -jar /opt/notisync-test/server-all.jar
+Environment=NOTISYNC_DB_PATH=/var/lib/notisync-test/notisync.db
+Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
+# FCM is ON for the test instance (prod keeps it off) so the FID-as-token send path can be exercised.
+Environment=NOTISYNC_FCM_ENABLED=true
+Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
+# Master switch OFF: bypasses Play Integrity attestation AND signed/JWT auth. TEST ONLY — lets any
+# build (incl. a sideloaded debug build) connect while exercising the migration. Never do this in prod.
+Environment=NOTISYNC_PLAY_INTEGRITY_ENABLED=false
+Environment=NOTISYNC_PLAY_INTEGRITY_PACKAGE=net.extrawdw.apps.notisync
+Restart=on-failure
+RestartSec=3
+# Hardening (same as prod, scoped to the test data dir).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/notisync-test
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
