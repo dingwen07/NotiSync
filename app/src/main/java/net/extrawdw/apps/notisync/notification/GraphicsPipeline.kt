@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.notif
+package net.extrawdw.apps.notisync.notification
 
 import android.service.notification.StatusBarNotification
 import net.extrawdw.apps.notisync.assets.AssetManager

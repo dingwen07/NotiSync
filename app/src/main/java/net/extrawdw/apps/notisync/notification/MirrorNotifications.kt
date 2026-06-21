@@ -1,5 +1,6 @@
-package net.extrawdw.apps.notisync.notif
+package net.extrawdw.apps.notisync.notification
 
+import android.Manifest
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
 import android.app.NotificationManager
@@ -7,6 +8,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Canvas
@@ -15,8 +17,10 @@ import android.graphics.drawable.Drawable
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.content.ContextCompat
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.launch
@@ -134,6 +138,10 @@ class RemoteNotificationPoster(
 ) : MirrorRenderer {
 
     override fun render(notif: CapturedNotification) {
+        // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
+        // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
+        // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
         val parentChannelId = MirrorChannels.ensure(context, notif)
         var postChannelId = parentChannelId
         var shortcutId: String? = null
@@ -237,7 +245,7 @@ class RemoteNotificationPoster(
         if (drawable is BitmapDrawable) drawable.bitmap?.let { return it }
         val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
         val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 128
-        val bitmap = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val bitmap = createBitmap(w, h)
         drawable.setBounds(0, 0, w, h)
         drawable.draw(Canvas(bitmap))
         return bitmap
@@ -255,7 +263,7 @@ class RemoteNotificationPoster(
             ?: notif.title
             ?: notif.appLabel
         val senders = notif.messages.mapNotNull { it.sender }.distinct()
-        val persons = (if (senders.isNotEmpty()) senders else listOf(label))
+        val persons = senders.ifEmpty { listOf(label) }
             .map { Person.Builder().setName(it).setKey(it).build() }
         val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW)
         val avatar = notif.messages.firstNotNullOfOrNull { m -> m.avatar?.let { cachedBitmap(it.assetHash) } }

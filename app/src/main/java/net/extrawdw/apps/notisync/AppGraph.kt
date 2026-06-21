@@ -45,11 +45,11 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
-import net.extrawdw.apps.notisync.notif.GraphicsExtractor
-import net.extrawdw.apps.notisync.notif.GraphicsPipeline
-import net.extrawdw.apps.notisync.notif.MirrorChannels
-import net.extrawdw.apps.notisync.notif.NotificationRuleEngine
-import net.extrawdw.apps.notisync.notif.RemoteNotificationPoster
+import net.extrawdw.apps.notisync.notification.GraphicsExtractor
+import net.extrawdw.apps.notisync.notification.GraphicsPipeline
+import net.extrawdw.apps.notisync.notification.MirrorChannels
+import net.extrawdw.apps.notisync.notification.NotificationRuleEngine
+import net.extrawdw.apps.notisync.notification.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.notisync.protocol.Capability

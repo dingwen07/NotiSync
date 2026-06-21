@@ -6,8 +6,8 @@
 -keep class net.extrawdw.apps.notisync.NotiSyncApp
 -keep class net.extrawdw.apps.notisync.MainActivity
 -keep class net.extrawdw.apps.notisync.fcm.NotiSyncMessagingService
--keep class net.extrawdw.apps.notisync.notif.NotiSyncListenerService
--keep class net.extrawdw.apps.notisync.notif.DismissReceiver
+-keep class net.extrawdw.apps.notisync.notification.NotiSyncListenerService
+-keep class net.extrawdw.apps.notisync.notification.DismissReceiver
 -keep class net.extrawdw.apps.notisync.trust.TrustActionReceiver
 
 # Keep serializable type names stable for cross-version protocol/persistence compatibility while
