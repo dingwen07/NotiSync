@@ -42,21 +42,30 @@ import net.extrawdw.notisync.protocol.NotifStyle
  * name (e.g. "alice@gmail.com · Mail") — when available (requires a CompanionDeviceManager
  * association; v1 falls back to the channel name / category / app label).
  *
- * IDs are opaque ASCII keyed by (sourceClientId, package, sourceChannelId); the second ':'-segment is
- * always the source client id so [gc] can prune channels for unpaired devices.
+ * IDs are "{type}:{sourceClientId}:{package}[:{source}]" with type = group / channel / conversation;
+ * the second ':'-segment is always the source client id so [gc] can prune by device. The per-app group
+ * is one per (sourceClientId, package), and its display name carries the source device — e.g.
+ * "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system settings.
  */
 object MirrorChannels {
-    private fun groupId(client: ClientId, pkg: String) = "notigrp:${client.value}:$pkg"
-    private fun channelId(client: ClientId, pkg: String, src: String?) = "notich:${client.value}:$pkg:${src ?: "_default"}"
-    private fun convChannelId(client: ClientId, pkg: String, conv: String) = "notichc:${client.value}:$pkg:$conv"
+    private fun groupId(client: ClientId, pkg: String) = "group:${client.value}:$pkg"
+    private fun channelId(client: ClientId, pkg: String, src: String?) = "channel:${client.value}:$pkg:${src ?: "_default"}"
+    private fun convChannelId(client: ClientId, pkg: String, conv: String) = "conversation:${client.value}:$pkg:$conv"
+
+    /** Group label carries the source device so two devices running the same app stay distinct. */
+    private fun groupName(appLabel: String, deviceName: String?): String =
+        deviceName?.takeIf { it.isNotBlank() }?.let { "$appLabel ($it)" } ?: appLabel
 
     /** Create the per-app group + per-source-channel channel; return the channel id to post on. */
-    fun ensure(context: Context, notif: CapturedNotification): String {
+    fun ensure(context: Context, notif: CapturedNotification, deviceName: String?): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val gid = groupId(notif.sourceClientId, notif.packageName)
         // Group must exist before a channel references it; createNotificationChannel also updates
         // name/description and lowers importance on an existing channel (never raises — OS contract).
-        mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, notif.appLabel))
+        // createNotificationChannelGroup re-applies the name every call, so a source-device rename
+        // surfaces on its next mirrored notification — the only point where both the app label (from
+        // the capture) and the current device name (from the trust store) are known together.
+        mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, groupName(notif.appLabel, deviceName)))
         val cid = channelId(notif.sourceClientId, notif.packageName, notif.channelId)
         mgr.createNotificationChannel(
             NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply { group = gid }
@@ -83,12 +92,12 @@ object MirrorChannels {
         val mgr = context.getSystemService(NotificationManager::class.java)
         runCatching {
             mgr.notificationChannels.forEach { c ->
-                if ((c.id.startsWith("notich:") || c.id.startsWith("notichc:")) && clientOf(c.id) !in validClientIds) {
+                if ((c.id.startsWith("channel:") || c.id.startsWith("conversation:")) && clientOf(c.id) !in validClientIds) {
                     mgr.deleteNotificationChannel(c.id)
                 }
             }
             mgr.notificationChannelGroups.forEach { g ->
-                if (g.id.startsWith("notigrp:") && clientOf(g.id) !in validClientIds) {
+                if (g.id.startsWith("group:") && clientOf(g.id) !in validClientIds) {
                     mgr.deleteNotificationChannelGroup(g.id)
                 }
             }
@@ -135,6 +144,8 @@ object MirrorChannels {
 class RemoteNotificationPoster(
     private val context: Context,
     private val assets: AssetCache,
+    /** Source device's display name, for the group label; null until the peer's profile is known. */
+    private val deviceNameOf: (ClientId) -> String? = { null },
 ) : MirrorRenderer {
 
     override fun render(notif: CapturedNotification) {
@@ -142,7 +153,7 @@ class RemoteNotificationPoster(
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
         // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val parentChannelId = MirrorChannels.ensure(context, notif)
+        val parentChannelId = MirrorChannels.ensure(context, notif, deviceNameOf(notif.sourceClientId))
         var postChannelId = parentChannelId
         var shortcutId: String? = null
 

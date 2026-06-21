@@ -46,7 +46,7 @@
     <string name="key_backing_unknown">未知</string>
     <string name="key_backing_unknown_secure">TEE 或更强</string>
     <string name="key_backing_software">软件</string>
-    <string name="key_backing_tee">TEE</string>
+    <string name="key_backing_tee">可信执行环境</string>
     <string name="key_backing_strongbox">StrongBox</string>
 
     <!-- Devices screen -->
@@ -63,7 +63,6 @@
     <string name="devices_other_devices_desc">其他人的设备。此列表会在您自己的设备之间保持同步，但绝不会共享给他们；他们也不会收到您的通知。</string>
     <string name="devices_this_device">此设备</string>
     <string name="devices_verification_number">验证号码  %1$s</string>
-    <string name="devices_key_backing">密钥存储  %1$s</string>
     <string name="device_unknown">未知设备</string>
     <string name="device_status_trusted">已信任</string>
     <string name="device_status_pending_trust">等待批准</string>

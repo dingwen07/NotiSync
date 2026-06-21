@@ -108,7 +108,7 @@ class AppGraph(private val app: Application) {
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)
         val assetManager = AssetManager(transport, assetCache, TicketStore(assetsDir))
-        poster = RemoteNotificationPoster(app, assetCache)
+        poster = RemoteNotificationPoster(app, assetCache, deviceNameOf = { id -> trust.displayName(id) })
         graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), GraphicsExtractor(app), assetManager)
         // The generic secure-messaging substrate: seal/sign/dedup/verify/open + per-MessageType routing.
         // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
@@ -149,8 +149,12 @@ class AppGraph(private val app: Application) {
         foundation.register() // DATA_SYNC (TRUST/CARD/PROFILE; forwards ASSET)
         mirror.register()      // NOTIFICATION + DISMISSAL
 
-        // Prune mirrored channels/groups for devices that are no longer trusted peers.
-        runCatching { MirrorChannels.gc(app, trust.activePeers.value.map { it.clientId.value }.toSet()) }
+        // Prune mirrored channels/groups for devices that are no longer trusted peers — at startup and
+        // again on every trust change (a revoke drops the peer from activePeers). StateFlow re-emits its
+        // current value on subscription, so this also performs the launch-time sweep.
+        trust.activePeers
+            .onEach { peers -> runCatching { MirrorChannels.gc(app, peers.map { it.clientId.value }.toSet()) } }
+            .launchIn(scope)
 
         // Battery-efficient transport policy:
         //  * Background delivery is via FCM only (Google's shared push connection — no app socket),

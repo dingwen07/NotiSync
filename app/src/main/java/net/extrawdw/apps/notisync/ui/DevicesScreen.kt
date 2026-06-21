@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
@@ -100,7 +101,7 @@ fun DevicesScreen(
                 ThisDeviceCard(
                     name = deviceName,
                     safetyNumber = graph.identity.clientId.value,
-                    keyBacking = keyBackingLabel(graph.identity.backing),
+                    backing = graph.identity.backing,
                 )
             }
             item {
@@ -172,7 +173,7 @@ private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.ex
 }
 
 @Composable
-private fun ThisDeviceCard(name: String, safetyNumber: String, keyBacking: String) {
+private fun ThisDeviceCard(name: String, safetyNumber: String, backing: KeyBacking) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -195,9 +196,9 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, keyBacking: Strin
                     color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
                 )
                 Text(
-                    stringResource(R.string.devices_key_backing, keyBacking),
+                    stringResource(R.string.settings_key_backing, keyBackingLabel(backing)),
                     style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.7f),
+                    color = keyBackingColor(backing),
                 )
             }
         }

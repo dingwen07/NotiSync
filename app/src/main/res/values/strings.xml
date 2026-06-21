@@ -46,7 +46,7 @@
     <string name="key_backing_unknown">Unknown</string>
     <string name="key_backing_unknown_secure">TEE or stronger</string>
     <string name="key_backing_software">Software</string>
-    <string name="key_backing_tee">TEE</string>
+    <string name="key_backing_tee">Trusted Execution Environment</string>
     <string name="key_backing_strongbox">StrongBox</string>
 
     <!-- Devices screen -->
@@ -63,7 +63,6 @@
     <string name="devices_other_devices_desc">Other people\'s devices. This list stays in sync across your own devices and is never shared with them; they never receive your notifications.</string>
     <string name="devices_this_device">THIS DEVICE</string>
     <string name="devices_verification_number">Verification number  %1$s</string>
-    <string name="devices_key_backing">Key backing  %1$s</string>
     <string name="device_unknown">Unknown device</string>
     <string name="device_status_trusted">Trusted</string>
     <string name="device_status_pending_trust">Pending approval</string>
