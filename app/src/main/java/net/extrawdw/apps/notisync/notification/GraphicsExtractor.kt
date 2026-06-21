@@ -9,6 +9,8 @@ import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import java.io.ByteArrayOutputStream
 
 /**
@@ -56,7 +58,7 @@ class GraphicsExtractor(private val context: Context) {
         val w = intrinsicWidth.takeIf { it > 0 } ?: maxDim
         val h = intrinsicHeight.takeIf { it > 0 } ?: maxDim
         val scale = minOf(1f, maxDim.toFloat() / maxOf(w, h))
-        val out = Bitmap.createBitmap(maxOf(1, (w * scale).toInt()), maxOf(1, (h * scale).toInt()), Bitmap.Config.ARGB_8888)
+        val out = createBitmap(maxOf(1, (w * scale).toInt()), maxOf(1, (h * scale).toInt()))
         setBounds(0, 0, out.width, out.height)
         draw(Canvas(out))
         return out
@@ -65,7 +67,7 @@ class GraphicsExtractor(private val context: Context) {
     private fun encode(bitmap: Bitmap, maxDim: Int, maxBytes: Int): ByteArray? {
         val scaled = if (maxOf(bitmap.width, bitmap.height) <= maxDim) bitmap else {
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
-            Bitmap.createScaledBitmap(bitmap, maxOf(1, (bitmap.width * scale).toInt()), maxOf(1, (bitmap.height * scale).toInt()), true)
+            bitmap.scale(maxOf(1, (bitmap.width * scale).toInt()), maxOf(1, (bitmap.height * scale).toInt()))
         }
         for (quality in intArrayOf(80, 50, 30)) {
             val bytes = ByteArrayOutputStream().use {

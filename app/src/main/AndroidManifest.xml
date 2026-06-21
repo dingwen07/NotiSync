@@ -41,7 +41,6 @@
             android:name=".MainActivity"
             android:enableOnBackInvokedCallback="true"
             android:exported="true"
-            android:label="@string/app_name"
             android:launchMode="singleTop"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize">

@@ -28,7 +28,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -61,7 +61,7 @@ fun DevicesScreen(
     // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
     // purge delay elapses without needing to leave and reopen the page.
     val hasRevoked = roster.any { it.status == TrustStatus.REVOKED }
-    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     LaunchedEffect(hasRevoked) {
         while (hasRevoked) {
             now = System.currentTimeMillis()

@@ -105,8 +105,8 @@
     <string name="pair_nfc_service_description">NotiSync Device Pairing</string>
     <string name="pair_no_code">No code detected</string>
     <string name="pair_scan_failed">Scan failed: %1$s</string>
-    <string name="pair_scanning">Scanning...</string>
-    <string name="pair_checking">Checking device...</string>
+    <string name="pair_scanning">Scanning…</string>
+    <string name="pair_checking">Checking device…</string>
     <string name="pair_scan_button">Scan the other device\'s code</string>
     <string name="pair_trust_title">Trust this device?</string>
     <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>

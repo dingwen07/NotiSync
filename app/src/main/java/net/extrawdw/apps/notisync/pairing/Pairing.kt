@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.Color
 import android.net.Uri
 import androidx.core.graphics.createBitmap
+import androidx.core.net.toUri
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
@@ -67,7 +68,7 @@ object PairingDeepLinks {
 
     fun extractPayload(content: String): String {
         val trimmed = content.trim()
-        val uri = runCatching { Uri.parse(trimmed) }.getOrNull()
+        val uri = runCatching { trimmed.toUri() }.getOrNull()
         if (uri != null && isPairingUri(uri)) {
             return payloadFrom(uri) ?: error("pairing link missing payload")
         }

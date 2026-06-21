@@ -1,12 +1,12 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Application
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.content.pm.PackageManager
 import android.os.Build
-import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
@@ -44,6 +44,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.core.graphics.createBitmap
+import androidx.core.graphics.scale
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -117,6 +119,10 @@ internal class AppsViewModel(app: Application) : AndroidViewModel(app) {
     }
 }
 
+// Package visibility comes from the scoped <queries> block in AndroidManifest (launcher apps plus the
+// explicitly listed system notifiers), deliberately avoiding QUERY_ALL_PACKAGES; getInstalledApplications
+// returns exactly that visible set, so the broad-visibility warning does not apply here.
+@SuppressLint("QueryPermissionsNeeded")
 private fun loadLaunchableApps(context: Context): List<InstalledApp> {
     val pm = context.packageManager
     return pm.getInstalledApplications(0)
@@ -272,8 +278,8 @@ private fun AppIcon(icon: ImageBitmap?) {
 }
 
 private fun Drawable.toImageBitmap(sizePx: Int): ImageBitmap {
-    (this as? BitmapDrawable)?.bitmap?.let { return Bitmap.createScaledBitmap(it, sizePx, sizePx, true).asImageBitmap() }
-    val bitmap = Bitmap.createBitmap(sizePx, sizePx, Bitmap.Config.ARGB_8888)
+    (this as? BitmapDrawable)?.bitmap?.let { return it.scale(sizePx, sizePx).asImageBitmap() }
+    val bitmap = createBitmap(sizePx, sizePx)
     setBounds(0, 0, sizePx, sizePx)
     draw(Canvas(bitmap))
     return bitmap.asImageBitmap()

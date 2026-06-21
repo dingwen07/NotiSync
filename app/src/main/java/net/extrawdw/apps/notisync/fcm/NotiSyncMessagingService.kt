@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.fcm
 
+import android.annotation.SuppressLint
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -14,6 +15,10 @@ import java.util.Base64
  * Decryption happens locally in the [SecureChannel] — FCM never sees plaintext. [SecureChannel.deliver]
  * is non-suspend and runs inline here, preserving the synchronous-completion contract of this thread.
  */
+// Routing uses the FCM installation id from the newer register()/onRegistered() flow (see
+// AppGraph.registerFcmRoute), not the legacy registration token — so onNewToken() is intentionally
+// absent. The MissingFirebaseInstanceTokenRefresh check only knows about the legacy onNewToken path.
+@SuppressLint("MissingFirebaseInstanceTokenRefresh")
 class NotiSyncMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {

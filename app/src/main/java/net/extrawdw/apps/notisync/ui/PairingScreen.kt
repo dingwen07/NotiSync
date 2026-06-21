@@ -42,6 +42,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
@@ -65,6 +66,9 @@ fun PairingScreen(
     onInitialPairingPayloadConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    // Resolve strings via LocalResources so they re-read on configuration changes (locale, etc.);
+    // context is retained for non-resource use (scanner client, NFC controller, startActivity).
+    val resources = LocalResources.current
     val graph = rememberGraph()
     val pairing = remember { PairingManager(graph) }
     val scope = rememberCoroutineScope()
@@ -80,7 +84,7 @@ fun PairingScreen(
             withContext(Dispatchers.Default) { pairing.inspect(content) }
                 .fold(
                     onSuccess = { pendingCandidate = it },
-                    onFailure = { result = context.getString(R.string.pair_could_not_pair, it.message) },
+                    onFailure = { result = resources.getString(R.string.pair_could_not_pair, it.message) },
                 )
             inspecting = false
         }
@@ -93,8 +97,8 @@ fun PairingScreen(
         scope.launch {
             result = withContext(Dispatchers.Default) {
                 pairing.accept(candidate.payload, ownDevice).fold(
-                    onSuccess = { context.getString(R.string.pair_paired_with, it.displayName) },
-                    onFailure = { context.getString(R.string.pair_could_not_pair, it.message) },
+                    onSuccess = { resources.getString(R.string.pair_paired_with, it.displayName) },
+                    onFailure = { resources.getString(R.string.pair_could_not_pair, it.message) },
                 )
             }
             inspecting = false
@@ -108,7 +112,7 @@ fun PairingScreen(
         withContext(Dispatchers.Default) { pairing.inspect(payload) }
             .fold(
                 onSuccess = { pendingCandidate = it },
-                onFailure = { result = context.getString(R.string.pair_could_not_open_link, it.message) },
+                onFailure = { result = resources.getString(R.string.pair_could_not_open_link, it.message) },
             )
         inspecting = false
         onInitialPairingPayloadConsumed()
@@ -122,7 +126,7 @@ fun PairingScreen(
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
-                PairingCodeState.Error(t.message ?: context.getString(R.string.error_unknown))
+                PairingCodeState.Error(t.message ?: resources.getString(R.string.error_unknown))
             }
         }
     }
@@ -130,7 +134,7 @@ fun PairingScreen(
 
     fun sharePairingUrl() {
         val url = pairingUrl ?: return
-        val title = context.getString(R.string.pair_share_title)
+        val title = resources.getString(R.string.pair_share_title)
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, url)
@@ -221,7 +225,7 @@ fun PairingScreen(
                         .addOnSuccessListener { barcode ->
                             val raw = barcode.rawValue
                             if (raw == null) {
-                                result = context.getString(R.string.pair_no_code)
+                                result = resources.getString(R.string.pair_no_code)
                                 scanning = false
                             } else {
                                 scanning = false
@@ -233,7 +237,7 @@ fun PairingScreen(
                             scanning = false
                         }
                         .addOnFailureListener {
-                            result = context.getString(R.string.pair_scan_failed, it.message)
+                            result = resources.getString(R.string.pair_scan_failed, it.message)
                             scanning = false
                         }
                 },

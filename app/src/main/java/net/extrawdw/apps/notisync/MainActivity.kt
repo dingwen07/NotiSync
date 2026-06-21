@@ -3,7 +3,6 @@ package net.extrawdw.apps.notisync
 import android.Manifest
 import android.content.Context
 import android.content.Intent
-import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
@@ -252,9 +251,7 @@ private fun DevicesDestination(onPair: () -> Unit) {
         permissions = permissions,
         onPair = onPair,
         onRequestPostNotifications = {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                postNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
+            postNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         },
         onOpenListenerSettings = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
@@ -264,11 +261,7 @@ private fun DevicesDestination(onPair: () -> Unit) {
 
 private fun readPermissions(context: Context): PermissionState {
     val listenerEnabled = NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
-    val postGranted = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-            android.content.pm.PackageManager.PERMISSION_GRANTED
-    } else {
-        true
-    }
+    val postGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+        android.content.pm.PackageManager.PERMISSION_GRANTED
     return PermissionState(listenerEnabled = listenerEnabled, postNotificationsGranted = postGranted)
 }

@@ -44,6 +44,7 @@ android {
         }
         release {
             isMinifyEnabled = true
+            isShrinkResources = true
             buildConfigField("String", "DEBUG_KEY", "".asBuildConfigString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
