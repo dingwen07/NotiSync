@@ -2,13 +2,16 @@ package net.extrawdw.apps.notisync.crypto
 
 import android.content.Context
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
+import android.util.Log
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.crypto.ClientIds
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import java.io.File
+import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
 import java.security.PrivateKey
@@ -19,9 +22,10 @@ import javax.crypto.KeyGenerator
 import javax.crypto.spec.GCMParameterSpec
 
 private const val ANDROID_KEYSTORE = "AndroidKeyStore"
+private const val TAG = "DeviceCrypto"
 
 /** Backing level of the identity key, surfaced in advanced diagnostics. */
-enum class KeyBacking { STRONGBOX, TEE, SOFTWARE_FALLBACK }
+enum class KeyBacking { UNKNOWN, UNKNOWN_SECURE, SOFTWARE, TEE, STRONGBOX }
 
 /**
  * Hardware-backed identity signer: a non-exportable EC P-256 key in the Android Keystore, preferring
@@ -49,7 +53,7 @@ class AndroidIdentitySigner private constructor(
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             (ks.getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
                 val spki = entry.certificate.publicKey.encoded
-                return AndroidIdentitySigner(spki, ClientIds.derive(spki), backingOf(ks), entry.privateKey)
+                return AndroidIdentitySigner(spki, ClientIds.derive(spki), backingOf(entry.privateKey), entry.privateKey)
             }
             val backing = generate()
             val entry = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
@@ -57,10 +61,22 @@ class AndroidIdentitySigner private constructor(
             return AndroidIdentitySigner(spki, ClientIds.derive(spki), backing, entry.privateKey)
         }
 
-        private fun backingOf(ks: KeyStore): KeyBacking =
-            // We cannot easily re-read the security level post-hoc on all OEMs; default to TEE here.
-            // Fresh generation reports the true level (see generate()).
-            KeyBacking.TEE
+        private fun backingOf(privateKey: PrivateKey): KeyBacking =
+            runCatching {
+                val info = KeyFactory.getInstance(privateKey.algorithm, ANDROID_KEYSTORE)
+                    .getKeySpec(privateKey, KeyInfo::class.java)
+                when (info.securityLevel) {
+                    KeyProperties.SECURITY_LEVEL_UNKNOWN -> KeyBacking.UNKNOWN
+                    KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> KeyBacking.UNKNOWN_SECURE
+                    KeyProperties.SECURITY_LEVEL_SOFTWARE -> KeyBacking.SOFTWARE
+                    KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> KeyBacking.TEE
+                    KeyProperties.SECURITY_LEVEL_STRONGBOX -> KeyBacking.STRONGBOX
+                    else -> KeyBacking.UNKNOWN
+                }
+            }.getOrElse {
+                Log.w(TAG, "Unable to read identity key security level", it)
+                KeyBacking.UNKNOWN
+            }
 
         private fun generate(): KeyBacking {
             fun spec(strongBox: Boolean) = KeyGenParameterSpec.Builder(
@@ -73,20 +89,21 @@ class AndroidIdentitySigner private constructor(
                 .build()
 
             return try {
-                generateWith(spec(strongBox = true)); KeyBacking.STRONGBOX
-            } catch (_: StrongBoxUnavailableException) {
-                generateWith(spec(strongBox = false)); KeyBacking.TEE
-            } catch (_: Exception) {
-                generateWith(spec(strongBox = false)); KeyBacking.TEE
+                backingOf(generateWith(spec(strongBox = true)))
+            } catch (e: StrongBoxUnavailableException) {
+                Log.w(TAG, "StrongBox identity key unavailable; falling back to TEE", e)
+                backingOf(generateWith(spec(strongBox = false)))
+            } catch (e: Exception) {
+                Log.w(TAG, "StrongBox identity key generation failed; falling back to TEE", e)
+                backingOf(generateWith(spec(strongBox = false)))
             }
         }
 
-        private fun generateWith(spec: KeyGenParameterSpec) {
+        private fun generateWith(spec: KeyGenParameterSpec): PrivateKey =
             KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE).run {
                 initialize(spec)
-                generateKeyPair()
+                generateKeyPair().private
             }
-        }
     }
 }
 

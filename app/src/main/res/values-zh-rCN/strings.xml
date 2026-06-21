@@ -43,6 +43,11 @@
     <string name="settings_client_id">客户端 ID：%1$s</string>
     <string name="settings_key_backing">密钥存储：%1$s</string>
     <string name="settings_transport">传输方式：%1$s</string>
+    <string name="key_backing_unknown">未知</string>
+    <string name="key_backing_unknown_secure">TEE 或更强</string>
+    <string name="key_backing_software">软件</string>
+    <string name="key_backing_tee">TEE</string>
+    <string name="key_backing_strongbox">StrongBox</string>
 
     <!-- Devices screen -->
     <string name="pair_a_device">配对设备</string>

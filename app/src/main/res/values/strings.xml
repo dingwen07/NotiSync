@@ -43,6 +43,11 @@
     <string name="settings_client_id">Client ID: %1$s</string>
     <string name="settings_key_backing">Key backing: %1$s</string>
     <string name="settings_transport">Transport: %1$s</string>
+    <string name="key_backing_unknown">Unknown</string>
+    <string name="key_backing_unknown_secure">TEE or stronger</string>
+    <string name="key_backing_software">Software</string>
+    <string name="key_backing_tee">TEE</string>
+    <string name="key_backing_strongbox">StrongBox</string>
 
     <!-- Devices screen -->
     <string name="pair_a_device">Pair a device</string>

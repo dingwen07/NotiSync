@@ -88,7 +88,7 @@ fun SettingsScreen() {
                         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text(stringResource(R.string.settings_diagnostics), style = MaterialTheme.typography.titleMedium)
                             Text(stringResource(R.string.settings_client_id, graph.identity.clientId.value), style = MaterialTheme.typography.bodySmall)
-                            Text(stringResource(R.string.settings_key_backing, graph.identity.backing.toString()), style = MaterialTheme.typography.bodySmall)
+                            Text(stringResource(R.string.settings_key_backing, keyBackingLabel(graph.identity.backing)), style = MaterialTheme.typography.bodySmall)
                             Text(stringResource(R.string.settings_transport, graph.transport.type.toString()), style = MaterialTheme.typography.bodySmall)
                         }
                     }

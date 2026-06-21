@@ -100,7 +100,7 @@ fun DevicesScreen(
                 ThisDeviceCard(
                     name = deviceName,
                     safetyNumber = graph.identity.clientId.value,
-                    keyBacking = graph.identity.backing.toString(),
+                    keyBacking = keyBackingLabel(graph.identity.backing),
                 )
             }
             item {

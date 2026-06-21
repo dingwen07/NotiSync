@@ -9,8 +9,11 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.crypto.KeyBacking
 
 data class PermissionState(
     val listenerEnabled: Boolean = false,
@@ -33,3 +36,15 @@ internal fun NotiScaffold(title: String, content: @Composable (Modifier) -> Unit
         content(Modifier.padding(padding))
     }
 }
+
+@Composable
+internal fun keyBackingLabel(backing: KeyBacking): String =
+    stringResource(
+        when (backing) {
+            KeyBacking.UNKNOWN -> R.string.key_backing_unknown
+            KeyBacking.UNKNOWN_SECURE -> R.string.key_backing_unknown_secure
+            KeyBacking.SOFTWARE -> R.string.key_backing_software
+            KeyBacking.TEE -> R.string.key_backing_tee
+            KeyBacking.STRONGBOX -> R.string.key_backing_strongbox
+        },
+    )
