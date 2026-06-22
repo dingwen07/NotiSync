@@ -20,6 +20,7 @@ import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.currentCoroutineContext
@@ -304,11 +305,15 @@ class BrokerClient(
         runCatching { verifyIntegrity() }
             .onSuccess { lastAuthFailure = null }
             .onFailure {
-                // Transient failures (network, server 429/5xx) get a short cooldown so a blip
-                // doesn't block all transport for a minute; only definitive rejects back off long.
+                // Transient failures (network, server 429/5xx, stale token) start with a short cooldown so
+                // a blip doesn't block all transport; a definitive reject starts long. Either way the
+                // cooldown grows per consecutive failure (see [backoffCooldownMs]) so a sustained outage
+                // backs off instead of re-attesting on a fixed interval. Runs under [authMutex], so the
+                // read-modify-write of the attempt counter can't race.
                 val retryable = (it as? IntegrityException)?.retryable ?: true
-                val cooldown = if (retryable) AUTH_RETRYABLE_COOLDOWN_MS else AUTH_FAILURE_COOLDOWN_MS
-                lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown)
+                val attempt = (lastAuthFailure?.attempt ?: 0) + 1
+                val cooldown = backoffCooldownMs(retryable, attempt)
+                lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown, attempt)
             }
             .getOrThrow()
             .also { storeAuth(it) }
@@ -317,6 +322,20 @@ class BrokerClient(
     private fun storeAuth(value: PlayIntegrityVerificationResponse?) {
         cachedAuth = value
         runCatching { tokenStore.save(value) }
+    }
+
+    /**
+     * Exponential backoff with additive jitter for re-attestation. The nth consecutive failure waits
+     * base·2^(n-1) — shift capped at [AUTH_COOLDOWN_MAX_SHIFT], total capped at [AUTH_COOLDOWN_MAX_MS] —
+     * plus 0–50% jitter so a fleet of clients hit by the same broker blip don't re-attest in lockstep.
+     * Jitter only ever DELAYS a retry, never advances it, so we never hammer Play Integrity or the broker
+     * harder than the computed backoff. [retryable] selects the base.
+     */
+    private fun backoffCooldownMs(retryable: Boolean, attempt: Int): Long {
+        val base = if (retryable) AUTH_RETRYABLE_COOLDOWN_BASE_MS else AUTH_FAILURE_COOLDOWN_BASE_MS
+        val shift = (attempt - 1).coerceIn(0, AUTH_COOLDOWN_MAX_SHIFT)
+        val capped = (base shl shift).coerceAtMost(AUTH_COOLDOWN_MAX_MS)
+        return capped + Random.nextLong(capped / 2 + 1)
     }
 
     private fun isCoolingDown(): Boolean {
@@ -430,7 +449,10 @@ class BrokerClient(
                     consecutiveFailures = 0
                 }
             }
-            delay(backoffMs)
+            // Additive jitter [x, 1.5x] (mirrors [backoffCooldownMs]): a fleet of devices dropped by the
+            // same broker blip would otherwise reconnect in lockstep and re-synchronize load spikes. Jitter
+            // only ever delays a retry, never advances it; the base keeps its clean exponential growth + cap.
+            delay(backoffMs + Random.nextLong(backoffMs / 2 + 1))
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
     }
@@ -442,13 +464,18 @@ class BrokerClient(
         // Refresh a still-valid token once it's within a day of expiry (stale-while-revalidate), so the
         // multi-day JWT is renewed in the background long before any request would have to block to re-attest.
         const val AUTH_PROACTIVE_REFRESH_MS = 24L * 60 * 60 * 1000
-        const val AUTH_FAILURE_COOLDOWN_MS = 60_000L
-        const val AUTH_RETRYABLE_COOLDOWN_MS = 5_000L
+        // Re-attestation backoff: the nth consecutive failure waits base·2^(n-1), shift- then total-capped,
+        // plus jitter (see [backoffCooldownMs]). Retryable (429/5xx/stale) starts gentle at 5s; a definitive
+        // reject (bad device/app/signature) starts at 60s. Both reset on the next successful attestation.
+        const val AUTH_RETRYABLE_COOLDOWN_BASE_MS = 5_000L
+        const val AUTH_FAILURE_COOLDOWN_BASE_MS = 60_000L
+        const val AUTH_COOLDOWN_MAX_SHIFT = 4
+        const val AUTH_COOLDOWN_MAX_MS = 5L * 60 * 1000
         const val WS_REAUTH_AFTER_FAILURES = 3
         const val WS_PING_SECONDS = 30L
     }
 
-    private data class AuthFailure(val atMillis: Long, val message: String, val cooldownMs: Long)
+    private data class AuthFailure(val atMillis: Long, val message: String, val cooldownMs: Long, val attempt: Int)
 
     private class IntegrityException(message: String, val retryable: Boolean) : Exception(message)
 }

@@ -203,7 +203,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
             delay(DISMISS_DEBOUNCE_MS)
             pendingDismissals.remove(sbn.key)
             lastSentSignature.remove(sbn.key)
-            eng.dismissLocal(clientId, sbn.key)
+            // Guard only the send, not the debounce delay above (which must stay cancellable so a
+            // cancel+repost aborts cleanly): a re-attestation in cooldown throws, and this bare launch
+            // would otherwise surface it as an uncaught exception that crashes the scope.
+            runCatching { eng.dismissLocal(clientId, sbn.key) }
         }
         pendingDismissals.put(sbn.key, job)?.cancel()
     }
@@ -244,8 +247,14 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         // Off the listener thread: extract/upload private graphics (best-effort), then seal + send.
         val pipeline = app.graph.graphicsPipeline
         app.graph.scope.launch {
-            val withGraphics = pipeline?.attach(sbn, captured) ?: captured
-            eng.captureLocal(withGraphics)
+            // Guard the whole send: a re-attestation in cooldown throws (see BrokerClient.bearerToken),
+            // and this bare launch would otherwise surface it as an uncaught exception that crashes the
+            // scope. attach() can throw too (it uploads private graphics via the same authed path). A
+            // dropped mirror is re-delivered by the live socket / relay drain backstop.
+            runCatching {
+                val withGraphics = pipeline?.attach(sbn, captured) ?: captured
+                eng.captureLocal(withGraphics)
+            }
         }
     }
 }

@@ -108,7 +108,13 @@ class PlayIntegrityVerifier(
         }
         val tokenAge = payload.timestampMillis?.let { now - it }
         if (tokenAge == null || tokenAge < 0 || tokenAge > config.playIntegrityMaxTokenAgeMillis) {
-            return reject("stale_integrity_token", payload)
+            // "Stale" is transient ONLY when the verdict aged past the window: Google caches the Standard
+            // verdict for a few minutes and mint→verify latency (or a doze gap) can push it over, but a
+            // fresh attestation clears it — so signal retryable (→ 429, short client cooldown) for that case.
+            // A missing or future-dated timestamp is malformed or clock-skewed, not transient: keep the
+            // definitive 403 backoff so a genuinely broken token doesn't re-attest in a tight loop.
+            val staleByAge = tokenAge != null && tokenAge > config.playIntegrityMaxTokenAgeMillis
+            return reject("stale_integrity_token", payload, retryable = staleByAge)
         }
 
         val debugBypass = request.debugProof != null &&
