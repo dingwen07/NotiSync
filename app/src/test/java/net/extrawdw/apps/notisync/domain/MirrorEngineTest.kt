@@ -13,6 +13,7 @@ import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
+import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -63,7 +64,13 @@ class MirrorEngineTest {
         activityLog: ActivityLog = ActivityLog(),
     ): Pair<SecureChannel, MirrorEngine> {
         val channel = SecureChannel(me, myHpkePrivate, transport, TrustPeerDirectory(trust), log = {})
-        val mirror = MirrorEngine(channel = channel, renderer = renderer, activityLog = activityLog, scope = CoroutineScope(Dispatchers.Unconfined))
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = renderer,
+            activityLog = activityLog,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+        )
         mirror.register()
         return channel to mirror
     }
@@ -107,6 +114,7 @@ class MirrorEngineTest {
             renderer = renderer,
             activityLog = activityLog,
             scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
             peerNameResolver = { trust.displayName(it) ?: it.shortForm() },
         )
         mirror.register()
@@ -175,7 +183,14 @@ class MirrorEngineTest {
         }
         val transport = CapturingTransport()
         val channel = SecureChannel(me, myHpke.privateKeyset, transport, TrustPeerDirectory(trust), log = {})
-        val mirror = MirrorEngine(channel = channel, renderer = RecordingRenderer(), activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined), assetResolver = MissingResolver(listOf(ref(other.clientId))))
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = RecordingRenderer(),
+            activityLog = ActivityLog(),
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+            assetResolver = MissingResolver(listOf(ref(other.clientId))),
+        )
         mirror.register()
 
         // NOTIFICATION from an OWN device, but its body's sourceClientId names a NON-own peer (body-controlled).
@@ -192,7 +207,14 @@ class MirrorEngineTest {
         val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, ownDevice = true)) }
         val transport = CapturingTransport()
         val channel = SecureChannel(me, myHpke.privateKeyset, transport, TrustPeerDirectory(trust), log = {})
-        val mirror = MirrorEngine(channel = channel, renderer = RecordingRenderer(), activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined), assetResolver = MissingResolver(listOf(ref(sender.clientId))))
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = RecordingRenderer(),
+            activityLog = ActivityLog(),
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+            assetResolver = MissingResolver(listOf(ref(sender.clientId))),
+        )
         mirror.register()
 
         val notif = sampleNotif(sender.clientId).copy(largeIcon = ref(sender.clientId))

@@ -14,6 +14,7 @@ import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
+import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.CardDelivery
 import net.extrawdw.notisync.protocol.ClientId
@@ -65,6 +66,7 @@ class FoundationEngineTest {
             scope = CoroutineScope(Dispatchers.Unconfined),
             onTrustPrompt = { id, p, by -> prompts.add(Triple(id, p, by)) },
             onAsset = { msg, sync -> forwarded.add(msg to sync) },
+            activityText = TestActivityText,
         )
         foundation.register()
         return Harness(me, myHpke, trust, transport, channel, foundation, prompts, forwarded, activityLog)

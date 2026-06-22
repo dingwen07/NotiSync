@@ -136,7 +136,7 @@ class PairingManager(private val graph: AppGraph) {
     fun accept(scanned: String, ownDevice: Boolean = true): Result<ClientCard> = runCatching {
         val verified = decodeVerifiedClientCard(PairingDeepLinks.extractPayload(scanned))
         require(graph.trust.addLocal(verified.blob, System.currentTimeMillis(), ownDevice)) { "card verification failed" }
-        graph.activityLog.add(ActivityEvent.Kind.PAIRED, "Paired", verified.card.displayName, System.currentTimeMillis())
+        graph.activityLog.add(ActivityEvent.Kind.PAIRED, graph.activityText.pairedTitle(), verified.card.displayName, System.currentTimeMillis())
         // Make sure our own card is published so the new peer (and broker) can resolve us.
         graph.scope.launch { runCatching { graph.transport.publishCard(graph.buildClientCardBlob()) } }
         // Tell our own devices about the new device (own or other) so the shared roster + its card converge.

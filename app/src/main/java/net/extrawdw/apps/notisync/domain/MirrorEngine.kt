@@ -7,6 +7,7 @@ import net.extrawdw.apps.notisync.channel.Recipients
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.foundation.SendPolicy
 import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.notisync.protocol.AssetSync
@@ -60,6 +61,7 @@ class MirrorEngine(
     private val channel: SecureChannel,
     private val renderer: MirrorRenderer,
     private val activityLog: ActivityLog,
+    private val activityText: ActivityText,
     private val scope: CoroutineScope,
     private val assetResolver: AssetResolver? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
@@ -86,7 +88,7 @@ class MirrorEngine(
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. */
     suspend fun captureLocal(notif: CapturedNotification): Int {
         val n = channel.send(MessageType.NOTIFICATION, ProtocolCodec.encodeToCbor(notif), Recipients.OwnMesh, Urgency.HIGH)
-        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, notif.appLabel, "mirrored to $n device(s)", now())
+        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, notif.appLabel, activityText.mirroredToDevices(n), now())
         return n
     }
 
@@ -96,7 +98,7 @@ class MirrorEngine(
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
         val event = DismissEvent(sourceClientId, sourceKey, now())
         val n = channel.send(MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), Recipients.OwnMesh, Urgency.NORMAL)
-        if (n > 0) activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), "synced to $n device(s)", now())
+        if (n > 0) activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), activityText.syncedToDevices(n), now())
     }
 
     private fun onNotification(msg: InboundMessage) {
@@ -106,7 +108,7 @@ class MirrorEngine(
         activityLog.add(
             ActivityEvent.Kind.RECEIVED,
             notif.appLabel,
-            "from ${peerNameResolver(msg.senderId)}",
+            activityText.fromDevice(peerNameResolver(msg.senderId)),
             now(),
             deliveryMode = msg.deliveryMode.ifKnown(),
         )
@@ -138,7 +140,7 @@ class MirrorEngine(
         activityLog.add(
             ActivityEvent.Kind.DISMISSED,
             dismissedAppName(event.sourceKey),
-            "by ${peerNameResolver(msg.senderId)}",
+            activityText.byDevice(peerNameResolver(msg.senderId)),
             now(),
             deliveryMode = msg.deliveryMode.ifKnown(),
         )
@@ -164,7 +166,12 @@ class MirrorEngine(
         for (item in items) resolver.repair(item.assetHash, channel.clientId)?.let { ready.add(it) }
         if (ready.isEmpty()) return
         sendAssetSync(requester, AssetSync(AssetSyncKind.ASSET_READY, ready.map { AssetSyncItem(it.assetHash, it.assetId, it) }))
-        activityLog.add(ActivityEvent.Kind.SENT, "Asset repair", "re-sent ${ready.size} to ${requester.shortForm()}", now())
+        activityLog.add(
+            ActivityEvent.Kind.SENT,
+            activityText.assetRepairTitle(),
+            activityText.assetRepairDetail(ready.size, requester.shortForm()),
+            now(),
+        )
     }
 
     /** Consumer side: fetch each repaired asset and re-post the notification that was waiting on it. */

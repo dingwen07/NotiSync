@@ -37,6 +37,47 @@
     <string name="activity_delivery_websocket">WebSocket</string>
     <string name="activity_delivery_fcm_inline">FCM inline</string>
     <string name="activity_delivery_fcm_relay_fetch">FCM wake + server fetch (oversized)</string>
+    <string name="activity_kind_captured">Captured</string>
+    <string name="activity_kind_sent">Sent</string>
+    <string name="activity_kind_received">Received</string>
+    <string name="activity_kind_dismissed">Dismissed</string>
+    <string name="activity_kind_paired">Paired</string>
+    <string name="activity_kind_route_repair">Route repair</string>
+    <string name="activity_kind_error">Error</string>
+    <plurals name="activity_detail_mirrored_to_devices">
+        <item quantity="one">mirrored to %1$d device</item>
+        <item quantity="other">mirrored to %1$d devices</item>
+    </plurals>
+    <plurals name="activity_detail_synced_to_devices">
+        <item quantity="one">synced to %1$d device</item>
+        <item quantity="other">synced to %1$d devices</item>
+    </plurals>
+    <string name="activity_detail_from_device">from %1$s</string>
+    <string name="activity_detail_by_device">by %1$s</string>
+    <string name="activity_title_asset_repair">Asset repair</string>
+    <plurals name="activity_detail_asset_repair">
+        <item quantity="one">re-sent %1$d asset to %2$s</item>
+        <item quantity="other">re-sent %1$d assets to %2$s</item>
+    </plurals>
+    <string name="activity_title_rejected">Rejected</string>
+    <string name="activity_detail_bad_signature_from">bad signature from %1$s</string>
+    <string name="activity_title_fcm_route">FCM route</string>
+    <string name="activity_detail_fcm_route_registration_failed">registration failed: %1$s</string>
+    <string name="activity_detail_fcm_route_registered">registered</string>
+    <string name="activity_title_device_name">Device name</string>
+    <plurals name="activity_detail_device_name_updated">
+        <item quantity="one">updated on %1$d device</item>
+        <item quantity="other">updated on %1$d devices</item>
+    </plurals>
+    <string name="activity_detail_renamed_was">renamed (was %1$s)</string>
+    <string name="activity_detail_trust_update_from">trust update from %1$s (%2$s)</string>
+    <string name="activity_trust_prompt_new_trust">new device</string>
+    <string name="activity_trust_prompt_re_trust">rejoining device</string>
+    <string name="activity_trust_prompt_new_revoke">device removal</string>
+    <string name="activity_trust_prompt_conflict">conflict</string>
+    <string name="activity_trust_prompt_other_added">other device added</string>
+    <string name="activity_trust_prompt_other_removed">other device removed</string>
+    <string name="activity_title_paired">Paired</string>
 
     <!-- Settings screen -->
     <string name="settings_device_name">Device name</string>

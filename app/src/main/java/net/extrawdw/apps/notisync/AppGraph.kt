@@ -38,6 +38,8 @@ import net.extrawdw.apps.notisync.crypto.KeyVault
 import net.extrawdw.apps.notisync.crypto.KeyVaultAuthTokenStore
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.data.ActivityText
+import net.extrawdw.apps.notisync.data.AndroidActivityText
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
@@ -80,6 +82,7 @@ internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("
 class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val activityLog = ActivityLog()
+    val activityText: ActivityText = AndroidActivityText(app)
 
     lateinit var identity: AndroidIdentitySigner
         private set
@@ -140,8 +143,8 @@ class AppGraph(private val app: Application) {
             onBadSignature = { id, at, deliveryMode ->
                 activityLog.add(
                     ActivityEvent.Kind.ERROR,
-                    "Rejected",
-                    "bad signature from ${trust.displayName(id) ?: id.shortForm()}",
+                    activityText.rejectedTitle(),
+                    activityText.badSignatureFrom(trust.displayName(id) ?: id.shortForm()),
                     at,
                     deliveryMode = deliveryMode.ifKnown(),
                 )
@@ -157,6 +160,7 @@ class AppGraph(private val app: Application) {
             assetResolver = assetManager,
             appLabelResolver = ::appLabelFor,
             peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
+            activityText = activityText,
         )
         mirrorEngine = mirror
         // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
@@ -167,6 +171,7 @@ class AppGraph(private val app: Application) {
             scope = scope,
             onTrustPrompt = ::onTrustPrompt,
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
+            activityText = activityText,
         )
         foundationEngine = foundation
         // Register all handlers synchronously now — BEFORE the lifecycle observer or an FCM wake can
@@ -392,8 +397,8 @@ class AppGraph(private val app: Application) {
             .addOnFailureListener { e ->
                 activityLog.add(
                     ActivityEvent.Kind.ERROR,
-                    "FCM route",
-                    "registration failed: ${e.message ?: e.javaClass.simpleName}",
+                    activityText.fcmRouteTitle(),
+                    activityText.fcmRouteRegistrationFailed(e.message ?: e.javaClass.simpleName),
                     System.currentTimeMillis(),
                 )
             }
@@ -404,7 +409,12 @@ class AppGraph(private val app: Application) {
             val epoch = settings.epochForFcmRoute(routeRef)
             runCatching {
                 transport.publishRoutes(listOf(signedRouteClaim(routeRef, epoch)))
-                activityLog.add(ActivityEvent.Kind.ROUTE_REPAIR, "FCM route", "registered", System.currentTimeMillis())
+                activityLog.add(
+                    ActivityEvent.Kind.ROUTE_REPAIR,
+                    activityText.fcmRouteTitle(),
+                    activityText.fcmRouteRegistered(),
+                    System.currentTimeMillis(),
+                )
             }
         }
     }
@@ -453,6 +463,8 @@ class AppGraph(private val app: Application) {
             style = NotifStyle.BIG_TEXT,
             importance = MirrorImportance.HIGH,
             postTime = System.currentTimeMillis(),
+            channelId = "notisync_test",
+            channelName = "NotiSync Test"
         )
         return mirror.captureLocal(notif)
     }

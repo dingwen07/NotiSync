@@ -52,7 +52,7 @@ fun ActivityScreen() {
             LazyColumn(modifier.fillMaxSize()) {
                 items(events) { e ->
                     ListItem(
-                        overlineContent = { Text(stringResource(R.string.activity_event_overline, e.kind.name, fmt.format(Date(e.timestamp)))) },
+                        overlineContent = { Text(stringResource(R.string.activity_event_overline, activityKindLabel(e.kind), fmt.format(Date(e.timestamp)))) },
                         headlineContent = { Text(e.title) },
                         supportingContent = { Text(activityDetail(e)) },
                     )
@@ -75,4 +75,15 @@ private fun deliveryModeLabel(mode: DeliveryMode): String = when (mode) {
     DeliveryMode.WEBSOCKET -> stringResource(R.string.activity_delivery_websocket)
     DeliveryMode.FCM_INLINE -> stringResource(R.string.activity_delivery_fcm_inline)
     DeliveryMode.FCM_RELAY_FETCH -> stringResource(R.string.activity_delivery_fcm_relay_fetch)
+}
+
+@Composable
+private fun activityKindLabel(kind: ActivityEvent.Kind): String = when (kind) {
+    ActivityEvent.Kind.CAPTURED -> stringResource(R.string.activity_kind_captured)
+    ActivityEvent.Kind.SENT -> stringResource(R.string.activity_kind_sent)
+    ActivityEvent.Kind.RECEIVED -> stringResource(R.string.activity_kind_received)
+    ActivityEvent.Kind.DISMISSED -> stringResource(R.string.activity_kind_dismissed)
+    ActivityEvent.Kind.PAIRED -> stringResource(R.string.activity_kind_paired)
+    ActivityEvent.Kind.ROUTE_REPAIR -> stringResource(R.string.activity_kind_route_repair)
+    ActivityEvent.Kind.ERROR -> stringResource(R.string.activity_kind_error)
 }

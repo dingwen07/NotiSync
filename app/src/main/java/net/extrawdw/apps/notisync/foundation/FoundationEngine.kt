@@ -7,6 +7,7 @@ import net.extrawdw.apps.notisync.channel.Recipients
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustState
 import net.extrawdw.apps.notisync.transport.ifKnown
@@ -40,6 +41,7 @@ class FoundationEngine(
     private val onTrustPrompt: (subject: ClientId, prompt: TrustPrompt, byName: String) -> Unit,
     /** Hands a DATA_SYNC `ASSET` sub-body to the notification app (the single-decode-point forward). */
     private val onAsset: (InboundMessage, DataSync) -> Unit,
+    private val activityText: ActivityText,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     /** Register the sole DATA_SYNC handler. Call during graph construction, before the channel runs. */
@@ -72,7 +74,7 @@ class FoundationEngine(
             MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)),
             Recipients.AllTrusted, Urgency.NORMAL, // profile updates reach own AND other devices
         )
-        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, "Device name", "updated on $n device(s)", now())
+        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, activityText.deviceNameTitle(), activityText.deviceNameUpdated(n), now())
     }
 
     /** Deliver a signed card to one own-mesh peer (keyless repair / card announce). */
@@ -100,7 +102,7 @@ class FoundationEngine(
                     activityLog.add(
                         ActivityEvent.Kind.PAIRED,
                         update.displayName,
-                        "renamed (was $previousName)",
+                        activityText.renamedWas(previousName),
                         now(),
                         deliveryMode = msg.deliveryMode.ifKnown(),
                     )
@@ -117,7 +119,7 @@ class FoundationEngine(
                     activityLog.add(
                         ActivityEvent.Kind.PAIRED,
                         id.shortForm(),
-                        "trust update from $byName ($prompt)",
+                        activityText.trustUpdateFrom(byName, prompt),
                         now(),
                         deliveryMode = msg.deliveryMode.ifKnown(),
                     )
