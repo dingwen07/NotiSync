@@ -11,9 +11,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
-import androidx.compose.animation.AnimatedContentTransitionScope
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
@@ -25,15 +25,19 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
-import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.core.app.NotificationManagerCompat
@@ -55,7 +59,7 @@ import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
-import net.extrawdw.apps.notisync.ui.PairingScreen
+import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
@@ -121,7 +125,6 @@ private sealed interface Route {
     @Serializable data object Apps : Route
     @Serializable data object Activity : Route
     @Serializable data object Settings : Route
-    @Serializable data object Pairing : Route
 }
 
 /** The navigation-suite (bottom bar / rail / drawer) destinations, in display order. */
@@ -143,10 +146,15 @@ fun NotiSyncRoot(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
 
+    // Pairing is a state-driven overlay rather than a nav destination, so it can expand out of — and
+    // collapse back into — the "Pair a device" stripe with a predictive-back-driven container transform
+    // (see PairingOverlay). The stripe reports its live position here; the overlay renders above the
+    // whole navigation suite so the Devices tab (and bar) stay visible as the page folds away.
+    var showPairing by rememberSaveable { mutableStateOf(false) }
+    var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
+
     LaunchedEffect(pendingPairingPayload) {
-        if (pendingPairingPayload != null) {
-            navController.navigate(Route.Pairing) { launchSingleTop = true }
-        }
+        if (pendingPairingPayload != null) showPairing = true
     }
 
     LaunchedEffect(openDevices) {
@@ -156,57 +164,56 @@ fun NotiSyncRoot(
         }
     }
 
-    NavigationSuiteScaffold(
-        // Show the navigation suite for the top-level tabs; full-screen flows (pairing) hide it.
-        // `null` is the first-frame state before the start destination is pushed — treat it as
-        // top-level so the bar doesn't flash hidden on launch.
-        layoutType = if (currentDestination == null || currentDestination.isTopLevel()) {
-            NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo())
-        } else {
-            NavigationSuiteType.None
-        },
-        navigationSuiteItems = {
-            TopLevelDestination.entries.forEach { dest ->
-                item(
-                    selected = currentDestination.isOn(dest),
-                    onClick = { navController.navigateToTopLevel(dest) },
-                    icon = { Icon(dest.icon, contentDescription = stringResource(dest.label)) },
-                    label = { Text(stringResource(dest.label)) },
-                )
-            }
-        },
-    ) {
-        NavHost(
-            navController = navController,
-            startDestination = Route.Devices,
-            modifier = Modifier.fillMaxSize(),
-            // Tabs swap instantly (no transition). System Back / predictive back from a tab is a pop,
-            // so it animates the pop transitions — a horizontal slide that the predictive-back gesture
-            // drives directly (the activity already opts in via android:enableOnBackInvokedCallback).
-            enterTransition = { EnterTransition.None },
-            exitTransition = { ExitTransition.None },
-            popEnterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.End) },
-            popExitTransition = { slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End) },
+    Box(modifier = Modifier.fillMaxSize()) {
+        NavigationSuiteScaffold(
+            layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo()),
+            navigationSuiteItems = {
+                TopLevelDestination.entries.forEach { dest ->
+                    item(
+                        selected = currentDestination.isOn(dest),
+                        onClick = { navController.navigateToTopLevel(dest) },
+                        icon = { Icon(dest.icon, contentDescription = stringResource(dest.label)) },
+                        label = { Text(stringResource(dest.label)) },
+                    )
+                }
+            },
         ) {
-            composable<Route.Devices> {
-                DevicesDestination(
-                    onPair = { navController.navigate(Route.Pairing) { launchSingleTop = true } },
-                )
-            }
-            composable<Route.Apps> { AppsScreen() }
-            composable<Route.Activity> { ActivityScreen() }
-            composable<Route.Settings> { SettingsScreen() }
-            composable<Route.Pairing>(
-                // Pairing is a pushed full-screen flow: slide in from the right (the pop back out
-                // reuses the NavHost's horizontal pop transition above).
-                enterTransition = { slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start) },
+            NavHost(
+                navController = navController,
+                startDestination = Route.Devices,
+                modifier = Modifier.fillMaxSize(),
+                // Top-level tabs swap instantly. Selecting a non-start tab is a push (enter/exit);
+                // selecting the start destination (Devices) is a pop, so the pop transitions must be
+                // None as well — otherwise Devices alone would slide while the others cut.
+                enterTransition = { EnterTransition.None },
+                exitTransition = { ExitTransition.None },
+                popEnterTransition = { EnterTransition.None },
+                popExitTransition = { ExitTransition.None },
             ) {
-                PairingScreen(
-                    onBack = { navController.navigateUp() },
-                    initialPairingPayload = pendingPairingPayload,
-                    onInitialPairingPayloadConsumed = onPendingPairingPayloadConsumed,
-                )
+                composable<Route.Devices> {
+                    DevicesDestination(
+                        onPair = { showPairing = true },
+                        // Sample the stripe's bounds (root coordinates, shared with the overlay) so the
+                        // container transform knows where to grow from / fold back into. It moves as the
+                        // list scrolls; the last value before opening is what the collapse animates to.
+                        pairButtonModifier = Modifier.onGloballyPositioned {
+                            pairButtonBounds = it.boundsInRoot()
+                        },
+                    )
+                }
+                composable<Route.Apps> { AppsScreen() }
+                composable<Route.Activity> { ActivityScreen() }
+                composable<Route.Settings> { SettingsScreen() }
             }
+        }
+
+        if (showPairing) {
+            PairingOverlay(
+                pairButtonBounds = pairButtonBounds,
+                onClose = { showPairing = false },
+                initialPairingPayload = pendingPairingPayload,
+                onInitialPairingPayloadConsumed = onPendingPairingPayloadConsumed,
+            )
         }
     }
 }
@@ -227,12 +234,9 @@ private fun NavController.navigateToTopLevel(dest: TopLevelDestination) {
 private fun NavDestination?.isOn(dest: TopLevelDestination): Boolean =
     this?.hierarchy?.any { it.hasRoute(dest.route::class) } == true
 
-private fun NavDestination?.isTopLevel(): Boolean =
-    TopLevelDestination.entries.any { isOn(it) }
-
 /** Hosts the permission/launcher plumbing the Devices screen needs, scoped to that destination. */
 @Composable
-private fun DevicesDestination(onPair: () -> Unit) {
+private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier = Modifier) {
     val context = LocalContext.current
 
     // Re-check permissions whenever Devices returns to the foreground (e.g. back from system settings).
@@ -250,6 +254,7 @@ private fun DevicesDestination(onPair: () -> Unit) {
     DevicesScreen(
         permissions = permissions,
         onPair = onPair,
+        pairButtonModifier = pairButtonModifier,
         onRequestPostNotifications = {
             postNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         },

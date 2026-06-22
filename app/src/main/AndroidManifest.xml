@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -127,6 +128,15 @@
         <meta-data
             android:name="com.google.mlkit.vision.DEPENDENCIES"
             android:value="barcode_ui" />
+
+        <!-- play-services-code-scanner ships its scanner activity locked to PORTRAIT, which Play's
+             large-screen check flags (and Android 16 ignores on large screens regardless). Relax it
+             to fullUser so it honors the device's rotation setting. -->
+        <activity
+            android:name="com.google.mlkit.vision.codescanner.internal.GmsBarcodeScanningDelegateActivity"
+            android:screenOrientation="fullUser"
+            tools:node="merge"
+            tools:replace="android:screenOrientation" />
     </application>
 
 </manifest>

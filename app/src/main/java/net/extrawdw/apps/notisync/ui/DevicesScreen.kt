@@ -54,6 +54,7 @@ fun DevicesScreen(
     onPair: () -> Unit,
     onRequestPostNotifications: () -> Unit,
     onOpenListenerSettings: () -> Unit,
+    pairButtonModifier: Modifier = Modifier,
 ) {
     val graph = rememberGraph()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
@@ -106,7 +107,7 @@ fun DevicesScreen(
                 )
             }
             item {
-                Button(onClick = onPair, modifier = Modifier.fillMaxWidth()) {
+                Button(onClick = onPair, modifier = Modifier.fillMaxWidth().then(pairButtonModifier)) {
                     Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.size(4.dp))
                     Icon(Icons.Outlined.Contactless, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))

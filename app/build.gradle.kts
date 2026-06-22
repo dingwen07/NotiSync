@@ -29,8 +29,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 4
-        versionName = "0.4.0-rc.1"
+        versionCode = 5
+        versionName = "0.4.1-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
             ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")
@@ -106,6 +106,15 @@ dependencies {
     implementation(libs.androidx.lifecycle.runtime.compose)
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.lifecycle.process)
+
+    // Play: Your app uses an outdated SDK version of androidx.fragment:fragment
+    // Raise the transitive androidx.fragment that play-services-base/basement pin at 1.1.0
+    // A constraint not a direct dependency since the app uses no Fragments.
+    constraints {
+        implementation(libs.androidx.fragment) {
+            because("play-services pins androidx.fragment:1.1.0, flagged outdated by Play's SDK index")
+        }
+    }
 
     // Persistence (no codegen): Preferences + structured values serialized via kotlinx-serialization.
     implementation(libs.androidx.datastore)
