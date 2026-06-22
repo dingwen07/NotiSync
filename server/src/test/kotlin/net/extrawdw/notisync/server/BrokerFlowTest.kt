@@ -27,6 +27,7 @@ import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
@@ -257,6 +258,70 @@ class BrokerFlowTest {
             HttpStatusCode.NotFound,
             client.get(unknown) { signedHeaders(recipient, "GET", unknown, ByteArray(0)) }.status,
         )
+    }
+
+    @Test
+    fun relayBatchAck_signedOnly_dropsOnlyTheNamedMessages() = testApplication {
+        val tmp = File.createTempFile("notisync-batchack", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(recipient, recipientHpke, "Recipient"))) }
+        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+
+        suspend fun queue(messageId: String) {
+            val body = ProtocolCodec.encodeToCbor(
+                CapturedNotification(
+                    sourceClientId = sender.clientId,
+                    sourceKey = "0|com.example.chat|7|null",
+                    packageName = "com.example.chat",
+                    appLabel = "Chat",
+                    title = "Alice",
+                    text = "Dinner at 7?",
+                    importance = MirrorImportance.HIGH,
+                    postTime = 1_750_000_000_000L,
+                )
+            )
+            val envelope = EnvelopeCrypto.seal(
+                signer = sender,
+                typ = MessageType.NOTIFICATION,
+                bodyPlaintext = body,
+                recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+                messageId = messageId,
+                seq = 1L,
+                createdAt = 1_750_000_000_000L,
+            )
+            client.post("/v1/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+        }
+        queue("01J0ACK0001"); queue("01J0ACK0002"); queue("01J0ACK0003")
+
+        val pendingBefore = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(setOf("01J0ACK0001", "01J0ACK0002", "01J0ACK0003"), pendingBefore.messageIds.toSet())
+
+        // Batch-ack two of the three with a signature-only POST (no JWT) — the FCM-inline / dismissal path.
+        val ackBody = ProtocolCodec.encodeToJson(RelayAck(listOf("01J0ACK0001", "01J0ACK0002"))).toByteArray(Charsets.UTF_8)
+        val ackResp = client.post("/v1/relay/ack") {
+            contentType(ContentType.Application.Json)
+            signedHeaders(recipient, "POST", "/v1/relay/ack", ackBody)
+            setBody(ackBody)
+        }
+        assertEquals(HttpStatusCode.OK, ackResp.status)
+
+        // Only the un-acked id remains queued.
+        val pendingAfter = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(listOf("01J0ACK0003"), pendingAfter.messageIds)
     }
 
     @Test

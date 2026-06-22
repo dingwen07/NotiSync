@@ -22,8 +22,9 @@ import java.util.concurrent.atomic.AtomicLong
  * inspects a sub-kind, and never applies an authorization (own/other) drop: those are caller concerns.
  *
  * Both inbound feeds — the live [Transport.incoming] stream and out-of-band [deliver] calls from the
- * FCM service — converge through ONE shared [seen] LRU, so they are idempotent against each other.
- * The single [seq] counter lives here too: one channel, one per-sender sequence space.
+ * FCM service — converge through ONE shared dedup ([recent] in memory, [dedup] across restarts), so
+ * they are idempotent against each other and across an app restart. The single [seq] counter lives
+ * here too: one channel, one per-sender sequence space.
  */
 class SecureChannel(
     private val signer: IdentitySigner,
@@ -38,16 +39,33 @@ class SecureChannel(
      * channel stays free of any activity/UI coupling.
      */
     private val onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
+    /**
+     * Persisted cross-session idempotency. Null keeps the channel a pure in-memory substrate (tests,
+     * and any caller that doesn't need restart-survival). When supplied, a message handled in a prior
+     * process is recognised as a duplicate after a restart — the fix for redelivered relay items
+     * re-posting notifications after an app update.
+     */
+    private val dedup: MessageDedup? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     private val seq = AtomicLong(now())
 
-    /** Bounded LRU of recently-seen message ids for idempotent delivery (dedupes FCM + WebSocket). */
-    private val seen: MutableSet<String> = java.util.Collections.synchronizedSet(
+    /**
+     * Bounded LRU of message ids handled THIS session — a cheap hot-path cache so a redelivery doesn't
+     * hit [dedup] (disk) every time. The durable dedup is [dedup]; this just shortcuts it.
+     */
+    private val recent: MutableSet<String> = java.util.Collections.synchronizedSet(
         java.util.Collections.newSetFromMap(object : java.util.LinkedHashMap<String, Boolean>(256, 0.75f, true) {
             override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>): Boolean = size > 512
         })
     )
+
+    /**
+     * Message ids currently being handled. A test-and-set guard that collapses a *concurrent* double
+     * delivery (FCM + WebSocket racing on the same id) into a single handler run, without marking an
+     * id "handled" before its handler has actually run (which [recent]/[dedup] only do on success).
+     */
+    private val inFlight: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
 
     /** One handler per [MessageType] — mirrors the old hard `when (typ)` branch, one owner each. */
     private val handlers = ConcurrentHashMap<MessageType, (InboundMessage) -> Unit>()
@@ -96,29 +114,52 @@ class SecureChannel(
     /**
      * Handle one inbound envelope (from the live stream or an FCM wake). NON-suspend by design: it
      * runs the prologue and dispatches inline so the FCM service thread's synchronous-completion
-     * contract is preserved (a handler launches its own async tail if it needs one). Idempotent:
-     * duplicates are dropped BEFORE any signature/decrypt work (dedup-first stays cheap-first).
+     * contract is preserved (a handler launches its own async tail if it needs one).
+     *
+     * Idempotent across processes: an id seen [recent]ly OR durably in [dedup] is a [DeliveryOutcome.DUPLICATE]
+     * before any crypto work (dedup-first stays cheap-first). An id is marked handled ONLY after its
+     * handler returns — so a crash mid-handle redelivers (a duplicate) rather than suppressing a
+     * never-shown notification. The returned outcome lets the caller decide whether to relay-ack:
+     * HANDLED/DUPLICATE are safe to ack; IN_FLIGHT (a racing thread hasn't committed yet) and DROPPED
+     * (may yet deliver once trust/keys converge) are not.
      */
-    fun deliver(envelope: Envelope, deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN) {
-        if (!seen.add(envelope.messageId)) return
-        val keys = directory.lookup(envelope.signerId)
-        if (keys == null) {
-            log.warn("dropping envelope from unknown sender ${envelope.signerId.shortForm()}")
-            return
+    fun deliver(envelope: Envelope, deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN): DeliveryOutcome {
+        val id = envelope.messageId
+        if (id in recent) return DeliveryOutcome.DUPLICATE
+        if (dedup?.seen(id) == true) {
+            recent.add(id)
+            return DeliveryOutcome.DUPLICATE
         }
-        if (!EnvelopeCrypto.verify(envelope, keys.identitySpki)) {
-            log.warn("signature verification failed for ${envelope.messageId}")
-            onBadSignature(envelope.signerId, now(), deliveryMode)
-            return
+        // Collapse a concurrent double-delivery: only the first thread for this id handles it; the
+        // other backs off as IN_FLIGHT — not yet durably recorded, so its caller must NOT ack it (the
+        // winning handler may still fail). Released in `finally` so a DROPPED id can be retried later.
+        if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
+        try {
+            val keys = directory.lookup(envelope.signerId)
+            if (keys == null) {
+                log.warn("dropping envelope from unknown sender ${envelope.signerId.shortForm()}")
+                return DeliveryOutcome.DROPPED
+            }
+            if (!EnvelopeCrypto.verify(envelope, keys.identitySpki)) {
+                log.warn("signature verification failed for $id")
+                onBadSignature(envelope.signerId, now(), deliveryMode)
+                return DeliveryOutcome.DROPPED
+            }
+            val body = runCatching {
+                EnvelopeCrypto.open(envelope, signer.clientId, myHpkePrivateKeyset)
+            }.getOrElse {
+                log.warn("decrypt failed for $id: ${it.message}")
+                return DeliveryOutcome.DROPPED
+            }
+            val handler = handlers[envelope.typ] ?: return DeliveryOutcome.DROPPED
+            handler(InboundMessage(envelope.signerId, keys.ownDevice, envelope.typ, body, id, deliveryMode))
+            // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
+            recent.add(id)
+            dedup?.record(id)
+            return DeliveryOutcome.HANDLED
+        } finally {
+            inFlight.remove(id)
         }
-        val body = runCatching {
-            EnvelopeCrypto.open(envelope, signer.clientId, myHpkePrivateKeyset)
-        }.getOrElse {
-            log.warn("decrypt failed for ${envelope.messageId}: ${it.message}")
-            return
-        }
-        val handler = handlers[envelope.typ] ?: return
-        handler(InboundMessage(envelope.signerId, keys.ownDevice, envelope.typ, body, deliveryMode))
     }
 
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */

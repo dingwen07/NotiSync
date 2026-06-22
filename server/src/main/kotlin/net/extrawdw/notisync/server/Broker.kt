@@ -182,6 +182,10 @@ class Broker(
 
     suspend fun ack(clientId: ClientId, messageId: String) = relay.ackByMessage(clientId, messageId)
 
+    /** Batch-drop [messageIds] from [clientId]'s relay queue; returns how many were removed. */
+    suspend fun ackMany(clientId: ClientId, messageIds: Collection<String>): Int =
+        relay.ackManyByMessage(clientId, messageIds)
+
     suspend fun purgeExpired() {
         val now = System.currentTimeMillis()
         val r = relay.purgeExpired(now)

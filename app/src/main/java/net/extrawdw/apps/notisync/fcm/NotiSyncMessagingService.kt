@@ -32,7 +32,10 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
             val envelope = runCatching {
                 ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(ct))
             }.getOrNull() ?: return
-            channel.deliver(envelope, DeliveryMode.FCM_INLINE)
+            // Inline delivery never gets fetched, so the broker can't drop its relay copy on its own —
+            // queue it for the worker's batch ack (skipped for a dropped-unhandled message).
+            val outcome = channel.deliver(envelope, DeliveryMode.FCM_INLINE)
+            graph.onInlineDelivered(envelope.messageId, outcome)
             return
         }
         // Wake-only message ("typ"="wake"): the payload was too large to inline. Pull exactly the

@@ -13,6 +13,7 @@ import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import java.util.concurrent.TimeUnit
 
@@ -60,25 +61,50 @@ class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
 }
 
 /**
- * Low-frequency catch-all: list whatever is still queued in the broker relay and pull + deliver each.
- * Backs up the FCM wake path for messages FCM deferred (normal-priority DATA_SYNC) or whose wake fetch
- * failed while offline. Deferrable + constrained (connected, battery-not-low) so it is near-free on
- * battery; runs opportunistically in maintenance windows. Idempotent — the channel dedups by id.
+ * Low-frequency catch-all with three jobs, in order:
+ *  1. **Ack** the pending-ack queue (deliveries we handled but couldn't ack inline — chiefly FCM-inline
+ *     pushes and locally-dismissed mirrors) in ONE batched request. Doing this BEFORE the fetch means
+ *     the drain below won't re-list what we've already handled, and it stops the relay backlog that was
+ *     re-posting after a restart from accumulating in the first place.
+ *  2. **Drain** whatever is still queued (FCM-deferred normal-priority, or a wake fetch that failed
+ *     offline): pull + deliver each. Idempotent — the channel dedups by id (across restarts now too).
+ *  3. **Prune** handled-message history past its retention window.
+ *
+ * Deferrable + constrained (connected, battery-not-low) so it is near-free on battery.
  */
 class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         val graph = (applicationContext as NotiSyncApp).graph
         val channel = graph.secureChannel ?: return Result.success()
+        val store = graph.messageStore
+
+        // 1. Batch-ack handled-but-unacked ids, oldest first, in bounded chunks. A failed ack KEEPS the
+        //    ids for next run — a dropped ack only costs a later (deduped) redelivery, never a loss.
+        var batches = 0
+        while (batches++ < MAX_ACK_BATCHES) {
+            val pending = store.pendingAcks()
+            if (pending.isEmpty()) break
+            if (!runCatching { graph.transport.ackRelayMessages(pending) }.getOrDefault(false)) break
+            store.clearAcks(pending)
+            if (pending.size < MessageStore.MAX_ACK_BATCH) break // last (partial) chunk
+        }
+
+        // 2. Drain anything still queued and deliver it.
         val ids = runCatching { graph.transport.fetchPendingRelayIds() }.getOrElse { return Result.retry() }
         for (id in ids) {
             val envelope = runCatching { graph.transport.fetchRelayMessage(id) }.getOrNull()
             if (envelope != null) channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
         }
+
+        // 3. Trim dedup/mapping/ack history past its retention window.
+        runCatching { store.prune() }
         return Result.success()
     }
 
     companion object {
         private const val UNIQUE_NAME = "relay-drain"
+        /** Bound the ack loop so a persistent clear failure can't spin it; the rest carries to next run. */
+        private const val MAX_ACK_BATCHES = 40
         /** Low frequency by design: the FCM + foreground-WS paths are primary; this only sweeps the tail. */
         private const val INTERVAL_HOURS = 6L
 

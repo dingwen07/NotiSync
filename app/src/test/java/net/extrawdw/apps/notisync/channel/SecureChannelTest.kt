@@ -14,6 +14,7 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -141,5 +142,66 @@ class SecureChannelTest {
 
         assertEquals(0, n)
         assertTrue(transport.sent.isEmpty())
+    }
+
+    /** An in-memory stand-in for the app's persisted dedup, to exercise the cross-restart path. */
+    private class FakeDedup : MessageDedup {
+        val ids = java.util.Collections.synchronizedSet(HashSet<String>())
+        override fun seen(messageId: String) = messageId in ids
+        override fun record(messageId: String) { ids.add(messageId) }
+    }
+
+    @Test
+    fun deliver_reportsOutcomes_andRecordsHandledIdsDurably() {
+        val me = newSigner(); val myHpke = newHpke()
+        val sender = newSigner(); val senderHpke = newHpke()
+        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val dedup = FakeDedup()
+        val channel = SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(trust), log = {}, dedup = dedup)
+        channel.onMessage(MessageType.NOTIFICATION) { }
+
+        val env = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1")
+        assertEquals(DeliveryOutcome.HANDLED, channel.deliver(env))
+        assertTrue("a handled id must be recorded durably so a restart still dedups it", dedup.seen("m1"))
+        assertEquals(DeliveryOutcome.DUPLICATE, channel.deliver(env))
+    }
+
+    @Test
+    fun persistedDedup_dropsRedeliveryAcrossAFreshChannel() {
+        val me = newSigner(); val myHpke = newHpke()
+        val sender = newSigner(); val senderHpke = newHpke()
+        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val dedup = FakeDedup() // the shared, persisted layer that survives the "restart"
+        val env = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1")
+
+        var firstCount = 0
+        SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(trust), log = {}, dedup = dedup)
+            .apply { onMessage(MessageType.NOTIFICATION) { firstCount++ } }
+            .deliver(env)
+        assertEquals(1, firstCount)
+
+        // A fresh channel (empty in-memory recent — i.e. after a process restart) sharing the persisted
+        // dedup must NOT re-handle the redelivered envelope. This is the core of the re-post fix.
+        var secondCount = 0
+        val outcome = SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(trust), log = {}, dedup = dedup)
+            .apply { onMessage(MessageType.NOTIFICATION) { secondCount++ } }
+            .deliver(env)
+        assertEquals("a redelivery after restart must not re-post", 0, secondCount)
+        assertEquals(DeliveryOutcome.DUPLICATE, outcome)
+    }
+
+    @Test
+    fun droppedMessages_areNotRecorded_soTheyCanStillArriveLater() {
+        val me = newSigner(); val myHpke = newHpke()
+        val stranger = newSigner()
+        val dedup = FakeDedup()
+        // Empty roster -> unknown sender -> dropped before handling.
+        val channel = SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(FakeTrustState()), log = {}, dedup = dedup)
+        channel.onMessage(MessageType.NOTIFICATION) { }
+
+        val outcome = channel.deliver(seal(stranger, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1"))
+
+        assertEquals(DeliveryOutcome.DROPPED, outcome)
+        assertFalse("a dropped (never-handled) message must not be recorded — it may yet deliver once trusted", dedup.seen("m1"))
     }
 }

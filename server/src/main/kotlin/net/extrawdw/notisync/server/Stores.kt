@@ -1,9 +1,11 @@
 package net.extrawdw.notisync.server
 
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.TransportType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.less
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
@@ -119,6 +121,18 @@ class RelayStore(private val db: NotiSyncDb) {
     suspend fun ackByMessage(recipientId: ClientId, messageId: String) = db.tx {
         Relay.deleteWhere { (Relay.recipientId eq recipientId.value) and (Relay.messageId eq messageId) }
         Unit
+    }
+
+    /** Drop many of [recipientId]'s queued messages in ONE transaction — the batch-ack path. Chunked by
+     *  [RelayAck.MAX_BATCH] so each `IN (...)` stays under SQLite's 999-variable limit no matter how many
+     *  ids the (untrusted) client sends. */
+    suspend fun ackManyByMessage(recipientId: ClientId, messageIds: Collection<String>): Int {
+        if (messageIds.isEmpty()) return 0
+        return db.tx {
+            messageIds.chunked(RelayAck.MAX_BATCH).sumOf { chunk ->
+                Relay.deleteWhere { (Relay.recipientId eq recipientId.value) and (Relay.messageId inList chunk) }
+            }
+        }
     }
 
     suspend fun purgeExpired(now: Long): Int = db.tx {

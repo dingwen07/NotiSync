@@ -36,6 +36,7 @@ import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -271,6 +272,22 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                 // flush. Best-effort — a failed ack just re-delivers later (the client dedups by id).
                 runCatching { broker.ack(principal.clientId, messageId) }
             }
+        }
+
+        // Batch-ack: drop many of the caller's queued messages in one signed request. Signature-only
+        // (no JWT) like the GET paths, so a background WorkManager run can ack even while attestation is
+        // cooling down. The body is the signed JSON RelayAck — the signature commits to those exact
+        // bytes. Used for deliveries the broker can't observe being consumed: FCM-inline pushes (the
+        // envelope rides in the push, so it's never fetched here) and a local mirror dismissal.
+        post("/v1/relay/ack") {
+            val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
+            val principal = auth.requireSigned(call, bytes, broker) ?: return@post
+            val ack = runCatching { ProtocolCodec.decodeFromJson<RelayAck>(bytes.decodeToString()) }.getOrNull()
+                ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_ack"))
+            val removed = broker.ackMany(principal.clientId, ack.messageIds)
+            log.info("relay ack client={} requested={} removed={}", principal.clientId.shortForm(), ack.messageIds.size, removed)
+            call.respondText("ok", status = HttpStatusCode.OK)
         }
 
         // Opaque private-asset blobs keyed by random (sourceClientId, assetId). The body is AEAD

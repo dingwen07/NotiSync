@@ -12,11 +12,16 @@ import net.extrawdw.notisync.protocol.MessageType
  * [senderOwnDevice] is surfaced so a handler can apply its own/other authorization policy (the
  * channel never does). [body] is the decrypted CBOR payload; the channel stays payload-agnostic.
  * [deliveryMode] is local diagnostic metadata, not sender-authenticated payload content.
+ *
+ * [messageId] is the envelope's relay id — surfaced so a handler can later relay-ack the exact item
+ * that delivered this message (e.g. when its mirror is dismissed). It is transport metadata, not
+ * sender-authenticated content.
  */
 class InboundMessage(
     val senderId: ClientId,
     val senderOwnDevice: Boolean,
     val typ: MessageType,
     val body: ByteArray,
+    val messageId: String = "",
     val deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
 )

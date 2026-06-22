@@ -41,6 +41,24 @@ data class RelayPending(
     val messageIds: List<String> = emptyList(),
 )
 
+/**
+ * Request body for the signed-only POST /v1/relay/ack: message ids the caller has durably handled and
+ * wants dropped from its relay queue in one round trip. The batch path for deliveries that don't ack
+ * inline — chiefly FCM-inline pushes (the envelope arrives in the push, so it's never fetched) and a
+ * local dismissal of a still-queued mirror. Acking is idempotent: an unknown/already-dropped id is a
+ * no-op, so a retry after a partial failure is safe.
+ */
+@Serializable
+data class RelayAck(
+    val messageIds: List<String> = emptyList(),
+) {
+    companion object {
+        /** Max ids per batch ack. Bounds one request's work and keeps the server's `IN (...)` delete
+         *  under SQLite's 999-variable limit. The client batches by this; the server chunks by it. */
+        const val MAX_BATCH = 500
+    }
+}
+
 /** Request body for POST /v1/integrity/verify. */
 @Serializable
 data class PlayIntegrityVerificationRequest(

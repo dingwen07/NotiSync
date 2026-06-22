@@ -47,7 +47,9 @@ import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
+import net.extrawdw.apps.notisync.channel.DeliveryOutcome
 import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
@@ -84,6 +86,10 @@ class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val activityLog = ActivityLog()
     val activityText: ActivityText = AndroidActivityText(app)
+
+    /** Durable receive-path bookkeeping: cross-restart dedup, the pending relay-ack queue, and the
+     *  mirror→message map for dismissal-ack. Constructing it is cheap (the db opens lazily, off-main). */
+    val messageStore = MessageStore(app)
 
     lateinit var identity: AndroidIdentitySigner
         private set
@@ -141,6 +147,7 @@ class AppGraph(private val app: Application) {
             transport = transport,
             directory = TrustPeerDirectory(trust),
             log = { msg -> Log.w("SecureChannel", msg) },
+            dedup = messageStore, // persisted dedup so a redelivery after restart isn't re-posted
             onBadSignature = { id, at, deliveryMode ->
                 activityLog.add(
                     ActivityEvent.Kind.ERROR,
@@ -162,6 +169,7 @@ class AppGraph(private val app: Application) {
             appLabelResolver = ::appLabelFor,
             peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
             activityText = activityText,
+            ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
         )
         mirrorEngine = mirror
         // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
@@ -201,6 +209,9 @@ class AppGraph(private val app: Application) {
         // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
         // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
         RelayDrainWorker.schedulePeriodic(app)
+        // Trim handled-message history past its retention window on each start — bounds the dedup db on
+        // long-lived processes and rarely-opened devices alike (off-main; the db opens lazily here).
+        scope.launch { runCatching { messageStore.prune() } }
 
         Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
     }
@@ -445,6 +456,29 @@ class AppGraph(private val app: Application) {
                 true
             } ?: false
         }
+        // No relay-ack queued here: the GET /v1/relay/{id} fetch already dropped the item server-side.
+    }
+
+    /**
+     * After an FCM-inline delivery, queue the message for batch relay-ack — UNLESS it was dropped
+     * unhandled (unknown sender / bad signature / decrypt fail), which must stay queued so it can still
+     * deliver once trust/keys converge. The inline path is the one delivery the broker can't observe
+     * being consumed (the envelope rode in the push, so it's never fetched), so without this the item
+     * lingers in the relay until TTL and is the backlog that re-posts after a restart. Local write only
+     * (no network) — the actual ack is one batched request from the relay worker.
+     *
+     * Ack only what is durably handled: HANDLED and DUPLICATE both are (the channel records before
+     * returning either). IN_FLIGHT (a racing thread is still handling this id and hasn't committed) and
+     * DROPPED are not — acking IN_FLIGHT could drop the item before that thread commits. The channel's
+     * outcome already encodes this, so no second dedup read is needed here. Erring toward "don't ack"
+     * only costs a later, deduped redelivery — never a lost notification.
+     */
+    fun onInlineDelivered(messageId: String, outcome: DeliveryOutcome) {
+        val ackable = when (outcome) {
+            DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> true
+            DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED -> false
+        }
+        if (ackable) runCatching { messageStore.enqueueAck(messageId) }
     }
 
     /**

@@ -35,6 +35,7 @@ import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -158,6 +159,28 @@ class BrokerClient(
         }.getOrNull() ?: return emptyList()
         if (!resp.status.isSuccess()) return emptyList()
         return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrDefault(emptyList())
+    }
+
+    /**
+     * Batch-ack [messageIds] so the broker drops them from our relay queue (signed-only POST, never
+     * triggers attestation). The backstop for deliveries the broker can't see consumed: FCM-inline
+     * pushes (delivered in the push, so never fetched) and locally-dismissed mirrors. Returns true only
+     * on a 2xx — on any failure the caller KEEPS the ids and retries next run, so a dropped ack only
+     * costs a later redelivery (the receiver dedups it), never a lost notification. No-op for an empty
+     * list. The signature commits to the exact JSON bytes the server re-reads and verifies.
+     */
+    suspend fun ackRelayMessages(messageIds: List<String>): Boolean {
+        if (messageIds.isEmpty()) return true
+        val url = "${httpBase()}/v1/relay/ack"
+        val body = ProtocolCodec.encodeToJson(RelayAck(messageIds)).toByteArray(Charsets.UTF_8)
+        val resp = runCatching {
+            client.post(url) {
+                contentType(ContentType.Application.Json)
+                signedHeaders("POST", url, body, cachedBearerOrNull())
+                setBody(body)
+            }
+        }.getOrNull() ?: return false
+        return resp.status.isSuccess()
     }
 
     /**

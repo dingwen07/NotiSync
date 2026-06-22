@@ -34,6 +34,20 @@ fun interface OriginalCanceler {
     fun cancel(sourceKey: String)
 }
 
+/**
+ * Maps a rendered mirror back to the relay message that delivered it, so a *local* dismissal can tell
+ * the broker to drop that message — otherwise the still-queued copy is redelivered later and the
+ * dismissed notification reappears. Persisted by the data layer (survives a restart); a no-op when the
+ * engine runs without one (tests, provider-only devices).
+ */
+interface MirrorAckIndex {
+    /** Remember that [messageId] delivered the mirror for ([sourceClientId], [sourceKey]). */
+    fun recordMirror(sourceClientId: ClientId, sourceKey: String, messageId: String)
+
+    /** The mirror for ([sourceClientId], [sourceKey]) was dismissed — queue its message for relay-ack. */
+    fun onDismissed(sourceClientId: ClientId, sourceKey: String)
+}
+
 /** The outcome of resolving a batch of private-asset refs on the consumer side. */
 data class ResolveResult(val newlyAvailable: Boolean, val stillMissing: List<PrivateAssetRef>)
 
@@ -69,6 +83,8 @@ class MirrorEngine(
     private val appLabelResolver: (String) -> String = { it },
     /** Resolves an authenticated sender id to a display name for activity rows; defaults to its short id. */
     private val peerNameResolver: (ClientId) -> String = { it.shortForm() },
+    /** Records mirror→message mappings and queues a relay-ack on local dismissal; null disables both. */
+    private val ackIndex: MirrorAckIndex? = null,
 ) {
     @Volatile var originalCanceler: OriginalCanceler? = null
 
@@ -93,6 +109,10 @@ class MirrorEngine(
     }
 
     suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String) {
+        // Drop the still-queued relay copy of the notification we're dismissing (no-op for our own
+        // captures, which were never received). Done first so the ack is queued even if the DISMISSAL
+        // broadcast below fails — the queue is local and drained by the relay worker.
+        ackIndex?.onDismissed(sourceClientId, sourceKey)
         // No local-suppression set here: echoes from our own cancelNotification() (issued on a remote
         // dismissal) carry REASON_LISTENER_CANCEL and are filtered out by the listener's reason
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
@@ -104,6 +124,9 @@ class MirrorEngine(
     private fun onNotification(msg: InboundMessage) {
         if (!SendPolicy.mayAccept(msg.typ, null, msg.senderOwnDevice)) return
         val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
+        // Remember which relay message delivered this mirror, so a later local dismissal can ack it
+        // (drop the still-queued copy) instead of letting it be redelivered and reappear.
+        ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
         renderer.render(notif) // text + any already-cached graphics, posted immediately
         activityLog.add(
             ActivityEvent.Kind.RECEIVED,
