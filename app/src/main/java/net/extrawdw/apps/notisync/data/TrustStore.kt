@@ -98,7 +98,7 @@ class TrustStore(
     /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. */
     override val activePeers: StateFlow<List<Peer>> = _activePeers
 
-    /** Everything the user reviews — trusted + pending (revoked tombstones hidden) — for the Devices UI. */
+    /** Everything the user reviews — trusted, pending, and revoked tombstones (until purged) — for the Devices UI. */
     val roster: StateFlow<List<RosterDevice>> = _roster
 
     fun cardFor(clientId: ClientId): SignedBlob? = _state.value.cards[clientId]
@@ -262,8 +262,10 @@ class TrustStore(
 
     private fun mutate(f: (State) -> State) {
         val next0 = f(_state.value)
-        // Overlays only ever apply to non-revoked devices; drop any left behind by a removal (bounded growth).
-        val overlays = next0.overlays.filterKeys { next0.entries[it]?.status != null && next0.entries[it]?.status != TrustStatus.REVOKED }
+        // Drop overlays orphaned by a removal (bounded growth), but KEEP them for revoked tombstones: the
+        // tombstone is still shown in the UI until purge, and its live (renamed) name must not revert to the
+        // card's original pairing-time name. purgeRevoked() drops the overlay with the entry at permanent delete.
+        val overlays = next0.overlays.filterKeys { next0.entries.containsKey(it) }
         val next = if (overlays.size != next0.overlays.size) next0.copy(overlays = overlays) else next0
         _state.value = next
         _activePeers.value = computeActivePeers(next)

@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import net.extrawdw.notisync.protocol.ClientCard
+import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
@@ -64,5 +65,25 @@ class TrustStoreTest {
         assertFalse("a revoked other-device must stay in the Other list, not flip to My devices", tombstone.ownDevice)
         // ...and it is broadcast as an other-device tombstone, so fresh peers don't miscategorize it.
         assertFalse(store.buildTrustTable().entries.single { it.clientId == other.clientId }.ownDevice)
+    }
+
+    /** Regression: removing a renamed device must keep its live (overlay) name on the still-shown tombstone,
+     *  not revert to the card's original pairing-time name. */
+    @Test
+    fun revokingRenamedDevice_keepsLiveNameOnTombstone() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self.clientId)
+
+        assertTrue(store.addLocal(signedCard(other), now = 10L, ownDevice = false))
+        // The peer renames itself: a profile update lifts the displayed name above the card's "Other".
+        assertTrue(store.applyProfile(ProfileUpdate(other.clientId, "Renamed", "android", emptyList(), updatedAt = 15L)))
+        assertEquals("Renamed", store.roster.value.single { it.clientId == other.clientId }.displayName)
+
+        store.revokeLocal(other.clientId, now = 20L)
+
+        val tombstone = store.roster.value.single { it.clientId == other.clientId }
+        assertEquals(TrustStatus.REVOKED, tombstone.status)
+        assertEquals("the tombstone must keep the live name, not revert to the card's original", "Renamed", tombstone.displayName)
     }
 }
