@@ -32,6 +32,11 @@
     <string name="activity_empty_title">暂无动态</string>
     <string name="activity_empty_body">配对设备后，您收到的通知将显示在此处。</string>
     <string name="activity_event_overline">%1$s · %2$s</string>
+    <string name="activity_detail_with_delivery">%1$s，通过 %2$s</string>
+    <string name="activity_delivery_unknown">未知路线</string>
+    <string name="activity_delivery_websocket">WebSocket</string>
+    <string name="activity_delivery_fcm_inline">FCM 内联</string>
+    <string name="activity_delivery_fcm_relay_fetch">FCM 唤醒 + 服务器拉取（过大）</string>
 
     <!-- Settings screen -->
     <string name="settings_device_name">设备名称</string>
@@ -55,12 +60,23 @@
     <string name="diag_attestation_not_required">无需认证</string>
     <string name="diag_attestation_unknown">未知</string>
     <string name="diag_token_expires">令牌有效期 %1$s</string>
+    <string name="diag_token_expired">已过期</string>
+    <string name="diag_token_less_than_minute">少于 1 分钟</string>
+    <plurals name="diag_duration_days">
+        <item quantity="other">%1$d 天</item>
+    </plurals>
+    <plurals name="diag_duration_hours">
+        <item quantity="other">%1$d 小时</item>
+    </plurals>
+    <plurals name="diag_duration_minutes">
+        <item quantity="other">%1$d 分钟</item>
+    </plurals>
     <string name="diag_pow">工作量证明</string>
     <string name="diag_pow_benchmark">基准测试（难度 1–5）</string>
     <string name="diag_pow_running">测试中…</string>
     <string name="diag_pow_result">难度 %1$d · %2$s 次哈希 · %3$s · %4$s</string>
     <string name="diag_delivery_test">大通知投递</string>
-    <string name="diag_oversized_hint">向你的其他设备发送一条超大通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
+    <string name="diag_oversized_hint">向你的其他设备发送一条过大的通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
     <string name="diag_oversized_send">发送超大测试通知</string>
     <string name="diag_oversized_sending">发送中…</string>
     <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>

@@ -8,6 +8,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.foundation.SendPolicy
+import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.notisync.protocol.AssetSync
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
@@ -102,7 +103,13 @@ class MirrorEngine(
         if (!SendPolicy.mayAccept(msg.typ, null, msg.senderOwnDevice)) return
         val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
         renderer.render(notif) // text + any already-cached graphics, posted immediately
-        activityLog.add(ActivityEvent.Kind.RECEIVED, notif.appLabel, "from ${peerNameResolver(msg.senderId)}", now())
+        activityLog.add(
+            ActivityEvent.Kind.RECEIVED,
+            notif.appLabel,
+            "from ${peerNameResolver(msg.senderId)}",
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
         // Fetch any missing private graphics in the background, then re-post (same tag/id) with them
         // attached. The notification is never blocked on asset transfer. Anything still missing is
         // remembered and repaired over an encrypted DATA_SYNC request to the sender.
@@ -128,7 +135,13 @@ class MirrorEngine(
         val event = ProtocolCodec.decodeFromCbor<DismissEvent>(msg.body)
         renderer.clear(event.sourceClientId, event.sourceKey)
         originalCanceler?.cancel(event.sourceKey)
-        activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(event.sourceKey), "by ${peerNameResolver(msg.senderId)}", now())
+        activityLog.add(
+            ActivityEvent.Kind.DISMISSED,
+            dismissedAppName(event.sourceKey),
+            "by ${peerNameResolver(msg.senderId)}",
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     /**

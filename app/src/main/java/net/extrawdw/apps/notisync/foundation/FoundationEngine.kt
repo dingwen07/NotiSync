@@ -9,6 +9,7 @@ import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustState
+import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.notisync.protocol.CardDelivery
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
@@ -96,7 +97,13 @@ class FoundationEngine(
                 if (update.clientId != msg.senderId) return
                 val previousName = nameOf(msg.senderId)
                 if (trust.applyProfile(update)) {
-                    activityLog.add(ActivityEvent.Kind.PAIRED, update.displayName, "renamed (was $previousName)", now())
+                    activityLog.add(
+                        ActivityEvent.Kind.PAIRED,
+                        update.displayName,
+                        "renamed (was $previousName)",
+                        now(),
+                        deliveryMode = msg.deliveryMode.ifKnown(),
+                    )
                 }
             }
 
@@ -107,7 +114,13 @@ class FoundationEngine(
                 val result = trust.applyIncomingTable(msg.senderId, table)
                 for ((id, prompt) in result.prompts) {
                     onTrustPrompt(id, prompt, byName)
-                    activityLog.add(ActivityEvent.Kind.PAIRED, id.shortForm(), "trust update from $byName ($prompt)", now())
+                    activityLog.add(
+                        ActivityEvent.Kind.PAIRED,
+                        id.shortForm(),
+                        "trust update from $byName ($prompt)",
+                        now(),
+                        deliveryMode = msg.deliveryMode.ifKnown(),
+                    )
                 }
                 // Repair any device the sender trusts but lacks a key for, that we can vouch for.
                 if (result.cardsToOffer.isNotEmpty()) {

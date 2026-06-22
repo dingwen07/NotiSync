@@ -16,6 +16,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
@@ -127,8 +128,14 @@ class ActivityLog {
     private val _events = MutableStateFlow<List<ActivityEvent>>(emptyList())
     val events: StateFlow<List<ActivityEvent>> = _events
 
-    fun add(kind: ActivityEvent.Kind, title: String, detail: String, now: Long) {
-        _events.value = (listOf(ActivityEvent(kind, title, detail, now)) + _events.value).take(MAX)
+    fun add(
+        kind: ActivityEvent.Kind,
+        title: String,
+        detail: String,
+        now: Long,
+        deliveryMode: DeliveryMode? = null,
+    ) {
+        _events.value = (listOf(ActivityEvent(kind, title, detail, now, deliveryMode)) + _events.value).take(MAX)
     }
 
     companion object {

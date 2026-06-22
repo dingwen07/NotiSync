@@ -24,6 +24,8 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -52,11 +54,25 @@ fun ActivityScreen() {
                     ListItem(
                         overlineContent = { Text(stringResource(R.string.activity_event_overline, e.kind.name, fmt.format(Date(e.timestamp)))) },
                         headlineContent = { Text(e.title) },
-                        supportingContent = { Text(e.detail) },
+                        supportingContent = { Text(activityDetail(e)) },
                     )
                     HorizontalDivider()
                 }
             }
         }
     }
+}
+
+@Composable
+private fun activityDetail(event: ActivityEvent): String {
+    val mode = event.deliveryMode ?: return event.detail
+    return stringResource(R.string.activity_detail_with_delivery, event.detail, deliveryModeLabel(mode))
+}
+
+@Composable
+private fun deliveryModeLabel(mode: DeliveryMode): String = when (mode) {
+    DeliveryMode.UNKNOWN -> stringResource(R.string.activity_delivery_unknown)
+    DeliveryMode.WEBSOCKET -> stringResource(R.string.activity_delivery_websocket)
+    DeliveryMode.FCM_INLINE -> stringResource(R.string.activity_delivery_fcm_inline)
+    DeliveryMode.FCM_RELAY_FETCH -> stringResource(R.string.activity_delivery_fcm_relay_fetch)
 }

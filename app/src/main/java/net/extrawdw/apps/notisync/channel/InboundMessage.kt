@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MessageType
 
@@ -10,10 +11,12 @@ import net.extrawdw.notisync.protocol.MessageType
  *
  * [senderOwnDevice] is surfaced so a handler can apply its own/other authorization policy (the
  * channel never does). [body] is the decrypted CBOR payload; the channel stays payload-agnostic.
+ * [deliveryMode] is local diagnostic metadata, not sender-authenticated payload content.
  */
 class InboundMessage(
     val senderId: ClientId,
     val senderOwnDevice: Boolean,
     val typ: MessageType,
     val body: ByteArray,
+    val deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
 )

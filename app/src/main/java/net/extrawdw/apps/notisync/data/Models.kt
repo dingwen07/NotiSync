@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.data
 
 import kotlinx.serialization.Serializable
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 
@@ -35,6 +36,7 @@ data class ActivityEvent(
     val title: String,
     val detail: String,
     val timestamp: Long,
+    val deliveryMode: DeliveryMode? = null,
 ) {
     @Serializable
     enum class Kind { CAPTURED, SENT, RECEIVED, DISMISSED, PAIRED, ROUTE_REPAIR, ERROR }

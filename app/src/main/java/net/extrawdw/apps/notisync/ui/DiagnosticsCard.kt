@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.ui
 
-import android.text.format.DateUtils
 import androidx.compose.foundation.background
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -28,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
@@ -141,7 +141,7 @@ fun DiagnosticsCard(
             StatusRow(stringResource(R.string.diag_attestation), attValue, attTone, loading)
             status?.takeIf { it.verified }?.expiresAt?.let { expiresAt ->
                 Text(
-                    stringResource(R.string.diag_token_expires, relativeTime(expiresAt)),
+                    stringResource(R.string.diag_token_expires, tokenTimeRemaining(expiresAt)),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 20.dp),
@@ -260,12 +260,27 @@ private fun StatusRow(label: String, value: String, tone: Tone, loading: Boolean
     }
 }
 
-private fun relativeTime(epochMillis: Long): String =
-    DateUtils.getRelativeTimeSpanString(
-        epochMillis,
-        System.currentTimeMillis(),
-        DateUtils.MINUTE_IN_MILLIS,
-    ).toString()
+@Composable
+private fun tokenTimeRemaining(epochMillis: Long): String {
+    val remainingMillis = epochMillis - System.currentTimeMillis()
+    if (remainingMillis <= 0) return stringResource(R.string.diag_token_expired)
+
+    val totalMinutes = remainingMillis / MILLIS_PER_MINUTE
+    if (totalMinutes == 0L) return stringResource(R.string.diag_token_less_than_minute)
+
+    val days = totalMinutes / MINUTES_PER_DAY
+    val hours = (totalMinutes % MINUTES_PER_DAY) / MINUTES_PER_HOUR
+    val minutes = totalMinutes % MINUTES_PER_HOUR
+    val parts = mutableListOf<String>()
+    if (days > 0) parts += pluralStringResource(R.plurals.diag_duration_days, days.toInt(), days)
+    if (hours > 0) parts += pluralStringResource(R.plurals.diag_duration_hours, hours.toInt(), hours)
+    if (minutes > 0) parts += pluralStringResource(R.plurals.diag_duration_minutes, minutes.toInt(), minutes)
+    return parts.joinToString(" ")
+}
+
+private const val MILLIS_PER_MINUTE = 60_000L
+private const val MINUTES_PER_HOUR = 60L
+private const val MINUTES_PER_DAY = 24L * MINUTES_PER_HOUR
 
 private fun formatHashrate(hashes: Long, ms: Double): String {
     if (ms <= 0.0) return "—"

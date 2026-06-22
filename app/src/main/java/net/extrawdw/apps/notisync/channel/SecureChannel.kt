@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
@@ -36,7 +37,7 @@ class SecureChannel(
      * channel's [now] so that row shares one clock with every other row); default is a no-op so the
      * channel stays free of any activity/UI coupling.
      */
-    private val onBadSignature: (ClientId, Long) -> Unit = { _, _ -> },
+    private val onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     private val seq = AtomicLong(now())
@@ -98,7 +99,7 @@ class SecureChannel(
      * contract is preserved (a handler launches its own async tail if it needs one). Idempotent:
      * duplicates are dropped BEFORE any signature/decrypt work (dedup-first stays cheap-first).
      */
-    fun deliver(envelope: Envelope) {
+    fun deliver(envelope: Envelope, deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN) {
         if (!seen.add(envelope.messageId)) return
         val keys = directory.lookup(envelope.signerId)
         if (keys == null) {
@@ -107,7 +108,7 @@ class SecureChannel(
         }
         if (!EnvelopeCrypto.verify(envelope, keys.identitySpki)) {
             log.warn("signature verification failed for ${envelope.messageId}")
-            onBadSignature(envelope.signerId, now())
+            onBadSignature(envelope.signerId, now(), deliveryMode)
             return
         }
         val body = runCatching {
@@ -117,7 +118,7 @@ class SecureChannel(
             return
         }
         val handler = handlers[envelope.typ] ?: return
-        handler(InboundMessage(envelope.signerId, keys.ownDevice, envelope.typ, body))
+        handler(InboundMessage(envelope.signerId, keys.ownDevice, envelope.typ, body, deliveryMode))
     }
 
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */

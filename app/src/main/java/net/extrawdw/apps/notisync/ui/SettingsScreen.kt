@@ -1,10 +1,10 @@
 package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -63,7 +63,8 @@ fun SettingsScreen() {
 
     NotiScaffold(stringResource(R.string.tab_settings)) { modifier ->
         LazyColumn(
-            modifier.fillMaxSize().padding(16.dp),
+            modifier = modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             item {

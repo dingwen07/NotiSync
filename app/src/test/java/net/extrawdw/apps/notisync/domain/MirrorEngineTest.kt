@@ -7,6 +7,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.apps.notisync.testsupport.FakeTrustState
 import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
@@ -53,9 +54,16 @@ class MirrorEngineTest {
         importance = MirrorImportance.DEFAULT, postTime = 1L,
     )
 
-    private fun engine(me: net.extrawdw.notisync.protocol.crypto.IdentitySigner, myHpkePrivate: ByteArray, trust: FakeTrustState, renderer: MirrorRenderer, transport: CapturingTransport = CapturingTransport()): Pair<SecureChannel, MirrorEngine> {
+    private fun engine(
+        me: net.extrawdw.notisync.protocol.crypto.IdentitySigner,
+        myHpkePrivate: ByteArray,
+        trust: FakeTrustState,
+        renderer: MirrorRenderer,
+        transport: CapturingTransport = CapturingTransport(),
+        activityLog: ActivityLog = ActivityLog(),
+    ): Pair<SecureChannel, MirrorEngine> {
         val channel = SecureChannel(me, myHpkePrivate, transport, TrustPeerDirectory(trust), log = {})
-        val mirror = MirrorEngine(channel = channel, renderer = renderer, activityLog = ActivityLog(), scope = CoroutineScope(Dispatchers.Unconfined))
+        val mirror = MirrorEngine(channel = channel, renderer = renderer, activityLog = activityLog, scope = CoroutineScope(Dispatchers.Unconfined))
         mirror.register()
         return channel to mirror
     }
@@ -87,20 +95,53 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun notificationActivity_includesDeliveryMode() {
+        val me = newSigner(); val myHpke = newHpke()
+        val own = newSigner(); val ownHpke = newHpke()
+        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true, name = "Desk")) }
+        val renderer = RecordingRenderer()
+        val activityLog = ActivityLog()
+        val channel = SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(trust), log = {})
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = renderer,
+            activityLog = activityLog,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            peerNameResolver = { trust.displayName(it) ?: it.shortForm() },
+        )
+        mirror.register()
+
+        channel.deliver(
+            seal(own, MessageType.NOTIFICATION, ProtocolCodec.encodeToCbor(sampleNotif(own.clientId)), me.clientId, myHpke.publicKeyset, "n1"),
+            DeliveryMode.FCM_RELAY_FETCH,
+        )
+
+        assertEquals(1, renderer.renders)
+        val row = activityLog.events.value.single()
+        assertEquals("from Desk", row.detail)
+        assertEquals(DeliveryMode.FCM_RELAY_FETCH, row.deliveryMode)
+    }
+
+    @Test
     fun dismissalFromOwnDevice_clearsAndCancelsOriginal() {
         val me = newSigner(); val myHpke = newHpke()
         val own = newSigner(); val ownHpke = newHpke()
         val trust = FakeTrustState().apply { peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true)) }
         val renderer = RecordingRenderer()
-        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, renderer)
+        val activityLog = ActivityLog()
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, renderer, activityLog = activityLog)
         val canceled = mutableListOf<String>()
         mirror.originalCanceler = OriginalCanceler { canceled.add(it) }
 
         val event = DismissEvent(own.clientId, "0|com.x|1|t", 1L)
-        channel.deliver(seal(own, MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), me.clientId, myHpke.publicKeyset, "d1"))
+        channel.deliver(
+            seal(own, MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), me.clientId, myHpke.publicKeyset, "d1"),
+            DeliveryMode.WEBSOCKET,
+        )
 
         assertEquals(listOf(own.clientId to "0|com.x|1|t"), renderer.cleared)
         assertEquals(listOf("0|com.x|1|t"), canceled)
+        assertEquals(DeliveryMode.WEBSOCKET, activityLog.events.value.single().deliveryMode)
     }
 
     @Test

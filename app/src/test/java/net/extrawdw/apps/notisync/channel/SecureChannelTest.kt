@@ -8,6 +8,7 @@ import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
@@ -19,7 +20,13 @@ import org.junit.Test
 /** The generic substrate: dedup, sender-auth, signature verify, HPKE-open, and audience scoping. */
 class SecureChannelTest {
 
-    private fun channel(me: net.extrawdw.notisync.protocol.crypto.IdentitySigner, myHpkePrivate: ByteArray, trust: FakeTrustState, transport: CapturingTransport = CapturingTransport(), onBadSignature: (ClientId, Long) -> Unit = { _, _ -> }) =
+    private fun channel(
+        me: net.extrawdw.notisync.protocol.crypto.IdentitySigner,
+        myHpkePrivate: ByteArray,
+        trust: FakeTrustState,
+        transport: CapturingTransport = CapturingTransport(),
+        onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
+    ) =
         SecureChannel(me, myHpkePrivate, transport, TrustPeerDirectory(trust), log = {}, onBadSignature = onBadSignature)
 
     @Test
@@ -89,17 +96,17 @@ class SecureChannelTest {
         val me = newSigner(); val myHpke = newHpke()
         val sender = newSigner(); val senderHpke = newHpke()
         val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
-        val rejected = mutableListOf<ClientId>()
-        val channel = channel(me, myHpke.privateKeyset, trust, onBadSignature = { id, _ -> rejected.add(id) })
+        val rejected = mutableListOf<Pair<ClientId, DeliveryMode>>()
+        val channel = channel(me, myHpke.privateKeyset, trust, onBadSignature = { id, _, deliveryMode -> rejected.add(id to deliveryMode) })
 
         var count = 0
         channel.onMessage(MessageType.NOTIFICATION) { count++ }
         val tampered = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "t")
             .let { it.copy(sig = ByteArray(it.sig.size)) }
-        channel.deliver(tampered)
+        channel.deliver(tampered, DeliveryMode.FCM_INLINE)
 
         assertEquals(0, count)
-        assertEquals(listOf(sender.clientId), rejected)
+        assertEquals(listOf(sender.clientId to DeliveryMode.FCM_INLINE), rejected)
     }
 
     @Test

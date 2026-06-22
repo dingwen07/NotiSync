@@ -5,6 +5,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import java.util.Base64
@@ -30,7 +31,7 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
             val envelope = runCatching {
                 ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(ct))
             }.getOrNull() ?: return
-            channel.deliver(envelope)
+            channel.deliver(envelope, DeliveryMode.FCM_INLINE)
             return
         }
         // Wake-only message ("typ"="wake"): the payload was too large to inline. Pull exactly the

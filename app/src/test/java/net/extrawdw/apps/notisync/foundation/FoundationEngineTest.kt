@@ -14,6 +14,7 @@ import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
+import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.CardDelivery
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
@@ -159,12 +160,16 @@ class FoundationEngineTest {
         val h = harness(trust)
 
         val table = TrustTable(listOf(TrustTableEntry(ClientId("x"), TrustStatus.TRUSTED, 5L, keyAvailable = false)))
-        h.channel.deliver(seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = table)), h.me.clientId, h.myHpke.publicKeyset, "t1"))
+        h.channel.deliver(
+            seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = table)), h.me.clientId, h.myHpke.publicKeyset, "t1"),
+            DeliveryMode.WEBSOCKET,
+        )
 
         assertEquals(1, trust.foldedTables.size)
         assertEquals(sender.clientId, trust.foldedTables.single().first)
         assertEquals(listOf(TrustPrompt.NEW_TRUST), h.prompts.map { it.second })
         assertEquals("S", h.prompts.single().third)
+        assertEquals(DeliveryMode.WEBSOCKET, h.activityLog.events.value.single().deliveryMode)
         // The offered card was sealed back to the sender as a CARD delivery.
         val sync = openAs(h.transport.envelopes.single(), sender, senderHpke)
         assertEquals(DataSyncKind.CARD, sync.kind)
@@ -208,7 +213,10 @@ class FoundationEngineTest {
         val h = harness(trust)
 
         val update = ProfileUpdate(sender.clientId, "New Name", "android", emptyList(), 500L)
-        h.channel.deliver(seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)), h.me.clientId, h.myHpke.publicKeyset, "p1"))
+        h.channel.deliver(
+            seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)), h.me.clientId, h.myHpke.publicKeyset, "p1"),
+            DeliveryMode.FCM_INLINE,
+        )
 
         assertEquals(1, trust.appliedProfiles.size)
         assertEquals("New Name", trust.appliedProfiles.single().displayName)
@@ -222,12 +230,16 @@ class FoundationEngineTest {
         val h = harness(trust)
 
         val update = ProfileUpdate(sender.clientId, "New Name", "android", emptyList(), 500L)
-        h.channel.deliver(seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)), h.me.clientId, h.myHpke.publicKeyset, "p1"))
+        h.channel.deliver(
+            seal(sender, MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)), h.me.clientId, h.myHpke.publicKeyset, "p1"),
+            DeliveryMode.FCM_INLINE,
+        )
 
         // The PAIRED row's "was <name>" must be the OLD name, captured before applyProfile mutated it.
         val row = h.activityLog.events.value.first()
         assertEquals("New Name", row.title)
         assertEquals("renamed (was Old Name)", row.detail)
+        assertEquals(DeliveryMode.FCM_INLINE, row.deliveryMode)
     }
 
     @Test

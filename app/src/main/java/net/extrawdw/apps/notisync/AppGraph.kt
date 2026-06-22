@@ -56,6 +56,8 @@ import net.extrawdw.apps.notisync.notification.MirrorChannels
 import net.extrawdw.apps.notisync.notification.NotificationRuleEngine
 import net.extrawdw.apps.notisync.notification.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
+import net.extrawdw.apps.notisync.transport.DeliveryMode
+import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
@@ -135,8 +137,14 @@ class AppGraph(private val app: Application) {
             transport = transport,
             directory = TrustPeerDirectory(trust),
             log = { msg -> Log.w("SecureChannel", msg) },
-            onBadSignature = { id, at ->
-                activityLog.add(ActivityEvent.Kind.ERROR, "Rejected", "bad signature from ${trust.displayName(id) ?: id.shortForm()}", at)
+            onBadSignature = { id, at, deliveryMode ->
+                activityLog.add(
+                    ActivityEvent.Kind.ERROR,
+                    "Rejected",
+                    "bad signature from ${trust.displayName(id) ?: id.shortForm()}",
+                    at,
+                    deliveryMode = deliveryMode.ifKnown(),
+                )
             },
         )
         secureChannel = channel
@@ -211,7 +219,7 @@ class AppGraph(private val app: Application) {
         liveJob = scope.launch {
             runCatching { transport.publishCard(buildClientCardBlob()) }
             runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
-            transport.incoming().collect { secureChannel?.deliver(it) }
+            transport.incoming().collect { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
         }
     }
 
@@ -416,7 +424,7 @@ class AppGraph(private val app: Application) {
         runBlocking {
             withTimeoutOrNull(WAKE_FETCH_TIMEOUT_MS) {
                 val envelope = runCatching { transport.fetchRelayMessage(messageId) }.getOrNull()
-                if (envelope != null) channel.deliver(envelope)
+                if (envelope != null) channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
             }
         }
     }
