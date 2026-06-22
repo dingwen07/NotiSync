@@ -27,6 +27,7 @@ import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
@@ -224,6 +225,12 @@ class BrokerFlowTest {
         )
         client.post("/v1/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
 
+        // 0. The signed drain-list endpoint reports exactly this queued id (the WorkManager backstop's input).
+        val pendingBefore = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(listOf(envelope.messageId), pendingBefore.messageIds)
+
         // 1. A signature-only GET (no JWT bearer) returns exactly that envelope; it decrypts on the recipient.
         val path = "/v1/relay/${envelope.messageId}"
         val fetched = client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }
@@ -233,11 +240,16 @@ class BrokerFlowTest {
         val plaintext = EnvelopeCrypto.open(receivedEnv, recipient.clientId, recipientHpke.privateKeyset)
         assertEquals("Dinner at 7?", ProtocolCodec.decodeFromCbor<CapturedNotification>(plaintext).text)
 
-        // 2. The broker acked/dropped it on read, so a second fetch of the same id is a miss.
+        // 2. The broker acked/dropped it on read, so a second fetch of the same id is a miss...
         assertEquals(
             HttpStatusCode.NotFound,
             client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }.status,
         )
+        // ...and the drain list is now empty.
+        val pendingAfter = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertTrue(pendingAfter.messageIds.isEmpty())
 
         // 3. An unknown message id is a miss too (and only the recipient's own relay is reachable).
         val unknown = "/v1/relay/01J0NOPE99"

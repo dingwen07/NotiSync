@@ -36,13 +36,19 @@ object DisabledPushTransport : PushTransport {
  * firebase-admin 9.9.0 has not grown a first-class FID setter yet, so use setToken(routeRef) while
  * FCM keeps that transition bridge. When Admin exposes a FID target, switch this call over.
  */
-class FcmPushTransport private constructor(private val app: FirebaseApp) : PushTransport {
+class FcmPushTransport private constructor(
+    private val app: FirebaseApp,
+    /** FCM message TTL, matched to the relay TTL so a deferred wake can't outlive the relay item it
+     *  points to (else a wake delivered after deep Doze would be a dead pointer → fetch 404). */
+    private val ttlMillis: Long,
+) : PushTransport {
     private val log = LoggerFactory.getLogger(javaClass)
 
     override suspend fun wake(routeRef: String, data: Map<String, String>, urgency: Urgency): PushOutcome =
         withContext(Dispatchers.IO) {
             val android = AndroidConfig.builder()
                 .setPriority(if (urgency == Urgency.HIGH) AndroidConfig.Priority.HIGH else AndroidConfig.Priority.NORMAL)
+                .setTtl(ttlMillis.coerceIn(0, MAX_FCM_TTL_MILLIS))
                 .build()
             val message = Message.builder()
                 .setToken(routeRef)
@@ -73,6 +79,9 @@ class FcmPushTransport private constructor(private val app: FirebaseApp) : PushT
     companion object {
         private val log = LoggerFactory.getLogger(FcmPushTransport::class.java)
 
+        /** FCM's hard ceiling on AndroidConfig TTL: 28 days. */
+        private const val MAX_FCM_TTL_MILLIS = 28L * 24 * 60 * 60 * 1000
+
         /**
          * Initialize FCM from Application Default Credentials (GOOGLE_APPLICATION_CREDENTIALS, gcloud
          * ADC, or workload identity). Returns null if credentials are unavailable so the broker still
@@ -93,7 +102,7 @@ class FcmPushTransport private constructor(private val app: FirebaseApp) : PushT
                     FirebaseApp.getInstance()
                 }
                 log.info("FCM transport enabled for project {}", config.fcmProjectId)
-                FcmPushTransport(app)
+                FcmPushTransport(app, config.relayTtlMillis)
             } catch (e: Exception) {
                 log.warn("FCM credentials unavailable ({}); push disabled, WebSocket transport only.", e.message)
                 null

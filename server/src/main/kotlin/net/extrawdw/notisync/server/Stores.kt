@@ -106,6 +106,11 @@ class RelayStore(private val db: NotiSyncDb) {
             .firstOrNull()?.let { b64d.decode(it[Relay.envelopeB64]) }
     }
 
+    /** Just the message ids queued for [recipientId] — the background-drain backstop lists then pulls each. */
+    suspend fun pendingMessageIds(recipientId: ClientId): List<String> = db.tx {
+        Relay.selectAll().where { Relay.recipientId eq recipientId.value }.map { it[Relay.messageId] }
+    }
+
     suspend fun ack(id: Long) = db.tx {
         Relay.deleteWhere { Relay.id eq id }
         Unit

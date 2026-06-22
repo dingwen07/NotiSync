@@ -18,6 +18,8 @@ import io.ktor.server.routing.get
 import io.ktor.server.routing.post
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.pingPeriod
+import io.ktor.server.websocket.timeout
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
@@ -34,6 +36,7 @@ import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.WsAuth
@@ -43,6 +46,7 @@ import net.extrawdw.notisync.protocol.WsMessage
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
+import kotlin.time.Duration.Companion.seconds
 
 private val CBOR = ContentType("application", "cbor")
 private val random = SecureRandom()
@@ -86,7 +90,13 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
 
     install(DefaultHeaders)
     install(CallLogging)
-    install(WebSockets)
+    install(WebSockets) {
+        // Keepalive: ping idle clients so half-open connections are detected and the hub frees the
+        // slot (and NAT paths stay open). The client also pings; either side noticing a dead peer
+        // tears the socket down and the client reconnects.
+        pingPeriod = 30.seconds
+        timeout = 60.seconds
+    }
     install(ContentNegotiation) { json(ProtocolCodec.json) }
     install(StatusPages) {
         exception<Throwable> { call, cause ->
@@ -234,6 +244,14 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             } else {
                 call.respond(HttpStatusCode.OK, broker.send(bytes, envelope))
             }
+        }
+
+        // List the caller's queued message ids (signature-only, no JWT). The WorkManager drain backstop
+        // pulls this, then fetches + acks each via GET /v1/relay/{id} below. A cheap, low-frequency
+        // catch-all for wakes that FCM deferred (normal priority) or whose foreground fetch failed.
+        get("/v1/relay") {
+            val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
+            call.respond(RelayPending(broker.pendingMessageIds(principal.clientId)))
         }
 
         // Single-message relay pull for the FCM background-wake path. When a notification is too large

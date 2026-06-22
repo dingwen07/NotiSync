@@ -1,9 +1,7 @@
 package net.extrawdw.apps.notisync.testsupport
 
-import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.emptyFlow
 import net.extrawdw.apps.notisync.data.IncomingTrustResult
 import net.extrawdw.apps.notisync.data.Peer
 import net.extrawdw.apps.notisync.data.TrustState
@@ -38,7 +36,7 @@ class CapturingTransport : Transport {
     override suspend fun fetchCard(clientId: ClientId): SignedBlob? = null
     override suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray) = true
     override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? = null
-    override fun incoming(): Flow<Envelope> = emptyFlow()
+    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
 }
 
 /**

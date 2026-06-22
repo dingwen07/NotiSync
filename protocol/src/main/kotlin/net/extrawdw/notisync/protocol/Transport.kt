@@ -1,7 +1,5 @@
 package net.extrawdw.notisync.protocol
 
-import kotlinx.coroutines.flow.Flow
-
 /** Delivery urgency, mapped by each transport adapter (FCM high vs normal priority data messages). */
 enum class Urgency { HIGH, NORMAL }
 
@@ -25,8 +23,14 @@ interface Transport {
     /** Send an encrypted envelope to its recipients. The result reports missing/invalid routes. */
     suspend fun send(envelope: Envelope, urgency: Urgency): SendResult
 
-    /** Cold stream of envelopes addressed to this client (push wake or live connection). */
-    fun incoming(): Flow<Envelope>
+    /**
+     * Run the live connection, delivering each inbound envelope to [onEnvelope] and acknowledging it
+     * to the broker ONLY AFTER [onEnvelope] returns. Suspends until cancelled, reconnecting with
+     * backoff. Ack-after-handling is what preserves at-least-once delivery: a crash before [onEnvelope]
+     * completes leaves the envelope queued in the relay for redelivery (the channel dedups by message
+     * id, so a redelivery is harmless).
+     */
+    suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit)
 
     /**
      * Upload an opaque private-asset blob (AEAD ciphertext) under ([sourceClientId], [assetId]).

@@ -32,6 +32,15 @@ data class ErrorResponse(
     val detail: String? = null,
 )
 
+/**
+ * Response body for the signed-only GET /v1/relay: the message ids currently queued for the caller.
+ * The background-drain backstop pulls this list, then fetches + acks each via GET /v1/relay/{id}.
+ */
+@Serializable
+data class RelayPending(
+    val messageIds: List<String> = emptyList(),
+)
+
 /** Request body for POST /v1/integrity/verify. */
 @Serializable
 data class PlayIntegrityVerificationRequest(

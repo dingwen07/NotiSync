@@ -20,12 +20,11 @@ import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.channelFlow
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -36,6 +35,7 @@ import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.Transport
@@ -52,6 +52,7 @@ import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import java.net.URI
 import java.util.Base64
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -72,6 +73,12 @@ class BrokerClient(
     override val type: TransportType = TransportType.WEBSOCKET
 
     private val client = HttpClient(OkHttp) {
+        engine {
+            // Keepalive at the OkHttp layer: ping the broker periodically so a half-open socket
+            // (NAT/proxy idle drop) is detected — a missed pong fails the socket instead of the read
+            // loop blocking forever, surfacing as the exception that drives reconnect in runLiveDelivery().
+            config { pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS) }
+        }
         install(WebSockets)
     }
     private val authMutex = Mutex()
@@ -137,6 +144,20 @@ class BrokerClient(
         }.getOrNull() ?: return null
         if (!resp.status.isSuccess()) return null
         return runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
+    }
+
+    /**
+     * List the message ids the broker currently has queued for us (signed-only GET, never triggers
+     * attestation). The WorkManager drain backstop then pulls + acks each via [fetchRelayMessage].
+     * Returns empty on any failure — the backstop simply tries again on its next run.
+     */
+    suspend fun fetchPendingRelayIds(): List<String> {
+        val url = "${httpBase()}/v1/relay"
+        val resp = runCatching {
+            client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
+        }.getOrNull() ?: return emptyList()
+        if (!resp.status.isSuccess()) return emptyList()
+        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrDefault(emptyList())
     }
 
     /**
@@ -341,14 +362,17 @@ class BrokerClient(
         }
 
     /**
-     * Live envelope stream over an authenticated WebSocket. Reconnects with backoff. The broker
-     * challenges with a nonce; we prove control of the identity key by signing it.
+     * Live delivery over an authenticated WebSocket. Reconnects with backoff. The broker challenges
+     * with a nonce; we prove control of the identity key by signing it. Each DELIVER is handed to
+     * [onEnvelope] inline and ACKed to the broker ONLY AFTER it returns — so the broker drops the relay
+     * copy only once we've durably handled it (at-least-once; a crash mid-handle leaves it queued).
+     * This replaces the old `Flow` that ACKed on enqueue, which could lose a message to a buffer
+     * overflow or process death between buffering and handling.
      */
-    @OptIn(DelicateCoroutinesApi::class) // for isClosedForSend on the channelFlow producer scope
-    override fun incoming(): Flow<Envelope> = channelFlow {
+    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) {
         var backoffMs = 1_000L
         var consecutiveFailures = 0
-        while (!isClosedForSend) {
+        while (currentCoroutineContext().isActive) {
             try {
                 val url = "${wsBase()}/v1/connect"
                 val token = bearerTokenOrNull()
@@ -367,11 +391,14 @@ class BrokerClient(
                             val env = runCatching {
                                 ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(msg.envelopeB64))
                             }.getOrNull() ?: continue
-                            trySend(env)
+                            onEnvelope(env) // verify + decrypt + post, inline (SecureChannel.deliver is non-suspend)
+                            // ACK only now: the broker drops the relay item once we've durably handled it.
                             send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = env.messageId))))
                         }
                     }
                 }
+            } catch (e: CancellationException) {
+                throw e // cooperative cancellation (app backgrounded / scope cancelled): not a reconnectable failure
             } catch (_: Exception) {
                 // A run of failed handshakes while we still hold a cached token may mean the broker
                 // rotated its JWT key; drop it so the next attempt re-attests. (HTTP calls self-heal on 401.)
@@ -383,7 +410,6 @@ class BrokerClient(
             delay(backoffMs)
             backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
         }
-        awaitClose { }
     }
 
     fun close() = client.close()
@@ -396,6 +422,7 @@ class BrokerClient(
         const val AUTH_FAILURE_COOLDOWN_MS = 60_000L
         const val AUTH_RETRYABLE_COOLDOWN_MS = 5_000L
         const val WS_REAUTH_AFTER_FAILURES = 3
+        const val WS_PING_SECONDS = 30L
     }
 
     private data class AuthFailure(val atMillis: Long, val message: String, val cooldownMs: Long)

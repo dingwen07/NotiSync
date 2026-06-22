@@ -5,6 +5,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.apps.notisync.work.WakeFetchWorker
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -36,8 +37,11 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
         }
         // Wake-only message ("typ"="wake"): the payload was too large to inline. Pull exactly the
         // referenced envelope from the broker's relay and deliver it now, instead of waiting for the
-        // next foreground WebSocket flush (which could be far off while the app is backgrounded).
-        message.data["mid"]?.let { graph.fetchWakeMessage(it) }
+        // next foreground WebSocket flush (which could be far off while the app is backgrounded). If the
+        // inline fetch fails (e.g. no network this instant), hand off to a retrying background worker.
+        message.data["mid"]?.let { mid ->
+            if (!graph.fetchWakeMessage(mid)) WakeFetchWorker.enqueue(applicationContext, mid)
+        }
     }
 
     override fun onRegistered(installationId: String) {

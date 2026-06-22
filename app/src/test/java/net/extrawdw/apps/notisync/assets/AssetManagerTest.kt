@@ -1,7 +1,5 @@
 package net.extrawdw.apps.notisync.assets
 
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.ClientId
@@ -45,7 +43,7 @@ class AssetManagerTest {
         override suspend fun publishRoutes(routes: List<SignedBlob>) = Unit
         override suspend fun fetchCard(clientId: ClientId): SignedBlob? = null
         override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult = SendResult(false)
-        override fun incoming(): Flow<Envelope> = emptyFlow()
+        override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
     }
 
     private fun manager(transport: Transport): Pair<AssetManager, AssetCache> {

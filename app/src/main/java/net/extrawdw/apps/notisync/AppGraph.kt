@@ -61,6 +61,7 @@ import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
+import net.extrawdw.apps.notisync.work.RelayDrainWorker
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
@@ -197,6 +198,9 @@ class AppGraph(private val app: Application) {
             override fun onStop(owner: LifecycleOwner) = onAppBackgrounded()
         })
         observeProfileChanges()
+        // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
+        // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
+        RelayDrainWorker.schedulePeriodic(app)
 
         Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
     }
@@ -224,7 +228,7 @@ class AppGraph(private val app: Application) {
         liveJob = scope.launch {
             runCatching { transport.publishCard(buildClientCardBlob()) }
             runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
-            transport.incoming().collect { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
+            transport.runLiveDelivery { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
         }
     }
 
@@ -423,19 +427,23 @@ class AppGraph(private val app: Application) {
      * Handle an FCM wake pointer: the broker had a notification too large to inline, so it pushed only
      * the message id. Pull exactly that envelope from the relay and deliver it now — otherwise it would
      * wait, undelivered, until the next foreground WebSocket flush (minutes/hours while backgrounded).
+     * Returns true iff the envelope was fetched and delivered; the FCM service enqueues a retry worker
+     * on false (e.g. no network in this wake window).
      *
      * Called from [net.extrawdw.apps.notisync.fcm.NotiSyncMessagingService.onMessageReceived] on FCM's
      * background thread, so we block (within a timeout) to keep the process alive until delivery
      * completes. Delivery is idempotent — [SecureChannel] dedups by message id — so a later foreground
-     * flush re-delivering the same id is harmless, and the broker acks/drops the item once it responds.
+     * flush or drain re-delivering the same id is harmless, and the broker acks/drops the item on fetch.
      */
-    fun fetchWakeMessage(messageId: String) {
-        val channel = secureChannel ?: return
-        runBlocking {
+    fun fetchWakeMessage(messageId: String): Boolean {
+        val channel = secureChannel ?: return false
+        return runBlocking {
             withTimeoutOrNull(WAKE_FETCH_TIMEOUT_MS) {
                 val envelope = runCatching { transport.fetchRelayMessage(messageId) }.getOrNull()
-                if (envelope != null) channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
-            }
+                    ?: return@withTimeoutOrNull false
+                channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
+                true
+            } ?: false
         }
     }
 

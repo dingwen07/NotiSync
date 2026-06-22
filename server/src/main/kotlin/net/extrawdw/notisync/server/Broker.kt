@@ -157,6 +157,9 @@ class Broker(
     /** The single queued envelope addressed to [clientId] with [messageId], or null. */
     suspend fun relayMessage(clientId: ClientId, messageId: String): ByteArray? = relay.getByMessage(clientId, messageId)
 
+    /** Message ids currently queued for [clientId] — the background-drain backstop lists then pulls each. */
+    suspend fun pendingMessageIds(clientId: ClientId): List<String> = relay.pendingMessageIds(clientId)
+
     suspend fun ack(clientId: ClientId, messageId: String) = relay.ackByMessage(clientId, messageId)
 
     suspend fun purgeExpired() {
