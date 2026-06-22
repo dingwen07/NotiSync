@@ -58,6 +58,7 @@ fun DevicesScreen(
 ) {
     val graph = rememberGraph()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
+    val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
     // purge delay elapses without needing to leave and reopen the page.
@@ -79,6 +80,16 @@ fun DevicesScreen(
             contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            if (quarantined) {
+                item {
+                    QuarantineCard(
+                        // Approve re-signs the current roster as-is; broadcast it so peers re-converge once
+                        // we're active again. Clear wipes it (nothing left to announce — they'll re-pair).
+                        onApprove = { graph.trust.approveQuarantine(); graph.broadcastTrust() },
+                        onClear = { graph.trust.clearQuarantine() },
+                    )
+                }
+            }
             if (!permissions.listenerEnabled) {
                 item {
                     PermissionCard(
@@ -107,7 +118,7 @@ fun DevicesScreen(
                 )
             }
             item {
-                Button(onClick = onPair, modifier = Modifier.fillMaxWidth().then(pairButtonModifier)) {
+                Button(onClick = onPair, enabled = !quarantined, modifier = Modifier.fillMaxWidth().then(pairButtonModifier)) {
                     Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
                     Spacer(Modifier.size(4.dp))
                     Icon(Icons.Outlined.Contactless, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
@@ -131,7 +142,7 @@ fun DevicesScreen(
                     )
                 }
             } else {
-                item { DeviceListCard(ownDevices, now, graph) }
+                item { DeviceListCard(ownDevices, now, graph, enabled = !quarantined) }
             }
             if (otherDevices.isNotEmpty()) {
                 item {
@@ -148,20 +159,21 @@ fun DevicesScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                item { DeviceListCard(otherDevices, now, graph) }
+                item { DeviceListCard(otherDevices, now, graph, enabled = !quarantined) }
             }
         }
     }
 }
 
 @Composable
-private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.extrawdw.apps.notisync.AppGraph) {
+private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.extrawdw.apps.notisync.AppGraph, enabled: Boolean = true) {
     Card(Modifier.fillMaxWidth()) {
         Column {
             devices.forEachIndexed { index, device ->
                 DeviceRow(
                     device = device,
                     now = now,
+                    enabled = enabled,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                     onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
                     onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
@@ -171,6 +183,31 @@ private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.ex
                     onPurge = { graph.trust.purgeRevoked(it) },
                 )
                 if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
+            }
+        }
+    }
+}
+
+/**
+ * Red banner shown while the trust roster fails its identity signature. The device lists below stay
+ * visible but inert (see [DeviceListCard]'s `enabled`) so the user can eyeball them before choosing to
+ * Approve (re-sign the current roster) or Clear (wipe and re-pair).
+ */
+@Composable
+private fun QuarantineCard(onApprove: () -> Unit, onClear: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(stringResource(R.string.devices_tamper_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.devices_tamper_body), style = MaterialTheme.typography.bodyMedium)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onApprove) { Text(stringResource(R.string.devices_tamper_approve)) }
+                OutlinedButton(onClick = onClear) { Text(stringResource(R.string.devices_tamper_clear)) }
             }
         }
     }
@@ -230,6 +267,7 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
 private fun DeviceRow(
     device: RosterDevice,
     now: Long,
+    enabled: Boolean = true,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
@@ -281,14 +319,14 @@ private fun DeviceRow(
             }
             when (device.status) {
                 // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
-                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }) {
+                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }, enabled = enabled) {
                     Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_remove_desc, name))
                 }
                 TrustStatus.REVOKED -> {
                     // Permanently forgettable only after the tombstone has outlived the stale-trust window.
                     val canPurge = device.revokedAt != null &&
                         now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
-                    IconButton(onClick = { onPurge(device.clientId) }, enabled = canPurge) {
+                    IconButton(onClick = { onPurge(device.clientId) }, enabled = canPurge && enabled) {
                         Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_permanently_delete_desc, name))
                     }
                 }
@@ -305,15 +343,15 @@ private fun DeviceRow(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onApprove(device.clientId) }) { Text(stringResource(R.string.action_approve)) }
-                    OutlinedButton(onClick = { onDeny(device.clientId) }) { Text(stringResource(R.string.action_deny)) }
+                    Button(onClick = { onApprove(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_approve)) }
+                    OutlinedButton(onClick = { onDeny(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_deny)) }
                 }
             }
             TrustStatus.PENDING_REVOKE -> {
                 Text(stringResource(R.string.device_removed_by, by), style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onRemoveConfirm(device.clientId) }) { Text(stringResource(R.string.action_remove)) }
-                    OutlinedButton(onClick = { onKeep(device.clientId) }) { Text(stringResource(R.string.action_keep)) }
+                    Button(onClick = { onRemoveConfirm(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_remove)) }
+                    OutlinedButton(onClick = { onKeep(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_keep)) }
                 }
             }
             else -> Unit

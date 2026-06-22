@@ -123,7 +123,7 @@ class AppGraph(private val app: Application) {
         hpke = HpkeKeyManager(app, vault).apply { loadOrCreate() }
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
-        trust = TrustStore(ds, scope, identity.clientId)
+        trust = TrustStore(ds, scope, identity)
         appSelection = AppSelectionRepository(ds, scope)
         transport = BrokerClient(
             signer = identity,
@@ -192,7 +192,18 @@ class AppGraph(private val app: Application) {
         // again on every trust change (a revoke drops the peer from activePeers). StateFlow re-emits its
         // current value on subscription, so this also performs the launch-time sweep.
         trust.activePeers
-            .onEach { peers -> runCatching { MirrorChannels.gc(app, peers.map { it.clientId.value }.toSet()) } }
+            .onEach { peers ->
+                // Skip pruning while quarantined: activePeers is forced empty then, and we must not nuke
+                // the user's mirrored channels over a freeze that may be Approved back to the same roster.
+                if (!trust.quarantined.value) runCatching { MirrorChannels.gc(app, peers.map { it.clientId.value }.toSet()) }
+            }
+            .launchIn(scope)
+
+        // Surface a tamper quarantine the instant it's detected — StateFlow replays its current value on
+        // subscription, so this also fires at launch when load() flagged the persisted roster — and clear
+        // the alert once the user resolves it (approve/clear flips quarantined back to false).
+        trust.quarantined
+            .onEach { tampered -> if (tampered) postTamperAlert() else cancelTamperAlert() }
             .launchIn(scope)
 
         // Battery-efficient transport policy:
@@ -332,6 +343,44 @@ class AppGraph(private val app: Application) {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+
+    /**
+     * Tamper-quarantine alert: the persisted trust roster failed its identity signature, so sealing and
+     * accepting are frozen until the user reviews it. One high-importance notification whose only action
+     * opens the Devices banner — Approve (re-sign) and Clear (wipe) live there by design, not as
+     * notification actions, since a stray tap must not bless or erase trust.
+     */
+    private fun postTamperAlert() {
+        if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        runCatching {
+            val channelId = "notisync.security"
+            (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
+                NotificationChannel(channelId, app.getString(R.string.security_channel_name), NotificationManager.IMPORTANCE_HIGH),
+            )
+            val open = PendingIntent.getActivity(
+                app, TAMPER_NOTIF_ID,
+                Intent(app, MainActivity::class.java).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
+                    putExtra(MainActivity.EXTRA_OPEN_DEVICES, true)
+                },
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            )
+            val builder = NotificationCompat.Builder(app, channelId)
+                .setSmallIcon(android.R.drawable.stat_sys_warning)
+                .setContentTitle(app.getString(R.string.tamper_alert_title))
+                .setContentText(app.getString(R.string.tamper_alert_text))
+                .setStyle(NotificationCompat.BigTextStyle().bigText(app.getString(R.string.tamper_alert_text)))
+                .setCategory(NotificationCompat.CATEGORY_ERROR)
+                .setContentIntent(open)
+                .setAutoCancel(false)
+                .addAction(0, app.getString(R.string.tamper_alert_review), open)
+            NotificationManagerCompat.from(app).notify(TAMPER_NOTIF_ID, builder.build())
+        }
+    }
+
+    private fun cancelTamperAlert() {
+        NotificationManagerCompat.from(app).cancel(TAMPER_NOTIF_ID)
+    }
 
     /** Background: drop the socket; FCM carries everything from here. */
     private fun stopLiveConnection() {
@@ -513,6 +562,9 @@ class AppGraph(private val app: Application) {
 
     companion object {
         private const val TAG = "AppGraph"
+
+        /** Stable id for the singleton tamper-quarantine notification (re-post replaces it, resolve cancels it). */
+        private val TAMPER_NOTIF_ID = "notisync.tamper-alert".hashCode()
 
         /** Collapse per-keystroke renames in the Settings field into a single broadcast. */
         private const val PROFILE_BROADCAST_DEBOUNCE_MS = 800L

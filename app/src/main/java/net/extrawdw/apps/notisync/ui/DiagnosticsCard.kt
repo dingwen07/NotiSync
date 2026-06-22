@@ -34,6 +34,7 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.AppGraph
+import net.extrawdw.apps.notisync.BuildConfig
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
@@ -107,6 +108,7 @@ fun DiagnosticsCard(
     onRefresh: () -> Unit,
     onBenchmark: () -> Unit,
     onSendOversizedTest: () -> Unit,
+    onTamperSignature: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(modifier.fillMaxWidth()) {
@@ -227,6 +229,19 @@ fun DiagnosticsCard(
                     color = MaterialTheme.colorScheme.error,
                 )
                 else -> Unit
+            }
+
+            // Debug-only: strip the trust store's signature to exercise the tamper-quarantine path
+            // (banner + high-importance notification + send/receive freeze). Compiled out of release.
+            if (BuildConfig.DEBUG) {
+                HorizontalDivider()
+                Text(stringResource(R.string.diag_security_test), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    stringResource(R.string.diag_tamper_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onTamperSignature) { Text(stringResource(R.string.diag_tamper_signature)) }
             }
         }
     }

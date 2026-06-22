@@ -21,7 +21,9 @@ import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.TrustTable
 import net.extrawdw.notisync.protocol.TrustTableEntry
+import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.IdentityVerifier
+import net.extrawdw.notisync.protocol.crypto.TrustStoreSigning
 import java.util.Base64
 
 /** Mutable profile fields ([displayName]/[platform]/[capabilities]) that converge via [ProfileUpdate]. */
@@ -72,12 +74,15 @@ data class IncomingTrustResult(
 class TrustStore(
     private val store: DataStore<Preferences>,
     private val scope: CoroutineScope,
-    /** This device's own id — a device is implicitly trusted to itself and ignores external rows about it. */
-    private val selfId: ClientId,
+    /** This device's identity: its [IdentitySigner.clientId] is our own id (implicitly trusted, external
+     *  rows about it ignored), and the key signs the persisted roster and verifies it on load. */
+    private val identity: IdentitySigner,
 ) : TrustState {
+    private val selfId: ClientId = identity.clientId
     private val entriesKey = stringPreferencesKey("trust_entries_json")
     private val cardsKey = stringPreferencesKey("trust_cards_json")     // clientId -> base64(CBOR(SignedBlob))
     private val overlaysKey = stringPreferencesKey("trust_overlays_json") // clientId -> ProfileOverlay
+    private val sigKey = stringPreferencesKey("trust_sig")              // identity signature over the three above
 
     private data class State(
         val entries: Map<ClientId, TrustEntry>,
@@ -85,17 +90,31 @@ class TrustStore(
         val overlays: Map<ClientId, ProfileOverlay>,
     )
 
+    /** What [load] produces: the decoded state and whether its on-disk signature failed to verify. */
+    private data class Loaded(val state: State, val quarantined: Boolean)
+
     private val b64e = Base64.getEncoder()
     private val b64d = Base64.getDecoder()
 
-    private val _state = MutableStateFlow(load())
+    private val loaded = load()
+
+    // Set when a non-empty persisted roster carries no valid identity signature — tampered with, or a
+    // pre-signing store whose signature was simply never written. While quarantined we neither seal to
+    // nor accept from any peer (activePeers is forced empty) and never auto-persist; the user resolves it
+    // from the Devices banner via approveQuarantine() (re-sign as-is) or clearQuarantine() (wipe + re-pair).
+    private val _quarantined = MutableStateFlow(loaded.quarantined)
+
+    /** True while the on-disk roster can't be verified against our identity key. Drives the Devices banner. */
+    val quarantined: StateFlow<Boolean> = _quarantined
+
+    private val _state = MutableStateFlow(loaded.state)
 
     // Exposed views are directly-updated StateFlows (refreshed in mutate), so a UI state change
     // recomposes synchronously on the action's thread — no derived-flow round trip.
-    private val _activePeers = MutableStateFlow(computeActivePeers(_state.value))
-    private val _roster = MutableStateFlow(computeRoster(_state.value))
+    private val _activePeers = MutableStateFlow(if (loaded.quarantined) emptyList<Peer>() else computeActivePeers(loaded.state))
+    private val _roster = MutableStateFlow(computeRoster(loaded.state))
 
-    /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. */
+    /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. Forced empty while [quarantined]. */
     override val activePeers: StateFlow<List<Peer>> = _activePeers
 
     /** Everything the user reviews — trusted, pending, and revoked tombstones (until purged) — for the Devices UI. */
@@ -109,6 +128,7 @@ class TrustStore(
 
     /** Optical/manual add: pin [cardBlob]'s keys and trust it. Returns false if the card fails verification. */
     fun addLocal(cardBlob: SignedBlob, now: Long, ownDevice: Boolean = true): Boolean {
+        if (_quarantined.value) return false
         val card = verifyCard(cardBlob) ?: return false
         mutate { st ->
             st.copy(
@@ -120,6 +140,7 @@ class TrustStore(
     }
 
     fun revokeLocal(clientId: ClientId, now: Long): Boolean {
+        if (_quarantined.value) return false
         // Keep the device's own/other classification on its tombstone — a revoke must never reclassify it.
         mutate { st ->
             val ownDevice = st.entries[clientId]?.ownDevice ?: true
@@ -134,6 +155,7 @@ class TrustStore(
      * so the UI gates this on [REVOKE_PURGE_DELAY_MS]; until then a stale re-introduction is re-tombstoned.
      */
     fun purgeRevoked(clientId: ClientId): Boolean {
+        if (_quarantined.value) return false
         if (_state.value.entries[clientId]?.status != TrustStatus.REVOKED) return false
         mutate { it.copy(entries = it.entries - clientId, cards = it.cards - clientId, overlays = it.overlays - clientId) }
         return false // purely local — nothing to propagate
@@ -159,10 +181,51 @@ class TrustStore(
         if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.keepTrusted(it, now) else null
     }
 
+    // ---- tamper quarantine (recover from a roster that fails its identity signature) ----
+
+    /**
+     * The user vouched for the current on-disk roster from the Devices banner: re-sign it as-is with our
+     * identity key and resume. The right choice when the mismatch is benign — most commonly the first
+     * launch after signing shipped, when a pre-existing roster simply had no signature yet.
+     */
+    fun approveQuarantine() {
+        if (!_quarantined.value) return
+        val st = _state.value
+        _quarantined.value = false
+        _activePeers.value = computeActivePeers(st)
+        _roster.value = computeRoster(st)
+        writeSigned(st)
+    }
+
+    /** The user declined to trust the unverifiable roster: wipe it, sign the empty store, and resume (re-pair). */
+    fun clearQuarantine() {
+        if (!_quarantined.value) return
+        val empty = State(emptyMap(), emptyMap(), emptyMap())
+        _quarantined.value = false
+        _state.value = empty
+        _activePeers.value = emptyList()
+        _roster.value = emptyList()
+        writeSigned(empty)
+    }
+
+    /**
+     * Diagnostics only: strip the on-disk signature and enter quarantine now, to exercise the tamper path
+     * end-to-end (Devices banner + high-importance notification + the send/receive freeze) without editing
+     * storage by hand. Survives a restart — [load] then re-detects the missing signature.
+     */
+    fun simulateSignatureTamper() {
+        scope.launch { store.edit { it.remove(sigKey) } }
+        if (!_quarantined.value) {
+            _quarantined.value = true
+            _activePeers.value = emptyList()
+        }
+    }
+
     // ---- incoming ----
 
     /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
     override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
+        if (_quarantined.value) return IncomingTrustResult(emptyList(), emptyList(), needsBroadcast = false)
         val prompts = mutableListOf<Pair<ClientId, TrustPrompt>>()
         val offers = mutableListOf<SignedBlob>()
         var needsBroadcast = false
@@ -203,6 +266,7 @@ class TrustStore(
      * an introduction resolve a still-pending device's name instead of leaving it "Unknown".
      */
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
+        if (_quarantined.value) return false
         val card = verifyCard(cardBlob) ?: return false
         if (card.clientId != clientId) return false
         if (_state.value.cards.containsKey(clientId)) return false // already pinned (immutable) — see putCard
@@ -218,6 +282,7 @@ class TrustStore(
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
     override fun applyProfile(update: ProfileUpdate): Boolean {
+        if (_quarantined.value) return false
         val st = _state.value
         if (st.entries[update.clientId]?.status != TrustStatus.TRUSTED) return false // only trusted devices' profiles converge
         val card = st.cards[update.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() } ?: return false
@@ -254,6 +319,7 @@ class TrustStore(
         broadcast: Boolean,
         next: (TrustEntry) -> TrustEntry?,
     ): Boolean {
+        if (_quarantined.value) return false
         val cur = _state.value.entries[clientId] ?: return false
         val updated = next(cur) ?: return false
         mutate { it.copy(entries = it.entries + (clientId to updated)) }
@@ -331,30 +397,52 @@ class TrustStore(
         )
     }
 
-    private fun load(): State = runBlocking {
-        val raw = store.data.first()[entriesKey]
-        val cardsRaw = store.data.first()[cardsKey]
-        val overlaysRaw = store.data.first()[overlaysKey]
-        val entries = raw?.let { runCatching { ProtocolCodec.decodeFromJson<List<TrustEntry>>(it) }.getOrNull() }.orEmpty()
+    private fun load(): Loaded = runBlocking {
+        val prefs = store.data.first()
+        val entriesRaw = prefs[entriesKey]
+        val cardsRaw = prefs[cardsKey]
+        val overlaysRaw = prefs[overlaysKey]
+        val sigRaw = prefs[sigKey]
+        val entries = entriesRaw?.let { runCatching { ProtocolCodec.decodeFromJson<List<TrustEntry>>(it) }.getOrNull() }.orEmpty()
         val cards = cardsRaw?.let { runCatching { ProtocolCodec.decodeFromJson<Map<String, String>>(it) }.getOrNull() }.orEmpty()
         val overlays = overlaysRaw?.let { runCatching { ProtocolCodec.decodeFromJson<Map<String, ProfileOverlay>>(it) }.getOrNull() }.orEmpty()
-        State(
+        val state = State(
             entries = entries.associateBy { it.clientId },
             cards = cards.mapNotNull { (k, v) -> runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(b64d.decode(v)) }.getOrNull()?.let { ClientId(k) to it } }.toMap(),
             overlays = overlays.mapKeys { ClientId(it.key) },
         )
+        // Verify over the EXACT persisted strings. An empty store has nothing to protect (fresh install,
+        // or post-Clear), so it is never quarantined and gets signed on its first write. A non-empty store
+        // MUST carry a signature this identity produced over these very bytes; anything else (tampered,
+        // stripped, or never-signed legacy data) is unverifiable and quarantines.
+        val verified = sigRaw != null && entriesRaw != null && cardsRaw != null && overlaysRaw != null &&
+            TrustStoreSigning.verify(identity.publicKeySpki, selfId, entriesRaw, cardsRaw, overlaysRaw, sigRaw)
+        val isEmpty = state.entries.isEmpty() && state.cards.isEmpty()
+        Loaded(state, quarantined = !isEmpty && !verified)
     }
 
+    // Reached only via mutate(), i.e. never while quarantined (the public mutators all no-op then). The
+    // guard is the invariant backstop: a roster we can't vouch for is never silently re-signed and
+    // re-persisted — only approveQuarantine()/clearQuarantine() write through writeSigned() directly.
     private fun persist() {
-        val st = _state.value
-        val entriesJson = ProtocolCodec.encodeToJson(st.entries.values.toList())
-        val cardsJson = ProtocolCodec.encodeToJson(st.cards.mapKeys { it.key.value }.mapValues { b64e.encodeToString(ProtocolCodec.encodeToCbor(it.value)) })
-        val overlaysJson = ProtocolCodec.encodeToJson(st.overlays.mapKeys { it.key.value })
+        if (_quarantined.value) return
+        writeSigned(_state.value)
+    }
+
+    /** Serialize [st], sign it with the identity key, and persist the sections + signature atomically.
+     *  Serialization and the Keystore signature run off the caller's thread (mutations can fire on the UI
+     *  thread); DataStore applies the four keys as one transaction, so sections and signature stay in step. */
+    private fun writeSigned(st: State) {
         scope.launch {
+            val entriesJson = ProtocolCodec.encodeToJson(st.entries.values.toList())
+            val cardsJson = ProtocolCodec.encodeToJson(st.cards.mapKeys { it.key.value }.mapValues { b64e.encodeToString(ProtocolCodec.encodeToCbor(it.value)) })
+            val overlaysJson = ProtocolCodec.encodeToJson(st.overlays.mapKeys { it.key.value })
+            val sig = TrustStoreSigning.sign(identity, entriesJson, cardsJson, overlaysJson)
             store.edit {
                 it[entriesKey] = entriesJson
                 it[cardsKey] = cardsJson
                 it[overlaysKey] = overlaysJson
+                it[sigKey] = sig
             }
         }
     }

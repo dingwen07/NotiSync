@@ -119,6 +119,9 @@
     <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>
     <string name="diag_oversized_no_peers">没有可发送的已配对设备。</string>
     <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
+    <string name="diag_security_test">信任完整性（调试）</string>
+    <string name="diag_tamper_hint">移除信任存储的签名以模拟篡改。应用会暂停同步，并在「设备」页面显示一条查看横幅。</string>
+    <string name="diag_tamper_signature">篡改信任签名</string>
     <string name="key_backing_unknown">未知</string>
     <string name="key_backing_unknown_secure">TEE 或更强</string>
     <string name="key_backing_software">软件</string>
@@ -193,6 +196,16 @@
     <string name="trust_other_removed_title">已移除设备</string>
     <string name="trust_other_removed_text">%1$s 已将 %2$s 从您的其他设备中移除。</string>
     <string name="trust_expanded_verification">%1$s\n\n验证码\n%2$s\n\n仅当它与该设备自身的验证码一致时才批准。</string>
+
+    <!-- Security / tamper quarantine -->
+    <string name="security_channel_name">安全提醒</string>
+    <string name="tamper_alert_title">请检查受信任的设备</string>
+    <string name="tamper_alert_text">NotiSync 无法验证您保存的设备列表，同步已暂停。请打开应用查看您的设备。</string>
+    <string name="tamper_alert_review">查看</string>
+    <string name="devices_tamper_title">请检查受信任的设备</string>
+    <string name="devices_tamper_body">NotiSync 无法验证您保存的设备列表。这可能发生在安全更新之后，或数据被改动时。同步已暂停。请在下方查看您的设备，然后点按「批准」保留它们，或「清除」重新开始。</string>
+    <string name="devices_tamper_approve">批准</string>
+    <string name="devices_tamper_clear">清除</string>
 
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">你</string>

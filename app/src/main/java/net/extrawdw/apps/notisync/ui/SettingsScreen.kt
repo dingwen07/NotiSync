@@ -121,6 +121,7 @@ fun SettingsScreen() {
                                 }
                             }
                         },
+                        onTamperSignature = { graph.trust.simulateSignatureTamper() },
                     )
                 }
             }

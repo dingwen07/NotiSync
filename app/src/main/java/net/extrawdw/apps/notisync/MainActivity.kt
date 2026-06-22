@@ -62,6 +62,7 @@ import net.extrawdw.apps.notisync.ui.DevicesScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
+import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
 class MainActivity : ComponentActivity() {
@@ -146,6 +147,10 @@ fun NotiSyncRoot(
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
 
+    // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
+    // this also blocks the deep-link path so a pairing link can't bypass the freeze.
+    val quarantined by rememberGraph().trust.quarantined.collectAsStateWithLifecycle()
+
     // Pairing is a state-driven overlay rather than a nav destination, so it can expand out of — and
     // collapse back into — the "Pair a device" stripe with a predictive-back-driven container transform
     // (see PairingOverlay). The stripe reports its live position here; the overlay renders above the
@@ -153,8 +158,8 @@ fun NotiSyncRoot(
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
 
-    LaunchedEffect(pendingPairingPayload) {
-        if (pendingPairingPayload != null) showPairing = true
+    LaunchedEffect(pendingPairingPayload, quarantined) {
+        if (pendingPairingPayload != null && !quarantined) showPairing = true
     }
 
     LaunchedEffect(openDevices) {
@@ -192,7 +197,7 @@ fun NotiSyncRoot(
             ) {
                 composable<Route.Devices> {
                     DevicesDestination(
-                        onPair = { showPairing = true },
+                        onPair = { if (!quarantined) showPairing = true },
                         // Sample the stripe's bounds (root coordinates, shared with the overlay) so the
                         // container transform knows where to grow from / fold back into. It moves as the
                         // list scrolls; the last value before opening is what the collapse animates to.

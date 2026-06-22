@@ -126,6 +126,9 @@
     <string name="diag_oversized_sent">Sent to %1$d device(s) — check the other device.</string>
     <string name="diag_oversized_no_peers">No paired devices to send to.</string>
     <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
+    <string name="diag_security_test">Trust integrity (debug)</string>
+    <string name="diag_tamper_hint">Strips the trust store signature to simulate tampering. The app pauses syncing and shows a review banner on the Devices screen.</string>
+    <string name="diag_tamper_signature">Tamper trust signature</string>
     <string name="key_backing_unknown">Unknown</string>
     <string name="key_backing_unknown_secure">TEE or stronger</string>
     <string name="key_backing_software">Software</string>
@@ -200,6 +203,16 @@
     <string name="trust_other_removed_title">Device removed</string>
     <string name="trust_other_removed_text">%1$s removed %2$s from your other devices.</string>
     <string name="trust_expanded_verification">%1$s\n\nVerification number\n%2$s\n\nApprove only if it matches the device\'s own verification number.</string>
+
+    <!-- Security / tamper quarantine -->
+    <string name="security_channel_name">Security alerts</string>
+    <string name="tamper_alert_title">Trusted devices need review</string>
+    <string name="tamper_alert_text">NotiSync can\'t verify your saved device list, so syncing is paused. Open the app to review your devices.</string>
+    <string name="tamper_alert_review">Review</string>
+    <string name="devices_tamper_title">Trusted devices need review</string>
+    <string name="devices_tamper_body">NotiSync can\'t verify your saved device list. This can happen after a security update or if the data was changed. Syncing is paused. Review your devices below, then Approve to keep them or Clear to start over.</string>
+    <string name="devices_tamper_approve">Approve</string>
+    <string name="devices_tamper_clear">Clear</string>
 
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">You</string>
