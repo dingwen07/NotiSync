@@ -260,6 +260,90 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun multiRecipientSend_stripsForeignKeyMaterialButStillVerifiesAndDecrypts() = testApplication {
+        val tmp = File.createTempFile("notisync-strip", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val alice = SoftwareIdentitySigner.generate()
+        val aliceHpke = Hpke.generateKeyPair()
+        val bob = SoftwareIdentitySigner.generate()
+        val bobHpke = Hpke.generateKeyPair()
+
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(alice, aliceHpke, "Alice"))) }
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(bob, bobHpke, "Bob"))) }
+        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(alice, "alice-token")))) }
+        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(bob, "bob-token")))) }
+
+        val body = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = body,
+            recipients = listOf(
+                RecipientKey(alice.clientId, aliceHpke.publicKeyset),
+                RecipientKey(bob.clientId, bobHpke.publicKeyset),
+            ),
+            messageId = "01J0STRIP01",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+        val fullBytes = ProtocolCodec.encodeToCbor(envelope)
+        client.post("/v1/send") { setBody(fullBytes) }
+
+        // Each recipient pulls their own queued copy from the relay.
+        val relayPath = "/v1/relay/${envelope.messageId}"
+        val aliceResp = client.get(relayPath) { signedHeaders(alice, "GET", relayPath, ByteArray(0)) }
+        assertEquals(HttpStatusCode.OK, aliceResp.status)
+        val aliceEnv = ProtocolCodec.decodeFromCbor<Envelope>(aliceResp.readRawBytes())
+        val bobResp = client.get(relayPath) { signedHeaders(bob, "GET", relayPath, ByteArray(0)) }
+        assertEquals(HttpStatusCode.OK, bobResp.status)
+        val bobEnv = ProtocolCodec.decodeFromCbor<Envelope>(bobResp.readRawBytes())
+
+        // Alice's copy: her sealedDek is intact, Bob's is blanked — and vice versa.
+        fun keyFor(env: Envelope, id: ClientId) = env.recipients.first { it.recipientId == id }.sealedDek
+        assertTrue("alice keeps her own key", keyFor(aliceEnv, alice.clientId).isNotEmpty())
+        assertEquals("bob's key stripped from alice's copy", 0, keyFor(aliceEnv, bob.clientId).size)
+        assertTrue("bob keeps his own key", keyFor(bobEnv, bob.clientId).isNotEmpty())
+        assertEquals("alice's key stripped from bob's copy", 0, keyFor(bobEnv, alice.clientId).size)
+
+        // Signature still verifies (authBytes commits to ids + body hash, not the sealed DEKs)...
+        assertTrue(EnvelopeCrypto.verify(aliceEnv, sender.publicKeySpki))
+        assertTrue(EnvelopeCrypto.verify(bobEnv, sender.publicKeySpki))
+        // ...and each recipient still decrypts with their own key.
+        assertEquals(
+            "Dinner at 7?",
+            ProtocolCodec.decodeFromCbor<CapturedNotification>(
+                EnvelopeCrypto.open(aliceEnv, alice.clientId, aliceHpke.privateKeyset)
+            ).text,
+        )
+        assertEquals(
+            "Dinner at 7?",
+            ProtocolCodec.decodeFromCbor<CapturedNotification>(
+                EnvelopeCrypto.open(bobEnv, bob.clientId, bobHpke.privateKeyset)
+            ).text,
+        )
+        // The per-recipient copy is smaller than the full two-key envelope.
+        assertTrue("stripped copy should be smaller", ProtocolCodec.encodeToCbor(aliceEnv).size < fullBytes.size)
+    }
+
+    @Test
     fun privateAsset_storeFetchOverwriteBadIdOversize() = testApplication {
         val tmp = File.createTempFile("notisync-assets", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)

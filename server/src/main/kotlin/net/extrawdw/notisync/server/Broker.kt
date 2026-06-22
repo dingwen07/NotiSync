@@ -68,12 +68,15 @@ class Broker(
         val expiresAt = System.currentTimeMillis() + config.relayTtlMillis
 
         for (recipient in envelope.recipientIds()) {
+            // Strip foreign key material so a device's payload doesn't grow with the roster size.
+            val recipientBytes = envelopeFor(recipient, envelope, envelopeBytes)
+
             // Persist for store-and-forward (removed on explicit ack), regardless of live state.
-            relay.add(recipient, envelope.messageId, envelopeBytes, urgency.name, expiresAt)
+            relay.add(recipient, envelope.messageId, recipientBytes, urgency.name, expiresAt)
 
             if (hub.isOnline(recipient)) {
                 val frame = ProtocolCodec.encodeToJson(
-                    WsMessage(kind = WsKind.DELIVER, envelopeB64 = b64.encodeToString(envelopeBytes))
+                    WsMessage(kind = WsKind.DELIVER, envelopeB64 = b64.encodeToString(recipientBytes))
                 )
                 if (hub.deliverText(recipient, frame)) {
                     delivered.add(recipient)
@@ -86,7 +89,7 @@ class Broker(
                 missing.add(recipient)
                 continue
             }
-            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, envelopeBytes, inlineBudgetFor(fcm)), urgency)
+            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, recipientBytes, inlineBudgetFor(fcm)), urgency)
             log.info("fcm wake recipient={} mid={} outcome={}", recipient.shortForm(), envelope.messageId, outcome)
             when (outcome) {
                 PushOutcome.DELIVERED -> delivered.add(recipient)
@@ -103,6 +106,23 @@ class Broker(
             envelope.messageId, envelope.recipients.size, delivered.size, missing.size, invalid.size,
         )
         return SendResult(true, delivered, missing, invalid, stale)
+    }
+
+    /**
+     * Re-encode [envelope] for a single [recipient], blanking every other recipient's sealedDek.
+     * The source signature commits (via EnvelopeAuth) only to the recipient *ids* and a hash of the
+     * body ciphertext — never the sealed DEKs — so dropping the foreign key material leaves both the
+     * signature and the recipient's own key intact, while keeping the per-device payload from growing
+     * with the roster. Single-recipient (or empty) envelopes are passed through untouched.
+     */
+    private fun envelopeFor(recipient: ClientId, envelope: Envelope, fullBytes: ByteArray): ByteArray {
+        if (envelope.recipients.size <= 1) return fullBytes
+        val stripped = envelope.copy(
+            recipients = envelope.recipients.map {
+                if (it.recipientId == recipient) it else it.copy(sealedDek = EMPTY_DEK)
+            }
+        )
+        return ProtocolCodec.encodeToCbor(stripped)
     }
 
     private fun buildFcmData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
@@ -171,5 +191,6 @@ class Broker(
 
     private companion object {
         const val ASSET_ID_BYTES = 24 // 192-bit opaque id; rejects content-derived/short ids
+        val EMPTY_DEK = ByteArray(0) // placeholder sealedDek for non-target recipients
     }
 }
