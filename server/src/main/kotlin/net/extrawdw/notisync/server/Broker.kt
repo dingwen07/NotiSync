@@ -5,6 +5,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
@@ -85,7 +86,7 @@ class Broker(
                 missing.add(recipient)
                 continue
             }
-            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, envelopeBytes), urgency)
+            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, envelopeBytes, inlineBudgetFor(fcm)), urgency)
             log.info("fcm wake recipient={} mid={} outcome={}", recipient.shortForm(), envelope.messageId, outcome)
             when (outcome) {
                 PushOutcome.DELIVERED -> delivered.add(recipient)
@@ -104,14 +105,25 @@ class Broker(
         return SendResult(true, delivered, missing, invalid, stale)
     }
 
-    private fun buildFcmData(messageId: String, envelopeBytes: ByteArray): Map<String, String> {
+    private fun buildFcmData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
         val b64env = b64.encodeToString(envelopeBytes)
-        return if (b64env.length <= config.inlineBudgetBytes) {
+        return if (b64env.length <= inlineBudget) {
             mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
         } else {
             mapOf("typ" to "wake", "mid" to messageId) // too big to inline; client pulls from relay
         }
     }
+
+    /**
+     * Effective inline budget for a route: the limit the client advertised in its signed route claim,
+     * capped by the server's own ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a
+     * payload larger than the broker is willing to push. Falls back to the server ceiling if the stored
+     * claim can't be decoded.
+     */
+    private fun inlineBudgetFor(route: StoredRoute): Int =
+        runCatching {
+            ProtocolCodec.decodeFromCbor<SignedBlob>(route.signedBlob).decode<RouteClaim>().capabilities.inlinePayloadLimitBytes
+        }.getOrNull()?.coerceAtMost(config.inlineBudgetBytes) ?: config.inlineBudgetBytes
 
     /** Outcome of a private-asset upload, surfaced as HTTP status by the route. */
     enum class AssetStoreOutcome { STORED, EXISTS, TOO_LARGE, BAD_ID }
@@ -141,6 +153,9 @@ class Broker(
             )
         }
     }
+
+    /** The single queued envelope addressed to [clientId] with [messageId], or null. */
+    suspend fun relayMessage(clientId: ClientId, messageId: String): ByteArray? = relay.getByMessage(clientId, messageId)
 
     suspend fun ack(clientId: ClientId, messageId: String) = relay.ackByMessage(clientId, messageId)
 

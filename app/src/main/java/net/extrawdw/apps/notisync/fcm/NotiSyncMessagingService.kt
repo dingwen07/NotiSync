@@ -11,7 +11,8 @@ import java.util.Base64
 
 /**
  * FCM data-message handler. The broker sends data-only messages: an inline encrypted envelope ("ct")
- * for small payloads, or a wake pointer ("mid") for large ones (pulled over the WebSocket transport).
+ * for small payloads, or a wake pointer ("mid") for large ones — which we pull from the broker's relay
+ * by id (see [AppGraph.fetchWakeMessage]) rather than waiting for the next foreground WebSocket flush.
  * Decryption happens locally in the [SecureChannel] — FCM never sees plaintext. [SecureChannel.deliver]
  * is non-suspend and runs inline here, preserving the synchronous-completion contract of this thread.
  */
@@ -22,15 +23,20 @@ import java.util.Base64
 class NotiSyncMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val channel = (applicationContext as NotiSyncApp).graph.secureChannel ?: return
+        val graph = (applicationContext as NotiSyncApp).graph
+        val channel = graph.secureChannel ?: return
         val ct = message.data["ct"]
         if (ct != null) {
             val envelope = runCatching {
                 ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(ct))
             }.getOrNull() ?: return
             channel.deliver(envelope)
+            return
         }
-        // Wake-only messages ("typ"="wake") are reconciled by the WebSocket transport's relay flush.
+        // Wake-only message ("typ"="wake"): the payload was too large to inline. Pull exactly the
+        // referenced envelope from the broker's relay and deliver it now, instead of waiting for the
+        // next foreground WebSocket flush (which could be far off while the app is backgrounded).
+        message.data["mid"]?.let { graph.fetchWakeMessage(it) }
     }
 
     override fun onRegistered(installationId: String) {

@@ -30,6 +30,8 @@ import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.HpkeKeyManager
 import net.extrawdw.apps.notisync.crypto.KeyVault
@@ -56,8 +58,11 @@ import net.extrawdw.apps.notisync.notification.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MirrorImportance
+import net.extrawdw.notisync.protocol.NotifStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteCapabilities
@@ -396,11 +401,62 @@ class AppGraph(private val app: Application) {
         }
     }
 
+    /**
+     * Handle an FCM wake pointer: the broker had a notification too large to inline, so it pushed only
+     * the message id. Pull exactly that envelope from the relay and deliver it now — otherwise it would
+     * wait, undelivered, until the next foreground WebSocket flush (minutes/hours while backgrounded).
+     *
+     * Called from [net.extrawdw.apps.notisync.fcm.NotiSyncMessagingService.onMessageReceived] on FCM's
+     * background thread, so we block (within a timeout) to keep the process alive until delivery
+     * completes. Delivery is idempotent — [SecureChannel] dedups by message id — so a later foreground
+     * flush re-delivering the same id is harmless, and the broker acks/drops the item once it responds.
+     */
+    fun fetchWakeMessage(messageId: String) {
+        val channel = secureChannel ?: return
+        runBlocking {
+            withTimeoutOrNull(WAKE_FETCH_TIMEOUT_MS) {
+                val envelope = runCatching { transport.fetchRelayMessage(messageId) }.getOrNull()
+                if (envelope != null) channel.deliver(envelope)
+            }
+        }
+    }
+
+    /**
+     * Diagnostics: mirror a deliberately oversized notification — simulating a capture from an app
+     * "net.extrawdw.notifly" — to this account's other devices. The sealed envelope is far larger than
+     * the FCM inline budget, so a receiving device cannot get it inline and must pull it via the
+     * wake → relay-fetch path: the exact flow the large-notification fix added. Returns the number of
+     * peer devices it was sealed to (0 if none are paired, in which case nothing is sent).
+     */
+    suspend fun sendOversizedDiagnostic(): Int {
+        val mirror = mirrorEngine ?: return 0
+        // ~8 KB of body text: comfortably past the 3 KB base64 inline budget once sealed + encoded.
+        val filler = "NotiSync oversized diagnostic — this payload is deliberately too large to inline in " +
+            "an FCM data message, so the receiver must pull it from the broker relay over the wake path. "
+        val bigText = buildString { while (length < 8_000) append(filler) }
+        val notif = CapturedNotification(
+            sourceClientId = identity.clientId,
+            sourceKey = "diag|net.extrawdw.notifly|${System.currentTimeMillis()}",
+            packageName = "net.extrawdw.notifly",
+            appLabel = "Notifly",
+            title = "Oversized test notification",
+            text = "Oversized NotiSync diagnostic (delivered via wake + relay fetch).",
+            bigText = bigText,
+            style = NotifStyle.BIG_TEXT,
+            importance = MirrorImportance.HIGH,
+            postTime = System.currentTimeMillis(),
+        )
+        return mirror.captureLocal(notif)
+    }
+
     companion object {
         private const val TAG = "AppGraph"
 
         /** Collapse per-keystroke renames in the Settings field into a single broadcast. */
         private const val PROFILE_BROADCAST_DEBOUNCE_MS = 800L
+
+        /** Upper bound on a background FCM-wake fetch — within FCM's high-priority wakelock window. */
+        private const val WAKE_FETCH_TIMEOUT_MS = 15_000L
     }
 }
 

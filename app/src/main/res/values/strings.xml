@@ -59,6 +59,13 @@
     <string name="diag_pow_benchmark">Benchmark (difficulty 1–5)</string>
     <string name="diag_pow_running">Benchmarking…</string>
     <string name="diag_pow_result">Difficulty %1$d · %2$s hashes · %3$s · %4$s</string>
+    <string name="diag_delivery_test">Large-notification delivery</string>
+    <string name="diag_oversized_hint">Sends an oversized notification (simulating net.extrawdw.notifly) to your other devices. It exceeds the FCM inline limit, so it is delivered via the wake + relay-fetch path.</string>
+    <string name="diag_oversized_send">Send oversized test</string>
+    <string name="diag_oversized_sending">Sending…</string>
+    <string name="diag_oversized_sent">Sent to %1$d device(s) — check the other device.</string>
+    <string name="diag_oversized_no_peers">No paired devices to send to.</string>
+    <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
     <string name="key_backing_unknown">Unknown</string>
     <string name="key_backing_unknown_secure">TEE or stronger</string>
     <string name="key_backing_software">Software</string>

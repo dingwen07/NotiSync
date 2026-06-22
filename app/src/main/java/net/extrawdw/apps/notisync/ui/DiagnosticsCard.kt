@@ -65,6 +65,14 @@ sealed interface BenchmarkState {
     data class Done(val results: List<PowBench>) : BenchmarkState
 }
 
+/** State of the "send oversized test notification" action (exercises the wake → relay-fetch path). */
+sealed interface OversizedTestState {
+    data object Idle : OversizedTestState
+    data object Sending : OversizedTestState
+    data class Sent(val deviceCount: Int) : OversizedTestState
+    data object Failed : OversizedTestState
+}
+
 /** One round-trip to the broker, off the main thread. Returns a Result even when calls fail (nulls). */
 suspend fun probeServer(graph: AppGraph): ServerProbe = withContext(Dispatchers.IO) {
     val health = runCatching { graph.transport.fetchHealth() }.getOrNull()
@@ -95,8 +103,10 @@ fun DiagnosticsCard(
     graph: AppGraph,
     probe: ServerProbe,
     benchmark: BenchmarkState,
+    oversizedTest: OversizedTestState,
     onRefresh: () -> Unit,
     onBenchmark: () -> Unit,
+    onSendOversizedTest: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     Card(modifier.fillMaxWidth()) {
@@ -182,6 +192,41 @@ fun DiagnosticsCard(
                     fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            HorizontalDivider()
+
+            Text(stringResource(R.string.diag_delivery_test), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_oversized_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = onSendOversizedTest,
+                enabled = oversizedTest !is OversizedTestState.Sending,
+            ) {
+                Text(
+                    if (oversizedTest is OversizedTestState.Sending) stringResource(R.string.diag_oversized_sending)
+                    else stringResource(R.string.diag_oversized_send),
+                )
+            }
+            when (oversizedTest) {
+                is OversizedTestState.Sent -> Text(
+                    if (oversizedTest.deviceCount > 0) {
+                        stringResource(R.string.diag_oversized_sent, oversizedTest.deviceCount)
+                    } else {
+                        stringResource(R.string.diag_oversized_no_peers)
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OversizedTestState.Failed -> Text(
+                    stringResource(R.string.diag_oversized_failed),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> Unit
             }
         }
     }

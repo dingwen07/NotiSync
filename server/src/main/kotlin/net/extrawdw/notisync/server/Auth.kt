@@ -54,6 +54,33 @@ class ServerAuth(
             }
         }
 
+    suspend fun requireSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthPrincipal? =
+        when (val result = authenticateSigned(call, body, broker)) {
+            is AuthResult.Accepted -> result.principal
+            is AuthResult.Rejected -> {
+                call.respond(result.status, ErrorResponse(result.reason))
+                null
+            }
+        }
+
+    /**
+     * Authenticate by request signature ALONE — no JWT bearer required. The clientId is read from the
+     * signed headers and bound by the signature (verified against that client's stored identity key).
+     * Used by the FCM background-wake fetch, which must work even when the client holds no valid
+     * attestation token — it can always sign with its identity key. When attestation is disabled the
+     * signature is trusted as-is, mirroring [authenticateJwtSigned].
+     */
+    suspend fun authenticateSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
+        val clientId = call.request.headers[HttpRequestSigning.HEADER_CLIENT_ID]?.takeIf { it.isNotBlank() }
+            ?.let { ClientId(it) }
+            ?: return AuthResult.Rejected("signature_required")
+        if (!config.playIntegrityEnabled) {
+            return AuthResult.Accepted(AuthPrincipal(clientId, Long.MAX_VALUE))
+        }
+        val spki = broker.clientSpki(clientId) ?: return AuthResult.Rejected("unknown_client")
+        return verifySignedRequest(call, body, clientId, spki).accepted(AuthPrincipal(clientId, Long.MAX_VALUE))
+    }
+
     suspend fun authenticateJwtSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
         if (!config.playIntegrityEnabled) {
             return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))

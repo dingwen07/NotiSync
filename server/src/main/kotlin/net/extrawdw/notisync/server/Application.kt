@@ -236,6 +236,25 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             }
         }
 
+        // Single-message relay pull for the FCM background-wake path. When a notification is too large
+        // to inline in the FCM data message, the broker sends a wake pointer ("mid") and the client
+        // fetches exactly that one envelope here, then the broker drops it. Authenticated by request
+        // SIGNATURE ALONE (no JWT bearer) so a background wake still works when the client's attestation
+        // token has lapsed — it can always sign with its identity key. The body is opaque ciphertext.
+        get("/v1/relay/{messageId}") {
+            val messageId = call.parameters["messageId"].orEmpty()
+            val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
+            val envelope = broker.relayMessage(principal.clientId, messageId)
+            if (envelope == null) {
+                call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_message"))
+            } else {
+                call.respondBytes(envelope, CBOR)
+                // Ack only after the bytes are flushed; a failed send leaves the item for the next WS
+                // flush. Best-effort — a failed ack just re-delivers later (the client dedups by id).
+                runCatching { broker.ack(principal.clientId, messageId) }
+            }
+        }
+
         // Opaque private-asset blobs keyed by random (sourceClientId, assetId). The body is AEAD
         // ciphertext the broker cannot read; the id+key are E2E-delivered inside the notification.
         post("/v1/assets/{sourceClientId}/{assetId}") {

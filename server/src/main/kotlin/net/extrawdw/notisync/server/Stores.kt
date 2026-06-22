@@ -100,6 +100,12 @@ class RelayStore(private val db: NotiSyncDb) {
         }
     }
 
+    /** The single queued envelope for ([recipientId], [messageId]), or null — the FCM-wake pull path. */
+    suspend fun getByMessage(recipientId: ClientId, messageId: String): ByteArray? = db.tx {
+        Relay.selectAll().where { (Relay.recipientId eq recipientId.value) and (Relay.messageId eq messageId) }
+            .firstOrNull()?.let { b64d.decode(it[Relay.envelopeB64]) }
+    }
+
     suspend fun ack(id: Long) = db.tx {
         Relay.deleteWhere { Relay.id eq id }
         Unit

@@ -184,6 +184,70 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun relayFetch_signedOnly_returnsThenAcksSingleMessage() = testApplication {
+        val tmp = File.createTempFile("notisync-relayfetch", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+
+        // Upload both cards and an FCM route for the recipient, then queue a notification while offline.
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
+        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(recipient, recipientHpke, "Recipient"))) }
+        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+
+        val body = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = body,
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = "01J0RELAY01",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+        client.post("/v1/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+
+        // 1. A signature-only GET (no JWT bearer) returns exactly that envelope; it decrypts on the recipient.
+        val path = "/v1/relay/${envelope.messageId}"
+        val fetched = client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }
+        assertEquals(HttpStatusCode.OK, fetched.status)
+        val receivedEnv = ProtocolCodec.decodeFromCbor<Envelope>(fetched.readRawBytes())
+        assertTrue(EnvelopeCrypto.verify(receivedEnv, sender.publicKeySpki))
+        val plaintext = EnvelopeCrypto.open(receivedEnv, recipient.clientId, recipientHpke.privateKeyset)
+        assertEquals("Dinner at 7?", ProtocolCodec.decodeFromCbor<CapturedNotification>(plaintext).text)
+
+        // 2. The broker acked/dropped it on read, so a second fetch of the same id is a miss.
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }.status,
+        )
+
+        // 3. An unknown message id is a miss too (and only the recipient's own relay is reachable).
+        val unknown = "/v1/relay/01J0NOPE99"
+        assertEquals(
+            HttpStatusCode.NotFound,
+            client.get(unknown) { signedHeaders(recipient, "GET", unknown, ByteArray(0)) }.status,
+        )
+    }
+
+    @Test
     fun privateAsset_storeFetchOverwriteBadIdOversize() = testApplication {
         val tmp = File.createTempFile("notisync-assets", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)

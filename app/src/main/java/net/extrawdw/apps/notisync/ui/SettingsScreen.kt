@@ -51,6 +51,7 @@ fun SettingsScreen() {
     var probe by remember { mutableStateOf<ServerProbe>(ServerProbe.Idle) }
     var probeKey by remember { mutableIntStateOf(0) }
     var benchmark by remember { mutableStateOf<BenchmarkState>(BenchmarkState.Idle) }
+    var oversizedTest by remember { mutableStateOf<OversizedTestState>(OversizedTestState.Idle) }
     LaunchedEffect(advanced, probeKey) {
         if (!advanced) {
             probe = ServerProbe.Idle
@@ -103,10 +104,20 @@ fun SettingsScreen() {
                         graph = graph,
                         probe = probe,
                         benchmark = benchmark,
+                        oversizedTest = oversizedTest,
                         onRefresh = { probeKey++ },
                         onBenchmark = {
                             if (benchmark !is BenchmarkState.Running) {
                                 scope.launch { runPowBenchmark { benchmark = it } }
+                            }
+                        },
+                        onSendOversizedTest = {
+                            if (oversizedTest !is OversizedTestState.Sending) {
+                                oversizedTest = OversizedTestState.Sending
+                                scope.launch {
+                                    oversizedTest = runCatching { OversizedTestState.Sent(graph.sendOversizedDiagnostic()) }
+                                        .getOrElse { OversizedTestState.Failed }
+                                }
                             }
                         },
                     )

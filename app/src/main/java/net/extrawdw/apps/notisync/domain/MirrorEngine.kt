@@ -82,9 +82,11 @@ class MirrorEngine(
         channel.onMessage(MessageType.DISMISSAL, ::onDismissal)
     }
 
-    suspend fun captureLocal(notif: CapturedNotification) {
+    /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. */
+    suspend fun captureLocal(notif: CapturedNotification): Int {
         val n = channel.send(MessageType.NOTIFICATION, ProtocolCodec.encodeToCbor(notif), Recipients.OwnMesh, Urgency.HIGH)
         if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, notif.appLabel, "mirrored to $n device(s)", now())
+        return n
     }
 
     suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String) {

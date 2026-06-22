@@ -124,6 +124,22 @@ class BrokerClient(
     }
 
     /**
+     * Pull a single relay message by id (the FCM-wake path: the broker stored a too-large notification
+     * and pushed only a "mid" pointer). Authenticated by request SIGNATURE alone — it sends a cached
+     * bearer if one happens to be valid but never triggers attestation, so a background wake delivers
+     * even while Play Integrity is cooling down. The broker acks/drops the message once it responds;
+     * returns null on any failure, leaving the item for the next foreground WebSocket flush.
+     */
+    suspend fun fetchRelayMessage(messageId: String): Envelope? {
+        val url = "${httpBase()}/v1/relay/$messageId"
+        val resp = runCatching {
+            client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
+        }.getOrNull() ?: return null
+        if (!resp.status.isSuccess()) return null
+        return runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
+    }
+
+    /**
      * Query the broker's auth posture and this client's current token validity. Unauthenticated; sends
      * the cached token (if any) so the broker can report `verified`, but never triggers attestation —
      * safe for a UI/status poll. Returns null if the broker is unreachable.

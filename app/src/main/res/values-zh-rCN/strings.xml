@@ -59,6 +59,13 @@
     <string name="diag_pow_benchmark">基准测试（难度 1–5）</string>
     <string name="diag_pow_running">测试中…</string>
     <string name="diag_pow_result">难度 %1$d · %2$s 次哈希 · %3$s · %4$s</string>
+    <string name="diag_delivery_test">大通知投递</string>
+    <string name="diag_oversized_hint">向你的其他设备发送一条超大通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
+    <string name="diag_oversized_send">发送超大测试通知</string>
+    <string name="diag_oversized_sending">发送中…</string>
+    <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>
+    <string name="diag_oversized_no_peers">没有可发送的已配对设备。</string>
+    <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
     <string name="key_backing_unknown">未知</string>
     <string name="key_backing_unknown_secure">TEE 或更强</string>
     <string name="key_backing_software">软件</string>
