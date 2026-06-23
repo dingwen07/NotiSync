@@ -14,51 +14,51 @@ enum class Capability {
     FOREGROUND_CONNECTION,  // can hold a live foreground connection (e.g. WebSocket)
 }
 
-/** Reserved for future group-administration hierarchy. v1 issues everything as MEMBER. */
+/** What an operational key in a [ClientKeyEpoch] is authorized for (NS2). */
 @Serializable
-enum class MemberRole { MEMBER, ADMIN }
+enum class Purpose { ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL }
 
 /**
- * A client's public identity, distributed (signed) to the group. The [clientId] is the fingerprint
- * of [identityPublicKey]; [hpkePublicKeyset] is the X25519 HPKE public keyset used to seal
- * per-recipient payload keys to this client.
+ * NS2: a self-contained, individually identity-signed certificate of a client's OPERATIONAL keys for
+ * one monotonic [epoch]. The identity key (the cold root) signs this, delegating the hot-path work to
+ * a rotatable [operationalSigningKey] (TEE) and [hpkePublicKeyset]. It carries [identityPublicKey] so
+ * it self-verifies ([clientId] == fingerprint(identityPublicKey)) and a peer that holds nothing about
+ * this client can bootstrap the anchor from it alone. Wrapped in [SignedBlob] (typ = [SignedType.KEY_EPOCH],
+ * signerId = clientId, sig = identity key) and stored/served by the broker; it is the unit rotation
+ * distributes. [minEpoch] is a floor assertion (reject any epoch below it); [notBefore]/[notAfter]
+ * bound the operational keys' validity window for staged rotation.
+ */
+@Serializable
+data class ClientKeyEpoch(
+    val suite: String = CipherSuite.CURRENT_ID,
+    val clientId: ClientId,
+    @ByteString val identityPublicKey: ByteArray,   // X.509 SPKI, EC P-256 — the anchor (constant across epochs)
+    val epoch: Int,                                  // ≥ 1, strictly monotonic per clientId
+    @ByteString val operationalSigningKey: ByteArray, // X.509 SPKI, EC P-256 — the rotatable hot-path key
+    @ByteString val hpkePublicKeyset: ByteArray,      // Tink X25519 public keyset for this epoch
+    val purposes: List<Purpose>,
+    val notBefore: Long,
+    val notAfter: Long,
+    val minEpoch: Int,
+)
+
+/**
+ * NS2 pairing / first-contact bundle: a client's identity anchor + human profile, identity-signed and
+ * shown over the QR (optical, off-broker). The [clientId] is the fingerprint of [identityPublicKey].
+ *
+ * It carries NO key material beyond the identity anchor — the operational signing key and the (rotating)
+ * HPKE keyset live in the self-contained [ClientKeyEpoch], which travels alongside the card in the pairing
+ * [CardDelivery] and is the authoritative source for sealing. Keeping the HPKE keyset out of the card
+ * removes a redundant copy (it was already in the key-epoch), shrinking the pairing QR, and keeps the card
+ * pure identity + profile (data minimization — it never reaches the broker).
  */
 @Serializable
 data class ClientCard(
     val suite: String = CipherSuite.CURRENT_ID,
     val clientId: ClientId,
     @ByteString val identityPublicKey: ByteArray,   // X.509 SubjectPublicKeyInfo, EC P-256
-    @ByteString val hpkePublicKeyset: ByteArray,     // serialized Tink public keyset (HPKE X25519)
     val displayName: String,
     val platform: String,
     val capabilities: List<Capability>,
     val createdAt: Long,
-)
-
-/**
- * Signed proof that a member belongs to a group, issued by an existing trusted member during
- * pairing. Peers accept any membership card signed by a member they already trust. Distributed
- * via data sync so the whole group converges on the same roster.
- */
-@Serializable
-data class MembershipCard(
-    val suite: String = CipherSuite.CURRENT_ID,
-    val groupId: GroupId,
-    val memberClientId: ClientId,
-    @ByteString val memberIdentityPublicKey: ByteArray,
-    val role: MemberRole = MemberRole.MEMBER,
-    val issuerClientId: ClientId,
-    val keyEpoch: Int,
-    val issuedAt: Long,
-)
-
-/** Signed statement removing a member from the group (lost/stolen device, manual removal). */
-@Serializable
-data class RevocationCard(
-    val suite: String = CipherSuite.CURRENT_ID,
-    val groupId: GroupId,
-    val revokedClientId: ClientId,
-    val issuerClientId: ClientId,
-    val keyEpoch: Int,
-    val issuedAt: Long,
 )

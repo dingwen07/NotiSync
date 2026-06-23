@@ -68,7 +68,12 @@ data class PlayIntegrityVerificationRequest(
     /** Play Integrity Standard API requestHash: hash("notisync-play-integrity-v1\\n<clientId>\\n<requestNonce>"). */
     val requestHash: String,
     val integrityToken: String,
-    /** Present on first verification or key refresh so the broker can learn the client's public key. */
+    /**
+     * NS2 (`/v2`): the self-authenticating [ClientKeyEpoch] blob, sent on first contact / key refresh so the
+     * broker learns this client's identity + operational keys. Replaces [clientCard] on the NS2 server.
+     */
+    val clientKeyEpoch: SignedBlob? = null,
+    /** NS1 (`/v1`, legacy) only: the client card. The NS2 server ignores this; use [clientKeyEpoch]. */
     val clientCard: SignedBlob? = null,
     /** Debug-only HMAC proof over the attestation binding; never send the raw debug key. */
     val debugProof: String? = null,
@@ -104,8 +109,10 @@ data class WsChallenge(val nonce: String)
 data class WsAuth(
     val clientId: ClientId,
     val nonce: String,
-    /** ECDSA-P256 signature over the UTF-8 bytes of [nonce], by the client's identity key. */
+    /** ECDSA-P256 signature over the UTF-8 bytes of [nonce], by the key named by [epoch]. */
     val signatureB64: String,
+    /** NS2: signing-key selector — 0 = identity key (NS1-compatible), ≥1 = operational [ClientKeyEpoch]. */
+    val epoch: Int = 0,
 )
 
 /** Realtime frame over the dev WebSocket transport (flat to avoid polymorphic serialization). */

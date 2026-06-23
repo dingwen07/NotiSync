@@ -30,7 +30,6 @@ class ProtocolCodecTest {
         val card = ClientCard(
             clientId = ClientId("client-aaa"),
             identityPublicKey = byteArrayOf(1, 2, 3, 4, 5),
-            hpkePublicKeyset = byteArrayOf(9, 8, 7),
             displayName = "Pixel 10 Pro XL",
             platform = "android",
             capabilities = listOf(Capability.CAPTURE, Capability.DISPLAY, Capability.DISMISS_SYNC),
@@ -66,6 +65,72 @@ class ProtocolCodecTest {
         assertEquals(env.seq, decoded.seq)
         assertEquals(listOf(ClientId("rcpt-a"), ClientId("rcpt-b")), decoded.recipientIds())
         assertArrayEquals(env.bodyCiphertext, decoded.bodyCiphertext)
+        // NS2 defaults: an envelope without explicit epochs is identity-signed (0) to NS1-era recipients (0).
+        assertEquals(0, decoded.signerEpoch)
+        assertEquals(listOf(0, 0), decoded.recipientEpochs())
+    }
+
+    @Test
+    fun envelope_ns2EpochFields_roundTrip() {
+        val env = Envelope(
+            typ = MessageType.NOTIFICATION,
+            signerId = ClientId("sender-1"),
+            signerEpoch = 3,
+            messageId = "m",
+            seq = 1L,
+            createdAt = 1L,
+            bodyCiphertext = byteArrayOf(1, 2),
+            recipients = listOf(
+                PerRecipientKey(ClientId("rcpt-a"), byteArrayOf(10), recipientEpoch = 2),
+                PerRecipientKey(ClientId("rcpt-b"), byteArrayOf(20), recipientEpoch = 5),
+            ),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<Envelope>(ProtocolCodec.encodeToCbor(env))
+        assertEquals(3, decoded.signerEpoch)
+        assertEquals(listOf(2, 5), decoded.recipientEpochs())
+    }
+
+    @Test
+    fun clientKeyEpoch_cborRoundTripsAndIsDeterministic() {
+        val ke = ClientKeyEpoch(
+            clientId = ClientId("client-aaa"),
+            identityPublicKey = byteArrayOf(1, 2, 3),
+            epoch = 2,
+            operationalSigningKey = byteArrayOf(4, 5, 6),
+            hpkePublicKeyset = byteArrayOf(7, 8, 9),
+            purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
+            notBefore = 0L,
+            notAfter = Long.MAX_VALUE,
+            minEpoch = 1,
+        )
+        val a = ProtocolCodec.encodeToCbor(ke)
+        assertArrayEquals("deterministic for signing", a, ProtocolCodec.encodeToCbor(ke))
+        val decoded = ProtocolCodec.decodeFromCbor<ClientKeyEpoch>(a)
+        assertEquals(2, decoded.epoch)
+        assertEquals(1, decoded.minEpoch)
+        assertEquals(ke.purposes, decoded.purposes)
+        assertArrayEquals(ke.operationalSigningKey, decoded.operationalSigningKey)
+    }
+
+    @Test
+    fun trustTableEntry_epochDefaultsToZero_forBackCompat() {
+        // An older roster row (no epoch column) must still decode — epoch defaults to 0 (unknown).
+        val legacy = ProtocolCodec.encodeToCbor(TrustTableEntry(ClientId("x"), TrustStatus.TRUSTED, 5L, keyAvailable = true))
+        assertEquals(0, ProtocolCodec.decodeFromCbor<TrustTableEntry>(legacy).epoch)
+        val withEpoch = TrustTableEntry(ClientId("x"), TrustStatus.TRUSTED, 5L, keyAvailable = true, epoch = 4)
+        assertEquals(4, ProtocolCodec.decodeFromCbor<TrustTableEntry>(ProtocolCodec.encodeToCbor(withEpoch)).epoch)
+    }
+
+    @Test
+    fun cardDelivery_carriesCardAndOrEpochBlob() {
+        val card = SignedBlob(SignedType.CLIENT_CARD, signerId = ClientId("x"), payload = byteArrayOf(1), sig = byteArrayOf(2))
+        val epoch = SignedBlob(SignedType.KEY_EPOCH, signerId = ClientId("x"), payload = byteArrayOf(3), sig = byteArrayOf(4))
+        // Both populated (pairing), card-only (NS1-style), and epoch-only (NS2 push) all round-trip.
+        for (delivery in listOf(CardDelivery(ClientId("x"), card, epoch), CardDelivery(ClientId("x"), card = card), CardDelivery(ClientId("x"), epochBlob = epoch))) {
+            val decoded = ProtocolCodec.decodeFromCbor<CardDelivery>(ProtocolCodec.encodeToCbor(delivery))
+            assertEquals(delivery.card?.typ, decoded.card?.typ)
+            assertEquals(delivery.epochBlob?.typ, decoded.epochBlob?.typ)
+        }
     }
 
     @Test
@@ -244,7 +309,6 @@ class ProtocolCodecTest {
         val card = ClientCard(
             clientId = ClientId("c"),
             identityPublicKey = byteArrayOf(1, 2, 3),
-            hpkePublicKeyset = byteArrayOf(4, 5, 6),
             displayName = "Tablet",
             platform = "android",
             capabilities = listOf(Capability.DISPLAY),

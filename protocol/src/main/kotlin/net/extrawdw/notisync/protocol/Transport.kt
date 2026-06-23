@@ -11,14 +11,24 @@ enum class Urgency { HIGH, NORMAL }
 interface Transport {
     val type: TransportType
 
-    /** Publish this client's signed identity card to the broker cache. */
-    suspend fun publishCard(card: SignedBlob)
+    /**
+     * Publish this client's self-contained, identity-signed [ClientKeyEpoch] ([SignedType.KEY_EPOCH]) to
+     * the broker (`POST /v2/keyepoch`). NS2's canonical key-distribution store: the broker holds it to
+     * authenticate this client's requests/WS, and peers pull it. Replaces the NS1 card upload — the device
+     * profile never reaches the broker (it travels via the pairing QR + [ProfileUpdate]).
+     */
+    suspend fun publishKeyEpoch(keyEpoch: SignedBlob)
 
     /** Publish one or more signed route claims (own routes, or relayed peer routes for recovery). */
     suspend fun publishRoutes(routes: List<SignedBlob>)
 
-    /** Fetch a peer's signed client card. */
-    suspend fun fetchCard(clientId: ClientId): SignedBlob?
+    /**
+     * Fetch a peer's [ClientKeyEpoch] [SignedBlob] from the broker (`GET /v2/keyepoch/{id}`). With [epoch]
+     * null the broker returns the latest minted epoch (which during pre-warm may have a future notBefore);
+     * with [epoch] set it returns that specific generation (to verify an in-flight envelope from it). The
+     * blob is self-authenticating, so the broker cannot forge or substitute keys.
+     */
+    suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int? = null): SignedBlob?
 
     /** Send an encrypted envelope to its recipients. The result reports missing/invalid routes. */
     suspend fun send(envelope: Envelope, urgency: Urgency): SendResult

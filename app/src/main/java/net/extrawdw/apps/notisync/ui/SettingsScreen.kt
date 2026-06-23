@@ -52,6 +52,7 @@ fun SettingsScreen() {
     var probeKey by remember { mutableIntStateOf(0) }
     var benchmark by remember { mutableStateOf<BenchmarkState>(BenchmarkState.Idle) }
     var oversizedTest by remember { mutableStateOf<OversizedTestState>(OversizedTestState.Idle) }
+    var rotateNow by remember { mutableStateOf<RotateNowState>(RotateNowState.Idle) }
     LaunchedEffect(advanced, probeKey) {
         if (!advanced) {
             probe = ServerProbe.Idle
@@ -106,6 +107,7 @@ fun SettingsScreen() {
                         probe = probe,
                         benchmark = benchmark,
                         oversizedTest = oversizedTest,
+                        rotateNow = rotateNow,
                         onRefresh = { probeKey++ },
                         onBenchmark = {
                             if (benchmark !is BenchmarkState.Running) {
@@ -118,6 +120,17 @@ fun SettingsScreen() {
                                 scope.launch {
                                     oversizedTest = runCatching { OversizedTestState.Sent(graph.sendOversizedDiagnostic()) }
                                         .getOrElse { OversizedTestState.Failed }
+                                }
+                            }
+                        },
+                        onRotateNow = {
+                            if (rotateNow !is RotateNowState.Running) {
+                                rotateNow = RotateNowState.Running
+                                scope.launch {
+                                    rotateNow = runCatching {
+                                        graph.rotateNowDiagnostic()?.let { RotateNowState.Done(it) }
+                                            ?: RotateNowState.AlreadyPending
+                                    }.getOrElse { RotateNowState.Failed }
                                 }
                             }
                         },

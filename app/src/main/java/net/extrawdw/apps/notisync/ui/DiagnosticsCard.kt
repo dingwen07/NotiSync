@@ -23,6 +23,8 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -35,6 +37,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.BuildConfig
+import net.extrawdw.apps.notisync.RotationKeyInfo
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.HealthResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
@@ -74,6 +77,15 @@ sealed interface OversizedTestState {
     data object Failed : OversizedTestState
 }
 
+/** State of the diagnostics "rotate epoch now" action (forces one rotation, bypassing the 14-day schedule). */
+sealed interface RotateNowState {
+    data object Idle : RotateNowState
+    data object Running : RotateNowState
+    data class Done(val targetEpoch: Int) : RotateNowState
+    data object AlreadyPending : RotateNowState
+    data object Failed : RotateNowState
+}
+
 /** One round-trip to the broker, off the main thread. Returns a Result even when calls fail (nulls). */
 suspend fun probeServer(graph: AppGraph): ServerProbe = withContext(Dispatchers.IO) {
     val health = runCatching { graph.transport.fetchHealth() }.getOrNull()
@@ -105,9 +117,11 @@ fun DiagnosticsCard(
     probe: ServerProbe,
     benchmark: BenchmarkState,
     oversizedTest: OversizedTestState,
+    rotateNow: RotateNowState,
     onRefresh: () -> Unit,
     onBenchmark: () -> Unit,
     onSendOversizedTest: () -> Unit,
+    onRotateNow: () -> Unit,
     onTamperSignature: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -229,6 +243,83 @@ fun DiagnosticsCard(
                     color = MaterialTheme.colorScheme.error,
                 )
                 else -> Unit
+            }
+
+            // Key epoch — always shown in advanced diagnostics: the operational (signing) + HPKE (encryption)
+            // keys exist even with rotation disabled. The schedule, status line and rotate controls below
+            // appear only when ENABLE_ROTATION built the rotation machine.
+            HorizontalDivider()
+            Text(stringResource(R.string.diag_rotation), style = MaterialTheme.typography.titleSmall)
+            // Refreshes after a rotate (keyed on rotateNow); loads off-main via produceState.
+            val keyInfo by produceState<RotationKeyInfo?>(null, rotateNow) { value = graph.rotationKeyInfo() }
+            Text(
+                stringResource(R.string.diag_rotation_current_epoch, keyInfo?.epoch ?: graph.trust.selfEpoch()),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.diag_rotation_signing_key, keyInfo?.signingKey ?: "…"),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(
+                stringResource(R.string.diag_rotation_encryption_key, keyInfo?.encryptionKey ?: "…"),
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            if (graph.rotationManager != null) {
+                // Schedule status: pending activation/retirement countdown, else when the next rotation is due.
+                keyInfo?.let { ki ->
+                    val status = when {
+                        ki.pendingTargetEpoch != null && !ki.pendingActivated ->
+                            stringResource(R.string.diag_rotation_activating, ki.pendingTargetEpoch, tokenTimeRemaining(ki.nextEventAtMillis))
+                        ki.pendingTargetEpoch != null ->
+                            stringResource(R.string.diag_rotation_retiring, ki.pendingTargetEpoch, tokenTimeRemaining(ki.nextEventAtMillis))
+                        ki.nextEventAtMillis > 0L ->
+                            stringResource(R.string.diag_rotation_next_due, tokenTimeRemaining(ki.nextEventAtMillis))
+                        else -> null
+                    }
+                    if (status != null) {
+                        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+                Text(
+                    stringResource(R.string.diag_rotation_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedButton(onClick = onRotateNow, enabled = rotateNow !is RotateNowState.Running) {
+                    Text(
+                        if (rotateNow is RotateNowState.Running) stringResource(R.string.diag_rotating)
+                        else stringResource(R.string.diag_rotate_now),
+                    )
+                }
+                when (val rn = rotateNow) {
+                    is RotateNowState.Done -> Text(
+                        stringResource(R.string.diag_rotate_done, rn.targetEpoch),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    RotateNowState.AlreadyPending -> Text(
+                        stringResource(R.string.diag_rotate_pending),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    RotateNowState.Failed -> Text(
+                        stringResource(R.string.diag_rotate_failed),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                    else -> Unit
+                }
+            } else {
+                Text(
+                    stringResource(R.string.diag_rotation_disabled),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // Debug-only: strip the trust store's signature to exercise the tamper-quarantine path

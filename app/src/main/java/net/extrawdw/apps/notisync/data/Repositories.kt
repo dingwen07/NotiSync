@@ -30,6 +30,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     private val epochKey = intPreferencesKey("route_epoch")
     private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
     private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
+    private val selfEpochActivatedKey = longPreferencesKey("self_epoch_activated_at")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -66,6 +67,19 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
             }
         }
         return epoch
+    }
+
+    /** Wall-clock at which the current operational epoch became active (epoch 1 = first run with rotation
+     *  enabled). EpochMaintenanceWorker compares `now −` this against the rotation interval to decide when to
+     *  mint the next epoch; [setSelfEpochActivatedAt] restamps it on each activation. A local hygiene timer
+     *  only — deliberately NOT in the signed TrustStore, since a wrong value can at worst rotate early/late,
+     *  never forge an epoch (every key-epoch is still identity-signed and floor-checked). */
+    suspend fun selfEpochActivatedAt(): Long = store.data.first()[selfEpochActivatedKey] ?: 0L
+    suspend fun setSelfEpochActivatedAt(at: Long) = store.edit { it[selfEpochActivatedKey] = at }
+    /** Seed the epoch-age clock on first run with rotation enabled WITHOUT resetting an existing stamp, so the
+     *  first scheduled rotation fires one interval from now rather than immediately. */
+    suspend fun seedSelfEpochActivatedAt(at: Long) = store.edit {
+        if (it[selfEpochActivatedKey] == null) it[selfEpochActivatedKey] = at
     }
 
     /** High-water mark of post times we've mirrored — used to gate the listener backfill after a restart. */

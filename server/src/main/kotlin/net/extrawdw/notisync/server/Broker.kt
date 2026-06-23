@@ -1,8 +1,9 @@
 package net.extrawdw.notisync.server
 
-import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.Envelope
+import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteClaim
@@ -22,10 +23,10 @@ import java.util.Base64
  * report a missing route so the caller can supply a signed claim).
  */
 class Broker(
-    private val cards: CardStore,
     private val routes: RouteStore,
     private val relay: RelayStore,
     private val assets: PrivateAssetStore,
+    private val epochs: EpochStore,
     private val hub: WebSocketHub,
     private val push: PushTransport,
     private val config: ServerConfig,
@@ -33,20 +34,73 @@ class Broker(
     private val log = LoggerFactory.getLogger(javaClass)
     private val b64 = Base64.getEncoder()
 
-    suspend fun uploadCard(blob: SignedBlob): Boolean {
-        val card = Verification.verifyClientCard(blob) ?: return false
-        cards.put(card.clientId, ProtocolCodec.encodeToCbor(blob))
-        return true
-    }
-
-    suspend fun getCardBlob(clientId: ClientId): ByteArray? = cards.getSignedBlob(clientId)
-
+    /**
+     * The client's IDENTITY public key (the cold root) — resolved from its latest stored key-epoch (every
+     * key-epoch carries the immutable identity key). Used to verify identity-signed artifacts: key-epochs,
+     * route claims, and signerEpoch-0 requests/WS. NOT interchangeable with [operationalSpki]; conflating
+     * them would let a leaked operational key masquerade as the root.
+     */
     suspend fun clientSpki(clientId: ClientId): ByteArray? {
-        val blobBytes = cards.getSignedBlob(clientId) ?: return null
+        val stored = epochs.latest(clientId) ?: return null
+        // Fail closed if the stored key-epoch carries no identity anchor (uploads of an identity-stripped
+        // key-epoch are already rejected, so this is defensive): null ⇒ unknown_client, never an empty key.
         return runCatching {
-            ProtocolCodec.decodeFromCbor<SignedBlob>(blobBytes).decode<ClientCard>().identityPublicKey
-        }.getOrNull()
+            ProtocolCodec.decodeFromCbor<SignedBlob>(stored.signedBlob).decode<ClientKeyEpoch>().identityPublicKey
+        }.getOrNull()?.takeIf { it.isNotEmpty() }
     }
+
+    /**
+     * The OPERATIONAL signing key for ([clientId], [epoch]), scoped to [purpose] — used to verify
+     * signerEpoch≥1 requests/WS (`REQUEST_AUTH`). Returns null if the epoch is unknown, below the client's
+     * monotonic floor (downgrade/rollback guard), outside its validity window (a pre-warmed key before
+     * `notBefore`, or a retired key after `notAfter`, both with a [ServerConfig.signedRequestMaxSkewMillis]
+     * clock-skew tolerance), or NOT authorized for [purpose] (closed-by-default purpose scoping). Enforcing
+     * the window bounds a compromised epoch's usable lifetime to `notAfter`. The clientId↔key binding was
+     * established when the key-epoch was verified and stored (it carries the identity key); this does not re-bind.
+     */
+    suspend fun operationalSpki(clientId: ClientId, epoch: Int, purpose: Purpose = Purpose.REQUEST_AUTH): ByteArray? {
+        if (epoch < 1) return null
+        // Floor check + row fetch in one transaction (no read-after-read gap a concurrent rotation could exploit).
+        val stored = epochs.getIfAtOrAboveFloor(clientId, epoch) ?: return null
+        val now = System.currentTimeMillis()
+        val skew = config.signedRequestMaxSkewMillis
+        if (stored.notBefore - skew > now) return null   // pre-warmed: not yet active
+        if (now - stored.notAfter > skew) return null     // retired: past notAfter
+        val ke = runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(stored.signedBlob).decode<ClientKeyEpoch>() }
+            .getOrNull() ?: return null
+        if (purpose !in ke.purposes) return null          // closed-by-default: the key must carry this purpose
+        return ke.operationalSigningKey
+    }
+
+    /**
+     * Ingest a self-contained, identity-signed key-epoch (NS2). Verifies it self-consistently, pins it
+     * against the stored card's identity key if we hold one (no key swap), and stores it under the
+     * monotonic floor. Returns whether it was accepted.
+     */
+    suspend fun uploadKeyEpoch(blob: SignedBlob): Boolean {
+        val ke = Verification.verifyKeyEpoch(blob) ?: return false
+        val pinned = clientSpki(ke.clientId)
+        if (pinned != null && !pinned.contentEquals(ke.identityPublicKey)) return false
+        return epochs.put(
+            StoredEpoch(ke.clientId, ke.epoch, ke.minEpoch, ke.notBefore, ke.notAfter, ProtocolCodec.encodeToCbor(blob))
+        )
+    }
+
+    /**
+     * Serve a client's verbatim identity-signed key-epoch blob (CBOR) for peer pull. The bytes are
+     * returned exactly as stored because the caller re-verifies the identity signature over them
+     * ([net.extrawdw.notisync.protocol.crypto.KeyEpochs.verify]); re-encoding through a typed response
+     * could perturb the signed bytes, so this stays a raw [ByteArray] (cf. the relay-pull endpoint).
+     * With [epoch] set, returns that specific epoch — the path a peer uses to fetch the exact key that
+     * signed a given envelope. With [epoch] null, returns the highest *minted* epoch, which during
+     * pre-warm is the staged, not-yet-active key (future `notBefore`): a peer pre-caches it but MUST
+     * check the validity window before trusting it on the active path.
+     */
+    suspend fun getKeyEpoch(clientId: ClientId, epoch: Int? = null): ByteArray? =
+        (if (epoch != null) epochs.get(clientId, epoch) else epochs.latest(clientId))?.signedBlob
+
+    /** The client's current downgrade floor — surfaced so a client that lost its counter can recover. */
+    suspend fun epochFloor(clientId: ClientId): Int = epochs.floor(clientId)
 
     suspend fun uploadRoutes(signedRoutes: List<SignedBlob>): Int {
         var accepted = 0
@@ -190,7 +244,10 @@ class Broker(
         val now = System.currentTimeMillis()
         val r = relay.purgeExpired(now)
         val a = assets.purgeExpired(now)
-        if (r > 0 || a > 0) log.info("purged expired relay={} assets={}", r, a)
+        // Retain a retired key-epoch one relay-TTL past notAfter so a peer can still pull it to verify an
+        // in-flight relayed envelope from that epoch; the latest epoch is always kept (floor + current key).
+        val e = epochs.purgeExpired(now, config.relayTtlMillis)
+        if (r > 0 || a > 0 || e > 0) log.info("purged expired relay={} assets={} epochs={}", r, a, e)
     }
 
     private companion object {

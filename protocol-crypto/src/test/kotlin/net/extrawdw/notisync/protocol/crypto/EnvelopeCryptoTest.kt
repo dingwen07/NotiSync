@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.protocol.crypto
 
 import net.extrawdw.notisync.protocol.CapturedNotification
+import net.extrawdw.notisync.protocol.CipherSuite
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -105,6 +106,55 @@ class EnvelopeCryptoTest {
         // And GCM authentication fails on open.
         assertThrows(Exception::class.java) {
             EnvelopeCrypto.open(tampered, a.identity.clientId, a.hpke.privateKeyset)
+        }
+    }
+
+    @Test
+    fun operationalSignedEnvelopeVerifiesAgainstOperationalKeyNotIdentity() {
+        val identity = SoftwareIdentitySigner.generate()
+        val op = SoftwareOperationalSigner.generate(identity.clientId, signerEpoch = 1)
+        val a = Peer()
+        val env = EnvelopeCrypto.seal(
+            signer = op,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = sampleBody(identity.clientId),
+            recipients = listOf(RecipientKey(a.identity.clientId, a.hpke.publicKeyset, recipientEpoch = 1)),
+            messageId = "01J0OP0001",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+            suite = CipherSuite.NS2.id,
+        )
+        assertEquals(1, env.signerEpoch)
+        // The clientId stays the identity fingerprint even though the operational key signed.
+        assertEquals(identity.clientId, env.signerId)
+        // Verifies against the operational key the key-epoch published...
+        assertTrue(EnvelopeCrypto.verify(env, op.operationalPublicKeySpki))
+        // ...and NOT against the identity key (which did not sign this envelope).
+        assertFalse(EnvelopeCrypto.verify(env, identity.publicKeySpki))
+        // Round-trips for the recipient's epoch-1 HPKE keyset.
+        assertArrayEquals(sampleBody(identity.clientId), EnvelopeCrypto.open(env, a.identity.clientId, a.hpke.privateKeyset))
+    }
+
+    @Test
+    fun crossEpochSealedDekCannotBeOpenedUnderAnotherEpoch() {
+        val identity = SoftwareIdentitySigner.generate()
+        val op = SoftwareOperationalSigner.generate(identity.clientId, signerEpoch = 1)
+        val a = Peer()
+        val env = EnvelopeCrypto.seal(
+            signer = op,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = sampleBody(identity.clientId),
+            recipients = listOf(RecipientKey(a.identity.clientId, a.hpke.publicKeyset, recipientEpoch = 1)),
+            messageId = "01J0OP0002",
+            seq = 2L,
+            createdAt = 1_750_000_000_000L,
+            suite = CipherSuite.NS2.id,
+        )
+        // A copy claiming the DEK was sealed under epoch 2: the HPKE context no longer matches, so the
+        // AEAD open fails — a (claimed, sealed) epoch mismatch cannot be passed off.
+        val forged = env.copy(recipients = env.recipients.map { it.copy(recipientEpoch = 2) })
+        assertThrows(Exception::class.java) {
+            EnvelopeCrypto.open(forged, a.identity.clientId, a.hpke.privateKeyset)
         }
     }
 

@@ -180,7 +180,7 @@ data class DataSync(
     val profile: ProfileUpdate? = null,
     /** A peer's trust roster — populated iff [kind] == [DataSyncKind.TRUST]. */
     val trust: TrustTable? = null,
-    /** A signed client card (key delivery / self-announce) — populated iff [kind] == [DataSyncKind.CARD]. */
+    /** A self-authenticating delivery (a client card and/or a key-epoch) — iff [kind] == [DataSyncKind.CARD]. */
     val card: CardDelivery? = null,
 )
 
@@ -212,6 +212,13 @@ data class TrustTableEntry(
      * mesh. Append-only: defaults true so a roster from an older peer (own devices only) decodes unchanged.
      */
     val ownDevice: Boolean = true,
+    /**
+     * NS2: the highest [ClientKeyEpoch.epoch] the broadcaster holds for this device (0 = unknown / not
+     * advertised, e.g. an NS1-shaped roster). Drives epoch convergence: a receiver that sees an advertised
+     * epoch higher than the one it holds for this id refetches via `GET /v2/keyepoch/{id}`. Additive with a
+     * default so an older roster (no epoch column) decodes unchanged.
+     */
+    val epoch: Int = 0,
 )
 
 /** A device's broadcast trust roster (its TRUSTED + REVOKED decisions). Carried over [DataSyncKind.TRUST]. */
@@ -219,15 +226,20 @@ data class TrustTableEntry(
 data class TrustTable(val entries: List<TrustTableEntry>)
 
 /**
- * Delivery of a signed client card over [DataSyncKind.CARD] — used both to repair a peer that trusts
- * [clientId] but lacks its keys, and for a device to (re)announce its own card. The card is
- * self-authenticating (clientId == fingerprint(identityKey) + self-signature), so the receiver verifies
- * it independently and pins it first-verified-wins; the enclosing signed envelope only attests the relay.
+ * Delivery of self-authenticating material about [clientId] over [DataSyncKind.CARD] — used to repair a
+ * peer that trusts [clientId] but lacks its keys, and for a device to (re)announce its own. It can carry a
+ * [card] (NS1 client card) and/or an [epochBlob] (NS2 [ClientKeyEpoch] rotation push); both are
+ * self-authenticating (clientId == fingerprint(identityKey) + identity signature, carrying the identity
+ * key), so the receiver verifies each independently — the enclosing envelope only attests the relay and
+ * [clientId] need not be the sender. NS1 populates [card]; NS2 populates [epochBlob] (an epoch-only push
+ * carries no card, since the profile travels via [ProfileUpdate]). `GET /v1/keyepoch/{clientId}` is the
+ * pull fallback for a peer that missed an [epochBlob] push.
  */
 @Serializable
 data class CardDelivery(
     val clientId: ClientId,
-    val card: SignedBlob,
+    val card: SignedBlob? = null,
+    val epochBlob: SignedBlob? = null,
 )
 
 /**

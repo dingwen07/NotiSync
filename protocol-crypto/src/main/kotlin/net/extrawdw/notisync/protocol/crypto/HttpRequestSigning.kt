@@ -10,12 +10,14 @@ import java.util.Base64
  * method, raw path/query, timestamp, nonce, and SHA-256 of the exact transmitted body bytes.
  */
 object HttpRequestSigning {
-    const val VERSION = "notisync-http-sign-v1"
+    const val VERSION = "notisync-http-sign-v2"
     const val HEADER_CLIENT_ID = "X-NotiSync-Client-Id"
     const val HEADER_TIMESTAMP = "X-NotiSync-Timestamp"
     const val HEADER_NONCE = "X-NotiSync-Nonce"
     const val HEADER_CONTENT_SHA256 = "X-NotiSync-Content-SHA256"
     const val HEADER_SIGNATURE = "X-NotiSync-Signature"
+    /** NS2: which key signed — "0"/absent = identity (NS1-compatible), ≥1 = operational epoch. */
+    const val HEADER_SIGNER_EPOCH = "X-NotiSync-Signer-Epoch"
 
     private val b64Url: Base64.Encoder = Base64.getUrlEncoder().withoutPadding()
     private val b64UrlDecoder: Base64.Decoder = Base64.getUrlDecoder()
@@ -27,6 +29,8 @@ object HttpRequestSigning {
         val nonce: String,
         val contentSha256: String,
         val signature: String,
+        /** Signing-key selector: 0 = identity (root) key, ≥1 = operational key of that epoch. */
+        val signerEpoch: Int = 0,
     )
 
     fun bodyHash(body: ByteArray): String =
@@ -42,17 +46,22 @@ object HttpRequestSigning {
         timestampMillis: Long,
         nonce: String,
         contentSha256: String,
+        signerEpoch: Int = 0,
     ): ByteArray =
         buildString {
             append(VERSION).append('\n')
             append(method.uppercase()).append('\n')
             append(pathAndQuery.ifBlank { "/" }).append('\n')
             append(clientId.value).append('\n')
+            // The signer-epoch is always bound (0 = identity, ≥1 = operational), so it can't be stripped or
+            // replayed as another epoch, and the v2 VERSION tag means an NS1 signature never verifies here.
+            append(signerEpoch).append('\n')
             append(timestampMillis).append('\n')
             append(nonce).append('\n')
             append(contentSha256)
         }.toByteArray(Charsets.UTF_8)
 
+    /** Sign with the device IDENTITY key (signerEpoch 0) — attestation, card/epoch publish, recovery. */
     fun sign(
         signer: IdentitySigner,
         method: String,
@@ -60,18 +69,44 @@ object HttpRequestSigning {
         body: ByteArray,
         nowMillis: Long = System.currentTimeMillis(),
         nonce: String = newNonce(),
+    ): Headers = signInternal(signer.clientId, 0, signer::sign, method, pathAndQuery, body, nowMillis, nonce)
+
+    /** Sign with a delegated OPERATIONAL key (signerEpoch ≥ 1) — the routine authenticated hot path. */
+    fun sign(
+        signer: OperationalSigner,
+        method: String,
+        pathAndQuery: String,
+        body: ByteArray,
+        nowMillis: Long = System.currentTimeMillis(),
+        nonce: String = newNonce(),
+    ): Headers = signInternal(signer.clientId, signer.signerEpoch, signer::sign, method, pathAndQuery, body, nowMillis, nonce)
+
+    private fun signInternal(
+        clientId: ClientId,
+        signerEpoch: Int,
+        sign: (ByteArray) -> ByteArray,
+        method: String,
+        pathAndQuery: String,
+        body: ByteArray,
+        nowMillis: Long,
+        nonce: String,
     ): Headers {
         val hash = bodyHash(body)
-        val canonical = canonical(method, pathAndQuery, signer.clientId, nowMillis, nonce, hash)
+        val canonical = canonical(method, pathAndQuery, clientId, nowMillis, nonce, hash, signerEpoch)
         return Headers(
-            clientId = signer.clientId,
+            clientId = clientId,
             timestampMillis = nowMillis,
             nonce = nonce,
             contentSha256 = hash,
-            signature = b64Url.encodeToString(signer.sign(canonical)),
+            signature = b64Url.encodeToString(sign(canonical)),
+            signerEpoch = signerEpoch,
         )
     }
 
+    /**
+     * Verify a request signature against [publicKeySpki] — the IDENTITY key when [Headers.signerEpoch]
+     * is 0, else the OPERATIONAL key of that epoch (the caller resolves it from a verified key-epoch).
+     */
     fun verify(
         publicKeySpki: ByteArray,
         method: String,
@@ -88,6 +123,7 @@ object HttpRequestSigning {
             timestampMillis = headers.timestampMillis,
             nonce = headers.nonce,
             contentSha256 = headers.contentSha256,
+            signerEpoch = headers.signerEpoch,
         )
         return IdentityVerifier.verify(publicKeySpki, canonical, signature)
     }

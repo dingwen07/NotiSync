@@ -6,9 +6,9 @@ import kotlinx.serialization.cbor.ByteString
 /** Discriminator for the inner DTO carried by a [SignedBlob.payload]. */
 object SignedType {
     const val CLIENT_CARD = "client-card"
-    const val MEMBERSHIP = "membership"
     const val ROUTE_CLAIM = "route-claim"
-    const val REVOCATION = "revocation"
+    const val KEY_EPOCH = "key-epoch"     // NS2: an identity-signed ClientKeyEpoch (operational keys)
+    // NB: no MEMBERSHIP/REVOCATION — there is no group-admin/CA model (MembershipCard/RevocationCard removed).
 }
 
 /**

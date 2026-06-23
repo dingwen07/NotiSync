@@ -22,6 +22,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -44,12 +45,14 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.pairing.KeyEpochStatus
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
 import net.extrawdw.apps.notisync.pairing.PairingNfcController
@@ -303,8 +306,28 @@ private fun TrustDeviceDialog(
                     DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)
                     DeviceInfo(stringResource(R.string.pair_field_platform), candidate.platform)
                     DeviceInfo(stringResource(R.string.pair_field_verification_number), candidate.safetyNumber)
-                    DeviceInfo(stringResource(R.string.pair_field_identity_key), candidate.identityKeyFingerprint)
-                    DeviceInfo(stringResource(R.string.pair_field_sync_key), candidate.hpkeKeyFingerprint)
+                    DeviceInfo(
+                        stringResource(R.string.pair_field_identity_key),
+                        candidate.identityKeyFingerprint,
+                        monospace = true,
+                    )
+                    // The immutable identity key (above) delegates a rotatable OPERATIONAL key per epoch. Show
+                    // that epoch + its signing key + HPKE keyset ONLY when the key-epoch's signature verified
+                    // against the identity; a tampered (INVALID) or absent epoch shows a note instead of forged
+                    // key fingerprints, so the user never confirms key material the identity didn't authorize.
+                    when (candidate.keyEpochStatus) {
+                        KeyEpochStatus.VERIFIED -> OperationalKeyChip(candidate)
+                        KeyEpochStatus.ABSENT -> Text(
+                            stringResource(R.string.pair_keys_sync_later),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        KeyEpochStatus.INVALID -> Text(
+                            stringResource(R.string.pair_keys_invalid),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.error,
+                        )
+                    }
                 }
             }
         },
@@ -322,10 +345,46 @@ private fun TrustDeviceDialog(
     )
 }
 
+/**
+ * The peer's NS2 operational layer in one chip: the current [PairingCandidate.epoch] and the two keys that
+ * epoch authorizes — the operational signing key and the HPKE keyset. Grouped so the user reads it as a
+ * single delegated unit under the identity key, and so it is visibly distinct from the immutable identity row.
+ */
 @Composable
-private fun DeviceInfo(label: String, value: String) {
+private fun OperationalKeyChip(candidate: PairingCandidate) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.secondaryContainer,
+            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ),
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(
+                stringResource(R.string.pair_operational_chip_title, candidate.epoch),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            DeviceInfo(
+                stringResource(R.string.pair_field_signing_key),
+                candidate.operationalKeyFingerprint,
+                monospace = true,
+            )
+            DeviceInfo(
+                stringResource(R.string.pair_field_encryption_key),
+                candidate.hpkeKeyFingerprint,
+                monospace = true,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeviceInfo(label: String, value: String, monospace: Boolean = false) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(label, style = MaterialTheme.typography.labelMedium)
-        Text(value, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontFamily = if (monospace) FontFamily.Monospace else null,
+        )
     }
 }

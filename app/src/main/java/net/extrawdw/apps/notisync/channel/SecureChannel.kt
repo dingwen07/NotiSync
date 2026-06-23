@@ -8,9 +8,20 @@ import net.extrawdw.notisync.protocol.Transport
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
+import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+
+/**
+ * Which key signs an outbound envelope. The caller chooses EXPLICITLY per §2.3 — the body-agnostic
+ * channel never infers it from the message type:
+ *  - [OPERATIONAL]: the rotatable TEE key (`signerEpoch` ≥1) — the hot path (notifications, dismissals,
+ *    asset sync, profile, standalone card pushes).
+ *  - [IDENTITY]: the cold StrongBox root (`signerEpoch` = 0) — for a `TrustTable` (a roster assertion must
+ *    bind to the immutable root and verify without epoch convergence) and any identity-anchored control body.
+ */
+enum class SignerSelection { OPERATIONAL, IDENTITY }
 
 /**
  * A generic, feature-agnostic end-to-end secure group-messaging substrate over a [Transport].
@@ -27,8 +38,19 @@ import java.util.concurrent.atomic.AtomicLong
  * here too: one channel, one per-sender sequence space.
  */
 class SecureChannel(
+    /** The cold StrongBox identity root — signs [SignerSelection.IDENTITY] envelopes (signerEpoch 0). */
     private val signer: IdentitySigner,
-    private val myHpkePrivateKeyset: ByteArray,
+    /**
+     * Provider for the CURRENT operational signer (signerEpoch ≥1) — the hot path. A provider (not a fixed
+     * instance) so a rotation can swap the active epoch under the channel without reconstructing it.
+     */
+    private val operationalSigner: () -> OperationalSigner,
+    /**
+     * The device's private HPKE keyset for a given epoch, or null if not retained. Backed by the
+     * epoch-indexed ring so an envelope sealed to a now-rotated key still opens during the overlap window
+     * ([EpochHpkeKeyManager]); selected on open by the recipient epoch the sender named.
+     */
+    private val myHpkePrivate: (epoch: Int) -> ByteArray?,
     private val transport: Transport,
     private val directory: PeerDirectory,
     private val log: ChannelLogger,
@@ -39,6 +61,13 @@ class SecureChannel(
      * channel stays free of any activity/UI coupling.
      */
     private val onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
+    /**
+     * Notified when an envelope is dropped because the directory could not resolve the sender's key for the
+     * claimed epoch — i.e. we hold no usable key-epoch for that sender (none, or the specific epoch it signed
+     * with). The handler above the channel reacts by fetching the sender's current key-epoch (and falling
+     * back to a roster broadcast), so an asymmetric or post-rotation gap self-heals. Default is a no-op.
+     */
+    private val onUnresolvedSender: (ClientId) -> Unit = { _ -> },
     /**
      * Persisted cross-session idempotency. Null keeps the channel a pure in-memory substrate (tests,
      * and any caller that doesn't need restart-survival). When supplied, a message handled in a prior
@@ -81,31 +110,44 @@ class SecureChannel(
     }
 
     /**
-     * Seal [body] (already CBOR) to [scope] and send it at [urgency]. Returns the recipient count, so
-     * callers keep their empty-audience early-returns and their "delivered to N device(s)" rows.
+     * Seal [body] (already CBOR) to [scope] and send it at [urgency], signed with [signWith]. Returns the
+     * recipient count, so callers keep their empty-audience early-returns and "delivered to N device(s)" rows.
      */
-    suspend fun send(typ: MessageType, body: ByteArray, scope: Recipients, urgency: Urgency): Int =
-        sendAll(typ, listOf(body), scope, urgency)
+    suspend fun send(
+        typ: MessageType,
+        body: ByteArray,
+        scope: Recipients,
+        urgency: Urgency,
+        signWith: SignerSelection = SignerSelection.OPERATIONAL,
+    ): Int = sendAll(typ, listOf(body), scope, urgency, signWith)
 
     /**
      * Seal each of [bodies] to a SINGLE audience resolved ONCE for [scope] and send them in order at
-     * [urgency]; returns the recipient count. Resolving the audience once keeps a multi-message
-     * broadcast (e.g. a trust table plus its cards) atomic against a roster change that lands
+     * [urgency], signed with [signWith]; returns the recipient count. Resolving the audience once keeps a
+     * multi-message broadcast (e.g. a trust table plus its cards) atomic against a roster change that lands
      * mid-broadcast — every message goes to the same device set, as the original did.
      */
-    suspend fun sendAll(typ: MessageType, bodies: List<ByteArray>, scope: Recipients, urgency: Urgency): Int {
+    suspend fun sendAll(
+        typ: MessageType,
+        bodies: List<ByteArray>,
+        scope: Recipients,
+        urgency: Urgency,
+        signWith: SignerSelection = SignerSelection.OPERATIONAL,
+    ): Int {
         val recipients = directory.recipients(scope)
         if (recipients.isEmpty()) return 0
+        // Resolve the operational signer once per broadcast (stable across the batch); the identity root is
+        // a fixed field. EnvelopeCrypto picks the overload by signer type, stamping signerEpoch accordingly.
+        val op = if (signWith == SignerSelection.OPERATIONAL) operationalSigner() else null
         for (body in bodies) {
-            val envelope = EnvelopeCrypto.seal(
-                signer = signer,
-                typ = typ,
-                bodyPlaintext = body,
-                recipients = recipients,
-                messageId = UUID.randomUUID().toString(),
-                seq = seq.incrementAndGet(),
-                createdAt = now(),
-            )
+            val messageId = UUID.randomUUID().toString()
+            val seqN = seq.incrementAndGet()
+            val createdAt = now()
+            val envelope = if (op != null) {
+                EnvelopeCrypto.seal(op, typ, body, recipients, messageId, seqN, createdAt)
+            } else {
+                EnvelopeCrypto.seal(signer, typ, body, recipients, messageId, seqN, createdAt)
+            }
             transport.send(envelope, urgency)
         }
         return recipients.size
@@ -135,24 +177,43 @@ class SecureChannel(
         // winning handler may still fail). Released in `finally` so a DROPPED id can be retried later.
         if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
         try {
-            val keys = directory.lookup(envelope.signerId)
-            if (keys == null) {
-                log.warn("dropping envelope from unknown sender ${envelope.signerId.shortForm()}")
+            // Resolve the verify key for the CLAIMED signerEpoch. For an operational epoch this is the
+            // anti-rollback gate: a retired/floored/non-ENVELOPE_SIGN epoch resolves to null and we drop
+            // BEFORE any signature check, so a replayed stale-epoch envelope can never open (§8 #1).
+            val sender = directory.resolveSender(envelope.signerId, envelope.signerEpoch)
+            if (sender == null) {
+                log.warn("dropping envelope from unresolvable sender ${envelope.signerId.shortForm()} epoch ${envelope.signerEpoch}")
+                // We hold no usable key-epoch for this sender (none, or not the epoch it signed with) — ask the
+                // handler to fetch it so the relayed copy can be re-delivered + verified once we converge.
+                onUnresolvedSender(envelope.signerId)
                 return DeliveryOutcome.DROPPED
             }
-            if (!EnvelopeCrypto.verify(envelope, keys.identitySpki)) {
+            if (!EnvelopeCrypto.verify(envelope, sender.verifySpki)) {
                 log.warn("signature verification failed for $id")
                 onBadSignature(envelope.signerId, now(), deliveryMode)
                 return DeliveryOutcome.DROPPED
             }
+            // Open with the private HPKE keyset for the epoch the sender sealed to us (selected from our
+            // retained ring). A missing keyset (we no longer retain that epoch) is an undecryptable DROPPED —
+            // deliberately left unacked (matching a decrypt failure) so the relay redelivers once we re-converge;
+            // HPKE retention ≥ relay TTL (RotationManager) makes this rare. A faster pull-on-demand path
+            // (EnvelopeResendRequest, §8 #10) is a Phase-6 optimization, not required for correctness.
+            val myEpoch = envelope.recipients.firstOrNull { it.recipientId == signer.clientId }?.recipientEpoch
+            val myKeyset = myEpoch?.let { myHpkePrivate(it) }
+            if (myKeyset == null) {
+                log.warn("no retained HPKE keyset for recipient epoch $myEpoch to open $id — dropping unacked for relay redelivery")
+                return DeliveryOutcome.DROPPED
+            }
             val body = runCatching {
-                EnvelopeCrypto.open(envelope, signer.clientId, myHpkePrivateKeyset)
+                EnvelopeCrypto.open(envelope, signer.clientId, myKeyset)
             }.getOrElse {
                 log.warn("decrypt failed for $id: ${it.message}")
                 return DeliveryOutcome.DROPPED
             }
             val handler = handlers[envelope.typ] ?: return DeliveryOutcome.DROPPED
-            handler(InboundMessage(envelope.signerId, keys.ownDevice, envelope.typ, body, id, deliveryMode))
+            // Report which key-kind signed (0 = identity, ≥1 = operational) so the handler can enforce the
+            // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
+            handler(InboundMessage(envelope.signerId, sender.ownDevice, envelope.typ, body, envelope.signerEpoch, id, deliveryMode))
             // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
             recent.add(id)
             dedup?.record(id)

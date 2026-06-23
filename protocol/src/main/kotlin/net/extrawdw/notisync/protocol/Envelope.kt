@@ -11,6 +11,13 @@ enum class MessageType { NOTIFICATION, DISMISSAL, DATA_SYNC }
 data class PerRecipientKey(
     val recipientId: ClientId,
     @ByteString val sealedDek: ByteArray,
+    /**
+     * NS2: which of the recipient's HPKE key epochs this DEK was sealed to, so the recipient selects the
+     * matching (possibly retained, pre-rotation) private keyset. 0 = the identity-era single HPKE key
+     * (NS1-compatible). Bound into the HPKE context and [EnvelopeAuth] so a (claimed, sealed) epoch
+     * mismatch fails AEAD.
+     */
+    val recipientEpoch: Int = 0,
 )
 
 /**
@@ -25,6 +32,12 @@ data class Envelope(
     val suite: String = CipherSuite.CURRENT_ID,
     val typ: MessageType,
     val signerId: ClientId,
+    /**
+     * NS2: which key signed this envelope. 0 = [signerId]'s identity key (NS1-compatible; also used for
+     * identity-anchored control bodies like a trust roster); ≥1 = the operational key of that
+     * [ClientKeyEpoch]. Bound into [EnvelopeAuth] so it cannot be stripped or swapped.
+     */
+    val signerEpoch: Int = 0,
     /** Unique per message — recipients dedupe on this. */
     val messageId: String,
     /** Per-sender monotonic counter for ordering and replay detection. */
@@ -37,6 +50,9 @@ data class Envelope(
 ) {
     /** The recipient ids in claim order — bound into the signature. */
     fun recipientIds(): List<ClientId> = recipients.map { it.recipientId }
+
+    /** The per-recipient HPKE epochs in claim order — bound into the signature (NS2). */
+    fun recipientEpochs(): List<Int> = recipients.map { it.recipientEpoch }
 }
 
 /**
@@ -50,9 +66,13 @@ data class EnvelopeAuth(
     val suite: String,
     val typ: MessageType,
     val signerId: ClientId,
+    /** NS2: the signing key selector (0 = identity, ≥1 = operational epoch). */
+    val signerEpoch: Int,
     val messageId: String,
     val seq: Long,
     val createdAt: Long,
     @ByteString val bodyCiphertextSha256: ByteArray,
     val recipientIds: List<ClientId>,
+    /** NS2: per-recipient HPKE epochs, parallel to [recipientIds]. */
+    val recipientEpochs: List<Int>,
 )

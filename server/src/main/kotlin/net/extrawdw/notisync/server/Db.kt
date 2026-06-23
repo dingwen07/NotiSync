@@ -16,13 +16,6 @@ import java.io.File
  * schema portable across SQLite/Postgres without binary-column quirks; the broker is a cache, not
  * a hot path. SQLite runs in WAL mode with a single-writer pool to avoid SQLITE_BUSY.
  */
-object Cards : Table("cards") {
-    val clientId = varchar("client_id", 64)
-    val signedBlobB64 = text("signed_blob_b64") // the verbatim SignedBlob(client-card) CBOR, base64
-    val updatedAt = long("updated_at")
-    override val primaryKey = PrimaryKey(clientId)
-}
-
 object Routes : Table("routes") {
     val id = long("id").autoIncrement()
     val clientId = varchar("client_id", 64).index()
@@ -33,6 +26,22 @@ object Routes : Table("routes") {
     val signedBlobB64 = text("signed_blob_b64")
     val updatedAt = long("updated_at")
     override val primaryKey = PrimaryKey(id)
+}
+
+/**
+ * NS2 operational key-epoch certificates, one row per (clientId, epoch). The broker stores the verbatim
+ * identity-signed [net.extrawdw.notisync.protocol.ClientKeyEpoch] [SignedBlob] (so peers re-verify it
+ * client-side) plus the columns it gates on: [minEpoch] (the downgrade floor) and the validity window.
+ */
+object Epochs : Table("key_epochs") {
+    val clientId = varchar("client_id", 64)
+    val epoch = integer("epoch")
+    val minEpoch = integer("min_epoch")
+    val notBefore = long("not_before")
+    val notAfter = long("not_after")
+    val signedBlobB64 = text("signed_blob_b64") // the verbatim SignedBlob(key-epoch) CBOR, base64
+    val updatedAt = long("updated_at")
+    override val primaryKey = PrimaryKey(clientId, epoch)
 }
 
 object Relay : Table("relay") {
@@ -76,7 +85,7 @@ class NotiSyncDb(private val database: Database) {
             })
             val database = Database.connect(ds)
             transaction(database) {
-                SchemaUtils.create(Cards, Routes, Relay, PrivateAssets)
+                SchemaUtils.create(Routes, Relay, PrivateAssets, Epochs)
             }
             return NotiSyncDb(database)
         }

@@ -39,9 +39,9 @@ class AssetManagerTest {
             store[key(sourceClientId, assetId)] = ByteArray(40) // garbage of plausible length
         }
 
-        override suspend fun publishCard(card: SignedBlob) = Unit
+        override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) = Unit
         override suspend fun publishRoutes(routes: List<SignedBlob>) = Unit
-        override suspend fun fetchCard(clientId: ClientId): SignedBlob? = null
+        override suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int?): SignedBlob? = null
         override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult = SendResult(false)
         override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
     }

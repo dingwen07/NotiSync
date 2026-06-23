@@ -20,6 +20,21 @@ interface IdentitySigner {
     fun sign(data: ByteArray): ByteArray
 }
 
+/**
+ * A device's OPERATIONAL signer (NS2, ECDSA-P256-SHA256): an EC P-256 key delegated by the identity
+ * key via a [net.extrawdw.notisync.protocol.ClientKeyEpoch], living in cheaper TEE keystore. It does
+ * the hot-path work — signing every envelope and authenticated request — so the StrongBox identity
+ * root stays cold. [clientId] is the *identity* fingerprint (stable across rotation), NOT the operational
+ * key's fingerprint; [signerEpoch] (≥1) is the epoch whose key-epoch published this key.
+ */
+interface OperationalSigner {
+    /** X.509 SubjectPublicKeyInfo of the operational public key (EC P-256). */
+    val operationalPublicKeySpki: ByteArray
+    val clientId: ClientId
+    val signerEpoch: Int
+    fun sign(data: ByteArray): ByteArray
+}
+
 /** Verifies ECDSA-P256-SHA256 signatures with plain JCA. Used by the broker and by peers. */
 object IdentityVerifier {
     fun verify(identityPublicKeySpki: ByteArray, data: ByteArray, signature: ByteArray): Boolean =
@@ -71,6 +86,36 @@ class SoftwareIdentitySigner private constructor(
             }
             val kp = kpg.generateKeyPair()
             return SoftwareIdentitySigner(kp.public.encoded, kp.private)
+        }
+    }
+}
+
+/**
+ * Software EC P-256 operational signer for tests and JVM fallback. [clientId] is supplied (it is the
+ * device's identity fingerprint, NOT this key's), as is the [signerEpoch]. The Android path uses a
+ * TEE-backed, non-exportable Keystore key.
+ */
+class SoftwareOperationalSigner private constructor(
+    override val operationalPublicKeySpki: ByteArray,
+    override val clientId: ClientId,
+    override val signerEpoch: Int,
+    private val privateKey: PrivateKey,
+) : OperationalSigner {
+
+    override fun sign(data: ByteArray): ByteArray =
+        Signature.getInstance("SHA256withECDSA").run {
+            initSign(privateKey)
+            update(data)
+            sign()
+        }
+
+    companion object {
+        fun generate(clientId: ClientId, signerEpoch: Int): SoftwareOperationalSigner {
+            val kpg = KeyPairGenerator.getInstance("EC").apply {
+                initialize(ECGenParameterSpec("secp256r1"))
+            }
+            val kp = kpg.generateKeyPair()
+            return SoftwareOperationalSigner(kp.public.encoded, clientId, signerEpoch, kp.private)
         }
     }
 }

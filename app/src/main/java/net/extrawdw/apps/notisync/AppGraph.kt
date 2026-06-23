@@ -21,6 +21,7 @@ import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
@@ -33,7 +34,9 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
-import net.extrawdw.apps.notisync.crypto.HpkeKeyManager
+import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
+import net.extrawdw.apps.notisync.crypto.EpochHpkeKeyManager
+import net.extrawdw.apps.notisync.crypto.KeyFingerprint
 import net.extrawdw.apps.notisync.crypto.KeyVault
 import net.extrawdw.apps.notisync.crypto.KeyVaultAuthTokenStore
 import net.extrawdw.apps.notisync.data.ActivityEvent
@@ -52,6 +55,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
+import net.extrawdw.apps.notisync.foundation.RotationManager
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
 import net.extrawdw.apps.notisync.notification.GraphicsExtractor
@@ -63,25 +67,43 @@ import net.extrawdw.apps.notisync.transport.BrokerClient
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
+import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
+import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
 
 /** Manual dependency graph. Built once in [NotiSyncApp.onCreate]; everything hangs off this. */
+/**
+ * Diagnostics view of the live epoch's public key fingerprints + rotation schedule (see [AppGraph.rotationKeyInfo]).
+ * [pendingTargetEpoch] is non-null while a rotation is in flight; [nextEventAtMillis] is the next scheduled
+ * instant to count down to — the pending activation/retirement when rotating, else when the next rotation is due.
+ */
+data class RotationKeyInfo(
+    val epoch: Int,
+    val signingKey: String,
+    val encryptionKey: String,
+    val pendingTargetEpoch: Int?,
+    val pendingActivated: Boolean,
+    val nextEventAtMillis: Long,
+)
+
 class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     val activityLog = ActivityLog()
@@ -93,8 +115,18 @@ class AppGraph(private val app: Application) {
 
     lateinit var identity: AndroidIdentitySigner
         private set
-    lateinit var hpke: HpkeKeyManager
+    lateinit var epochHpke: EpochHpkeKeyManager
         private set
+
+    /**
+     * The CURRENT operational signer (the epoch the device signs envelopes/requests with). A volatile
+     * holder so [RotationManager] can swap the active epoch at activation without rebuilding the channel or
+     * transport — both read it through a `{ operational }` provider. NS2 hot-path key; the identity root
+     * stays cold.
+     */
+    @Volatile
+    lateinit var operational: OperationalSigner
+
     lateinit var settings: SettingsRepository
         private set
     lateinit var trust: TrustStore
@@ -115,21 +147,33 @@ class AppGraph(private val app: Application) {
     var graphicsPipeline: GraphicsPipeline? = null
         private set
 
+    /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
+     *  stays at epoch 1 forever and never mints a second epoch). Driven by [tickRotation]. */
+    var rotationManager: RotationManager? = null
+        private set
+
     val clientId: ClientId? get() = if (::identity.isInitialized) identity.clientId else null
 
     fun init() {
         identity = AndroidIdentitySigner.loadOrCreate()
         val vault = KeyVault()
-        hpke = HpkeKeyManager(app, vault).apply { loadOrCreate() }
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
         trust = TrustStore(ds, scope, identity)
         appSelection = AppSelectionRepository(ds, scope)
+        // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
+        // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
+        // epoch's TEE operational signing key + HPKE keyset. Rotation (Phase 6) advances the epoch + swaps
+        // [operational]; here we simply pin epoch 1 (or whatever the floor recovered to).
+        val selfEpoch = trust.advanceSelfEpoch(1)
+        epochHpke = EpochHpkeKeyManager(app, vault).apply { loadOrCreate(selfEpoch) }
+        operational = AndroidOperationalSigner.loadOrCreate(identity.clientId, selfEpoch)
         transport = BrokerClient(
             signer = identity,
+            operationalSigner = { operational },
             baseUrlProvider = { settings.brokerUrl.value },
             integrity = PlayIntegrityAttestor(app, BuildConfig.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER),
-            clientCardProvider = ::buildClientCardBlob,
+            clientKeyEpochProvider = ::buildClientKeyEpochBlob,
             debugKey = BuildConfig.DEBUG_KEY,
             tokenStore = KeyVaultAuthTokenStore(app, vault),
             scope = scope,
@@ -143,7 +187,8 @@ class AppGraph(private val app: Application) {
         // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
         val channel = SecureChannel(
             signer = identity,
-            myHpkePrivateKeyset = hpke.privateKeyset,
+            operationalSigner = { operational },
+            myHpkePrivate = { epoch -> epochHpke.privateKeyset(epoch) },
             transport = transport,
             directory = TrustPeerDirectory(trust),
             log = { msg -> Log.w("SecureChannel", msg) },
@@ -157,6 +202,9 @@ class AppGraph(private val app: Application) {
                     deliveryMode = deliveryMode.ifKnown(),
                 )
             },
+            // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
+            // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
+            onUnresolvedSender = { id -> scope.launch { runCatching { foundationEngine?.onUnresolvedSender(id) } } },
         )
         secureChannel = channel
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
@@ -181,12 +229,51 @@ class AppGraph(private val app: Application) {
             onTrustPrompt = ::onTrustPrompt,
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
             activityText = activityText,
+            // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
+            // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.
+            selfKeyEpoch = { runCatching { buildClientKeyEpochBlob() }.getOrNull() },
+            fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
         foundationEngine = foundation
         // Register all handlers synchronously now — BEFORE the lifecycle observer or an FCM wake can
         // reach the channel — or an early cold-start delivery to an unregistered type is dropped.
         foundation.register() // DATA_SYNC (TRUST/CARD/PROFILE; forwards ASSET)
         mirror.register()      // NOTIFICATION + DISMISSAL
+
+        // NS2 rotation (Phase 6) — constructed ONLY behind the flag; the key generation, live-signer swap,
+        // and key destruction are the Android-specific bits injected here, keeping the state machine itself
+        // Keystore-free and unit-testable. With the flag OFF this is never built: epoch 1 forever.
+        if (BuildConfig.ENABLE_ROTATION) {
+            rotationManager = RotationManager(
+                clientId = identity.clientId,
+                identitySpki = identity.publicKeySpki,
+                identitySign = identity::sign,
+                trust = trust,
+                mintOperational = { epoch -> AndroidOperationalSigner.loadOrCreate(identity.clientId, epoch) },
+                mintHpke = { epoch -> epochHpke.loadOrCreate(epoch) },
+                onActivate = { signer, epoch ->
+                    // Swap the live signer + advance the epoch counter ONLY. RotationManager.tick() republishes
+                    // the activated epoch to the broker with the correct rotation windows immediately after this
+                    // returns; publishing buildClientKeyEpochBlob() here would race it and corrupt the schedule.
+                    operational = signer
+                    trust.advanceSelfEpoch(epoch)
+                    // Restart the epoch-age clock so the NEXT scheduled rotation is measured from this activation.
+                    scope.launch { runCatching { settings.setSelfEpochActivatedAt(System.currentTimeMillis()) } }
+                    scope.launch { runCatching { foundationEngine?.broadcastTrust() } } // E2E-announce the new active epoch to own-mesh
+                },
+                onRetire = { retired, keep ->
+                    AndroidOperationalSigner.destroy(retired)
+                    epochHpke.prune(keep)
+                },
+                publish = { blob -> transport.publishKeyEpoch(blob) },
+                pushE2E = { blob -> foundationEngine?.announceKeyEpoch(blob) },
+            )
+            // Resume any rotation that was pre-warmed before this process started (activate/retire on time).
+            scope.launch { runCatching { rotationManager?.tick() } }
+            // Seed the epoch-age clock for epoch 1 on first run with rotation enabled (never resets an existing
+            // stamp), anchoring the first scheduled rotation one interval out rather than firing immediately.
+            scope.launch { runCatching { settings.seedSelfEpochActivatedAt(System.currentTimeMillis()) } }
+        }
 
         // Prune mirrored channels/groups for devices that are no longer trusted peers — at startup and
         // again on every trust change (a revoke drops the peer from activePeers). StateFlow re-emits its
@@ -220,6 +307,9 @@ class AppGraph(private val app: Application) {
         // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
         // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
         RelayDrainWorker.schedulePeriodic(app)
+        // Time-driven epoch upkeep (converge peer key-epochs; with ENABLE_ROTATION also initiate + advance
+        // rotation) — the message-independent guarantee a quiet device still rotates. See the worker doc.
+        EpochMaintenanceWorker.schedulePeriodic(app)
         // Trim handled-message history past its retention window on each start — bounds the dedup db on
         // long-lived processes and rarely-opened devices alike (off-main; the db opens lazily here).
         scope.launch { runCatching { messageStore.prune() } }
@@ -236,23 +326,102 @@ class AppGraph(private val app: Application) {
     @Volatile
     private var liveJob: Job? = null
 
-    /** Publish our signed card, then our FCM route (card first so the broker can verify the route). */
+    /** Publish our key-epoch (the broker's canonical key store), then our FCM route (key-epoch first so the
+     *  broker can resolve the route claim's signer). The profile never reaches the broker (QR + E2E only). */
     private fun publishSelf() {
         scope.launch {
-            runCatching { transport.publishCard(buildClientCardBlob()) }
+            publishKeyEpochUnlessRotating()
+            // Pull trusted peers' key-epochs from the broker so an upgraded/keyless device becomes sealable
+            // without an E2E round-trip or a re-pair (breaks the bootstrap deadlock; see convergeKeyEpochs).
+            runCatching { foundationEngine?.convergeKeyEpochs() }
             registerFcmRoute()
         }
     }
 
-    /** Foreground only: refresh our card on the broker (self-heals stale broker state) and stream live updates. */
+    /** Foreground only: refresh our key-epoch on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
-            runCatching { transport.publishCard(buildClientCardBlob()) }
-            runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster
+            publishKeyEpochUnlessRotating()
+            // Converge peer key-epochs BEFORE the live loop blocks, so a just-upgraded peer is sealable and
+            // our broadcast actually reaches it (the pull is the bootstrap; the broadcast is anti-entropy).
+            runCatching { foundationEngine?.convergeKeyEpochs() }
+            runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster + key-epoch
             transport.runLiveDelivery { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
         }
+        tickRotation() // advance any staged rotation across an activation/retirement boundary
     }
+
+    /**
+     * Publish our current key-epoch to the broker — but stand down while a rotation is in flight. During a
+     * rotation [RotationManager] owns broker publishing (it stages N+1's future-notBefore + N's finite
+     * notAfter windows); a permanent-window republish here would clobber that schedule. With no rotation
+     * pending this is the normal self-heal/refresh.
+     */
+    private suspend fun publishKeyEpochUnlessRotating() {
+        if (trust.pendingRotation() != null) return
+        runCatching { transport.publishKeyEpoch(buildClientKeyEpochBlob()) }
+    }
+
+    /** Advance any in-flight epoch rotation (no-op unless `ENABLE_ROTATION`). Safe to call on any cadence. */
+    fun tickRotation() {
+        val rm = rotationManager ?: return
+        scope.launch { runCatching { rm.tick() } }
+    }
+
+    /**
+     * Diagnostics: force a single rotation right now, bypassing the 30-day schedule. Uses a zero pre-warm lead
+     * so the immediately-following [RotationManager.tick] activates N+1 at once — the days-long overlap still
+     * covers peers that haven't cached N+1 yet (they keep accepting N and pull N+1 lazily). Retirement of N
+     * (and destruction of its private keys) still waits the full overlap + relay-TTL grace. Returns the new
+     * (target) epoch, or null if rotation is disabled or one is already in flight. Off the main thread —
+     * operational keygen + broker publish run on IO.
+     */
+    suspend fun rotateNowDiagnostic(): Int? = withContext(Dispatchers.IO) {
+        val rm = rotationManager ?: return@withContext null
+        val target = rm.beginRotation(leadMillisOverride = 0L) ?: return@withContext null
+        rm.tick() // notBefore = now → activate immediately
+        target
+    }
+
+    /** Diagnostics snapshot of the live epoch's public key material + rotation schedule — short fingerprints of
+     *  the current operational (signing) key and HPKE (encryption) public keyset, plus any pending rotation and
+     *  the next scheduled instant. Computed off-main (hashing + a file read + a DataStore read). Public keys
+     *  only; private material never leaves the Keystore/vault. */
+    suspend fun rotationKeyInfo(): RotationKeyInfo = withContext(Dispatchers.Default) {
+        val epoch = trust.selfEpoch()
+        val pending = trust.pendingRotation()
+        val activated = pending != null && epoch >= pending.targetEpoch
+        val nextAt = when {
+            pending != null -> if (activated) pending.retireRetiredAt else pending.notBefore
+            else -> runCatching { settings.selfEpochActivatedAt() }.getOrDefault(0L)
+                .let { if (it > 0L) it + RotationManager.DEFAULT_ROTATION_INTERVAL_MS else 0L }
+        }
+        RotationKeyInfo(
+            epoch = epoch,
+            signingKey = KeyFingerprint.short(operational.operationalPublicKeySpki),
+            encryptionKey = runCatching { epochHpke.publicKeyset(epoch) }.getOrNull()?.let { KeyFingerprint.short(it) } ?: "—",
+            pendingTargetEpoch = pending?.targetEpoch,
+            pendingActivated = activated,
+            nextEventAtMillis = nextAt,
+        )
+    }
+
+    /**
+     * Forward-secrecy backstop GC: when no rotation is in flight, destroy every operational + HPKE key strictly
+     * below the live epoch. This covers a retirement whose on-device delete was skipped (device offline at the
+     * `notAfter + grace` boundary) or silently failed — so a retired private key is guaranteed gone within a
+     * maintenance cycle rather than merely best-effort at retirement. No-op while a rotation is pending (the
+     * retiring epoch is still needed through the overlap), and `< live` only, so a freshly pre-warmed N+1 minted
+     * by a racing [RotationManager.beginRotation] is never touched. Called from [EpochMaintenanceWorker].
+     */
+    fun gcStaleEpochs() {
+        if (rotationManager == null || trust.pendingRotation() != null) return
+        val live = trust.selfEpoch()
+        AndroidOperationalSigner.retainedEpochs().filter { it < live }.forEach { AndroidOperationalSigner.destroy(it) }
+        epochHpke.prune(epochHpke.retainedEpochs().filter { it >= live }.toSet())
+    }
+
 
     /**
      * Going to the background: drop the live socket, then do the work that matters precisely *because*
@@ -394,12 +563,15 @@ class AppGraph(private val app: Application) {
         Capability.BACKGROUND_WAKE, Capability.FOREGROUND_CONNECTION,
     )
 
-    /** Build this device's self-signed client card. */
+    /**
+     * Build this device's self-signed client card — the QR/E2E-only pairing bundle (identity anchor +
+     * current HPKE keyset + human profile). NEVER uploaded to the broker in NS2; it travels in the pairing
+     * [net.extrawdw.notisync.protocol.CardDelivery] alongside the key-epoch.
+     */
     fun buildClientCardBlob(): SignedBlob {
         val card = ClientCard(
             clientId = identity.clientId,
             identityPublicKey = identity.publicKeySpki,
-            hpkePublicKeyset = hpke.publicKeyset,
             displayName = settings.deviceName.value,
             platform = "android",
             capabilities = selfCapabilities(),
@@ -407,6 +579,38 @@ class AppGraph(private val app: Application) {
         )
         val payload = ProtocolCodec.encodeToCbor(card)
         return SignedBlob(SignedType.CLIENT_CARD, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+    }
+
+    /**
+     * Build this device's self-contained, identity-signed [ClientKeyEpoch] for the current epoch — the
+     * broker's canonical key record and the peer-pull/E2E-push unit. Carries the identity anchor (so it
+     * self-verifies), the current epoch's operational signing key + HPKE keyset, and the validity window.
+     * With rotation OFF the window is open-ended ([notBefore]=0, [notAfter]=MAX); [minEpoch] asserts the
+     * floor at this epoch. Profile fields are deliberately absent — they never reach the broker (§3.5).
+     */
+    fun buildClientKeyEpochBlob(stripIdentity: Boolean = false): SignedBlob {
+        val epoch = trust.selfEpoch()
+        // The floor we assert is the RETIRED epoch while a rotation is in flight (the old epoch is still
+        // valid through the overlap, §7) — NOT the live epoch — so a self-publish or E2E announce mid-overlap
+        // can never raise the floor early and strand in-flight envelopes still sealed to the old epoch. With
+        // no rotation pending, the floor is simply the current epoch.
+        val minEpoch = trust.pendingRotation()?.retiredEpoch ?: epoch
+        val keyEpoch = ClientKeyEpoch(
+            clientId = identity.clientId,
+            // [stripIdentity] omits the (~91-byte) identity anchor — ONLY for the pairing QR, where the
+            // accompanying ClientCard supplies it, shrinking the code. Every other copy (broker publish, E2E
+            // announce/repair) stays self-contained: the broker + a card-less peer have no other identity source.
+            identityPublicKey = if (stripIdentity) ByteArray(0) else identity.publicKeySpki,
+            epoch = epoch,
+            operationalSigningKey = operational.operationalPublicKeySpki,
+            hpkePublicKeyset = epochHpke.loadOrCreate(epoch),
+            purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
+            notBefore = 0L,
+            notAfter = Long.MAX_VALUE,
+            minEpoch = minEpoch,
+        )
+        val payload = ProtocolCodec.encodeToCbor(keyEpoch)
+        return SignedBlob(SignedType.KEY_EPOCH, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
     }
 
     /** This device's current mutable profile, stamped with when the name last changed (no key material). */
@@ -423,7 +627,7 @@ class AppGraph(private val app: Application) {
      * is done (focus loss / IME action), so this normally fires once per edit; the debounce just
      * coalesces any rapid back-to-back commits. Each change does both halves of convergence: refresh
      * the broker's card cache (so a *future* pairing resolves the new name) and push a DATA_SYNC
-     * profile update to *existing* peers (the broker never pushes card changes on its own).
+     * profile update to *existing* peers (the broker never sees the profile in NS2 — it is QR + E2E only).
      */
     @OptIn(FlowPreview::class) // debounce() is a preview API; used only to coalesce rapid renames
     private fun observeProfileChanges() {
@@ -432,7 +636,7 @@ class AppGraph(private val app: Application) {
             .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
             .distinctUntilChanged()
             .onEach {
-                runCatching { transport.publishCard(buildClientCardBlob()) }
+                // The profile is not key material and never goes to the broker; converge peers over E2E only.
                 runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate()) }
             }
             .launchIn(scope)
@@ -505,7 +709,7 @@ class AppGraph(private val app: Application) {
                 true
             } ?: false
         }
-        // No relay-ack queued here: the GET /v1/relay/{id} fetch already dropped the item server-side.
+        // No relay-ack queued here: the GET /v2/relay/{id} fetch already dropped the item server-side.
     }
 
     /**

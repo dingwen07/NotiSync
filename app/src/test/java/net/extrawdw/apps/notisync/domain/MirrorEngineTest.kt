@@ -5,7 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityLog
-import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
+import net.extrawdw.apps.notisync.testsupport.testChannel
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.apps.notisync.testsupport.FakeTrustState
@@ -63,7 +63,7 @@ class MirrorEngineTest {
         transport: CapturingTransport = CapturingTransport(),
         activityLog: ActivityLog = ActivityLog(),
     ): Pair<SecureChannel, MirrorEngine> {
-        val channel = SecureChannel(me, myHpkePrivate, transport, TrustPeerDirectory(trust), log = {})
+        val channel = testChannel(me, myHpkePrivate, trust, transport)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = renderer,
@@ -108,7 +108,7 @@ class MirrorEngineTest {
         val trust = FakeTrustState().apply { peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true, name = "Desk")) }
         val renderer = RecordingRenderer()
         val activityLog = ActivityLog()
-        val channel = SecureChannel(me, myHpke.privateKeyset, CapturingTransport(), TrustPeerDirectory(trust), log = {})
+        val channel = testChannel(me, myHpke.privateKeyset, trust)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = renderer,
@@ -182,7 +182,7 @@ class MirrorEngineTest {
             )
         }
         val transport = CapturingTransport()
-        val channel = SecureChannel(me, myHpke.privateKeyset, transport, TrustPeerDirectory(trust), log = {})
+        val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),
@@ -206,7 +206,7 @@ class MirrorEngineTest {
         val sender = newSigner(); val senderHpke = newHpke()
         val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, ownDevice = true)) }
         val transport = CapturingTransport()
-        val channel = SecureChannel(me, myHpke.privateKeyset, transport, TrustPeerDirectory(trust), log = {})
+        val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),

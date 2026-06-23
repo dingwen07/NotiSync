@@ -17,13 +17,14 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.Base32
-import net.extrawdw.notisync.protocol.Capability
-import net.extrawdw.notisync.protocol.ClientCard
+import net.extrawdw.notisync.protocol.CipherSuite
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -45,19 +46,29 @@ import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.HpkeKeyPair
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
+import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
+import net.extrawdw.notisync.protocol.crypto.SoftwareOperationalSigner
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 import java.util.Base64
 
+/**
+ * NS2 broker flow tests, served entirely under `/v2`. There are no client cards: a client's identity is
+ * learned from its self-authenticating [ClientKeyEpoch] (uploaded at attestation or via POST /v2/keyepoch),
+ * and the broker resolves [Broker.clientSpki] from the latest stored key-epoch.
+ */
 class BrokerFlowTest {
 
     @After
@@ -69,20 +80,6 @@ class BrokerFlowTest {
             "NOTISYNC_PLAY_INTEGRITY_ENABLED",
             "NOTISYNC_JWT_PRIVATE_KEY_PATH",
         ).forEach(System::clearProperty)
-    }
-
-    private fun cardBlob(signer: IdentitySigner, hpke: HpkeKeyPair, name: String): SignedBlob {
-        val card = ClientCard(
-            clientId = signer.clientId,
-            identityPublicKey = signer.publicKeySpki,
-            hpkePublicKeyset = hpke.publicKeyset,
-            displayName = name,
-            platform = "test",
-            capabilities = listOf(Capability.CAPTURE, Capability.DISPLAY),
-            createdAt = 1_750_000_000_000L,
-        )
-        val payload = ProtocolCodec.encodeToCbor(card)
-        return SignedBlob(SignedType.CLIENT_CARD, signerId = signer.clientId, payload = payload, sig = signer.sign(payload))
     }
 
     private fun routeBlob(signer: IdentitySigner, routeRef: String): SignedBlob {
@@ -97,6 +94,328 @@ class BrokerFlowTest {
         )
         val payload = ProtocolCodec.encodeToCbor(claim)
         return SignedBlob(SignedType.ROUTE_CLAIM, signerId = signer.clientId, payload = payload, sig = signer.sign(payload))
+    }
+
+    private fun keyEpochBlob(
+        identity: IdentitySigner,
+        op: OperationalSigner,
+        hpke: HpkeKeyPair,
+        epoch: Int,
+        minEpoch: Int = epoch,
+        notBefore: Long = 0L,
+        notAfter: Long = Long.MAX_VALUE,
+        purposes: List<Purpose> = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
+    ): SignedBlob {
+        val ke = ClientKeyEpoch(
+            suite = CipherSuite.NS2.id,
+            clientId = identity.clientId,
+            identityPublicKey = identity.publicKeySpki,
+            epoch = epoch,
+            operationalSigningKey = op.operationalPublicKeySpki,
+            hpkePublicKeyset = hpke.publicKeyset,
+            purposes = purposes,
+            notBefore = notBefore,
+            notAfter = notAfter,
+            minEpoch = minEpoch,
+        )
+        val payload = ProtocolCodec.encodeToCbor(ke)
+        return SignedBlob(SignedType.KEY_EPOCH, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+    }
+
+    /** Register a client's identity with the broker by publishing an epoch-1 key-epoch (auth-disabled tests). */
+    private suspend fun io.ktor.client.HttpClient.register(signer: SoftwareIdentitySigner, hpke: HpkeKeyPair) {
+        val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val ke = ProtocolCodec.encodeToCbor(keyEpochBlob(signer, op, hpke, epoch = 1))
+        assertEquals(HttpStatusCode.OK, post("/v2/keyepoch") { setBody(ke) }.status)
+    }
+
+    @Test
+    fun operationalKeyEpoch_uploadResolveThenFloorRejectsOlderEpoch() = testApplication {
+        val tmp = File.createTempFile("notisync-epoch", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-epochjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+        val op1 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+
+        // Attest carrying the epoch-1 key-epoch — this registers identity + epoch 1 and returns a bearer.
+        val token = client.attest(signer, keyEpochBlob(signer, op1, hpke, epoch = 1))
+
+        // A request signed with the OPERATIONAL key (epoch 1) is accepted.
+        val getPath = "/v2/keyepoch/${signer.clientId.value}"
+        assertEquals(
+            HttpStatusCode.OK,
+            client.get(getPath) { operationalSignedHeaders(op1, "GET", getPath, ByteArray(0), token) }.status,
+        )
+
+        // The key-epoch is served back for peer pull and re-verifies self-contained.
+        val keFetched = ProtocolCodec.decodeFromCbor<SignedBlob>(
+            client.get(getPath) { signedHeaders(signer, "GET", getPath, ByteArray(0), token) }.readRawBytes()
+        )
+        assertNotNull(Verification.verifyKeyEpoch(keFetched))
+
+        // Advancing to epoch 3 (minEpoch 3) raises the floor; a stale epoch-2 publish is then rejected...
+        val op3 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 3)
+        val ke3 = ProtocolCodec.encodeToCbor(keyEpochBlob(signer, op3, hpke, epoch = 3))
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/keyepoch") { signedHeaders(signer, "POST", "/v2/keyepoch", ke3, token); setBody(ke3) }.status,
+        )
+        val op2 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 2)
+        val ke2 = ProtocolCodec.encodeToCbor(keyEpochBlob(signer, op2, hpke, epoch = 2))
+        assertEquals(
+            HttpStatusCode.BadRequest,
+            client.post("/v2/keyepoch") { signedHeaders(signer, "POST", "/v2/keyepoch", ke2, token); setBody(ke2) }.status,
+        )
+
+        // ...and a request signed with the now-floored epoch-1 key is no longer accepted.
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            client.get(getPath) { operationalSignedHeaders(op1, "GET", getPath, ByteArray(0), token) }.status,
+        )
+    }
+
+    @Test
+    fun keyEpochValidityWindow_preWarmedRejectedUntilActiveAndExpiredRejected() = testApplication {
+        val tmp = File.createTempFile("notisync-validity", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-validityjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+        val op1 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val token = client.attest(signer, keyEpochBlob(signer, op1, hpke, epoch = 1))
+        val getPath = "/v2/keyepoch/${signer.clientId.value}"
+
+        // Active epoch 1 authenticates.
+        assertEquals(
+            HttpStatusCode.OK,
+            client.get(getPath) { operationalSignedHeaders(op1, "GET", getPath, ByteArray(0), token) }.status,
+        )
+
+        // Pre-warm epoch 2 with a FUTURE notBefore, floor unchanged (minEpoch 1).
+        val now = System.currentTimeMillis()
+        val op2 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 2)
+        val ke2 = ProtocolCodec.encodeToCbor(
+            keyEpochBlob(signer, op2, hpke, epoch = 2, minEpoch = 1, notBefore = now + 3_600_000, notAfter = now + 604_800_000)
+        )
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/keyepoch") { signedHeaders(signer, "POST", "/v2/keyepoch", ke2, token); setBody(ke2) }.status,
+        )
+
+        // It IS served (peers pre-cache it before activation)...
+        val servedBlob = ProtocolCodec.decodeFromCbor<SignedBlob>(
+            client.get(getPath) { signedHeaders(signer, "GET", getPath, ByteArray(0), token) }.readRawBytes()
+        )
+        assertEquals(2, servedBlob.decode<ClientKeyEpoch>().epoch)
+        // ...but a request signed with the pre-warmed key is rejected until notBefore.
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            client.get(getPath) { operationalSignedHeaders(op2, "GET", getPath, ByteArray(0), token) }.status,
+        )
+        // Epoch 1 still authenticates during the overlap.
+        assertEquals(
+            HttpStatusCode.OK,
+            client.get(getPath) { operationalSignedHeaders(op1, "GET", getPath, ByteArray(0), token) }.status,
+        )
+
+        // An expired epoch (notAfter in the past) is rejected for auth — bounding a compromised key.
+        val op9 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 9)
+        val ke9 = ProtocolCodec.encodeToCbor(
+            keyEpochBlob(signer, op9, hpke, epoch = 9, minEpoch = 1, notBefore = 0L, notAfter = now - 3_600_000)
+        )
+        client.post("/v2/keyepoch") { signedHeaders(signer, "POST", "/v2/keyepoch", ke9, token); setBody(ke9) }
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            client.get(getPath) { operationalSignedHeaders(op9, "GET", getPath, ByteArray(0), token) }.status,
+        )
+    }
+
+    @Test
+    fun epochStore_monotonicFloorAndPurgeKeepsLatest() = runBlocking {
+        val tmp = File.createTempFile("notisync-epochstore", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        val store = EpochStore(NotiSyncDb.connect(ServerConfig.fromEnv()))
+        val cid = ClientId("client-epochstore")
+        fun blob(n: Int) = ByteArray(4) { n.toByte() }
+
+        assertTrue(store.put(StoredEpoch(cid, epoch = 1, minEpoch = 1, notBefore = 0L, notAfter = 1_000L, signedBlob = blob(1))))
+        assertTrue(store.put(StoredEpoch(cid, epoch = 2, minEpoch = 1, notBefore = 0L, notAfter = 1_000L, signedBlob = blob(2))))
+        assertEquals("overlap keeps the floor low", 1, store.floor(cid))
+        assertTrue(store.put(StoredEpoch(cid, epoch = 3, minEpoch = 3, notBefore = 0L, notAfter = Long.MAX_VALUE, signedBlob = blob(3))))
+        assertEquals("a higher minEpoch retires older epochs", 3, store.floor(cid))
+        assertFalse("a below-floor epoch is rejected", store.put(StoredEpoch(cid, epoch = 2, minEpoch = 2, notBefore = 0L, notAfter = 1_000L, signedBlob = blob(2))))
+        assertEquals(3, store.latest(cid)!!.epoch)
+
+        // Purge well past the expired epochs (notAfter 1000) with zero grace: 1 & 2 go; epoch 3 (latest,
+        // notAfter MAX) is kept, so the floor survives.
+        assertEquals(2, store.purgeExpired(now = 10_000L, retentionGrace = 0L))
+        assertNull(store.get(cid, 1))
+        assertNull(store.get(cid, 2))
+        assertNotNull(store.get(cid, 3))
+        assertEquals("floor preserved by keeping the latest", 3, store.floor(cid))
+    }
+
+    @Test
+    fun epochStore_floorDoesNotRegressViaStaleMinEpochOrGc() = runBlocking {
+        val tmp = File.createTempFile("notisync-floor", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        val store = EpochStore(NotiSyncDb.connect(ServerConfig.fromEnv()))
+        val cid = ClientId("client-floor")
+        fun blob(n: Int) = ByteArray(4) { n.toByte() }
+
+        // Floor is 5; the epoch-5 row is set to expire so GC could be tempted to drop it.
+        assertTrue(store.put(StoredEpoch(cid, epoch = 5, minEpoch = 5, notBefore = 0L, notAfter = 1_000L, signedBlob = blob(5))))
+        assertEquals(5, store.floor(cid))
+
+        // A later epoch carrying a STALE (below-floor) minEpoch is rejected — put can't lower the floor.
+        assertFalse(store.put(StoredEpoch(cid, epoch = 6, minEpoch = 3, notBefore = 0L, notAfter = Long.MAX_VALUE, signedBlob = blob(6))))
+        assertEquals(5, store.floor(cid))
+
+        // A legitimate advance keeps minEpoch ≥ floor.
+        assertTrue(store.put(StoredEpoch(cid, epoch = 6, minEpoch = 5, notBefore = 0L, notAfter = Long.MAX_VALUE, signedBlob = blob(6))))
+
+        // GC of the expired epoch-5 row must NOT regress the floor (the highest-minEpoch row is protected).
+        store.purgeExpired(now = 10_000L, retentionGrace = 0L)
+        assertEquals("floor durable across GC", 5, store.floor(cid))
+        assertNotNull(store.get(cid, 6))
+    }
+
+    @Test
+    fun operationalKey_withoutRequestAuthPurpose_isRejectedForRequestAuth() = testApplication {
+        val tmp = File.createTempFile("notisync-purpose", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-purposejwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+        // A key-epoch authorized only for ENVELOPE_SIGN/HPKE_SEAL — NOT REQUEST_AUTH.
+        val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val token = client.attest(
+            signer,
+            keyEpochBlob(signer, op, hpke, epoch = 1, purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.HPKE_SEAL)),
+        )
+
+        // Stored/served, but a request-auth signature with it is refused (closed-by-default purpose scope).
+        val getPath = "/v2/keyepoch/${signer.clientId.value}"
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            client.get(getPath) { operationalSignedHeaders(op, "GET", getPath, ByteArray(0), token) }.status,
+        )
+    }
+
+    @Test
+    fun integrityVerify_staleKeyEpochIsRejectedNotSilentlyTokenized() = testApplication {
+        val tmp = File.createTempFile("notisync-staleke", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-stalekejwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+
+        // First contact at epoch 3 raises the broker's monotonic floor to 3.
+        val op3 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 3)
+        val token = client.attest(signer, keyEpochBlob(signer, op3, hpke, epoch = 3))
+
+        // Re-attesting while carrying a STALE (below-floor) epoch-1 key-epoch must be REFUSED with a
+        // conflict — not silently handed a bearer for an epoch the broker rejected (uploadKeyEpoch == false).
+        val op1 = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val requestNonce = HttpRequestSigning.newNonce()
+        val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
+        val staleBody = ProtocolCodec.encodeToJson(
+            PlayIntegrityVerificationRequest(
+                clientId = signer.clientId,
+                requestNonce = requestNonce,
+                requestHash = requestHash,
+                integrityToken = requestHash,
+                clientKeyEpoch = keyEpochBlob(signer, op1, hpke, epoch = 1),
+            )
+        ).toByteArray(Charsets.UTF_8)
+        val resp = client.post("/v2/integrity/verify") {
+            contentType(ContentType.Application.Json)
+            signedHeaders(signer, "POST", "/v2/integrity/verify", staleBody, pow = true)
+            setBody(staleBody)
+        }
+        assertEquals(HttpStatusCode.Conflict, resp.status)
+
+        // The stale epoch was NOT stored: the latest served key-epoch is still epoch 3 (floor intact).
+        val getPath = "/v2/keyepoch/${signer.clientId.value}"
+        val served = ProtocolCodec.decodeFromCbor<SignedBlob>(
+            client.get(getPath) { signedHeaders(signer, "GET", getPath, ByteArray(0), token) }.readRawBytes()
+        )
+        assertEquals(3, served.decode<ClientKeyEpoch>().epoch)
+    }
+
+    @Test
+    fun healthProbesAreServedUnversionedAtRoot() = testApplication {
+        val tmp = File.createTempFile("notisync-health", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-healthjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        // Liveness/readiness live at the unversioned root so probes survive an API version bump; the
+        // /v2 prefix must NOT capture them.
+        assertEquals(HttpStatusCode.OK, client.get("/healthz").status)
+        assertEquals(HttpStatusCode.OK, client.get("/readyz").status)
+        assertEquals(HttpStatusCode.NotFound, client.get("/v2/healthz").status)
+    }
+
+    private fun allGoodDecoder() = object : PlayIntegrityDecoder {
+        override suspend fun decode(integrityToken: String) = IntegrityPayload(
+            requestPackageName = "net.extrawdw.apps.notisync",
+            requestHash = integrityToken,
+            timestampMillis = System.currentTimeMillis(),
+            appLicensingVerdict = "LICENSED",
+            appRecognitionVerdict = "PLAY_RECOGNIZED",
+            appPackageName = "net.extrawdw.apps.notisync",
+            deviceRecognitionVerdict = listOf("MEETS_DEVICE_INTEGRITY"),
+            deviceActivityLevel = "LEVEL_1",
+            playProtectVerdict = "NO_ISSUES",
+        )
+    }
+
+    /** Attest (carrying [keyEpoch] so the broker learns identity) and return the issued bearer token. */
+    private suspend fun io.ktor.client.HttpClient.attest(signer: SoftwareIdentitySigner, keyEpoch: SignedBlob): String {
+        val requestNonce = HttpRequestSigning.newNonce()
+        val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
+        val verifyBody = ProtocolCodec.encodeToJson(
+            PlayIntegrityVerificationRequest(
+                clientId = signer.clientId,
+                requestNonce = requestNonce,
+                requestHash = requestHash,
+                integrityToken = requestHash,
+                clientKeyEpoch = keyEpoch,
+            )
+        ).toByteArray(Charsets.UTF_8)
+        val resp = post("/v2/integrity/verify") {
+            contentType(ContentType.Application.Json)
+            signedHeaders(signer, "POST", "/v2/integrity/verify", verifyBody, pow = true)
+            setBody(verifyBody)
+        }
+        return ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(resp.bodyAsText()).token
     }
 
     @Test
@@ -114,26 +433,20 @@ class BrokerFlowTest {
         val recipient = SoftwareIdentitySigner.generate()
         val recipientHpke = Hpke.generateKeyPair()
 
-        // 1. Upload both signed client cards.
-        assertEquals(
-            HttpStatusCode.OK,
-            http.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }.status,
-        )
-        assertEquals(
-            HttpStatusCode.OK,
-            http.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(recipient, recipientHpke, "Recipient"))) }.status,
-        )
+        // 1. Register both identities (publish their key-epochs).
+        http.register(sender, senderHpke)
+        http.register(recipient, recipientHpke)
 
-        // 2. The broker returns a verifiable card.
+        // 2. The broker returns a verifiable key-epoch for the recipient.
         val fetched = ProtocolCodec.decodeFromCbor<SignedBlob>(
-            http.get("/v1/cards/${recipient.clientId.value}").readRawBytes()
+            http.get("/v2/keyepoch/${recipient.clientId.value}").readRawBytes()
         )
-        assertNotNull(Verification.verifyClientCard(fetched))
+        assertNotNull(Verification.verifyKeyEpoch(fetched))
 
         // 3. Register a (fake) FCM route claim for the recipient.
         assertEquals(
             HttpStatusCode.OK,
-            http.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }.status,
+            http.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }.status,
         )
 
         // 4. Seal a notification to the recipient and send it while they are offline.
@@ -159,14 +472,14 @@ class BrokerFlowTest {
             createdAt = 1_750_000_000_000L,
         )
         val envBytes = ProtocolCodec.encodeToCbor(envelope)
-        val sendResp = http.post("/v1/send") { setBody(envBytes) }
+        val sendResp = http.post("/v2/send") { setBody(envBytes) }
         val result = ProtocolCodec.decodeFromJson<SendResult>(sendResp.bodyAsText())
         // FCM is disabled in the test, so the recipient (offline) has no live route -> reported missing,
         // but the envelope is queued in the relay for delivery on connect.
         assertTrue("recipient should be reported missing while offline", recipient.clientId in result.missingRoutes)
 
         // 5. Connect as the recipient; the broker flushes the queued envelope after auth.
-        http.webSocket("/v1/connect") {
+        http.webSocket("/v2/connect") {
             val challenge = ProtocolCodec.decodeFromJson<WsChallenge>((incoming.receive() as Frame.Text).readText())
             val sig = Base64.getEncoder().encodeToString(recipient.sign(challenge.nonce.toByteArray()))
             send(Frame.Text(ProtocolCodec.encodeToJson(WsAuth(recipient.clientId, challenge.nonce, sig))))
@@ -198,10 +511,9 @@ class BrokerFlowTest {
         val recipient = SoftwareIdentitySigner.generate()
         val recipientHpke = Hpke.generateKeyPair()
 
-        // Upload both cards and an FCM route for the recipient, then queue a notification while offline.
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(recipient, recipientHpke, "Recipient"))) }
-        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
 
         val body = ProtocolCodec.encodeToCbor(
             CapturedNotification(
@@ -224,16 +536,16 @@ class BrokerFlowTest {
             seq = 1L,
             createdAt = 1_750_000_000_000L,
         )
-        client.post("/v1/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
 
         // 0. The signed drain-list endpoint reports exactly this queued id (the WorkManager backstop's input).
         val pendingBefore = ProtocolCodec.decodeFromJson<RelayPending>(
-            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertEquals(listOf(envelope.messageId), pendingBefore.messageIds)
 
         // 1. A signature-only GET (no JWT bearer) returns exactly that envelope; it decrypts on the recipient.
-        val path = "/v1/relay/${envelope.messageId}"
+        val path = "/v2/relay/${envelope.messageId}"
         val fetched = client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }
         assertEquals(HttpStatusCode.OK, fetched.status)
         val receivedEnv = ProtocolCodec.decodeFromCbor<Envelope>(fetched.readRawBytes())
@@ -248,12 +560,12 @@ class BrokerFlowTest {
         )
         // ...and the drain list is now empty.
         val pendingAfter = ProtocolCodec.decodeFromJson<RelayPending>(
-            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertTrue(pendingAfter.messageIds.isEmpty())
 
         // 3. An unknown message id is a miss too (and only the recipient's own relay is reachable).
-        val unknown = "/v1/relay/01J0NOPE99"
+        val unknown = "/v2/relay/01J0NOPE99"
         assertEquals(
             HttpStatusCode.NotFound,
             client.get(unknown) { signedHeaders(recipient, "GET", unknown, ByteArray(0)) }.status,
@@ -273,9 +585,9 @@ class BrokerFlowTest {
         val recipient = SoftwareIdentitySigner.generate()
         val recipientHpke = Hpke.generateKeyPair()
 
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(recipient, recipientHpke, "Recipient"))) }
-        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
 
         suspend fun queue(messageId: String) {
             val body = ProtocolCodec.encodeToCbor(
@@ -299,27 +611,27 @@ class BrokerFlowTest {
                 seq = 1L,
                 createdAt = 1_750_000_000_000L,
             )
-            client.post("/v1/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+            client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
         }
         queue("01J0ACK0001"); queue("01J0ACK0002"); queue("01J0ACK0003")
 
         val pendingBefore = ProtocolCodec.decodeFromJson<RelayPending>(
-            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertEquals(setOf("01J0ACK0001", "01J0ACK0002", "01J0ACK0003"), pendingBefore.messageIds.toSet())
 
         // Batch-ack two of the three with a signature-only POST (no JWT) — the FCM-inline / dismissal path.
         val ackBody = ProtocolCodec.encodeToJson(RelayAck(listOf("01J0ACK0001", "01J0ACK0002"))).toByteArray(Charsets.UTF_8)
-        val ackResp = client.post("/v1/relay/ack") {
+        val ackResp = client.post("/v2/relay/ack") {
             contentType(ContentType.Application.Json)
-            signedHeaders(recipient, "POST", "/v1/relay/ack", ackBody)
+            signedHeaders(recipient, "POST", "/v2/relay/ack", ackBody)
             setBody(ackBody)
         }
         assertEquals(HttpStatusCode.OK, ackResp.status)
 
         // Only the un-acked id remains queued.
         val pendingAfter = ProtocolCodec.decodeFromJson<RelayPending>(
-            client.get("/v1/relay") { signedHeaders(recipient, "GET", "/v1/relay", ByteArray(0)) }.bodyAsText()
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertEquals(listOf("01J0ACK0003"), pendingAfter.messageIds)
     }
@@ -339,11 +651,11 @@ class BrokerFlowTest {
         val bob = SoftwareIdentitySigner.generate()
         val bobHpke = Hpke.generateKeyPair()
 
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(sender, senderHpke, "Sender"))) }
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(alice, aliceHpke, "Alice"))) }
-        client.post("/v1/cards") { setBody(ProtocolCodec.encodeToCbor(cardBlob(bob, bobHpke, "Bob"))) }
-        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(alice, "alice-token")))) }
-        client.post("/v1/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(bob, "bob-token")))) }
+        client.register(sender, senderHpke)
+        client.register(alice, aliceHpke)
+        client.register(bob, bobHpke)
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(alice, "alice-token")))) }
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(bob, "bob-token")))) }
 
         val body = ProtocolCodec.encodeToCbor(
             CapturedNotification(
@@ -370,10 +682,10 @@ class BrokerFlowTest {
             createdAt = 1_750_000_000_000L,
         )
         val fullBytes = ProtocolCodec.encodeToCbor(envelope)
-        client.post("/v1/send") { setBody(fullBytes) }
+        client.post("/v2/send") { setBody(fullBytes) }
 
         // Each recipient pulls their own queued copy from the relay.
-        val relayPath = "/v1/relay/${envelope.messageId}"
+        val relayPath = "/v2/relay/${envelope.messageId}"
         val aliceResp = client.get(relayPath) { signedHeaders(alice, "GET", relayPath, ByteArray(0)) }
         assertEquals(HttpStatusCode.OK, aliceResp.status)
         val aliceEnv = ProtocolCodec.decodeFromCbor<Envelope>(aliceResp.readRawBytes())
@@ -425,34 +737,34 @@ class BrokerFlowTest {
             // 1. Store succeeds, then fetch returns the exact ciphertext.
             assertEquals(
                 HttpStatusCode.OK,
-                client.post("/v1/assets/${src.value}/$assetId") { setBody(ciphertext) }.status,
+                client.post("/v2/assets/${src.value}/$assetId") { setBody(ciphertext) }.status,
             )
-            val fetched = client.get("/v1/assets/${src.value}/$assetId")
+            val fetched = client.get("/v2/assets/${src.value}/$assetId")
             assertEquals(HttpStatusCode.OK, fetched.status)
             assertArrayEquals(ciphertext, fetched.readRawBytes())
 
             // 2. Overwrite is rejected (first-writer-wins on an unguessable id) and the original survives.
             assertEquals(
                 HttpStatusCode.Conflict,
-                client.post("/v1/assets/${src.value}/$assetId") { setBody(ByteArray(8)) }.status,
+                client.post("/v2/assets/${src.value}/$assetId") { setBody(ByteArray(8)) }.status,
             )
-            assertArrayEquals(ciphertext, client.get("/v1/assets/${src.value}/$assetId").readRawBytes())
+            assertArrayEquals(ciphertext, client.get("/v2/assets/${src.value}/$assetId").readRawBytes())
 
             // 3. A non-opaque id (not Base32 of 24 bytes) is rejected — the content-derived-id guard.
             assertEquals(
                 HttpStatusCode.BadRequest,
-                client.post("/v1/assets/${src.value}/notanopaqueid") { setBody(ciphertext) }.status,
+                client.post("/v2/assets/${src.value}/notanopaqueid") { setBody(ciphertext) }.status,
             )
 
             // 4. Oversize is rejected before buffering (Content-Length guard, max=64).
             assertEquals(
                 HttpStatusCode.PayloadTooLarge,
-                client.post("/v1/assets/${src.value}/$assetId") { setBody(ByteArray(100)) }.status,
+                client.post("/v2/assets/${src.value}/$assetId") { setBody(ByteArray(100)) }.status,
             )
 
             // 5. Unknown asset -> 404.
             val other = Base32.encode(ByteArray(24) { (it + 9).toByte() })
-            assertEquals(HttpStatusCode.NotFound, client.get("/v1/assets/${src.value}/$other").status)
+            assertEquals(HttpStatusCode.NotFound, client.get("/v2/assets/${src.value}/$other").status)
         } finally {
             System.clearProperty("NOTISYNC_MAX_ASSET_BYTES")
         }
@@ -466,32 +778,19 @@ class BrokerFlowTest {
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
         System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
         System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
-        // Fake decoder so the full verdict pipeline runs without a real Google call; it echoes the
-        // requestHash carried in the (test-supplied) integrity token and reports all-good verdicts.
-        val decoder = object : PlayIntegrityDecoder {
-            override suspend fun decode(integrityToken: String) = IntegrityPayload(
-                requestPackageName = "net.extrawdw.apps.notisync",
-                requestHash = integrityToken,
-                timestampMillis = System.currentTimeMillis(),
-                appLicensingVerdict = "LICENSED",
-                appRecognitionVerdict = "PLAY_RECOGNIZED",
-                appPackageName = "net.extrawdw.apps.notisync",
-                deviceRecognitionVerdict = listOf("MEETS_DEVICE_INTEGRITY"),
-                deviceActivityLevel = "LEVEL_1",
-                playProtectVerdict = "NO_ISSUES",
-            )
-        }
-        application { brokerModule(decoder) }
+        application { brokerModule(allGoodDecoder()) }
 
         val signer = SoftwareIdentitySigner.generate()
         val hpke = Hpke.generateKeyPair()
-        val card = cardBlob(signer, hpke, "Signed")
-        val cardBytes = ProtocolCodec.encodeToCbor(card)
+        val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val ke = keyEpochBlob(signer, op, hpke, epoch = 1)
+        val keBytes = ProtocolCodec.encodeToCbor(ke)
 
-        assertEquals(HttpStatusCode.Unauthorized, client.post("/v1/cards") { setBody(cardBytes) }.status)
+        // Publishing a key-epoch without a bearer is rejected when attestation is enabled.
+        assertEquals(HttpStatusCode.Unauthorized, client.post("/v2/keyepoch") { setBody(keBytes) }.status)
 
         // Unauthenticated status discovery: attestation required, not yet verified.
-        val statusBefore = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(client.get("/v1/status").bodyAsText())
+        val statusBefore = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(client.get("/v2/status").bodyAsText())
         assertEquals(true, statusBefore.playIntegrityRequired)
         assertEquals(false, statusBefore.verified)
 
@@ -502,12 +801,12 @@ class BrokerFlowTest {
             requestNonce = requestNonce,
             requestHash = requestHash,
             integrityToken = requestHash, // the fake decoder echoes this back as the token's requestHash
-            clientCard = card,
+            clientKeyEpoch = ke,
         )
         val verifyBody = ProtocolCodec.encodeToJson(verifyRequest).toByteArray(Charsets.UTF_8)
-        val verifyResponse = client.post("/v1/integrity/verify") {
+        val verifyResponse = client.post("/v2/integrity/verify") {
             contentType(ContentType.Application.Json)
-            signedHeaders(signer, "POST", "/v1/integrity/verify", verifyBody, pow = true)
+            signedHeaders(signer, "POST", "/v2/integrity/verify", verifyBody, pow = true)
             setBody(verifyBody)
         }
         assertEquals(HttpStatusCode.OK, verifyResponse.status)
@@ -515,24 +814,25 @@ class BrokerFlowTest {
 
         // With the bearer presented, status now reports this client as verified.
         val statusAfter = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(
-            client.get("/v1/status") { header(HttpHeaders.Authorization, "Bearer $token") }.bodyAsText()
+            client.get("/v2/status") { header(HttpHeaders.Authorization, "Bearer $token") }.bodyAsText()
         )
         assertEquals(true, statusAfter.verified)
         assertEquals(signer.clientId, statusAfter.clientId)
 
+        // A subsequent key-epoch publish with the bearer + identity signature is accepted.
         assertEquals(
             HttpStatusCode.OK,
-            client.post("/v1/cards") {
-                signedHeaders(signer, "POST", "/v1/cards", cardBytes, token)
-                setBody(cardBytes)
+            client.post("/v2/keyepoch") {
+                signedHeaders(signer, "POST", "/v2/keyepoch", keBytes, token)
+                setBody(keBytes)
             }.status,
         )
 
-        val fetched = client.get("/v1/cards/${signer.clientId.value}") {
-            signedHeaders(signer, "GET", "/v1/cards/${signer.clientId.value}", ByteArray(0), token)
+        val fetched = client.get("/v2/keyepoch/${signer.clientId.value}") {
+            signedHeaders(signer, "GET", "/v2/keyepoch/${signer.clientId.value}", ByteArray(0), token)
         }
         assertEquals(HttpStatusCode.OK, fetched.status)
-        assertNotNull(Verification.verifyClientCard(ProtocolCodec.decodeFromCbor<SignedBlob>(fetched.readRawBytes())))
+        assertNotNull(Verification.verifyKeyEpoch(ProtocolCodec.decodeFromCbor<SignedBlob>(fetched.readRawBytes())))
     }
 
     @Test
@@ -570,11 +870,29 @@ class BrokerFlowTest {
         header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
         header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
         header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
+        header(HttpRequestSigning.HEADER_SIGNER_EPOCH, signed.signerEpoch.toString())
         if (pow) {
             val powTimestamp = System.currentTimeMillis()
             val powNonce = ProofOfWork.solve(signed.signature, powTimestamp)
             header(ProofOfWork.HEADER_NONCE, powNonce)
             header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
         }
+    }
+
+    private fun io.ktor.client.request.HttpRequestBuilder.operationalSignedHeaders(
+        signer: OperationalSigner,
+        method: String,
+        pathAndQuery: String,
+        body: ByteArray,
+        bearerToken: String? = null,
+    ) {
+        bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+        val signed = HttpRequestSigning.sign(signer, method, pathAndQuery, body)
+        header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
+        header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
+        header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
+        header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
+        header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
+        header(HttpRequestSigning.HEADER_SIGNER_EPOCH, signed.signerEpoch.toString())
     }
 }

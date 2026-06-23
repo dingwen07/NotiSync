@@ -29,13 +29,20 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 7
-        versionName = "0.5.0-rc.1"
+        versionCode = 8
+        versionName = "1.0.0-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
             ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")
             ?: "0"
         buildConfigField("long", "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER", "${cloudProjectNumber.trim()}L")
+        // NS2 epoch rotation: the foundation (operational key at epoch 1, key-epoch publish, signed floor +
+        // generation ring) is always on; this flag gates ONLY whether the client ever mints a SECOND epoch
+        // (the scheduled rotation + pre-warm state machine in RotationManager). OFF ⇒ epoch 1 forever, so the
+        // complex rotation path never runs until it's been exercised on TEST. Override per build via
+        // local.properties (ENABLE_ROTATION=true) if desired.
+        val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
+        buildConfigField("boolean", "ENABLE_ROTATION", enableRotation.toString())
     }
 
     buildTypes {

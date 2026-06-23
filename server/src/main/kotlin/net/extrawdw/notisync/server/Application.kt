@@ -16,6 +16,7 @@ import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
+import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.pingPeriod
@@ -79,13 +80,13 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     val config = ServerConfig.fromEnv()
     val db = NotiSyncDb.connect(config)
 
-    val cards = CardStore(db)
     val routes = RouteStore(db)
     val relay = RelayStore(db)
     val assets = PrivateAssetStore(db)
+    val epochs = EpochStore(db)
     val hub = WebSocketHub()
     val push = FcmPushTransport.createOrNull(config) ?: DisabledPushTransport
-    val broker = Broker(cards, routes, relay, assets, hub, push, config)
+    val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
     val integrity = if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config)
 
@@ -123,13 +124,20 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     )
 
     routing {
+        // Liveness/readiness stay UNVERSIONED at the root: load balancers, container probes, uptime
+        // monitors, and BrokerClient hit /healthz and /readyz directly (see docker-compose.yml, README).
+        // They report process health, not the wire contract, so they must not move when the API version does.
         get("/healthz") { call.respond(HealthResponse("ok", config.version)) }
         get("/readyz") { call.respond(HealthResponse("ready", config.version)) }
+
+        // Clean NS2 API — everything version-specific (its own JWT key, the NS2 wire contract) is served
+        // under /v2 (the legacy NS1 JAR owns /v1). No NS1 code path.
+        route("/v2") {
         get("/.well-known/jwks.json") { call.respondText(auth.jwksJson(), ContentType.Application.Json) }
 
         // Unauthenticated discovery: a client learns whether attestation is required, and — if it
         // presents a bearer — whether that token is currently valid (so it can decide to re-attest).
-        get("/v1/status") {
+        get("/status") {
             val principal = auth.bearerPrincipal(call)
             call.respond(
                 VerificationStatusResponse(
@@ -142,22 +150,26 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             )
         }
 
-        post("/v1/integrity/verify") {
+        post("/integrity/verify") {
             val body = call.receiveCapped(MAX_VERIFY_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val req = runCatching {
                 ProtocolCodec.decodeFromJson<PlayIntegrityVerificationRequest>(body.toString(Charsets.UTF_8))
             }.getOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_integrity_request"))
 
-            val verifiedCard = req.clientCard?.let { Verification.verifyClientCard(it) }
-            if (req.clientCard != null && verifiedCard == null) {
-                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_card"))
+            // Identity is learned from the self-authenticating key-epoch (first contact / key refresh).
+            val keyEpoch = req.clientKeyEpoch?.let { Verification.verifyKeyEpoch(it) }
+            if (req.clientKeyEpoch != null && keyEpoch == null) {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_key_epoch"))
             }
-            if (verifiedCard != null && verifiedCard.clientId != req.clientId) {
-                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("card_client_mismatch"))
+            if (keyEpoch != null && keyEpoch.clientId != req.clientId) {
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("key_epoch_client_mismatch"))
             }
-            val signerSpki = verifiedCard?.identityPublicKey ?: broker.clientSpki(req.clientId)
+            // A verified key-epoch carries the identity (a stripped one was already rejected above); fall back
+            // to the stored identity otherwise. takeIf guards against an empty anchor → unknown_client, never empty.
+            val signerSpki = keyEpoch?.identityPublicKey?.takeIf { it.isNotEmpty() } ?: broker.clientSpki(req.clientId)
                 ?: return@post call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_client"))
+            // The attestation request is signed by the IDENTITY key (signerEpoch 0).
             when (val sig = auth.verifySignedRequest(call, body, req.clientId, signerSpki)) {
                 SignatureCheck.Accepted -> Unit
                 is SignatureCheck.Rejected -> return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse(sig.reason))
@@ -179,7 +191,13 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                     ErrorResponse(decision.reason),
                 )
                 is IntegrityDecision.Accepted -> {
-                    req.clientCard?.let { broker.uploadCard(it) }
+                    // Persist the carried key-epoch BEFORE minting a token. A non-null blob that fails to
+                    // store (stale/below-floor, or an identity-pin mismatch) must not silently yield a
+                    // bearer the client would then use with a signer epoch the broker never recorded.
+                    val ke = req.clientKeyEpoch
+                    if (ke != null && !broker.uploadKeyEpoch(ke)) {
+                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("stale_key_epoch"))
+                    }
                     val issued = auth.issue(req.clientId)
                     call.respond(
                         HttpStatusCode.OK,
@@ -193,7 +211,8 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             }
         }
 
-        post("/v1/cards") {
+        // Publish/rotate a self-contained key-epoch (the server's identity + operational-key source).
+        post("/keyepoch") {
             val body = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
@@ -201,22 +220,25 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             if (config.playIntegrityEnabled && blob?.signerId != principal.clientId) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             }
-            if (blob == null || !broker.uploadCard(blob)) {
-                call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_card"))
+            if (blob == null || !broker.uploadKeyEpoch(blob)) {
+                call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_key_epoch"))
             } else {
                 call.respond(HttpStatusCode.OK, HealthResponse("stored", config.version))
             }
         }
 
-        get("/v1/cards/{clientId}") {
+        // Key-epoch pull: serve a client's current (or a specific ?epoch=N) operational key-epoch so peers
+        // learn rotated keys. Self-verifying (carries the identity key), so the caller re-checks it.
+        get("/keyepoch/{clientId}") {
             auth.requireJwtSigned(call, ByteArray(0), broker) ?: return@get
             val id = ClientId(call.parameters["clientId"].orEmpty())
-            val bytes = broker.getCardBlob(id)
-            if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_client"))
+            val epoch = call.request.queryParameters["epoch"]?.toIntOrNull()
+            val bytes = broker.getKeyEpoch(id, epoch)
+            if (bytes == null) call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_epoch"))
             else call.respondBytes(bytes, CBOR)
         }
 
-        post("/v1/routes") {
+        post("/routes") {
             val body = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
@@ -233,7 +255,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             }
         }
 
-        post("/v1/send") {
+        post("/send") {
             val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
@@ -248,9 +270,9 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
         }
 
         // List the caller's queued message ids (signature-only, no JWT). The WorkManager drain backstop
-        // pulls this, then fetches + acks each via GET /v1/relay/{id} below. A cheap, low-frequency
+        // pulls this, then fetches + acks each via GET /v2/relay/{id} below. A cheap, low-frequency
         // catch-all for wakes that FCM deferred (normal priority) or whose foreground fetch failed.
-        get("/v1/relay") {
+        get("/relay") {
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
             call.respond(RelayPending(broker.pendingMessageIds(principal.clientId)))
         }
@@ -260,7 +282,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
         // fetches exactly that one envelope here, then the broker drops it. Authenticated by request
         // SIGNATURE ALONE (no JWT bearer) so a background wake still works when the client's attestation
         // token has lapsed — it can always sign with its identity key. The body is opaque ciphertext.
-        get("/v1/relay/{messageId}") {
+        get("/relay/{messageId}") {
             val messageId = call.parameters["messageId"].orEmpty()
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
             val envelope = broker.relayMessage(principal.clientId, messageId)
@@ -279,7 +301,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
         // cooling down. The body is the signed JSON RelayAck — the signature commits to those exact
         // bytes. Used for deliveries the broker can't observe being consumed: FCM-inline pushes (the
         // envelope rides in the push, so it's never fetched here) and a local mirror dismissal.
-        post("/v1/relay/ack") {
+        post("/relay/ack") {
             val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireSigned(call, bytes, broker) ?: return@post
@@ -292,7 +314,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
 
         // Opaque private-asset blobs keyed by random (sourceClientId, assetId). The body is AEAD
         // ciphertext the broker cannot read; the id+key are E2E-delivered inside the notification.
-        post("/v1/assets/{sourceClientId}/{assetId}") {
+        post("/assets/{sourceClientId}/{assetId}") {
             val src = ClientId(call.parameters["sourceClientId"].orEmpty())
             val assetId = call.parameters["assetId"].orEmpty()
             // Reject oversized uploads before buffering the whole body.
@@ -314,7 +336,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             }
         }
 
-        get("/v1/assets/{sourceClientId}/{assetId}") {
+        get("/assets/{sourceClientId}/{assetId}") {
             auth.requireJwtSigned(call, ByteArray(0), broker) ?: return@get
             val src = ClientId(call.parameters["sourceClientId"].orEmpty())
             val bytes = broker.fetchAsset(src, call.parameters["assetId"].orEmpty())
@@ -322,14 +344,14 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             else call.respondBytes(bytes, ContentType.Application.OctetStream)
         }
 
-        webSocket("/v1/connect") {
+        webSocket("/connect") {
             val principal = when (val result = auth.authenticateJwtSigned(call, ByteArray(0), broker)) {
                 is AuthResult.Accepted -> result.principal
                 is AuthResult.Rejected -> return@webSocket close(
                     CloseReason(CloseReason.Codes.VIOLATED_POLICY, result.reason)
                 )
             }
-            // 1. Challenge the client to prove control of its identity key.
+            // 1. Challenge the client to prove control of its signing key.
             val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(18).also { random.nextBytes(it) })
             send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge(nonce))))
 
@@ -338,7 +360,8 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             if (auth == null || auth.nonce != nonce || (config.playIntegrityEnabled && auth.clientId != principal.clientId)) {
                 return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth_failed"))
             }
-            val spki = broker.clientSpki(auth.clientId)
+            // epoch 0 = identity (root) key, ≥1 = the operational key of that key-epoch.
+            val spki = (if (auth.epoch == 0) broker.clientSpki(auth.clientId) else broker.operationalSpki(auth.clientId, auth.epoch))
                 ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "unknown_client"))
             val sig = runCatching { Base64.getDecoder().decode(auth.signatureB64) }.getOrNull()
             if (sig == null || !Verification.verifyDetached(spki, nonce.toByteArray(), sig)) {
@@ -365,5 +388,5 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                 log.info("ws disconnected client={}", auth.clientId.shortForm())
             }
         }
-    }
+    } }
 }

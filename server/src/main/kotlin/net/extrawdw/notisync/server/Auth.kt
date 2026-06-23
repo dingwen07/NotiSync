@@ -77,7 +77,8 @@ class ServerAuth(
         if (!config.playIntegrityEnabled) {
             return AuthResult.Accepted(AuthPrincipal(clientId, Long.MAX_VALUE))
         }
-        val spki = broker.clientSpki(clientId) ?: return AuthResult.Rejected("unknown_client")
+        val (spki, reason) = resolveSignerSpki(call, broker, clientId)
+        if (spki == null) return AuthResult.Rejected(reason)
         return verifySignedRequest(call, body, clientId, spki).accepted(AuthPrincipal(clientId, Long.MAX_VALUE))
     }
 
@@ -86,9 +87,21 @@ class ServerAuth(
             return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))
         }
         val principal = authenticateBearer(call) ?: return AuthResult.Rejected("auth_required")
-        val spki = broker.clientSpki(principal.clientId) ?: return AuthResult.Rejected("unknown_client")
+        val (spki, reason) = resolveSignerSpki(call, broker, principal.clientId)
+        if (spki == null) return AuthResult.Rejected(reason)
         return verifySignedRequest(call, body, principal.clientId, spki)
             .accepted(principal)
+    }
+
+    /**
+     * Resolve the public key the request signature should verify against, by its NS2 signer-epoch header:
+     * epoch 0 (or absent) → the identity key (NS1-compatible, always-valid root); ≥1 → the operational
+     * key of that key-epoch. Returns (null, reason) when no key is available for the named epoch.
+     */
+    private suspend fun resolveSignerSpki(call: ApplicationCall, broker: Broker, clientId: ClientId): Pair<ByteArray?, String> {
+        val epoch = call.request.headers[HttpRequestSigning.HEADER_SIGNER_EPOCH]?.toIntOrNull() ?: 0
+        val spki = if (epoch == 0) broker.clientSpki(clientId) else broker.operationalSpki(clientId, epoch)
+        return spki to (if (epoch == 0) "unknown_client" else "unknown_epoch")
     }
 
     fun verifySignedRequest(
@@ -132,7 +145,8 @@ class ServerAuth(
         val nonce = call.request.headers[HttpRequestSigning.HEADER_NONCE]?.takeIf { it.length in 16..128 } ?: return null
         val hash = call.request.headers[HttpRequestSigning.HEADER_CONTENT_SHA256]?.takeIf { it.isNotBlank() } ?: return null
         val signature = call.request.headers[HttpRequestSigning.HEADER_SIGNATURE]?.takeIf { it.isNotBlank() } ?: return null
-        return HttpRequestSigning.Headers(ClientId(clientId), timestamp, nonce, hash, signature)
+        val signerEpoch = call.request.headers[HttpRequestSigning.HEADER_SIGNER_EPOCH]?.toIntOrNull() ?: 0
+        return HttpRequestSigning.Headers(ClientId(clientId), timestamp, nonce, hash, signature, signerEpoch)
     }
 }
 

@@ -284,9 +284,12 @@ private fun DeviceRow(
         TrustStatus.REVOKED -> stringResource(R.string.device_status_removed)
     }
     val unavailableLabel = stringResource(R.string.device_status_unavailable)
+    val epochLabel = stringResource(R.string.device_epoch, device.currentEpoch)
     val statusLine = buildList {
         add(statusLabel)
-        if (!device.keyAvailable) add(unavailableLabel) // we hold no card for it yet
+        // Reachability in NS2 is the key-epoch, not the card: show the epoch when we hold one, else
+        // "unavailable" (trusted but not yet converged — its key-epoch is still being pulled).
+        if (device.currentEpoch > 0) add(epochLabel) else add(unavailableLabel)
         add(device.clientId.shortForm())
     }.joinToString(" · ")
     val by = device.introducedByName ?: stringResource(R.string.device_introducer_unknown)

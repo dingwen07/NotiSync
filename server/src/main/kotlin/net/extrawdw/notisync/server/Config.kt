@@ -43,7 +43,9 @@ data class ServerConfig(
     val version: String,
 ) {
     companion object {
-        const val VERSION = "0.1.0"
+        // 0.2.0 = clean NS2 server (operational-key delegation + epoch rotation, /v2 API). The legacy
+        // NS1 JAR stays at 0.1.x on /v1; the version distinguishes the two instances via /healthz + /status.
+        const val VERSION = "0.2.0"
 
         fun fromEnv(): ServerConfig {
             // System property overrides environment (handy for tests and ops).

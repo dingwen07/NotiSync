@@ -119,6 +119,20 @@
     <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>
     <string name="diag_oversized_no_peers">没有可发送的已配对设备。</string>
     <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
+    <string name="diag_rotation">密钥轮换</string>
+    <string name="diag_rotation_current_epoch">当前密钥世代：%1$d</string>
+    <string name="diag_rotation_signing_key">签名密钥：%1$s</string>
+    <string name="diag_rotation_encryption_key">加密密钥：%1$s</string>
+    <string name="diag_rotation_next_due">距下次轮换还有 %1$s</string>
+    <string name="diag_rotation_activating">正在轮换到世代 %1$d — 将在 %2$s 后启用</string>
+    <string name="diag_rotation_retiring">正在轮换到世代 %1$d — 旧世代将在 %2$s 后退役</string>
+    <string name="diag_rotation_disabled">此版本未启用轮换（ENABLE_ROTATION）。仅显示当前密钥。</string>
+    <string name="diag_rotation_hint">立即生成下一个密钥世代，而不必等待 30 天的计划。上一个世代的密钥会在重叠期内保留，因此在途通知仍可解开。</string>
+    <string name="diag_rotate_now">立即轮换世代</string>
+    <string name="diag_rotating">轮换中…</string>
+    <string name="diag_rotate_done">已轮换 — 当前世代 %1$d</string>
+    <string name="diag_rotate_pending">已有一个轮换正在进行</string>
+    <string name="diag_rotate_failed">轮换失败 — 请检查与中继服务器的连接</string>
     <string name="diag_security_test">信任完整性（调试）</string>
     <string name="diag_tamper_hint">移除信任存储的签名以模拟篡改。应用会暂停同步，并在「设备」页面显示一条查看横幅。</string>
     <string name="diag_tamper_signature">篡改信任签名</string>
@@ -148,6 +162,7 @@
     <string name="device_status_pending_revoke">等待移除</string>
     <string name="device_status_removed">已移除</string>
     <string name="device_status_unavailable">不可用</string>
+    <string name="device_epoch">世代 %1$d</string>
     <string name="device_introducer_unknown">另一台设备</string>
     <string name="device_remove_desc">移除 %1$s</string>
     <string name="device_permanently_delete_desc">永久删除 %1$s</string>
@@ -177,7 +192,11 @@
     <string name="pair_field_platform">平台</string>
     <string name="pair_field_verification_number">验证码</string>
     <string name="pair_field_identity_key">身份密钥</string>
-    <string name="pair_field_sync_key">同步密钥</string>
+    <string name="pair_field_encryption_key">加密密钥</string>
+    <string name="pair_field_signing_key">签名密钥</string>
+    <string name="pair_operational_chip_title">操作密钥 · 世代 %1$d</string>
+    <string name="pair_keys_sync_later">运行密钥将在配对后从服务器同步。</string>
+    <string name="pair_keys_invalid">密钥世代签名无效 — 可能被篡改。已隐藏密钥，将在配对后从服务器重新同步。</string>
     <string name="pair_trust_other">他人的设备</string>
     <string name="pair_trust_own">我的设备</string>
 

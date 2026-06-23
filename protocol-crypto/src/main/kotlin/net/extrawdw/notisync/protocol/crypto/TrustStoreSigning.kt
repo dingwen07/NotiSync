@@ -11,7 +11,7 @@ import java.util.Base64
  * TRUSTED and have us seal notifications to — and accept them from — their keys.
  *
  * Mirrors [HttpRequestSigning]: a versioned, newline-delimited canonical string is signed with the
- * ECDSA-P256 identity key. The three persisted sections are folded in by SHA-256 digest (not raw
+ * ECDSA-P256 identity key. The persisted sections are folded in by SHA-256 digest (not raw
  * JSON), so the signed input is fixed-size and unambiguous regardless of section contents. Two
  * deliberate properties:
  *  - The [VERSION] tag domain-separates this from HTTP-request signatures and from CBOR `SignedBlob`
@@ -31,22 +31,59 @@ object TrustStoreSigning {
     private fun digest(section: String): String =
         b64Url.encodeToString(MessageDigest.getInstance("SHA-256").digest(section.toByteArray(Charsets.UTF_8)))
 
-    /** The exact bytes signed/verified: version, signer id, then a digest of each persisted section. */
-    fun canonical(selfId: ClientId, entriesJson: String, cardsJson: String, overlaysJson: String): ByteArray =
+    /**
+     * The exact bytes signed/verified: version, signer id, then a digest of each persisted section. NS2
+     * folds in a fourth section ([epochsJson]) — the anti-rollback epoch floor + per-peer generation ring
+     * (§6) — so the floor is tamper-proof (covered by the same identity signature + tamper-quarantine) and
+     * can live neither on the disposable broker nor in a strippable sidecar.
+     */
+    fun canonical(
+        selfId: ClientId,
+        entriesJson: String,
+        cardsJson: String,
+        overlaysJson: String,
+        epochsJson: String,
+    ): ByteArray =
         buildString {
             append(VERSION).append('\n')
             append(selfId.value).append('\n')
             append(digest(entriesJson)).append('\n')
             append(digest(cardsJson)).append('\n')
-            append(digest(overlaysJson))
+            append(digest(overlaysJson)).append('\n')
+            append(digest(epochsJson))
         }.toByteArray(Charsets.UTF_8)
 
     /** Sign the current sections; returns a base64url DER signature to persist alongside them. */
-    fun sign(signer: IdentitySigner, entriesJson: String, cardsJson: String, overlaysJson: String): String =
-        b64Url.encodeToString(signer.sign(canonical(signer.clientId, entriesJson, cardsJson, overlaysJson)))
+    fun sign(
+        signer: IdentitySigner,
+        entriesJson: String,
+        cardsJson: String,
+        overlaysJson: String,
+        epochsJson: String,
+    ): String =
+        b64Url.encodeToString(signer.sign(canonical(signer.clientId, entriesJson, cardsJson, overlaysJson, epochsJson)))
 
-    /** True iff [signatureB64] is this device's signature over exactly these sections. */
+    /** True iff [signatureB64] is this device's signature over exactly these (four) sections. */
     fun verify(
+        publicKeySpki: ByteArray,
+        selfId: ClientId,
+        entriesJson: String,
+        cardsJson: String,
+        overlaysJson: String,
+        epochsJson: String,
+        signatureB64: String,
+    ): Boolean {
+        val sig = runCatching { b64UrlDecoder.decode(signatureB64) }.getOrNull() ?: return false
+        return IdentityVerifier.verify(publicKeySpki, canonical(selfId, entriesJson, cardsJson, overlaysJson, epochsJson), sig)
+    }
+
+    /**
+     * Migration fallback: verify a pre-NS2 roster signed over only the original THREE sections (no epoch
+     * section existed). Used by [net.extrawdw.notisync.protocol.crypto] consumers on load when no epoch
+     * section is persisted yet — a valid legacy roster is accepted (not quarantined) and re-signed as a
+     * four-section store on its next write. Domain-separated from [canonical] purely by section count.
+     */
+    fun verifyLegacyThreeSection(
         publicKeySpki: ByteArray,
         selfId: ClientId,
         entriesJson: String,
@@ -55,6 +92,13 @@ object TrustStoreSigning {
         signatureB64: String,
     ): Boolean {
         val sig = runCatching { b64UrlDecoder.decode(signatureB64) }.getOrNull() ?: return false
-        return IdentityVerifier.verify(publicKeySpki, canonical(selfId, entriesJson, cardsJson, overlaysJson), sig)
+        val legacy = buildString {
+            append(VERSION).append('\n')
+            append(selfId.value).append('\n')
+            append(digest(entriesJson)).append('\n')
+            append(digest(cardsJson)).append('\n')
+            append(digest(overlaysJson))
+        }.toByteArray(Charsets.UTF_8)
+        return IdentityVerifier.verify(publicKeySpki, legacy, sig)
     }
 }
