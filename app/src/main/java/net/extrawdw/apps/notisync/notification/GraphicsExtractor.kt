@@ -25,6 +25,17 @@ class GraphicsExtractor(private val context: Context) {
     fun largeIcon(sbn: StatusBarNotification): ByteArray? =
         sbn.notification.getLargeIcon()?.let { rasterize(it, MAX_ICON_DIM, MAX_ICON_BYTES) }
 
+    /**
+     * The source app's launcher icon as WEBP bytes, for delivery as an `APP_ICON` asset so a consumer that
+     * doesn't have the app installed can still render the real icon. Null if the package can't be resolved
+     * or the icon can't fit the budget. Content is stable across notifications, so the asset layer dedups it
+     * to a single upload per app.
+     */
+    fun appIcon(packageName: String): ByteArray? = runCatching {
+        val drawable = context.packageManager.getApplicationIcon(packageName)
+        encode(drawable.toBitmap(MAX_ICON_DIM), MAX_ICON_DIM, MAX_ICON_BYTES)
+    }.getOrNull()
+
     /** The big picture (BigPictureStyle image), as a Bitmap (classic) or an Icon (newer). */
     fun bigPicture(sbn: StatusBarNotification): ByteArray? {
         val extras = sbn.notification.extras

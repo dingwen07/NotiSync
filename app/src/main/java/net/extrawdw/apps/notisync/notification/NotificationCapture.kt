@@ -79,6 +79,7 @@ class NotificationNormalizer(private val pm: PackageManager) {
             channelGroupId = runCatching { channel?.group }.getOrNull(),
             channelGroupName = null, // group display name requires a CompanionDeviceManager association (v1: omit)
             channelImportance = channelImportance,
+            shouldVibrate = runCatching { channel?.shouldVibrate() == true }.getOrDefault(false),
             isConversation = conversation || (shortcutId != null && messages.isNotEmpty()),
             shortcutId = shortcutId,
             conversationId = runCatching { channel?.conversationId }.getOrNull(),

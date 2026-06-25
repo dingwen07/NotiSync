@@ -40,6 +40,13 @@ class GraphicsPipeline(
         if (result.style == NotifStyle.MESSAGING && plan.avatar == GraphicsSlot.PRIVATE) {
             result = attachMessageAvatars(sbn, result)
         }
+
+        // App icon (any style): deliver the source app's launcher icon so a consumer that doesn't have the
+        // app installed still renders the real icon (the small/status-bar icon is never transferred). The
+        // asset layer content-addresses it, so this uploads once per app and is reference-only thereafter.
+        extractor.appIcon(result.packageName)?.let { bytes ->
+            upload(bytes, AssetRole.APP_ICON, result)?.let { result = result.copy(appIcon = it) }
+        }
         return result
     }
 

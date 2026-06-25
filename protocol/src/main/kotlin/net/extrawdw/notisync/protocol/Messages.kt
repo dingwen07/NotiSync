@@ -16,9 +16,17 @@ enum class MirrorCategory {
 @Serializable
 enum class NotifStyle { DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
 
-/** The graphic's logical slot. Drives placement on the consumer and is bound into the asset AAD. */
+/** The graphic's logical slot. Drives placement on the consumer and is bound into the asset AAD.
+ *  Append-only — the ordinal is bound into the asset AAD, so existing values must never shift.
+ *  APP_ICON delivers the *source app's launcher icon* so a consumer without that app installed can
+ *  still show it (Android captures; future iOS). */
 @Serializable
-enum class AssetRole { LARGE_ICON, BIG_PICTURE, AVATAR, INLINE_IMAGE }
+enum class AssetRole { LARGE_ICON, BIG_PICTURE, AVATAR, INLINE_IMAGE, APP_ICON }
+
+/** Where a [CapturedNotification] was captured. Drives consumer-side rendering choices (e.g. an iOS
+ *  mirror has no rich graphics and shows the bridged iPhone's name). Append-only — keep ordinals stable. */
+@Serializable
+enum class OriginPlatform { ANDROID_LOCAL, IOS_ANCS }
 
 /**
  * A reference to a *private* notification graphic (contact photo, avatar, big picture). It lives
@@ -114,6 +122,11 @@ data class CapturedNotification(
     val channelGroupName: String? = null,
     /** Source channel-level importance/mute; drives the mirrored channel's importance. */
     val channelImportance: MirrorImportance? = null,
+    /** Whether the mirrored channel should vibrate — mirrored from the source channel's own vibration setting
+     *  (Android: NotificationChannel.shouldVibrate(); importance alone never enables vibration). The OS only honors
+     *  enableVibration() at channel creation, so this takes effect when the mirror first creates the channel. False
+     *  for sources without a channel (iOS/ANCS), which then alert per importance but don't vibrate. */
+    val shouldVibrate: Boolean = false,
 
     // --- Conversation notifications ---
     val isConversation: Boolean = false,
@@ -123,6 +136,24 @@ data class CapturedNotification(
     val conversationId: String? = null,
     /** Source conversation channel's parent channel id (NotificationChannel.getParentChannelId()). */
     val parentChannelId: String? = null,
+
+    // --- Cross-platform app icon + capture origin (all appended; default = an Android-local capture) ---
+    /** The source app's launcher icon as a private asset, so a consumer that doesn't have the app
+     *  installed still renders the real icon. Body-only, content-addressed, deduped like any asset. */
+    val appIcon: PrivateAssetRef? = null,
+    /** Which platform captured this. ANDROID_LOCAL for a NotificationListener capture; IOS_ANCS for a
+     *  notification bridged from a paired iPhone over ANCS. */
+    val originPlatform: OriginPlatform = OriginPlatform.ANDROID_LOCAL,
+    /** For a bridged capture, the *originating* device's name (e.g. the iPhone's Bluetooth name) — used
+     *  for the mirror's group label / "via" line instead of the bridging device's own name. */
+    val originDeviceName: String? = null,
+    /** For an IOS_ANCS capture, the raw iOS bundle identifier (the ANCS App Identifier), retained for
+     *  icon/display resolution alongside the best-match Android [packageName]. */
+    val iosBundleId: String? = null,
+    /** Stable id of the *originating* device (e.g. a hashed iPhone address) for a bridged capture. Lets the
+     *  consumer group/channel notifications per origin: once one client bridges another device, [sourceClientId]
+     *  alone no longer identifies the source (its own Android vs the paired iPhone). Null for a local capture. */
+    val originDeviceId: String? = null,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */

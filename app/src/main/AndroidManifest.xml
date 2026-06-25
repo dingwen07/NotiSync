@@ -7,8 +7,34 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.NFC" />
 
+    <!-- iOS notification bridge (ANCS over BLE): advertise as a peripheral, connect to the iPhone, and
+         hold the link in a connectedDevice foreground service. SCAN declares neverForLocation (we don't
+         derive location from BLE). All are runtime permissions on minSdk 34. -->
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
+    <uses-permission
+        android:name="android.permission.BLUETOOTH_SCAN"
+        android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
+    <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
+    <!-- Lets AncsCompanionService.onDeviceAppeared start the connectedDevice FGS from the background when the
+         associated iPhone comes into range — without it that background start throws on API 31+. -->
+    <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
+    <!-- Restart the bridge (if the user left it on) after a reboot / app update — see ancs.AncsBootReceiver. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+
     <uses-feature
         android:name="android.hardware.nfc.hce"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+    <!-- Required for CompanionDeviceManager (background auto-connect); without it getSystemService returns null. -->
+    <uses-feature
+        android:name="android.software.companion_device_setup"
         android:required="false" />
 
     <!-- Scoped package visibility instead of QUERY_ALL_PACKAGES -->
@@ -92,6 +118,34 @@
             </intent-filter>
         </service>
 
+        <!-- Hosts the ANCS Bluetooth bridge so the link to a paired iPhone survives backgrounding. -->
+        <service
+            android:name=".ancs.AncsBridgeService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Optional reliability: the OS (re)starts the bridge when the associated iPhone is in range, after
+             the user creates a CompanionDeviceManager association from the iOS tab. -->
+        <service
+            android:name=".ancs.AncsCompanionService"
+            android:exported="true"
+            android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
+            <intent-filter>
+                <action android:name="android.companion.CompanionDeviceService" />
+            </intent-filter>
+        </service>
+
+        <!-- Resumes the ANCS bridge (if the switch is on) after a reboot or an app update. Both actions are
+             protected system broadcasts, so exported="true" is safe. -->
+        <receiver
+            android:name=".ancs.AncsBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <meta-data
             android:name="firebase_messaging_installation_id_enabled"
             android:value="true" />
@@ -136,7 +190,8 @@
             android:name="com.google.mlkit.vision.codescanner.internal.GmsBarcodeScanningDelegateActivity"
             android:screenOrientation="fullUser"
             tools:node="merge"
-            tools:replace="android:screenOrientation" />
+            tools:replace="android:screenOrientation"
+            tools:ignore="DiscouragedApi" /><!-- deliberate: fullUser RELAXES the 3rd-party PORTRAIT lock to the most adaptive setting -->
     </application>
 
 </manifest>

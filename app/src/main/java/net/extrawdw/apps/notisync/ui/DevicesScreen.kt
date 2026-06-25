@@ -48,6 +48,9 @@ import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.TrustStatus
 
+// pairButtonModifier targets the pair button specifically, not the composable root (which takes its modifier
+// from NotiScaffold), so the "first Modifier param must be named modifier" convention doesn't apply here.
+@Suppress("ModifierParameter")
 @Composable
 fun DevicesScreen(
     permissions: PermissionState,

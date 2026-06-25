@@ -11,23 +11,23 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Canvas
-import android.graphics.drawable.BitmapDrawable
-import android.graphics.drawable.Drawable
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
-import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.content.pm.ShortcutManagerCompat
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
+import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.apps.notisync.assets.AssetCache
+import java.util.concurrent.ConcurrentHashMap
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -48,9 +48,19 @@ import net.extrawdw.notisync.protocol.NotifStyle
  * "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system settings.
  */
 object MirrorChannels {
-    private fun groupId(client: ClientId, pkg: String) = "group:${client.value}:$pkg"
-    private fun channelId(client: ClientId, pkg: String, src: String?) = "channel:${client.value}:$pkg:${src ?: "_default"}"
-    private fun convChannelId(client: ClientId, pkg: String, conv: String) = "conversation:${client.value}:$pkg:$conv"
+    // The [originId] segment (a stable origin-device id, e.g. a hashed iPhone id) separates notifications a
+    // bridging client relays for *different* origin devices (its own Android vs a paired iPhone) — otherwise
+    // a same-app notification from each collides into one group and its name flip-flops. Empty for a local
+    // capture, which keeps the legacy id format so existing groups/channels aren't churned.
+    private fun groupId(client: ClientId, originId: String, pkg: String) =
+        if (originId.isEmpty()) "group:${client.value}:$pkg" else "group:${client.value}:$originId:$pkg"
+    private fun channelId(client: ClientId, originId: String, pkg: String, src: String?) =
+        if (originId.isEmpty()) "channel:${client.value}:$pkg:${src ?: "_default"}" else "channel:${client.value}:$originId:$pkg:${src ?: "_default"}"
+    private fun convChannelId(client: ClientId, originId: String, pkg: String, conv: String) =
+        if (originId.isEmpty()) "conversation:${client.value}:$pkg:$conv" else "conversation:${client.value}:$originId:$pkg:$conv"
+
+    /** Stable origin-device discriminator for ids; empty for a local capture (keeps the legacy id format). */
+    private fun originId(notif: CapturedNotification): String = notif.originDeviceId?.takeIf { it.isNotBlank() }.orEmpty()
 
     /** Group label carries the source device so two devices running the same app stay distinct. */
     private fun groupName(appLabel: String, deviceName: String?): String =
@@ -59,16 +69,29 @@ object MirrorChannels {
     /** Create the per-app group + per-source-channel channel; return the channel id to post on. */
     fun ensure(context: Context, notif: CapturedNotification, deviceName: String?): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
-        val gid = groupId(notif.sourceClientId, notif.packageName)
+        val oid = originId(notif)
+        val gid = groupId(notif.sourceClientId, oid, notif.packageName)
         // Group must exist before a channel references it; createNotificationChannel also updates
         // name/description and lowers importance on an existing channel (never raises — OS contract).
         // createNotificationChannelGroup re-applies the name every call, so a source-device rename
         // surfaces on its next mirrored notification — the only point where both the app label (from
         // the capture) and the current device name (from the trust store) are known together.
         mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, groupName(notif.appLabel, deviceName)))
-        val cid = channelId(notif.sourceClientId, notif.packageName, notif.channelId)
+        val cid = channelId(notif.sourceClientId, oid, notif.packageName, notif.channelId)
+        // The first notification's importance fixes the channel: createNotificationChannel can only LOWER an
+        // existing channel's importance, never raise it (OS contract), and a delete+recreate to force a raise
+        // doesn't work either — the OS resurrects a same-id channel with its old importance (and the delete
+        // cancels any live posts on it). So the first message's importance is authoritative; the user can
+        // raise it later in system settings.
+        val importance = importanceOf(notif)
         mgr.createNotificationChannel(
-            NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply { group = gid }
+            NotificationChannel(cid, channelName(context, notif), importance).apply {
+                group = gid
+                // Mirror the source channel's own vibration setting (Android: NotificationChannel.shouldVibrate()).
+                // Vibration is a per-channel property the OS fixes at creation — importance alone never enables it.
+                // iOS/ANCS has no source channel, so shouldVibrate is false there and the mirror just heads-up + sounds.
+                enableVibration(notif.shouldVibrate)
+            }
         )
         return cid
     }
@@ -77,11 +100,13 @@ object MirrorChannels {
     fun ensureConversation(context: Context, notif: CapturedNotification, parentChannelId: String, shortcutId: String): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val conv = notif.shortcutId ?: notif.sourceKey
-        val cid = convChannelId(notif.sourceClientId, notif.packageName, conv)
+        val oid = originId(notif)
+        val cid = convChannelId(notif.sourceClientId, oid, notif.packageName, conv)
         mgr.createNotificationChannel(
             NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply {
-                group = groupId(notif.sourceClientId, notif.packageName)
+                group = groupId(notif.sourceClientId, oid, notif.packageName)
                 setConversationId(parentChannelId, shortcutId)
+                enableVibration(notif.shouldVibrate)
             }
         )
         return cid
@@ -144,16 +169,28 @@ object MirrorChannels {
 class RemoteNotificationPoster(
     private val context: Context,
     private val assets: AssetCache,
+    /** Resolves an app icon (shipped pack → App Store cache → delivered asset → installed → bundle-id map). */
+    private val iconResolver: IconResolver,
     /** Source device's display name, for the group label; null until the peer's profile is known. */
     private val deviceNameOf: (ClientId) -> String? = { null },
+    /** App Store icon fetcher for the async iOS-icon upgrade; null leaves icons on their immediate fallback. */
+    private val appStoreIcons: AppStoreIconProvider? = null,
+    /** Scope for the off-render-path App Store fetch + re-render; null disables the upgrade. */
+    private val scope: CoroutineScope? = null,
 ) : MirrorRenderer {
+
+    // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
+    private val iconUpgradesInFlight = ConcurrentHashMap.newKeySet<String>()
 
     override fun render(notif: CapturedNotification) {
         // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
         // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
-        val parentChannelId = MirrorChannels.ensure(context, notif, deviceNameOf(notif.sourceClientId))
+        // Prefer the originating device's name (e.g. the bridged iPhone) over this sender's own name, so an
+        // iOS mirror reads "WhatsApp (Dingwen's iPhone)", not the Android bridge phone's name.
+        val groupDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
+        val parentChannelId = MirrorChannels.ensure(context, notif, groupDeviceName)
         var postChannelId = parentChannelId
         var shortcutId: String? = null
 
@@ -226,17 +263,42 @@ class RemoteNotificationPoster(
         applyLargeIcon(builder, notif)
 
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
+
+        maybeUpgradeIcon(notif)
     }
 
     /**
-     * Large icon: the mirrored original (a private asset) once it's in the local cache; until then,
-     * nothing (a later re-post fills it in). When the original had no large icon, fall back to the
-     * source app's icon if that app is installed on this device.
+     * Large icon: the mirrored original (a contact-photo private asset) once it's in the local cache; until
+     * then — and for any notification without one (including all iOS/ANCS mirrors) — the best recognizable
+     * app icon, via [IconResolver.colorIcon]: shipped pack → App Store cache → delivered APP_ICON asset →
+     * the app installed here → the iOS bundle-id → Android-package mapping → none.
      */
     private fun applyLargeIcon(builder: NotificationCompat.Builder, notif: CapturedNotification) {
-        val ref = notif.largeIcon
-        val bitmap = if (ref != null) cachedBitmap(ref.assetHash) else appIconBitmap(notif.packageName)
+        val bitmap = notif.largeIcon?.let { cachedBitmap(it.assetHash) }
+            ?: iconResolver.colorIcon(notif.packageName, notif.iosBundleId, notif.appIcon?.assetHash)
         bitmap?.let { builder.setLargeIcon(it) }
+    }
+
+    /**
+     * For an iOS/ANCS mirror whose icon isn't already in the shipped pack (and has no mirrored original),
+     * fetch the real App Store icon once off the render path and re-post when it lands — the same
+     * "render now, re-render when the graphic arrives" pattern the asset layer uses. The in-flight guard +
+     * `ensureCached`'s newly-available result make the re-render fire at most once per app.
+     */
+    private fun maybeUpgradeIcon(notif: CapturedNotification) {
+        val provider = appStoreIcons ?: return
+        val scope = scope ?: return
+        val bundleId = notif.iosBundleId ?: return
+        if (notif.largeIcon != null) return            // a mirrored original is already the best icon
+        if (iconResolver.shippedCovers(bundleId)) return // shipped icon already preferred
+        if (!iconUpgradesInFlight.add(bundleId)) return  // a fetch for this app is already running
+        scope.launch {
+            try {
+                if (provider.ensureCached(bundleId)) render(notif) // colorIcon now hits the App Store cache
+            } finally {
+                iconUpgradesInFlight.remove(bundleId)
+            }
+        }
     }
 
     private fun smallIconForPackage(packageName: String): Int = when (packageName) {
@@ -248,19 +310,6 @@ class RemoteNotificationPoster(
 
     private fun cachedBitmap(assetHash: String): Bitmap? =
         assets.read(assetHash)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
-
-    private fun appIconBitmap(pkg: String): Bitmap? =
-        runCatching { drawableToBitmap(context.packageManager.getApplicationIcon(pkg)) }.getOrNull()
-
-    private fun drawableToBitmap(drawable: Drawable): Bitmap {
-        if (drawable is BitmapDrawable) drawable.bitmap?.let { return it }
-        val w = drawable.intrinsicWidth.takeIf { it > 0 } ?: 128
-        val h = drawable.intrinsicHeight.takeIf { it > 0 } ?: 128
-        val bitmap = createBitmap(w, h)
-        drawable.setBounds(0, 0, w, h)
-        drawable.draw(Canvas(bitmap))
-        return bitmap
-    }
 
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)

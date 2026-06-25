@@ -15,10 +15,12 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
@@ -33,6 +35,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -40,6 +43,7 @@ import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -59,6 +63,7 @@ import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
+import net.extrawdw.apps.notisync.ui.IosScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
@@ -124,6 +129,7 @@ class MainActivity : ComponentActivity() {
 private sealed interface Route {
     @Serializable data object Devices : Route
     @Serializable data object Apps : Route
+    @Serializable data object Ios : Route
     @Serializable data object Activity : Route
     @Serializable data object Settings : Route
 }
@@ -132,9 +138,16 @@ private sealed interface Route {
 private enum class TopLevelDestination(val route: Route, @param:StringRes val label: Int, val icon: ImageVector) {
     DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
     APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
+    IOS(Route.Ios, R.string.tab_ios, Icons.Outlined.PhoneIphone),
     ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),
     SETTINGS(Route.Settings, R.string.tab_settings, Icons.Outlined.Settings),
 }
+
+// Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
+// for the others), so its taller silhouette reads as raised. Render just the iOS glyph slightly
+// smaller, inside the same 24dp box, so its visual height matches the rest of the set.
+private val TopLevelNavIconSize = 24.dp
+private val TopLevelNavIosIconSize = 20.dp
 
 @Composable
 fun NotiSyncRoot(
@@ -177,8 +190,8 @@ fun NotiSyncRoot(
                     item(
                         selected = currentDestination.isOn(dest),
                         onClick = { navController.navigateToTopLevel(dest) },
-                        icon = { Icon(dest.icon, contentDescription = stringResource(dest.label)) },
-                        label = { Text(stringResource(dest.label)) },
+                        icon = { TopLevelNavIcon(dest) },
+                        label = { TopLevelNavLabel(dest) },
                     )
                 }
             },
@@ -207,6 +220,7 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Apps> { AppsScreen() }
+                composable<Route.Ios> { IosScreen() }
                 composable<Route.Activity> { ActivityScreen() }
                 composable<Route.Settings> { SettingsScreen() }
             }
@@ -221,6 +235,19 @@ fun NotiSyncRoot(
             )
         }
     }
+}
+
+@Composable
+private fun TopLevelNavIcon(dest: TopLevelDestination) {
+    val glyphSize = if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
+    Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
+        Icon(dest.icon, contentDescription = stringResource(dest.label), modifier = Modifier.size(glyphSize))
+    }
+}
+
+@Composable
+private fun TopLevelNavLabel(dest: TopLevelDestination) {
+    Text(stringResource(dest.label), maxLines = 1)
 }
 
 /**
@@ -240,6 +267,8 @@ private fun NavDestination?.isOn(dest: TopLevelDestination): Boolean =
     this?.hierarchy?.any { it.hasRoute(dest.route::class) } == true
 
 /** Hosts the permission/launcher plumbing the Devices screen needs, scoped to that destination. */
+// pairButtonModifier is threaded to the pair button specifically, not applied as the composable's root modifier.
+@Suppress("ModifierParameter")
 @Composable
 private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier = Modifier) {
     val context = LocalContext.current

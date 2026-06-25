@@ -217,6 +217,64 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun capturedNotification_iosAncsOriginAndAppIconRoundTrip() {
+        val appIcon = PrivateAssetRef(
+            role = AssetRole.APP_ICON,
+            assetHash = "iconhash",
+            mimeType = "image/webp",
+            sizeBytes = 2048,
+            sourceClientId = ClientId("bridge-phone"),
+            assetId = "appiconid",
+            assetKey = ByteArray(32) { (it + 1).toByte() },
+        )
+        val notif = CapturedNotification(
+            sourceClientId = ClientId("bridge-phone"),
+            sourceKey = "ancs|iphone-1|net.whatsapp.WhatsApp|42",
+            packageName = "com.whatsapp", // best-match Android package
+            appLabel = "WhatsApp",
+            text = "Hello from iOS",
+            postTime = 1_750_000_000_000L,
+            appIcon = appIcon,
+            originPlatform = OriginPlatform.IOS_ANCS,
+            originDeviceName = "Dingwen's iPhone",
+            iosBundleId = "net.whatsapp.WhatsApp",
+            originDeviceId = "iph0nehash",
+            shouldVibrate = true,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
+        // PrivateAssetRef holds a ByteArray key (reference equality), so compare fields, not the whole object.
+        assertEquals("com.whatsapp", decoded.packageName)
+        assertEquals("WhatsApp", decoded.appLabel)
+        assertEquals(OriginPlatform.IOS_ANCS, decoded.originPlatform)
+        assertEquals("Dingwen's iPhone", decoded.originDeviceName)
+        assertEquals("net.whatsapp.WhatsApp", decoded.iosBundleId)
+        assertEquals("iph0nehash", decoded.originDeviceId)
+        assertTrue(decoded.shouldVibrate)
+        assertEquals(AssetRole.APP_ICON, decoded.appIcon?.role)
+        assertEquals("appiconid", decoded.appIcon?.assetId)
+        assertArrayEquals(appIcon.assetKey, decoded.appIcon?.assetKey)
+    }
+
+    @Test
+    fun capturedNotification_originDefaultsForAndroidLocalCapture() {
+        // A capture that omits the new fields decodes as an Android-local capture with no app-icon asset —
+        // the wire-compat contract for the existing notification-listener path and older producers.
+        val notif = CapturedNotification(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "0|com.example|1|tag",
+            packageName = "com.example",
+            appLabel = "Example",
+            text = "hi",
+            postTime = 1L,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
+        assertEquals(OriginPlatform.ANDROID_LOCAL, decoded.originPlatform)
+        assertNull(decoded.appIcon)
+        assertNull(decoded.originDeviceName)
+        assertNull(decoded.iosBundleId)
+    }
+
+    @Test
     fun assetSync_cborRoundTrips() {
         val sync = AssetSync(
             kind = AssetSyncKind.ASSET_READY,

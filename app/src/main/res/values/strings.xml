@@ -4,6 +4,7 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
+    <string name="tab_ios">iPhone</string>
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 
@@ -245,4 +246,38 @@
     <string name="category_social">Social</string>
     <string name="category_media">Media</string>
     <string name="category_service">Service</string>
+
+    <!-- iOS notification bridge (ANCS over Bluetooth) -->
+    <string name="ios_bridge_card_title">iPhone over Bluetooth</string>
+    <string name="ios_connected_device">Connected to %1$s</string>
+    <string name="ios_pairing_title">Pair your iPhone</string>
+    <string name="ios_pairing_off">Pair your iPhone over Bluetooth so Android can reconnect to it automatically when it\'s nearby, even when NotiSync isn\'t open.</string>
+    <string name="ios_pairing_on">Paired with %1$s</string>
+    <string name="ios_pairing_on_unknown">Paired</string>
+    <string name="ios_pairing_setup">Pair</string>
+    <string name="ios_pairing_forget">Forget</string>
+    <string name="ios_pairing_unavailable">Pairing isn\'t available on this device</string>
+    <string name="ios_pairing_open_bt">Open your iPhone\'s Bluetooth Settings to allow discovery</string>
+    <string name="ios_pairing_accept_prompt">Accept the pairing request on both devices</string>
+    <string name="ios_pairing_forget_prompt">The device may still be paired. You can unpair them in the Bluetooth settings.</string>
+    <string name="ios_pairing_failed">Couldn\'t start pairing: %1$s</string>
+    <string name="ios_show_here">Show on this phone</string>
+    <string name="ios_mirror_mesh">Mirror to my devices</string>
+    <string name="ios_apps_search_hint">Search iPhone apps</string>
+    <string name="ios_apps_section_mirroring">Mirroring</string>
+    <string name="ios_apps_section">iPhone apps</string>
+    <string name="ios_apps_empty">Apps appear here as your iPhone sends notifications — iOS can\'t list them all in advance. Turn one on to start mirroring it.</string>
+    <string name="ios_apps_no_match">No iPhone apps match \"%1$s\"</string>
+    <string name="ios_status_off">Off</string>
+    <string name="ios_status_unsupported">This phone can\'t advertise over Bluetooth LE</string>
+    <string name="ios_status_advertising">Waiting for an iPhone to connect…</string>
+    <string name="ios_status_connecting">Connecting…</string>
+    <string name="ios_status_needs_pairing">Accept pairing on your iPhone</string>
+    <string name="ios_status_sharing">Sharing notifications</string>
+    <string name="ios_status_no_ancs">Connected, but notifications aren\'t shared</string>
+    <string name="ios_status_error">Bluetooth permission or hardware error</string>
+
+    <!-- ANCS foreground service -->
+    <string name="ancs_service_channel">iPhone bridge</string>
+    <string name="ancs_service_title">Bridging iPhone notifications</string>
 </resources>

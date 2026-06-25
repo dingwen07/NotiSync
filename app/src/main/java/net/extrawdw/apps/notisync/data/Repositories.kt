@@ -31,6 +31,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
     private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
     private val selfEpochActivatedKey = longPreferencesKey("self_epoch_activated_at")
+    private val ancsBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
+    private val ancsLocalKey = booleanPreferencesKey("ancs_local_display")
+    private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -44,6 +47,24 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         store.data.map { it[batchLowKey] ?: false }.stateInEager(scope, false)
     val advancedDiagnostics: StateFlow<Boolean> =
         store.data.map { it[advancedKey] ?: false }.stateInEager(scope, false)
+
+    /** ANCS bridge master switch: whether to advertise + connect to a paired iPhone. Default off (opt-in). */
+    val ancsBridgeEnabled: StateFlow<Boolean> =
+        store.data.map { it[ancsBridgeKey] ?: false }.stateInEager(scope, false)
+    /** Show captured iPhone notifications on THIS phone (like a smartwatch). Default on once bridging. */
+    val ancsLocalDisplay: StateFlow<Boolean> =
+        store.data.map { it[ancsLocalKey] ?: true }.stateInEager(scope, true)
+    /** Mirror captured iPhone notifications to the user's other mesh devices. Default on once bridging. */
+    val ancsMeshMirror: StateFlow<Boolean> =
+        store.data.map { it[ancsMeshKey] ?: true }.stateInEager(scope, true)
+
+    /** The PERSISTED switch, read directly from DataStore — use this (not [ancsBridgeEnabled].value, which is
+     *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
+    suspend fun ancsBridgeEnabledNow(): Boolean = store.data.first()[ancsBridgeKey] ?: false
+
+    suspend fun setAncsBridgeEnabled(on: Boolean) = store.edit { it[ancsBridgeKey] = on }
+    suspend fun setAncsLocalDisplay(on: Boolean) = store.edit { it[ancsLocalKey] = on }
+    suspend fun setAncsMeshMirror(on: Boolean) = store.edit { it[ancsMeshKey] = on }
 
     suspend fun setBrokerUrl(url: String) = store.edit { it[brokerUrlKey] = url }
     suspend fun setDeviceName(name: String) = store.edit {

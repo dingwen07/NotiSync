@@ -4,6 +4,7 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
+    <string name="tab_ios">iPhone</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
@@ -238,4 +239,38 @@
     <string name="category_social">社交</string>
     <string name="category_media">媒体</string>
     <string name="category_service">服务</string>
+
+    <!-- iOS notification bridge (ANCS over Bluetooth) -->
+    <string name="ios_bridge_card_title">通过蓝牙连接 iPhone</string>
+    <string name="ios_connected_device">已连接到 %1$s</string>
+    <string name="ios_pairing_title">配对 iPhone</string>
+    <string name="ios_pairing_off">通过蓝牙配对你的 iPhone，之后当它在附近时 Android 会自动重新连接，即使 NotiSync 未打开。</string>
+    <string name="ios_pairing_on">已与 %1$s 配对</string>
+    <string name="ios_pairing_on_unknown">已配对</string>
+    <string name="ios_pairing_setup">配对</string>
+    <string name="ios_pairing_forget">忘记</string>
+    <string name="ios_pairing_unavailable">此设备不支持配对</string>
+    <string name="ios_pairing_open_bt">请打开 iPhone 的蓝牙设置以允许被发现</string>
+    <string name="ios_pairing_accept_prompt">请在两台设备上接受配对请求</string>
+    <string name="ios_pairing_forget_prompt">该设备可能仍处于配对状态，您可以在蓝牙设置中解除配对。</string>
+    <string name="ios_pairing_failed">无法开始配对：%1$s</string>
+    <string name="ios_show_here">在此手机上显示</string>
+    <string name="ios_mirror_mesh">镜像到我的设备</string>
+    <string name="ios_apps_search_hint">搜索 iPhone 应用</string>
+    <string name="ios_apps_section_mirroring">镜像中</string>
+    <string name="ios_apps_section">iPhone 应用</string>
+    <string name="ios_apps_empty">当 iPhone 发送通知时，应用会显示在这里 — iOS 无法预先列出全部应用。开启某个应用即可开始镜像。</string>
+    <string name="ios_apps_no_match">没有与“%1$s”匹配的 iPhone 应用</string>
+    <string name="ios_status_off">已关闭</string>
+    <string name="ios_status_unsupported">此手机无法通过 Bluetooth LE 广播</string>
+    <string name="ios_status_advertising">正在等待 iPhone 连接…</string>
+    <string name="ios_status_connecting">正在连接…</string>
+    <string name="ios_status_needs_pairing">请在 iPhone 上接受配对</string>
+    <string name="ios_status_sharing">正在共享通知</string>
+    <string name="ios_status_no_ancs">已连接，但未共享通知</string>
+    <string name="ios_status_error">蓝牙权限或硬件错误</string>
+
+    <!-- ANCS foreground service -->
+    <string name="ancs_service_channel">iPhone 桥接</string>
+    <string name="ancs_service_title">正在桥接 iPhone 通知</string>
 </resources>

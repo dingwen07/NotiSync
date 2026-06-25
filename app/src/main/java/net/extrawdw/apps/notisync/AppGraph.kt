@@ -47,6 +47,16 @@ import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
+import net.extrawdw.apps.notisync.ancs.AncsBleManager
+import net.extrawdw.apps.notisync.ancs.AncsBridgeService
+import net.extrawdw.apps.notisync.ancs.AncsCompanion
+import net.extrawdw.apps.notisync.ancs.IosAppRegistry
+import net.extrawdw.apps.notisync.ancs.IosDeviceRepository
+import net.extrawdw.apps.notisync.appicon.AppStoreIconCache
+import net.extrawdw.apps.notisync.appicon.AppStoreIconClient
+import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
+import net.extrawdw.apps.notisync.appicon.IconResolver
+import net.extrawdw.apps.notisync.appicon.ShippedIcons
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
@@ -147,6 +157,18 @@ class AppGraph(private val app: Application) {
     var graphicsPipeline: GraphicsPipeline? = null
         private set
 
+    /** Resolves recognizable app icons (delivered asset → installed app → iOS bundle-id map). */
+    var iconResolver: IconResolver? = null
+        private set
+    /** Per-bundle-id opt-in + discovered iOS apps for the iOS tab. */
+    var iosAppRegistry: IosAppRegistry? = null
+        private set
+    /** The ANCS BLE bridge; hosted by [AncsBridgeService] while enabled. */
+    var ancsManager: AncsBleManager? = null
+        private set
+    /** Live ANCS connection status + bonded iPhone name for the iOS tab. */
+    val iosDeviceRepo = IosDeviceRepository()
+
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
      *  stays at epoch 1 forever and never mints a second epoch). Driven by [tickRotation]. */
     var rotationManager: RotationManager? = null
@@ -181,8 +203,22 @@ class AppGraph(private val app: Application) {
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)
         val assetManager = AssetManager(transport, assetCache, TicketStore(assetsDir))
-        poster = RemoteNotificationPoster(app, assetCache, deviceNameOf = { id -> trust.displayName(id) })
-        graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), GraphicsExtractor(app), assetManager)
+        // App Store (iTunes Lookup) icons get their OWN cache, deliberately separate from the encrypted
+        // private-asset cache: public artwork fetched per device, never delivered as an asset.
+        val appStoreIcons = AppStoreIconProvider(
+            AppStoreIconCache(java.io.File(app.filesDir, "appstore-icons")),
+            fetch = AppStoreIconClient()::fetch,
+        )
+        val resolver = IconResolver(app, assetCache, ShippedIcons.fromAssets(app), appStoreIcons)
+        iconResolver = resolver
+        poster = RemoteNotificationPoster(
+            app, assetCache, resolver,
+            deviceNameOf = { id -> trust.displayName(id) },
+            appStoreIcons = appStoreIcons,
+            scope = scope,
+        )
+        val graphicsExtractor = GraphicsExtractor(app)
+        graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), graphicsExtractor, assetManager)
         // The generic secure-messaging substrate: seal/sign/dedup/verify/open + per-MessageType routing.
         // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
         val channel = SecureChannel(
@@ -220,6 +256,27 @@ class AppGraph(private val app: Application) {
             ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
         )
         mirrorEngine = mirror
+        // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the
+        // BLE manager that turns ANCS events into CapturedNotifications, then dispatches them to local display
+        // and/or the own mesh — reusing the same capture/render pipeline as a local Android capture.
+        val registry = IosAppRegistry(ds, scope)
+        iosAppRegistry = registry
+        ancsManager = AncsBleManager(
+            context = app,
+            scope = scope,
+            clientId = identity.clientId,
+            iconResolver = resolver,
+            appIconBytes = { pkg -> graphicsExtractor.appIcon(pkg) },
+            uploadAsset = { bytes, role, mime, cid -> assetManager.ensureUploaded(bytes, role, mime, cid) },
+            registry = registry,
+            deviceRepo = iosDeviceRepo,
+            localDisplayEnabled = { settings.ancsLocalDisplay.value },
+            meshMirrorEnabled = { settings.ancsMeshMirror.value },
+            captureToMesh = { notif -> mirror.captureLocal(notif) },
+            renderLocal = { notif -> poster.render(notif) },
+            clearLocal = { cid, key -> poster.clear(cid, key) },
+            dismissMesh = { cid, key -> mirror.dismissLocal(cid, key) },
+        )
         // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
         val foundation = FoundationEngine(
             channel = channel,
@@ -313,6 +370,10 @@ class AppGraph(private val app: Application) {
         // Trim handled-message history past its retention window on each start — bounds the dedup db on
         // long-lived processes and rarely-opened devices alike (off-main; the db opens lazily here).
         scope.launch { runCatching { messageStore.prune() } }
+        // Resume the ANCS bridge if the user left its switch on — covers any cold start of this process
+        // (FCM wake, etc.). Reboot / app-update arrive via AncsBootReceiver, which starts the same FGS inside
+        // the boot exemption window; both are idempotent.
+        scope.launch { resumeAncsBridgeIfEnabled() }
 
         Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
     }
@@ -442,6 +503,44 @@ class AppGraph(private val app: Application) {
     /** Re-broadcast our trust roster now (call after a local trust change that should propagate at once). */
     fun broadcastTrust() {
         scope.launch { runCatching { foundationEngine?.broadcastTrust() } }
+    }
+
+    /**
+     * Toggle the ANCS iOS-notification bridge: persist the choice and start/stop the foreground bridge
+     * service that owns the BLE link. Called from the iOS tab (always foreground, so starting the
+     * `connectedDevice` foreground service is permitted). With the switch on, [AncsBridgeService] keeps the
+     * link alive in the background; [net.extrawdw.apps.notisync.ancs.AncsCompanionService] can re-start it on
+     * device presence after a process death.
+     */
+    fun setAncsBridgeEnabled(enabled: Boolean) {
+        // Persist FIRST, then act. The iOS tab's auto-resume effect keys on this persisted flag; a
+        // fire-and-forget persist races the synchronous service stop (status -> OFF), so the effect would see
+        // the stale enabled=true together with OFF and immediately restart the bridge — "off" never sticks.
+        scope.launch {
+            runCatching { settings.setAncsBridgeEnabled(enabled) }
+            if (enabled) {
+                AncsBridgeService.start(app)
+            } else {
+                AncsBridgeService.stop(app)
+                AncsCompanion.stopObservingPresence(app) // user turned it off: don't let CDM presence re-wake us
+            }
+        }
+    }
+
+    /**
+     * Bring the ANCS bridge back after a process (re)start if the user left the switch on. Reads the
+     * PERSISTED flag (the [SettingsRepository.ancsBridgeEnabled] StateFlow is still its default here, before
+     * DataStore loads) and gates on BT permissions so the `connectedDevice` FGS start can't throw, then
+     * starts the bridge and re-arms CompanionDeviceManager presence. Guarded throughout: a background-start
+     * denial (no exemption) is harmless — the iOS tab, CDM presence, and
+     * [net.extrawdw.apps.notisync.ancs.AncsBootReceiver] are the other resume paths. Called from [init] (every
+     * process spawn — cold start, FCM wake) and AncsBootReceiver (reboot / app update).
+     */
+    suspend fun resumeAncsBridgeIfEnabled() {
+        if (!runCatching { settings.ancsBridgeEnabledNow() }.getOrDefault(false)) return
+        if (!AncsBridgeService.hasPermissions(app)) return
+        runCatching { AncsBridgeService.start(app) }
+        runCatching { AncsCompanion.observePresence(app) }
     }
 
     /** Surface a pending trust decision as a local notification: tap opens Devices; add/re-add carry Approve/Reject. */

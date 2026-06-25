@@ -29,8 +29,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 8
-        versionName = "1.0.0-rc.1"
+        versionCode = 9
+        versionName = "1.1.0-beta.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
             ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")
@@ -128,8 +128,10 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
     implementation(libs.kotlinx.coroutines.android)
+    // Directly used for the small App Store (iTunes Lookup) icon JSON; also exported transitively by :protocol.
+    implementation(libs.kotlinx.serialization.json)
 
-    // Transport (Ktor client) — dev WebSocket + control plane
+    // Transport (Ktor client) — dev WebSocket + control plane + App Store icon fetch
     implementation(platform(libs.ktor.bom))
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)
