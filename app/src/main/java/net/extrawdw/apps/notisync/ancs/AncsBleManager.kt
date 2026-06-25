@@ -95,6 +95,10 @@ class AncsBleManager(
     // was down, or the UID had already rotated. Drained in [onSourceEvent]: when such a notification replays we
     // clear it on the iPhone (with its fresh UID) instead of re-displaying it. Survives reconnect.
     private val pendingClear = java.util.Collections.synchronizedSet(HashSet<String>())
+    // UIDs we asked the iPhone to clear ourselves (dismiss-through), awaiting their EVENT_REMOVED. That removal
+    // must NOT re-broadcast to the mesh — the dismissal it answers already propagated there (it's what triggered
+    // the clear), so re-sending it would echo back to the peer that dismissed. Session-scoped, like [uidToKey].
+    private val selfClearedUids = java.util.Collections.synchronizedSet(HashSet<Int>())
 
     fun start() {
         if (running) return // idempotent: the foreground service may re-deliver onStartCommand
@@ -306,6 +310,7 @@ class AncsBleManager(
         client?.close(); client = null
         connectedDevice = null
         uidToKey.clear() // UIDs are session-scoped; drop the removal map on disconnect
+        selfClearedUids.clear() // ditto — pending self-clear confirmations don't carry across sessions
         deviceRepo.clearDeviceName() // no device connected — don't leave a stale name in the FGS / tab / group labels
         deviceRepo.setStatus(AncsStatus.ADVERTISING)
     }
@@ -417,6 +422,7 @@ class AncsBleManager(
             // Dismissed earlier while the iPhone was unreachable? This replay (fresh UID this session) is our
             // chance to clear it on the source instead of re-showing a notification the user already swiped.
             if (pendingClear.remove(contentKey)) {
+                selfClearedUids.add(packet.notificationUid) // our own clear → don't re-broadcast its removal
                 runCatching { c.performAction(packet.notificationUid, Ancs.ACTION_NEGATIVE) }
                 return@launch
             }
@@ -445,6 +451,10 @@ class AncsBleManager(
         // the notification already gone from the iPhone we don't want it to (re-)park a clear for a dead key.
         keyToContent.remove(key)
         clearLocal(clientId, key)
+        // If this removal is the iPhone confirming a clear WE performed (dismiss-through), the dismissal that
+        // triggered it already reached the mesh — re-broadcasting would echo it back to the sender. Only a
+        // removal the user made on the iPhone itself propagates outward.
+        if (selfClearedUids.remove(packet.notificationUid)) return
         scope.launch { runCatching { dismissMesh(clientId, key) } }
     }
 
@@ -463,6 +473,7 @@ class AncsBleManager(
         val uid = parts[3].toIntOrNull() ?: return
         // Live this session (same UID still mapped to this exact key) on our connected iPhone → clear now.
         if (client != null && parts[1] == iphoneId() && uidToKey[uid] == sourceKey) {
+            selfClearedUids.add(uid) // our own clear → its EVENT_REMOVED must not re-broadcast to the mesh
             scope.launch { runCatching { client?.performAction(uid, Ancs.ACTION_NEGATIVE) } }
             return
         }

@@ -85,7 +85,6 @@ fun SettingsScreen() {
                     value = brokerUrl,
                     onCommit = { graph.scope.launch { graph.settings.setBrokerUrl(it) } },
                     label = { Text(stringResource(R.string.settings_broker_url)) },
-                    supportingText = { Text(stringResource(R.string.settings_broker_url_hint)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
                         keyboardType = KeyboardType.Uri,

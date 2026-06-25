@@ -187,35 +187,6 @@ fun DiagnosticsCard(
 
             HorizontalDivider()
 
-            Text(stringResource(R.string.diag_pow), style = MaterialTheme.typography.titleSmall)
-            OutlinedButton(onClick = onBenchmark, enabled = benchmark !is BenchmarkState.Running) {
-                Text(
-                    if (benchmark is BenchmarkState.Running) stringResource(R.string.diag_pow_running)
-                    else stringResource(R.string.diag_pow_benchmark),
-                )
-            }
-            val rows = when (benchmark) {
-                is BenchmarkState.Running -> benchmark.done
-                is BenchmarkState.Done -> benchmark.results
-                BenchmarkState.Idle -> emptyList()
-            }
-            rows.forEach { b ->
-                Text(
-                    stringResource(
-                        R.string.diag_pow_result,
-                        b.difficulty,
-                        "%,d".format(b.hashes),
-                        "%.1f ms".format(b.ms),
-                        formatHashrate(b.hashes, b.ms),
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontFamily = FontFamily.Monospace,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            HorizontalDivider()
-
             Text(stringResource(R.string.diag_delivery_test), style = MaterialTheme.typography.titleSmall)
             Text(
                 stringResource(R.string.diag_oversized_hint),
@@ -339,8 +310,41 @@ fun DiagnosticsCard(
             }
             channelsReset?.let {
                 Text(
-                    stringResource(R.string.diag_channels_reset_done, it),
+                    pluralStringResource(R.plurals.diag_channels_reset_done, it, it),
                     style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            HorizontalDivider()
+            Text(stringResource(R.string.diag_pow), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_pow_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(onClick = onBenchmark, enabled = benchmark !is BenchmarkState.Running) {
+                Text(
+                    if (benchmark is BenchmarkState.Running) stringResource(R.string.diag_pow_running)
+                    else stringResource(R.string.diag_pow_benchmark),
+                )
+            }
+            val rows = when (benchmark) {
+                is BenchmarkState.Running -> benchmark.done
+                is BenchmarkState.Done -> benchmark.results
+                BenchmarkState.Idle -> emptyList()
+            }
+            rows.forEach { b ->
+                Text(
+                    stringResource(
+                        R.string.diag_pow_result,
+                        b.difficulty,
+                        "%,d".format(b.hashes),
+                        "%.1f ms".format(b.ms),
+                        formatHashrate(b.hashes, b.ms),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }

@@ -29,8 +29,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 12
-        versionName = "1.1.1-rc.2"
+        versionCode = 13
+        versionName = "1.1.1-rc.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
             ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")

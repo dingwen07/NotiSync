@@ -41,6 +41,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -202,6 +203,7 @@ fun PairingScreen(
                     Image(
                         bitmap = state.bitmap.asImageBitmap(),
                         contentDescription = stringResource(R.string.pair_qr_code_desc),
+                        filterQuality = FilterQuality.None,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                     )
                 }

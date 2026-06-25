@@ -83,7 +83,6 @@
     <!-- Settings screen -->
     <string name="settings_device_name">Device name</string>
     <string name="settings_broker_url">Broker URL (ws://…)</string>
-    <string name="settings_broker_url_hint">Use ws://10.0.2.2:8080 for a local server from the emulator.</string>
     <string name="settings_batch_low_priority">Batch low-priority notifications</string>
     <string name="settings_advanced_diagnostics">Advanced diagnostics</string>
     <string name="settings_diagnostics">Diagnostics</string>
@@ -96,12 +95,12 @@
     <string name="diag_server_unreachable">Unreachable</string>
     <string name="diag_checking">Checking…</string>
     <string name="diag_refresh">Refresh</string>
-    <string name="diag_attestation">Attestation</string>
+    <string name="diag_attestation">Client Integrity</string>
     <string name="diag_attestation_verified">Verified</string>
     <string name="diag_attestation_unverified">Required · not verified</string>
     <string name="diag_attestation_not_required">Not required</string>
     <string name="diag_attestation_unknown">Unknown</string>
-    <string name="diag_token_expires">Token valid %1$s</string>
+    <string name="diag_token_expires">Token valid for %1$s</string>
     <string name="diag_token_expired">expired</string>
     <string name="diag_token_less_than_minute">less than 1 minute</string>
     <plurals name="diag_duration_days">
@@ -116,7 +115,8 @@
         <item quantity="one">%1$d minute</item>
         <item quantity="other">%1$d minutes</item>
     </plurals>
-    <string name="diag_pow">Proof of work</string>
+    <string name="diag_pow">Proof of Work</string>
+    <string name="diag_pow_hint">Some servers require Proof of Work to prevent abuse.</string>
     <string name="diag_pow_benchmark">Benchmark (difficulty 1–5)</string>
     <string name="diag_pow_running">Benchmarking…</string>
     <string name="diag_pow_result">Difficulty %1$d · %2$s hashes · %3$s · %4$s</string>
@@ -125,7 +125,7 @@
     <string name="diag_oversized_send">Send oversized test</string>
     <string name="diag_oversized_sending">Sending…</string>
     <string name="diag_oversized_sent">Sent to %1$d device(s) — check the other device.</string>
-    <string name="diag_oversized_no_peers">No paired devices to send to.</string>
+    <string name="diag_oversized_no_peers">No devices to send to.</string>
     <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
     <string name="diag_rotation">Key rotation</string>
     <string name="diag_rotation_current_epoch">Current epoch: %1$d</string>
@@ -134,7 +134,7 @@
     <string name="diag_rotation_next_due">Next rotation in %1$s</string>
     <string name="diag_rotation_activating">Rotating to epoch %1$d — activates in %2$s</string>
     <string name="diag_rotation_retiring">Rotating to epoch %1$d — old epoch retires in %2$s</string>
-    <string name="diag_rotation_disabled">Rotation is off in this build (ENABLE_ROTATION). Showing the current keys only.</string>
+    <string name="diag_rotation_disabled">Rotation is off in this build (ENABLE_ROTATION).</string>
     <string name="diag_rotation_hint">Mint the next key epoch now instead of waiting for the 30-day schedule. The previous epoch\'s keys are retained through the overlap so in-flight notifications still open.</string>
     <string name="diag_rotate_now">Rotate epoch now</string>
     <string name="diag_rotating">Rotating…</string>
@@ -142,10 +142,13 @@
     <string name="diag_rotate_pending">A rotation is already in progress</string>
     <string name="diag_rotate_failed">Rotation failed — check the broker connection</string>
     <string name="diag_channels">Notification channels</string>
-    <string name="diag_channels_hint">Deletes the mirrored notification channels (one per app/device) so they rebuild fresh. Use this if bridged iPhone notifications are stuck Silent: Android pins a channel\'s importance when it is created and never raises it, so a channel first created Silent stays Silent until it is deleted and recreated.</string>
-    <string name="diag_channels_reset">Reset mirrored channels</string>
-    <string name="diag_channels_reset_done">Deleted %1$d channel(s) — they rebuild at High importance on the next notification.</string>
-    <string name="diag_security_test">Trust integrity (debug)</string>
+    <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps. Use this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
+    <string name="diag_channels_reset">Reset notification channels</string>
+    <plurals name="diag_channels_reset_done">
+        <item quantity="one">Deleted %1$d channel.</item>
+        <item quantity="other">Deleted %1$d channels.</item>
+    </plurals>
+    <string name="diag_security_test">Trust database integrity</string>
     <string name="diag_tamper_hint">Strips the trust store signature to simulate tampering. The app pauses syncing and shows a review banner on the Devices screen.</string>
     <string name="diag_tamper_signature">Tamper trust signature</string>
     <string name="key_backing_unknown">Unknown</string>
@@ -259,7 +262,7 @@
     <string name="ios_bridge_card_title">iPhone over Bluetooth</string>
     <string name="ios_connected_device">Connected to %1$s</string>
     <string name="ios_pairing_title">Pair your iPhone</string>
-    <string name="ios_pairing_off">Pair your iPhone over Bluetooth so Android can reconnect to it automatically when it\'s nearby, even when NotiSync isn\'t open.</string>
+    <string name="ios_pairing_off">Pair your iPhone via Bluetooth to access its notifications.</string>
     <string name="ios_pairing_on">Paired with %1$s</string>
     <string name="ios_pairing_on_unknown">Paired</string>
     <string name="ios_pairing_setup">Pair</string>
@@ -269,8 +272,8 @@
     <string name="ios_pairing_accept_prompt">Accept the pairing request on both devices</string>
     <string name="ios_pairing_forget_prompt">The device may still be paired. You can unpair them in the Bluetooth settings.</string>
     <string name="ios_pairing_failed">Couldn\'t start pairing: %1$s</string>
-    <string name="ios_show_here">Show on this phone</string>
-    <string name="ios_mirror_mesh">Mirror to my devices</string>
+    <string name="ios_show_here">Mirror to this phone</string>
+    <string name="ios_mirror_mesh">Mirror to my other devices</string>
     <string name="ios_apps_search_hint">Search iPhone apps</string>
     <string name="ios_apps_section_mirroring">Mirroring</string>
     <string name="ios_apps_section">iPhone apps</string>
