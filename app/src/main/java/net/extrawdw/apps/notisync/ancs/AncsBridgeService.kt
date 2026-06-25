@@ -16,9 +16,11 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -39,6 +41,9 @@ class AncsBridgeService : Service() {
 
     /** Service-lifetime scope for the status collector; cancelled in [onDestroy]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    /** Guards [observeStatus]: repeated [onStartCommand] (multiple start sources, START_STICKY redelivery)
+     *  must not stack duplicate collectors that each re-post the notification on every state change. */
+    @Volatile private var collecting = false
     private val repo get() = (application as NotiSyncApp).graph.iosDeviceRepo
     private val notificationManager get() = getSystemService(NotificationManager::class.java)
 
@@ -48,7 +53,7 @@ class AncsBridgeService : Service() {
             this, NOTIF_ID, buildNotification(repo.status.value, repo.deviceName.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
-        observeStatus()
+        if (!collecting) { collecting = true; observeStatus() }
         runCatching { (application as NotiSyncApp).graph.ancsManager?.start() }
         return START_STICKY
     }
@@ -59,11 +64,19 @@ class AncsBridgeService : Service() {
         super.onDestroy()
     }
 
-    /** Re-post the FGS notification (same id → in-place update) whenever the bridge status or iPhone name changes. */
+    /**
+     * Re-post the FGS notification (same id → in-place update) whenever the bridge status or iPhone name
+     * changes. Debounced so a burst of rapid transitions (the pairing handshake, a Bluetooth toggle)
+     * collapses to a single post of the settled state: this keeps us under the system's per-package
+     * notification enqueue-rate limit, which would otherwise silently drop an update and — because the
+     * source is a conflated StateFlow that never re-emits — leave the shade stuck on a stale state.
+     */
+    @OptIn(FlowPreview::class) // debounce() is a preview API; used to coalesce rapid bridge-state changes
     private fun observeStatus() {
         scope.launch {
             combine(repo.status, repo.deviceName) { status, name -> status to name }
                 .distinctUntilChanged()
+                .debounce(STATUS_NOTIFY_DEBOUNCE_MS)
                 .collect { (status, name) ->
                     notificationManager?.notify(NOTIF_ID, buildNotification(status, name))
                 }
@@ -108,6 +121,10 @@ class AncsBridgeService : Service() {
         private const val CHANNEL_ID = "notisync.ancs"
         private const val GROUP_ID = "notisync.ancs.bridge"
         private const val NOTIF_ID = 0x4E43 // "NC" — Notification Consumer
+
+        /** Debounce window for status→notification reposts: coalesce a burst of transitions into one post,
+         *  staying under the system's per-package notification enqueue-rate limit (default ~5/sec). */
+        private const val STATUS_NOTIFY_DEBOUNCE_MS = 250L
 
         /** Permissions the `connectedDevice` FGS needs to start without throwing on API 34+. Resume paths
          *  (cold start, AncsBootReceiver) must gate [start] on this — a missing-permission start throws. */

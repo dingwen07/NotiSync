@@ -11,7 +11,12 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
+import android.graphics.BitmapShader
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.Matrix
+import android.graphics.Paint
+import android.graphics.Shader
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
@@ -263,7 +268,7 @@ class RemoteNotificationPoster(
                 notif.messages.forEach { m ->
                     val person = m.sender?.let { name ->
                         Person.Builder().setName(name)
-                            .apply { m.avatar?.let { cachedBitmap(it.assetHash) }?.let { setIcon(IconCompat.createWithBitmap(it)) } }
+                            .apply { m.avatar?.let { avatarIcon(it.assetHash) }?.let { setIcon(it) } }
                             .build()
                     }
                     style.addMessage(NotificationCompat.MessagingStyle.Message(m.text, m.timestamp, person))
@@ -435,6 +440,25 @@ class RemoteNotificationPoster(
     private fun cachedBitmap(assetHash: String): Bitmap? =
         assets.read(assetHash)?.let { BitmapFactory.decodeByteArray(it, 0, it.size) }
 
+    private fun avatarIcon(assetHash: String): IconCompat? =
+        cachedBitmap(assetHash)?.let { IconCompat.createWithBitmap(it.circularAvatar()) }
+
+    private fun Bitmap.circularAvatar(): Bitmap {
+        if (width <= 0 || height <= 0) return this
+        val size = minOf(width, height)
+        val left = (width - size) / 2f
+        val top = (height - size) / 2f
+        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val shader = BitmapShader(this, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
+            setLocalMatrix(Matrix().apply { setTranslate(-left, -top) })
+        }
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG).apply {
+            this.shader = shader
+        }
+        Canvas(out).drawCircle(size / 2f, size / 2f, size / 2f, paint)
+        return out
+    }
+
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
         val active = activeNotification(tag, tag.hashCode())
@@ -467,14 +491,14 @@ class RemoteNotificationPoster(
         val persons = senders.ifEmpty { listOf(label) }
             .map { Person.Builder().setName(it).setKey(it).build() }
         val intent = Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW)
-        val avatar = notif.messages.firstNotNullOfOrNull { m -> m.avatar?.let { cachedBitmap(it.assetHash) } }
+        val avatar = notif.messages.firstNotNullOfOrNull { m -> m.avatar?.let { avatarIcon(it.assetHash) } }
         val shortcut = ShortcutInfoCompat.Builder(context, shortcutId)
             .setLongLived(true)
             .setShortLabel(label)
             .setPersons(persons.toTypedArray())
             .setLocusId(LocusIdCompat(shortcutId))
             .setIntent(intent)
-            .apply { avatar?.let { setIcon(IconCompat.createWithBitmap(it)) } }
+            .apply { avatar?.let { setIcon(it) } }
             .build()
         return ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
     }
