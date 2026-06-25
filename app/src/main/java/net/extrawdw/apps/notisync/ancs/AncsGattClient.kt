@@ -170,6 +170,20 @@ class AncsGattClient(
         request(Ancs.CMD_GET_APP_ATTRIBUTES, 1, Ancs.buildGetAppAttributes(appId))
             ?.let { Ancs.parseAppAttributes(it)?.displayName }
 
+    /**
+     * Best-effort PerformNotificationAction — e.g. a negative ("Clear") action that dismisses the notification
+     * on the iPhone. Unlike the attribute fetches there's no Data Source reply to await, so this is a
+     * fire-and-forget Control Point write, still serialized through [cpMutex] so it can't interleave with an
+     * in-flight request's write. Returns whether the local stack accepted the write (not whether iOS, which
+     * silently ignores an action a notification doesn't expose, actually honored it).
+     */
+    suspend fun performAction(uid: Int, actionId: Int): Boolean = cpMutex.withLock {
+        val cp = controlPoint ?: return false
+        val g = gatt ?: return false
+        g.writeCharacteristic(cp, Ancs.buildPerformAction(uid, actionId), BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT) ==
+            BluetoothStatusCodes.SUCCESS
+    }
+
     private suspend fun request(command: Int, attrCount: Int, payload: ByteArray, correlationId: Int = -1): ByteArray? = cpMutex.withLock {
         val cp = controlPoint ?: return null
         val g = gatt ?: return null

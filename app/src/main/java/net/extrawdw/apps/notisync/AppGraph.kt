@@ -64,6 +64,7 @@ import net.extrawdw.apps.notisync.channel.DeliveryOutcome
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
+import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.RotationManager
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
@@ -277,6 +278,9 @@ class AppGraph(private val app: Application) {
             clearLocal = { cid, key -> poster.clear(cid, key) },
             dismissMesh = { cid, key -> mirror.dismissLocal(cid, key) },
         )
+        // Dismissing an iOS mirror — swiped here or relayed from another own device — clears it on the iPhone
+        // too (best-effort ANCS negative action), so it doesn't linger on iOS or reappear on the next reconnect.
+        mirror.iosOriginCanceler = OriginalCanceler { key -> ancsManager?.dismissOnIphone(key) }
         // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
         val foundation = FoundationEngine(
             channel = channel,

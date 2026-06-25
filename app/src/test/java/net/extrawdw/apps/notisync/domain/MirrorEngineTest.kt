@@ -153,6 +153,37 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun localDismissal_propagatesToIosOrigin() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val own = newSigner(); val ownHpke = newHpke()
+        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true)) }
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer())
+        val iosCleared = mutableListOf<String>()
+        mirror.iosOriginCanceler = OriginalCanceler { iosCleared.add(it) }
+
+        // Swiping an iOS mirror locally doesn't remove it from the iPhone, so the dismissal must be propagated.
+        mirror.dismissLocal(me.clientId, "ancs|ip|com.x|7")
+
+        assertEquals(listOf("ancs|ip|com.x|7"), iosCleared)
+    }
+
+    @Test
+    fun remoteDismissal_propagatesToIosOrigin() {
+        val me = newSigner(); val myHpke = newHpke()
+        val own = newSigner(); val ownHpke = newHpke()
+        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true)) }
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer())
+        val iosCleared = mutableListOf<String>()
+        mirror.iosOriginCanceler = OriginalCanceler { iosCleared.add(it) }
+
+        // A peer's dismissal must clear the bridged iPhone notification too (like cancelling an Android original).
+        val event = DismissEvent(own.clientId, "ancs|ip|com.x|7", 1L)
+        channel.deliver(seal(own, MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), me.clientId, myHpke.publicKeyset, "d1"))
+
+        assertEquals(listOf("ancs|ip|com.x|7"), iosCleared)
+    }
+
+    @Test
     fun captureLocal_sealsNotificationToOwnMesh() = runBlocking {
         val me = newSigner(); val myHpke = newHpke()
         val own = newSigner(); val ownHpke = newHpke()

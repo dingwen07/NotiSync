@@ -84,6 +84,18 @@ class AncsBleManager(
 
     private val appNameCache = ConcurrentHashMap<String, String>() // bundleId -> resolved display name
     private val uidToKey = ConcurrentHashMap<Int, String>()        // ANCS notification UID -> mirror sourceKey
+    // sourceKey -> reconnect-stable content key. Unlike [uidToKey] (session-scoped, cleared on disconnect) this
+    // SURVIVES a reconnect — the manager outlives the BLE link — so a dismissal can still be matched to the same
+    // notification when it replays under a fresh UID. Bounded LRU so a long session can't grow it without end.
+    private val keyToContent = java.util.Collections.synchronizedMap(
+        object : java.util.LinkedHashMap<String, String>(64, 0.75f, true) {
+            override fun removeEldestEntry(eldest: Map.Entry<String, String>): Boolean = size > 256
+        }
+    )
+    // Content keys of mirrors dismissed (here or by a mesh peer) while we couldn't reach the iPhone — the link
+    // was down, or the UID had already rotated. Drained in [onSourceEvent]: when such a notification replays we
+    // clear it on the iPhone (with its fresh UID) instead of re-displaying it. Survives reconnect.
+    private val pendingClear = java.util.Collections.synchronizedSet(HashSet<String>())
 
     fun start() {
         if (running) return // idempotent: the foreground service may re-deliver onStartCommand
@@ -401,6 +413,14 @@ class AncsBleManager(
             // Only ship the app icon as an asset when mirroring — a local render resolves the icon directly.
             if (toMesh) notif = attachAppIcon(notif, androidPkg)
             uidToKey[packet.notificationUid] = notif.sourceKey
+            val contentKey = contentKeyOf(record)
+            keyToContent[notif.sourceKey] = contentKey
+            // Dismissed earlier while the iPhone was unreachable? This replay (fresh UID this session) is our
+            // chance to clear it on the source instead of re-showing a notification the user already swiped.
+            if (pendingClear.remove(contentKey)) {
+                runCatching { c.performAction(packet.notificationUid, Ancs.ACTION_NEGATIVE) }
+                return@launch
+            }
 
             if (localDisplayEnabled()) {
                 renderLocal(if (packet.isPreExisting) notif.copy(importance = MirrorImportance.LOW) else notif)
@@ -420,11 +440,42 @@ class AncsBleManager(
 
     private fun onRemoved(packet: Ancs.SourcePacket) {
         val key = uidToKey.remove(packet.notificationUid) ?: return
+        // Drop the content mapping first: the dismissMesh below routes back through [dismissOnIphone], and with
+        // the notification already gone from the iPhone we don't want it to (re-)park a clear for a dead key.
+        keyToContent.remove(key)
         clearLocal(clientId, key)
         scope.launch { runCatching { dismissMesh(clientId, key) } }
     }
 
+    /**
+     * Propagate a dismissal back to the iPhone: clear the source notification on iOS via a best-effort ANCS
+     * negative ("Clear") action. Invoked for both a local swipe of the mirror and a dismissal relayed from
+     * another NotiSync device — the iOS analogue of cancelling the original Android notification, which a local
+     * swipe alone can't do (it removes our mirror, not the iPhone's notification). If the iPhone is connected
+     * and this UID is still live this session we clear immediately; otherwise we park the dismissal by content
+     * key and clear it when the notification next replays (under a fresh UID) — so one dismissed while the link
+     * was down doesn't reappear on reconnect. No-op for non-ANCS keys.
+     */
+    fun dismissOnIphone(sourceKey: String) {
+        val parts = sourceKey.split('|')
+        if (parts.size < 4 || parts[0] != "ancs") return // not an ANCS source key
+        val uid = parts[3].toIntOrNull() ?: return
+        // Live this session (same UID still mapped to this exact key) on our connected iPhone → clear now.
+        if (client != null && parts[1] == iphoneId() && uidToKey[uid] == sourceKey) {
+            scope.launch { runCatching { client?.performAction(uid, Ancs.ACTION_NEGATIVE) } }
+            return
+        }
+        // Otherwise defer: clear it when it next replays. Keyed by content (not the rotating UID) so it matches
+        // across the reconnect. Unknown only if this process never captured it — then it's a best-effort no-op.
+        keyToContent[sourceKey]?.let { pendingClear.add(it) }
+    }
+
     // ---- Helpers ----
+
+    /** A reconnect-stable identity for an iPhone notification: the ANCS UID rotates per session, but the app +
+     *  original date + text do not — so this is what matches a parked dismissal to the notification's replay. */
+    private fun contentKeyOf(record: AncsRecord): String =
+        "${record.bundleId}\u001F${record.date}\u001F${record.title}\u001F${record.message}"
 
     /** A stable, non-identifying id for the bonded iPhone (hashed MAC) for the mirror source key. */
     private fun iphoneId(): String = connectedDevice?.address?.let { addr ->

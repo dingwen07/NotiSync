@@ -16,11 +16,11 @@ import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.conflate
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -66,19 +66,26 @@ class AncsBridgeService : Service() {
 
     /**
      * Re-post the FGS notification (same id → in-place update) whenever the bridge status or iPhone name
-     * changes. Debounced so a burst of rapid transitions (the pairing handshake, a Bluetooth toggle)
-     * collapses to a single post of the settled state: this keeps us under the system's per-package
-     * notification enqueue-rate limit, which would otherwise silently drop an update and — because the
-     * source is a conflated StateFlow that never re-emits — leave the shade stuck on a stale state.
+     * changes, throttled with a *leading* edge: the first change after a quiet period posts immediately —
+     * so a notification the user dismissed (allowed for FGS on Android 13+) reappears at once on a state
+     * change — while a burst of rapid transitions is coalesced to one post per [STATUS_NOTIFY_THROTTLE_MS].
+     * That cap keeps us under the system's per-package notification enqueue-rate limit, which would
+     * otherwise silently drop an update and, because the source is a conflated StateFlow that never
+     * re-emits, leave the shade stuck on a stale state.
+     *
+     * The throttle is the [conflate] + trailing [delay] idiom: `collect` posts the value, then sleeps the
+     * window; emissions arriving mid-sleep are conflated to the latest and posted next. So the leading post
+     * is immediate (unlike `debounce`, which delays every post), the final value is never lost, and posts
+     * stay ≥ a window apart (≤ ~4/sec) regardless of how fast the bridge churns.
      */
-    @OptIn(FlowPreview::class) // debounce() is a preview API; used to coalesce rapid bridge-state changes
     private fun observeStatus() {
         scope.launch {
             combine(repo.status, repo.deviceName) { status, name -> status to name }
                 .distinctUntilChanged()
-                .debounce(STATUS_NOTIFY_DEBOUNCE_MS)
+                .conflate()
                 .collect { (status, name) ->
                     notificationManager?.notify(NOTIF_ID, buildNotification(status, name))
+                    delay(STATUS_NOTIFY_THROTTLE_MS)
                 }
         }
     }
@@ -122,9 +129,10 @@ class AncsBridgeService : Service() {
         private const val GROUP_ID = "notisync.ancs.bridge"
         private const val NOTIF_ID = 0x4E43 // "NC" — Notification Consumer
 
-        /** Debounce window for status→notification reposts: coalesce a burst of transitions into one post,
-         *  staying under the system's per-package notification enqueue-rate limit (default ~5/sec). */
-        private const val STATUS_NOTIFY_DEBOUNCE_MS = 250L
+        /** Leading-edge throttle window for status→notification reposts: the first change posts at once,
+         *  then a burst is coalesced to one post per window — keeping us under the system's per-package
+         *  notification enqueue-rate limit (default ~5/sec). */
+        private const val STATUS_NOTIFY_THROTTLE_MS = 250L
 
         /** Permissions the `connectedDevice` FGS needs to start without throwing on API 34+. Resume paths
          *  (cold start, AncsBootReceiver) must gate [start] on this — a missing-permission start throws. */

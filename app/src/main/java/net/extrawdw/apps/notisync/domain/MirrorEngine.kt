@@ -88,6 +88,15 @@ class MirrorEngine(
 ) {
     @Volatile var originalCanceler: OriginalCanceler? = null
 
+    /**
+     * Clears the *origin* notification on a bridged iOS device when its mirror is dismissed — the iPhone-side
+     * analogue of [originalCanceler] (which cancels a local Android original). Unlike the Android case, a *local*
+     * swipe of an iOS mirror does NOT remove the notification from the iPhone, so this fires from BOTH
+     * [dismissLocal] (local swipe) and [onDismissal] (a peer's dismissal relayed over the mesh). Its
+     * implementation ignores non-ANCS keys; null on devices that run no iOS bridge.
+     */
+    @Volatile var iosOriginCanceler: OriginalCanceler? = null
+
     /** Notifications awaiting a repaired asset, keyed by the missing assetHash (bounded LRU). */
     private val pendingAssetRenders: MutableMap<String, CapturedNotification> = java.util.Collections.synchronizedMap(
         object : java.util.LinkedHashMap<String, CapturedNotification>(64, 0.75f, true) {
@@ -119,6 +128,9 @@ class MirrorEngine(
         val event = DismissEvent(sourceClientId, sourceKey, now())
         val n = channel.send(MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), Recipients.OwnMesh, Urgency.NORMAL)
         if (n > 0) activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), activityText.syncedToDevices(n), now())
+        // A bridged iOS notification isn't removed from the iPhone when its mirror is swiped here — propagate
+        // the dismissal back over ANCS so it clears on the source device too (no-op for non-ANCS keys).
+        iosOriginCanceler?.cancel(sourceKey)
     }
 
     private fun onNotification(msg: InboundMessage) {
@@ -160,6 +172,10 @@ class MirrorEngine(
         val event = ProtocolCodec.decodeFromCbor<DismissEvent>(msg.body)
         renderer.clear(event.sourceClientId, event.sourceKey)
         originalCanceler?.cancel(event.sourceKey)
+        // A peer dismissed this notification: cancel the local Android original (above) and, if it was bridged
+        // from an iPhone, clear it on that iPhone too — mirroring how an Android original is cancelled on a
+        // remote dismissal (no-op for non-ANCS keys).
+        iosOriginCanceler?.cancel(event.sourceKey)
         activityLog.add(
             ActivityEvent.Kind.DISMISSED,
             dismissedAppName(event.sourceKey),
