@@ -237,6 +237,10 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">You</string>
     <string name="mirror_via">via %1$s</string>
+    <plurals name="mirror_group_summary_count">
+        <item quantity="one">%1$d notification</item>
+        <item quantity="other">%1$d notifications</item>
+    </plurals>
     <string name="category_messages">Messages</string>
     <string name="category_email">Email</string>
     <string name="category_calls">Calls</string>

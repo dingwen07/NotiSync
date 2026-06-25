@@ -71,7 +71,8 @@ class NotificationNormalizer(private val pm: PackageManager) {
             category = categoryOf(n.category),
             importance = if (n.category == Notification.CATEGORY_MESSAGE) MirrorImportance.HIGH else MirrorImportance.DEFAULT,
             postTime = sbn.postTime,
-            groupKey = n.group,
+            groupKey = n.group ?: runCatching { sbn.overrideGroupKey }.getOrNull(),
+            isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0,
             isOngoing = sbn.isOngoing,
             isClearable = sbn.isClearable,
             channelId = channel?.id,
@@ -224,6 +225,8 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
     private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?) {
         if (sbn.packageName == packageName) return                              // never mirror ourselves
         val n = sbn.notification
+        // The payload can represent source summaries, but this provider avoids forwarding them as
+        // duplicate visible rows; the receiver builds its own local summary from mirrored children.
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return            // group summaries
         // Learn which apps post notifications (for the picker + recency sort), even if not enabled.
         app.graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)

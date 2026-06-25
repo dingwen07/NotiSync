@@ -230,6 +230,10 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">你</string>
     <string name="mirror_via">通过 %1$s</string>
+    <plurals name="mirror_group_summary_count">
+        <item quantity="one">%1$d 条通知</item>
+        <item quantity="other">%1$d 条通知</item>
+    </plurals>
     <string name="category_messages">消息</string>
     <string name="category_email">电子邮件</string>
     <string name="category_calls">通话</string>

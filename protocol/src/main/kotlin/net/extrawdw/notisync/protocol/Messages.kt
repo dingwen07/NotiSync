@@ -105,7 +105,10 @@ data class CapturedNotification(
     val category: MirrorCategory = MirrorCategory.NONE,
     val importance: MirrorImportance = MirrorImportance.DEFAULT,
     val postTime: Long,
+    /** Source app group key, or a system override group key when the app did not supply one. */
     val groupKey: String? = null,
+    /** True when the source notification is the summary row for [groupKey]. */
+    val isGroupSummary: Boolean = false,
     val isOngoing: Boolean = false,
     val isClearable: Boolean = true,
     /** True if the platform redacted sensitive content (Android 15+); consumer should signal it. */

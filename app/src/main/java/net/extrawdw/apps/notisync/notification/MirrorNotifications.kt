@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.notification
 
 import android.Manifest
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
 import android.app.NotificationManager
@@ -11,6 +12,8 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.os.Bundle
+import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
@@ -27,13 +30,16 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
 import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.apps.notisync.assets.AssetCache
-import java.util.concurrent.ConcurrentHashMap
+import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import java.security.MessageDigest
+import java.util.Base64
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * Mirrors the SOURCE app's channel structure on the receiver: one NotificationChannelGroup per source
@@ -63,7 +69,7 @@ object MirrorChannels {
     private fun originId(notif: CapturedNotification): String = notif.originDeviceId?.takeIf { it.isNotBlank() }.orEmpty()
 
     /** Group label carries the source device so two devices running the same app stay distinct. */
-    private fun groupName(appLabel: String, deviceName: String?): String =
+    fun groupName(appLabel: String, deviceName: String?): String =
         deviceName?.takeIf { it.isNotBlank() }?.let { "$appLabel ($it)" } ?: appLabel
 
     /** Create the per-app group + per-source-channel channel; return the channel id to post on. */
@@ -161,6 +167,16 @@ object MirrorChannels {
     }
 }
 
+private object MirrorNotificationExtras {
+    const val SOURCE_CLIENT = "net.extrawdw.apps.notisync.mirror.SOURCE_CLIENT"
+    const val SOURCE_KEY = "net.extrawdw.apps.notisync.mirror.SOURCE_KEY"
+    const val GROUP_KEY = "net.extrawdw.apps.notisync.mirror.GROUP_KEY"
+    const val GROUP_TITLE = "net.extrawdw.apps.notisync.mirror.GROUP_TITLE"
+    const val PACKAGE = "net.extrawdw.apps.notisync.mirror.PACKAGE"
+    const val IOS_BUNDLE_ID = "net.extrawdw.apps.notisync.mirror.IOS_BUNDLE_ID"
+    const val APP_ICON_HASH = "net.extrawdw.apps.notisync.mirror.APP_ICON_HASH"
+}
+
 /**
  * Posts mirrored notifications natively, reconstructing MessagingStyle / BigText and — for
  * conversation notifications — a long-lived shortcut + conversation channel so they file under the
@@ -191,6 +207,19 @@ class RemoteNotificationPoster(
         // iOS mirror reads "WhatsApp (Dingwen's iPhone)", not the Android bridge phone's name.
         val groupDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
         val parentChannelId = MirrorChannels.ensure(context, notif, groupDeviceName)
+        val receiverGroupKey = receiverGroupKey(notif)
+        val receiverGroupTitle = MirrorChannels.groupName(notif.appLabel, groupDeviceName)
+        if (notif.isGroupSummary) {
+            updateGroupSummary(
+                receiverGroupKey,
+                parentChannelId,
+                receiverGroupTitle,
+                notif.packageName,
+                notif.iosBundleId,
+                notif.appIcon?.assetHash,
+            )
+            return
+        }
         var postChannelId = parentChannelId
         var shortcutId: String? = null
 
@@ -216,7 +245,10 @@ class RemoteNotificationPoster(
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
+            .setGroup(receiverGroupKey)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
+            .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
         if (shortcutId != null) builder.setShortcutId(shortcutId)
 
         when (notif.style) {
@@ -263,8 +295,100 @@ class RemoteNotificationPoster(
         applyLargeIcon(builder, notif)
 
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
+        updateGroupSummary(
+            receiverGroupKey,
+            postChannelId,
+            receiverGroupTitle,
+            notif.packageName,
+            notif.iosBundleId,
+            notif.appIcon?.assetHash,
+        )
 
         maybeUpgradeIcon(notif)
+    }
+
+    private fun mirrorExtras(notif: CapturedNotification, receiverGroupKey: String, receiverGroupTitle: String) =
+        Bundle().apply {
+            putString(MirrorNotificationExtras.SOURCE_CLIENT, notif.sourceClientId.value)
+            putString(MirrorNotificationExtras.SOURCE_KEY, notif.sourceKey)
+            putString(MirrorNotificationExtras.GROUP_KEY, receiverGroupKey)
+            putString(MirrorNotificationExtras.GROUP_TITLE, receiverGroupTitle)
+            putString(MirrorNotificationExtras.PACKAGE, notif.packageName)
+            putString(MirrorNotificationExtras.IOS_BUNDLE_ID, notif.iosBundleId)
+            putString(MirrorNotificationExtras.APP_ICON_HASH, notif.appIcon?.assetHash)
+        }
+
+    /**
+     * Receiver-local shade grouping. Same-app, same-channel mirrors group together by default, separated
+     * by source client and bridged-origin device so two devices running the same app do not collapse into
+     * one shade group. The source group key remains payload metadata; it is not used as the default
+     * receiver bucket.
+     */
+    private fun receiverGroupKey(notif: CapturedNotification): String {
+        val origin = notif.originDeviceId?.takeIf { it.isNotBlank() } ?: "_local"
+        val channel = notif.parentChannelId?.takeIf { it.isNotBlank() }
+            ?: notif.channelId?.takeIf { it.isNotBlank() }
+            ?: "_default"
+        return "notisync:${stableToken("${notif.sourceClientId.value}\u001F$origin\u001F${notif.packageName}\u001F$channel")}"
+    }
+
+    private fun stableToken(value: String): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest.copyOf(12))
+    }
+
+    private fun updateGroupSummary(
+        groupKey: String,
+        fallbackChannelId: String,
+        fallbackTitle: String,
+        fallbackPackage: String,
+        fallbackIosBundleId: String? = null,
+        fallbackAppIconHash: String? = null,
+    ) {
+        val compat = NotificationManagerCompat.from(context)
+        val summaryTag = summaryTagOf(groupKey)
+        val children = activeGroupChildren(groupKey)
+        if (children.size < 2) {
+            compat.cancel(summaryTag, summaryTag.hashCode())
+            return
+        }
+        val latest = children.maxByOrNull { it.postTime }
+        val extras = latest?.notification?.extras
+        val title = extras?.getString(MirrorNotificationExtras.GROUP_TITLE) ?: fallbackTitle
+        val packageName = extras?.getString(MirrorNotificationExtras.PACKAGE) ?: fallbackPackage
+        val iosBundleId = extras?.getString(MirrorNotificationExtras.IOS_BUNDLE_ID) ?: fallbackIosBundleId
+        val appIconHash = extras?.getString(MirrorNotificationExtras.APP_ICON_HASH) ?: fallbackAppIconHash
+        val channelId = latest?.notification?.channelId ?: fallbackChannelId
+        val text = context.resources.getQuantityString(R.plurals.mirror_group_summary_count, children.size, children.size)
+        val largeIcon = iconResolver.colorIcon(packageName, iosBundleId, appIconHash)
+        val summary = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(smallIconForPackage(packageName))
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSubText(context.getString(R.string.mirror_via, title))
+            .setWhen(latest?.postTime ?: System.currentTimeMillis())
+            .setShowWhen(true)
+            .setPriority(NotificationCompat.PRIORITY_DEFAULT)
+            .setGroup(groupKey)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            .setOnlyAlertOnce(true)
+            .setSilent(true)
+            .setDeleteIntent(groupDeleteIntent(groupKey, summaryTag.hashCode()))
+            .apply { largeIcon?.let { setLargeIcon(it) } }
+            .build()
+        runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
+    }
+
+    private fun activeGroupChildren(groupKey: String): List<StatusBarNotification> {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        return runCatching {
+            mgr.activeNotifications.filter { sbn ->
+                sbn.packageName == context.packageName &&
+                    sbn.notification.group == groupKey &&
+                    (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
+            }
+        }.getOrDefault(emptyList())
     }
 
     /**
@@ -313,7 +437,24 @@ class RemoteNotificationPoster(
 
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
+        val active = activeNotification(tag, tag.hashCode())
+        val groupKey = active?.notification?.group
+        val fallbackChannel = active?.notification?.channelId
+        val fallbackTitle = active?.notification?.extras?.getString(MirrorNotificationExtras.GROUP_TITLE)
+        val fallbackPackage = active?.notification?.extras?.getString(MirrorNotificationExtras.PACKAGE)
+        val fallbackIosBundleId = active?.notification?.extras?.getString(MirrorNotificationExtras.IOS_BUNDLE_ID)
+        val fallbackAppIconHash = active?.notification?.extras?.getString(MirrorNotificationExtras.APP_ICON_HASH)
         NotificationManagerCompat.from(context).cancel(tag, tag.hashCode())
+        if (groupKey != null && fallbackChannel != null) {
+            updateGroupSummary(
+                groupKey,
+                fallbackChannel,
+                fallbackTitle ?: context.getString(R.string.app_name),
+                fallbackPackage ?: context.packageName,
+                fallbackIosBundleId,
+                fallbackAppIconHash,
+            )
+        }
     }
 
     /** Publish a long-lived Person shortcut so the mirrored conversation renders as a conversation. */
@@ -350,6 +491,22 @@ class RemoteNotificationPoster(
         )
     }
 
+    private fun groupDeleteIntent(groupKey: String, id: Int): PendingIntent {
+        val intent = Intent(context, DismissReceiver::class.java).apply {
+            action = "net.extrawdw.apps.notisync.DISMISS_GROUP"
+            putExtra(DismissReceiver.EXTRA_GROUP_KEY, groupKey)
+        }
+        return PendingIntent.getBroadcast(
+            context, id, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    private fun activeNotification(tag: String, id: Int): StatusBarNotification? {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        return runCatching { mgr.activeNotifications.firstOrNull { it.tag == tag && it.id == id } }.getOrNull()
+    }
+
     private fun toPriority(importance: MirrorImportance) = when (importance) {
         MirrorImportance.HIGH -> NotificationCompat.PRIORITY_HIGH
         MirrorImportance.DEFAULT -> NotificationCompat.PRIORITY_DEFAULT
@@ -359,28 +516,58 @@ class RemoteNotificationPoster(
 
     companion object {
         fun tagOf(sourceClientId: ClientId, sourceKey: String) = "${sourceClientId.value}|$sourceKey"
+        fun summaryTagOf(groupKey: String) = "summary|$groupKey"
     }
 }
 
 /** Fires when the user swipes away a mirrored notification → propagate the dismissal to peers. */
 class DismissReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return
-        val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return
         val app = context.applicationContext as NotiSyncApp
         val engine = app.graph.mirrorEngine ?: return
         val pending = goAsync()
         app.graph.scope.launch {
             try {
-                engine.dismissLocal(ClientId(sourceClient), sourceKey)
+                val groupKey = intent.getStringExtra(EXTRA_GROUP_KEY)
+                if (groupKey != null) {
+                    dismissGroup(context, engine, groupKey)
+                } else {
+                    val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return@launch
+                    val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return@launch
+                    engine.dismissLocal(ClientId(sourceClient), sourceKey)
+                }
             } finally {
                 pending.finish()
             }
         }
     }
 
+    private suspend fun dismissGroup(context: Context, engine: MirrorEngine, groupKey: String) {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        val compat = NotificationManagerCompat.from(context)
+        val children = runCatching {
+            mgr.activeNotifications.filter { sbn ->
+                sbn.packageName == context.packageName &&
+                    sbn.notification.group == groupKey &&
+                    (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
+            }
+        }.getOrDefault(emptyList())
+
+        children.forEach { child ->
+            val sourceClient = child.notification.extras.getString(MirrorNotificationExtras.SOURCE_CLIENT) ?: return@forEach
+            val sourceKey = child.notification.extras.getString(MirrorNotificationExtras.SOURCE_KEY) ?: return@forEach
+            val clientId = ClientId(sourceClient)
+            engine.dismissLocal(clientId, sourceKey)
+            val tag = RemoteNotificationPoster.tagOf(clientId, sourceKey)
+            compat.cancel(tag, tag.hashCode())
+        }
+        val summaryTag = RemoteNotificationPoster.summaryTagOf(groupKey)
+        compat.cancel(summaryTag, summaryTag.hashCode())
+    }
+
     companion object {
         const val EXTRA_SOURCE_CLIENT = "source_client"
         const val EXTRA_SOURCE_KEY = "source_key"
+        const val EXTRA_GROUP_KEY = "group_key"
     }
 }

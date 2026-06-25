@@ -151,6 +151,8 @@ class ProtocolCodecTest {
             category = MirrorCategory.MESSAGE,
             importance = MirrorImportance.HIGH,
             postTime = 1_750_000_000_000L,
+            groupKey = "chat-group",
+            isGroupSummary = true,
         )
         val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
         assertEquals(notif, decoded)
@@ -269,6 +271,7 @@ class ProtocolCodecTest {
         )
         val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
         assertEquals(OriginPlatform.ANDROID_LOCAL, decoded.originPlatform)
+        assertFalse(decoded.isGroupSummary)
         assertNull(decoded.appIcon)
         assertNull(decoded.originDeviceName)
         assertNull(decoded.iosBundleId)
