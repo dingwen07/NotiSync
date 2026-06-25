@@ -134,6 +134,7 @@ fun SettingsScreen() {
                                 }
                             }
                         },
+                        onResetChannels = { graph.resetNotificationChannels() },
                         onTamperSignature = { graph.trust.simulateSignatureTamper() },
                     )
                 }

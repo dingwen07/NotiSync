@@ -274,7 +274,7 @@ class AppGraph(private val app: Application) {
             localDisplayEnabled = { settings.ancsLocalDisplay.value },
             meshMirrorEnabled = { settings.ancsMeshMirror.value },
             captureToMesh = { notif -> mirror.captureLocal(notif) },
-            renderLocal = { notif -> poster.render(notif) },
+            renderLocal = { notif, silent -> poster.render(notif, silent) },
             clearLocal = { cid, key -> poster.clear(cid, key) },
             dismissMesh = { cid, key -> mirror.dismissLocal(cid, key) },
         )
@@ -442,6 +442,10 @@ class AppGraph(private val app: Application) {
      * (target) epoch, or null if rotation is disabled or one is already in flight. Off the main thread —
      * operational keygen + broker publish run on IO.
      */
+    /** Diagnostics recovery: delete every mirrored notification channel so they rebuild at the right importance
+     *  (the OS can't raise a channel stranded at Silent — only a delete+recreate fixes it). Returns the count. */
+    fun resetNotificationChannels(): Int = MirrorChannels.deleteAll(app)
+
     suspend fun rotateNowDiagnostic(): Int? = withContext(Dispatchers.IO) {
         val rm = rotationManager ?: return@withContext null
         val target = rm.beginRotation(leadMillisOverride = 0L) ?: return@withContext null

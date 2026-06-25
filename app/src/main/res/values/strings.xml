@@ -141,6 +141,10 @@
     <string name="diag_rotate_done">Rotated — now at epoch %1$d</string>
     <string name="diag_rotate_pending">A rotation is already in progress</string>
     <string name="diag_rotate_failed">Rotation failed — check the broker connection</string>
+    <string name="diag_channels">Notification channels</string>
+    <string name="diag_channels_hint">Deletes the mirrored notification channels (one per app/device) so they rebuild fresh. Use this if bridged iPhone notifications are stuck Silent: Android pins a channel\'s importance when it is created and never raises it, so a channel first created Silent stays Silent until it is deleted and recreated.</string>
+    <string name="diag_channels_reset">Reset mirrored channels</string>
+    <string name="diag_channels_reset_done">Deleted %1$d channel(s) — they rebuild at High importance on the next notification.</string>
     <string name="diag_security_test">Trust integrity (debug)</string>
     <string name="diag_tamper_hint">Strips the trust store signature to simulate tampering. The app pauses syncing and shows a review banner on the Devices screen.</string>
     <string name="diag_tamper_signature">Tamper trust signature</string>

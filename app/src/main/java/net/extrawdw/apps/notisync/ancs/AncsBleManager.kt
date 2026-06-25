@@ -30,7 +30,6 @@ import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -60,8 +59,8 @@ class AncsBleManager(
     private val meshMirrorEnabled: () -> Boolean,
     /** Seal the capture to the own mesh ([MirrorEngine.captureLocal]). */
     private val captureToMesh: suspend (CapturedNotification) -> Int,
-    /** Post the capture locally on this phone ([RemoteNotificationPoster.render]). */
-    private val renderLocal: (CapturedNotification) -> Unit,
+    /** Post the capture locally on this phone ([RemoteNotificationPoster.render]); [silent] mutes the backlog. */
+    private val renderLocal: (CapturedNotification, Boolean) -> Unit,
     /** Clear a locally-posted mirror ([RemoteNotificationPoster.clear]). */
     private val clearLocal: (ClientId, String) -> Unit,
     /** Broadcast a dismissal to the mesh ([MirrorEngine.dismissLocal]). */
@@ -423,7 +422,9 @@ class AncsBleManager(
             }
 
             if (localDisplayEnabled()) {
-                renderLocal(if (packet.isPreExisting) notif.copy(importance = MirrorImportance.LOW) else notif)
+                // Backlog (PreExisting) replays quietly: post it silently rather than lowering its importance —
+                // a lowered importance would pin the channel to Silent for good (see MirrorChannels.ensure).
+                renderLocal(notif, packet.isPreExisting)
             }
             if (toMesh) runCatching { captureToMesh(notif) }
         }

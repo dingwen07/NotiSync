@@ -24,7 +24,10 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -122,6 +125,7 @@ fun DiagnosticsCard(
     onBenchmark: () -> Unit,
     onSendOversizedTest: () -> Unit,
     onRotateNow: () -> Unit,
+    onResetChannels: () -> Int,
     onTamperSignature: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -317,6 +321,25 @@ fun DiagnosticsCard(
             } else {
                 Text(
                     stringResource(R.string.diag_rotation_disabled),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            HorizontalDivider()
+            Text(stringResource(R.string.diag_channels), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_channels_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var channelsReset by remember { mutableStateOf<Int?>(null) }
+            OutlinedButton(onClick = { channelsReset = onResetChannels() }) {
+                Text(stringResource(R.string.diag_channels_reset))
+            }
+            channelsReset?.let {
+                Text(
+                    stringResource(R.string.diag_channels_reset_done, it),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

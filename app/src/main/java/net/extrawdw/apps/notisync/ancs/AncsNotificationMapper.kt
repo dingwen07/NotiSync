@@ -54,7 +54,12 @@ object AncsNotificationMapper {
             subText = record.subtitle?.takeIf { it != record.title && it != body },
             style = if (isLong) NotifStyle.BIG_TEXT else NotifStyle.DEFAULT,
             category = mapCategory(record.source.categoryId),
-            importance = mapImportance(record.source),
+            // Always HIGH: iOS shows notifications as banners, so the mirrored channel must stay banner-capable.
+            // The per-notification iOS "silent" flag is deliberately ignored here — it flips at runtime (e.g. iOS
+            // sets it whenever the iPhone is unlocked/in use), and feeding it into the channel's importance would
+            // pin the channel to Silent permanently (the OS never raises a channel). The connect-time backlog is
+            // quieted at post time via setSilent() instead, never by lowering importance. See MirrorChannels.
+            importance = MirrorImportance.HIGH,
             postTime = Ancs.parseDate(record.date) ?: now,
             originPlatform = OriginPlatform.IOS_ANCS,
             originDeviceName = iphoneName,
@@ -70,11 +75,5 @@ object AncsNotificationMapper {
         Ancs.CAT_EMAIL -> MirrorCategory.EMAIL
         Ancs.CAT_LOCATION -> MirrorCategory.NAVIGATION
         else -> MirrorCategory.NONE
-    }
-
-    private fun mapImportance(p: Ancs.SourcePacket): MirrorImportance = when {
-        p.isImportant -> MirrorImportance.HIGH
-        p.isSilent -> MirrorImportance.LOW
-        else -> MirrorImportance.HIGH
     }
 }

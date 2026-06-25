@@ -15,10 +15,14 @@ class AncsNotificationMapperTest {
     }
 
     @Test
-    fun map_silentAncsNotificationStaysLowImportance() {
+    fun map_silentFlaggedAncsNotificationStaysHighImportance() {
+        // The iOS per-notification "silent" flag must NOT lower the mirrored channel's importance — it flips at
+        // runtime (iOS sets it whenever the iPhone is unlocked/in use) and, fed into the channel's importance,
+        // would pin the channel to Silent permanently (the OS never raises a channel). ANCS notifications always
+        // map to HIGH; quieting a single post (the connect-time backlog) is done via setSilent() at post time.
         val notif = mapWithFlags(Ancs.FLAG_SILENT)
 
-        assertEquals(MirrorImportance.LOW, notif.importance)
+        assertEquals(MirrorImportance.HIGH, notif.importance)
     }
 
     private fun mapWithFlags(flags: Int) = AncsNotificationMapper.map(

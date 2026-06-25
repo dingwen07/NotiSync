@@ -42,6 +42,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.OriginPlatform
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -140,6 +141,23 @@ object MirrorChannels {
         }
     }
 
+    /**
+     * Delete every mirrored group + channel this app created (diagnostics recovery). The OS pins a channel's
+     * importance at creation and only ever lowers it, so a channel stranded at Silent (e.g. minted by an older
+     * build, or before the importance fix) can't be raised in code — deleting it is the only way to have it
+     * recreated at the right importance. They come back at HIGH on the next mirrored iPhone notification. Leaves
+     * the app's own service channels alone. Returns the number of channels removed.
+     */
+    fun deleteAll(context: Context): Int {
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        return runCatching {
+            val mirrored = mgr.notificationChannels.filter { it.id.startsWith("channel:") || it.id.startsWith("conversation:") }
+            mirrored.forEach { mgr.deleteNotificationChannel(it.id) }
+            mgr.notificationChannelGroups.forEach { if (it.id.startsWith("group:")) mgr.deleteNotificationChannelGroup(it.id) }
+            mirrored.size
+        }.getOrDefault(0)
+    }
+
     private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
 
     private fun channelName(context: Context, notif: CapturedNotification): String {
@@ -147,8 +165,15 @@ object MirrorChannels {
         return notif.channelGroupName?.takeIf { it.isNotBlank() }?.let { "$it · $base" } ?: base
     }
 
+    // iPhone (ANCS) notifications are banners on iOS, so their mirrored channel is always created HIGH — this is
+    // the single enforcement point for that rule. It must NOT be derived from any one notification's importance:
+    // the OS fixes a channel's importance at creation and only ever LOWERS it (see ensure()), so a single
+    // transiently-quiet notification (connect-time backlog, or an iOS "silent" flag) would otherwise strand the
+    // whole channel in the shade's Silent section. Per-notification quieting is done with setSilent() at post
+    // time instead (RemoteNotificationPoster.render), which never touches the channel's importance.
     private fun importanceOf(notif: CapturedNotification): Int =
-        mapImportance(notif.channelImportance ?: notif.importance)
+        if (notif.originPlatform == OriginPlatform.IOS_ANCS) NotificationManager.IMPORTANCE_HIGH
+        else mapImportance(notif.channelImportance ?: notif.importance)
 
     private fun mapImportance(importance: MirrorImportance): Int = when (importance) {
         MirrorImportance.NONE -> NotificationManager.IMPORTANCE_NONE
@@ -203,7 +228,12 @@ class RemoteNotificationPoster(
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
     private val iconUpgradesInFlight = ConcurrentHashMap.newKeySet<String>()
 
-    override fun render(notif: CapturedNotification) {
+    override fun render(notif: CapturedNotification) = render(notif, silent = false)
+
+    /** [silent] posts just this one notification without sound/heads-up — used for the connect-time ANCS backlog
+     *  replay — while leaving the channel's importance untouched, so the next live notification on the same (HIGH)
+     *  channel still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). */
+    fun render(notif: CapturedNotification, silent: Boolean) {
         // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
         // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
@@ -255,6 +285,9 @@ class RemoteNotificationPoster(
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
         if (shortcutId != null) builder.setShortcutId(shortcutId)
+        // Quiet this one post (ANCS backlog replay) without lowering the channel — the channel stays HIGH so the
+        // next live notification still heads-up. MessagingStyle below may also silence its own self-reply case.
+        if (silent) builder.setSilent(true)
 
         when (notif.style) {
             NotifStyle.MESSAGING -> {
