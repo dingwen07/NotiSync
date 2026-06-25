@@ -1,11 +1,11 @@
-<!-- Small icon for the ANCS bridge foreground service: a Bluetooth glyph (the link to the iPhone),
-     so it reads distinctly from the bell used by mirrored notifications. White; the system tints it. -->
+<!-- Small icon for the ANCS bridge foreground service: Material Symbols Outlined "Mobile Sound".
+     White; the system tints notification small icons. -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="24dp"
     android:height="24dp"
-    android:viewportWidth="24"
-    android:viewportHeight="24">
+    android:viewportWidth="960"
+    android:viewportHeight="960">
     <path
         android:fillColor="@android:color/white"
-        android:pathData="M17.71,7.71L12,2h-1v7.59L6.41,5 5,6.41 10.59,12 5,17.59 6.41,19 11,14.41V22h1l5.71,-5.71 -4.3,-4.29 4.3,-4.29zM13,5.83l1.88,1.88L13,9.59V5.83zm1.88,10.46L13,18.17v-3.76l1.88,1.88z" />
+        android:pathData="M280,530v310,-720 410ZM280,920q-33,0 -56.5,-23.5T200,840v-720q0,-33 23.5,-56.5T280,40h400q33,0 56.5,23.5T760,120v80h-80v-80L280,120v720h400v-80h80v80q0,33 -23.5,56.5T680,920L280,920ZM508.5,228.5Q520,217 520,200t-11.5,-28.5Q497,160 480,160t-28.5,11.5Q440,183 440,200t11.5,28.5Q463,240 480,240t28.5,-11.5ZM653,594l-58,-58q12,-11 18.5,-25.5T620,480q0,-16 -6.5,-30.5T595,424l58,-58q23,23 35,52.5t12,61.5q0,32 -12,61.5T653,594ZM751,692 L695,636q31,-31 48,-71t17,-85q0,-45 -17,-85t-48,-71l56,-56q43,42 66,97t23,115q0,60 -23,115t-66,97Z" />
 </vector>

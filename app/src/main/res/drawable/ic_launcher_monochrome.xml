@@ -2,7 +2,8 @@
 <!--
   Monochrome layer for Android 13+ themed icons. Single-colour line art; the
   launcher tints it. Devices are drawn as outlines so the overlapping pair stays
-  legible when flattened to one colour. Geometry matches the foreground.
+  legible when flattened to one colour. The sync arrows are omitted so tiny
+  themed/status surfaces stay calm and readable.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
@@ -11,36 +12,18 @@
     android:viewportHeight="300"
     android:tint="#000000">
 
-    <!-- two-way sync arrows -->
-    <path
-        android:pathData="M244,-3.4L79.64,160.96"
-        android:strokeColor="#000000"
-        android:strokeWidth="17"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M56,303.4L220.36,139.04"
-        android:strokeColor="#000000"
-        android:strokeWidth="17"
-        android:strokeLineCap="round" />
-    <path
-        android:pathData="M62.67,177.93L93.78,175.1L65.5,146.82Z"
-        android:fillColor="#000000" />
-    <path
-        android:pathData="M237.33,122.07L234.5,153.18L206.22,124.9Z"
-        android:fillColor="#000000" />
-
     <!-- tablet outline + mesh -->
     <path
-        android:pathData="M103,96L153,96A14,14 0 0 1 167,110L167,190A14,14 0 0 1 153,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96Z"
+        android:pathData="M103,96L153,96A14,14 0 0 1 167,110L167,118M141,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96"
         android:strokeColor="#000000"
         android:strokeWidth="5" />
     <path
-        android:pathData="M128,114L106,150M128,114L150,150M106,150L150,150M106,150L128,186M150,150L128,186"
+        android:pathData="M128,114L106,150M128,114L141,135.27M106,150L141,150M106,150L128,186M141,164.73L128,186"
         android:strokeColor="#000000"
         android:strokeWidth="2.5"
         android:strokeLineCap="round" />
     <path
-        android:pathData="M122.5,114a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM100.5,150a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM144.5,150a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM122.5,186a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0Z"
+        android:pathData="M122.5,114a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM100.5,150a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0ZM122.5,186a5.5,5.5 0 1 0 11,0a5.5,5.5 0 1 0 -11,0Z"
         android:fillColor="#000000" />
 
     <!-- phone outline + padlock -->
