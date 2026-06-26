@@ -88,6 +88,22 @@ class ApnsPushTransportTest {
         assertEquals("application/json", request.headers().firstValue("content-type").orElse(null))
     }
 
+    @Test
+    fun notificationUsesAlertPushTypeAndPriority() = runBlocking {
+        val requests = mutableListOf<HttpRequest>()
+        val transport = apnsTransport(ApnsResponse(200, ""), requests)
+
+        assertEquals(
+            PushOutcome.DELIVERED,
+            transport.wake(apnsRoute(routeRef = "ABCD1234"), notificationData(), Urgency.HIGH),
+        )
+
+        val request = requests.single()
+        // A NOTIFICATION must be an alert push at priority 10 so the NSE wakes to decrypt + display.
+        assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
+        assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
+    }
+
     private fun apnsTransport(
         response: ApnsResponse,
         requests: MutableList<HttpRequest> = mutableListOf(),
@@ -115,6 +131,8 @@ class ApnsPushTransportTest {
     )
 
     private fun pushData() = mapOf("typ" to "wake", "mid" to "01J0APNS001")
+
+    private fun notificationData() = mapOf("mtyp" to "NOTIFICATION", "typ" to "notif", "mid" to "01J0APNS002", "ct" to "AAEC")
 
     private companion object {
         const val APNS_TOPIC = "net.extrawdw.apps.NotiSync"

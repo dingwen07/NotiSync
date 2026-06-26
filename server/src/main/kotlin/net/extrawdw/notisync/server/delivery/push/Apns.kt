@@ -3,6 +3,7 @@ package net.extrawdw.notisync.server.delivery.push
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.TransportType
@@ -48,20 +49,22 @@ class ApnsPushTransport internal constructor(
                 // Match the wake TTL to the relay TTL (as FcmPushTransport does) so a deferred wake can't
                 // outlive the relay item it points to (else a wake delivered later is a dead pointer).
                 val expiration = (System.currentTimeMillis() + ttlMillis) / 1000
-                // This is a silent, end-to-end-encrypted background push: the client decrypts and posts the
-                // local notification, so it MUST be apns-push-type=background at apns-priority=5 regardless of
-                // urgency (an alert/priority-10 push needs plaintext the broker never holds). Urgency therefore
-                // can't change the APNs delivery class here; see review note on iOS timeliness.
+                // Type-aware delivery class. A NOTIFICATION is delivered as an alert push with
+                // mutable-content so the iOS Notification Service Extension wakes, decrypts the inline
+                // ciphertext (or fetches the relay pointer) on-device, and replaces the placeholder before
+                // display — the broker still holds only ciphertext. DISMISSAL/DATA_SYNC stay silent
+                // background pushes handled by the app process. (FCM/Android is unaffected.)
+                val isAlert = data["mtyp"] == MessageType.NOTIFICATION.name
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("$endpoint/3/device/${route.routeRef}"))
                     .timeout(Duration.ofSeconds(20))
                     .header("authorization", "bearer ${tokenProvider.token()}")
                     .header("content-type", "application/json")
                     .header("apns-topic", topic)
-                    .header("apns-push-type", "background")
-                    .header("apns-priority", "5")
+                    .header("apns-push-type", if (isAlert) "alert" else "background")
+                    .header("apns-priority", if (isAlert) "10" else "5")
                     .header("apns-expiration", expiration.toString())
-                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data)))
+                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data, isAlert)))
                     .build()
                 val response = client.send(request)
                 if (response.statusCode in 200..299) return@withContext PushOutcome.DELIVERED
@@ -85,13 +88,16 @@ class ApnsPushTransport internal constructor(
             }
         }
 
-    private fun apnsPayload(data: Map<String, String>): String {
+    private fun apnsPayload(data: Map<String, String>, alert: Boolean): String {
         val entries = data.entries.joinToString(",") { (k, v) -> "\"${jsonEscape(k)}\":\"${jsonEscape(v)}\"" }
-        return if (entries.isEmpty()) {
-            """{"aps":{"content-available":1}}"""
+        val aps = if (alert) {
+            // mutable-content lets the NSE intercept + decrypt; the alert is a generic placeholder the NSE
+            // replaces (the broker never holds plaintext). priority/push-type set by the caller.
+            """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default"}"""
         } else {
-            """{"aps":{"content-available":1},$entries}"""
+            """"aps":{"content-available":1}"""
         }
+        return if (entries.isEmpty()) "{$aps}" else "{$aps,$entries}"
     }
 
     private fun jsonEscape(value: String): String = buildString(value.length + 8) {
