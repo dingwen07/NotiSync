@@ -107,7 +107,16 @@ class Broker(
         for (blob in signedRoutes) {
             val spki = clientSpki(blob.signerId) ?: continue
             val claim = Verification.verifyRouteClaim(blob, spki) ?: continue
-            routes.put(StoredRoute(claim.clientId, claim.transport, claim.routeRef, claim.epoch, ProtocolCodec.encodeToCbor(blob)))
+            routes.put(
+                StoredRoute(
+                    claim.clientId,
+                    claim.transport,
+                    claim.environment,
+                    claim.routeRef,
+                    claim.epoch,
+                    ProtocolCodec.encodeToCbor(blob),
+                )
+            )
             accepted++
         }
         return accepted
@@ -138,21 +147,50 @@ class Broker(
                 }
             }
 
-            val fcm = routes.routesFor(recipient).firstOrNull { it.transport == TransportType.FCM }
-            if (fcm == null) {
+            val candidates = routes.routesFor(recipient)
+                .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
+                .sortedBy { pushPreference(it.transport) }
+            if (candidates.isEmpty()) {
                 missing.add(recipient)
                 continue
             }
-            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, recipientBytes, inlineBudgetFor(fcm)), urgency)
-            log.info("fcm wake recipient={} mid={} outcome={}", recipient.shortForm(), envelope.messageId, outcome)
-            when (outcome) {
-                PushOutcome.DELIVERED -> delivered.add(recipient)
-                PushOutcome.ROUTE_INVALID -> {
-                    routes.invalidate(recipient, TransportType.FCM)
-                    invalid.add(recipient)
+            var anyAttempted = false
+            var anyTransient = false
+            var anyInvalid = false
+            var pushed = false
+            for (route in candidates) {
+                val outcome = push.wake(route, buildPushData(envelope.messageId, recipientBytes, inlineBudgetFor(route)), urgency)
+                log.info(
+                    "push wake transport={} recipient={} mid={} outcome={}",
+                    route.transport,
+                    recipient.shortForm(),
+                    envelope.messageId,
+                    outcome,
+                )
+                when (outcome) {
+                    PushOutcome.DELIVERED -> {
+                        delivered.add(recipient)
+                        pushed = true
+                        break
+                    }
+                    PushOutcome.ROUTE_INVALID -> {
+                        routes.invalidate(recipient, route.transport)
+                        anyAttempted = true
+                        anyInvalid = true
+                    }
+                    PushOutcome.TRANSIENT_FAILURE -> {
+                        anyAttempted = true
+                        anyTransient = true
+                    }
+                    PushOutcome.DISABLED -> Unit
                 }
-                PushOutcome.TRANSIENT_FAILURE -> stale.add(recipient)
-                PushOutcome.DISABLED -> missing.add(recipient) // relay still holds it for a future WS pickup
+            }
+            if (pushed) continue
+            when {
+                anyTransient -> stale.add(recipient)
+                anyInvalid -> invalid.add(recipient)
+                !anyAttempted -> missing.add(recipient)
+                else -> missing.add(recipient)
             }
         }
         log.info(
@@ -179,7 +217,7 @@ class Broker(
         return ProtocolCodec.encodeToCbor(stripped)
     }
 
-    private fun buildFcmData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
+    private fun buildPushData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
         val b64env = b64.encodeToString(envelopeBytes)
         return if (b64env.length <= inlineBudget) {
             mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
@@ -198,6 +236,13 @@ class Broker(
         runCatching {
             ProtocolCodec.decodeFromCbor<SignedBlob>(route.signedBlob).decode<RouteClaim>().capabilities.inlinePayloadLimitBytes
         }.getOrNull()?.coerceAtMost(config.inlineBudgetBytes) ?: config.inlineBudgetBytes
+
+    private fun pushPreference(transport: TransportType): Int =
+        when (transport) {
+            TransportType.APNS -> 0
+            TransportType.FCM -> 1
+            else -> 100
+        }
 
     /** Outcome of a private-asset upload, surfaced as HTTP status by the route. */
     enum class AssetStoreOutcome { STORED, EXISTS, TOO_LARGE, BAD_ID }

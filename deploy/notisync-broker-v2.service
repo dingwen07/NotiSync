@@ -14,6 +14,12 @@ ExecStart=/usr/bin/java -Dktor.deployment.host=127.0.0.1 -Dktor.deployment.port=
 Environment=NOTISYNC_DB_PATH=/var/lib/notisync-v2/notisync.db
 Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
 Environment=NOTISYNC_FCM_ENABLED=true
+# APNs is off until the Apple Auth Key is installed and the iOS bundle-id topic is confirmed.
+Environment=NOTISYNC_APNS_ENABLED=false
+# Environment=NOTISYNC_APNS_TEAM_ID=ABC123DEFG
+# Environment=NOTISYNC_APNS_KEY_ID=ABC123DEFG
+# Environment=NOTISYNC_APNS_PRIVATE_KEY_PATH=/etc/notisync/apns-authkey.p8
+# Environment=NOTISYNC_APNS_TOPIC=net.extrawdw.apps.NotiSync
 # Security ENABLED (mirrors prod v1): real Play Integrity attestation + signed/JWT auth. The ES256 JWT
 # key is generated at /var/lib/notisync-v2/jwt-es256-private.pem (db-dir default) — distinct from v1's.
 # Public key: /v2/.well-known/jwks.json

@@ -75,6 +75,11 @@ class BrokerFlowTest {
     fun clearServerProperties() {
         listOf(
             "NOTISYNC_DB_PATH",
+            "NOTISYNC_APNS_ENABLED",
+            "NOTISYNC_APNS_KEY_ID",
+            "NOTISYNC_APNS_PRIVATE_KEY_PATH",
+            "NOTISYNC_APNS_TEAM_ID",
+            "NOTISYNC_APNS_TOPIC",
             "NOTISYNC_FCM_ENABLED",
             "NOTISYNC_MAX_ASSET_BYTES",
             "NOTISYNC_PLAY_INTEGRITY_ENABLED",
@@ -82,11 +87,16 @@ class BrokerFlowTest {
         ).forEach(System::clearProperty)
     }
 
-    private fun routeBlob(signer: IdentitySigner, routeRef: String): SignedBlob {
+    private fun routeBlob(
+        signer: IdentitySigner,
+        routeRef: String,
+        transport: TransportType = TransportType.FCM,
+        environment: RouteEnvironment = RouteEnvironment.PRODUCTION,
+    ): SignedBlob {
         val claim = RouteClaim(
             clientId = signer.clientId,
-            transport = TransportType.FCM,
-            environment = RouteEnvironment.PRODUCTION,
+            transport = transport,
+            environment = environment,
             routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
             epoch = 1,
@@ -496,6 +506,66 @@ class BrokerFlowTest {
 
             send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = receivedEnv.messageId))))
         }
+    }
+
+    @Test
+    fun apnsRouteClaimQueuesRelayWhenProviderDisabled() = testApplication {
+        val tmp = File.createTempFile("notisync-apns-route", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_APNS_ENABLED", "false")
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/routes") {
+                setBody(
+                    ProtocolCodec.encodeToCbor(
+                        listOf(routeBlob(recipient, "abcd1234", TransportType.APNS, RouteEnvironment.DEVELOPMENT))
+                    )
+                )
+            }.status,
+        )
+
+        val body = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = body,
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = "01J0APNS001",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+
+        val sendResp = client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+        val result = ProtocolCodec.decodeFromJson<SendResult>(sendResp.bodyAsText())
+        assertTrue(recipient.clientId in result.missingRoutes)
+
+        val pending = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(listOf(envelope.messageId), pending.messageIds)
     }
 
     @Test

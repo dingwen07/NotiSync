@@ -8,6 +8,11 @@ data class ServerConfig(
     val dbPath: String,
     val fcmEnabled: Boolean,
     val fcmProjectId: String,
+    val apnsEnabled: Boolean,
+    val apnsTeamId: String,
+    val apnsKeyId: String,
+    val apnsPrivateKeyPath: String,
+    val apnsTopic: String,
     /** Max ciphertext bytes delivered inline in an FCM data message; larger ones send a wake pointer. */
     val inlineBudgetBytes: Int,
     /** How long the broker retains an undelivered encrypted relay item. */
@@ -77,6 +82,11 @@ data class ServerConfig(
                 dbPath = dbPath,
                 fcmEnabled = env("NOTISYNC_FCM_ENABLED")?.toBooleanStrictOrNull() ?: true,
                 fcmProjectId = env("NOTISYNC_FCM_PROJECT_ID") ?: "extrawdw-notifly",
+                apnsEnabled = env("NOTISYNC_APNS_ENABLED")?.toBooleanStrictOrNull() ?: false,
+                apnsTeamId = env("NOTISYNC_APNS_TEAM_ID").orEmpty(),
+                apnsKeyId = env("NOTISYNC_APNS_KEY_ID").orEmpty(),
+                apnsPrivateKeyPath = env("NOTISYNC_APNS_PRIVATE_KEY_PATH").orEmpty(),
+                apnsTopic = env("NOTISYNC_APNS_TOPIC") ?: "net.extrawdw.apps.NotiSync",
                 inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 3072,
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
                 privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),

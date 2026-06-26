@@ -1,7 +1,11 @@
 package net.extrawdw.notisync.server
 
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
+import net.extrawdw.notisync.protocol.RouteClaim
+import net.extrawdw.notisync.protocol.RouteEnvironment
+import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
@@ -124,6 +128,7 @@ class EpochStore(private val db: NotiSyncDb) {
 data class StoredRoute(
     val clientId: ClientId,
     val transport: TransportType,
+    val environment: RouteEnvironment,
     val routeRef: String,
     val epoch: Int,
     val signedBlob: ByteArray,
@@ -153,12 +158,14 @@ class RouteStore(private val db: NotiSyncDb) {
 
     suspend fun routesFor(clientId: ClientId): List<StoredRoute> = db.tx {
         Routes.selectAll().where { Routes.clientId eq clientId.value }.map {
+            val blob = b64d.decode(it[Routes.signedBlobB64])
             StoredRoute(
                 clientId = ClientId(it[Routes.clientId]),
                 transport = TransportType.valueOf(it[Routes.transport]),
+                environment = routeEnvironment(blob),
                 routeRef = it[Routes.routeRef],
                 epoch = it[Routes.epoch],
-                signedBlob = b64d.decode(it[Routes.signedBlobB64]),
+                signedBlob = blob,
             )
         }
     }
@@ -167,6 +174,11 @@ class RouteStore(private val db: NotiSyncDb) {
         Routes.deleteWhere { (Routes.clientId eq clientId.value) and (Routes.transport eq transport.name) }
         Unit
     }
+
+    private fun routeEnvironment(signedBlob: ByteArray): RouteEnvironment =
+        runCatching {
+            ProtocolCodec.decodeFromCbor<SignedBlob>(signedBlob).decode<RouteClaim>().environment
+        }.getOrDefault(RouteEnvironment.PRODUCTION)
 }
 
 data class RelayItem(val id: Long, val messageId: String, val envelope: ByteArray, val urgency: String)

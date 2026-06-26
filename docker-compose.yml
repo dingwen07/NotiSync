@@ -13,10 +13,17 @@ services:
       - notisync-data:/data
       # To enable Play Integrity decode and FCM, mount a service-account key and point ADC at it:
       # - ./service-account.json:/secrets/sa.json:ro
+      # To enable APNs, mount the Apple Auth Key and set the APNs env vars below:
+      # - ./AuthKey_ABC123DEFG.p8:/secrets/apns-authkey.p8:ro
     environment:
       NOTISYNC_DB_PATH: /data/notisync.db
       NOTISYNC_FCM_PROJECT_ID: extrawdw-notifly
       NOTISYNC_FCM_ENABLED: "false" # set "true" once GOOGLE_APPLICATION_CREDENTIALS is mounted
+      NOTISYNC_APNS_ENABLED: "false" # set "true" once the APNs .p8 key is mounted
+      # NOTISYNC_APNS_TEAM_ID: ABC123DEFG
+      # NOTISYNC_APNS_KEY_ID: ABC123DEFG
+      # NOTISYNC_APNS_PRIVATE_KEY_PATH: /secrets/apns-authkey.p8
+      # NOTISYNC_APNS_TOPIC: net.extrawdw.apps.NotiSync
       NOTISYNC_PLAY_INTEGRITY_PACKAGE: net.extrawdw.apps.notisync
       NOTISYNC_REQUIRE_APP_LICENSING: LICENSED
       NOTISYNC_REQUIRE_APP_RECOGNITION: PLAY_RECOGNIZED

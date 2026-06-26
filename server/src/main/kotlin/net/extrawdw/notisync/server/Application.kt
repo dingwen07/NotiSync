@@ -85,7 +85,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     val assets = PrivateAssetStore(db)
     val epochs = EpochStore(db)
     val hub = WebSocketHub()
-    val push = FcmPushTransport.createOrNull(config) ?: DisabledPushTransport
+    val push = CompositePushTransport.create(config)
     val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
     val integrity = if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config)
@@ -116,10 +116,11 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     }
 
     log.info(
-        "NotiSync broker {} starting (db={}, fcm={}, playIntegrity={})",
+        "NotiSync broker {} starting (db={}, fcm={}, apns={}, playIntegrity={})",
         config.version,
         config.dbPath,
-        push !is DisabledPushTransport,
+        config.fcmEnabled,
+        config.apnsEnabled,
         config.playIntegrityEnabled,
     )
 
