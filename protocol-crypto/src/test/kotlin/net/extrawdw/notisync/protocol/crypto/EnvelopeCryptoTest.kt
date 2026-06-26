@@ -79,6 +79,21 @@ class EnvelopeCryptoTest {
     }
 
     @Test
+    fun sealsToARawRecipientKeyAndOpensWithTheTinkPrivateKeyset() {
+        val sender = SoftwareIdentitySigner.generate()
+        val a = Peer()
+        // After §B.2 the device publishes the raw 32-byte key in ClientKeyEpoch.hpkePublicKeyset; a sender
+        // builds the RecipientKey from those bytes, Hpke.seal dispatches to the raw path, and the recipient
+        // still opens with its unchanged Tink private keyset.
+        val rawRecipient = RecipientKey(a.identity.clientId, Hpke.rawPublicKey(a.hpke.publicKeyset))
+        val body = sampleBody(sender.clientId)
+        val env = EnvelopeCrypto.seal(
+            sender, MessageType.NOTIFICATION, body, listOf(rawRecipient), "01J0RAW001", 1L, 1_750_000_000_000L,
+        )
+        assertArrayEquals(body, EnvelopeCrypto.open(env, a.identity.clientId, a.hpke.privateKeyset))
+    }
+
+    @Test
     fun signatureVerifiesForSenderAndFailsForOthers() {
         val sender = SoftwareIdentitySigner.generate()
         val a = Peer()
