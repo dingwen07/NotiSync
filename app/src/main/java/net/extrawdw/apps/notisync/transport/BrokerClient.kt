@@ -147,14 +147,24 @@ class BrokerClient(
      * Pull a single relay message by id (the FCM-wake path: the broker stored a too-large notification
      * and pushed only a "mid" pointer). Authenticated by request SIGNATURE alone — it sends a cached
      * bearer if one happens to be valid but never triggers attestation, so a background wake delivers
-     * even while Play Integrity is cooling down. The broker acks/drops the message once it responds;
-     * returns null on any failure, leaving the item for the next foreground WebSocket flush.
+     * even while Play Integrity is cooling down. Signs with the operational key (TEE, fast) to keep the
+     * slow StrongBox identity root off this per-message wake/drain path, falling back ONCE to the identity
+     * root on a 401 if the broker hasn't ingested our current epoch yet (a rotation/convergence race). The
+     * broker acks/drops the message once it responds; returns null on any failure, leaving the item for the
+     * next foreground WebSocket flush.
      */
     suspend fun fetchRelayMessage(messageId: String): Envelope? {
         val url = "${httpBase()}/v2/relay/$messageId"
-        val resp = runCatching {
-            client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
+        var resp = runCatching {
+            client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull(), operational = true) }
         }.getOrNull() ?: return null
+        // unknown_epoch → 401: the broker doesn't yet know our operational epoch; retry once on the
+        // always-valid identity root (still signature-only — never attests).
+        if (resp.status == HttpStatusCode.Unauthorized) {
+            resp = runCatching {
+                client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
+            }.getOrNull() ?: return null
+        }
         if (!resp.status.isSuccess()) return null
         return runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
     }
