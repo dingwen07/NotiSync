@@ -27,6 +27,7 @@ interface AttestationVerifier {
 class AttestationService(
     private val config: ServerConfig,
     verifiers: List<AttestationVerifier>,
+    private val metrics: AttestationMetrics? = null,
 ) {
     private val byType: Map<String, AttestationVerifier> = verifiers.associateBy { it.type }
 
@@ -34,9 +35,12 @@ class AttestationService(
     val acceptedMethods: List<String> = verifiers.map { it.type }
 
     suspend fun verify(request: IntegrityVerificationRequest): IntegrityDecision {
-        if (!config.playIntegrityEnabled) return IntegrityDecision.Accepted(debugBypass = true)
-        val verifier = byType[request.attestationType]
-            ?: return IntegrityDecision.Rejected("unsupported_attestation_type")
-        return verifier.verify(request)
+        val decision = when {
+            !config.playIntegrityEnabled -> IntegrityDecision.Accepted(debugBypass = true)
+            else -> byType[request.attestationType]?.verify(request)
+                ?: IntegrityDecision.Rejected("unsupported_attestation_type")
+        }
+        metrics?.record(request.attestationType, request.clientId, decision)
+        return decision
     }
 }

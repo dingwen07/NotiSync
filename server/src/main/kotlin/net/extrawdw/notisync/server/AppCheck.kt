@@ -162,6 +162,6 @@ class AppCheckVerifier(
         }
 
         log.info("App Check accepted client={} app={}", request.clientId.shortForm(), sub)
-        IntegrityDecision.Accepted(debugBypass = false)
+        IntegrityDecision.Accepted(debugBypass = false, detail = VerificationDetail(appId = sub))
     }
 }
