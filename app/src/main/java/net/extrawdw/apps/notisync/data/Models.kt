@@ -10,8 +10,8 @@ import net.extrawdw.notisync.protocol.ClientId
  * through QR pairing. Public key material is held base64-encoded for easy persistence/use.
  *
  * [identityPublicKeyB64] is the immutable identity anchor pinned at pairing (first-verified-wins). In
- * NS2 the OPERATIONAL key material rotates per epoch: [hpkePublicKeysetB64] is the *current* epoch's HPKE
- * keyset and [currentEpoch] names it (≥1 once a key-epoch is held; 0 = the NS1 identity-era single key).
+ * NS2 the OPERATIONAL key material rotates per epoch: [hpkePublicKeyB64] is the *current* epoch's HPKE
+ * public key and [currentEpoch] names it (≥1 once a key-epoch is held; 0 = the NS1 identity-era single key).
  * A peer is sealable only once a current key-epoch is held — the directory binds [currentEpoch] into each
  * outbound [net.extrawdw.notisync.protocol.crypto.RecipientKey]. The remaining profile fields
  * ([displayName], [platform], [capabilities]) are mutable and converge via DATA_SYNC profile updates;
@@ -24,14 +24,14 @@ data class Peer(
     val displayName: String,
     val platform: String,
     val identityPublicKeyB64: String,
-    val hpkePublicKeysetB64: String,
+    val hpkePublicKeyB64: String,
     val addedAt: Long,
     val lastSeenAt: Long = 0L,
     val capabilities: List<Capability> = emptyList(),
     val profileUpdatedAt: Long = 0L,
     /** One of the user's own devices (full mirroring) vs an "other" device in the synced private contact list. */
     val ownDevice: Boolean = true,
-    /** NS2: the epoch of [hpkePublicKeysetB64] — the recipient HPKE epoch a sender seals to. 0 = NS1-era. */
+    /** NS2: the epoch of [hpkePublicKeyB64] — the recipient HPKE epoch a sender seals to. 0 = NS1-era. */
     val currentEpoch: Int = 0,
 )
 

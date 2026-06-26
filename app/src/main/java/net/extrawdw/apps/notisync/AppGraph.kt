@@ -716,7 +716,7 @@ class AppGraph(private val app: Application) {
             operationalSigningKey = operational.operationalPublicKeySpki,
             // Publish the raw 32-byte X25519 key (not the Tink keyset) so Tink-free peers (iOS CryptoKit)
             // can seal; Android peers seal via Hpke.seal's length dispatch. The local private keyset stays Tink.
-            hpkePublicKeyset = Hpke.rawPublicKey(epochHpke.loadOrCreate(epoch)),
+            hpkePublicKey = Hpke.rawPublicKey(epochHpke.loadOrCreate(epoch)),
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 0L,
             notAfter = Long.MAX_VALUE,

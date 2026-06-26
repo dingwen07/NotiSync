@@ -115,7 +115,7 @@ class TrustStoreTest {
             identityPublicKey = if (stripIdentity) ByteArray(0) else signer.publicKeySpki,
             epoch = epoch,
             operationalSigningKey = op.operationalPublicKeySpki,
-            hpkePublicKeyset = hpke.publicKeyset,
+            hpkePublicKey = hpke.publicKeyset,
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 0L,
             notAfter = notAfter,

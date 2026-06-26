@@ -136,7 +136,7 @@ class RotationManager(
             operationalSigningKey = opSpki,
             // Publish the raw 32-byte X25519 key (not the Tink keyset); peers seal via Hpke.seal's length
             // dispatch (iOS CryptoKit directly). Mirrors AppGraph.buildClientKeyEpochBlob.
-            hpkePublicKeyset = Hpke.rawPublicKey(hpkePublic),
+            hpkePublicKey = Hpke.rawPublicKey(hpkePublic),
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = notBefore,
             notAfter = notAfter,

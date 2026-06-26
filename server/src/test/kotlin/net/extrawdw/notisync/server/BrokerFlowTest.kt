@@ -137,7 +137,7 @@ class BrokerFlowTest {
             identityPublicKey = identity.publicKeySpki,
             epoch = epoch,
             operationalSigningKey = op.operationalPublicKeySpki,
-            hpkePublicKeyset = hpke.publicKeyset,
+            hpkePublicKey = hpke.publicKeyset,
             purposes = purposes,
             notBefore = notBefore,
             notAfter = notAfter,

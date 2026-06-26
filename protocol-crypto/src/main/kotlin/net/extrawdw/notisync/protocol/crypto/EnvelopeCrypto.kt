@@ -13,7 +13,7 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
  * keyset (0 = the NS1 identity-era single key); it is recorded on the sealed key and bound into the HPKE
  * context so the recipient selects the matching (possibly retained) private keyset.
  */
-class RecipientKey(val clientId: ClientId, val hpkePublicKeyset: ByteArray, val recipientEpoch: Int = 0)
+class RecipientKey(val clientId: ClientId, val hpkePublicKey: ByteArray, val recipientEpoch: Int = 0)
 
 /**
  * The two-layer E2E scheme for the notification pipeline:
@@ -110,7 +110,7 @@ object EnvelopeCrypto {
                 runCatching {
                     PerRecipientKey(
                         recipientId = r.clientId,
-                        sealedDek = Hpke.seal(dek, r.hpkePublicKeyset, dekContext(suite, r.clientId, r.recipientEpoch)),
+                        sealedDek = Hpke.seal(dek, r.hpkePublicKey, dekContext(suite, r.clientId, r.recipientEpoch)),
                         recipientEpoch = r.recipientEpoch,
                     )
                 }.getOrNull()

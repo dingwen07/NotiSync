@@ -61,7 +61,7 @@ object Hpke {
 
     /**
      * Extract the raw 32-byte X25519 public key from a Tink HPKE [publicKeyset] — the form published in
-     * [net.extrawdw.notisync.protocol.ClientKeyEpoch.hpkePublicKeyset] so a Tink-free peer (iOS CryptoKit)
+     * [net.extrawdw.notisync.protocol.ClientKeyEpoch.hpkePublicKey] so a Tink-free peer (iOS CryptoKit)
      * or [sealToRaw] can seal without parsing a keyset. The suite pins NO_PREFIX, so the key bytes are the
      * bare wire key with nothing to strip.
      */
