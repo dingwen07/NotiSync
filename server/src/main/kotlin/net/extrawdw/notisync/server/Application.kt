@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.server
 
 import io.ktor.http.ContentType
+import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
 import io.ktor.serialization.kotlinx.json.json
 import io.ktor.server.application.Application
@@ -90,6 +91,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
     val auth = ServerAuth(config, JwtIssuer.load(config))
     // Pluggable attestation: Play Integrity is always available (legacy/transition); App Check is added when
     // configured. New "ways" (e.g. Apple App Attest) join here without touching the endpoint or downstream.
+    val metrics = AttestationMetrics()
     val attestation = AttestationService(
         config,
         buildList {
@@ -98,6 +100,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
                 add(if (appCheckJwks != null) AppCheckVerifier(config, appCheckJwks) else AppCheckVerifier(config))
             }
         },
+        metrics,
     )
 
     install(DefaultHeaders)
@@ -146,6 +149,18 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
         // under /v2 (the legacy NS1 JAR owns /v1). No NS1 code path.
         route("/v2") {
         get("/.well-known/jwks.json") { call.respondText(auth.jwksJson(), ContentType.Application.Json) }
+
+        // Attestation metrics (HTTP Basic Auth; 404 when NOTISYNC_METRICS_PASSWORD is unset). Grouped under
+        // /integrity alongside /integrity/verify. Per-30-min buckets + a recent-events ring — diagnostics, and
+        // watching the legacy playIntegrity count trend to zero ("when to drop"). At <host>/v2/integrity/metrics.
+        get("/integrity/metrics") {
+            if (config.metricsPassword.isBlank()) return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
+            if (!auth.metricsAuthorized(call)) {
+                call.response.headers.append(HttpHeaders.WWWAuthenticate, "Basic realm=\"notisync-metrics\"")
+                return@get call.respond(HttpStatusCode.Unauthorized, ErrorResponse("unauthorized"))
+            }
+            call.respond(metrics.snapshot())
+        }
 
         // Unauthenticated discovery: a client learns whether attestation is required, and — if it
         // presents a bearer — whether that token is currently valid (so it can decide to re-attest).

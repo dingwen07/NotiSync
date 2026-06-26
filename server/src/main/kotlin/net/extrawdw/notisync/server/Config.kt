@@ -52,6 +52,9 @@ data class ServerConfig(
     val appCheckJwksUrl: String,
     /** Optional extra freshness cap on an App Check token (0 = rely on the token's own exp). */
     val appCheckMaxTokenAgeMillis: Long,
+    // --- /v2/metrics diagnostics endpoint (HTTP Basic Auth; disabled when the password is blank) ---
+    val metricsUser: String,
+    val metricsPassword: String,
     val signedRequestMaxSkewMillis: Long,
     /** Leading-hex-zero difficulty required of the /v1/integrity/verify proof of work (0 disables). */
     val powDifficulty: Int,
@@ -119,6 +122,9 @@ data class ServerConfig(
                 appCheckAppIds = csv("NOTISYNC_APPCHECK_APP_IDS", ""),
                 appCheckJwksUrl = env("NOTISYNC_APPCHECK_JWKS_URL") ?: "https://firebaseappcheck.googleapis.com/v1/jwks",
                 appCheckMaxTokenAgeMillis = env("NOTISYNC_APPCHECK_MAX_AGE_MS")?.toLongOrNull() ?: 0L,
+                // Metrics endpoint creds (not sensitive). env()/local.properties OK; a blank password disables it.
+                metricsUser = env("NOTISYNC_METRICS_USER") ?: "metrics",
+                metricsPassword = env("NOTISYNC_METRICS_PASSWORD").orEmpty(),
                 signedRequestMaxSkewMillis = env("NOTISYNC_SIGNED_REQUEST_MAX_SKEW_MS")?.toLongOrNull()
                     ?: (5L * 60 * 1000),
                 powDifficulty = env("NOTISYNC_POW_DIFFICULTY")?.toIntOrNull() ?: 4,

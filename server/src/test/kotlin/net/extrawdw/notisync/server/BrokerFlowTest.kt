@@ -513,6 +513,44 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun metricsEndpoint_basicAuthGatesSnapshot() = testApplication {
+        val tmp = File.createTempFile("notisync-metrics", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-metricsjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        System.setProperty("NOTISYNC_METRICS_USER", "ops")
+        System.setProperty("NOTISYNC_METRICS_PASSWORD", "s3cret")
+        try {
+            application { brokerModule(allGoodDecoder()) }
+            fun basic(creds: String) = "Basic " + Base64.getEncoder().encodeToString(creds.toByteArray())
+
+            // Missing and wrong credentials are both rejected.
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/v2/integrity/metrics").status)
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.get("/v2/integrity/metrics") { header(HttpHeaders.Authorization, basic("ops:wrong")) }.status,
+            )
+
+            // Drive one Play Integrity attestation so the snapshot has something to report.
+            val signer = SoftwareIdentitySigner.generate()
+            val hpke = Hpke.generateKeyPair()
+            val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+            client.attest(signer, keyEpochBlob(signer, op, hpke, epoch = 1))
+
+            val resp = client.get("/v2/integrity/metrics") { header(HttpHeaders.Authorization, basic("ops:s3cret")) }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            val snap = ProtocolCodec.decodeFromJson<MetricsSnapshot>(resp.bodyAsText())
+            val piAccepted = snap.buckets.sumOf { it.methods[AttestationType.PLAY_INTEGRITY]?.accepted ?: 0 }
+            assertTrue("a playIntegrity accept should be recorded", piAccepted >= 1)
+            assertTrue("recent log includes the attest", snap.recent.any { it.method == AttestationType.PLAY_INTEGRITY })
+        } finally {
+            listOf("NOTISYNC_METRICS_USER", "NOTISYNC_METRICS_PASSWORD").forEach(System::clearProperty)
+        }
+    }
+
+    @Test
     fun storeAndForwardDeliversAndDecryptsOverWebSocket() = testApplication {
         val tmp = File.createTempFile("notisync-it", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
