@@ -67,22 +67,27 @@ curl http://localhost:8080/healthz  # {"status":"ok","version":"0.1.0"}
 ```
 
 Configuration (environment variables): `NOTISYNC_DB_PATH`, `NOTISYNC_FCM_ENABLED`,
-`NOTISYNC_FCM_PROJECT_ID`, `NOTISYNC_INLINE_BUDGET`, `NOTISYNC_RELAY_TTL_MS`,
-`NOTISYNC_ASSET_TTL_MS`, `NOTISYNC_PLAY_INTEGRITY_ENABLED` (master security switch),
-`NOTISYNC_PLAY_INTEGRITY_PACKAGE`, `NOTISYNC_REQUIRE_APP_LICENSING`,
-`NOTISYNC_REQUIRE_APP_RECOGNITION`, `NOTISYNC_REQUIRE_DEVICE_RECOGNITION`,
-`NOTISYNC_ALLOW_DEVICE_ACTIVITY` (allow-list; default rejects only `LEVEL_4`),
-`NOTISYNC_REQUIRE_PLAY_PROTECT`, `NOTISYNC_DEBUG_KEY`, `NOTISYNC_JWT_PRIVATE_KEY_PATH`,
-`NOTISYNC_JWT_TTL_MS` (default 7 days), and `NOTISYNC_POW_DIFFICULTY` (leading-hex-zero
-proof-of-work on `/v1/integrity/verify`, default 4). The broker exposes its JWT verification key at
-`/.well-known/jwks.json`, and an unauthenticated `/v1/status` for clients to discover whether
-attestation is required and whether their token is still valid. The security-sensitive switches
-(`NOTISYNC_PLAY_INTEGRITY_ENABLED`, `NOTISYNC_DEBUG_KEY`) are read from the environment / system
-properties only — never from `local.properties`.
+`NOTISYNC_FCM_PROJECT_ID`, `NOTISYNC_APNS_ENABLED`, `NOTISYNC_APNS_TEAM_ID`,
+`NOTISYNC_APNS_KEY_ID`, `NOTISYNC_APNS_PRIVATE_KEY_PATH`, `NOTISYNC_APNS_TOPIC`,
+`NOTISYNC_INLINE_BUDGET`, `NOTISYNC_RELAY_TTL_MS`, `NOTISYNC_ASSET_TTL_MS`,
+`NOTISYNC_PLAY_INTEGRITY_ENABLED` (master security switch), `NOTISYNC_PLAY_INTEGRITY_PACKAGE`,
+`NOTISYNC_REQUIRE_APP_LICENSING`, `NOTISYNC_REQUIRE_APP_RECOGNITION`,
+`NOTISYNC_REQUIRE_DEVICE_RECOGNITION`, `NOTISYNC_ALLOW_DEVICE_ACTIVITY` (allow-list; default rejects
+only `LEVEL_4`), `NOTISYNC_REQUIRE_PLAY_PROTECT`, `NOTISYNC_DEBUG_KEY`,
+`NOTISYNC_JWT_PRIVATE_KEY_PATH`, `NOTISYNC_JWT_TTL_MS` (default 7 days), and
+`NOTISYNC_POW_DIFFICULTY` (leading-hex-zero proof-of-work on `/v1/integrity/verify`, default 4).
+The broker exposes its JWT verification key at `/.well-known/jwks.json`, and an unauthenticated
+`/v1/status` for clients to discover whether attestation is required and whether their token is still
+valid. The security-sensitive switches (`NOTISYNC_PLAY_INTEGRITY_ENABLED`, `NOTISYNC_DEBUG_KEY`) are
+read from the environment / system properties only — never from `local.properties`.
 
 To enable Play Integrity token decoding and real FCM, give the server Application Default Credentials:
 `gcloud auth application-default login` (local), or mount a service-account key and set
 `GOOGLE_APPLICATION_CREDENTIALS` + `NOTISYNC_FCM_ENABLED=true`.
+
+To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file and set
+`NOTISYNC_APNS_ENABLED=true`, `NOTISYNC_APNS_TEAM_ID`, `NOTISYNC_APNS_KEY_ID`,
+`NOTISYNC_APNS_PRIVATE_KEY_PATH`, and `NOTISYNC_APNS_TOPIC` to the iOS app bundle identifier.
 
 ### Android app
 

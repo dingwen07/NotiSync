@@ -10,7 +10,8 @@ import com.google.auth.http.HttpCredentialsAdapter
 import com.google.auth.oauth2.GoogleCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.AttestationType
+import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import org.slf4j.LoggerFactory
 
@@ -66,10 +67,11 @@ class GooglePlayIntegrityDecoder(private val config: ServerConfig) : PlayIntegri
 class PlayIntegrityVerifier(
     private val config: ServerConfig,
     private val decoder: PlayIntegrityDecoder = GooglePlayIntegrityDecoder(config),
-) {
+) : AttestationVerifier {
+    override val type: String = AttestationType.PLAY_INTEGRITY
     private val log = LoggerFactory.getLogger(javaClass)
 
-    suspend fun verify(request: PlayIntegrityVerificationRequest): IntegrityDecision {
+    override suspend fun verify(request: IntegrityVerificationRequest): IntegrityDecision {
         fun reject(reason: String, payload: IntegrityPayload? = null, retryable: Boolean = false): IntegrityDecision.Rejected {
             log.info(
                 "Play Integrity rejected client={} reason={} appLicensing={} appRecognition={} device={} activity={} playProtect={} retryable={}",
@@ -82,7 +84,7 @@ class PlayIntegrityVerifier(
                 payload?.playProtectVerdict,
                 retryable,
             )
-            return IntegrityDecision.Rejected(reason, retryable)
+            return IntegrityDecision.Rejected(reason, retryable, payload?.toDetail())
         }
 
         val expectedHash = PlayIntegrityBinding.requestHash(request.clientId, request.requestNonce)
@@ -148,7 +150,7 @@ class PlayIntegrityVerifier(
         }
 
         log.info("Play Integrity accepted client={} debugBypass={}", request.clientId.shortForm(), debugBypass)
-        return IntegrityDecision.Accepted(debugBypass = debugBypass)
+        return IntegrityDecision.Accepted(debugBypass = debugBypass, detail = payload.toDetail())
     }
 
     private fun requireAllowed(name: String, value: String?, allowed: Set<String>): String? {
@@ -160,7 +162,18 @@ class PlayIntegrityVerifier(
         "*" in this || all { it in actual }
 }
 
+private fun IntegrityPayload.toDetail() = VerificationDetail(
+    appLicensingVerdict = appLicensingVerdict,
+    appRecognitionVerdict = appRecognitionVerdict,
+    deviceRecognitionVerdict = deviceRecognitionVerdict,
+    deviceActivityLevel = deviceActivityLevel,
+    playProtectVerdict = playProtectVerdict,
+)
+
 sealed class IntegrityDecision {
-    data class Accepted(val debugBypass: Boolean) : IntegrityDecision()
-    data class Rejected(val reason: String, val retryable: Boolean = false) : IntegrityDecision()
+    /** Optional method-specific data captured for /v2/metrics (Play Integrity verdicts / App Check appId). */
+    abstract val detail: VerificationDetail?
+
+    data class Accepted(val debugBypass: Boolean, override val detail: VerificationDetail? = null) : IntegrityDecision()
+    data class Rejected(val reason: String, val retryable: Boolean = false, override val detail: VerificationDetail? = null) : IntegrityDecision()
 }

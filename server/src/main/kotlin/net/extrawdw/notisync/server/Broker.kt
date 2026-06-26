@@ -6,7 +6,6 @@ import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
@@ -107,7 +106,17 @@ class Broker(
         for (blob in signedRoutes) {
             val spki = clientSpki(blob.signerId) ?: continue
             val claim = Verification.verifyRouteClaim(blob, spki) ?: continue
-            routes.put(StoredRoute(claim.clientId, claim.transport, claim.routeRef, claim.epoch, ProtocolCodec.encodeToCbor(blob)))
+            routes.put(
+                StoredRoute(
+                    claim.clientId,
+                    claim.transport,
+                    claim.environment,
+                    claim.routeRef,
+                    claim.epoch,
+                    claim.capabilities.inlinePayloadLimitBytes,
+                    ProtocolCodec.encodeToCbor(blob),
+                )
+            )
             accepted++
         }
         return accepted
@@ -138,21 +147,48 @@ class Broker(
                 }
             }
 
-            val fcm = routes.routesFor(recipient).firstOrNull { it.transport == TransportType.FCM }
-            if (fcm == null) {
+            val candidates = routes.routesFor(recipient)
+                .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
+                .sortedBy { pushPreference(it.transport) }
+            if (candidates.isEmpty()) {
                 missing.add(recipient)
                 continue
             }
-            val outcome = push.wake(fcm.routeRef, buildFcmData(envelope.messageId, recipientBytes, inlineBudgetFor(fcm)), urgency)
-            log.info("fcm wake recipient={} mid={} outcome={}", recipient.shortForm(), envelope.messageId, outcome)
-            when (outcome) {
-                PushOutcome.DELIVERED -> delivered.add(recipient)
-                PushOutcome.ROUTE_INVALID -> {
-                    routes.invalidate(recipient, TransportType.FCM)
-                    invalid.add(recipient)
+            var anyTransient = false
+            var anyInvalid = false
+            var pushed = false
+            for (route in candidates) {
+                val outcome = push.wake(route, buildPushData(envelope.messageId, recipientBytes, inlineBudgetFor(route)), urgency)
+                log.info(
+                    "push wake transport={} recipient={} mid={} outcome={}",
+                    route.transport,
+                    recipient.shortForm(),
+                    envelope.messageId,
+                    outcome,
+                )
+                when (outcome) {
+                    PushOutcome.DELIVERED -> {
+                        delivered.add(recipient)
+                        pushed = true
+                        break
+                    }
+                    PushOutcome.ROUTE_INVALID -> {
+                        routes.invalidate(recipient, route.transport)
+                        anyInvalid = true
+                    }
+                    PushOutcome.TRANSIENT_FAILURE -> anyTransient = true
+                    // Route token is fine but the push can't succeed as sent (permanent), or the transport
+                    // is off (disabled): either way the relay still holds the item for a future WS pickup.
+                    PushOutcome.PERMANENT_FAILURE, PushOutcome.DISABLED -> Unit
                 }
-                PushOutcome.TRANSIENT_FAILURE -> stale.add(recipient)
-                PushOutcome.DISABLED -> missing.add(recipient) // relay still holds it for a future WS pickup
+            }
+            if (pushed) continue
+            // A just-invalidated route is the more actionable signal, so it outranks a transient blip on a
+            // different candidate; anything else (permanent/disabled/none) leaves the item for relay + WS.
+            when {
+                anyInvalid -> invalid.add(recipient)
+                anyTransient -> stale.add(recipient)
+                else -> missing.add(recipient)
             }
         }
         log.info(
@@ -179,7 +215,7 @@ class Broker(
         return ProtocolCodec.encodeToCbor(stripped)
     }
 
-    private fun buildFcmData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
+    private fun buildPushData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
         val b64env = b64.encodeToString(envelopeBytes)
         return if (b64env.length <= inlineBudget) {
             mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
@@ -189,15 +225,20 @@ class Broker(
     }
 
     /**
-     * Effective inline budget for a route: the limit the client advertised in its signed route claim,
-     * capped by the server's own ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a
-     * payload larger than the broker is willing to push. Falls back to the server ceiling if the stored
-     * claim can't be decoded.
+     * Effective inline budget for a route: the limit the client advertised in its signed route claim
+     * (decoded once in [RouteStore.routesFor], so this is just a field read), capped by the server's own
+     * ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a payload larger than the broker
+     * is willing to push.
      */
     private fun inlineBudgetFor(route: StoredRoute): Int =
-        runCatching {
-            ProtocolCodec.decodeFromCbor<SignedBlob>(route.signedBlob).decode<RouteClaim>().capabilities.inlinePayloadLimitBytes
-        }.getOrNull()?.coerceAtMost(config.inlineBudgetBytes) ?: config.inlineBudgetBytes
+        route.inlinePayloadLimitBytes.coerceAtMost(config.inlineBudgetBytes)
+
+    private fun pushPreference(transport: TransportType): Int =
+        when (transport) {
+            TransportType.APNS -> 0
+            TransportType.FCM -> 1
+            else -> 100
+        }
 
     /** Outcome of a private-asset upload, surfaced as HTTP status by the route. */
     enum class AssetStoreOutcome { STORED, EXISTS, TOO_LARGE, BAD_ID }

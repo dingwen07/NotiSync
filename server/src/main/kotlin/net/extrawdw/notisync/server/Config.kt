@@ -8,6 +8,11 @@ data class ServerConfig(
     val dbPath: String,
     val fcmEnabled: Boolean,
     val fcmProjectId: String,
+    val apnsEnabled: Boolean,
+    val apnsTeamId: String,
+    val apnsKeyId: String,
+    val apnsPrivateKeyPath: String,
+    val apnsTopic: String,
     /** Max ciphertext bytes delivered inline in an FCM data message; larger ones send a wake pointer. */
     val inlineBudgetBytes: Int,
     /** How long the broker retains an undelivered encrypted relay item. */
@@ -37,6 +42,19 @@ data class ServerConfig(
      */
     val allowedDeviceActivityLevels: Set<String>,
     val requiredPlayProtectVerdicts: Set<String>,
+    // --- Firebase App Check (verified locally as an RS256 JWT against the App Check JWKS) ---
+    /** When on, the broker also accepts the firebaseAppCheck attestation method (alongside Play Integrity). */
+    val appCheckEnabled: Boolean,
+    /** Numeric Firebase project number; an App Check token's iss/aud must match it. */
+    val appCheckProjectNumber: String,
+    /** Allow-list of Firebase app ids (the token `sub`) — pins attestation to NotiSync's own app(s). */
+    val appCheckAppIds: Set<String>,
+    val appCheckJwksUrl: String,
+    /** Optional extra freshness cap on an App Check token (0 = rely on the token's own exp). */
+    val appCheckMaxTokenAgeMillis: Long,
+    // --- /v2/metrics diagnostics endpoint (HTTP Basic Auth; disabled when the password is blank) ---
+    val metricsUser: String,
+    val metricsPassword: String,
     val signedRequestMaxSkewMillis: Long,
     /** Leading-hex-zero difficulty required of the /v1/integrity/verify proof of work (0 disables). */
     val powDifficulty: Int,
@@ -77,6 +95,11 @@ data class ServerConfig(
                 dbPath = dbPath,
                 fcmEnabled = env("NOTISYNC_FCM_ENABLED")?.toBooleanStrictOrNull() ?: true,
                 fcmProjectId = env("NOTISYNC_FCM_PROJECT_ID") ?: "extrawdw-notifly",
+                apnsEnabled = env("NOTISYNC_APNS_ENABLED")?.toBooleanStrictOrNull() ?: false,
+                apnsTeamId = env("NOTISYNC_APNS_TEAM_ID").orEmpty(),
+                apnsKeyId = env("NOTISYNC_APNS_KEY_ID").orEmpty(),
+                apnsPrivateKeyPath = env("NOTISYNC_APNS_PRIVATE_KEY_PATH").orEmpty(),
+                apnsTopic = env("NOTISYNC_APNS_TOPIC") ?: "net.extrawdw.apps.NotiSync",
                 inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 3072,
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
                 privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
@@ -93,6 +116,15 @@ data class ServerConfig(
                 requiredDeviceRecognitionVerdicts = csv("NOTISYNC_REQUIRE_DEVICE_RECOGNITION", "MEETS_DEVICE_INTEGRITY"),
                 allowedDeviceActivityLevels = csv("NOTISYNC_ALLOW_DEVICE_ACTIVITY", "LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED"),
                 requiredPlayProtectVerdicts = csv("NOTISYNC_REQUIRE_PLAY_PROTECT", "NO_ISSUES"),
+                // App Check enable is security-critical (it widens accepted attestation) → env/sysprop only.
+                appCheckEnabled = secureEnv("NOTISYNC_APPCHECK_ENABLED")?.toBooleanStrictOrNull() ?: false,
+                appCheckProjectNumber = env("NOTISYNC_APPCHECK_PROJECT_NUMBER").orEmpty(),
+                appCheckAppIds = csv("NOTISYNC_APPCHECK_APP_IDS", ""),
+                appCheckJwksUrl = env("NOTISYNC_APPCHECK_JWKS_URL") ?: "https://firebaseappcheck.googleapis.com/v1/jwks",
+                appCheckMaxTokenAgeMillis = env("NOTISYNC_APPCHECK_MAX_AGE_MS")?.toLongOrNull() ?: 0L,
+                // Metrics endpoint creds (not sensitive). env()/local.properties OK; a blank password disables it.
+                metricsUser = env("NOTISYNC_METRICS_USER") ?: "metrics",
+                metricsPassword = env("NOTISYNC_METRICS_PASSWORD").orEmpty(),
                 signedRequestMaxSkewMillis = env("NOTISYNC_SIGNED_REQUEST_MAX_SKEW_MS")?.toLongOrNull()
                     ?: (5L * 60 * 1000),
                 powDifficulty = env("NOTISYNC_POW_DIFFICULTY")?.toIntOrNull() ?: 4,

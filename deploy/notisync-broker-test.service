@@ -13,10 +13,22 @@ Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
 # FCM is ON for the test instance (prod keeps it off) so the FID-as-token send path can be exercised.
 Environment=NOTISYNC_FCM_ENABLED=true
 Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
-# Master switch OFF: bypasses Play Integrity attestation AND signed/JWT auth. TEST ONLY — lets any
-# build (incl. a sideloaded debug build) connect while exercising the migration. Never do this in prod.
-Environment=NOTISYNC_PLAY_INTEGRITY_ENABLED=false
+# APNs can be enabled here after installing /etc/notisync/apns-authkey.p8 and setting team/key/topic.
+Environment=NOTISYNC_APNS_ENABLED=false
+# Environment=NOTISYNC_APNS_TEAM_ID=ABC123DEFG
+# Environment=NOTISYNC_APNS_KEY_ID=ABC123DEFG
+# Environment=NOTISYNC_APNS_PRIVATE_KEY_PATH=/etc/notisync/apns-authkey.p8
+# Environment=NOTISYNC_APNS_TOPIC=net.extrawdw.apps.NotiSync
+# Master switch ON (mirrors prod): enforces signed/JWT auth + real attestation — Play Integrity (legacy
+# clients) AND App Check (new clients). Flipped on now that no clients depend on test, to validate both
+# paths end-to-end. The App Check env is below; the App Check JWKS verify needs no service account.
+Environment=NOTISYNC_PLAY_INTEGRITY_ENABLED=true
 Environment=NOTISYNC_PLAY_INTEGRITY_PACKAGE=net.extrawdw.apps.notisync
+# Firebase App Check env (staged). NOTE: with the master switch OFF above, ALL attestation is bypassed, so
+# App Check is NOT actually verified here yet — set NOTISYNC_PLAY_INTEGRITY_ENABLED=true to enforce it.
+Environment=NOTISYNC_APPCHECK_ENABLED=true
+Environment=NOTISYNC_APPCHECK_PROJECT_NUMBER=873059270463
+Environment=NOTISYNC_APPCHECK_APP_IDS=1:873059270463:android:b7417ebafc094521011d8a
 Restart=on-failure
 RestartSec=3
 # Hardening (same as prod, scoped to the test data dir).

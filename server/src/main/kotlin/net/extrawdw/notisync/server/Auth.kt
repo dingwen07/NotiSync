@@ -10,6 +10,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ErrorResponse
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
+import java.util.Base64
 import kotlin.math.abs
 
 class ServerAuth(
@@ -24,6 +25,26 @@ class ServerAuth(
 
     /** The JWT principal carried by an Authorization: Bearer header, or null if absent/invalid. */
     fun bearerPrincipal(call: ApplicationCall): AuthPrincipal? = authenticateBearer(call)
+
+    /**
+     * Validate HTTP Basic credentials for the /v2/metrics diagnostics endpoint. Returns false when the
+     * metrics password is unset (endpoint disabled) or the credentials don't match. Constant-time password
+     * compare — the creds are low-sensitivity (read-only stats) but a trivial timing oracle is still avoided.
+     */
+    fun metricsAuthorized(call: ApplicationCall): Boolean {
+        val expected = config.metricsPassword
+        if (expected.isBlank()) return false
+        val header = call.request.headers[HttpHeaders.Authorization]?.takeIf { it.startsWith("Basic ") } ?: return false
+        val decoded = runCatching { String(Base64.getDecoder().decode(header.removePrefix("Basic ").trim()), Charsets.UTF_8) }
+            .getOrNull() ?: return false
+        val sep = decoded.indexOf(':')
+        if (sep < 0) return false
+        return decoded.substring(0, sep) == config.metricsUser &&
+            java.security.MessageDigest.isEqual(
+                decoded.substring(sep + 1).toByteArray(Charsets.UTF_8),
+                expected.toByteArray(Charsets.UTF_8),
+            )
+    }
 
     /**
      * Validates the hashcash proof of work on /v1/integrity/verify. Returns null when valid, else a

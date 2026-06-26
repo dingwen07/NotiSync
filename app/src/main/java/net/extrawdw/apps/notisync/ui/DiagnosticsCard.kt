@@ -122,6 +122,7 @@ fun DiagnosticsCard(
     oversizedTest: OversizedTestState,
     rotateNow: RotateNowState,
     onRefresh: () -> Unit,
+    onClearToken: () -> Unit,
     onBenchmark: () -> Unit,
     onSendOversizedTest: () -> Unit,
     onRotateNow: () -> Unit,
@@ -166,6 +167,10 @@ fun DiagnosticsCard(
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.padding(start = 20.dp),
                 )
+            }
+            // Drop the cached broker bearer so the next request re-attests from scratch (App Check → JWKS).
+            OutlinedButton(onClick = onClearToken) {
+                Text(stringResource(R.string.diag_clear_token))
             }
 
             HorizontalDivider()
@@ -218,6 +223,25 @@ fun DiagnosticsCard(
                     color = MaterialTheme.colorScheme.error,
                 )
                 else -> Unit
+            }
+
+            HorizontalDivider()
+            Text(stringResource(R.string.diag_channels), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_channels_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            var channelsReset by remember { mutableStateOf<Int?>(null) }
+            OutlinedButton(onClick = { channelsReset = onResetChannels() }) {
+                Text(stringResource(R.string.diag_channels_reset))
+            }
+            channelsReset?.let {
+                Text(
+                    pluralStringResource(R.plurals.diag_channels_reset_done, it, it),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
 
             // Key epoch — always shown in advanced diagnostics: the operational (signing) + HPKE (encryption)
@@ -292,25 +316,6 @@ fun DiagnosticsCard(
             } else {
                 Text(
                     stringResource(R.string.diag_rotation_disabled),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-
-            HorizontalDivider()
-            Text(stringResource(R.string.diag_channels), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(R.string.diag_channels_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            var channelsReset by remember { mutableStateOf<Int?>(null) }
-            OutlinedButton(onClick = { channelsReset = onResetChannels() }) {
-                Text(stringResource(R.string.diag_channels_reset))
-            }
-            channelsReset?.let {
-                Text(
-                    pluralStringResource(R.plurals.diag_channels_reset_done, it, it),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

@@ -15,6 +15,7 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.CipherSuite
@@ -23,9 +24,9 @@ import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.Purpose
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
@@ -62,6 +63,9 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.security.KeyPairGenerator
+import java.security.Signature
+import java.security.interfaces.RSAPublicKey
 import java.util.Base64
 
 /**
@@ -75,6 +79,11 @@ class BrokerFlowTest {
     fun clearServerProperties() {
         listOf(
             "NOTISYNC_DB_PATH",
+            "NOTISYNC_APNS_ENABLED",
+            "NOTISYNC_APNS_KEY_ID",
+            "NOTISYNC_APNS_PRIVATE_KEY_PATH",
+            "NOTISYNC_APNS_TEAM_ID",
+            "NOTISYNC_APNS_TOPIC",
             "NOTISYNC_FCM_ENABLED",
             "NOTISYNC_MAX_ASSET_BYTES",
             "NOTISYNC_PLAY_INTEGRITY_ENABLED",
@@ -82,11 +91,16 @@ class BrokerFlowTest {
         ).forEach(System::clearProperty)
     }
 
-    private fun routeBlob(signer: IdentitySigner, routeRef: String): SignedBlob {
+    private fun routeBlob(
+        signer: IdentitySigner,
+        routeRef: String,
+        transport: TransportType = TransportType.FCM,
+        environment: RouteEnvironment = RouteEnvironment.PRODUCTION,
+    ): SignedBlob {
         val claim = RouteClaim(
             clientId = signer.clientId,
-            transport = TransportType.FCM,
-            environment = RouteEnvironment.PRODUCTION,
+            transport = transport,
+            environment = environment,
             routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
             epoch = 1,
@@ -343,7 +357,7 @@ class BrokerFlowTest {
         val requestNonce = HttpRequestSigning.newNonce()
         val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
         val staleBody = ProtocolCodec.encodeToJson(
-            PlayIntegrityVerificationRequest(
+            IntegrityVerificationRequest(
                 clientId = signer.clientId,
                 requestNonce = requestNonce,
                 requestHash = requestHash,
@@ -402,7 +416,7 @@ class BrokerFlowTest {
         val requestNonce = HttpRequestSigning.newNonce()
         val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
         val verifyBody = ProtocolCodec.encodeToJson(
-            PlayIntegrityVerificationRequest(
+            IntegrityVerificationRequest(
                 clientId = signer.clientId,
                 requestNonce = requestNonce,
                 requestHash = requestHash,
@@ -415,7 +429,125 @@ class BrokerFlowTest {
             signedHeaders(signer, "POST", "/v2/integrity/verify", verifyBody, pow = true)
             setBody(verifyBody)
         }
-        return ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(resp.bodyAsText()).token
+        return ProtocolCodec.decodeFromJson<IntegrityVerificationResponse>(resp.bodyAsText()).token
+    }
+
+    // --- App Check (firebaseAppCheck) attestation method, verified locally against an injected JWKS ---
+
+    private val appCheckProjectNumber = "987654321"
+    private val appCheckAppId = "1:987654321:android:notisync"
+    private val appCheckKid = "broker-test-kid"
+    private val appCheckKeyPair = KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
+    private val appCheckJwks = object : AppCheckJwks {
+        override fun key(kid: String): RSAPublicKey? =
+            if (kid == appCheckKid) appCheckKeyPair.public as RSAPublicKey else null
+    }
+
+    private fun mintAppCheckToken(): String {
+        val url = Base64.getUrlEncoder().withoutPadding()
+        val now = System.currentTimeMillis() / 1000
+        val header = """{"alg":"RS256","typ":"JWT","kid":"$appCheckKid"}"""
+        val claims = """{"iss":"https://firebaseappcheck.googleapis.com/$appCheckProjectNumber",""" +
+            """"aud":["projects/$appCheckProjectNumber"],"sub":"$appCheckAppId","exp":${now + 1800},"iat":$now}"""
+        val signingInput = "${url.encodeToString(header.toByteArray())}.${url.encodeToString(claims.toByteArray())}"
+        val sig = Signature.getInstance("SHA256withRSA").run {
+            initSign(appCheckKeyPair.private); update(signingInput.toByteArray(Charsets.US_ASCII)); sign()
+        }
+        return "$signingInput.${url.encodeToString(sig)}"
+    }
+
+    @Test
+    fun integrityVerify_viaAppCheck_issuesJwtAndStatusAdvertisesMethods() = testApplication {
+        val tmp = File.createTempFile("notisync-appcheck", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-appcheckjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_APPCHECK_ENABLED", "true")
+        System.setProperty("NOTISYNC_APPCHECK_PROJECT_NUMBER", appCheckProjectNumber)
+        System.setProperty("NOTISYNC_APPCHECK_APP_IDS", appCheckAppId)
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        try {
+            application { brokerModule(allGoodDecoder(), appCheckJwks) }
+
+            // Unauthenticated discovery advertises both accepted methods + the PoW difficulty.
+            val status = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(client.get("/v2/status").bodyAsText())
+            assertTrue(AttestationType.PLAY_INTEGRITY in status.acceptedAttestationMethods)
+            assertTrue(AttestationType.FIREBASE_APP_CHECK in status.acceptedAttestationMethods)
+            assertEquals(4, status.powDifficulty)
+
+            val signer = SoftwareIdentitySigner.generate()
+            val hpke = Hpke.generateKeyPair()
+            val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+
+            // Attest with App Check (no requestHash/integrityToken) — same identity-signed request + PoW.
+            val verifyBody = ProtocolCodec.encodeToJson(
+                IntegrityVerificationRequest(
+                    clientId = signer.clientId,
+                    attestationType = AttestationType.FIREBASE_APP_CHECK,
+                    attestationToken = mintAppCheckToken(),
+                    clientKeyEpoch = keyEpochBlob(signer, op, hpke, epoch = 1),
+                )
+            ).toByteArray(Charsets.UTF_8)
+            val resp = client.post("/v2/integrity/verify") {
+                contentType(ContentType.Application.Json)
+                signedHeaders(signer, "POST", "/v2/integrity/verify", verifyBody, pow = true)
+                setBody(verifyBody)
+            }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            val token = ProtocolCodec.decodeFromJson<IntegrityVerificationResponse>(resp.bodyAsText()).token
+
+            // The issued broker bearer authenticates a subsequent call, just like the Play Integrity path.
+            val getPath = "/v2/keyepoch/${signer.clientId.value}"
+            assertEquals(
+                HttpStatusCode.OK,
+                client.get(getPath) { signedHeaders(signer, "GET", getPath, ByteArray(0), token) }.status,
+            )
+        } finally {
+            listOf(
+                "NOTISYNC_APPCHECK_ENABLED",
+                "NOTISYNC_APPCHECK_PROJECT_NUMBER",
+                "NOTISYNC_APPCHECK_APP_IDS",
+            ).forEach(System::clearProperty)
+        }
+    }
+
+    @Test
+    fun metricsEndpoint_basicAuthGatesSnapshot() = testApplication {
+        val tmp = File.createTempFile("notisync-metrics", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-metricsjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        System.setProperty("NOTISYNC_METRICS_USER", "ops")
+        System.setProperty("NOTISYNC_METRICS_PASSWORD", "s3cret")
+        try {
+            application { brokerModule(allGoodDecoder()) }
+            fun basic(creds: String) = "Basic " + Base64.getEncoder().encodeToString(creds.toByteArray())
+
+            // Missing and wrong credentials are both rejected.
+            assertEquals(HttpStatusCode.Unauthorized, client.get("/v2/integrity/metrics").status)
+            assertEquals(
+                HttpStatusCode.Unauthorized,
+                client.get("/v2/integrity/metrics") { header(HttpHeaders.Authorization, basic("ops:wrong")) }.status,
+            )
+
+            // Drive one Play Integrity attestation so the snapshot has something to report.
+            val signer = SoftwareIdentitySigner.generate()
+            val hpke = Hpke.generateKeyPair()
+            val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+            client.attest(signer, keyEpochBlob(signer, op, hpke, epoch = 1))
+
+            val resp = client.get("/v2/integrity/metrics") { header(HttpHeaders.Authorization, basic("ops:s3cret")) }
+            assertEquals(HttpStatusCode.OK, resp.status)
+            val snap = ProtocolCodec.decodeFromJson<MetricsSnapshot>(resp.bodyAsText())
+            val piAccepted = snap.buckets.sumOf { it.methods[AttestationType.PLAY_INTEGRITY]?.accepted ?: 0 }
+            assertTrue("a playIntegrity accept should be recorded", piAccepted >= 1)
+            assertTrue("recent log includes the attest", snap.recent.any { it.method == AttestationType.PLAY_INTEGRITY })
+        } finally {
+            listOf("NOTISYNC_METRICS_USER", "NOTISYNC_METRICS_PASSWORD").forEach(System::clearProperty)
+        }
     }
 
     @Test
@@ -496,6 +628,66 @@ class BrokerFlowTest {
 
             send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = receivedEnv.messageId))))
         }
+    }
+
+    @Test
+    fun apnsRouteClaimQueuesRelayWhenProviderDisabled() = testApplication {
+        val tmp = File.createTempFile("notisync-apns-route", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_APNS_ENABLED", "false")
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/routes") {
+                setBody(
+                    ProtocolCodec.encodeToCbor(
+                        listOf(routeBlob(recipient, "abcd1234", TransportType.APNS, RouteEnvironment.DEVELOPMENT))
+                    )
+                )
+            }.status,
+        )
+
+        val body = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = body,
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = "01J0APNS001",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+
+        val sendResp = client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+        val result = ProtocolCodec.decodeFromJson<SendResult>(sendResp.bodyAsText())
+        assertTrue(recipient.clientId in result.missingRoutes)
+
+        val pending = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(listOf(envelope.messageId), pending.messageIds)
     }
 
     @Test
@@ -796,7 +988,7 @@ class BrokerFlowTest {
 
         val requestNonce = HttpRequestSigning.newNonce()
         val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
-        val verifyRequest = PlayIntegrityVerificationRequest(
+        val verifyRequest = IntegrityVerificationRequest(
             clientId = signer.clientId,
             requestNonce = requestNonce,
             requestHash = requestHash,
@@ -810,7 +1002,7 @@ class BrokerFlowTest {
             setBody(verifyBody)
         }
         assertEquals(HttpStatusCode.OK, verifyResponse.status)
-        val token = ProtocolCodec.decodeFromJson<PlayIntegrityVerificationResponse>(verifyResponse.bodyAsText()).token
+        val token = ProtocolCodec.decodeFromJson<IntegrityVerificationResponse>(verifyResponse.bodyAsText()).token
 
         // With the bearer presented, status now reports this client as verified.
         val statusAfter = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(
