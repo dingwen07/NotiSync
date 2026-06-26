@@ -18,6 +18,21 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 @Serializable
 data class IosApp(val bundleId: String, val displayName: String, val lastSeen: Long)
 
+/** Bundle ids that should stay visible in the iPhone app list but must never be enabled for mirroring. */
+internal object IosBundleIdExclusions {
+    private val excluded = setOf(
+        "net.extrawdw.apps.NotiSync",
+        "net.extrawdw.apps.NotiSync.NotificationService",
+    ).mapTo(mutableSetOf()) { normalize(it) }
+
+    fun isExcluded(bundleId: String): Boolean = normalize(bundleId) in excluded
+
+    fun filterEnabled(bundleIds: Set<String>): Set<String> =
+        bundleIds.filterNotTo(LinkedHashSet()) { isExcluded(it) }
+
+    private fun normalize(bundleId: String): String = bundleId.trim().lowercase()
+}
+
 /**
  * The iOS-side analogue of [net.extrawdw.apps.notisync.data.AppSelectionRepository]: per-bundle-id mirroring
  * is **opt-in** (an allowlist; nothing is captured by default), plus the set of apps discovered so far.
@@ -65,11 +80,19 @@ class IosAppRegistry(private val store: DataStore<Preferences>, private val scop
      *  the startup window isn't silently dropped as "not enabled" before the user's opt-ins are available. */
     suspend fun isEnabled(bundleId: String): Boolean {
         hydrated.await()
-        return bundleId in _enabled.value
+        return !IosBundleIdExclusions.isExcluded(bundleId) && bundleId in _enabled.value
     }
 
     fun setEnabled(bundleId: String, enabled: Boolean) {
-        _enabled.update { if (enabled) it + bundleId else it - bundleId }
+        _enabled.update {
+            if (IosBundleIdExclusions.isExcluded(bundleId)) {
+                it - bundleId
+            } else if (enabled) {
+                it + bundleId
+            } else {
+                it - bundleId
+            }
+        }
         val json = ProtocolCodec.encodeToJson(_enabled.value)
         scope.launch { store.edit { it[enabledKey] = json } }
     }

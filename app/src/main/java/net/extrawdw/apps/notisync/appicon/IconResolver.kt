@@ -39,15 +39,22 @@ class IconResolver(
      *  3. the delivered app-icon asset ([appIconHash]) — covers a consumer that lacks the app installed;
      *  4. the locally-installed app's launcher icon (by [packageName]);
      *  5. the curated bundle-id → Android package, if that package is installed (a borrowed-icon fallback);
+     *  6. for iOS only, the bundled generic iOS fallback if [includeIosGenericFallback] is true;
      * else null — the caller may draw a monogram from the display name. The network step for (2) is
      * [colorIconEnsuringRemote] / [AppStoreIconProvider.ensureCached], invoked off the render path.
      */
-    fun colorIcon(packageName: String?, iosBundleId: String? = null, appIconHash: String? = null): Bitmap? {
+    fun colorIcon(
+        packageName: String?,
+        iosBundleId: String? = null,
+        appIconHash: String? = null,
+        includeIosGenericFallback: Boolean = true,
+    ): Bitmap? {
         shippedIcons?.bitmap(iosBundleId, packageName)?.let { return it }
         iosBundleId?.let { appStoreIcons?.cached(it) }?.let { return it }
         appIconHash?.let { hash -> assetCache.read(hash)?.let { decode(it) }?.let { return it } }
         packageName?.let { installedIcon(it) }?.let { return it }
         iosBundleId?.let { BundleIdMap.androidPackage(it) }?.let { installedIcon(it) }?.let { return it }
+        if (includeIosGenericFallback && !iosBundleId.isNullOrBlank()) shippedIcons?.iosFallback()?.let { return it }
         return null
     }
 

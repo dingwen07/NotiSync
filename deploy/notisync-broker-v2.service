@@ -34,7 +34,7 @@ Environment=NOTISYNC_REQUIRE_PLAY_PROTECT=NO_ISSUES
 # app-id allow-list pins to the NotiSync app; the project's other app (net.extrawdw.notifly) is NOT listed.
 Environment=NOTISYNC_APPCHECK_ENABLED=true
 Environment=NOTISYNC_APPCHECK_PROJECT_NUMBER=873059270463
-Environment=NOTISYNC_APPCHECK_APP_IDS=1:873059270463:android:b7417ebafc094521011d8a
+Environment=NOTISYNC_APPCHECK_APP_IDS=1:873059270463:android:b7417ebafc094521011d8a,1:873059270463:ios:5d11b7d970889964011d8a
 # Enable Play Integrity decode + FCM later by adding (as in v1):
 Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
 Restart=on-failure

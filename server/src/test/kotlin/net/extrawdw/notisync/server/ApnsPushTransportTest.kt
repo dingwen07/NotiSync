@@ -44,7 +44,7 @@ class ApnsPushTransportTest {
         val transport = ApnsPushTransport(
             topic = APNS_TOPIC,
             ttlMillis = 60_000,
-            tokenProvider = provider,
+            tokenProviders = providers(provider),
             client = ApnsClient { ApnsResponse(403, """{"reason":"ExpiredProviderToken"}""") },
         )
 
@@ -53,12 +53,32 @@ class ApnsPushTransportTest {
     }
 
     @Test
+    fun invalidProviderTokenDoesNotRemint() = runBlocking {
+        var invalidations = 0
+        val provider = object : ApnsTokenProvider {
+            override fun token() = "jwt"
+            override fun invalidate() { invalidations++ }
+        }
+        val transport = ApnsPushTransport(
+            topic = APNS_TOPIC,
+            ttlMillis = 60_000,
+            tokenProviders = providers(provider),
+            client = ApnsClient { ApnsResponse(403, """{"reason":"InvalidProviderToken"}""") },
+        )
+
+        // InvalidProviderToken is a key/kid/team misconfig — re-minting the same token on every send storms
+        // APNs into 429 TooManyProviderTokenUpdates, so it must NOT invalidate the cached token.
+        assertEquals(PushOutcome.TRANSIENT_FAILURE, transport.wake(apnsRoute(), pushData(), Urgency.HIGH))
+        assertEquals("InvalidProviderToken must not re-mint", 0, invalidations)
+    }
+
+    @Test
     fun malformedApnsRouteRefIsInvalidWithoutCallingProvider() = runBlocking {
         var calls = 0
         val transport = ApnsPushTransport(
             topic = APNS_TOPIC,
             ttlMillis = 60_000,
-            tokenProvider = ApnsTokenProvider { "jwt" },
+            tokenProviders = providers(ApnsTokenProvider { "jwt" }),
             client = ApnsClient {
                 calls++
                 ApnsResponse(200, "")
@@ -88,18 +108,37 @@ class ApnsPushTransportTest {
         assertEquals("application/json", request.headers().firstValue("content-type").orElse(null))
     }
 
+    @Test
+    fun notificationUsesAlertPushTypeAndPriority() = runBlocking {
+        val requests = mutableListOf<HttpRequest>()
+        val transport = apnsTransport(ApnsResponse(200, ""), requests)
+
+        assertEquals(
+            PushOutcome.DELIVERED,
+            transport.wake(apnsRoute(routeRef = "ABCD1234"), notificationData(), Urgency.HIGH),
+        )
+
+        val request = requests.single()
+        // A NOTIFICATION must be an alert push at priority 10 so the NSE wakes to decrypt + display.
+        assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
+        assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
+    }
+
     private fun apnsTransport(
         response: ApnsResponse,
         requests: MutableList<HttpRequest> = mutableListOf(),
     ) = ApnsPushTransport(
         topic = APNS_TOPIC,
         ttlMillis = 60_000,
-        tokenProvider = ApnsTokenProvider { "jwt" },
+        tokenProviders = providers(ApnsTokenProvider { "jwt" }),
         client = ApnsClient { request ->
             requests += request
             response
         },
     )
+
+    private fun providers(p: ApnsTokenProvider) =
+        mapOf(RouteEnvironment.PRODUCTION to p, RouteEnvironment.DEVELOPMENT to p)
 
     private fun apnsRoute(
         routeRef: String = "abcd1234",
@@ -115,6 +154,8 @@ class ApnsPushTransportTest {
     )
 
     private fun pushData() = mapOf("typ" to "wake", "mid" to "01J0APNS001")
+
+    private fun notificationData() = mapOf("mtyp" to "NOTIFICATION", "typ" to "notif", "mid" to "01J0APNS002", "ct" to "AAEC")
 
     private companion object {
         const val APNS_TOPIC = "net.extrawdw.apps.NotiSync"

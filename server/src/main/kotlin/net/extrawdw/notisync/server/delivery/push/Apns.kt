@@ -3,6 +3,7 @@ package net.extrawdw.notisync.server.delivery.push
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
+import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.TransportType
@@ -28,7 +29,8 @@ import java.time.Duration
 class ApnsPushTransport internal constructor(
     private val topic: String,
     private val ttlMillis: Long,
-    private val tokenProvider: ApnsTokenProvider,
+    /** APNs provider-token signer per environment — Apple scopes keys to sandbox vs production. */
+    private val tokenProviders: Map<RouteEnvironment, ApnsTokenProvider>,
     private val client: ApnsClient = JavaNetApnsClient(),
 ) : PushTransport {
     private val log = LoggerFactory.getLogger(javaClass)
@@ -41,6 +43,10 @@ class ApnsPushTransport internal constructor(
                 return@withContext PushOutcome.ROUTE_INVALID
             }
             try {
+                // Pick the provider token for the route's environment; if no key is configured for it
+                // (e.g. only a sandbox key is installed), the push can't be signed — leave it for relay/WS.
+                val provider = tokenProviders[route.environment]
+                    ?: return@withContext PushOutcome.DISABLED
                 val endpoint = when (route.environment) {
                     RouteEnvironment.DEVELOPMENT -> "https://api.sandbox.push.apple.com"
                     RouteEnvironment.PRODUCTION -> "https://api.push.apple.com"
@@ -48,28 +54,31 @@ class ApnsPushTransport internal constructor(
                 // Match the wake TTL to the relay TTL (as FcmPushTransport does) so a deferred wake can't
                 // outlive the relay item it points to (else a wake delivered later is a dead pointer).
                 val expiration = (System.currentTimeMillis() + ttlMillis) / 1000
-                // This is a silent, end-to-end-encrypted background push: the client decrypts and posts the
-                // local notification, so it MUST be apns-push-type=background at apns-priority=5 regardless of
-                // urgency (an alert/priority-10 push needs plaintext the broker never holds). Urgency therefore
-                // can't change the APNs delivery class here; see review note on iOS timeliness.
+                // Type-aware delivery class. A NOTIFICATION is delivered as an alert push with
+                // mutable-content so the iOS Notification Service Extension wakes, decrypts the inline
+                // ciphertext (or fetches the relay pointer) on-device, and replaces the placeholder before
+                // display — the broker still holds only ciphertext. DISMISSAL/DATA_SYNC stay silent
+                // background pushes handled by the app process. (FCM/Android is unaffected.)
+                val isAlert = data["mtyp"] == MessageType.NOTIFICATION.name
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("$endpoint/3/device/${route.routeRef}"))
                     .timeout(Duration.ofSeconds(20))
-                    .header("authorization", "bearer ${tokenProvider.token()}")
+                    .header("authorization", "bearer ${provider.token()}")
                     .header("content-type", "application/json")
                     .header("apns-topic", topic)
-                    .header("apns-push-type", "background")
-                    .header("apns-priority", "5")
+                    .header("apns-push-type", if (isAlert) "alert" else "background")
+                    .header("apns-priority", if (isAlert) "10" else "5")
                     .header("apns-expiration", expiration.toString())
-                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data)))
+                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data, isAlert)))
                     .build()
                 val response = client.send(request)
                 if (response.statusCode in 200..299) return@withContext PushOutcome.DELIVERED
-                // A 403 means the provider auth JWT was rejected (Expired/Invalid/MissingProviderToken).
-                // Drop the cached token so the next send re-mints, instead of replaying the rejected token
-                // for the rest of its ~50-minute cache window.
-                if (response.statusCode == 403) tokenProvider.invalidate()
                 val reason = apnsReason(response.body)
+                // Re-mint the provider token ONLY when re-minting can actually help — an Expired or Missing
+                // token. An InvalidProviderToken is a config error (wrong key/kid/team): re-minting yields the
+                // same rejected token on every send and quickly trips APNs's 429 TooManyProviderTokenUpdates
+                // rate limit, so leave the cached token in place and surface the (steady) InvalidProviderToken.
+                if (response.statusCode == 403 && reason in REMINTABLE_TOKEN_REASONS) provider.invalidate()
                 val outcome = apnsOutcome(response.statusCode, reason)
                 log.info(
                     "APNs rejected push client={} status={} reason={} outcome={}",
@@ -85,13 +94,16 @@ class ApnsPushTransport internal constructor(
             }
         }
 
-    private fun apnsPayload(data: Map<String, String>): String {
+    private fun apnsPayload(data: Map<String, String>, alert: Boolean): String {
         val entries = data.entries.joinToString(",") { (k, v) -> "\"${jsonEscape(k)}\":\"${jsonEscape(v)}\"" }
-        return if (entries.isEmpty()) {
-            """{"aps":{"content-available":1}}"""
+        val aps = if (alert) {
+            // mutable-content lets the NSE intercept + decrypt; the alert is a generic placeholder the NSE
+            // replaces (the broker never holds plaintext). priority/push-type set by the caller.
+            """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default"}"""
         } else {
-            """{"aps":{"content-available":1},$entries}"""
+            """"aps":{"content-available":1}"""
         }
+        return if (entries.isEmpty()) "{$aps}" else "{$aps,$entries}"
     }
 
     private fun jsonEscape(value: String): String = buildString(value.length + 8) {
@@ -130,26 +142,39 @@ class ApnsPushTransport internal constructor(
     companion object {
         private val log = LoggerFactory.getLogger(ApnsPushTransport::class.java)
         private val ROUTE_INVALID_REASONS = setOf("BadDeviceToken", "DeviceTokenNotForTopic", "Unregistered")
+        // 403 reasons where a fresh provider token actually fixes the rejection. NOT InvalidProviderToken
+        // (a key/kid/team misconfig — re-minting it just storms APNs into 429 TooManyProviderTokenUpdates).
+        private val REMINTABLE_TOKEN_REASONS = setOf("ExpiredProviderToken", "MissingProviderToken")
 
         fun createOrNull(config: ServerConfig): PushTransport? {
             if (!config.apnsEnabled) return null
-            val missing = buildList {
-                if (config.apnsTeamId.isBlank()) add("NOTISYNC_APNS_TEAM_ID")
-                if (config.apnsKeyId.isBlank()) add("NOTISYNC_APNS_KEY_ID")
-                if (config.apnsPrivateKeyPath.isBlank()) add("NOTISYNC_APNS_PRIVATE_KEY_PATH")
-                if (config.apnsTopic.isBlank()) add("NOTISYNC_APNS_TOPIC")
-            }
-            if (missing.isNotEmpty()) {
-                log.warn("APNs disabled; missing {}", missing.joinToString(","))
+            if (config.apnsTeamId.isBlank() || config.apnsTopic.isBlank()) {
+                log.warn("APNs disabled; missing NOTISYNC_APNS_TEAM_ID / NOTISYNC_APNS_TOPIC")
                 return null
             }
             return try {
-                val key = Es256.loadEcPrivateKeyPem(File(config.apnsPrivateKeyPath).readText())
-                log.info("APNs transport enabled for topic {}", config.apnsTopic)
+                val providers = mutableMapOf<RouteEnvironment, ApnsTokenProvider>()
+                // Production (api.push.apple.com) — also the fallback key for an unscoped key.
+                if (config.apnsKeyId.isNotBlank() && config.apnsPrivateKeyPath.isNotBlank()) {
+                    val key = Es256.loadEcPrivateKeyPem(File(config.apnsPrivateKeyPath).readText())
+                    providers[RouteEnvironment.PRODUCTION] = ApnsJwtProvider(config.apnsTeamId, config.apnsKeyId, key)
+                }
+                // Sandbox (api.sandbox.push.apple.com) — its own env-scoped key, else reuse the (unscoped) one.
+                val sandboxKeyId = config.apnsKeyIdSandbox.ifBlank { config.apnsKeyId }
+                val sandboxPath = config.apnsPrivateKeyPathSandbox.ifBlank { config.apnsPrivateKeyPath }
+                if (sandboxKeyId.isNotBlank() && sandboxPath.isNotBlank()) {
+                    val key = Es256.loadEcPrivateKeyPem(File(sandboxPath).readText())
+                    providers[RouteEnvironment.DEVELOPMENT] = ApnsJwtProvider(config.apnsTeamId, sandboxKeyId, key)
+                }
+                if (providers.isEmpty()) {
+                    log.warn("APNs disabled; no key configured (NOTISYNC_APNS_KEY_ID and/or _KEY_ID_SANDBOX)")
+                    return null
+                }
+                log.info("APNs transport enabled for topic {} environments={}", config.apnsTopic, providers.keys)
                 ApnsPushTransport(
                     topic = config.apnsTopic,
                     ttlMillis = config.relayTtlMillis,
-                    tokenProvider = ApnsJwtProvider(config.apnsTeamId, config.apnsKeyId, key),
+                    tokenProviders = providers,
                 )
             } catch (e: Exception) {
                 log.warn("APNs credentials unavailable ({}); APNs push disabled.", e.message)

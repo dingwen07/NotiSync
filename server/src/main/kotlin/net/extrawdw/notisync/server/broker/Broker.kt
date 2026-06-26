@@ -169,7 +169,7 @@ class Broker(
             var anyInvalid = false
             var pushed = false
             for (route in candidates) {
-                val outcome = push.wake(route, buildPushData(envelope.messageId, recipientBytes, inlineBudgetFor(route)), urgency)
+                val outcome = push.wake(route, buildPushData(envelope.messageId, envelope.typ, recipientBytes, inlineBudgetFor(route)), urgency)
                 log.info(
                     "push wake transport={} recipient={} mid={} outcome={}",
                     route.transport,
@@ -226,12 +226,16 @@ class Broker(
         return ProtocolCodec.encodeToCbor(stripped)
     }
 
-    private fun buildPushData(messageId: String, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
+    private fun buildPushData(messageId: String, messageType: MessageType, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
         val b64env = b64.encodeToString(envelopeBytes)
+        // "mtyp" carries the E2E message type (broker-visible on the envelope) so APNs can branch
+        // alert+mutable-content (NOTIFICATION → NSE decrypts) vs silent background (DISMISSAL/DATA_SYNC).
+        // FCM/Android ignores it.
+        val base = mapOf("mtyp" to messageType.name)
         return if (b64env.length <= inlineBudget) {
-            mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
+            base + mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
         } else {
-            mapOf("typ" to "wake", "mid" to messageId) // too big to inline; client pulls from relay
+            base + mapOf("typ" to "wake", "mid" to messageId) // too big to inline; client pulls from relay
         }
     }
 

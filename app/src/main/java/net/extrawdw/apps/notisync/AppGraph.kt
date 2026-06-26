@@ -874,7 +874,8 @@ class AppGraph(private val app: Application) {
             channelId = "notisync_test",
             channelName = "NotiSync Test"
         )
-        return mirror.captureLocal(notif)
+        val withAppIcon = graphicsPipeline?.attachAppIcon(notif) ?: notif
+        return mirror.captureLocal(withAppIcon)
     }
 
     companion object {

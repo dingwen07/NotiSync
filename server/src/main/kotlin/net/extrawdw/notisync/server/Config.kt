@@ -10,8 +10,12 @@ data class ServerConfig(
     val fcmProjectId: String,
     val apnsEnabled: Boolean,
     val apnsTeamId: String,
+    /** Production (api.push.apple.com) or unscoped APNs auth key. Apple now scopes keys per environment. */
     val apnsKeyId: String,
     val apnsPrivateKeyPath: String,
+    /** Sandbox (api.sandbox.push.apple.com) APNs auth key; falls back to [apnsKeyId] for an unscoped key. */
+    val apnsKeyIdSandbox: String,
+    val apnsPrivateKeyPathSandbox: String,
     val apnsTopic: String,
     /** Max ciphertext bytes delivered inline in an FCM data message; larger ones send a wake pointer. */
     val inlineBudgetBytes: Int,
@@ -99,6 +103,8 @@ data class ServerConfig(
                 apnsTeamId = env("NOTISYNC_APNS_TEAM_ID").orEmpty(),
                 apnsKeyId = env("NOTISYNC_APNS_KEY_ID").orEmpty(),
                 apnsPrivateKeyPath = env("NOTISYNC_APNS_PRIVATE_KEY_PATH").orEmpty(),
+                apnsKeyIdSandbox = env("NOTISYNC_APNS_KEY_ID_SANDBOX").orEmpty(),
+                apnsPrivateKeyPathSandbox = env("NOTISYNC_APNS_PRIVATE_KEY_PATH_SANDBOX").orEmpty(),
                 apnsTopic = env("NOTISYNC_APNS_TOPIC") ?: "net.extrawdw.apps.NotiSync",
                 inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 3072,
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
