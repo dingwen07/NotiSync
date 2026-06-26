@@ -56,4 +56,16 @@ class ShippedIconsTest {
         assertFalse(icons.covers("com.apple.Preferences"))
         assertEquals(1, open.calls.size) // second lookup served from the in-memory negative cache
     }
+
+    @Test fun iosFallback_isSeparateFromBundleCoverage() {
+        val open = FakeOpen(present = setOf("appicons/GenericAppIcon_iOS.webp"))
+        val icons = ShippedIcons(open = open, decode = { null })
+
+        assertNull(icons.iosFallback())
+        assertFalse(icons.covers("com.example.Missing"))
+        assertEquals(
+            listOf("appicons/GenericAppIcon_iOS.webp", "appicons/com.example.missing.webp"),
+            open.calls,
+        )
+    }
 }

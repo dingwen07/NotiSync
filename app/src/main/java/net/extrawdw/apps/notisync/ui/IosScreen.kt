@@ -5,6 +5,13 @@ import android.app.Application
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceManager
 import android.content.IntentSender
+import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.Path as AndroidPath
+import android.graphics.PorterDuff
+import android.graphics.PorterDuffXfermode
 import android.util.Log
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -49,14 +56,21 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.Path as ComposePath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -75,8 +89,15 @@ import net.extrawdw.apps.notisync.ancs.AncsBridgeService
 import net.extrawdw.apps.notisync.ancs.AncsCompanion
 import net.extrawdw.apps.notisync.ancs.AncsStatus
 import net.extrawdw.apps.notisync.ancs.IosApp
+import net.extrawdw.apps.notisync.ancs.IosBundleIdExclusions
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.PI
+import kotlin.math.abs
+import kotlin.math.cos
+import kotlin.math.pow
+import kotlin.math.sign
+import kotlin.math.sin
 
 private const val ICON_PX = 128
 
@@ -119,11 +140,10 @@ internal class IosAppsViewModel(app: Application) : AndroidViewModel(app) {
                                 // Fast pass — shipped pack + persisted disk cache + installed icon, NO network — so
                                 // already-cached icons render immediately on restart instead of queuing behind other
                                 // apps' App Store fetches. Only a genuine local miss takes the bounded network path.
-                                var bmp = resolver.colorIcon(pkg, iosApp.bundleId)
+                                var bmp = resolver.colorIcon(pkg, iosApp.bundleId, includeIosGenericFallback = false)
                                 if (bmp == null) bmp = fetchGate.withPermit { resolver.colorIconEnsuringRemote(pkg, iosApp.bundleId) }
                                 bmp?.let { img ->
-                                    val scaled = img.scale(ICON_PX, ICON_PX).asImageBitmap()
-                                    _icons.update { it + (iosApp.bundleId to scaled) } // atomic: many coroutines update concurrently
+                                    _icons.update { it + (iosApp.bundleId to IosIconMask.prepare(img)) } // atomic: many coroutines update concurrently
                                 }
                             } finally {
                                 inFlight.remove(iosApp.bundleId) // failed lookups become retryable on the next discovery
@@ -136,6 +156,59 @@ internal class IosAppsViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private companion object { const val MAX_CONCURRENT_FETCHES = 4 }
+}
+
+private object IosIconMask {
+    private const val SEGMENTS = 128
+    private val unitPoints: List<Pair<Float, Float>> = List(SEGMENTS) { i ->
+        val t = 2.0 * PI * i / SEGMENTS
+        0.5f + 0.5f * signedSuperellipse(cos(t)) to 0.5f + 0.5f * signedSuperellipse(sin(t))
+    }
+    private val masks = ConcurrentHashMap<Int, Bitmap>()
+
+    fun prepare(icon: Bitmap): ImageBitmap = icon.scale(ICON_PX, ICON_PX).masked().asImageBitmap()
+
+    fun composePath(width: Float, height: Float): ComposePath = ComposePath().apply {
+        unitPoints.forEachIndexed { index, (x, y) ->
+            if (index == 0) moveTo(x * width, y * height) else lineTo(x * width, y * height)
+        }
+        close()
+    }
+
+    private fun Bitmap.masked(): Bitmap {
+        val out = createBitmap(width, height)
+        val canvas = Canvas(out)
+        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+        canvas.drawBitmap(this, 0f, 0f, paint)
+        paint.xfermode = PorterDuffXfermode(PorterDuff.Mode.DST_IN)
+        canvas.drawBitmap(mask(width), 0f, 0f, paint)
+        paint.xfermode = null
+        return out
+    }
+
+    private fun mask(size: Int): Bitmap = masks.getOrPut(size) {
+        createBitmap(size, size).also { bitmap ->
+            Canvas(bitmap).drawPath(androidPath(size.toFloat(), size.toFloat()), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = Color.WHITE
+                style = Paint.Style.FILL
+            })
+        }
+    }
+
+    private fun androidPath(width: Float, height: Float): AndroidPath = AndroidPath().apply {
+        unitPoints.forEachIndexed { index, (x, y) ->
+            if (index == 0) moveTo(x * width, y * height) else lineTo(x * width, y * height)
+        }
+        close()
+    }
+
+    private fun signedSuperellipse(value: Double): Float =
+        (sign(value) * abs(value).pow(2.0 / 5.0)).toFloat()
+}
+
+private object IosIconShape : Shape {
+    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+        Outline.Generic(IosIconMask.composePath(size.width, size.height))
 }
 
 @Composable
@@ -244,11 +317,12 @@ fun IosScreen() {
     val q = norm(query.trim())
     fun matches(app: IosApp) = q.isEmpty() || norm(app.displayName).contains(q) || norm(app.bundleId).contains(q)
 
+    val effectiveEnabled = IosBundleIdExclusions.filterEnabled(enabled)
     val enabledApps = discovered.values
-        .filter { it.bundleId in enabled && matches(it) }
+        .filter { it.bundleId in effectiveEnabled && matches(it) }
         .sortedBy { norm(it.displayName) }
     val otherApps = discovered.values
-        .filter { it.bundleId !in enabled && matches(it) }
+        .filter { it.bundleId !in effectiveEnabled && matches(it) }
         .sortedWith(compareByDescending<IosApp> { it.lastSeen }.thenBy { norm(it.displayName) })
     NotiScaffold(stringResource(R.string.tab_ios)) { modifier ->
         Column(modifier.fillMaxSize()) {
@@ -312,6 +386,7 @@ fun IosScreen() {
                             IosAppRow(
                                 app = app,
                                 isOn = true,
+                                canToggle = true,
                                 icon = icons[app.bundleId],
                                 onToggle = { on -> registry.setEnabled(app.bundleId, on) },
                             )
@@ -324,6 +399,7 @@ fun IosScreen() {
                         IosAppRow(
                             app = app,
                             isOn = false,
+                            canToggle = !IosBundleIdExclusions.isExcluded(app.bundleId),
                             icon = icons[app.bundleId],
                             onToggle = { on -> registry.setEnabled(app.bundleId, on) },
                         )
@@ -472,10 +548,10 @@ private fun CompactSwitchRow(label: String, checked: Boolean, onCheckedChange: (
 }
 
 @Composable
-private fun IosAppRow(app: IosApp, isOn: Boolean, icon: ImageBitmap?, onToggle: (Boolean) -> Unit) {
+private fun IosAppRow(app: IosApp, isOn: Boolean, canToggle: Boolean, icon: ImageBitmap?, onToggle: (Boolean) -> Unit) {
     ListItem(
-        modifier = Modifier.clickable { onToggle(!isOn) },
-        leadingContent = { AppIconCircle(icon) },
+        modifier = if (canToggle) Modifier.clickable { onToggle(!isOn) } else Modifier,
+        leadingContent = { AppIconSquare(icon) },
         headlineContent = { Text(app.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
@@ -484,16 +560,16 @@ private fun IosAppRow(app: IosApp, isOn: Boolean, icon: ImageBitmap?, onToggle: 
                 overflow = TextOverflow.Ellipsis,
             )
         },
-        trailingContent = { Switch(checked = isOn, onCheckedChange = onToggle) },
+        trailingContent = { Switch(checked = isOn, onCheckedChange = onToggle, enabled = canToggle) },
     )
 }
 
 @Composable
-private fun AppIconCircle(icon: ImageBitmap?) {
+private fun AppIconSquare(icon: ImageBitmap?) {
     if (icon != null) {
-        Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(40.dp).clip(CircleShape))
+        Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(40.dp))
     } else {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant))
+        Box(Modifier.size(40.dp).clip(IosIconShape).background(MaterialTheme.colorScheme.surfaceVariant))
     }
 }
 

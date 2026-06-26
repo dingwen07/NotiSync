@@ -13,8 +13,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * This is the **first** source in [IconResolver.colorIcon]: a crisp, offline, consistent icon for the most
  * common apps, ahead of any delivered asset, the App Store fetch, or a borrowed installed icon. It also
- * covers the handful of iOS surfaces the App Store has no entry for (e.g. Settings). The long tail is filled
- * in at runtime by [AppStoreIconProvider]; this pack is intentionally curated to keep the APK small.
+ * covers the handful of iOS surfaces the App Store has no entry for (e.g. Settings), plus a generic iOS-only
+ * final fallback exposed separately so it does not suppress App Store fetches. The long tail is filled in at
+ * runtime by [AppStoreIconProvider]; this pack is intentionally curated to keep the APK small.
  *
  * Files are populated by `scripts/fetch_shipped_icons.py` (see that script). Lookups are lazy and memoized
  * (including misses) so a given key touches `assets/` at most once. The Android `assets`/decode boundary is an
@@ -36,6 +37,9 @@ class ShippedIcons(
     /** Whether the pack covers this bundle id — used to decide if an App Store fetch is even worth trying. */
     fun covers(iosBundleId: String): Boolean = bitmap(iosBundleId, null) != null
 
+    /** Generic icon for iOS apps after all real-icon sources miss. Kept out of [bitmap] and [covers]. */
+    fun iosFallback(): Bitmap? = load(IOS_GENERIC_KEY)
+
     private fun load(key: String): Bitmap? {
         cache[key]?.let { return it.orElse(null) }
         val bmp = open("$DIR/$key.webp")?.use { decode(it) }
@@ -45,6 +49,7 @@ class ShippedIcons(
 
     companion object {
         private const val DIR = "appicons"
+        private const val IOS_GENERIC_KEY = "GenericAppIcon_iOS"
 
         /** Back the pack with the app's bundled `assets/appicons/` directory. */
         fun fromAssets(context: Context): ShippedIcons =

@@ -50,6 +50,7 @@
         <package android:name="com.android.systemui" />             <!-- System UI -->
         <package android:name="com.android.phone" />                <!-- Telephony / Phone services -->
         <package android:name="com.google.android.gms" />           <!-- Google Play services -->
+        <package android:name="net.extrawdw.notifly" />             <!-- Notifly diagnostic source -->
     </queries>
 
     <application
