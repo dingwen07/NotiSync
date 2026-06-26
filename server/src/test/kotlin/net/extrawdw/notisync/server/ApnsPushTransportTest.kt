@@ -44,7 +44,7 @@ class ApnsPushTransportTest {
         val transport = ApnsPushTransport(
             topic = APNS_TOPIC,
             ttlMillis = 60_000,
-            tokenProvider = provider,
+            tokenProviders = providers(provider),
             client = ApnsClient { ApnsResponse(403, """{"reason":"ExpiredProviderToken"}""") },
         )
 
@@ -53,12 +53,32 @@ class ApnsPushTransportTest {
     }
 
     @Test
+    fun invalidProviderTokenDoesNotRemint() = runBlocking {
+        var invalidations = 0
+        val provider = object : ApnsTokenProvider {
+            override fun token() = "jwt"
+            override fun invalidate() { invalidations++ }
+        }
+        val transport = ApnsPushTransport(
+            topic = APNS_TOPIC,
+            ttlMillis = 60_000,
+            tokenProviders = providers(provider),
+            client = ApnsClient { ApnsResponse(403, """{"reason":"InvalidProviderToken"}""") },
+        )
+
+        // InvalidProviderToken is a key/kid/team misconfig — re-minting the same token on every send storms
+        // APNs into 429 TooManyProviderTokenUpdates, so it must NOT invalidate the cached token.
+        assertEquals(PushOutcome.TRANSIENT_FAILURE, transport.wake(apnsRoute(), pushData(), Urgency.HIGH))
+        assertEquals("InvalidProviderToken must not re-mint", 0, invalidations)
+    }
+
+    @Test
     fun malformedApnsRouteRefIsInvalidWithoutCallingProvider() = runBlocking {
         var calls = 0
         val transport = ApnsPushTransport(
             topic = APNS_TOPIC,
             ttlMillis = 60_000,
-            tokenProvider = ApnsTokenProvider { "jwt" },
+            tokenProviders = providers(ApnsTokenProvider { "jwt" }),
             client = ApnsClient {
                 calls++
                 ApnsResponse(200, "")
@@ -110,12 +130,15 @@ class ApnsPushTransportTest {
     ) = ApnsPushTransport(
         topic = APNS_TOPIC,
         ttlMillis = 60_000,
-        tokenProvider = ApnsTokenProvider { "jwt" },
+        tokenProviders = providers(ApnsTokenProvider { "jwt" }),
         client = ApnsClient { request ->
             requests += request
             response
         },
     )
+
+    private fun providers(p: ApnsTokenProvider) =
+        mapOf(RouteEnvironment.PRODUCTION to p, RouteEnvironment.DEVELOPMENT to p)
 
     private fun apnsRoute(
         routeRef: String = "abcd1234",
