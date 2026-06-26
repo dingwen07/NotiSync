@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.delivery
 
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.websocket.Frame

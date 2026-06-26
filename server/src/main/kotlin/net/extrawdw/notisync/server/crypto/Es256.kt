@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.crypto
 
 import java.math.BigInteger
 import java.security.KeyFactory

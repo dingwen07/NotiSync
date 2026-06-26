@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.server
 
+import net.extrawdw.notisync.server.integrity.HttpAppCheckJwks
+import net.extrawdw.notisync.server.integrity.JwksHttpResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull

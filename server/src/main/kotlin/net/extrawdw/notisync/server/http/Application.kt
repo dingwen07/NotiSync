@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.http
 
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -46,6 +46,28 @@ import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
 import net.extrawdw.notisync.protocol.WsKind
 import net.extrawdw.notisync.protocol.WsMessage
+import net.extrawdw.notisync.server.ServerConfig
+import net.extrawdw.notisync.server.auth.AuthResult
+import net.extrawdw.notisync.server.auth.JwtIssuer
+import net.extrawdw.notisync.server.auth.ServerAuth
+import net.extrawdw.notisync.server.auth.SignatureCheck
+import net.extrawdw.notisync.server.broker.Broker
+import net.extrawdw.notisync.server.crypto.Verification
+import net.extrawdw.notisync.server.delivery.WebSocketHub
+import net.extrawdw.notisync.server.delivery.WsConnection
+import net.extrawdw.notisync.server.delivery.push.CompositePushTransport
+import net.extrawdw.notisync.server.integrity.AppCheckJwks
+import net.extrawdw.notisync.server.integrity.AppCheckVerifier
+import net.extrawdw.notisync.server.integrity.AttestationMetrics
+import net.extrawdw.notisync.server.integrity.AttestationService
+import net.extrawdw.notisync.server.integrity.IntegrityDecision
+import net.extrawdw.notisync.server.integrity.PlayIntegrityDecoder
+import net.extrawdw.notisync.server.integrity.PlayIntegrityVerifier
+import net.extrawdw.notisync.server.data.EpochStore
+import net.extrawdw.notisync.server.data.NotiSyncDb
+import net.extrawdw.notisync.server.data.PrivateAssetStore
+import net.extrawdw.notisync.server.data.RelayStore
+import net.extrawdw.notisync.server.data.RouteStore
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64

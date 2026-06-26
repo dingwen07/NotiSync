@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.auth
 
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpStatusCode
@@ -10,6 +10,8 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ErrorResponse
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
+import net.extrawdw.notisync.server.ServerConfig
+import net.extrawdw.notisync.server.broker.Broker
 import java.util.Base64
 import kotlin.math.abs
 

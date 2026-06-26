@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.integrity
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -11,6 +11,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
+import net.extrawdw.notisync.server.ServerConfig
 import org.slf4j.LoggerFactory
 import java.math.BigInteger
 import java.net.URI

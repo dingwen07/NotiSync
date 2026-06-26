@@ -1,9 +1,11 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.auth
 
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.server.ServerConfig
+import net.extrawdw.notisync.server.crypto.Es256
 import java.io.File
 import java.math.BigInteger
 import java.nio.file.Files

@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.integrity
 
 import com.google.api.client.googleapis.javanet.GoogleNetHttpTransport
 import com.google.api.client.googleapis.json.GoogleJsonResponseException
@@ -13,6 +13,7 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
+import net.extrawdw.notisync.server.ServerConfig
 import org.slf4j.LoggerFactory
 
 data class IntegrityPayload(

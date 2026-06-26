@@ -1,6 +1,7 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.integrity
 
 import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
+import net.extrawdw.notisync.server.ServerConfig
 
 /**
  * A pluggable "way" of verifying client integrity. Each method — Play Integrity, Firebase App Check, and
