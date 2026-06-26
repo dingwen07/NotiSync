@@ -21,7 +21,7 @@ enum class Purpose { ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL }
 /**
  * NS2: a self-contained, individually identity-signed certificate of a client's OPERATIONAL keys for
  * one monotonic [epoch]. The identity key (the cold root) signs this, delegating the hot-path work to
- * a rotatable [operationalSigningKey] (TEE) and [hpkePublicKeyset]. It carries [identityPublicKey] so
+ * a rotatable [operationalSigningKey] (TEE) and [hpkePublicKey]. It carries [identityPublicKey] so
  * it self-verifies ([clientId] == fingerprint(identityPublicKey)) and a peer that holds nothing about
  * this client can bootstrap the anchor from it alone. Wrapped in [SignedBlob] (typ = [SignedType.KEY_EPOCH],
  * signerId = clientId, sig = identity key) and stored/served by the broker; it is the unit rotation
@@ -35,7 +35,7 @@ data class ClientKeyEpoch(
     @ByteString val identityPublicKey: ByteArray,   // X.509 SPKI, EC P-256 — the anchor (constant across epochs)
     val epoch: Int,                                  // ≥ 1, strictly monotonic per clientId
     @ByteString val operationalSigningKey: ByteArray, // X.509 SPKI, EC P-256 — the rotatable hot-path key
-    @ByteString val hpkePublicKeyset: ByteArray,      // Tink X25519 public keyset for this epoch
+    @ByteString val hpkePublicKey: ByteArray,        // raw 32-byte X25519 public key (legacy peers: Tink keyset > 32 B)
     val purposes: List<Purpose>,
     val notBefore: Long,
     val notAfter: Long,

@@ -125,7 +125,7 @@ fun newOperationalSigner(signer: IdentitySigner, epoch: Int = 1): SoftwareOperat
 /** A [Peer] for [signer] with the given HPKE public keyset (and NS2 [currentEpoch], 0 = NS1-era). */
 fun peerOf(
     signer: IdentitySigner,
-    hpkePublicKeyset: ByteArray,
+    hpkePublicKey: ByteArray,
     ownDevice: Boolean = true,
     name: String = "peer",
     profileTs: Long = 0L,
@@ -135,7 +135,7 @@ fun peerOf(
     displayName = name,
     platform = "android",
     identityPublicKeyB64 = enc.encodeToString(signer.publicKeySpki),
-    hpkePublicKeysetB64 = enc.encodeToString(hpkePublicKeyset),
+    hpkePublicKeyB64 = enc.encodeToString(hpkePublicKey),
     addedAt = 1L,
     profileUpdatedAt = profileTs,
     ownDevice = ownDevice,
@@ -146,7 +146,7 @@ fun peerOf(
 fun keyEpochBlob(
     signer: IdentitySigner,
     op: OperationalSigner,
-    hpkePublicKeyset: ByteArray,
+    hpkePublicKey: ByteArray,
     epoch: Int = 1,
     minEpoch: Int = epoch,
     notBefore: Long = 0L,
@@ -158,7 +158,7 @@ fun keyEpochBlob(
         identityPublicKey = signer.publicKeySpki,
         epoch = epoch,
         operationalSigningKey = op.operationalPublicKeySpki,
-        hpkePublicKeyset = hpkePublicKeyset,
+        hpkePublicKey = hpkePublicKey,
         purposes = purposes,
         notBefore = notBefore,
         notAfter = notAfter,
@@ -205,6 +205,7 @@ fun testChannel(
     trust: TrustState,
     transport: Transport = CapturingTransport(),
     onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
+    onUnresolvedSender: (ClientId) -> Unit = { _ -> },
     dedup: MessageDedup? = null,
     operational: OperationalSigner = newOperationalSigner(me),
 ): SecureChannel = SecureChannel(
@@ -215,5 +216,6 @@ fun testChannel(
     directory = TrustPeerDirectory(trust),
     log = {},
     onBadSignature = onBadSignature,
+    onUnresolvedSender = onUnresolvedSender,
     dedup = dedup,
 )

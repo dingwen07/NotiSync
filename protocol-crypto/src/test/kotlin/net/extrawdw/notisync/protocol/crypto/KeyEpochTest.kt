@@ -28,7 +28,7 @@ class KeyEpochTest {
             identityPublicKey = if (stripIdentity) ByteArray(0) else identity.publicKeySpki,
             epoch = epoch,
             operationalSigningKey = opSpki,
-            hpkePublicKeyset = hpke,
+            hpkePublicKey = hpke,
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 0L,
             notAfter = Long.MAX_VALUE,

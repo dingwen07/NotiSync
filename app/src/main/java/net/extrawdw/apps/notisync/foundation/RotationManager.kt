@@ -8,6 +8,7 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
+import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 
 /**
@@ -133,7 +134,9 @@ class RotationManager(
             identityPublicKey = identitySpki,
             epoch = epoch,
             operationalSigningKey = opSpki,
-            hpkePublicKeyset = hpkePublic,
+            // Publish the raw 32-byte X25519 key (not the Tink keyset); peers seal via Hpke.seal's length
+            // dispatch (iOS CryptoKit directly). Mirrors AppGraph.buildClientKeyEpochBlob.
+            hpkePublicKey = Hpke.rawPublicKey(hpkePublic),
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = notBefore,
             notAfter = notAfter,

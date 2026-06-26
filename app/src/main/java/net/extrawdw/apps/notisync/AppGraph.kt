@@ -96,6 +96,7 @@ import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
+import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
@@ -468,7 +469,11 @@ class AppGraph(private val app: Application) {
         RotationKeyInfo(
             epoch = epoch,
             signingKey = KeyFingerprint.short(operational.operationalPublicKeySpki),
-            encryptionKey = runCatching { epochHpke.publicKeyset(epoch) }.getOrNull()?.let { KeyFingerprint.short(it) } ?: "—",
+            // Fingerprint the raw published key (not the local Tink keyset) so this self-diagnostic matches
+            // the HPKE fingerprint peers compute over the same bytes carried in our ClientKeyEpoch.
+            encryptionKey = runCatching {
+                epochHpke.publicKeyset(epoch)?.let { KeyFingerprint.short(Hpke.rawPublicKey(it)) }
+            }.getOrNull() ?: "—",
             pendingTargetEpoch = pending?.targetEpoch,
             pendingActivated = activated,
             nextEventAtMillis = nextAt,
@@ -709,7 +714,9 @@ class AppGraph(private val app: Application) {
             identityPublicKey = if (stripIdentity) ByteArray(0) else identity.publicKeySpki,
             epoch = epoch,
             operationalSigningKey = operational.operationalPublicKeySpki,
-            hpkePublicKeyset = epochHpke.loadOrCreate(epoch),
+            // Publish the raw 32-byte X25519 key (not the Tink keyset) so Tink-free peers (iOS CryptoKit)
+            // can seal; Android peers seal via Hpke.seal's length dispatch. The local private keyset stays Tink.
+            hpkePublicKey = Hpke.rawPublicKey(epochHpke.loadOrCreate(epoch)),
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 0L,
             notAfter = Long.MAX_VALUE,

@@ -97,7 +97,7 @@ class ProtocolCodecTest {
             identityPublicKey = byteArrayOf(1, 2, 3),
             epoch = 2,
             operationalSigningKey = byteArrayOf(4, 5, 6),
-            hpkePublicKeyset = byteArrayOf(7, 8, 9),
+            hpkePublicKey = byteArrayOf(7, 8, 9),
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 0L,
             notAfter = Long.MAX_VALUE,

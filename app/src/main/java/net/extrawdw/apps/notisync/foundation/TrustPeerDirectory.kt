@@ -43,6 +43,17 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
         }
         // Seal to each recipient's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
         // signed EnvelopeAuth, so the recipient selects the matching (possibly retained) private keyset.
-        return selected.map { RecipientKey(it.clientId, b64.decode(it.hpkePublicKeysetB64), it.currentEpoch) }
+        return selected.map { RecipientKey(it.clientId, b64.decode(it.hpkePublicKeyB64), it.currentEpoch) }
+    }
+
+    override fun unsealableRecipients(scope: Recipients): Set<ClientId> {
+        // Trusted peers we hold no usable key-epoch for (the convergence-pull target set). OwnMesh/AllTrusted
+        // repair the whole set — a notification to own-mesh should heal every keyless device, and pulling a
+        // trusted "other" contact's public key-epoch is harmless. Only(id) is precise (unicast targets one id).
+        val needing = trust.peersNeedingKeyEpoch(System.currentTimeMillis())
+        return when (scope) {
+            Recipients.OwnMesh, Recipients.AllTrusted -> needing.toSet()
+            is Recipients.Only -> if (scope.id in needing) setOf(scope.id) else emptySet()
+        }
     }
 }

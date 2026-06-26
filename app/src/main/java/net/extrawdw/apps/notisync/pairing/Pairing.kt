@@ -172,7 +172,7 @@ class PairingManager(private val graph: AppGraph) {
             identityKeyFingerprint = KeyFingerprint.short(card.identityPublicKey),
             epoch = ke?.epoch ?: 0,
             operationalKeyFingerprint = ke?.let { KeyFingerprint.short(it.operationalSigningKey) } ?: "",
-            hpkeKeyFingerprint = ke?.let { KeyFingerprint.short(it.hpkePublicKeyset) } ?: "",
+            hpkeKeyFingerprint = ke?.let { KeyFingerprint.short(it.hpkePublicKey) } ?: "",
             keyEpochStatus = keyEpochStatus,
         )
     }

@@ -525,7 +525,7 @@ class TrustStore(
             displayName = overlay?.displayName ?: card?.displayName ?: entry.clientId.shortForm(),
             platform = overlay?.platform ?: card?.platform ?: "",
             identityPublicKeyB64 = b64e.encodeToString(identity),
-            hpkePublicKeysetB64 = b64e.encodeToString(current.hpkePublicKeyset),
+            hpkePublicKeyB64 = b64e.encodeToString(current.hpkePublicKey),
             addedAt = entry.updatedAt,
             capabilities = overlay?.capabilities ?: card?.capabilities ?: emptyList(),
             profileUpdatedAt = overlay?.updatedAt ?: card?.createdAt ?: 0L,
