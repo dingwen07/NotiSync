@@ -1,5 +1,6 @@
 package net.extrawdw.notisync.protocol
 
+import kotlin.jvm.JvmInline
 import kotlinx.serialization.Serializable
 
 /**

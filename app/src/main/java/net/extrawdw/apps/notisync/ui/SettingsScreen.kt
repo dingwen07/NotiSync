@@ -107,7 +107,10 @@ fun SettingsScreen() {
                         benchmark = benchmark,
                         oversizedTest = oversizedTest,
                         rotateNow = rotateNow,
-                        onRefresh = { probeKey++ },
+                        onRefresh = {
+                            graph.transport.resetVerificationBackoff()
+                            probeKey++
+                        },
                         onClearToken = {
                             graph.transport.clearCachedAuth()
                             probeKey++

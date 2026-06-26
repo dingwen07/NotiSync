@@ -339,6 +339,11 @@ class BrokerClient(
      *  attestation on the next authenticated request. */
     fun clearCachedAuth() = storeAuth(null)
 
+    /** Diagnostics: let the next attestation try immediately after a prior verification failure. */
+    fun resetVerificationBackoff() {
+        lastAuthFailure = null
+    }
+
     /**
      * Exponential backoff with additive jitter for re-attestation. The nth consecutive failure waits
      * base·2^(n-1) — shift capped at [AUTH_COOLDOWN_MAX_SHIFT], total capped at [AUTH_COOLDOWN_MAX_MS] —

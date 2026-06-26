@@ -1,5 +1,6 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
+    alias(libs.plugins.kotlin.serialization) // enables @Serializable in tests (golden-vector schema); no main-source @Serializable types
 }
 
 kotlin {
