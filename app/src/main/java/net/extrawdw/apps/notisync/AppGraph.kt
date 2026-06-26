@@ -68,7 +68,7 @@ import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.RotationManager
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
-import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
+import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.apps.notisync.notification.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.GraphicsPipeline
 import net.extrawdw.apps.notisync.notification.MirrorChannels
@@ -195,9 +195,8 @@ class AppGraph(private val app: Application) {
             signer = identity,
             operationalSigner = { operational },
             baseUrlProvider = { settings.brokerUrl.value },
-            integrity = PlayIntegrityAttestor(app, BuildConfig.PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER),
+            integrity = AppCheckAttestor(),
             clientKeyEpochProvider = ::buildClientKeyEpochBlob,
-            debugKey = BuildConfig.DEBUG_KEY,
             tokenStore = KeyVaultAuthTokenStore(app, vault),
             scope = scope,
         )

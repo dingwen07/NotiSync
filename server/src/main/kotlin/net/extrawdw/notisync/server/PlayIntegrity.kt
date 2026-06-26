@@ -10,7 +10,8 @@ import com.google.auth.http.HttpCredentialsAdapter
 import com.google.auth.oauth2.GoogleCredentials
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.AttestationType
+import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import org.slf4j.LoggerFactory
 
@@ -66,10 +67,11 @@ class GooglePlayIntegrityDecoder(private val config: ServerConfig) : PlayIntegri
 class PlayIntegrityVerifier(
     private val config: ServerConfig,
     private val decoder: PlayIntegrityDecoder = GooglePlayIntegrityDecoder(config),
-) {
+) : AttestationVerifier {
+    override val type: String = AttestationType.PLAY_INTEGRITY
     private val log = LoggerFactory.getLogger(javaClass)
 
-    suspend fun verify(request: PlayIntegrityVerificationRequest): IntegrityDecision {
+    override suspend fun verify(request: IntegrityVerificationRequest): IntegrityDecision {
         fun reject(reason: String, payload: IntegrityPayload? = null, retryable: Boolean = false): IntegrityDecision.Rejected {
             log.info(
                 "Play Integrity rejected client={} reason={} appLicensing={} appRecognition={} device={} activity={} playProtect={} retryable={}",

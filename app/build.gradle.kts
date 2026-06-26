@@ -16,9 +16,6 @@ val localProperties = Properties().apply {
     if (file.isFile) file.inputStream().use(::load)
 }
 
-fun String.asBuildConfigString(): String =
-    "\"" + replace("\\", "\\\\").replace("\"", "\\\"") + "\""
-
 android {
     namespace = "net.extrawdw.apps.notisync"
     compileSdk {
@@ -32,10 +29,6 @@ android {
         versionCode = 13
         versionName = "1.1.1-rc.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
-        val cloudProjectNumber = localProperties.getProperty("PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER")
-            ?: localProperties.getProperty("CLOUD_PROJECT_NUMBER")
-            ?: "0"
-        buildConfigField("long", "PLAY_INTEGRITY_CLOUD_PROJECT_NUMBER", "${cloudProjectNumber.trim()}L")
         // NS2 epoch rotation: the foundation (operational key at epoch 1, key-epoch publish, signed floor +
         // generation ring) is always on; this flag gates ONLY whether the client ever mints a SECOND epoch
         // (the scheduled rotation + pre-warm state machine in RotationManager). OFF ⇒ epoch 1 forever, so the
@@ -46,13 +39,10 @@ android {
     }
 
     buildTypes {
-        debug {
-            buildConfigField("String", "DEBUG_KEY", (localProperties.getProperty("DEBUG_KEY") ?: "").asBuildConfigString())
-        }
+        debug { }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
-            buildConfigField("String", "DEBUG_KEY", "".asBuildConfigString())
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "src/main/keepRules/rules.keep",
@@ -143,8 +133,14 @@ dependencies {
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
 
+    // App Check — genuine-app/device attestation (Play Integrity provider, handled internally by Firebase).
+    // The broker verifies the App Check JWT locally against the App Check JWKS. Debug builds use the debug
+    // provider (a console-registered debug token), kept out of release via debugImplementation + src/debug.
+    implementation(libs.firebase.appcheck)
+    implementation(libs.firebase.appcheck.playintegrity)
+    debugImplementation(libs.firebase.appcheck.debug)
+
     // QR pairing — Google code scanner (no CAMERA permission) + ZXing for QR generation
-    implementation(libs.play.integrity)
     implementation(libs.play.services.code.scanner)
     implementation(libs.zxing.core)
 

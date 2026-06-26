@@ -59,15 +59,34 @@ data class RelayAck(
     }
 }
 
-/** Request body for POST /v1/integrity/verify. */
+/** The pluggable client-integrity methods the broker can verify, named by
+ *  [IntegrityVerificationRequest.attestationType]. Absent/legacy requests are [PLAY_INTEGRITY]. */
+object AttestationType {
+    const val PLAY_INTEGRITY = "playIntegrity"
+    const val FIREBASE_APP_CHECK = "firebaseAppCheck"
+    const val APPLE_APP_ATTEST = "appleAppAttest"
+}
+
+/**
+ * Request body for POST /v2/integrity/verify. Carries whichever client-integrity proof the client uses;
+ * the broker dispatches on [attestationType]. The whole body is SHA-256'd and identity-ECDSA-signed by the
+ * request signature, so [attestationToken] is bound to this client/nonce/timestamp regardless of method.
+ */
 @Serializable
-data class PlayIntegrityVerificationRequest(
+data class IntegrityVerificationRequest(
     val clientId: ClientId,
-    /** Client-generated nonce bound into [requestHash]. */
-    val requestNonce: String,
-    /** Play Integrity Standard API requestHash: hash("notisync-play-integrity-v1\\n<clientId>\\n<requestNonce>"). */
-    val requestHash: String,
-    val integrityToken: String,
+    /** Which attestation method this request uses; absent ⇒ legacy [AttestationType.PLAY_INTEGRITY]. */
+    val attestationType: String = AttestationType.PLAY_INTEGRITY,
+    /** Generic attestation token: the Firebase App Check JWT (and, later, an Apple App Attest assertion). */
+    val attestationToken: String? = null,
+    /** Reserved for App Attest's per-install hardware key id. Unused by Play Integrity / App Check. */
+    val attestationKeyId: String? = null,
+    /** Play Integrity (legacy) only: client-generated nonce bound into [requestHash]. */
+    val requestNonce: String = "",
+    /** Play Integrity (legacy) only: Standard API requestHash hash("notisync-play-integrity-v1\\n<clientId>\\n<requestNonce>"). */
+    val requestHash: String = "",
+    /** Play Integrity (legacy) only: the Play Integrity token. */
+    val integrityToken: String = "",
     /**
      * NS2 (`/v2`): the self-authenticating [ClientKeyEpoch] blob, sent on first contact / key refresh so the
      * broker learns this client's identity + operational keys. Replaces [clientCard] on the NS2 server.
@@ -75,12 +94,13 @@ data class PlayIntegrityVerificationRequest(
     val clientKeyEpoch: SignedBlob? = null,
     /** NS1 (`/v1`, legacy) only: the client card. The NS2 server ignores this; use [clientKeyEpoch]. */
     val clientCard: SignedBlob? = null,
-    /** Debug-only HMAC proof over the attestation binding; never send the raw debug key. */
+    /** Debug-only HMAC proof over the Play Integrity binding; never send the raw debug key. */
     val debugProof: String? = null,
 )
 
+/** Response body for POST /v2/integrity/verify: the broker bearer (ES256 JWT) issued on a passing attestation. */
 @Serializable
-data class PlayIntegrityVerificationResponse(
+data class IntegrityVerificationResponse(
     val token: String,
     val tokenType: String = "Bearer",
     val clientId: ClientId,
@@ -99,6 +119,10 @@ data class VerificationStatusResponse(
     val clientId: ClientId? = null,
     /** Bearer token expiry (epoch millis), present iff [verified]. */
     val expiresAt: Long? = null,
+    /** Required hashcash difficulty for first-contact /integrity/verify (0 = PoW disabled). */
+    val powDifficulty: Int = 0,
+    /** Attestation methods this broker accepts (see [AttestationType]); the client picks one it supports. */
+    val acceptedAttestationMethods: List<String> = emptyList(),
 )
 
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */

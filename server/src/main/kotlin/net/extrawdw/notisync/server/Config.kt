@@ -42,6 +42,16 @@ data class ServerConfig(
      */
     val allowedDeviceActivityLevels: Set<String>,
     val requiredPlayProtectVerdicts: Set<String>,
+    // --- Firebase App Check (verified locally as an RS256 JWT against the App Check JWKS) ---
+    /** When on, the broker also accepts the firebaseAppCheck attestation method (alongside Play Integrity). */
+    val appCheckEnabled: Boolean,
+    /** Numeric Firebase project number; an App Check token's iss/aud must match it. */
+    val appCheckProjectNumber: String,
+    /** Allow-list of Firebase app ids (the token `sub`) — pins attestation to NotiSync's own app(s). */
+    val appCheckAppIds: Set<String>,
+    val appCheckJwksUrl: String,
+    /** Optional extra freshness cap on an App Check token (0 = rely on the token's own exp). */
+    val appCheckMaxTokenAgeMillis: Long,
     val signedRequestMaxSkewMillis: Long,
     /** Leading-hex-zero difficulty required of the /v1/integrity/verify proof of work (0 disables). */
     val powDifficulty: Int,
@@ -103,6 +113,12 @@ data class ServerConfig(
                 requiredDeviceRecognitionVerdicts = csv("NOTISYNC_REQUIRE_DEVICE_RECOGNITION", "MEETS_DEVICE_INTEGRITY"),
                 allowedDeviceActivityLevels = csv("NOTISYNC_ALLOW_DEVICE_ACTIVITY", "LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED"),
                 requiredPlayProtectVerdicts = csv("NOTISYNC_REQUIRE_PLAY_PROTECT", "NO_ISSUES"),
+                // App Check enable is security-critical (it widens accepted attestation) → env/sysprop only.
+                appCheckEnabled = secureEnv("NOTISYNC_APPCHECK_ENABLED")?.toBooleanStrictOrNull() ?: false,
+                appCheckProjectNumber = env("NOTISYNC_APPCHECK_PROJECT_NUMBER").orEmpty(),
+                appCheckAppIds = csv("NOTISYNC_APPCHECK_APP_IDS", ""),
+                appCheckJwksUrl = env("NOTISYNC_APPCHECK_JWKS_URL") ?: "https://firebaseappcheck.googleapis.com/v1/jwks",
+                appCheckMaxTokenAgeMillis = env("NOTISYNC_APPCHECK_MAX_AGE_MS")?.toLongOrNull() ?: 0L,
                 signedRequestMaxSkewMillis = env("NOTISYNC_SIGNED_REQUEST_MAX_SKEW_MS")?.toLongOrNull()
                     ?: (5L * 60 * 1000),
                 powDifficulty = env("NOTISYNC_POW_DIFFICULTY")?.toIntOrNull() ?: 4,

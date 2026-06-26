@@ -34,8 +34,8 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ErrorResponse
 import net.extrawdw.notisync.protocol.HealthResponse
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
@@ -71,11 +71,11 @@ private suspend fun ApplicationCall.receiveCapped(maxBytes: Int): ByteArray? {
 fun Application.module() = brokerModule()
 
 /**
- * The broker application. [decoder] is a test seam for the Play Integrity decoder; production passes
- * null and uses the real Google-backed decoder. It is kept off [module] so Ktor's reflective module
- * loader (application.yaml) binds the no-arg entry point.
+ * The broker application. [decoder] and [appCheckJwks] are test seams for the Play Integrity decoder and
+ * the App Check JWKS source; production passes null and uses the real Google-backed decoder / live JWKS.
+ * Kept off [module] so Ktor's reflective module loader (application.yaml) binds the no-arg entry point.
  */
-fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
+fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks: AppCheckJwks? = null) {
     val log = LoggerFactory.getLogger("NotiSyncBroker")
     val config = ServerConfig.fromEnv()
     val db = NotiSyncDb.connect(config)
@@ -88,7 +88,17 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     val push = CompositePushTransport.create(config)
     val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
-    val integrity = if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config)
+    // Pluggable attestation: Play Integrity is always available (legacy/transition); App Check is added when
+    // configured. New "ways" (e.g. Apple App Attest) join here without touching the endpoint or downstream.
+    val attestation = AttestationService(
+        config,
+        buildList {
+            add(if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config))
+            if (config.appCheckEnabled) {
+                add(if (appCheckJwks != null) AppCheckVerifier(config, appCheckJwks) else AppCheckVerifier(config))
+            }
+        },
+    )
 
     install(DefaultHeaders)
     install(CallLogging)
@@ -116,12 +126,13 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
     }
 
     log.info(
-        "NotiSync broker {} starting (db={}, fcm={}, apns={}, playIntegrity={})",
+        "NotiSync broker {} starting (db={}, fcm={}, apns={}, playIntegrity={}, appCheck={})",
         config.version,
         config.dbPath,
         config.fcmEnabled,
         config.apnsEnabled,
         config.playIntegrityEnabled,
+        config.appCheckEnabled,
     )
 
     routing {
@@ -147,6 +158,8 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                     verified = principal != null,
                     clientId = principal?.clientId,
                     expiresAt = principal?.expiresAtMillis,
+                    powDifficulty = config.powDifficulty,
+                    acceptedAttestationMethods = attestation.acceptedMethods,
                 )
             )
         }
@@ -155,7 +168,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
             val body = call.receiveCapped(MAX_VERIFY_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val req = runCatching {
-                ProtocolCodec.decodeFromJson<PlayIntegrityVerificationRequest>(body.toString(Charsets.UTF_8))
+                ProtocolCodec.decodeFromJson<IntegrityVerificationRequest>(body.toString(Charsets.UTF_8))
             }.getOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_integrity_request"))
 
             // Identity is learned from the self-authenticating key-epoch (first contact / key refresh).
@@ -186,7 +199,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                 }
             }
 
-            when (val decision = integrity.verify(req)) {
+            when (val decision = attestation.verify(req)) {
                 is IntegrityDecision.Rejected -> return@post call.respond(
                     if (decision.retryable) HttpStatusCode.TooManyRequests else HttpStatusCode.Forbidden,
                     ErrorResponse(decision.reason),
@@ -202,7 +215,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null) {
                     val issued = auth.issue(req.clientId)
                     call.respond(
                         HttpStatusCode.OK,
-                        PlayIntegrityVerificationResponse(
+                        IntegrityVerificationResponse(
                             token = issued.token,
                             clientId = req.clientId,
                             expiresAt = issued.expiresAtMillis,

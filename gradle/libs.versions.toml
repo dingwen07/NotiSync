@@ -43,7 +43,6 @@ work = "2.11.2"
 
 # Pairing (QR)
 playServicesCodeScanner = "16.1.0"
-playIntegrityClient = "1.6.0"
 zxing = "3.5.4"
 
 # Firebase (client)
@@ -145,10 +144,12 @@ ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-conte
 # --- Android: FCM ---
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+firebase-appcheck = { group = "com.google.firebase", name = "firebase-appcheck" }
+firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
+firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
 
 # --- Android: QR pairing (Google code scanner needs no CAMERA permission) ---
 play-services-code-scanner = { group = "com.google.android.gms", name = "play-services-code-scanner", version.ref = "playServicesCodeScanner" }
-play-integrity = { group = "com.google.android.play", name = "integrity", version.ref = "playIntegrityClient" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
 # --- Test ---

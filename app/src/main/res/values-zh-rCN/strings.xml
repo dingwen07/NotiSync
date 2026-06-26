@@ -99,6 +99,7 @@
     <string name="diag_token_expires">验证令牌有效期 %1$s</string>
     <string name="diag_token_expired">已过期</string>
     <string name="diag_token_less_than_minute">少于 1 分钟</string>
+    <string name="diag_clear_token">清除本地令牌</string>
     <plurals name="diag_duration_days">
         <item quantity="other">%1$d 天</item>
     </plurals>
@@ -129,13 +130,13 @@
     <string name="diag_rotation_retiring">正在轮换到世代 %1$d — 旧世代将在 %2$s 后退役</string>
     <string name="diag_rotation_disabled">此版本未启用轮换（ENABLE_ROTATION）。</string>
     <string name="diag_rotation_hint">立即生成下一个密钥世代，而不必等待 30 天的计划。上一个世代的密钥会在重叠期内保留，因此在途通知仍可解开。</string>
-    <string name="diag_rotate_now">立即轮换世代</string>
+    <string name="diag_rotate_now">立即轮换密钥</string>
     <string name="diag_rotating">轮换中…</string>
     <string name="diag_rotate_done">已轮换 — 当前世代 %1$d</string>
     <string name="diag_rotate_pending">已有一个轮换正在进行</string>
     <string name="diag_rotate_failed">轮换失败 — 请检查与中继服务器的连接</string>
     <string name="diag_channels">通知渠道</string>
-    <string name="diag_channels_hint">通知渠道（类别）会在新通知到达时创建。来自 Android 的通知将与原始通知通道保持一致，而 iOS 应用则将使用单一通知通道。使用此选项来删除所有镜像通知渠道，这还会还原您对所有通知频道的自定义设置（包括声音、振动、弹出横幅、通知圆点等）。</string>
+    <string name="diag_channels_hint">通知渠道（类别）会在新通知到达时创建。来自 Android 的通知将与原始通知通道保持一致，而 iOS 应用则将使用单一通知通道。\n\n使用此选项来删除所有镜像通知渠道，这还会还原您对所有通知频道的自定义设置（包括声音、振动、弹出横幅、通知圆点等）。</string>
     <string name="diag_channels_reset">重置通知渠道</string>
     <plurals name="diag_channels_reset_done">
         <item quantity="other">已删除 %1$d 个渠道。</item>

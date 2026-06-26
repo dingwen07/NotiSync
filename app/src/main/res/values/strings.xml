@@ -103,6 +103,7 @@
     <string name="diag_token_expires">Token valid for %1$s</string>
     <string name="diag_token_expired">expired</string>
     <string name="diag_token_less_than_minute">less than 1 minute</string>
+    <string name="diag_clear_token">Clear local token</string>
     <plurals name="diag_duration_days">
         <item quantity="one">%1$d day</item>
         <item quantity="other">%1$d days</item>
@@ -136,13 +137,13 @@
     <string name="diag_rotation_retiring">Rotating to epoch %1$d — old epoch retires in %2$s</string>
     <string name="diag_rotation_disabled">Rotation is off in this build (ENABLE_ROTATION).</string>
     <string name="diag_rotation_hint">Mint the next key epoch now instead of waiting for the 30-day schedule. The previous epoch\'s keys are retained through the overlap so in-flight notifications still open.</string>
-    <string name="diag_rotate_now">Rotate epoch now</string>
+    <string name="diag_rotate_now">Rotate key now</string>
     <string name="diag_rotating">Rotating…</string>
     <string name="diag_rotate_done">Rotated — now at epoch %1$d</string>
     <string name="diag_rotate_pending">A rotation is already in progress</string>
     <string name="diag_rotate_failed">Rotation failed — check the broker connection</string>
     <string name="diag_channels">Notification channels</string>
-    <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps. Use this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
+    <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
     <string name="diag_channels_reset">Reset notification channels</string>
     <plurals name="diag_channels_reset_done">
         <item quantity="one">Deleted %1$d channel.</item>

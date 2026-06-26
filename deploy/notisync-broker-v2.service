@@ -29,6 +29,12 @@ Environment=NOTISYNC_REQUIRE_APP_RECOGNITION=PLAY_RECOGNIZED
 Environment=NOTISYNC_REQUIRE_DEVICE_RECOGNITION=MEETS_DEVICE_INTEGRITY
 Environment=NOTISYNC_ALLOW_DEVICE_ACTIVITY=LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED
 Environment=NOTISYNC_REQUIRE_PLAY_PROTECT=NO_ISSUES
+# Firebase App Check — the new attestation method, accepted alongside Play Integrity during the migration.
+# The broker verifies the token locally against the App Check JWKS (no service account needed for this). The
+# app-id allow-list pins to the NotiSync app; the project's other app (net.extrawdw.notifly) is NOT listed.
+Environment=NOTISYNC_APPCHECK_ENABLED=true
+Environment=NOTISYNC_APPCHECK_PROJECT_NUMBER=873059270463
+Environment=NOTISYNC_APPCHECK_APP_IDS=1:873059270463:android:b7417ebafc094521011d8a
 # Enable Play Integrity decode + FCM later by adding (as in v1):
 Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
 Restart=on-failure

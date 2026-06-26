@@ -29,12 +29,13 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import net.extrawdw.apps.notisync.integrity.PlayIntegrityAttestor
+import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
+import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.HealthResponse
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationRequest
-import net.extrawdw.notisync.protocol.PlayIntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
+import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
@@ -51,7 +52,6 @@ import net.extrawdw.notisync.protocol.WsMessage
 import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
-import net.extrawdw.notisync.protocol.crypto.PlayIntegrityBinding
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
 import java.net.URI
 import java.util.Base64
@@ -69,11 +69,10 @@ class BrokerClient(
      *  signerEpoch ≥1; a provider so a rotation swaps the active epoch without rebuilding the client. */
     private val operationalSigner: () -> OperationalSigner,
     private val baseUrlProvider: () -> String,
-    private val integrity: PlayIntegrityAttestor,
+    private val integrity: AppCheckAttestor,
     /** This device's current self-contained, identity-signed `ClientKeyEpoch` ([SignedType.KEY_EPOCH]) —
      *  carried on attestation so the broker learns our keys, and (re)published via [publishKeyEpoch]. */
     private val clientKeyEpochProvider: () -> SignedBlob,
-    private val debugKey: String,
     private val tokenStore: AuthTokenStore,
     private val scope: CoroutineScope,
 ) : Transport {
@@ -92,13 +91,13 @@ class BrokerClient(
     private val authMutex = Mutex()
 
     @Volatile
-    private var cachedAuth: PlayIntegrityVerificationResponse? = null
+    private var cachedAuth: IntegrityVerificationResponse? = null
     @Volatile
     private var lastAuthFailure: AuthFailure? = null
     private val refreshInFlight = AtomicBoolean(false)
 
     init {
-        // The JWT is just a cached proof of Play Integrity (valid for days), so reuse a still-valid one
+        // The JWT is just a cached proof of a passing attestation (valid for days), so reuse a still-valid one
         // across process death — a force-stop/relaunch shouldn't force a fresh attestation. Ignore a token
         // minted for a different identity (signing key regenerated); it would only earn a 401 and re-attest.
         cachedAuth = runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
@@ -313,7 +312,7 @@ class BrokerClient(
 
     /** Attest, then atomically cache and persist the new token. Caller holds [authMutex]; records a
      *  cooldown and rethrows on failure. */
-    private suspend fun reverifyLocked(): PlayIntegrityVerificationResponse =
+    private suspend fun reverifyLocked(): IntegrityVerificationResponse =
         runCatching { verifyIntegrity() }
             .onSuccess { lastAuthFailure = null }
             .onFailure {
@@ -331,10 +330,14 @@ class BrokerClient(
             .also { storeAuth(it) }
 
     /** Write-through: update the in-memory token and mirror it to encrypted storage (best-effort). */
-    private fun storeAuth(value: PlayIntegrityVerificationResponse?) {
+    private fun storeAuth(value: IntegrityVerificationResponse?) {
         cachedAuth = value
         runCatching { tokenStore.save(value) }
     }
+
+    /** Diagnostics: drop the cached broker bearer (memory + encrypted storage), forcing a fresh
+     *  attestation on the next authenticated request. */
+    fun clearCachedAuth() = storeAuth(null)
 
     /**
      * Exponential backoff with additive jitter for re-attestation. The nth consecutive failure waits
@@ -356,22 +359,20 @@ class BrokerClient(
     }
 
     private fun throwIfCoolingDown() {
-        if (isCoolingDown()) error("Play Integrity verification cooling down after ${lastAuthFailure?.message}")
+        if (isCoolingDown()) error("Attestation cooling down after ${lastAuthFailure?.message}")
     }
 
-    private suspend fun verifyIntegrity(): PlayIntegrityVerificationResponse {
-        val requestNonce = HttpRequestSigning.newNonce()
-        val requestHash = PlayIntegrityBinding.requestHash(signer.clientId, requestNonce)
-        val integrityToken = integrity.requestToken(requestHash)
-        val request = PlayIntegrityVerificationRequest(
+    private suspend fun verifyIntegrity(): IntegrityVerificationResponse {
+        // App Check proves this is a genuine, unmodified app on a genuine device (Play Integrity under the
+        // hood, handled by Firebase). The token is bound to this clientId/nonce/timestamp by the identity
+        // request signature below, and the broker verifies it locally against the App Check JWKS.
+        val request = IntegrityVerificationRequest(
             clientId = signer.clientId,
-            requestNonce = requestNonce,
-            requestHash = requestHash,
-            integrityToken = integrityToken,
+            attestationType = AttestationType.FIREBASE_APP_CHECK,
+            attestationToken = integrity.token(),
             // NS2: carry the self-contained key-epoch so the broker learns our identity + operational keys and
             // stores them BEFORE issuing the bearer (so a subsequent operational-signed request resolves).
             clientKeyEpoch = clientKeyEpochProvider(),
-            debugProof = PlayIntegrityBinding.debugProof(debugKey, signer.clientId, requestNonce, requestHash),
         )
         val body = ProtocolCodec.encodeToJson(request).toByteArray(Charsets.UTF_8)
         val url = "${httpBase()}/v2/integrity/verify"
@@ -382,9 +383,10 @@ class BrokerClient(
             contentType(ContentType.Application.Json)
             applySigned(signed, bearerToken = refreshToken)
             if (refreshToken == null) {
-                // First contact: solve the proof of work, bound to this request's signature.
+                // First contact: solve the proof of work at the broker's advertised difficulty, bound to
+                // this request's signature so it can't be precomputed.
                 val powTimestamp = System.currentTimeMillis()
-                val powNonce = ProofOfWork.solve(signed.signature, powTimestamp)
+                val powNonce = ProofOfWork.solve(signed.signature, powTimestamp, powDifficulty())
                 header(ProofOfWork.HEADER_NONCE, powNonce)
                 header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
             }
@@ -392,10 +394,15 @@ class BrokerClient(
         }
         if (!resp.status.isSuccess()) {
             val retryable = resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
-            throw IntegrityException("Play Integrity verification failed: ${resp.status} ${resp.bodyAsText()}", retryable)
+            throw IntegrityException("Attestation verification failed: ${resp.status} ${resp.bodyAsText()}", retryable)
         }
         return ProtocolCodec.decodeFromJson(resp.bodyAsText())
     }
+
+    /** The PoW difficulty the broker currently requires (advertised on /v2/status); falls back to the
+     *  protocol default only if the broker is unreachable. A difficulty of 0 means PoW is disabled. */
+    private suspend fun powDifficulty(): Int =
+        fetchVerificationStatus()?.powDifficulty ?: ProofOfWork.DEFAULT_DIFFICULTY
 
     private fun HttpRequestBuilder.applySigned(signed: HttpRequestSigning.Headers, bearerToken: String?) {
         bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }

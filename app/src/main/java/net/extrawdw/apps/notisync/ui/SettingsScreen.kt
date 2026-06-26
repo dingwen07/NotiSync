@@ -108,6 +108,10 @@ fun SettingsScreen() {
                         oversizedTest = oversizedTest,
                         rotateNow = rotateNow,
                         onRefresh = { probeKey++ },
+                        onClearToken = {
+                            graph.transport.clearCachedAuth()
+                            probeKey++
+                        },
                         onBenchmark = {
                             if (benchmark !is BenchmarkState.Running) {
                                 scope.launch { runPowBenchmark { benchmark = it } }
