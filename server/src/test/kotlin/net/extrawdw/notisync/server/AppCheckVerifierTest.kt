@@ -4,6 +4,11 @@ import kotlinx.coroutines.runBlocking
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
+import net.extrawdw.notisync.server.integrity.AppCheckJwks
+import net.extrawdw.notisync.server.integrity.AppCheckVerifier
+import net.extrawdw.notisync.server.integrity.AttestationService
+import net.extrawdw.notisync.server.integrity.AttestationVerifier
+import net.extrawdw.notisync.server.integrity.IntegrityDecision
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue

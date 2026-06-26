@@ -4,4 +4,4 @@ ktor:
     host: "0.0.0.0"
   application:
     modules:
-      - net.extrawdw.notisync.server.ApplicationKt.module
+      - net.extrawdw.notisync.server.http.ApplicationKt.module

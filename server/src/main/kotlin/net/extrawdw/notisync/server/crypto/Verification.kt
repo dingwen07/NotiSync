@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.crypto
 
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.RouteClaim

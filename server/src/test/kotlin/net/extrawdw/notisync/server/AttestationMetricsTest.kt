@@ -2,6 +2,9 @@ package net.extrawdw.notisync.server
 
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.server.integrity.AttestationMetrics
+import net.extrawdw.notisync.server.integrity.IntegrityDecision
+import net.extrawdw.notisync.server.integrity.VerificationDetail
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test

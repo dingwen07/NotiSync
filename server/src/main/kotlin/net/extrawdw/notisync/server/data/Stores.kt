@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.data
 
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec

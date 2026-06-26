@@ -1,4 +1,4 @@
-package net.extrawdw.notisync.server
+package net.extrawdw.notisync.server.integrity
 
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
