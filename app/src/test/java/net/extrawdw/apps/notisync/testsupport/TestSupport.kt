@@ -205,6 +205,7 @@ fun testChannel(
     trust: TrustState,
     transport: Transport = CapturingTransport(),
     onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
+    onUnresolvedSender: (ClientId) -> Unit = { _ -> },
     dedup: MessageDedup? = null,
     operational: OperationalSigner = newOperationalSigner(me),
 ): SecureChannel = SecureChannel(
@@ -215,5 +216,6 @@ fun testChannel(
     directory = TrustPeerDirectory(trust),
     log = {},
     onBadSignature = onBadSignature,
+    onUnresolvedSender = onUnresolvedSender,
     dedup = dedup,
 )

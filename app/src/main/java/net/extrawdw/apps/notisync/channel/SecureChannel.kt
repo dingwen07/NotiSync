@@ -62,10 +62,12 @@ class SecureChannel(
      */
     private val onBadSignature: (ClientId, Long, DeliveryMode) -> Unit = { _, _, _ -> },
     /**
-     * Notified when an envelope is dropped because the directory could not resolve the sender's key for the
-     * claimed epoch — i.e. we hold no usable key-epoch for that sender (none, or the specific epoch it signed
-     * with). The handler above the channel reacts by fetching the sender's current key-epoch (and falling
-     * back to a roster broadcast), so an asymmetric or post-rotation gap self-heals. Default is a no-op.
+     * Notified that we hold no usable key-epoch for a peer and should fetch its current one — from BOTH
+     * directions: an inbound envelope whose sender we can't resolve ([deliver]), and an outbound send that
+     * targets a peer we can't currently seal to ([sendAll], via [PeerDirectory.unsealableRecipients]). The
+     * handler reacts by pulling that peer's key-epoch from the broker (and falling back to a roster
+     * broadcast), so an asymmetric or post-rotation gap self-heals on either receive OR attempted send.
+     * Default is a no-op.
      */
     private val onUnresolvedSender: (ClientId) -> Unit = { _ -> },
     /**
@@ -135,6 +137,11 @@ class SecureChannel(
         signWith: SignerSelection = SignerSelection.OPERATIONAL,
     ): Int {
         val recipients = directory.recipients(scope)
+        // Send-initiated key-epoch repair (same handler as the receive-side unresolved-sender path): a trusted
+        // peer this scope targets but that we can't currently seal to was filtered out of `recipients`, so
+        // attempting delivery would otherwise never repair it. Surface it for a broker refetch. BEFORE the
+        // empty-recipients return: a scope whose ONLY peer is unsealable must still trigger its repair.
+        directory.unsealableRecipients(scope).forEach(onUnresolvedSender)
         if (recipients.isEmpty()) return 0
         // Resolve the operational signer once per broadcast (stable across the batch); the identity root is
         // a fixed field. EnvelopeCrypto picks the overload by signer type, stamping signerEpoch accordingly.

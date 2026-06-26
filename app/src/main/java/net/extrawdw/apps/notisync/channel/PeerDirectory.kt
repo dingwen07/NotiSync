@@ -47,4 +47,12 @@ interface PeerDirectory {
     /** The recipient keys for a [scope] (each bound to the recipient's current HPKE epoch); empty when no
      *  device matches (the channel then no-ops the send). */
     fun recipients(scope: Recipients): List<RecipientKey>
+
+    /**
+     * Trusted peers the [scope] targets that are NOT currently sealable — no usable key-epoch held (missing,
+     * expired, or stripped). Such a peer is silently absent from [recipients], so a send would otherwise never
+     * repair it on the sender's initiative. The channel feeds these to the same key-epoch refetch the receive
+     * path uses (an unresolved sender), so *attempting to deliver* drives a broker pull. Empty by default.
+     */
+    fun unsealableRecipients(scope: Recipients): Set<ClientId> = emptySet()
 }
