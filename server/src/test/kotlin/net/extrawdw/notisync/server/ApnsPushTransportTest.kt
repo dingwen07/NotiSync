@@ -22,8 +22,28 @@ class ApnsPushTransportTest {
         val expiredToken = apnsTransport(ApnsResponse(403, """{"reason":"ExpiredProviderToken"}"""))
         val badTopic = apnsTransport(ApnsResponse(400, """{"reason":"BadTopic"}"""))
 
+        // 403 provider-token rejection is retryable (the token is re-minted); a 400 config error is permanent
+        // (retrying as-sent can't fix it) — but neither implies the device token is invalid, so the route stays.
         assertEquals(PushOutcome.TRANSIENT_FAILURE, expiredToken.wake(apnsRoute(), pushData(), Urgency.HIGH))
-        assertEquals(PushOutcome.TRANSIENT_FAILURE, badTopic.wake(apnsRoute(), pushData(), Urgency.HIGH))
+        assertEquals(PushOutcome.PERMANENT_FAILURE, badTopic.wake(apnsRoute(), pushData(), Urgency.HIGH))
+    }
+
+    @Test
+    fun providerTokenRejectionInvalidatesCachedToken() = runBlocking {
+        var invalidations = 0
+        val provider = object : ApnsTokenProvider {
+            override fun token() = "jwt"
+            override fun invalidate() { invalidations++ }
+        }
+        val transport = ApnsPushTransport(
+            topic = APNS_TOPIC,
+            ttlMillis = 60_000,
+            tokenProvider = provider,
+            client = ApnsClient { ApnsResponse(403, """{"reason":"ExpiredProviderToken"}""") },
+        )
+
+        assertEquals(PushOutcome.TRANSIENT_FAILURE, transport.wake(apnsRoute(), pushData(), Urgency.HIGH))
+        assertEquals("a 403 must drop the cached provider token so the next send re-mints", 1, invalidations)
     }
 
     @Test
@@ -84,6 +104,7 @@ class ApnsPushTransportTest {
         environment = environment,
         routeRef = routeRef,
         epoch = 1,
+        inlinePayloadLimitBytes = 3072,
         signedBlob = ByteArray(0),
     )
 

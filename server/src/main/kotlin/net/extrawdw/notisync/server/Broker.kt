@@ -6,7 +6,6 @@ import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
@@ -114,6 +113,7 @@ class Broker(
                     claim.environment,
                     claim.routeRef,
                     claim.epoch,
+                    claim.capabilities.inlinePayloadLimitBytes,
                     ProtocolCodec.encodeToCbor(blob),
                 )
             )
@@ -154,7 +154,6 @@ class Broker(
                 missing.add(recipient)
                 continue
             }
-            var anyAttempted = false
             var anyTransient = false
             var anyInvalid = false
             var pushed = false
@@ -175,21 +174,20 @@ class Broker(
                     }
                     PushOutcome.ROUTE_INVALID -> {
                         routes.invalidate(recipient, route.transport)
-                        anyAttempted = true
                         anyInvalid = true
                     }
-                    PushOutcome.TRANSIENT_FAILURE -> {
-                        anyAttempted = true
-                        anyTransient = true
-                    }
-                    PushOutcome.DISABLED -> Unit
+                    PushOutcome.TRANSIENT_FAILURE -> anyTransient = true
+                    // Route token is fine but the push can't succeed as sent (permanent), or the transport
+                    // is off (disabled): either way the relay still holds the item for a future WS pickup.
+                    PushOutcome.PERMANENT_FAILURE, PushOutcome.DISABLED -> Unit
                 }
             }
             if (pushed) continue
+            // A just-invalidated route is the more actionable signal, so it outranks a transient blip on a
+            // different candidate; anything else (permanent/disabled/none) leaves the item for relay + WS.
             when {
-                anyTransient -> stale.add(recipient)
                 anyInvalid -> invalid.add(recipient)
-                !anyAttempted -> missing.add(recipient)
+                anyTransient -> stale.add(recipient)
                 else -> missing.add(recipient)
             }
         }
@@ -227,15 +225,13 @@ class Broker(
     }
 
     /**
-     * Effective inline budget for a route: the limit the client advertised in its signed route claim,
-     * capped by the server's own ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a
-     * payload larger than the broker is willing to push. Falls back to the server ceiling if the stored
-     * claim can't be decoded.
+     * Effective inline budget for a route: the limit the client advertised in its signed route claim
+     * (decoded once in [RouteStore.routesFor], so this is just a field read), capped by the server's own
+     * ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a payload larger than the broker
+     * is willing to push.
      */
     private fun inlineBudgetFor(route: StoredRoute): Int =
-        runCatching {
-            ProtocolCodec.decodeFromCbor<SignedBlob>(route.signedBlob).decode<RouteClaim>().capabilities.inlinePayloadLimitBytes
-        }.getOrNull()?.coerceAtMost(config.inlineBudgetBytes) ?: config.inlineBudgetBytes
+        route.inlinePayloadLimitBytes.coerceAtMost(config.inlineBudgetBytes)
 
     private fun pushPreference(transport: TransportType): Int =
         when (transport) {

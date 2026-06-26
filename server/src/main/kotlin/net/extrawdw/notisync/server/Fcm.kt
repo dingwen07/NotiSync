@@ -20,15 +20,17 @@ import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
 import java.net.http.HttpResponse
-import java.security.KeyFactory
 import java.security.PrivateKey
-import java.security.Signature
-import java.security.spec.PKCS8EncodedKeySpec
 import java.time.Duration
-import java.util.Base64
 
-/** Outcome of a wake/inline push, mapped to NotiSync route-state semantics. */
-enum class PushOutcome { DELIVERED, ROUTE_INVALID, TRANSIENT_FAILURE, DISABLED }
+/**
+ * Outcome of a wake/inline push, mapped to NotiSync route-state semantics.
+ *
+ * [PERMANENT_FAILURE] is distinct from [TRANSIENT_FAILURE]: the route token is fine, but the push can't
+ * succeed as sent (a broker payload/config error like BadTopic or PayloadTooLarge), so retrying it
+ * unchanged is pointless — surfaced separately so it isn't silently retried as a transient blip.
+ */
+enum class PushOutcome { DELIVERED, ROUTE_INVALID, TRANSIENT_FAILURE, PERMANENT_FAILURE, DISABLED }
 
 /** A wake + small-message transport. Trusted only to wake and carry opaque ciphertext, never plaintext. */
 interface PushTransport {
@@ -157,7 +159,13 @@ class ApnsPushTransport internal constructor(
                     RouteEnvironment.DEVELOPMENT -> "https://api.sandbox.push.apple.com"
                     RouteEnvironment.PRODUCTION -> "https://api.push.apple.com"
                 }
-                val expiration = (System.currentTimeMillis() + ttlMillis).coerceAtLeast(0) / 1000
+                // Match the wake TTL to the relay TTL (as FcmPushTransport does) so a deferred wake can't
+                // outlive the relay item it points to (else a wake delivered later is a dead pointer).
+                val expiration = (System.currentTimeMillis() + ttlMillis) / 1000
+                // This is a silent, end-to-end-encrypted background push: the client decrypts and posts the
+                // local notification, so it MUST be apns-push-type=background at apns-priority=5 regardless of
+                // urgency (an alert/priority-10 push needs plaintext the broker never holds). Urgency therefore
+                // can't change the APNs delivery class here; see review note on iOS timeliness.
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("$endpoint/3/device/${route.routeRef}"))
                     .timeout(Duration.ofSeconds(20))
@@ -170,17 +178,21 @@ class ApnsPushTransport internal constructor(
                     .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data)))
                     .build()
                 val response = client.send(request)
-                apnsOutcome(response.statusCode, response.body).also { outcome ->
-                    if (outcome != PushOutcome.DELIVERED) {
-                        log.info(
-                            "APNs rejected push client={} status={} reason={} outcome={}",
-                            route.clientId.shortForm(),
-                            response.statusCode,
-                            apnsReason(response.body) ?: "unknown",
-                            outcome,
-                        )
-                    }
-                }
+                if (response.statusCode in 200..299) return@withContext PushOutcome.DELIVERED
+                // A 403 means the provider auth JWT was rejected (Expired/Invalid/MissingProviderToken).
+                // Drop the cached token so the next send re-mints, instead of replaying the rejected token
+                // for the rest of its ~50-minute cache window.
+                if (response.statusCode == 403) tokenProvider.invalidate()
+                val reason = apnsReason(response.body)
+                val outcome = apnsOutcome(response.statusCode, reason)
+                log.info(
+                    "APNs rejected push client={} status={} reason={} outcome={}",
+                    route.clientId.shortForm(),
+                    response.statusCode,
+                    reason ?: "unknown",
+                    outcome,
+                )
+                outcome
             } catch (e: Exception) {
                 log.warn("APNs send failed: {}", e.message)
                 PushOutcome.TRANSIENT_FAILURE
@@ -212,15 +224,17 @@ class ApnsPushTransport internal constructor(
     private fun String.isApnsDeviceToken(): Boolean =
         isNotEmpty() && length % 2 == 0 && all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
-    private fun apnsOutcome(statusCode: Int, body: String): PushOutcome {
-        if (statusCode in 200..299) return PushOutcome.DELIVERED
-        val reason = apnsReason(body)
-        return when {
-            statusCode == 410 -> PushOutcome.ROUTE_INVALID
-            reason != null && reason in ROUTE_INVALID_REASONS -> PushOutcome.ROUTE_INVALID
-            statusCode == 429 || statusCode in 500..599 -> PushOutcome.TRANSIENT_FAILURE
-            else -> PushOutcome.TRANSIENT_FAILURE
-        }
+    /** Map a non-2xx APNs response to a route-state outcome. [reason] is APNs's JSON `reason`, if present. */
+    private fun apnsOutcome(statusCode: Int, reason: String?): PushOutcome = when {
+        // Token/route-specific: this device token is dead for this topic — retire the route.
+        statusCode == 410 -> PushOutcome.ROUTE_INVALID
+        reason != null && reason in ROUTE_INVALID_REASONS -> PushOutcome.ROUTE_INVALID
+        // Provider auth (403, token already re-minted above) and server/throttling (429/5xx): retry later.
+        statusCode == 403 -> PushOutcome.TRANSIENT_FAILURE
+        statusCode == 429 || statusCode in 500..599 -> PushOutcome.TRANSIENT_FAILURE
+        // Other 4xx (BadTopic, PayloadTooLarge, BadPriority, ...): a broker payload/config error that
+        // retrying as-sent can't fix and that does NOT imply the device token is invalid.
+        else -> PushOutcome.PERMANENT_FAILURE
     }
 
     private fun apnsReason(body: String): String? =
@@ -244,7 +258,7 @@ class ApnsPushTransport internal constructor(
                 return null
             }
             return try {
-                val key = ApnsPrivateKey.load(config.apnsPrivateKeyPath)
+                val key = Es256.loadEcPrivateKeyPem(File(config.apnsPrivateKeyPath).readText())
                 log.info("APNs transport enabled for topic {}", config.apnsTopic)
                 ApnsPushTransport(
                     topic = config.apnsTopic,
@@ -279,6 +293,9 @@ private class JavaNetApnsClient(
 
 internal fun interface ApnsTokenProvider {
     fun token(): String
+
+    /** Drop any cached token so the next [token] call re-mints. No-op for stateless providers. */
+    fun invalidate() {}
 }
 
 @kotlinx.serialization.Serializable
@@ -294,75 +311,26 @@ private class ApnsJwtProvider(
 
     override fun token(): String = token(System.currentTimeMillis() / 1000)
 
+    override fun invalidate() {
+        cached = null
+    }
+
     fun token(nowSeconds: Long): String {
         cached?.let { if (nowSeconds - it.issuedAtSeconds < TOKEN_TTL_SECONDS) return it.jwt }
         synchronized(this) {
             cached?.let { if (nowSeconds - it.issuedAtSeconds < TOKEN_TTL_SECONDS) return it.jwt }
-            val header = b64Url("""{"alg":"ES256","kid":"$keyId"}""".toByteArray())
-            val claims = b64Url("""{"iss":"$teamId","iat":$nowSeconds}""".toByteArray())
+            val header = Es256.b64Url.encodeToString("""{"alg":"ES256","kid":"$keyId"}""".toByteArray())
+            val claims = Es256.b64Url.encodeToString("""{"iss":"$teamId","iat":$nowSeconds}""".toByteArray())
             val signingInput = "$header.$claims"
-            val sig = b64Url(signEs256(signingInput.toByteArray(Charsets.US_ASCII)))
+            val sig = Es256.b64Url.encodeToString(Es256.sign(privateKey, signingInput.toByteArray(Charsets.US_ASCII)))
             return "$signingInput.$sig".also { cached = CachedToken(it, nowSeconds) }
         }
-    }
-
-    private fun signEs256(data: ByteArray): ByteArray {
-        val der = Signature.getInstance("SHA256withECDSA").run {
-            initSign(privateKey)
-            update(data)
-            sign()
-        }
-        return derToJose(der)
     }
 
     private data class CachedToken(val jwt: String, val issuedAtSeconds: Long)
 
     private companion object {
         const val TOKEN_TTL_SECONDS = 50L * 60L
-        val encoder: Base64.Encoder = Base64.getUrlEncoder().withoutPadding()
-        fun b64Url(bytes: ByteArray): String = encoder.encodeToString(bytes)
     }
 }
 
-private object ApnsPrivateKey {
-    fun load(path: String): PrivateKey {
-        val pem = File(path).readText()
-            .lineSequence()
-            .filterNot { it.startsWith("-----") }
-            .joinToString("")
-        val der = Base64.getDecoder().decode(pem)
-        return KeyFactory.getInstance("EC").generatePrivate(PKCS8EncodedKeySpec(der))
-    }
-}
-
-private fun derToJose(der: ByteArray): ByteArray {
-    var index = 0
-    fun readByte(): Int = der[index++].toInt() and 0xff
-    fun readLength(): Int {
-        val first = readByte()
-        if (first and 0x80 == 0) return first
-        val bytes = first and 0x7f
-        var value = 0
-        repeat(bytes) { value = (value shl 8) or readByte() }
-        return value
-    }
-    fun readInteger(): ByteArray {
-        require(readByte() == 0x02) { "bad ECDSA DER integer" }
-        val length = readLength()
-        return der.copyOfRange(index, index + length).also { index += length }
-    }
-
-    require(readByte() == 0x30) { "bad ECDSA DER sequence" }
-    readLength()
-    val r = readInteger().toJoseComponent()
-    val s = readInteger().toJoseComponent()
-    return r + s
-}
-
-private fun ByteArray.toJoseComponent(): ByteArray {
-    var start = 0
-    while (size - start > 32 && this[start] == 0.toByte()) start++
-    val trimmed = copyOfRange(start, size)
-    require(trimmed.size <= 32) { "ECDSA coordinate too large" }
-    return ByteArray(32 - trimmed.size) + trimmed
-}

@@ -30,39 +30,60 @@ interface AppCheckJwks {
     fun key(kid: String): RSAPublicKey?
 }
 
+/** A single JWKS fetch result. Separated from the HTTP client so tests can drive responses. */
+internal data class JwksHttpResponse(val statusCode: Int, val body: String)
+
+/** Fetches the raw JWKS document. Injectable so tests don't hit the network. */
+internal fun interface JwksFetcher {
+    fun get(): JwksHttpResponse
+}
+
 /**
  * Fetches and caches the Firebase App Check JWKS (RS256 RSA keys). Refetches when a `kid` is unseen (key
- * rotation), but at most once per [minRefetchIntervalMillis] so a bogus `kid` can't drive unbounded fetches.
+ * rotation), but at most once per [minRefetchIntervalMillis] — throttled by last *attempt*, so neither a
+ * bogus `kid` nor an upstream outage drives a fetch on every request.
+ *
+ * Only a 2xx response with at least one usable key replaces the cache: a non-2xx (5xx / HTML error page) or
+ * an unparseable/empty body is NOT cached, so a transient JWKS blip can never evict good keys and reject
+ * every token until the cooldown elapses.
  */
-class HttpAppCheckJwks(
-    private val url: String,
-    private val minRefetchIntervalMillis: Long = 5L * 60 * 1000,
+class HttpAppCheckJwks internal constructor(
+    private val minRefetchIntervalMillis: Long,
+    private val fetcher: JwksFetcher,
 ) : AppCheckJwks {
-    private val http: HttpClient = HttpClient.newHttpClient()
-    private val b64 = Base64.getUrlDecoder()
+    constructor(url: String, minRefetchIntervalMillis: Long = 5L * 60 * 1000) :
+        this(minRefetchIntervalMillis, httpFetcher(url))
 
-    private class Cache(val keys: Map<String, RSAPublicKey>, val fetchedAt: Long)
-    private val cache = AtomicReference<Cache?>(null)
+    private val b64 = Base64.getUrlDecoder()
+    private val keys = AtomicReference<Map<String, RSAPublicKey>>(emptyMap())
+
+    // Epoch (not MIN_VALUE, whose subtraction from `now` overflows) so the very first call always fetches.
+    @Volatile
+    private var lastFetchAttempt: Long = 0L
 
     override fun key(kid: String): RSAPublicKey? {
-        cache.get()?.keys?.get(kid)?.let { return it }
-        val current = cache.get()
+        keys.get()[kid]?.let { return it }
         val now = System.currentTimeMillis()
-        // A miss within the cooldown stays a miss — don't refetch on every unknown kid.
-        if (current != null && now - current.fetchedAt < minRefetchIntervalMillis) return null
-        return runCatching { refresh(now) }.getOrNull()?.get(kid)
+        // Throttle by last attempt (success OR failure) so an unknown kid / outage can't fetch every call.
+        if (now - lastFetchAttempt < minRefetchIntervalMillis) return null
+        synchronized(this) {
+            keys.get()[kid]?.let { return it } // a peer thread may have just refreshed
+            if (now - lastFetchAttempt < minRefetchIntervalMillis) return null
+            lastFetchAttempt = now
+            val fetched = runCatching { fetchKeys() }.getOrNull() ?: return null
+            keys.set(fetched) // only a good response replaces the cache; a bad one leaves prior keys intact
+            return fetched[kid]
+        }
     }
 
-    @Synchronized
-    private fun refresh(now: Long): Map<String, RSAPublicKey> {
-        cache.get()?.let { if (now - it.fetchedAt < minRefetchIntervalMillis) return it.keys }
-        val body = http.send(
-            HttpRequest.newBuilder(URI.create(url)).GET().build(),
-            HttpResponse.BodyHandlers.ofString(),
-        ).body()
-        val keys = parse(body)
-        cache.set(Cache(keys, now))
-        return keys
+    /** Fetch + parse the JWKS, throwing on a non-2xx or no-usable-keys response so [key] never overwrites a
+     *  previously-good cache (caching an empty map would reject every token until the cooldown elapses). */
+    private fun fetchKeys(): Map<String, RSAPublicKey> {
+        val response = fetcher.get()
+        check(response.statusCode in 200..299) { "App Check JWKS fetch HTTP ${response.statusCode}" }
+        val parsed = parse(response.body)
+        check(parsed.isNotEmpty()) { "App Check JWKS contained no usable RSA keys" }
+        return parsed
     }
 
     private fun parse(body: String): Map<String, RSAPublicKey> {
@@ -81,6 +102,19 @@ class HttpAppCheckJwks(
             out[kid] = factory.generatePublic(RSAPublicKeySpec(modulus, exponent)) as RSAPublicKey
         }
         return out
+    }
+
+    private companion object {
+        private fun httpFetcher(url: String): JwksFetcher {
+            val http = HttpClient.newHttpClient()
+            return JwksFetcher {
+                val response = http.send(
+                    HttpRequest.newBuilder(URI.create(url)).GET().build(),
+                    HttpResponse.BodyHandlers.ofString(),
+                )
+                JwksHttpResponse(response.statusCode(), response.body())
+            }
+        }
     }
 }
 

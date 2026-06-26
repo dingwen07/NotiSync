@@ -16,6 +16,7 @@ import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.upsert
+import org.slf4j.LoggerFactory
 import java.util.Base64
 
 private val b64e: Base64.Encoder = Base64.getEncoder()
@@ -131,10 +132,14 @@ data class StoredRoute(
     val environment: RouteEnvironment,
     val routeRef: String,
     val epoch: Int,
+    /** Client-advertised inline payload limit from the signed claim (decoded once in [RouteStore.routesFor]). */
+    val inlinePayloadLimitBytes: Int,
     val signedBlob: ByteArray,
 )
 
 class RouteStore(private val db: NotiSyncDb) {
+    private val log = LoggerFactory.getLogger(javaClass)
+
     /** Replace any existing route of the same transport for this client (keeping the latest epoch). */
     suspend fun put(route: StoredRoute) = db.tx {
         val existingEpoch = Routes.selectAll()
@@ -157,14 +162,24 @@ class RouteStore(private val db: NotiSyncDb) {
     }
 
     suspend fun routesFor(clientId: ClientId): List<StoredRoute> = db.tx {
-        Routes.selectAll().where { Routes.clientId eq clientId.value }.map {
-            val blob = b64d.decode(it[Routes.signedBlobB64])
+        Routes.selectAll().where { Routes.clientId eq clientId.value }.mapNotNull { row ->
+            val blob = b64d.decode(row[Routes.signedBlobB64])
+            // Decode the signed claim ONCE: it carries both the APNs environment (prod vs sandbox endpoint)
+            // and the inline-payload budget. If it no longer decodes, fail closed — skip the route rather
+            // than guess PRODUCTION and risk deleting a valid sandbox route on a wrong-endpoint BadDeviceToken.
+            val claim = runCatching {
+                ProtocolCodec.decodeFromCbor<SignedBlob>(blob).decode<RouteClaim>()
+            }.getOrNull() ?: run {
+                log.warn("skipping route with undecodable claim client={} transport={}", clientId.shortForm(), row[Routes.transport])
+                return@mapNotNull null
+            }
             StoredRoute(
-                clientId = ClientId(it[Routes.clientId]),
-                transport = TransportType.valueOf(it[Routes.transport]),
-                environment = routeEnvironment(blob),
-                routeRef = it[Routes.routeRef],
-                epoch = it[Routes.epoch],
+                clientId = ClientId(row[Routes.clientId]),
+                transport = TransportType.valueOf(row[Routes.transport]),
+                environment = claim.environment,
+                routeRef = row[Routes.routeRef],
+                epoch = row[Routes.epoch],
+                inlinePayloadLimitBytes = claim.capabilities.inlinePayloadLimitBytes,
                 signedBlob = blob,
             )
         }
@@ -174,11 +189,6 @@ class RouteStore(private val db: NotiSyncDb) {
         Routes.deleteWhere { (Routes.clientId eq clientId.value) and (Routes.transport eq transport.name) }
         Unit
     }
-
-    private fun routeEnvironment(signedBlob: ByteArray): RouteEnvironment =
-        runCatching {
-            ProtocolCodec.decodeFromCbor<SignedBlob>(signedBlob).decode<RouteClaim>().environment
-        }.getOrDefault(RouteEnvironment.PRODUCTION)
 }
 
 data class RelayItem(val id: Long, val messageId: String, val envelope: ByteArray, val urgency: String)
