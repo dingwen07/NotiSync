@@ -94,6 +94,40 @@ class EnvelopeCryptoTest {
     }
 
     @Test
+    fun sealSkipsAnUnsealableRecipientAndDeliversToTheRest() {
+        val sender = SoftwareIdentitySigner.generate()
+        val good = Peer()
+        // 3 bytes: not a 32-byte raw key and not a Tink keyset, so Hpke.seal throws for this recipient. A single
+        // unsealable peer (an old/corrupt/future-format key) must not abort the fan-out to the healthy peers.
+        val bad = RecipientKey(ClientId("badpeerbadpeerbadpeerbadpeerbadp"), byteArrayOf(1, 2, 3))
+        val body = sampleBody(sender.clientId)
+
+        val env = EnvelopeCrypto.seal(
+            sender, MessageType.NOTIFICATION, body,
+            listOf(bad, good.recipientKey()), "01J0SKIP001", 1L, 1_750_000_000_000L,
+        )
+
+        // The bad recipient was dropped; the good one survives, and the signature covers only the survivors.
+        assertEquals(1, env.recipients.size)
+        assertEquals(good.identity.clientId, env.recipients.single().recipientId)
+        assertTrue(EnvelopeCrypto.verify(env, sender.publicKeySpki))
+        assertArrayEquals(body, EnvelopeCrypto.open(env, good.identity.clientId, good.hpke.privateKeyset))
+    }
+
+    @Test
+    fun sealThrowsOnlyWhenEveryRecipientIsUnsealable() {
+        val sender = SoftwareIdentitySigner.generate()
+        val bad1 = RecipientKey(ClientId("bad1bad1bad1bad1bad1bad1bad1bad1"), byteArrayOf(1, 2, 3))
+        val bad2 = RecipientKey(ClientId("bad2bad2bad2bad2bad2bad2bad2bad2"), byteArrayOf(4, 5, 6, 7))
+        assertThrows(IllegalArgumentException::class.java) {
+            EnvelopeCrypto.seal(
+                sender, MessageType.NOTIFICATION, sampleBody(sender.clientId),
+                listOf(bad1, bad2), "01J0SKIP002", 2L, 1_750_000_000_000L,
+            )
+        }
+    }
+
+    @Test
     fun signatureVerifiesForSenderAndFailsForOthers() {
         val sender = SoftwareIdentitySigner.generate()
         val a = Peer()

@@ -143,10 +143,23 @@ class SecureChannel(
             val messageId = UUID.randomUUID().toString()
             val seqN = seq.incrementAndGet()
             val createdAt = now()
-            val envelope = if (op != null) {
-                EnvelopeCrypto.seal(op, typ, body, recipients, messageId, seqN, createdAt)
-            } else {
-                EnvelopeCrypto.seal(signer, typ, body, recipients, messageId, seqN, createdAt)
+            // Sealing must never crash the sender. EnvelopeCrypto already drops individually-unsealable
+            // recipients (e.g. an old/corrupt/future-format HPKE key) and delivers to the rest; reaching this
+            // catch means EVERY recipient — or the signature — failed. Log and skip this body rather than
+            // throwing out of the send, mirroring deliver()'s defensive open. (Only the non-suspending seal is
+            // wrapped, so coroutine cancellation from transport.send still propagates normally.)
+            val envelope = runCatching {
+                if (op != null) {
+                    EnvelopeCrypto.seal(op, typ, body, recipients, messageId, seqN, createdAt)
+                } else {
+                    EnvelopeCrypto.seal(signer, typ, body, recipients, messageId, seqN, createdAt)
+                }
+            }.getOrElse {
+                log.warn("seal failed for $typ ($messageId); skipping send: ${it.message}")
+                continue
+            }
+            if (envelope.recipients.size < recipients.size) {
+                log.warn("sealed $typ ($messageId) to ${envelope.recipients.size}/${recipients.size} recipients — ${recipients.size - envelope.recipients.size} unsealable key(s) dropped")
             }
             transport.send(envelope, urgency)
         }

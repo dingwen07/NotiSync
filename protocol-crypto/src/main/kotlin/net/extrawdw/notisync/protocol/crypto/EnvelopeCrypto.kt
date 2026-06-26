@@ -100,12 +100,23 @@ object EnvelopeCrypto {
         val dek = BodyAead.generateDek()
         try {
             val bodyCiphertext = BodyAead.seal(dek, bodyPlaintext, bodyAad(suite))
-            val perRecipient = recipients.map { r ->
-                PerRecipientKey(
-                    recipientId = r.clientId,
-                    sealedDek = Hpke.seal(dek, r.hpkePublicKeyset, dekContext(suite, r.clientId, r.recipientEpoch)),
-                    recipientEpoch = r.recipientEpoch,
-                )
+            // Seal the DEK per recipient defensively: a single recipient whose published HPKE key can't be
+            // sealed to — an unreadable/corrupt key, or a wire format this build predates — must NOT abort the
+            // whole fan-out. Drop that one and still deliver to everyone else (authBytes covers only the sealed
+            // recipients, so the signature stays consistent). Throw only when NONE seal, so the caller — which
+            // can log/skip — never ships an envelope no one can open. Caller compares the returned recipient
+            // count to the requested set to surface partial drops.
+            val perRecipient = recipients.mapNotNull { r ->
+                runCatching {
+                    PerRecipientKey(
+                        recipientId = r.clientId,
+                        sealedDek = Hpke.seal(dek, r.hpkePublicKeyset, dekContext(suite, r.clientId, r.recipientEpoch)),
+                        recipientEpoch = r.recipientEpoch,
+                    )
+                }.getOrNull()
+            }
+            require(perRecipient.isNotEmpty() || recipients.isEmpty()) {
+                "all ${recipients.size} recipient(s) failed to seal for message $messageId"
             }
             val unsigned = Envelope(
                 suite = suite,

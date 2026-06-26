@@ -243,4 +243,29 @@ class SecureChannelTest {
         assertEquals(0, count)
         assertEquals(DeliveryOutcome.DROPPED, outcome)
     }
+
+    @Test
+    fun send_skipsAnUnsealableRecipient_withoutCrashing_andDeliversToTheRest() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val good = newSigner(); val goodHpke = newHpke()
+        val bad = newSigner()
+        val transport = CapturingTransport()
+        // One own-mesh peer carries a 3-byte HPKE key (not a 32-byte raw key, not a Tink keyset) — Hpke.seal
+        // throws for it. This is exactly the shape that crashed the old app's send path.
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(good, goodHpke.publicKeyset, ownDevice = true),
+                peerOf(bad, byteArrayOf(1, 2, 3), ownDevice = true),
+            )
+        }
+        val channel = channel(me, myHpke.privateKeyset, trust, transport)
+
+        // Must not throw despite the unsealable peer.
+        channel.send(MessageType.NOTIFICATION, byteArrayOf(9), Recipients.OwnMesh, Urgency.HIGH)
+
+        // The notification still went out, sealed only to the healthy peer.
+        assertEquals(1, transport.envelopes.size)
+        assertEquals(1, transport.envelopes.single().recipients.size)
+        assertEquals(good.clientId, transport.envelopes.single().recipients.single().recipientId)
+    }
 }
