@@ -469,7 +469,11 @@ class AppGraph(private val app: Application) {
         RotationKeyInfo(
             epoch = epoch,
             signingKey = KeyFingerprint.short(operational.operationalPublicKeySpki),
-            encryptionKey = runCatching { epochHpke.publicKeyset(epoch) }.getOrNull()?.let { KeyFingerprint.short(it) } ?: "—",
+            // Fingerprint the raw published key (not the local Tink keyset) so this self-diagnostic matches
+            // the HPKE fingerprint peers compute over the same bytes carried in our ClientKeyEpoch.
+            encryptionKey = runCatching {
+                epochHpke.publicKeyset(epoch)?.let { KeyFingerprint.short(Hpke.rawPublicKey(it)) }
+            }.getOrNull() ?: "—",
             pendingTargetEpoch = pending?.targetEpoch,
             pendingActivated = activated,
             nextEventAtMillis = nextAt,
