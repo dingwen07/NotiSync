@@ -71,7 +71,7 @@ nonisolated enum ProtocolCodec {
                                                    attestationToken: String?,
                                                    clientKeyEpoch: SignedBlob) -> Data {
         let request = NotiSyncProtocol.IntegrityVerificationRequest(
-            clientId: clientId,
+            clientId: KMPProtocolBridge.clientId(clientId),
             attestationType: attestationType,
             attestationToken: attestationToken,
             attestationKeyId: nil,
@@ -90,7 +90,12 @@ nonisolated enum ProtocolCodec {
     }
 
     static func encodeWsAuth(clientId: String, nonce: String, signatureB64: String, epoch: Int = 0) -> String {
-        let auth = NotiSyncProtocol.WsAuth(clientId: clientId, nonce: nonce, signatureB64: signatureB64, epoch: Int32(epoch))
+        let auth = NotiSyncProtocol.WsAuth(
+            clientId: KMPProtocolBridge.clientId(clientId),
+            nonce: nonce,
+            signatureB64: signatureB64,
+            epoch: Int32(epoch)
+        )
         return kmp.encodeWsAuth(value: auth)
     }
 
@@ -187,10 +192,22 @@ nonisolated enum KMPProtocolBridge {
         String(decoding: data, as: UTF8.self)
     }
 
+    static func string(_ value: NotiSyncProtocol.ClientId) -> String {
+        value.value
+    }
+
     static func string(_ value: Any) -> String {
         if let s = value as? String { return s }
         if let s = value as? NSString { return s as String }
         return String(describing: value)
+    }
+
+    static func clientId(_ value: String) -> NotiSyncProtocol.ClientId {
+        NotiSyncProtocol.ClientId(value: value)
+    }
+
+    static func clientIds(_ values: [String]) -> [NotiSyncProtocol.ClientId] {
+        values.map(clientId)
     }
 
     // MARK: Swift -> KMP DTOs
@@ -200,13 +217,13 @@ nonisolated enum KMPProtocolBridge {
             v: Int32(value.v),
             suite: value.suite,
             typ: kmp(value.typ),
-            signerId: value.signerId,
+            signerId: clientId(value.signerId),
             signerEpoch: Int32(value.signerEpoch),
             messageId: value.messageId,
             seq: value.seq,
             createdAt: value.createdAt,
             bodyCiphertextSha256: kotlinBytes(value.bodyCiphertextSha256),
-            recipientIds: value.recipientIds,
+            recipientIds: clientIds(value.recipientIds),
             recipientEpochs: value.recipientEpochs.map { NotiSyncProtocol.KotlinInt(int: Int32($0)) }
         )
     }
@@ -214,7 +231,7 @@ nonisolated enum KMPProtocolBridge {
     static func toKmp(_ value: AssetAad) -> NotiSyncProtocol.AssetAad {
         NotiSyncProtocol.AssetAad(
             suite: value.suite,
-            sourceClientId: value.sourceClientId,
+            sourceClientId: clientId(value.sourceClientId),
             assetId: value.assetId,
             mimeType: value.mimeType,
             sizeBytes: Int32(value.sizeBytes),
@@ -226,7 +243,7 @@ nonisolated enum KMPProtocolBridge {
         NotiSyncProtocol.SignedBlob(
             typ: value.typ,
             suite: value.suite,
-            signerId: value.signerId,
+            signerId: clientId(value.signerId),
             payload: kotlinBytes(value.payload),
             sig: kotlinBytes(value.sig)
         )
@@ -235,7 +252,7 @@ nonisolated enum KMPProtocolBridge {
     static func toKmp(_ value: ClientKeyEpoch) -> NotiSyncProtocol.ClientKeyEpoch {
         NotiSyncProtocol.ClientKeyEpoch(
             suite: value.suite,
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             identityPublicKey: kotlinBytes(value.identityPublicKey),
             epoch: Int32(value.epoch),
             operationalSigningKey: kotlinBytes(value.operationalSigningKey),
@@ -259,7 +276,7 @@ nonisolated enum KMPProtocolBridge {
     static func toKmp(_ value: RouteClaim) -> NotiSyncProtocol.RouteClaim {
         NotiSyncProtocol.RouteClaim(
             suite: value.suite,
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             transport: kmp(value.transport),
             environment: kmp(value.environment),
             routeRef: value.routeRef,
@@ -271,7 +288,7 @@ nonisolated enum KMPProtocolBridge {
 
     static func toKmp(_ value: DismissEvent) -> NotiSyncProtocol.DismissEvent {
         NotiSyncProtocol.DismissEvent(
-            sourceClientId: value.sourceClientId,
+            sourceClientId: clientId(value.sourceClientId),
             sourceKey: value.sourceKey,
             dismissedAt: value.dismissedAt
         )
@@ -283,7 +300,7 @@ nonisolated enum KMPProtocolBridge {
             assetHash: value.assetHash,
             mimeType: value.mimeType,
             sizeBytes: Int32(value.sizeBytes),
-            sourceClientId: value.sourceClientId,
+            sourceClientId: clientId(value.sourceClientId),
             assetId: value.assetId,
             assetKey: kotlinBytes(value.assetKey),
             suite: value.suite
@@ -304,7 +321,7 @@ nonisolated enum KMPProtocolBridge {
 
     static func toKmp(_ value: TrustTableEntry) -> NotiSyncProtocol.TrustTableEntry {
         NotiSyncProtocol.TrustTableEntry(
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             status: kmp(value.status),
             updatedAt: value.updatedAt,
             keyAvailable: value.keyAvailable,
@@ -319,7 +336,7 @@ nonisolated enum KMPProtocolBridge {
 
     static func toKmp(_ value: ProfileUpdate) -> NotiSyncProtocol.ProfileUpdate {
         NotiSyncProtocol.ProfileUpdate(
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             displayName: value.displayName,
             platform: value.platform,
             capabilities: value.capabilities.map(kmp),
@@ -330,7 +347,7 @@ nonisolated enum KMPProtocolBridge {
     static func toKmp(_ value: ClientCard) -> NotiSyncProtocol.ClientCard {
         NotiSyncProtocol.ClientCard(
             suite: value.suite,
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             identityPublicKey: kotlinBytes(value.identityPublicKey),
             displayName: value.displayName,
             platform: value.platform,
@@ -341,7 +358,7 @@ nonisolated enum KMPProtocolBridge {
 
     static func toKmp(_ value: CardDelivery) -> NotiSyncProtocol.CardDelivery {
         NotiSyncProtocol.CardDelivery(
-            clientId: value.clientId,
+            clientId: clientId(value.clientId),
             card: value.card.map { toKmp($0) },
             epochBlob: value.epochBlob.map { toKmp($0) }
         )
@@ -359,7 +376,7 @@ nonisolated enum KMPProtocolBridge {
 
     static func toKmp(_ value: PerRecipientKey) -> NotiSyncProtocol.PerRecipientKey {
         NotiSyncProtocol.PerRecipientKey(
-            recipientId: value.recipientId,
+            recipientId: clientId(value.recipientId),
             sealedDek: kotlinBytes(value.sealedDek),
             recipientEpoch: Int32(value.recipientEpoch)
         )
@@ -370,7 +387,7 @@ nonisolated enum KMPProtocolBridge {
             v: Int32(value.v),
             suite: value.suite,
             typ: kmp(value.typ),
-            signerId: value.signerId,
+            signerId: clientId(value.signerId),
             signerEpoch: Int32(value.signerEpoch),
             messageId: value.messageId,
             seq: value.seq,

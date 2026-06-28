@@ -26,7 +26,7 @@ struct InlineIconLabel: View {
     }
 
     var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 4) {
+        HStack(alignment: .center, spacing: 4) {
             Image(systemName: systemImage)
                 .imageScale(.medium)
             title

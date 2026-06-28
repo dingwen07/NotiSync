@@ -2,7 +2,7 @@ import Foundation
 
 // Swift-facing adapters for the KMP :protocol DTOs. The iOS app keeps native structs at its internal
 // boundaries, while ProtocolCodec converts them to/from the shared Kotlin types for all wire encoding.
-// KMP `ClientId`/`GroupId` inline classes are represented as plain String on the Swift side.
+// KMP `ClientId`/`GroupId` are represented as plain String inside Swift app models.
 
 nonisolated enum CipherSuite {
     static let current = "NS2"

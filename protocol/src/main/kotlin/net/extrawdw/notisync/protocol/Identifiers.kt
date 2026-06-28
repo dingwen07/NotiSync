@@ -1,16 +1,24 @@
 package net.extrawdw.notisync.protocol
 
-import kotlin.jvm.JvmInline
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.descriptors.PrimitiveKind
+import kotlinx.serialization.descriptors.PrimitiveSerialDescriptor
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 
 /**
  * Stable client identifier. Conceptually the fingerprint of a client's identity public key:
  * base32(SHA-256(X.509 SubjectPublicKeyInfo))[..20 bytes]. Derivation lives in :protocol-crypto;
  * this is the wire/storage type. Serializes transparently as its underlying string.
+ *
+ * This is intentionally a regular class, not a Kotlin value class. Kotlin/Native exports value classes
+ * to Swift as erased `id`, which lets Swift-owned NSString/String values reach serializers that expect
+ * real Kotlin String instances and can crash in native CBOR string encoding.
  */
-@JvmInline
-@Serializable
-value class ClientId(val value: String) {
+@Serializable(with = ClientIdSerializer::class)
+data class ClientId(val value: String) {
     override fun toString(): String = value
 
     /** Short, human-glanceable fragment for UI ("a3b2…f8c1"). */
@@ -19,10 +27,33 @@ value class ClientId(val value: String) {
 }
 
 /** Identifier of a trusted group (the implicit set of a user's paired devices). */
-@JvmInline
-@Serializable
-value class GroupId(val value: String) {
+@Serializable(with = GroupIdSerializer::class)
+data class GroupId(val value: String) {
     override fun toString(): String = value
+}
+
+object ClientIdSerializer : KSerializer<ClientId> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("net.extrawdw.notisync.protocol.ClientId", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: ClientId) {
+        encoder.encodeString(value.value)
+    }
+
+    override fun deserialize(decoder: Decoder): ClientId =
+        ClientId(decoder.decodeString())
+}
+
+object GroupIdSerializer : KSerializer<GroupId> {
+    override val descriptor: SerialDescriptor =
+        PrimitiveSerialDescriptor("net.extrawdw.notisync.protocol.GroupId", PrimitiveKind.STRING)
+
+    override fun serialize(encoder: Encoder, value: GroupId) {
+        encoder.encodeString(value.value)
+    }
+
+    override fun deserialize(decoder: Decoder): GroupId =
+        GroupId(decoder.decodeString())
 }
 
 /** RFC 4648 base32 (lowercase, no padding). Used for client-id derivation and safety numbers. */
