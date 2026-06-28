@@ -56,19 +56,30 @@ struct InboxView: View {
                             }
                         }
                         .contextMenu {
+                            if let channelFilter = androidChannelFilter(for: notification) {
+                                Button {
+                                    runtime.setChannelNotificationsEnabled(
+                                        false,
+                                        deviceKey: channelFilter.deviceKey,
+                                        appId: channelFilter.appId,
+                                        channelId: channelFilter.channelId)
+                                } label: {
+                                    Label("Silence this Channel", systemImage: "bell.slash")
+                                }
+                            }
                             if let deviceKey = runtime.filterDeviceKey(for: notification),
                                let appId = runtime.filterAppIdentifier(for: notification) {
                                 Button {
                                     runtime.setAppNotificationsEnabled(false, deviceKey: deviceKey, appId: appId)
                                 } label: {
-                                    Label("Filter This App", systemImage: "bell.slash")
+                                    Label("Silence this App", systemImage: "bell.slash")
                                 }
                             }
                             if runtime.canFilterNotificationsLike(notification) {
                                 Button {
                                     runtime.filterNotificationsLike(notification)
                                 } label: {
-                                    Label(filterDeviceTitle(for: notification), systemImage: "bell.slash")
+                                    Label("Silence this Device", systemImage: "bell.slash")
                                 }
                             }
                         }
@@ -87,11 +98,17 @@ struct InboxView: View {
         devices.first { $0.clientId == notification.sourceClientId }
     }
 
-    private func filterDeviceTitle(for notification: InboxNotification) -> String {
-        switch runtime.originPlatform(for: notification) {
-        case .ANDROID_LOCAL: "Filter This Peer"
-        case .IOS_ANCS: "Filter This iOS Device"
-        }
+    private func androidChannelFilter(for notification: InboxNotification) -> (deviceKey: String, appId: String, channelId: String)? {
+        guard runtime.originPlatform(for: notification) == .ANDROID_LOCAL,
+              let deviceKey = runtime.filterDeviceKey(for: notification),
+              let appId = runtime.filterAppIdentifier(for: notification),
+              let channelId = nonBlank(notification.channelId) else { return nil }
+        return (deviceKey, appId, channelId)
+    }
+
+    private func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 }
 
@@ -231,7 +248,7 @@ struct DevicesView: View {
                 }
                 Section("Trusted Peers") {
                     ForEach(devices.filter { $0.status == .trusted }) { device in
-                        TrustedPeerRow(device: device) {
+                        TrustedPeerRow(device: device, opensFilters: !isIosPeer(device)) {
                             selectedFilterDevice = .android(device)
                         }
                             .swipeActions(edge: .trailing) {
@@ -270,6 +287,7 @@ struct DevicesView: View {
                 AppFilterSheet(
                     title: selection.title(peerName: peerName),
                     deviceKey: selection.deviceKey,
+                    supportsChannels: selection.supportsChannels,
                     apps: appFilterItems(for: selection))
                     .environmentObject(runtime)
             }
@@ -277,19 +295,30 @@ struct DevicesView: View {
     }
 
     private var iosDeviceRows: [FilteredIosDeviceRecord] {
-        var rowsByPeer = Dictionary(uniqueKeysWithValues: runtime.iosDevices().map { ($0.peerClientId, $0) })
+        var rowsByKey: [String: FilteredIosDeviceRecord] = [:]
+        for device in runtime.iosDevices() {
+            rowsByKey[device.deviceKey] = device
+        }
         for notification in notifications where runtime.originPlatform(for: notification) == .IOS_ANCS {
-            guard !notification.sourceClientId.isEmpty else { continue }
+            guard !notification.sourceClientId.isEmpty,
+                  let deviceKey = runtime.filterDeviceKey(for: notification) else { continue }
             let name = notification.originDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
             let displayName = name?.isEmpty == false ? name ?? "iOS Device" : "iOS Device"
-            rowsByPeer[notification.sourceClientId] = FilteredIosDeviceRecord(
+            rowsByKey[deviceKey] = FilteredIosDeviceRecord(
                 peerClientId: notification.sourceClientId,
+                originDeviceId: notification.originDeviceId,
                 deviceName: displayName,
                 updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
         }
-        return rowsByPeer.values.sorted {
-            $0.deviceName.localizedCaseInsensitiveCompare($1.deviceName) == .orderedAscending
-        }
+        return rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
+    }
+
+    private func areIosDevicesInDisplayOrder(_ lhs: FilteredIosDeviceRecord, _ rhs: FilteredIosDeviceRecord) -> Bool {
+        let nameOrder = lhs.deviceName.localizedCaseInsensitiveCompare(rhs.deviceName)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        let originOrder = (lhs.originDeviceId ?? "").localizedCaseInsensitiveCompare(rhs.originDeviceId ?? "")
+        if originOrder != .orderedSame { return originOrder == .orderedAscending }
+        return lhs.peerClientId.localizedCaseInsensitiveCompare(rhs.peerClientId) == .orderedAscending
     }
 
     private func peerName(_ clientId: String) -> String {
@@ -297,15 +326,43 @@ struct DevicesView: View {
         return name?.isEmpty == false ? name ?? clientId : clientId
     }
 
+    private func isIosPeer(_ device: TrustedDevice) -> Bool {
+        device.platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ios"
+    }
+
     private func appFilterItems(for selection: FilterDeviceSelection) -> [AppFilterItem] {
         var items: [String: AppFilterItem] = [:]
         for notification in notifications where selection.matches(notification, runtime: runtime) {
             guard let appId = runtime.filterAppIdentifier(for: notification) else { continue }
             let label = notification.appLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-            items[appId] = AppFilterItem(
+            var item = items[appId] ?? AppFilterItem(
                 appId: appId,
                 appLabel: label.isEmpty ? appId : label,
-                detail: appId)
+                detail: appId,
+                channels: [:])
+            if selection.supportsChannels,
+               let channelId = notification.channelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !channelId.isEmpty {
+                let channelName = notification.channelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                item.channels[channelId] = ChannelFilterItem(
+                    channelId: channelId,
+                    channelName: channelName?.isEmpty == false ? channelName ?? channelId : channelId)
+            }
+            items[appId] = item
+        }
+        for appId in runtime.filteredAppIdentifiers(deviceKey: selection.deviceKey) where items[appId] == nil {
+            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+        }
+        for appId in runtime.appIdentifiersWithFilteredChannels(deviceKey: selection.deviceKey) where items[appId] == nil {
+            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+        }
+        for appId in Array(items.keys) {
+            var item = items[appId] ?? AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+            for channelId in runtime.filteredChannelIdentifiers(deviceKey: selection.deviceKey, appId: appId)
+                where item.channels[channelId] == nil {
+                item.channels[channelId] = ChannelFilterItem(channelId: channelId, channelName: channelId)
+            }
+            items[appId] = item
         }
         return items.values.sorted {
             $0.appLabel.localizedCaseInsensitiveCompare($1.appLabel) == .orderedAscending
@@ -316,26 +373,28 @@ struct DevicesView: View {
 private struct TrustedPeerRow: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     let device: TrustedDevice
+    let opensFilters: Bool
     let openFilters: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             DeviceLabel(device: device)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    if opensFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
+                        openFilters()
+                    }
+                }
             HStack {
                 Toggle(isOn: Binding(
                     get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
                     set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
                 )) {
-                    InlineIconLabel("Post Notifications", systemImage: "bell")
+                    NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
                 }
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 Spacer()
-                Button(action: openFilters) {
-                    InlineIconLabel("App Filters", systemImage: "line.3.horizontal.decrease.circle")
-                }
-                .font(.caption)
-                .disabled(!runtime.androidLocalNotificationsEnabled(for: device.clientId))
             }
         }
     }
@@ -348,7 +407,7 @@ private enum FilterDeviceSelection: Identifiable {
     var id: String {
         switch self {
         case .android(let device): "android:\(device.clientId)"
-        case .ios(let record): "ios:\(record.peerClientId)"
+        case .ios(let record): record.deviceKey
         }
     }
 
@@ -362,7 +421,14 @@ private enum FilterDeviceSelection: Identifiable {
             let name = device.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
             return name.isEmpty ? "Peer Apps" : "\(name) Apps"
         case .ios(let record):
-            return "\(record.deviceName) Apps"
+            return "\(record.deviceName) (via \(peerName(record.peerClientId))) Apps"
+        }
+    }
+
+    var supportsChannels: Bool {
+        switch self {
+        case .android: true
+        case .ios: false
         }
     }
 
@@ -374,7 +440,13 @@ private enum FilterDeviceSelection: Identifiable {
         case .ios(let record):
             return runtime.originPlatform(for: notification) == .IOS_ANCS
                 && notification.sourceClientId == record.peerClientId
+                && normalizedOriginDeviceId(notification.originDeviceId) == normalizedOriginDeviceId(record.originDeviceId)
         }
+    }
+
+    private func normalizedOriginDeviceId(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 }
 
@@ -382,8 +454,16 @@ private struct AppFilterItem: Identifiable {
     var appId: String
     var appLabel: String
     var detail: String
+    var channels: [String: ChannelFilterItem]
 
     var id: String { appId }
+}
+
+private struct ChannelFilterItem: Identifiable {
+    var channelId: String
+    var channelName: String
+
+    var id: String { channelId }
 }
 
 private struct IosDevicesSection: View {
@@ -398,36 +478,78 @@ private struct IosDevicesSection: View {
                 ForEach(devices) { device in
                     VStack(alignment: .leading, spacing: 8) {
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(verbatim: "\(device.deviceName) (via \(peerName(device.peerClientId)))")
+                            Text(verbatim: device.deviceName)
                                 .font(.body.weight(.medium))
-                            VerificationValueText(device.peerClientId)
+                            iosDeviceSubtitle(device)
+                        }
+                        .contentShape(Rectangle())
+                        .onTapGesture {
+                            if runtime.iosNotificationsEnabled(deviceKey: device.deviceKey) {
+                                onOpenFilters(device)
+                            }
                         }
                         HStack {
                             Toggle(isOn: Binding(
-                                get: { runtime.iosNotificationsEnabled(forPeerClientId: device.peerClientId) },
-                                set: {
-                                    runtime.setIosNotificationsEnabled(
-                                        $0,
-                                        forPeerClientId: device.peerClientId,
-                                        deviceName: device.deviceName)
-                                }
+                                get: { runtime.iosNotificationsEnabled(deviceKey: device.deviceKey) },
+                                set: { runtime.setIosNotificationsEnabled($0, device: device) }
                             )) {
-                                InlineIconLabel("Post Notifications", systemImage: "bell")
+                                NotificationPostingLabel(isEnabled: runtime.iosNotificationsEnabled(deviceKey: device.deviceKey))
                             }
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             Spacer()
+                        }
+                    }
+                    .swipeActions(edge: .trailing) {
+                        if !runtime.iosNotificationsEnabled(deviceKey: device.deviceKey) {
                             Button {
-                                onOpenFilters(device)
+                                runtime.removeIosDevice(deviceKey: device.deviceKey)
                             } label: {
-                                InlineIconLabel("App Filters", systemImage: "line.3.horizontal.decrease.circle")
+                                Label("Clear Filter", systemImage: "bell")
                             }
-                            .font(.caption)
-                            .disabled(!runtime.iosNotificationsEnabled(forPeerClientId: device.peerClientId))
+                            .tint(.gray)
                         }
                     }
                 }
             }
+        }
+    }
+
+    private func nonBlank(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    @ViewBuilder
+    private func iosDeviceSubtitle(_ device: FilteredIosDeviceRecord) -> some View {
+        let peer = peerName(device.peerClientId)
+        if let originDeviceId = nonBlank(device.originDeviceId) {
+            HStack(alignment: .firstTextBaseline, spacing: 3) {
+                Text(verbatim: originDeviceId)
+                    .font(.caption.monospaced())
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(verbatim: "via \(peer)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            Text(verbatim: "via \(peer)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
+}
+
+private struct NotificationPostingLabel: View {
+    let isEnabled: Bool
+
+    var body: some View {
+        if isEnabled {
+            InlineIconLabel("Post Notifications", systemImage: "bell")
+        } else {
+            InlineIconLabel("Notifications Silenced", systemImage: "bell.slash")
         }
     }
 }
@@ -437,26 +559,88 @@ private struct AppFilterSheet: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     let title: String
     let deviceKey: String
+    let supportsChannels: Bool
     let apps: [AppFilterItem]
 
     var body: some View {
         NavigationStack {
             List {
                 ForEach(apps) { app in
-                    Toggle(isOn: Binding(
-                        get: { runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: app.appId) },
-                        set: { runtime.setAppNotificationsEnabled($0, deviceKey: deviceKey, appId: app.appId) }
-                    )) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text(verbatim: app.appLabel)
-                                .font(.body.weight(.medium))
-                            Text(verbatim: app.detail)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
+                    Section {
+                        Toggle(isOn: Binding(
+                            get: { runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: app.appId) },
+                            set: { runtime.setAppNotificationsEnabled($0, deviceKey: deviceKey, appId: app.appId) }
+                        )) {
+                            VStack(alignment: .leading, spacing: 4) {
+                                Text(verbatim: app.appLabel)
+                                    .font(.body.weight(.medium))
+                                Text(verbatim: app.detail)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .swipeActions(edge: .trailing) {
+                            if !runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: app.appId) {
+                                Button {
+                                    runtime.setAppNotificationsEnabled(true, deviceKey: deviceKey, appId: app.appId)
+                                } label: {
+                                    Label("Clear Filter", systemImage: "trash")
+                                }
+                            }
+                        }
+
+                        if supportsChannels {
+                            ForEach(app.channels.values.sorted {
+                                $0.channelName.localizedCaseInsensitiveCompare($1.channelName) == .orderedAscending
+                            }) { channel in
+                                Toggle(isOn: Binding(
+                                    get: {
+                                        runtime.channelNotificationsEnabled(
+                                            deviceKey: deviceKey,
+                                            appId: app.appId,
+                                            channelId: channel.channelId)
+                                    },
+                                    set: {
+                                        runtime.setChannelNotificationsEnabled(
+                                            $0,
+                                            deviceKey: deviceKey,
+                                            appId: app.appId,
+                                            channelId: channel.channelId)
+                                    }
+                                )) {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(verbatim: channel.channelName)
+                                            .textSelection(.enabled)
+                                        Text(verbatim: channel.channelId)
+                                            .font(.caption)
+                                            .foregroundStyle(.secondary)
+                                            .textSelection(.enabled)
+                                    }
+                                }
+                                .disabled(!runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: app.appId))
+                                .swipeActions(edge: .trailing) {
+                                    if !runtime.channelNotificationsEnabled(
+                                        deviceKey: deviceKey,
+                                        appId: app.appId,
+                                        channelId: channel.channelId) {
+                                        Button {
+                                            runtime.setChannelNotificationsEnabled(
+                                                true,
+                                                deviceKey: deviceKey,
+                                                appId: app.appId,
+                                                channelId: channel.channelId)
+                                        } label: {
+                                            Label("Clear Filter", systemImage: "trash")
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
+            .listSectionSpacing(.compact)
             .navigationTitle(title)
             .overlay {
                 if apps.isEmpty {

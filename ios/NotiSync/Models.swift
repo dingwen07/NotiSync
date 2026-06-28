@@ -128,7 +128,10 @@ final class InboxNotification {
     var body: String?
     var subtitle: String?
     var originDeviceName: String?
+    var originDeviceId: String?
     var originPlatform: String?
+    var channelId: String?
+    var channelName: String?
     var category: String
     var importance: String
     var postTime: Date
@@ -154,7 +157,10 @@ final class InboxNotification {
         body: String? = nil,
         subtitle: String? = nil,
         originDeviceName: String? = nil,
+        originDeviceId: String? = nil,
         originPlatform: String? = nil,
+        channelId: String? = nil,
+        channelName: String? = nil,
         category: String,
         importance: String,
         postTime: Date,
@@ -176,7 +182,10 @@ final class InboxNotification {
         self.body = body
         self.subtitle = subtitle
         self.originDeviceName = originDeviceName
+        self.originDeviceId = originDeviceId
         self.originPlatform = originPlatform
+        self.channelId = channelId
+        self.channelName = channelName
         self.category = category
         self.importance = importance
         self.postTime = postTime

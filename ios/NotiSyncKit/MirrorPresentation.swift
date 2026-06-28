@@ -135,6 +135,9 @@ nonisolated enum MirrorPresentation {
             "iosBundleId": n.iosBundleId ?? "",
             "originPlatform": n.originPlatform.rawValue,
             "originDeviceName": n.originDeviceName ?? "",
+            "originDeviceId": n.originDeviceId ?? "",
+            "channelId": n.channelId ?? "",
+            "channelName": n.channelName ?? "",
             "appLabel": n.appLabel,
             "isClearable": n.isClearable,   // #14 — a swipe of a non-clearable mirror must not sync-dismiss
         ]

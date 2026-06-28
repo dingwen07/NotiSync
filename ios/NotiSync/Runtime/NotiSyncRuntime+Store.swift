@@ -26,23 +26,31 @@ extension NotiSyncRuntime {
         return NotificationFilterStore.iosDevices()
     }
 
-    func recordIosDevice(peerClientId: String, deviceName: String?) {
-        NotificationFilterStore.recordIosDevice(peerClientId: peerClientId, deviceName: deviceName)
+    func recordIosDevice(peerClientId: String, originDeviceId: String?, deviceName: String?) {
+        NotificationFilterStore.recordIosDevice(
+            peerClientId: peerClientId,
+            originDeviceId: originDeviceId,
+            deviceName: deviceName)
         bumpNotificationFilterRevision()
     }
 
-    func removeIosDevice(peerClientId: String) {
-        NotificationFilterStore.removeIosDevice(peerClientId: peerClientId)
+    func removeIosDevice(deviceKey: String) {
+        NotificationFilterStore.removeIosDevice(deviceKey: deviceKey)
         bumpNotificationFilterRevision()
     }
 
-    func iosNotificationsEnabled(forPeerClientId peerClientId: String) -> Bool {
+    func iosNotificationsEnabled(deviceKey: String) -> Bool {
         _ = notificationFilterRevision
-        return NotificationFilterStore.iosNotificationsEnabled(forPeerClientId: peerClientId)
+        return NotificationFilterStore.iosNotificationsEnabled(deviceKey: deviceKey)
     }
 
-    func setIosNotificationsEnabled(_ enabled: Bool, forPeerClientId peerClientId: String, deviceName: String?) {
-        NotificationFilterStore.setIosNotificationsEnabled(enabled, forPeerClientId: peerClientId, deviceName: deviceName)
+    func setIosNotificationsEnabled(_ enabled: Bool, device: FilteredIosDeviceRecord) {
+        NotificationFilterStore.setIosNotificationsEnabled(
+            enabled,
+            deviceKey: device.deviceKey,
+            peerClientId: device.peerClientId,
+            originDeviceId: device.originDeviceId,
+            deviceName: device.deviceName)
         bumpNotificationFilterRevision()
     }
 
@@ -56,15 +64,52 @@ extension NotiSyncRuntime {
         bumpNotificationFilterRevision()
     }
 
+    func filteredAppIdentifiers(deviceKey: String) -> Set<String> {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.filteredAppIds(deviceKey: deviceKey)
+    }
+
+    func channelNotificationsEnabled(deviceKey: String, appId: String, channelId: String) -> Bool {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.channelNotificationsEnabled(deviceKey: deviceKey, appId: appId, channelId: channelId)
+    }
+
+    func setChannelNotificationsEnabled(_ enabled: Bool, deviceKey: String, appId: String, channelId: String) {
+        NotificationFilterStore.setChannelNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId, channelId: channelId)
+        bumpNotificationFilterRevision()
+    }
+
+    func filteredChannelIdentifiers(deviceKey: String, appId: String) -> Set<String> {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.filteredChannelIds(deviceKey: deviceKey, appId: appId)
+    }
+
+    func appIdentifiersWithFilteredChannels(deviceKey: String) -> Set<String> {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.appIdsWithFilteredChannels(deviceKey: deviceKey)
+    }
+
     func filterNotificationsLike(_ notification: InboxNotification) {
         let platform = originPlatform(for: notification)
         switch platform {
         case .ANDROID_LOCAL:
             setAndroidLocalNotificationsEnabled(false, for: notification.sourceClientId)
         case .IOS_ANCS:
-            if let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) {
-                recordIosDevice(peerClientId: notification.sourceClientId, deviceName: name)
-                setIosNotificationsEnabled(false, forPeerClientId: notification.sourceClientId, deviceName: name)
+            let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) ?? "iOS Device"
+            recordIosDevice(peerClientId: notification.sourceClientId, originDeviceId: notification.originDeviceId, deviceName: name)
+            if let deviceKey = filterDeviceKey(for: notification) {
+                let device = FilteredIosDeviceRecord(
+                    peerClientId: notification.sourceClientId,
+                    originDeviceId: notification.originDeviceId,
+                    deviceName: name,
+                    updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
+                NotificationFilterStore.setIosNotificationsEnabled(
+                    false,
+                    deviceKey: deviceKey,
+                    peerClientId: device.peerClientId,
+                    originDeviceId: device.originDeviceId,
+                    deviceName: device.deviceName)
+                bumpNotificationFilterRevision()
             }
         }
     }
@@ -75,7 +120,7 @@ extension NotiSyncRuntime {
         case .ANDROID_LOCAL:
             return !notification.sourceClientId.isEmpty
         case .IOS_ANCS:
-            return NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) != nil
+            return !notification.sourceClientId.isEmpty
         }
     }
 
@@ -91,7 +136,9 @@ extension NotiSyncRuntime {
         case .ANDROID_LOCAL:
             return NotificationFilterStore.androidDeviceKey(notification.sourceClientId)
         case .IOS_ANCS:
-            return NotificationFilterStore.iosDeviceKey(peerClientId: notification.sourceClientId)
+            return NotificationFilterStore.iosDeviceKey(
+                peerClientId: notification.sourceClientId,
+                originDeviceId: notification.originDeviceId)
         }
     }
 
@@ -182,6 +229,15 @@ extension NotiSyncRuntime {
             if existing.originDeviceName == nil {
                 existing.originDeviceName = n.originDeviceName
             }
+            if existing.originDeviceId == nil {
+                existing.originDeviceId = n.originDeviceId
+            }
+            if existing.channelId == nil {
+                existing.channelId = n.channelId
+            }
+            if existing.channelName == nil {
+                existing.channelName = n.channelName
+            }
             if existing.iconAssetHash == nil, let hash = iconRef?.assetHash {
                 existing.iconAssetHash = hash
                 shouldRefreshIcons = true
@@ -197,7 +253,8 @@ extension NotiSyncRuntime {
                 messageId: messageId, sourceClientId: n.sourceClientId, sourceKey: n.sourceKey,
                 packageName: n.packageName, iosBundleId: n.iosBundleId, appLabel: n.appLabel,
                 title: n.title, body: n.bigText ?? n.text, subtitle: n.subText,
-                originDeviceName: n.originDeviceName, originPlatform: n.originPlatform.rawValue,
+                originDeviceName: n.originDeviceName, originDeviceId: n.originDeviceId,
+                originPlatform: n.originPlatform.rawValue, channelId: n.channelId, channelName: n.channelName,
                 category: n.category.rawValue,
                 importance: n.importance.rawValue,
                 postTime: Date(timeIntervalSince1970: TimeInterval(n.postTime) / 1000), receivedAt: .now,

@@ -61,7 +61,7 @@ struct VerificationValueText: View {
 
     private static func grouped(_ value: String) -> String {
         if value.contains(":") {
-            return value.replacingOccurrences(of: ":", with: ": ")
+            return value
         }
 
         guard value.count > 24, value.unicodeScalars.allSatisfy({ hexDigits.contains($0) }) else { return value }

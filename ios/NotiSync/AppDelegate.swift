@@ -47,8 +47,10 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
             originPlatform: info["originPlatform"] as? String,
             sourceClientId: info["sourceClientId"] as? String ?? "",
             originDeviceName: info["originDeviceName"] as? String,
+            originDeviceId: info["originDeviceId"] as? String,
             packageName: info["packageName"] as? String,
-            iosBundleId: info["iosBundleId"] as? String
+            iosBundleId: info["iosBundleId"] as? String,
+            channelId: info["channelId"] as? String
         ) {
             return []
         }
