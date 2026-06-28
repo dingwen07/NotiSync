@@ -357,10 +357,10 @@ nonisolated struct RotationStore: Codable, Sendable {
     static func load() -> RotationStore? { AppGroupStore.read(RotationStore.self, AppGroupStore.Files.rotation) }
     func save() { AppGroupStore.write(self, AppGroupStore.Files.rotation) }
 
-    /// Load the persisted state, seeding it at the initial epoch on first run.
-    static func loadOrSeed() -> RotationStore {
+    /// Load the persisted state, seeding it at the supplied epoch on first run.
+    static func loadOrSeed(selfEpoch: Int = NotiSyncConfig.initialEpoch) -> RotationStore {
         if let existing = load() { return existing }
-        let seeded = RotationStore(selfEpoch: NotiSyncConfig.initialEpoch,
+        let seeded = RotationStore(selfEpoch: max(selfEpoch, NotiSyncConfig.initialEpoch),
                                    activatedAt: Int64(Date().timeIntervalSince1970 * 1000), pending: nil)
         seeded.save()
         return seeded

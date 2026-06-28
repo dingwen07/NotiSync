@@ -15,6 +15,7 @@ extension NotiSyncRuntime {
         guard let modelContext else { return AppSettings() }
         if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first { return existing }
         let created = AppSettings()
+        createdSettingsThisLaunch = true
         modelContext.insert(created)
         return created
     }

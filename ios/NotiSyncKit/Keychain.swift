@@ -48,3 +48,55 @@ nonisolated enum Keychain {
         return SecItemDelete(query as CFDictionary) == errSecSuccess
     }
 }
+
+/// Durable high-water state for recovery from local-container loss. iOS may keep Keychain items while
+/// removing SwiftData/App Group files, so this must live beside the identity key rather than in SwiftData.
+nonisolated enum KeychainEpochStore {
+    private static let latestEpochAccount = "self.latest.keyepoch"
+    private static let apnsRouteResetPendingAccount = "apns.route.reset.pending"
+
+    static func latestEpoch() -> Int {
+        var latest = 0
+        var sawDefault = false
+        for group in [NotiSyncConfig.keychainGroup, nil] as [String?] {
+            guard let data = Keychain.get(account: latestEpochAccount, accessGroup: group),
+                  let text = String(data: data, encoding: .utf8),
+                  let value = Int(text) else {
+                continue
+            }
+            if group == nil { sawDefault = true }
+            latest = max(latest, value)
+        }
+        if sawDefault, latest > 0 { writeLatestEpoch(latest) }   // migrate legacy/default-only value into shared group.
+        return max(latest, 0)
+    }
+
+    static func record(epoch: Int) {
+        guard epoch > latestEpoch() else { return }
+        writeLatestEpoch(epoch)
+    }
+
+    static func apnsRouteResetPending() -> Bool {
+        Keychain.get(account: apnsRouteResetPendingAccount, accessGroup: NotiSyncConfig.keychainGroup) != nil
+            || Keychain.get(account: apnsRouteResetPendingAccount, accessGroup: nil) != nil
+    }
+
+    static func setAPNsRouteResetPending(_ pending: Bool) {
+        if pending {
+            let value = Data("1".utf8)
+            let wroteShared = Keychain.set(value, account: apnsRouteResetPendingAccount, accessGroup: NotiSyncConfig.keychainGroup)
+            let wroteDefault = Keychain.set(value, account: apnsRouteResetPendingAccount, accessGroup: nil)
+            _ = wroteShared || wroteDefault
+        } else {
+            Keychain.delete(account: apnsRouteResetPendingAccount, accessGroup: NotiSyncConfig.keychainGroup)
+            Keychain.delete(account: apnsRouteResetPendingAccount, accessGroup: nil)
+        }
+    }
+
+    private static func writeLatestEpoch(_ epoch: Int) {
+        let data = Data(String(max(epoch, 0)).utf8)
+        let wroteShared = Keychain.set(data, account: latestEpochAccount, accessGroup: NotiSyncConfig.keychainGroup)
+        let wroteDefault = Keychain.set(data, account: latestEpochAccount, accessGroup: nil)
+        _ = wroteShared || wroteDefault
+    }
+}

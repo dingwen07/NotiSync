@@ -55,6 +55,8 @@ nonisolated final class SecureEnclaveSigningKey: Sendable {
         return sig
     }
 
+    func exists() -> Bool { load() != nil }
+
     /// Permanently delete this key (rotation retirement / forward-secrecy GC). Idempotent.
     func delete() {
         for group in lookupAccessGroups {
@@ -156,6 +158,7 @@ nonisolated final class IdentityKeyStore: Sendable {
     private let key = SecureEnclaveSigningKey(tag: "\(NotiSyncConfig.bundleId).identity.p256",
                                               accessGroup: NotiSyncConfig.signingKeychainGroup)
 
+    func exists() -> Bool { key.exists() }
     func publicKeySpki() throws -> Data { try key.publicKeySpki() }
     func clientId() throws -> String { ClientIds.derive(spki: try key.publicKeySpki()) }
     func sign(_ data: Data) throws -> Data { try key.sign(data) }

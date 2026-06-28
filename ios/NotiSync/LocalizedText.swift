@@ -267,6 +267,10 @@ enum LocalizedText {
             return String(localized: "activity.title.rotatedDebug",
                           defaultValue: "Rotated (debug)",
                           comment: "Activity title for a debug key rotation.")
+        case .localStateRecovered:
+            return String(localized: "activity.title.localStateRecovered",
+                          defaultValue: "Recovered local state",
+                          comment: "Activity title for recovering after local app state was cleared while Keychain remained.")
         case .paired:
             return String(localized: "activity.title.paired",
                           defaultValue: "Paired",

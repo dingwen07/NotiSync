@@ -94,6 +94,9 @@ nonisolated enum KeyFingerprint {
 nonisolated final class NotiSyncEngine: Sendable {
     let selfClientId: String
     let selfIdentitySpki: Data
+    let identityAlreadyExisted: Bool
+    let recoveredAfterLocalStateLoss: Bool
+    let localStateRecoveryKeychainBaseEpoch: Int
 
     let identityKeys: IdentityKeyStore
     let operationalKeys: OperationalKeyStore
@@ -108,9 +111,20 @@ nonisolated final class NotiSyncEngine: Sendable {
     /// record is published to the App Group container (so the NSE knows our clientId + current epoch).
     init() throws {
         let identity = IdentityKeyStore()
+        let identityAlreadyExisted = identity.exists()
+        let persistedRotation = RotationStore.load()
+        let keychainLatestEpoch = KeychainEpochStore.latestEpoch()
+        let needsLocalStateRecovery = identityAlreadyExisted && persistedRotation == nil
+        let seedEpoch: Int
+        if needsLocalStateRecovery {
+            seedEpoch = max(keychainLatestEpoch, NotiSyncConfig.initialEpoch - 1) + 1
+        } else {
+            seedEpoch = NotiSyncConfig.initialEpoch
+        }
         let clientId = try identity.clientId()
         let spki = try identity.publicKeySpki()
-        let epoch = RotationStore.loadOrSeed().selfEpoch   // seeded at initialEpoch on first run
+        let rotation = persistedRotation ?? RotationStore.loadOrSeed(selfEpoch: seedEpoch)
+        let epoch = rotation.selfEpoch
 
         let operational = OperationalKeyStore()
         _ = try operational.publicKeySpki(epoch: epoch)   // create on first use
@@ -122,7 +136,17 @@ nonisolated final class NotiSyncEngine: Sendable {
         self.hpkeKeys = hpke
         self.selfClientId = clientId
         self.selfIdentitySpki = spki
+        self.identityAlreadyExisted = identityAlreadyExisted
+        self.recoveredAfterLocalStateLoss = needsLocalStateRecovery
+        self.localStateRecoveryKeychainBaseEpoch = keychainLatestEpoch
 
+        KeychainEpochStore.record(epoch: epoch)
+        if let pendingTarget = rotation.pending?.targetEpoch {
+            KeychainEpochStore.record(epoch: pendingTarget)
+        }
+        if needsLocalStateRecovery {
+            KeychainEpochStore.setAPNsRouteResetPending(true)
+        }
         SelfRecord(clientId: clientId, identitySpki: spki, currentEpoch: epoch).save()
     }
 
@@ -134,6 +158,9 @@ nonisolated final class NotiSyncEngine: Sendable {
         self.hpkeKeys = HpkeKeyStore()
         self.selfClientId = record.clientId
         self.selfIdentitySpki = record.identitySpki
+        self.identityAlreadyExisted = true
+        self.recoveredAfterLocalStateLoss = false
+        self.localStateRecoveryKeychainBaseEpoch = 0
     }
 
     // MARK: Signers
@@ -162,6 +189,7 @@ nonisolated final class NotiSyncEngine: Sendable {
     /// A key-epoch blob for an arbitrary epoch + validity window + floor — the rotation lifecycle builds the
     /// retiring (finite `notAfter`) and pre-warmed (future `notBefore`) blobs through this.
     func buildKeyEpochBlob(epoch: Int, notBefore: Int64, notAfter: Int64, minEpoch: Int, stripIdentity: Bool = false) throws -> SignedBlob {
+        KeychainEpochStore.record(epoch: epoch)
         let ke = ClientKeyEpoch(
             clientId: selfClientId,
             identityPublicKey: stripIdentity ? Data() : selfIdentitySpki,
@@ -194,6 +222,15 @@ nonisolated final class NotiSyncEngine: Sendable {
         )
         let payload = ProtocolCodec.encode(claim)
         return SignedBlob(typ: SignedType.routeClaim, signerId: selfClientId, payload: payload, sig: try identityKeys.sign(payload))
+    }
+
+    func serverEpoch(from blob: SignedBlob) -> Int? {
+        guard blob.typ == SignedType.keyEpoch, blob.signerId == selfClientId,
+              let keyEpoch = try? ProtocolCodec.decodeClientKeyEpoch(blob.payload),
+              keyEpoch.clientId == selfClientId else {
+            return nil
+        }
+        return max(keyEpoch.epoch, 0)
     }
 
     // MARK: Open
@@ -313,7 +350,32 @@ nonisolated final class NotiSyncEngine: Sendable {
         state.selfEpoch = target
         state.activatedAt = Self.nowMillis()
         state.save()
+        KeychainEpochStore.record(epoch: target)
         SelfRecord(clientId: selfClientId, identitySpki: selfIdentitySpki, currentEpoch: target).save()
+    }
+
+    /// Recover when the identity key survived but the local App Group/SwiftData epoch counter did not.
+    /// The new live epoch and floor are strictly above both the durable keychain high-water and the broker's
+    /// latest self epoch, preventing reuse of an epoch already accepted by peers or the broker.
+    @discardableResult
+    func recoverSelfEpochAfterLocalStateLoss(serverLatestEpoch: Int, force: Bool = false) throws -> Int {
+        let keychainBase = force ? KeychainEpochStore.latestEpoch() : localStateRecoveryKeychainBaseEpoch
+        let target = max(keychainBase, serverLatestEpoch, NotiSyncConfig.initialEpoch - 1) + 1
+        if force || target > epoch || pendingRotation() != nil {
+            try ensureEpochKeys(target)
+            let state = RotationStore(
+                selfEpoch: target,
+                activatedAt: Self.nowMillis(),
+                pending: nil
+            )
+            state.save()
+            SelfRecord(clientId: selfClientId, identitySpki: selfIdentitySpki, currentEpoch: target).save()
+        } else {
+            try ensureEpochKeys(epoch)
+        }
+        KeychainEpochStore.record(epoch: max(epoch, target))
+        KeychainEpochStore.setAPNsRouteResetPending(true)
+        return epoch
     }
 
     /// Mint (generate-on-first-use) the operational + HPKE keys for `epoch`.

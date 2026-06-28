@@ -161,6 +161,22 @@ actor BrokerClient {
         return try? ProtocolCodec.decodeSignedBlob(data)
     }
 
+    /// Recovery-only key-epoch probe. It signs with the identity key and reuses a still-valid cached bearer
+    /// if one exists, but it never re-attests. That keeps a stale local epoch from causing a failed recovery
+    /// probe to put the client into the attestation failure cooldown before it can publish the recovered epoch.
+    func fetchKeyEpochWithCachedAuth(clientId: String, epoch: Int? = nil) async -> SignedBlob? {
+        let q = epoch.map { "?epoch=\($0)" } ?? ""
+        guard var req = try? signedRequest(path: "/v2/keyepoch/\(clientId)\(q)", method: "GET",
+                                           body: Data(), signer: identitySigner, contentType: nil) else {
+            return nil
+        }
+        if let token = cachedBearerForRefresh() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        guard let (data, resp) = try? await session.data(for: req), Self.ok(resp) else { return nil }
+        return try? ProtocolCodec.decodeSignedBlob(data)
+    }
+
     func publishRoutes(_ routes: [SignedBlob]) async throws {
         guard !routes.isEmpty else { return }
         _ = try await authed(path: "/v2/routes", method: "POST",

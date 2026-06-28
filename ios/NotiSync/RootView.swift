@@ -423,6 +423,11 @@ struct SettingsView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.red)
                         }
+                        Button {
+                            runtime.simulateLocalStateLossRecovery()
+                        } label: {
+                            InlineIconLabel("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
+                        }
                     }
                 }
                 Section {

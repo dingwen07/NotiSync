@@ -40,12 +40,16 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published var incomingPairing: PairingCandidate?
 
     var modelContext: ModelContext?
+    var createdSettingsThisLaunch = false
     var engine: NotiSyncEngine?
     var broker: BrokerClient?
     var liveTask: Task<Void, Never>?
     private var foregroundSyncTask: Task<Void, Never>?
     private var foregroundSyncGeneration = 0
     private var foregroundSyncRerunRequested = false
+    private var localStateRecoveryNeeded = false
+    private var localStateRecoveryCompleted = false
+    private var localStateRecoveryUsesCurrentKeychainBase = false
     private var foregroundActive = false
     private var bgRegistered = false
     var lastReconcileAt = Date.distantPast
@@ -90,6 +94,15 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
                 attestor: FirebaseBootstrap.attestor(),
                 keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
             )
+            let swiftDataRecoveredWithExistingIdentity = createdSettingsThisLaunch && engine.identityAlreadyExisted
+            createdSettingsThisLaunch = false
+            self.localStateRecoveryNeeded = engine.recoveredAfterLocalStateLoss || swiftDataRecoveredWithExistingIdentity
+            self.localStateRecoveryCompleted = !localStateRecoveryNeeded
+            self.localStateRecoveryUsesCurrentKeychainBase =
+                swiftDataRecoveredWithExistingIdentity && !engine.recoveredAfterLocalStateLoss
+            if swiftDataRecoveredWithExistingIdentity {
+                KeychainEpochStore.setAPNsRouteResetPending(true)
+            }
             log.info("engine ready client=\(engine.selfClientId, privacy: .public) epoch=\(engine.epoch)")
         } catch {
             log.error("engine init failed: \(error.localizedDescription, privacy: .public)")
@@ -155,6 +168,10 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         guard shouldContinueForegroundSync(generation) else { return }
         await refreshBrokerStatus()
         guard shouldContinueForegroundSync(generation) else { return }
+        if localStateRecoveryNeeded && !localStateRecoveryCompleted {
+            guard await recoverLocalStateLossIfNeeded() else { return }
+        }
+        guard shouldContinueForegroundSync(generation) else { return }
         await publishCurrentRoute()
         guard shouldContinueForegroundSync(generation) else { return }
         await reconcileDismissals()
@@ -215,9 +232,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func didRegisterForRemoteNotifications(deviceToken: Data) {
         let token = deviceToken.lowercaseHex
         let s = settings()
-        s.apnsToken = token
+        _ = s.epochForAPNsRoute(routeRef: token, environment: s.apnsEnvironment)
         s.pushStatusValue = .apnsRegistered
-        s.routeEpoch += 1
         try? modelContext?.save()
         addActivity(.route, .apnsRegistered, detail: .text, detailArg: String(token.prefix(12)) + "…")
         Task { await publishCurrentRoute() }
@@ -266,12 +282,16 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         let effectiveEnvironment = NotiSyncConfig.effectiveAPNSEnvironment(environment)
         let brokerChanged = s.brokerURL != brokerURL
         let renamed = s.deviceName != deviceName
-        let routeChanged = brokerChanged || s.apnsEnvironment != effectiveEnvironment
+        let apnsEnvironmentChanged = s.apnsEnvironment != effectiveEnvironment
+        let routeChanged = brokerChanged || apnsEnvironmentChanged
         guard renamed || routeChanged else { return }
         s.brokerURL = brokerURL
         s.deviceName = deviceName
-        s.apnsEnvironment = effectiveEnvironment
-        if routeChanged { s.routeEpoch += 1 }
+        if apnsEnvironmentChanged, let token = s.apnsToken, !token.isEmpty {
+            _ = s.epochForAPNsRoute(routeRef: token, environment: effectiveEnvironment)
+        } else {
+            s.apnsEnvironment = effectiveEnvironment
+        }
         try? modelContext?.save()
         if brokerChanged { NotiSyncConfig.brokerURL = brokerURL }
         if renamed { ensureThisDeviceRow() }
@@ -283,21 +303,25 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     }
 
     func publishCurrentRoute() async {
+        if localStateRecoveryNeeded && !localStateRecoveryCompleted {
+            guard await recoverLocalStateLossIfNeeded() else { return }
+        }
         let s = settings()
         guard let engine, let broker else { return }
         let environment = NotiSyncConfig.effectiveAPNSEnvironment(s.apnsEnvironment)
-        if s.apnsEnvironment != environment {
-            s.apnsEnvironment = environment
-            s.routeEpoch += 1
-            try? modelContext?.save()
-        }
         guard let token = s.apnsToken, !token.isEmpty else { s.pushStatusValue = .apnsUnregistered; return }
-        let snapshot = RoutePublishSnapshot(routeRef: token, environment: environment, routeEpoch: s.routeEpoch)
+        let routeEpoch = s.epochForAPNsRoute(routeRef: token, environment: environment)
+        try? modelContext?.save()
+        let resetRouteFirst = KeychainEpochStore.apnsRouteResetPending()
+        let snapshot = RoutePublishSnapshot(routeRef: token, environment: environment, routeEpoch: routeEpoch)
         let result = await Task.detached(priority: .utility) {
-            try await Self.publishRoute(snapshot: snapshot, engine: engine, broker: broker)
+            try await Self.publishRoute(snapshot: snapshot, engine: engine, broker: broker, resetRouteFirst: resetRouteFirst)
         }.result
         switch result {
         case .success:
+            if resetRouteFirst {
+                KeychainEpochStore.setAPNsRouteResetPending(false)
+            }
             s.pushStatusValue = .routePublished
             s.lastRoutePublishAt = .now
             addActivity(.route, .routePublished, detail: .routeEnvironment, detailArg: environment.rawValue)
@@ -311,12 +335,21 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     private nonisolated static func publishRoute(
         snapshot: RoutePublishSnapshot,
         engine: NotiSyncEngine,
-        broker: BrokerClient
+        broker: BrokerClient,
+        resetRouteFirst: Bool
     ) async throws {
         // During a rotation the lifecycle publishes the (finite-notAfter) key-epochs; don't clobber them
         // here with a never-expiring blob. Between rotations, refresh the current epoch to notAfter=max.
         if engine.pendingRotation() == nil {
             try await broker.publishKeyEpoch(try engine.buildClientKeyEpochBlob())
+        }
+        if resetRouteFirst {
+            let resetClaim = try engine.buildRouteClaimBlob(
+                routeRef: "",
+                environment: snapshot.environment,
+                routeEpoch: max(snapshot.routeEpoch, 1)
+            )
+            try await broker.publishRoutes([resetClaim])
         }
         let claim = try engine.buildRouteClaimBlob(
             routeRef: snapshot.routeRef,
@@ -324,6 +357,41 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             routeEpoch: snapshot.routeEpoch
         )
         try await broker.publishRoutes([claim])
+    }
+
+    @discardableResult
+    private func recoverLocalStateLossIfNeeded(force: Bool = false) async -> Bool {
+        guard let engine, let broker else { return false }
+        guard force || (localStateRecoveryNeeded && !localStateRecoveryCompleted) else { return true }
+
+        let serverLatestEpoch = await broker.fetchKeyEpochWithCachedAuth(clientId: engine.selfClientId)
+            .flatMap { engine.serverEpoch(from: $0) } ?? 0
+        do {
+            let useCurrentKeychainBase = force || localStateRecoveryUsesCurrentKeychainBase
+            let recoveredEpoch = try await Task.detached(priority: .utility) {
+                try engine.recoverSelfEpochAfterLocalStateLoss(
+                    serverLatestEpoch: serverLatestEpoch,
+                    force: useCurrentKeychainBase
+                )
+            }.value
+            try await broker.publishKeyEpoch(try engine.buildClientKeyEpochBlob())
+            localStateRecoveryNeeded = false
+            localStateRecoveryCompleted = true
+            localStateRecoveryUsesCurrentKeychainBase = false
+            addActivity(.route, .localStateRecovered, detail: .epoch, detailNum: recoveredEpoch)
+            await refreshRotationInfoAsync()
+            return true
+        } catch {
+            record(error: error, domain: .rotation)
+            return false
+        }
+    }
+
+    func simulateLocalStateLossRecovery() {
+        Task {
+            guard await recoverLocalStateLossIfNeeded(force: true) else { return }
+            await publishCurrentRoute()
+        }
     }
 
     // MARK: Acks

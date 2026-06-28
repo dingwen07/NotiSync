@@ -73,6 +73,7 @@ enum ActivityTitleToken: String, Codable {
     case rotationActivated
     case rotationRetired
     case rotatedDebug
+    case localStateRecovered
     case paired
     case revoked
     case approved
@@ -332,6 +333,21 @@ final class AppSettings {
                 RouteEnvironment(rawValue: apnsEnvironmentRaw) ?? NotiSyncConfig.defaultAPNSEnvironment)
         }
         set { apnsEnvironmentRaw = NotiSyncConfig.effectiveAPNSEnvironment(newValue).rawValue }
+    }
+
+    /// Route epoching: reuse the epoch for the same APNs route, bump only when the route identity changes.
+    func epochForAPNsRoute(routeRef: String, environment: RouteEnvironment) -> Int {
+        let effectiveEnvironment = NotiSyncConfig.effectiveAPNSEnvironment(environment)
+        let currentEpoch = max(routeEpoch, 1)
+        let previousRouteRef = apnsToken?.isEmpty == false ? apnsToken : nil
+        if previousRouteRef == routeRef && apnsEnvironment == effectiveEnvironment {
+            routeEpoch = currentEpoch
+        } else {
+            routeEpoch = previousRouteRef == nil ? currentEpoch : currentEpoch + 1
+            apnsToken = routeRef
+            apnsEnvironment = effectiveEnvironment
+        }
+        return routeEpoch
     }
 
     /// Token-typed accessors over the persisted raw strings — producers read/write these, never the raw text.
