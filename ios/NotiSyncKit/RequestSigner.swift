@@ -5,6 +5,8 @@ import Security
 /// covers version, method, path+query, clientId, signer-epoch, timestamp, nonce, and base64url(SHA-256(body)).
 /// Epoch 0 = identity key (attestation / key-epoch publish / fallback / WS); ≥1 = operational (hot path).
 nonisolated enum RequestSigner {
+    enum NonceError: Error { case invalidByteCount, randomGenerationFailed(OSStatus) }
+
     static let headerClientId = "X-NotiSync-Client-Id"
     static let headerTimestamp = "X-NotiSync-Timestamp"
     static let headerNonce = "X-NotiSync-Nonce"
@@ -14,9 +16,14 @@ nonisolated enum RequestSigner {
 
     static func bodyHash(_ body: Data) -> String { NSBase64URL.encode(NSHash.sha256(body)) }
 
-    static func newNonce(byteCount: Int = 18) -> String {
+    static func newNonce(byteCount: Int = 18) throws -> String {
+        guard byteCount > 0 else { throw NonceError.invalidByteCount }
         var bytes = Data(count: byteCount)
-        _ = bytes.withUnsafeMutableBytes { SecRandomCopyBytes(kSecRandomDefault, byteCount, $0.baseAddress!) }
+        let status = bytes.withUnsafeMutableBytes { buffer -> OSStatus in
+            guard let baseAddress = buffer.baseAddress else { return errSecParam }
+            return SecRandomCopyBytes(kSecRandomDefault, byteCount, baseAddress)
+        }
+        guard status == errSecSuccess else { throw NonceError.randomGenerationFailed(status) }
         return NSBase64URL.encode(bytes)
     }
 
@@ -37,7 +44,8 @@ nonisolated enum RequestSigner {
     /// Returns the signed header dictionary for `signer` over `(method, url, body)`.
     static func signedHeaders(signer: EnvelopeSigner, method: String, url: URL, body: Data,
                               nowMillis: Int64 = Int64(Date().timeIntervalSince1970 * 1000),
-                              nonce: String = newNonce()) throws -> [String: String] {
+                              nonce: String? = nil) throws -> [String: String] {
+        let nonce = try nonce ?? newNonce()
         let hash = bodyHash(body)
         let canonical = canonical(method: method, pathAndQuery: pathAndQuery(url), clientId: signer.clientId,
                                   signerEpoch: signer.signerEpoch, timestampMillis: nowMillis, nonce: nonce,

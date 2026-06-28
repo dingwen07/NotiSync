@@ -225,13 +225,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             if handled, let mid = (userInfo["mid"] as? String) ?? (try? engine?.envelopeMessageId(bytes)) {
                 await queueAndFlushAck(messageId: mid)
             }
-            return handled ? .newData : .failed
+            return handled ? .newData : .noData
         }
         if let mid = userInfo["mid"] as? String, let broker {
             guard let bytes = await broker.fetchRelayMessage(mid) else { return .failed }
             let handled = await receiveEnvelope(bytes, mode: .apnsRelayFetch)
             if handled { await queueAndFlushAck(messageId: mid) }
-            return handled ? .newData : .failed
+            return handled ? .newData : .noData
         }
         return .noData
     }

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import Security
 
 // Native Swift reimplementation of :protocol-crypto, gated by the Kotlin↔Swift golden vectors
 // (see GoldenVectorsTests). HPKE + AEAD via CryptoKit; ECDSA-P256 verify via CryptoKit; no Tink.
