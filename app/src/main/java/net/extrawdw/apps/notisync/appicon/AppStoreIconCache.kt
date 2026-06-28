@@ -24,9 +24,11 @@ class AppStoreIconCache(
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     private val dir = File(baseDir, "icons").apply { mkdirs() }
+
     // Kept in baseDir, NOT in `dir`, so LRU eviction (which scans `dir`) never counts or deletes it.
     private val negFile = File(baseDir, "negatives.json")
-    private val negatives = ConcurrentHashMap<String, Long>(loadNegatives()) // normalized bundle id -> last-miss epoch ms
+    private val negatives =
+        ConcurrentHashMap<String, Long>(loadNegatives()) // normalized bundle id -> last-miss epoch ms
 
     private fun key(bundleId: String) = bundleId.lowercase().replace(UNSAFE, "_")
     private fun file(bundleId: String) = File(dir, key(bundleId))
@@ -74,7 +76,8 @@ class AppStoreIconCache(
 
     private fun loadNegatives(): Map<String, Long> = runCatching {
         val cutoff = now() - negativeTtlMs
-        Json.decodeFromString(NEG_SERIALIZER, negFile.readText()).filterValues { it >= cutoff } // drop expired
+        Json.decodeFromString(NEG_SERIALIZER, negFile.readText())
+            .filterValues { it >= cutoff } // drop expired
     }.getOrDefault(emptyMap())
 
     private fun saveNegatives() {
@@ -86,7 +89,8 @@ class AppStoreIconCache(
     }
 
     private companion object {
-        const val DEFAULT_MAX_BYTES = 8L * 1024 * 1024 // tiny WebP icons; a few hundred fit comfortably
+        const val DEFAULT_MAX_BYTES =
+            8L * 1024 * 1024 // tiny WebP icons; a few hundred fit comfortably
         const val DEFAULT_NEGATIVE_TTL_MS = 24L * 60 * 60 * 1000
         val UNSAFE = Regex("[^a-z0-9._-]")
         val NEG_SERIALIZER = MapSerializer(String.serializer(), Long.serializer())

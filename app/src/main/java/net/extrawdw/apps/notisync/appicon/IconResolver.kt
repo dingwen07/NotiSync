@@ -30,7 +30,8 @@ class IconResolver(
 
     // Lazily-built, cached index of installed launcher apps by lowercased label, for the display-name
     // heuristic. Cleared by [invalidate] (e.g. after an install changes the installed set).
-    @Volatile private var labelIndex: Map<String, String>? = null
+    @Volatile
+    private var labelIndex: Map<String, String>? = null
 
     /**
      * A color icon for an app, following the resolution chain (best, cheapest first):
@@ -53,8 +54,10 @@ class IconResolver(
         iosBundleId?.let { appStoreIcons?.cached(it) }?.let { return it }
         appIconHash?.let { hash -> assetCache.read(hash)?.let { decode(it) }?.let { return it } }
         packageName?.let { installedIcon(it) }?.let { return it }
-        iosBundleId?.let { BundleIdMap.androidPackage(it) }?.let { installedIcon(it) }?.let { return it }
-        if (includeIosGenericFallback && !iosBundleId.isNullOrBlank()) shippedIcons?.iosFallback()?.let { return it }
+        iosBundleId?.let { BundleIdMap.androidPackage(it) }?.let { installedIcon(it) }
+            ?.let { return it }
+        if (includeIosGenericFallback && !iosBundleId.isNullOrBlank()) shippedIcons?.iosFallback()
+            ?.let { return it }
         return null
     }
 
@@ -64,7 +67,10 @@ class IconResolver(
      * icon rather than a borrowed/installed fallback. For the iOS app-list UI, which already runs off-main;
      * the render path uses the sync [colorIcon] + an [AppStoreIconProvider.ensureCached] re-render instead.
      */
-    suspend fun colorIconEnsuringRemote(packageName: String?, iosBundleId: String? = null): Bitmap? {
+    suspend fun colorIconEnsuringRemote(
+        packageName: String?,
+        iosBundleId: String? = null
+    ): Bitmap? {
         if (iosBundleId != null && shippedIcons?.covers(iosBundleId) != true) {
             appStoreIcons?.ensureCached(iosBundleId)
         }
@@ -89,7 +95,9 @@ class IconResolver(
     }
 
     /** Drop the cached installed-app index so the next heuristic lookup rebuilds it (e.g. after an install). */
-    fun invalidate() { labelIndex = null }
+    fun invalidate() {
+        labelIndex = null
+    }
 
     private fun installedIcon(pkg: String): Bitmap? =
         runCatching { drawableToBitmap(pm.getApplicationIcon(pkg)) }.getOrNull()
@@ -100,7 +108,9 @@ class IconResolver(
         buildMap {
             for (info in pm.getInstalledApplications(0)) {
                 if (info.packageName == context.packageName) continue
-                val label = runCatching { pm.getApplicationLabel(info).toString() }.getOrNull()?.trim()?.lowercase()
+                val label =
+                    runCatching { pm.getApplicationLabel(info).toString() }.getOrNull()?.trim()
+                        ?.lowercase()
                 if (!label.isNullOrEmpty()) putIfAbsent(label, info.packageName)
             }
         }
@@ -119,5 +129,7 @@ class IconResolver(
         return bitmap
     }
 
-    private companion object { const val ICON_PX = 128 }
+    private companion object {
+        const val ICON_PX = 128
+    }
 }

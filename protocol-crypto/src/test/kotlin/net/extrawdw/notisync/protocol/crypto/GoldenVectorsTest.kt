@@ -25,19 +25,17 @@ import java.io.File
 import java.util.Base64
 
 /**
- * Phase 0 of the iOS plan: generate the Kotlin→Swift golden vectors and assert their self-consistency
- * on the JVM so this doubles as a regression guard. The emitted JSON file is consumed by the iOS
- * XCTest suite (Phases 2–3) to prove the native Swift crypto is byte-compatible with this reference
- * implementation. See ~/.claude/plans/read-docs-notisync-ios-library-implement-giggly-sky.md §B.5 / §E.
+ * Generates Kotlin→Swift golden vectors and asserts their self-consistency on the JVM. The emitted JSON
+ * file is consumed by the iOS XCTest suite to prove the native Swift crypto is byte-compatible with this
+ * reference implementation.
  *
  * The two byte-identity vectors ([EnvelopeAuth], [AssetAad]) are built from fixed literal inputs so the
- * expected CBOR is stable; everything else embeds the (possibly freshly generated) keys it needs so the
- * file is self-contained. Binary fields are base64-standard (Swift: `Data(base64Encoded:)`).
+ * expected CBOR is stable; everything else embeds the keys it needs so the file is self-contained. Binary
+ * fields are base64-standard (Swift: `Data(base64Encoded:)`).
  *
- * The HPKE vectors are the Tink↔CryptoKit framing proof obligation: Kotlin seals via [Hpke.sealToRaw]
- * to the RFC-7748 §6.1 X25519 keypair (whose raw private key is published in the vector), and Swift
- * must open them with CryptoKit `HPKE.Recipient`. If those open, NS2's `NO_PREFIX` Tink output is the
- * bare RFC-9180 `enc‖ct` the plan assumes.
+ * The HPKE vectors prove the Tink↔CryptoKit framing: Kotlin seals via [Hpke.sealToRaw] to the RFC-7748
+ * §6.1 X25519 keypair (whose raw private key is published in the vector), and Swift opens them with
+ * CryptoKit `HPKE.Recipient`.
  */
 class GoldenVectorsTest {
 
@@ -173,7 +171,7 @@ class GoldenVectorsTest {
             identityPublicKey = if (stripped) ByteArray(0) else identity.publicKeySpki,
             epoch = 1,
             operationalSigningKey = op.operationalPublicKeySpki,
-            hpkePublicKey = rfc7748PubX25519, // raw 32-byte X25519 (post-rename wire form)
+            hpkePublicKey = rfc7748PubX25519, // raw 32-byte X25519 public key
             purposes = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
             notBefore = 1_750_000_000_000L,
             notAfter = 1_760_000_000_000L,

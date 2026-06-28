@@ -17,23 +17,34 @@ class GraphicsPipeline(
     private val extractor: GraphicsExtractor,
     private val assets: AssetManager,
 ) {
-    suspend fun attach(sbn: StatusBarNotification, captured: CapturedNotification): CapturedNotification {
+    suspend fun attach(
+        sbn: StatusBarNotification,
+        captured: CapturedNotification
+    ): CapturedNotification {
         val plan = ruleEngine.plan(captured)
         var result = captured
 
         when (plan.largeIcon) {
             LargeIconHandling.MIRROR -> extractor.largeIcon(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.LARGE_ICON, captured)?.let { result = result.copy(largeIcon = it) }
+                upload(bytes, AssetRole.LARGE_ICON, captured)?.let {
+                    result = result.copy(largeIcon = it)
+                }
             }
+
             LargeIconHandling.AS_AVATAR -> extractor.largeIcon(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.AVATAR, captured)?.let { result = asConversation(result, it) }
+                upload(bytes, AssetRole.AVATAR, captured)?.let {
+                    result = asConversation(result, it)
+                }
             }
+
             LargeIconHandling.OMIT -> Unit
         }
 
         if (result.style == NotifStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.PRIVATE) {
             extractor.bigPicture(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.BIG_PICTURE, captured)?.let { result = result.copy(bigPicture = it) }
+                upload(bytes, AssetRole.BIG_PICTURE, captured)?.let {
+                    result = result.copy(bigPicture = it)
+                }
             }
         }
 
@@ -59,7 +70,10 @@ class GraphicsPipeline(
     private suspend fun upload(bytes: ByteArray, role: AssetRole, notif: CapturedNotification) =
         assets.ensureUploaded(bytes, role, MIME_WEBP, notif.sourceClientId)
 
-    private suspend fun attachMessageAvatars(sbn: StatusBarNotification, notif: CapturedNotification): CapturedNotification {
+    private suspend fun attachMessageAvatars(
+        sbn: StatusBarNotification,
+        notif: CapturedNotification
+    ): CapturedNotification {
         val avatarBytes = extractor.messageAvatars(sbn)
         if (avatarBytes.isEmpty()) return notif
         val updated = ArrayList<ConversationMessage>(notif.messages.size)
@@ -77,7 +91,10 @@ class GraphicsPipeline(
     }
 
     /** Render the notification as a conversation carrying [avatarRef] as the contact's avatar. */
-    private fun asConversation(notif: CapturedNotification, avatarRef: net.extrawdw.notisync.protocol.PrivateAssetRef): CapturedNotification {
+    private fun asConversation(
+        notif: CapturedNotification,
+        avatarRef: net.extrawdw.notisync.protocol.PrivateAssetRef
+    ): CapturedNotification {
         if (notif.style == NotifStyle.MESSAGING) {
             // Attach the contact avatar to incoming messages that lack their own.
             return notif.copy(messages = notif.messages.map {
@@ -92,7 +109,11 @@ class GraphicsPipeline(
             timestamp = notif.postTime,
             avatar = avatarRef,
         )
-        return notif.copy(style = NotifStyle.MESSAGING, isConversation = true, messages = listOf(message))
+        return notif.copy(
+            style = NotifStyle.MESSAGING,
+            isConversation = true,
+            messages = listOf(message)
+        )
     }
 
     private companion object {

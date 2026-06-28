@@ -10,7 +10,8 @@ class AppStoreIconCacheTest {
 
     private fun tempDir() = Files.createTempDirectory("notisync-appicons").toFile()
 
-    @Test fun writeReadRoundTrip_caseInsensitiveKey() {
+    @Test
+    fun writeReadRoundTrip_caseInsensitiveKey() {
         val c = AppStoreIconCache(tempDir(), now = { 1L })
         assertFalse(c.has("com.apple.MobileSMS"))
         c.write("com.apple.MobileSMS", byteArrayOf(1, 2, 3))
@@ -19,7 +20,8 @@ class AppStoreIconCacheTest {
         assertArrayEquals(byteArrayOf(1, 2, 3), c.readBytes("com.apple.MOBILESMS"))
     }
 
-    @Test fun negativeCache_marksAndExpiresAfterTtl() {
+    @Test
+    fun negativeCache_marksAndExpiresAfterTtl() {
         var t = 0L
         val c = AppStoreIconCache(tempDir(), negativeTtlMs = 1000, now = { t })
         assertFalse(c.isRecentlyMissing("com.apple.Preferences"))
@@ -29,7 +31,8 @@ class AppStoreIconCacheTest {
         assertFalse(c.isRecentlyMissing("com.apple.Preferences")) // TTL elapsed -> retry allowed
     }
 
-    @Test fun write_clearsNegativeMarker() {
+    @Test
+    fun write_clearsNegativeMarker() {
         val c = AppStoreIconCache(tempDir(), now = { 5L })
         c.markMissing("x")
         assertTrue(c.isRecentlyMissing("x"))
@@ -37,7 +40,8 @@ class AppStoreIconCacheTest {
         assertFalse(c.isRecentlyMissing("x"))
     }
 
-    @Test fun lruEviction_dropsOldest_andReadProtectsRecent() {
+    @Test
+    fun lruEviction_dropsOldest_andReadProtectsRecent() {
         var t = 100L
         val c = AppStoreIconCache(tempDir(), maxBytes = 12, now = { t })
         c.write("a", ByteArray(6)); t = 200
@@ -49,17 +53,25 @@ class AppStoreIconCacheTest {
         assertTrue(c.has("c"))
     }
 
-    @Test fun negativeCache_persistsAcrossInstances() {
+    @Test
+    fun negativeCache_persistsAcrossInstances() {
         val dir = tempDir()
-        AppStoreIconCache(dir, negativeTtlMs = 10_000, now = { 1000L }).markMissing("com.example.absent")
+        AppStoreIconCache(
+            dir,
+            negativeTtlMs = 10_000,
+            now = { 1000L }).markMissing("com.example.absent")
         // A fresh instance over the same dir (an app restart) still sees the miss -> no redundant re-fetch.
         val restarted = AppStoreIconCache(dir, negativeTtlMs = 10_000, now = { 2000L })
         assertTrue(restarted.isRecentlyMissing("com.example.absent"))
     }
 
-    @Test fun negativeCache_expiredEntriesDroppedOnLoad() {
+    @Test
+    fun negativeCache_expiredEntriesDroppedOnLoad() {
         val dir = tempDir()
-        AppStoreIconCache(dir, negativeTtlMs = 1000, now = { 1000L }).markMissing("com.example.absent")
+        AppStoreIconCache(
+            dir,
+            negativeTtlMs = 1000,
+            now = { 1000L }).markMissing("com.example.absent")
         // Restart 4s later with a 1s TTL: the persisted miss is stale and must not suppress a retry.
         val restarted = AppStoreIconCache(dir, negativeTtlMs = 1000, now = { 5000L })
         assertFalse(restarted.isRecentlyMissing("com.example.absent"))

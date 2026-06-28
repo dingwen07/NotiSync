@@ -80,13 +80,30 @@ class RotationManager(
         val hpkeNext = mintHpke(target)
 
         val nb = now() + (leadMillisOverride ?: leadMillis)
-        val retireNotAfter = nb + overlapMillis            // N stops being valid one overlap after N+1 activates
+        val retireNotAfter =
+            nb + overlapMillis            // N stops being valid one overlap after N+1 activates
         val targetNotAfter = retireNotAfter + lifetimeMillis
 
         // Re-publish N with a finite notAfter (floor stays N: minEpoch = n) so the broker GC + peers retire it.
-        publish(buildKeyEpoch(n, opCur.operationalPublicKeySpki, hpkeCur, notBefore = 0L, notAfter = retireNotAfter, minEpoch = n))
+        publish(
+            buildKeyEpoch(
+                n,
+                opCur.operationalPublicKeySpki,
+                hpkeCur,
+                notBefore = 0L,
+                notAfter = retireNotAfter,
+                minEpoch = n
+            )
+        )
         // Publish + pre-warm N+1 (future notBefore; minEpoch still n so it does not yet raise the floor).
-        val nextBlob = buildKeyEpoch(target, opNext.operationalPublicKeySpki, hpkeNext, notBefore = nb, notAfter = targetNotAfter, minEpoch = n)
+        val nextBlob = buildKeyEpoch(
+            target,
+            opNext.operationalPublicKeySpki,
+            hpkeNext,
+            notBefore = nb,
+            notAfter = targetNotAfter,
+            minEpoch = n
+        )
         publish(nextBlob)
         pushE2E(nextBlob)
 
@@ -114,21 +131,49 @@ class RotationManager(
 
         if (nowMs >= p.notBefore && trust.selfEpoch() < p.targetEpoch) {
             val opNext = mintOperational(p.targetEpoch)
-            onActivate(opNext, p.targetEpoch) // sets the live operational signer + advanceSelfEpoch(target)
+            onActivate(
+                opNext,
+                p.targetEpoch
+            ) // sets the live operational signer + advanceSelfEpoch(target)
             // Re-publish the now-active target (floor still N during the overlap so peers may still send to N).
-            publish(buildKeyEpoch(p.targetEpoch, opNext.operationalPublicKeySpki, mintHpke(p.targetEpoch), notBefore = p.notBefore, notAfter = p.notAfter, minEpoch = p.retiredEpoch))
+            publish(
+                buildKeyEpoch(
+                    p.targetEpoch,
+                    opNext.operationalPublicKeySpki,
+                    mintHpke(p.targetEpoch),
+                    notBefore = p.notBefore,
+                    notAfter = p.notAfter,
+                    minEpoch = p.retiredEpoch
+                )
+            )
         }
 
         if (nowMs >= p.retireRetiredAt) {
             val opNext = mintOperational(p.targetEpoch)
             // Raise the floor to the target (minEpoch = target): the broker floor advances and peers reject N.
-            publish(buildKeyEpoch(p.targetEpoch, opNext.operationalPublicKeySpki, mintHpke(p.targetEpoch), notBefore = p.notBefore, notAfter = p.notAfter, minEpoch = p.targetEpoch))
+            publish(
+                buildKeyEpoch(
+                    p.targetEpoch,
+                    opNext.operationalPublicKeySpki,
+                    mintHpke(p.targetEpoch),
+                    notBefore = p.notBefore,
+                    notAfter = p.notAfter,
+                    minEpoch = p.targetEpoch
+                )
+            )
             onRetire(p.retiredEpoch, setOf(p.targetEpoch))
             trust.setPendingRotation(null)
         }
     }
 
-    private fun buildKeyEpoch(epoch: Int, opSpki: ByteArray, hpkePublic: ByteArray, notBefore: Long, notAfter: Long, minEpoch: Int): SignedBlob {
+    private fun buildKeyEpoch(
+        epoch: Int,
+        opSpki: ByteArray,
+        hpkePublic: ByteArray,
+        notBefore: Long,
+        notAfter: Long,
+        minEpoch: Int
+    ): SignedBlob {
         val keyEpoch = ClientKeyEpoch(
             clientId = clientId,
             identityPublicKey = identitySpki,
@@ -143,7 +188,12 @@ class RotationManager(
             minEpoch = minEpoch,
         )
         val payload = ProtocolCodec.encodeToCbor(keyEpoch)
-        return SignedBlob(SignedType.KEY_EPOCH, signerId = clientId, payload = payload, sig = identitySign(payload))
+        return SignedBlob(
+            SignedType.KEY_EPOCH,
+            signerId = clientId,
+            payload = payload,
+            sig = identitySign(payload)
+        )
     }
 
     companion object {
@@ -180,7 +230,7 @@ class RotationManager(
             // gap before the next rotation re-publishes it. Validated against the shipped defaults at class load.
             require(DEFAULT_OVERLAP_MS + DEFAULT_LIFETIME_MS >= DEFAULT_ROTATION_INTERVAL_MS) {
                 "epoch validity (overlap ${DEFAULT_OVERLAP_MS} + lifetime ${DEFAULT_LIFETIME_MS} ms) must cover " +
-                    "the rotation interval (${DEFAULT_ROTATION_INTERVAL_MS} ms) or a headless device locks out"
+                        "the rotation interval (${DEFAULT_ROTATION_INTERVAL_MS} ms) or a headless device locks out"
             }
         }
     }

@@ -28,8 +28,8 @@ import org.slf4j.LoggerFactory
 import java.util.Base64
 
 /**
- * Broker orchestration: verify signed cards/routes (never decrypt), store-and-forward encrypted
- * envelopes, and fan out via the best available route (live WebSocket, else FCM wake/inline, else
+ * Broker orchestration: verify signed key-epochs/routes (never decrypt), store-and-forward encrypted
+ * envelopes, and fan out via the best available route (live WebSocket, else APNs/FCM push, else
  * report a missing route so the caller can supply a signed claim).
  */
 class Broker(
@@ -84,7 +84,7 @@ class Broker(
 
     /**
      * Ingest a self-contained, identity-signed key-epoch (NS2). Verifies it self-consistently, pins it
-     * against the stored card's identity key if we hold one (no key swap), and stores it under the
+     * against the client's previously stored identity key if we hold one (no key swap), and stores it under the
      * monotonic floor. Returns whether it was accepted.
      */
     suspend fun uploadKeyEpoch(blob: SignedBlob): Boolean {

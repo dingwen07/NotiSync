@@ -10,7 +10,11 @@ class NotificationRuleEngineTest {
 
     private val engine = NotificationRuleEngine()
 
-    private fun notif(pkg: String, category: MirrorCategory = MirrorCategory.NONE, isConversation: Boolean = false) =
+    private fun notif(
+        pkg: String,
+        category: MirrorCategory = MirrorCategory.NONE,
+        isConversation: Boolean = false
+    ) =
         CapturedNotification(
             sourceClientId = ClientId("x"),
             sourceKey = "k",
@@ -31,13 +35,22 @@ class NotificationRuleEngineTest {
 
     @Test
     fun weChatMessageRoutesLargeIconToAvatar() {
-        assertEquals(LargeIconHandling.AS_AVATAR, engine.plan(notif("com.tencent.mm", category = MirrorCategory.MESSAGE)).largeIcon)
-        assertEquals(LargeIconHandling.AS_AVATAR, engine.plan(notif("com.tencent.mm", isConversation = true)).largeIcon)
+        assertEquals(
+            LargeIconHandling.AS_AVATAR,
+            engine.plan(notif("com.tencent.mm", category = MirrorCategory.MESSAGE)).largeIcon
+        )
+        assertEquals(
+            LargeIconHandling.AS_AVATAR,
+            engine.plan(notif("com.tencent.mm", isConversation = true)).largeIcon
+        )
     }
 
     @Test
     fun weChatNonConversationFallsBackToDefault() {
         // A non-message, non-conversation WeChat notification (e.g. a payment receipt) mirrors normally.
-        assertEquals(LargeIconHandling.MIRROR, engine.plan(notif("com.tencent.mm", category = MirrorCategory.STATUS)).largeIcon)
+        assertEquals(
+            LargeIconHandling.MIRROR,
+            engine.plan(notif("com.tencent.mm", category = MirrorCategory.STATUS)).largeIcon
+        )
     }
 }

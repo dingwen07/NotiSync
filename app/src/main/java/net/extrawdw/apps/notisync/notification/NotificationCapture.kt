@@ -34,7 +34,8 @@ class NotificationNormalizer(private val pm: PackageManager) {
 
         // Source channel + conversation metadata (best-effort; redacted/absent for a plain listener).
         val channel = runCatching { ranking?.channel }.getOrNull()
-        val channelImportance = runCatching { ranking?.importance }.getOrNull()?.let(::mapImportance)
+        val channelImportance =
+            runCatching { ranking?.importance }.getOrNull()?.let(::mapImportance)
         val shortcutId = runCatching { n.shortcutId }.getOrNull()
         val conversation = runCatching { ranking?.isConversation == true }.getOrDefault(false)
 
@@ -43,11 +44,16 @@ class NotificationNormalizer(private val pm: PackageManager) {
         }.getOrNull()
 
         val messages = messaging?.messages?.map {
-            ConversationMessage(sender = it.person?.name?.toString(), text = it.text?.toString() ?: "", timestamp = it.timestamp)
+            ConversationMessage(
+                sender = it.person?.name?.toString(),
+                text = it.text?.toString() ?: "",
+                timestamp = it.timestamp
+            )
         } ?: emptyList()
 
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
-        val hasBigPicture = extras.containsKey(Notification.EXTRA_PICTURE) || extras.containsKey(Notification.EXTRA_PICTURE_ICON)
+        val hasBigPicture =
+            extras.containsKey(Notification.EXTRA_PICTURE) || extras.containsKey(Notification.EXTRA_PICTURE_ICON)
         val style = when {
             messages.isNotEmpty() -> NotifStyle.MESSAGING
             hasBigPicture -> NotifStyle.BIG_PICTURE
@@ -168,7 +174,8 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
     )
 
     /** Debounced dismissals in flight, keyed by source key — cancelled by a re-post (cancel+repost update). */
-    private val pendingDismissals: MutableMap<String, Job> = java.util.Collections.synchronizedMap(HashMap())
+    private val pendingDismissals: MutableMap<String, Job> =
+        java.util.Collections.synchronizedMap(HashMap())
 
     override fun onListenerConnected() {
         engine?.originalCanceler = this
@@ -187,7 +194,11 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         handlePosted(sbn, backfillCutoff = null)
     }
 
-    override fun onNotificationRemoved(sbn: StatusBarNotification, rankingMap: RankingMap?, reason: Int) {
+    override fun onNotificationRemoved(
+        sbn: StatusBarNotification,
+        rankingMap: RankingMap?,
+        reason: Int
+    ) {
         val wasMirrored = mirroredKeys.remove(sbn.key)
         if (reason !in dismissReasons) return // echo / regroup / snooze / package churn — leave the mirror
         if (!wasMirrored) {
@@ -235,7 +246,8 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         val eng = engine ?: return
         val clientId = app.graph.clientId ?: return
         val ranking = NotificationListenerService.Ranking()
-        val haveRanking = runCatching { currentRanking?.getRanking(sbn.key, ranking) == true }.getOrDefault(false)
+        val haveRanking =
+            runCatching { currentRanking?.getRanking(sbn.key, ranking) == true }.getOrDefault(false)
         val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId)
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 

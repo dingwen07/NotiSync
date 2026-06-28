@@ -86,7 +86,8 @@ class SecureChannel(
      * hit [dedup] (disk) every time. The durable dedup is [dedup]; this just shortcuts it.
      */
     private val recent: MutableSet<String> = java.util.Collections.synchronizedSet(
-        java.util.Collections.newSetFromMap(object : java.util.LinkedHashMap<String, Boolean>(256, 0.75f, true) {
+        java.util.Collections.newSetFromMap(object :
+            java.util.LinkedHashMap<String, Boolean>(256, 0.75f, true) {
             override fun removeEldestEntry(eldest: Map.Entry<String, Boolean>): Boolean = size > 512
         })
     )
@@ -185,7 +186,10 @@ class SecureChannel(
      * HANDLED/DUPLICATE are safe to ack; IN_FLIGHT (a racing thread hasn't committed yet) and DROPPED
      * (may yet deliver once trust/keys converge) are not.
      */
-    fun deliver(envelope: Envelope, deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN): DeliveryOutcome {
+    fun deliver(
+        envelope: Envelope,
+        deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN
+    ): DeliveryOutcome {
         val id = envelope.messageId
         if (id in recent) return DeliveryOutcome.DUPLICATE
         if (dedup?.seen(id) == true) {
@@ -218,7 +222,8 @@ class SecureChannel(
             // deliberately left unacked (matching a decrypt failure) so the relay redelivers once we re-converge;
             // HPKE retention ≥ relay TTL (RotationManager) makes this rare. A faster pull-on-demand path
             // (EnvelopeResendRequest, §8 #10) is a Phase-6 optimization, not required for correctness.
-            val myEpoch = envelope.recipients.firstOrNull { it.recipientId == signer.clientId }?.recipientEpoch
+            val myEpoch =
+                envelope.recipients.firstOrNull { it.recipientId == signer.clientId }?.recipientEpoch
             val myKeyset = myEpoch?.let { myHpkePrivate(it) }
             if (myKeyset == null) {
                 log.warn("no retained HPKE keyset for recipient epoch $myEpoch to open $id — dropping unacked for relay redelivery")
@@ -233,7 +238,17 @@ class SecureChannel(
             val handler = handlers[envelope.typ] ?: return DeliveryOutcome.DROPPED
             // Report which key-kind signed (0 = identity, ≥1 = operational) so the handler can enforce the
             // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
-            handler(InboundMessage(envelope.signerId, sender.ownDevice, envelope.typ, body, envelope.signerEpoch, id, deliveryMode))
+            handler(
+                InboundMessage(
+                    envelope.signerId,
+                    sender.ownDevice,
+                    envelope.typ,
+                    body,
+                    envelope.signerEpoch,
+                    id,
+                    deliveryMode
+                )
+            )
             // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
             recent.add(id)
             dedup?.record(id)

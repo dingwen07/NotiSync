@@ -32,7 +32,14 @@ class RotationManagerTest {
             identitySpki = identity.publicKeySpki,
             identitySign = identity::sign,
             trust = trust,
-            mintOperational = { e -> ops.getOrPut(e) { SoftwareOperationalSigner.generate(identity.clientId, e) } },
+            mintOperational = { e ->
+                ops.getOrPut(e) {
+                    SoftwareOperationalSigner.generate(
+                        identity.clientId,
+                        e
+                    )
+                }
+            },
             mintHpke = { e -> hpkes.getOrPut(e) { Hpke.generateKeyPair().publicKeyset } },
             // Mirror production: the activation callback swaps the live signer AND advances the epoch counter.
             onActivate = { s, e -> activated.add(s to e); trust.advanceSelfEpoch(e) },

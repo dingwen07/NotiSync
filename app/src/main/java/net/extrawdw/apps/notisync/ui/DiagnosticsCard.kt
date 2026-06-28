@@ -57,9 +57,11 @@ import net.extrawdw.apps.notisync.ui.theme.SecurityRedLight
 sealed interface ServerProbe {
     data object Idle : ServerProbe
     data object Loading : ServerProbe
-    data class Result(val health: HealthResponse?, val status: VerificationStatusResponse?) : ServerProbe
+    data class Result(val health: HealthResponse?, val status: VerificationStatusResponse?) :
+        ServerProbe
 
-    fun version(): String = (this as? Result)?.let { it.health?.version ?: it.status?.version } ?: "?"
+    fun version(): String =
+        (this as? Result)?.let { it.health?.version ?: it.status?.version } ?: "?"
 }
 
 /** One difficulty's benchmark sample: hashes tried, wall-clock time, and the derived hashrate. */
@@ -133,10 +135,16 @@ fun DiagnosticsCard(
     Card(modifier.fillMaxWidth()) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(stringResource(R.string.settings_diagnostics), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    stringResource(R.string.settings_diagnostics),
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onRefresh, enabled = probe !is ServerProbe.Loading) {
-                    Icon(Icons.Outlined.Refresh, contentDescription = stringResource(R.string.diag_refresh))
+                    Icon(
+                        Icons.Outlined.Refresh,
+                        contentDescription = stringResource(R.string.diag_refresh)
+                    )
                 }
             }
 
@@ -145,8 +153,16 @@ fun DiagnosticsCard(
 
             val (serverValue, serverTone) = when {
                 loading -> stringResource(R.string.diag_checking) to Tone.NEUTRAL
-                result?.health?.status == "ok" -> stringResource(R.string.diag_server_healthy, result.version()) to Tone.GOOD
-                result?.status != null -> stringResource(R.string.diag_server_reachable, result.version()) to Tone.GOOD
+                result?.health?.status == "ok" -> stringResource(
+                    R.string.diag_server_healthy,
+                    result.version()
+                ) to Tone.GOOD
+
+                result?.status != null -> stringResource(
+                    R.string.diag_server_reachable,
+                    result.version()
+                ) to Tone.GOOD
+
                 else -> stringResource(R.string.diag_server_unreachable) to Tone.BAD
             }
             StatusRow(stringResource(R.string.diag_server), serverValue, serverTone, loading)
@@ -181,7 +197,10 @@ fun DiagnosticsCard(
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
-                    stringResource(R.string.settings_key_backing, keyBackingLabel(graph.identity.backing)),
+                    stringResource(
+                        R.string.settings_key_backing,
+                        keyBackingLabel(graph.identity.backing)
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Text(
@@ -192,7 +211,10 @@ fun DiagnosticsCard(
 
             HorizontalDivider()
 
-            Text(stringResource(R.string.diag_delivery_test), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_delivery_test),
+                style = MaterialTheme.typography.titleSmall
+            )
             Text(
                 stringResource(R.string.diag_oversized_hint),
                 style = MaterialTheme.typography.bodySmall,
@@ -217,16 +239,21 @@ fun DiagnosticsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+
                 OversizedTestState.Failed -> Text(
                     stringResource(R.string.diag_oversized_failed),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
+
                 else -> Unit
             }
 
             HorizontalDivider()
-            Text(stringResource(R.string.diag_channels), style = MaterialTheme.typography.titleSmall)
+            Text(
+                stringResource(R.string.diag_channels),
+                style = MaterialTheme.typography.titleSmall
+            )
             Text(
                 stringResource(R.string.diag_channels_hint),
                 style = MaterialTheme.typography.bodySmall,
@@ -248,11 +275,19 @@ fun DiagnosticsCard(
             // keys exist even with rotation disabled. The schedule, status line and rotate controls below
             // appear only when ENABLE_ROTATION built the rotation machine.
             HorizontalDivider()
-            Text(stringResource(R.string.diag_rotation), style = MaterialTheme.typography.titleSmall)
-            // Refreshes after a rotate (keyed on rotateNow); loads off-main via produceState.
-            val keyInfo by produceState<RotationKeyInfo?>(null, rotateNow) { value = graph.rotationKeyInfo() }
             Text(
-                stringResource(R.string.diag_rotation_current_epoch, keyInfo?.epoch ?: graph.trust.selfEpoch()),
+                stringResource(R.string.diag_rotation),
+                style = MaterialTheme.typography.titleSmall
+            )
+            // Refreshes after a rotate (keyed on rotateNow); loads off-main via produceState.
+            val keyInfo by produceState<RotationKeyInfo?>(null, rotateNow) {
+                value = graph.rotationKeyInfo()
+            }
+            Text(
+                stringResource(
+                    R.string.diag_rotation_current_epoch,
+                    keyInfo?.epoch ?: graph.trust.selfEpoch()
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -263,7 +298,10 @@ fun DiagnosticsCard(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                stringResource(R.string.diag_rotation_encryption_key, keyInfo?.encryptionKey ?: "…"),
+                stringResource(
+                    R.string.diag_rotation_encryption_key,
+                    keyInfo?.encryptionKey ?: "…"
+                ),
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -273,15 +311,33 @@ fun DiagnosticsCard(
                 keyInfo?.let { ki ->
                     val status = when {
                         ki.pendingTargetEpoch != null && !ki.pendingActivated ->
-                            stringResource(R.string.diag_rotation_activating, ki.pendingTargetEpoch, tokenTimeRemaining(ki.nextEventAtMillis))
+                            stringResource(
+                                R.string.diag_rotation_activating,
+                                ki.pendingTargetEpoch,
+                                tokenTimeRemaining(ki.nextEventAtMillis)
+                            )
+
                         ki.pendingTargetEpoch != null ->
-                            stringResource(R.string.diag_rotation_retiring, ki.pendingTargetEpoch, tokenTimeRemaining(ki.nextEventAtMillis))
+                            stringResource(
+                                R.string.diag_rotation_retiring,
+                                ki.pendingTargetEpoch,
+                                tokenTimeRemaining(ki.nextEventAtMillis)
+                            )
+
                         ki.nextEventAtMillis > 0L ->
-                            stringResource(R.string.diag_rotation_next_due, tokenTimeRemaining(ki.nextEventAtMillis))
+                            stringResource(
+                                R.string.diag_rotation_next_due,
+                                tokenTimeRemaining(ki.nextEventAtMillis)
+                            )
+
                         else -> null
                     }
                     if (status != null) {
-                        Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Text(
+                            status,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
                 Text(
@@ -289,7 +345,10 @@ fun DiagnosticsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                OutlinedButton(onClick = onRotateNow, enabled = rotateNow !is RotateNowState.Running) {
+                OutlinedButton(
+                    onClick = onRotateNow,
+                    enabled = rotateNow !is RotateNowState.Running
+                ) {
                     Text(
                         if (rotateNow is RotateNowState.Running) stringResource(R.string.diag_rotating)
                         else stringResource(R.string.diag_rotate_now),
@@ -301,16 +360,19 @@ fun DiagnosticsCard(
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+
                     RotateNowState.AlreadyPending -> Text(
                         stringResource(R.string.diag_rotate_pending),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+
                     RotateNowState.Failed -> Text(
                         stringResource(R.string.diag_rotate_failed),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.error,
                     )
+
                     else -> Unit
                 }
             } else {
@@ -358,7 +420,10 @@ fun DiagnosticsCard(
             // (banner + high-importance notification + send/receive freeze). Compiled out of release.
             if (BuildConfig.DEBUG) {
                 HorizontalDivider()
-                Text(stringResource(R.string.diag_security_test), style = MaterialTheme.typography.titleSmall)
+                Text(
+                    stringResource(R.string.diag_security_test),
+                    style = MaterialTheme.typography.titleSmall
+                )
                 Text(
                     stringResource(R.string.diag_tamper_hint),
                     style = MaterialTheme.typography.bodySmall,
@@ -394,7 +459,11 @@ private fun StatusRow(label: String, value: String, tone: Tone, loading: Boolean
         Spacer(Modifier.width(10.dp))
         Text(label, style = MaterialTheme.typography.bodyMedium)
         Spacer(Modifier.weight(1f))
-        Text(value, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
     }
 }
 
@@ -411,8 +480,16 @@ private fun tokenTimeRemaining(epochMillis: Long): String {
     val minutes = totalMinutes % MINUTES_PER_HOUR
     val parts = mutableListOf<String>()
     if (days > 0) parts += pluralStringResource(R.plurals.diag_duration_days, days.toInt(), days)
-    if (hours > 0) parts += pluralStringResource(R.plurals.diag_duration_hours, hours.toInt(), hours)
-    if (minutes > 0) parts += pluralStringResource(R.plurals.diag_duration_minutes, minutes.toInt(), minutes)
+    if (hours > 0) parts += pluralStringResource(
+        R.plurals.diag_duration_hours,
+        hours.toInt(),
+        hours
+    )
+    if (minutes > 0) parts += pluralStringResource(
+        R.plurals.diag_duration_minutes,
+        minutes.toInt(),
+        minutes
+    )
     return parts.joinToString(" ")
 }
 

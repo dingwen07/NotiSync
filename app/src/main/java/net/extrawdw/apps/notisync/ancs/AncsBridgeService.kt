@@ -41,9 +41,11 @@ class AncsBridgeService : Service() {
 
     /** Service-lifetime scope for the status collector; cancelled in [onDestroy]. */
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
     /** Guards [observeStatus]: repeated [onStartCommand] (multiple start sources, START_STICKY redelivery)
      *  must not stack duplicate collectors that each re-post the notification on every state change. */
-    @Volatile private var collecting = false
+    @Volatile
+    private var collecting = false
     private val repo get() = (application as NotiSyncApp).graph.iosDeviceRepo
     private val notificationManager get() = getSystemService(NotificationManager::class.java)
 
@@ -53,7 +55,9 @@ class AncsBridgeService : Service() {
             this, NOTIF_ID, buildNotification(repo.status.value, repo.deviceName.value),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
         )
-        if (!collecting) { collecting = true; observeStatus() }
+        if (!collecting) {
+            collecting = true; observeStatus()
+        }
         runCatching { (application as NotiSyncApp).graph.ancsManager?.start() }
         return START_STICKY
     }
@@ -92,7 +96,11 @@ class AncsBridgeService : Service() {
 
     private fun ensureChannel() {
         notificationManager?.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, getString(R.string.ancs_service_channel), NotificationManager.IMPORTANCE_LOW),
+            NotificationChannel(
+                CHANNEL_ID,
+                getString(R.string.ancs_service_channel),
+                NotificationManager.IMPORTANCE_LOW
+            ),
         )
     }
 
@@ -137,12 +145,18 @@ class AncsBridgeService : Service() {
         /** Permissions the `connectedDevice` FGS needs to start without throwing on API 34+. Resume paths
          *  (cold start, AncsBootReceiver) must gate [start] on this — a missing-permission start throws. */
         fun hasPermissions(context: Context): Boolean =
-            arrayOf(Manifest.permission.BLUETOOTH_CONNECT, Manifest.permission.BLUETOOTH_ADVERTISE).all {
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_ADVERTISE
+            ).all {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
             }
 
         fun start(context: Context) =
-            ContextCompat.startForegroundService(context, Intent(context, AncsBridgeService::class.java))
+            ContextCompat.startForegroundService(
+                context,
+                Intent(context, AncsBridgeService::class.java)
+            )
 
         fun stop(context: Context) {
             context.stopService(Intent(context, AncsBridgeService::class.java))

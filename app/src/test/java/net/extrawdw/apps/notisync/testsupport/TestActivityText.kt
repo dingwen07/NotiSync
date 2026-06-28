@@ -18,6 +18,8 @@ object TestActivityText : ActivityText {
     override fun deviceNameTitle() = "Device name"
     override fun deviceNameUpdated(count: Int) = "updated on $count device(s)"
     override fun renamedWas(previousName: String) = "renamed (was $previousName)"
-    override fun trustUpdateFrom(name: String, prompt: TrustPrompt) = "trust update from $name ($prompt)"
+    override fun trustUpdateFrom(name: String, prompt: TrustPrompt) =
+        "trust update from $name ($prompt)"
+
     override fun pairedTitle() = "Paired"
 }

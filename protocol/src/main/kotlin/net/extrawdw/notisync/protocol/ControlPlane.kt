@@ -14,7 +14,7 @@ data class HealthResponse(
     val version: String,
 )
 
-/** Result of a /v1/send. Tells the caller which recipients delivered and what the broker is missing. */
+/** Result of /v2/send. Tells the caller which recipients delivered and what the broker is missing. */
 @Serializable
 data class SendResult(
     val accepted: Boolean,
@@ -33,8 +33,8 @@ data class ErrorResponse(
 )
 
 /**
- * Response body for the signed-only GET /v1/relay: the message ids currently queued for the caller.
- * The background-drain backstop pulls this list, then fetches + acks each via GET /v1/relay/{id}.
+ * Response body for the signed-only GET /v2/relay: the message ids currently queued for the caller.
+ * The background-drain backstop pulls this list, then fetches each via GET /v2/relay/{id}.
  */
 @Serializable
 data class RelayPending(
@@ -42,11 +42,11 @@ data class RelayPending(
 )
 
 /**
- * Request body for the signed-only POST /v1/relay/ack: message ids the caller has durably handled and
- * wants dropped from its relay queue in one round trip. The batch path for deliveries that don't ack
- * inline — chiefly FCM-inline pushes (the envelope arrives in the push, so it's never fetched) and a
- * local dismissal of a still-queued mirror. Acking is idempotent: an unknown/already-dropped id is a
- * no-op, so a retry after a partial failure is safe.
+ * Request body for the signed-only POST /v2/relay/ack: message ids the caller has durably handled and
+ * wants dropped from its relay queue in one round trip. The batch path for deliveries the broker cannot
+ * observe being consumed inline: inline pushes, ack-after-handle relay fetches, and local dismissals of
+ * still-queued mirrors. Acking is idempotent: an unknown/already-dropped id is a no-op, so a retry after
+ * a partial failure is safe.
  */
 @Serializable
 data class RelayAck(
@@ -77,7 +77,7 @@ data class IntegrityVerificationRequest(
     val clientId: ClientId,
     /** Which attestation method this request uses; absent ⇒ legacy [AttestationType.PLAY_INTEGRITY]. */
     val attestationType: String = AttestationType.PLAY_INTEGRITY,
-    /** Generic attestation token: the Firebase App Check JWT (and, later, an Apple App Attest assertion). */
+    /** Generic attestation token: a Firebase App Check JWT today; future methods can reuse this slot. */
     val attestationToken: String? = null,
     /** Reserved for App Attest's per-install hardware key id. Unused by Play Integrity / App Check. */
     val attestationKeyId: String? = null,
@@ -107,11 +107,11 @@ data class IntegrityVerificationResponse(
     val expiresAt: Long,
 )
 
-/** Response body for GET /v1/status — unauthenticated discovery of the broker's auth posture. */
+/** Response body for GET /v2/status — unauthenticated discovery of the broker's auth posture. */
 @Serializable
 data class VerificationStatusResponse(
     val version: String,
-    /** Whether the broker requires Play Integrity attestation + signed/JWT auth at all. */
+    /** Whether the broker requires client-integrity attestation plus signed/JWT auth at all. */
     val playIntegrityRequired: Boolean,
     /** True iff this request carried a currently-valid bearer token. */
     val verified: Boolean,

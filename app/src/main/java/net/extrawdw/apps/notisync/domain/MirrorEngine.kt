@@ -86,7 +86,8 @@ class MirrorEngine(
     /** Records mirror→message mappings and queues a relay-ack on local dismissal; null disables both. */
     private val ackIndex: MirrorAckIndex? = null,
 ) {
-    @Volatile var originalCanceler: OriginalCanceler? = null
+    @Volatile
+    var originalCanceler: OriginalCanceler? = null
 
     /**
      * Clears the *origin* notification on a bridged iOS device when its mirror is dismissed — the iPhone-side
@@ -95,14 +96,17 @@ class MirrorEngine(
      * [dismissLocal] (local swipe) and [onDismissal] (a peer's dismissal relayed over the mesh). Its
      * implementation ignores non-ANCS keys; null on devices that run no iOS bridge.
      */
-    @Volatile var iosOriginCanceler: OriginalCanceler? = null
+    @Volatile
+    var iosOriginCanceler: OriginalCanceler? = null
 
     /** Notifications awaiting a repaired asset, keyed by the missing assetHash (bounded LRU). */
-    private val pendingAssetRenders: MutableMap<String, CapturedNotification> = java.util.Collections.synchronizedMap(
-        object : java.util.LinkedHashMap<String, CapturedNotification>(64, 0.75f, true) {
-            override fun removeEldestEntry(eldest: Map.Entry<String, CapturedNotification>): Boolean = size > 128
-        }
-    )
+    private val pendingAssetRenders: MutableMap<String, CapturedNotification> =
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, CapturedNotification>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: Map.Entry<String, CapturedNotification>): Boolean =
+                    size > 128
+            }
+        )
 
     /** Register inbound handlers. Call during graph construction, before the channel starts delivering. */
     fun register() {
@@ -112,8 +116,18 @@ class MirrorEngine(
 
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. */
     suspend fun captureLocal(notif: CapturedNotification): Int {
-        val n = channel.send(MessageType.NOTIFICATION, ProtocolCodec.encodeToCbor(notif), Recipients.OwnMesh, Urgency.HIGH)
-        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, notif.appLabel, activityText.mirroredToDevices(n), now())
+        val n = channel.send(
+            MessageType.NOTIFICATION,
+            ProtocolCodec.encodeToCbor(notif),
+            Recipients.OwnMesh,
+            Urgency.HIGH
+        )
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.SENT,
+            notif.appLabel,
+            activityText.mirroredToDevices(n),
+            now()
+        )
         return n
     }
 
@@ -126,8 +140,18 @@ class MirrorEngine(
         // dismissal) carry REASON_LISTENER_CANCEL and are filtered out by the listener's reason
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
         val event = DismissEvent(sourceClientId, sourceKey, now())
-        val n = channel.send(MessageType.DISMISSAL, ProtocolCodec.encodeToCbor(event), Recipients.OwnMesh, Urgency.NORMAL)
-        if (n > 0) activityLog.add(ActivityEvent.Kind.DISMISSED, dismissedAppName(sourceKey), activityText.syncedToDevices(n), now())
+        val n = channel.send(
+            MessageType.DISMISSAL,
+            ProtocolCodec.encodeToCbor(event),
+            Recipients.OwnMesh,
+            Urgency.NORMAL
+        )
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.DISMISSED,
+            dismissedAppName(sourceKey),
+            activityText.syncedToDevices(n),
+            now()
+        )
         // A bridged iOS notification isn't removed from the iPhone when its mirror is swiped here — propagate
         // the dismissal back over ANCS so it clears on the source device too (no-op for non-ANCS keys).
         iosOriginCanceler?.cancel(sourceKey)
@@ -160,7 +184,9 @@ class MirrorEngine(
                     result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
                     sendAssetSync(
                         notif.sourceClientId,
-                        AssetSync(AssetSyncKind.ASSET_MISSING, result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
+                        AssetSync(
+                            AssetSyncKind.ASSET_MISSING,
+                            result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
                     )
                 }
             }
@@ -194,17 +220,33 @@ class MirrorEngine(
         val asset = sync.asset ?: return
         val resolver = assetResolver ?: return
         when (asset.kind) {
-            AssetSyncKind.ASSET_MISSING -> scope.launch { repairAndReply(msg.senderId, asset.items, resolver) }
+            AssetSyncKind.ASSET_MISSING -> scope.launch {
+                repairAndReply(
+                    msg.senderId,
+                    asset.items,
+                    resolver
+                )
+            }
+
             AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(asset.items, resolver) }
         }
     }
 
     /** Provider side: re-upload each requested asset under its existing id and reply ASSET_READY. */
-    private suspend fun repairAndReply(requester: ClientId, items: List<AssetSyncItem>, resolver: AssetResolver) {
+    private suspend fun repairAndReply(
+        requester: ClientId,
+        items: List<AssetSyncItem>,
+        resolver: AssetResolver
+    ) {
         val ready = ArrayList<PrivateAssetRef>(items.size)
         for (item in items) resolver.repair(item.assetHash, channel.clientId)?.let { ready.add(it) }
         if (ready.isEmpty()) return
-        sendAssetSync(requester, AssetSync(AssetSyncKind.ASSET_READY, ready.map { AssetSyncItem(it.assetHash, it.assetId, it) }))
+        sendAssetSync(
+            requester,
+            AssetSync(
+                AssetSyncKind.ASSET_READY,
+                ready.map { AssetSyncItem(it.assetHash, it.assetId, it) })
+        )
         activityLog.add(
             ActivityEvent.Kind.SENT,
             activityText.assetRepairTitle(),
@@ -226,8 +268,10 @@ class MirrorEngine(
     /** Seal an [AssetSync] to a single own-mesh peer over DATA_SYNC (FCM NORMAL priority). */
     private suspend fun sendAssetSync(recipientId: ClientId, sync: AssetSync) {
         channel.send(
-            MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.ASSET, asset = sync)),
-            Recipients.Only(recipientId), Urgency.NORMAL,
+            MessageType.DATA_SYNC,
+            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.ASSET, asset = sync)),
+            Recipients.Only(recipientId),
+            Urgency.NORMAL,
         )
     }
 

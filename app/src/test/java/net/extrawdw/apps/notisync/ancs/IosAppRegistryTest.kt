@@ -15,7 +15,8 @@ import java.io.File
 class IosAppRegistryTest {
     private fun newRegistry(): IosAppRegistry {
         val scope = CoroutineScope(Dispatchers.Unconfined)
-        val file = File.createTempFile("ios-app-registry-${System.nanoTime()}", ".preferences_pb").also { it.delete() }
+        val file = File.createTempFile("ios-app-registry-${System.nanoTime()}", ".preferences_pb")
+            .also { it.delete() }
         val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
         return IosAppRegistry(ds, scope)
     }

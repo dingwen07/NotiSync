@@ -43,7 +43,13 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
         }
         // Seal to each recipient's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
         // signed EnvelopeAuth, so the recipient selects the matching (possibly retained) private keyset.
-        return selected.map { RecipientKey(it.clientId, b64.decode(it.hpkePublicKeyB64), it.currentEpoch) }
+        return selected.map {
+            RecipientKey(
+                it.clientId,
+                b64.decode(it.hpkePublicKeyB64),
+                it.currentEpoch
+            )
+        }
     }
 
     override fun unsealableRecipients(scope: Recipients): Set<ClientId> {

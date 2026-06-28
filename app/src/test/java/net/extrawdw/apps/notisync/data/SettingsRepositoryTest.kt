@@ -14,7 +14,8 @@ class SettingsRepositoryTest {
 
     private fun newRepository(): SettingsRepository {
         val scope = CoroutineScope(Dispatchers.Unconfined)
-        val file = File.createTempFile("settings-${System.nanoTime()}", ".preferences_pb").also { it.delete() }
+        val file = File.createTempFile("settings-${System.nanoTime()}", ".preferences_pb")
+            .also { it.delete() }
         val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
         return SettingsRepository(ds, scope)
     }

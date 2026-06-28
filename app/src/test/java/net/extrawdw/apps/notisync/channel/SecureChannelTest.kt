@@ -33,14 +33,27 @@ class SecureChannelTest {
 
     @Test
     fun deliversDecryptedBody_withAuthenticatedSenderAndOwnFlag_toRegisteredHandler() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, ownDevice = true)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, ownDevice = true))
+        }
         val channel = channel(me, myHpke.privateKeyset, trust)
 
         val received = mutableListOf<InboundMessage>()
         channel.onMessage(MessageType.NOTIFICATION) { received.add(it) }
-        channel.deliver(seal(sender, MessageType.NOTIFICATION, byteArrayOf(7, 8, 9), me.clientId, myHpke.publicKeyset, "n1"))
+        channel.deliver(
+            seal(
+                sender,
+                MessageType.NOTIFICATION,
+                byteArrayOf(7, 8, 9),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
 
         assertEquals(1, received.size)
         assertEquals(sender.clientId, received.single().senderId)
@@ -50,14 +63,27 @@ class SecureChannelTest {
 
     @Test
     fun surfacesOtherDeviceFlag_butNeverDropsOnIt() {
-        val me = newSigner(); val myHpke = newHpke()
-        val other = newSigner(); val otherHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(other, otherHpke.publicKeyset, ownDevice = false)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val other = newSigner();
+        val otherHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(other, otherHpke.publicKeyset, ownDevice = false))
+        }
         val channel = channel(me, myHpke.privateKeyset, trust)
 
         val received = mutableListOf<InboundMessage>()
         channel.onMessage(MessageType.NOTIFICATION) { received.add(it) }
-        channel.deliver(seal(other, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "n1"))
+        channel.deliver(
+            seal(
+                other,
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
 
         // The channel itself never applies an ownDevice gate — it forwards with the flag; policy is a caller concern.
         assertEquals(1, received.size)
@@ -66,14 +92,24 @@ class SecureChannelTest {
 
     @Test
     fun dropsDuplicateMessageId_acrossDeliveries() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust =
+            FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
         val channel = channel(me, myHpke.privateKeyset, trust)
 
         var count = 0
         channel.onMessage(MessageType.NOTIFICATION) { count++ }
-        val env = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "dup")
+        val env = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "dup"
+        )
         channel.deliver(env)
         channel.deliver(env) // same messageId — FCM/WebSocket double delivery
 
@@ -82,28 +118,53 @@ class SecureChannelTest {
 
     @Test
     fun dropsUnknownSender() {
-        val me = newSigner(); val myHpke = newHpke()
-        val stranger = newSigner(); val strangerHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
+        val stranger = newSigner();
+        val strangerHpke = newHpke()
         val channel = channel(me, myHpke.privateKeyset, FakeTrustState()) // empty roster
 
         var count = 0
         channel.onMessage(MessageType.NOTIFICATION) { count++ }
-        channel.deliver(seal(stranger, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "x"))
+        channel.deliver(
+            seal(
+                stranger,
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                me.clientId,
+                myHpke.publicKeyset,
+                "x"
+            )
+        )
 
         assertEquals(0, count)
     }
 
     @Test
     fun dropsBadSignature_andNotifies() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust =
+            FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
         val rejected = mutableListOf<Pair<ClientId, DeliveryMode>>()
-        val channel = channel(me, myHpke.privateKeyset, trust, onBadSignature = { id, _, deliveryMode -> rejected.add(id to deliveryMode) })
+        val channel = channel(
+            me,
+            myHpke.privateKeyset,
+            trust,
+            onBadSignature = { id, _, deliveryMode -> rejected.add(id to deliveryMode) })
 
         var count = 0
         channel.onMessage(MessageType.NOTIFICATION) { count++ }
-        val tampered = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "t")
+        val tampered = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "t"
+        )
             .let { it.copy(sig = ByteArray(it.sig.size)) }
         channel.deliver(tampered, DeliveryMode.FCM_INLINE)
 
@@ -113,10 +174,14 @@ class SecureChannelTest {
 
     @Test
     fun send_sealsToOwnMesh_andReturnsRecipientCount() {
-        val me = newSigner(); val myHpke = newHpke()
-        val own1 = newSigner(); val own1Hpke = newHpke()
-        val own2 = newSigner(); val own2Hpke = newHpke()
-        val other = newSigner(); val otherHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own1 = newSigner();
+        val own1Hpke = newHpke()
+        val own2 = newSigner();
+        val own2Hpke = newHpke()
+        val other = newSigner();
+        val otherHpke = newHpke()
         val trust = FakeTrustState().apply {
             peers.value = listOf(
                 peerOf(own1, own1Hpke.publicKeyset, ownDevice = true),
@@ -127,19 +192,37 @@ class SecureChannelTest {
         val transport = CapturingTransport()
         val channel = channel(me, myHpke.privateKeyset, trust, transport)
 
-        val n = runBlocking { channel.send(MessageType.NOTIFICATION, byteArrayOf(1), Recipients.OwnMesh, Urgency.HIGH) }
+        val n = runBlocking {
+            channel.send(
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                Recipients.OwnMesh,
+                Urgency.HIGH
+            )
+        }
 
         assertEquals(2, n)
-        assertEquals(setOf(own1.clientId, own2.clientId), transport.envelopes.single().recipientIds().toSet())
+        assertEquals(
+            setOf(own1.clientId, own2.clientId),
+            transport.envelopes.single().recipientIds().toSet()
+        )
     }
 
     @Test
     fun send_toEmptyAudience_returnsZero_andSendsNothing() {
-        val me = newSigner(); val myHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
         val transport = CapturingTransport()
         val channel = channel(me, myHpke.privateKeyset, FakeTrustState(), transport)
 
-        val n = runBlocking { channel.send(MessageType.NOTIFICATION, byteArrayOf(1), Recipients.OwnMesh, Urgency.HIGH) }
+        val n = runBlocking {
+            channel.send(
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                Recipients.OwnMesh,
+                Urgency.HIGH
+            )
+        }
 
         assertEquals(0, n)
         assertTrue(transport.sent.isEmpty())
@@ -149,31 +232,56 @@ class SecureChannelTest {
     private class FakeDedup : MessageDedup {
         val ids = java.util.Collections.synchronizedSet(HashSet<String>())
         override fun seen(messageId: String) = messageId in ids
-        override fun record(messageId: String) { ids.add(messageId) }
+        override fun record(messageId: String) {
+            ids.add(messageId)
+        }
     }
 
     @Test
     fun deliver_reportsOutcomes_andRecordsHandledIdsDurably() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust =
+            FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
         val dedup = FakeDedup()
         val channel = testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
         channel.onMessage(MessageType.NOTIFICATION) { }
 
-        val env = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1")
+        val env = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "m1"
+        )
         assertEquals(DeliveryOutcome.HANDLED, channel.deliver(env))
-        assertTrue("a handled id must be recorded durably so a restart still dedups it", dedup.seen("m1"))
+        assertTrue(
+            "a handled id must be recorded durably so a restart still dedups it",
+            dedup.seen("m1")
+        )
         assertEquals(DeliveryOutcome.DUPLICATE, channel.deliver(env))
     }
 
     @Test
     fun persistedDedup_dropsRedeliveryAcrossAFreshChannel() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust =
+            FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset)) }
         val dedup = FakeDedup() // the shared, persisted layer that survives the "restart"
-        val env = seal(sender, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1")
+        val env = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "m1"
+        )
 
         var firstCount = 0
         testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
@@ -193,23 +301,38 @@ class SecureChannelTest {
 
     @Test
     fun droppedMessages_areNotRecorded_soTheyCanStillArriveLater() {
-        val me = newSigner(); val myHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
         val stranger = newSigner()
         val dedup = FakeDedup()
         // Empty roster -> unknown sender -> dropped before handling.
         val channel = testChannel(me, myHpke.privateKeyset, FakeTrustState(), dedup = dedup)
         channel.onMessage(MessageType.NOTIFICATION) { }
 
-        val outcome = channel.deliver(seal(stranger, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "m1"))
+        val outcome = channel.deliver(
+            seal(
+                stranger,
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                me.clientId,
+                myHpke.publicKeyset,
+                "m1"
+            )
+        )
 
         assertEquals(DeliveryOutcome.DROPPED, outcome)
-        assertFalse("a dropped (never-handled) message must not be recorded — it may yet deliver once trusted", dedup.seen("m1"))
+        assertFalse(
+            "a dropped (never-handled) message must not be recorded — it may yet deliver once trusted",
+            dedup.seen("m1")
+        )
     }
 
     @Test
     fun deliversOperationalSignedEnvelope_verifiedAgainstOperationalKey() {
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
         val senderOp = newOperationalSigner(sender, epoch = 1)
         val trust = FakeTrustState().apply {
             peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, currentEpoch = 1))
@@ -220,7 +343,16 @@ class SecureChannelTest {
 
         val received = mutableListOf<InboundMessage>()
         channel.onMessage(MessageType.NOTIFICATION) { received.add(it) }
-        channel.deliver(sealOperational(senderOp, MessageType.NOTIFICATION, byteArrayOf(4, 2), me.clientId, myHpke.publicKeyset, "op1"))
+        channel.deliver(
+            sealOperational(
+                senderOp,
+                MessageType.NOTIFICATION,
+                byteArrayOf(4, 2),
+                me.clientId,
+                myHpke.publicKeyset,
+                "op1"
+            )
+        )
 
         assertEquals(1, received.size)
         assertEquals(sender.clientId, received.single().senderId)
@@ -230,15 +362,28 @@ class SecureChannelTest {
     fun dropsOperationalEnvelope_whenEpochNotResolvable() {
         // The anti-rollback gate: an operational epoch the directory won't resolve (below floor / unknown /
         // no ENVELOPE_SIGN) drops BEFORE any signature check, even though the signature itself is valid.
-        val me = newSigner(); val myHpke = newHpke()
-        val sender = newSigner(); val senderHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
         val senderOp = newOperationalSigner(sender, epoch = 1)
-        val trust = FakeTrustState().apply { peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, currentEpoch = 1)) } // no operationalSpkis
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, currentEpoch = 1))
+        } // no operationalSpkis
         val channel = channel(me, myHpke.privateKeyset, trust)
 
         var count = 0
         channel.onMessage(MessageType.NOTIFICATION) { count++ }
-        val outcome = channel.deliver(sealOperational(senderOp, MessageType.NOTIFICATION, byteArrayOf(1), me.clientId, myHpke.publicKeyset, "op2"))
+        val outcome = channel.deliver(
+            sealOperational(
+                senderOp,
+                MessageType.NOTIFICATION,
+                byteArrayOf(1),
+                me.clientId,
+                myHpke.publicKeyset,
+                "op2"
+            )
+        )
 
         assertEquals(0, count)
         assertEquals(DeliveryOutcome.DROPPED, outcome)
@@ -246,8 +391,10 @@ class SecureChannelTest {
 
     @Test
     fun send_skipsAnUnsealableRecipient_withoutCrashing_andDeliversToTheRest() = runBlocking {
-        val me = newSigner(); val myHpke = newHpke()
-        val good = newSigner(); val goodHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
+        val good = newSigner();
+        val goodHpke = newHpke()
         val bad = newSigner()
         val transport = CapturingTransport()
         // One own-mesh peer carries a 3-byte HPKE key (not a 32-byte raw key, not a Tink keyset) — Hpke.seal
@@ -271,18 +418,24 @@ class SecureChannelTest {
 
     @Test
     fun send_triggersKeyEpochRepairForAnUnsealableScopePeer() = runBlocking {
-        val me = newSigner(); val myHpke = newHpke()
+        val me = newSigner();
+        val myHpke = newHpke()
         val keyless = newSigner()
         val repairRequests = mutableListOf<ClientId>()
         // No sealable peers — the keyless peer is absent from activePeers — but it IS trusted-and-needing a
         // key-epoch (e.g. just upgraded, or its saved epoch went invalid), so it can never be a recipient.
         val trust = FakeTrustState().apply { peersNeeding = listOf(keyless.clientId) }
         // Send-side repair reuses the receive-side onUnresolvedSender handler (the broker key-epoch refetch).
-        val channel = testChannel(me, myHpke.privateKeyset, trust, onUnresolvedSender = { repairRequests.add(it) })
+        val channel = testChannel(
+            me,
+            myHpke.privateKeyset,
+            trust,
+            onUnresolvedSender = { repairRequests.add(it) })
 
         // Attempting to deliver to own-mesh must drive a repair for the keyless peer even though there is no
         // one to actually seal to — this is what makes "try to deliver" heal it over the server (no restart).
-        val n = channel.send(MessageType.NOTIFICATION, byteArrayOf(9), Recipients.OwnMesh, Urgency.HIGH)
+        val n =
+            channel.send(MessageType.NOTIFICATION, byteArrayOf(9), Recipients.OwnMesh, Urgency.HIGH)
 
         assertEquals(0, n) // nobody sealable yet
         assertEquals(listOf(keyless.clientId), repairRequests)

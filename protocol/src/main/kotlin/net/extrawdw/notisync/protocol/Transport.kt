@@ -1,11 +1,11 @@
 package net.extrawdw.notisync.protocol
 
-/** Delivery urgency, mapped by each transport adapter (FCM high vs normal priority data messages). */
+/** Delivery urgency, mapped by each transport adapter (for example FCM/APNs priority). */
 enum class Urgency { HIGH, NORMAL }
 
 /**
  * Transport-neutral client interface. Adapters map these concepts onto a concrete provider (FCM,
- * a dev WebSocket, future APNs/Web Push). The protocol — wake requests, encrypted payloads, route
+ * APNs, WebSocket, Web Push). The protocol — wake requests, encrypted payloads, route
  * repair, sync hints — is described independently of any one provider.
  */
 interface Transport {

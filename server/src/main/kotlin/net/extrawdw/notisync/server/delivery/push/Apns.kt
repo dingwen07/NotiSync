@@ -23,8 +23,9 @@ import java.security.PrivateKey
 import java.time.Duration
 
 /**
- * APNs token-authenticated HTTP/2 adapter. Payloads are background pushes carrying NotiSync's opaque
- * inline envelope (`ct`) or relay pointer (`mid`); the iOS app decrypts and posts the local notification.
+ * APNs token-authenticated HTTP/2 adapter. NOTIFICATION envelopes are alert pushes carrying NotiSync's
+ * opaque inline envelope (`ct`) or relay pointer (`mid`) for the NSE to decrypt and display; other message
+ * types are priority-5 background pushes handled by the app process.
  */
 class ApnsPushTransport internal constructor(
     private val topic: String,

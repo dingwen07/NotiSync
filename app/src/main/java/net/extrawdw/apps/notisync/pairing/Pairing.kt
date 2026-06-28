@@ -39,7 +39,8 @@ object QrCodes {
             val matrixY = y / moduleSize
             val rowOffset = y * bitmapSize
             for (x in 0 until bitmapSize) {
-                pixels[rowOffset + x] = if (matrix[x / moduleSize, matrixY]) Color.BLACK else Color.WHITE
+                pixels[rowOffset + x] =
+                    if (matrix[x / moduleSize, matrixY]) Color.BLACK else Color.WHITE
             }
         }
         bmp.setPixels(pixels, 0, bitmapSize, 0, 0, bitmapSize, bitmapSize)
@@ -82,9 +83,14 @@ object PairingDeepLinks {
     private fun isPairingUri(uri: Uri): Boolean {
         val scheme = uri.scheme ?: return false
         return when {
-            scheme.equals(CUSTOM_SCHEME, ignoreCase = true) -> uri.host.equals(CUSTOM_HOST, ignoreCase = true)
+            scheme.equals(CUSTOM_SCHEME, ignoreCase = true) -> uri.host.equals(
+                CUSTOM_HOST,
+                ignoreCase = true
+            )
+
             scheme.equals(HTTPS_SCHEME, ignoreCase = true) ->
                 uri.host.equals(HTTPS_HOST, ignoreCase = true) && uri.path == PAIRING_PATH
+
             else -> false
         }
     }
@@ -157,7 +163,12 @@ class PairingManager(private val graph: AppGraph) {
         // the epoch's own identity anchor, so it can't self-verify) BEFORE surfacing any of its key signatures —
         // a present-but-unverifiable epoch is a tampered QR, and its forged operational/HPKE keys must never be
         // shown as if the identity had authorized them. Blank/0 unless the epoch is present and verifies.
-        val ke = verified.epochBlob?.let { KeyEpochs.verify(it, pinnedIdentitySpki = card.identityPublicKey) }
+        val ke = verified.epochBlob?.let {
+            KeyEpochs.verify(
+                it,
+                pinnedIdentitySpki = card.identityPublicKey
+            )
+        }
         val keyEpochStatus = when {
             verified.epochBlob == null -> KeyEpochStatus.ABSENT
             ke == null -> KeyEpochStatus.INVALID
@@ -171,7 +182,8 @@ class PairingManager(private val graph: AppGraph) {
             safetyNumber = card.clientId.value,
             identityKeyFingerprint = KeyFingerprint.short(card.identityPublicKey),
             epoch = ke?.epoch ?: 0,
-            operationalKeyFingerprint = ke?.let { KeyFingerprint.short(it.operationalSigningKey) } ?: "",
+            operationalKeyFingerprint = ke?.let { KeyFingerprint.short(it.operationalSigningKey) }
+                ?: "",
             hpkeKeyFingerprint = ke?.let { KeyFingerprint.short(it.hpkePublicKey) } ?: "",
             keyEpochStatus = keyEpochStatus,
         )
@@ -184,11 +196,22 @@ class PairingManager(private val graph: AppGraph) {
      */
     fun accept(scanned: String, ownDevice: Boolean = true): Result<ClientCard> = runCatching {
         val verified = decodeVerifiedDelivery(PairingDeepLinks.extractPayload(scanned))
-        require(graph.trust.addLocal(verified.cardBlob, System.currentTimeMillis(), ownDevice)) { "card verification failed" }
+        require(
+            graph.trust.addLocal(
+                verified.cardBlob,
+                System.currentTimeMillis(),
+                ownDevice
+            )
+        ) { "card verification failed" }
         // Apply the peer's key-epoch (verified standalone, pinned to the just-pinned identity) so the peer is
         // sealable at once — its operational + current HPKE keys come from here, not the card.
         verified.epochBlob?.let { graph.trust.applyKeyEpoch(verified.card.clientId, it) }
-        graph.activityLog.add(ActivityEvent.Kind.PAIRED, graph.activityText.pairedTitle(), verified.card.displayName, System.currentTimeMillis())
+        graph.activityLog.add(
+            ActivityEvent.Kind.PAIRED,
+            graph.activityText.pairedTitle(),
+            verified.card.displayName,
+            System.currentTimeMillis()
+        )
         // Make sure our own key-epoch is published so the new peer (and broker) can resolve us.
         graph.scope.launch { runCatching { graph.transport.publishKeyEpoch(graph.buildClientKeyEpochBlob()) } }
         // Tell our own devices about the new device (own or other) so the shared roster + its keys converge.
@@ -204,17 +227,29 @@ class PairingManager(private val graph: AppGraph) {
     private fun decodeVerifiedDelivery(payload: String): VerifiedDelivery {
         val raw = urlDecoder.decode(payload.trim())
         val delivery = runCatching { ProtocolCodec.decodeFromCbor<CardDelivery>(raw) }.getOrNull()
-            ?: CardDelivery(graph.identity.clientId, card = ProtocolCodec.decodeFromCbor<SignedBlob>(raw))
+            ?: CardDelivery(
+                graph.identity.clientId,
+                card = ProtocolCodec.decodeFromCbor<SignedBlob>(raw)
+            )
         val cardBlob = requireNotNull(delivery.card) { "pairing payload carries no client card" }
         require(cardBlob.typ == SignedType.CLIENT_CARD) { "not a client card" }
         val card = cardBlob.decode<ClientCard>()
         require(card.clientId == cardBlob.signerId) { "card id does not match signer" }
         require(card.clientId != graph.identity.clientId) { "cannot pair with self" }
         require(
-            IdentityVerifier.verifyBound(cardBlob.signerId, card.identityPublicKey, cardBlob.payload, cardBlob.sig)
+            IdentityVerifier.verifyBound(
+                cardBlob.signerId,
+                card.identityPublicKey,
+                cardBlob.payload,
+                cardBlob.sig
+            )
         ) { "card signature invalid" }
         return VerifiedDelivery(cardBlob, card, delivery.epochBlob)
     }
 
-    private data class VerifiedDelivery(val cardBlob: SignedBlob, val card: ClientCard, val epochBlob: SignedBlob?)
+    private data class VerifiedDelivery(
+        val cardBlob: SignedBlob,
+        val card: ClientCard,
+        val epochBlob: SignedBlob?
+    )
 }

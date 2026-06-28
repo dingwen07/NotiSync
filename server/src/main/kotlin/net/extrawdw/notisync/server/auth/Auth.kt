@@ -49,7 +49,7 @@ class ServerAuth(
     }
 
     /**
-     * Validates the hashcash proof of work on /v1/integrity/verify. Returns null when valid, else a
+     * Validates the hashcash proof of work on /v2/integrity/verify. Returns null when valid, else a
      * rejection reason. The proof is bound to the request signature (so it can't be precomputed) and
      * to [ProofOfWork.HEADER_TIMESTAMP] (bounded by the signed-request skew window and replay-cached).
      */
@@ -89,7 +89,7 @@ class ServerAuth(
     /**
      * Authenticate by request signature ALONE — no JWT bearer required. The clientId is read from the
      * signed headers and bound by the signature (verified against that client's stored identity key).
-     * Used by the FCM background-wake fetch, which must work even when the client holds no valid
+     * Used by background relay fetch/ack paths, which must work even when the client holds no valid
      * attestation token — it can always sign with its identity key. When attestation is disabled the
      * signature is trusted as-is, mirroring [authenticateJwtSigned].
      */

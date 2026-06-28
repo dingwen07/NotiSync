@@ -776,6 +776,74 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun relayFetch_withPeekHeaderLeavesMessageQueuedUntilExplicitAck() = testApplication {
+        val tmp = File.createTempFile("notisync-relaypeek", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+
+        val body = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|8|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Peek first, ack later",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.NOTIFICATION,
+            bodyPlaintext = body,
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = "01J0PEEK001",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+
+        val path = "/v2/relay/${envelope.messageId}"
+        val peeked = client.get(path) {
+            signedHeaders(recipient, "GET", path, ByteArray(0))
+            header("Peek", "true")
+        }
+        assertEquals(HttpStatusCode.OK, peeked.status)
+        val receivedEnv = ProtocolCodec.decodeFromCbor<Envelope>(peeked.readRawBytes())
+        assertEquals(envelope.messageId, receivedEnv.messageId)
+
+        val pendingAfterPeek = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(listOf(envelope.messageId), pendingAfterPeek.messageIds)
+
+        val ackBody = ProtocolCodec.encodeToJson(RelayAck(listOf(envelope.messageId))).toByteArray(Charsets.UTF_8)
+        val ackResp = client.post("/v2/relay/ack") {
+            contentType(ContentType.Application.Json)
+            signedHeaders(recipient, "POST", "/v2/relay/ack", ackBody)
+            setBody(ackBody)
+        }
+        assertEquals(HttpStatusCode.OK, ackResp.status)
+
+        val pendingAfterAck = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertTrue(pendingAfterAck.messageIds.isEmpty())
+    }
+
+    @Test
     fun relayBatchAck_signedOnly_dropsOnlyTheNamedMessages() = testApplication {
         val tmp = File.createTempFile("notisync-batchack", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
@@ -823,7 +891,7 @@ class BrokerFlowTest {
         )
         assertEquals(setOf("01J0ACK0001", "01J0ACK0002", "01J0ACK0003"), pendingBefore.messageIds.toSet())
 
-        // Batch-ack two of the three with a signature-only POST (no JWT) — the FCM-inline / dismissal path.
+        // Batch-ack two of the three with a signature-only POST (no JWT) — the inline-push / dismissal path.
         val ackBody = ProtocolCodec.encodeToJson(RelayAck(listOf("01J0ACK0001", "01J0ACK0002"))).toByteArray(Charsets.UTF_8)
         val ackResp = client.post("/v2/relay/ack") {
             contentType(ContentType.Application.Json)

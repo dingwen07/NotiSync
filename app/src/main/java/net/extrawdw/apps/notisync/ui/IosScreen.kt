@@ -123,6 +123,7 @@ internal class IosAppsViewModel(app: Application) : AndroidViewModel(app) {
 
     // Bundle ids currently being resolved, so rapid re-emissions of `discovered` don't double-fetch.
     private val inFlight = ConcurrentHashMap.newKeySet<String>()
+
     // Bound concurrent App Store fetches: surface icons fast without hammering the iTunes API.
     private val fetchGate = Semaphore(MAX_CONCURRENT_FETCHES)
 
@@ -136,12 +137,24 @@ internal class IosAppsViewModel(app: Application) : AndroidViewModel(app) {
                         if (iosApp.bundleId in _icons.value || !inFlight.add(iosApp.bundleId)) continue
                         launch(Dispatchers.IO) {
                             try {
-                                val pkg = resolver.androidPackageForIos(iosApp.bundleId, iosApp.displayName)
+                                val pkg = resolver.androidPackageForIos(
+                                    iosApp.bundleId,
+                                    iosApp.displayName
+                                )
                                 // Fast pass — shipped pack + persisted disk cache + installed icon, NO network — so
                                 // already-cached icons render immediately on restart instead of queuing behind other
                                 // apps' App Store fetches. Only a genuine local miss takes the bounded network path.
-                                var bmp = resolver.colorIcon(pkg, iosApp.bundleId, includeIosGenericFallback = false)
-                                if (bmp == null) bmp = fetchGate.withPermit { resolver.colorIconEnsuringRemote(pkg, iosApp.bundleId) }
+                                var bmp = resolver.colorIcon(
+                                    pkg,
+                                    iosApp.bundleId,
+                                    includeIosGenericFallback = false
+                                )
+                                if (bmp == null) bmp = fetchGate.withPermit {
+                                    resolver.colorIconEnsuringRemote(
+                                        pkg,
+                                        iosApp.bundleId
+                                    )
+                                }
                                 bmp?.let { img ->
                                     _icons.update { it + (iosApp.bundleId to IosIconMask.prepare(img)) } // atomic: many coroutines update concurrently
                                 }
@@ -155,7 +168,9 @@ internal class IosAppsViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private companion object { const val MAX_CONCURRENT_FETCHES = 4 }
+    private companion object {
+        const val MAX_CONCURRENT_FETCHES = 4
+    }
 }
 
 private object IosIconMask {
@@ -188,10 +203,12 @@ private object IosIconMask {
 
     private fun mask(size: Int): Bitmap = masks.getOrPut(size) {
         createBitmap(size, size).also { bitmap ->
-            Canvas(bitmap).drawPath(androidPath(size.toFloat(), size.toFloat()), Paint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = Color.WHITE
-                style = Paint.Style.FILL
-            })
+            Canvas(bitmap).drawPath(
+                androidPath(size.toFloat(), size.toFloat()),
+                Paint(Paint.ANTI_ALIAS_FLAG).apply {
+                    color = Color.WHITE
+                    style = Paint.Style.FILL
+                })
         }
     }
 
@@ -207,7 +224,11 @@ private object IosIconMask {
 }
 
 private object IosIconShape : Shape {
-    override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline =
+    override fun createOutline(
+        size: Size,
+        layoutDirection: LayoutDirection,
+        density: Density
+    ): Outline =
         Outline.Generic(IosIconMask.composePath(size.width, size.height))
 }
 
@@ -232,9 +253,10 @@ fun IosScreen() {
     val icons by viewModel<IosAppsViewModel>().icons.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
 
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-        if (result.values.all { it }) graph.setAncsBridgeEnabled(true)
-    }
+    val permissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            if (result.values.all { it }) graph.setAncsBridgeEnabled(true)
+        }
 
     // If the bridge was left enabled but isn't running — after a process death (status OFF) or a transient
     // failure such as Bluetooth having been off (status ERROR) — resume it now; starting the connectedDevice
@@ -242,7 +264,12 @@ fun IosScreen() {
     // we don't retry it. (Re-entry is safe: the manager's own `running` guard no-ops a redundant start.)
     LaunchedEffect(bridgeEnabled, status) {
         if (bridgeEnabled && (status == AncsStatus.OFF || status == AncsStatus.ERROR) &&
-            BT_PERMISSIONS.all { ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED } &&
+            BT_PERMISSIONS.all {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    it
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            } &&
             // Re-confirm the PERSISTED intent: right after the user toggles off, `bridgeEnabled` (DataStore-backed)
             // can still read true here while `status` has already flipped to OFF — without this the effect would
             // restart the bridge it was just asked to stop. (setAncsBridgeEnabled persists before stopping.)
@@ -253,7 +280,12 @@ fun IosScreen() {
     }
 
     fun enableBridge() {
-        if (BT_PERMISSIONS.all { ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED }) {
+        if (BT_PERMISSIONS.all {
+                ContextCompat.checkSelfPermission(
+                    context,
+                    it
+                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
+            }) {
             graph.setAncsBridgeEnabled(true)
         } else {
             permissionLauncher.launch(BT_PERMISSIONS)
@@ -264,58 +296,93 @@ fun IosScreen() {
     val cdm = remember { context.getSystemService(CompanionDeviceManager::class.java) }
     var cdmAssociated by remember { mutableStateOf(AncsCompanion.isAssociated(context)) }
     var cdmDeviceName by remember { mutableStateOf(AncsCompanion.associatedDeviceName(context)) }
-    val intentSenderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
-        val picked = AncsCompanion.deviceFromPickerResult(result.data)
-        AncsCompanion.bondDevice(picked)
-        cdmAssociated = AncsCompanion.isAssociated(context)
-        cdmDeviceName = AncsCompanion.associatedDeviceName(context)
-        if (cdmAssociated) {
-            AncsCompanion.observePresence(context)
-            graph.setAncsBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
+    val intentSenderLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
+            // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
+            val picked = AncsCompanion.deviceFromPickerResult(result.data)
+            AncsCompanion.bondDevice(picked)
+            cdmAssociated = AncsCompanion.isAssociated(context)
+            cdmDeviceName = AncsCompanion.associatedDeviceName(context)
+            if (cdmAssociated) {
+                AncsCompanion.observePresence(context)
+                graph.setAncsBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
+            }
+            // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
+            if (picked != null) {
+                Toast.makeText(
+                    context,
+                    resources.getString(R.string.ios_pairing_accept_prompt),
+                    Toast.LENGTH_LONG
+                ).show()
+            }
         }
-        // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
-        if (picked != null) {
-            Toast.makeText(context, resources.getString(R.string.ios_pairing_accept_prompt), Toast.LENGTH_LONG).show()
-        }
-    }
+
     fun startPairing() {
         val mgr = cdm
         if (mgr == null) {
             Log.w("IosScreen", "CompanionDeviceManager unavailable")
-            Toast.makeText(context, resources.getString(R.string.ios_pairing_unavailable), Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                resources.getString(R.string.ios_pairing_unavailable),
+                Toast.LENGTH_LONG
+            ).show()
             return
         }
-        Toast.makeText(context, resources.getString(R.string.ios_pairing_open_bt), Toast.LENGTH_LONG).show()
+        Toast.makeText(
+            context,
+            resources.getString(R.string.ios_pairing_open_bt),
+            Toast.LENGTH_LONG
+        ).show()
         fun launchPicker(intentSender: IntentSender) {
-            runCatching { intentSenderLauncher.launch(IntentSenderRequest.Builder(intentSender).build()) }
+            runCatching {
+                intentSenderLauncher.launch(
+                    IntentSenderRequest.Builder(intentSender).build()
+                )
+            }
                 .onFailure { Log.w("IosScreen", "launching CDM picker failed", it) }
         }
         runCatching {
-            mgr.associate(AncsCompanion.request(), context.mainExecutor, object : CompanionDeviceManager.Callback() {
-                override fun onAssociationPending(intentSender: IntentSender) { launchPicker(intentSender) }
-                @Suppress("OVERRIDE_DEPRECATION") // pre-33 entry point; delegate to the same picker launch
-                override fun onDeviceFound(intentSender: IntentSender) { launchPicker(intentSender) }
-                override fun onAssociationCreated(associationInfo: AssociationInfo) {
-                    Log.i("IosScreen", "CDM association created: ${associationInfo.id}")
-                    cdmAssociated = true
-                    cdmDeviceName = AncsCompanion.associatedDeviceName(context)
-                    AncsCompanion.observePresence(context)
-                    // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                    AncsCompanion.bondDevice(runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull())
-                    graph.setAncsBridgeEnabled(true) // run the bridge so it connects once bonded
-                }
-                override fun onFailure(error: CharSequence?) { Log.w("IosScreen", "CDM association failed: $error") }
-            })
+            mgr.associate(
+                AncsCompanion.request(),
+                context.mainExecutor,
+                object : CompanionDeviceManager.Callback() {
+                    override fun onAssociationPending(intentSender: IntentSender) {
+                        launchPicker(intentSender)
+                    }
+
+                    @Suppress("OVERRIDE_DEPRECATION") // pre-33 entry point; delegate to the same picker launch
+                    override fun onDeviceFound(intentSender: IntentSender) {
+                        launchPicker(intentSender)
+                    }
+
+                    override fun onAssociationCreated(associationInfo: AssociationInfo) {
+                        Log.i("IosScreen", "CDM association created: ${associationInfo.id}")
+                        cdmAssociated = true
+                        cdmDeviceName = AncsCompanion.associatedDeviceName(context)
+                        AncsCompanion.observePresence(context)
+                        // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
+                        AncsCompanion.bondDevice(runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull())
+                        graph.setAncsBridgeEnabled(true) // run the bridge so it connects once bonded
+                    }
+
+                    override fun onFailure(error: CharSequence?) {
+                        Log.w("IosScreen", "CDM association failed: $error")
+                    }
+                })
         }.onFailure {
             Log.w("IosScreen", "associate() threw", it)
-            Toast.makeText(context, resources.getString(R.string.ios_pairing_failed, it.message ?: ""), Toast.LENGTH_LONG).show()
+            Toast.makeText(
+                context,
+                resources.getString(R.string.ios_pairing_failed, it.message ?: ""),
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
     fun norm(s: String) = s.lowercase(Locale.getDefault())
     val q = norm(query.trim())
-    fun matches(app: IosApp) = q.isEmpty() || norm(app.displayName).contains(q) || norm(app.bundleId).contains(q)
+    fun matches(app: IosApp) =
+        q.isEmpty() || norm(app.displayName).contains(q) || norm(app.bundleId).contains(q)
 
     val effectiveEnabled = IosBundleIdExclusions.filterEnabled(enabled)
     val enabledApps = discovered.values
@@ -336,7 +403,11 @@ fun IosScreen() {
                         status = status,
                         deviceName = deviceName,
                         bridgeEnabled = bridgeEnabled,
-                        onToggle = { on -> if (on) enableBridge() else graph.setAncsBridgeEnabled(false) },
+                        onToggle = { on ->
+                            if (on) enableBridge() else graph.setAncsBridgeEnabled(
+                                false
+                            )
+                        },
                     )
                 }
                 item("pairing") {
@@ -369,9 +440,15 @@ fun IosScreen() {
                         SectionHeader(stringResource(R.string.ios_apps_section), 0)
                     }
                     item("apps-empty") {
-                        Box(Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                        Box(
+                            Modifier.fillMaxWidth().padding(16.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
                             Text(
-                                if (q.isEmpty()) stringResource(R.string.ios_apps_empty) else stringResource(R.string.ios_apps_no_match, query),
+                                if (q.isEmpty()) stringResource(R.string.ios_apps_empty) else stringResource(
+                                    R.string.ios_apps_no_match,
+                                    query
+                                ),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -380,7 +457,10 @@ fun IosScreen() {
                 } else {
                     if (enabledApps.isNotEmpty()) {
                         stickyHeader(key = "header:mirroring") {
-                            SectionHeader(stringResource(R.string.ios_apps_section_mirroring), enabledApps.size)
+                            SectionHeader(
+                                stringResource(R.string.ios_apps_section_mirroring),
+                                enabledApps.size
+                            )
                         }
                         items(enabledApps, key = { "on:${it.bundleId}" }) { app ->
                             IosAppRow(
@@ -420,7 +500,10 @@ private fun IosAppsSearchField(query: String, onQueryChange: (String) -> Unit) {
         trailingIcon = {
             if (query.isNotEmpty()) {
                 IconButton(onClick = { onQueryChange("") }) {
-                    Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.apps_clear_search))
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.apps_clear_search)
+                    )
                 }
             }
         },
@@ -447,8 +530,16 @@ private fun SectionHeader(title: String, count: Int) {
 }
 
 @Composable
-private fun ConnectionCard(status: AncsStatus, deviceName: String?, bridgeEnabled: Boolean, onToggle: (Boolean) -> Unit) {
-    Card(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp)) {
+private fun ConnectionCard(
+    status: AncsStatus,
+    deviceName: String?,
+    bridgeEnabled: Boolean,
+    onToggle: (Boolean) -> Unit
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth()
+            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp)
+    ) {
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -461,7 +552,10 @@ private fun ConnectionCard(status: AncsStatus, deviceName: String?, bridgeEnable
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(3.dp),
             ) {
-                Text(stringResource(R.string.ios_bridge_card_title), style = MaterialTheme.typography.bodyLarge)
+                Text(
+                    stringResource(R.string.ios_bridge_card_title),
+                    style = MaterialTheme.typography.bodyLarge
+                )
                 Text(
                     statusText(status),
                     style = MaterialTheme.typography.bodyMedium,
@@ -488,7 +582,12 @@ private fun ConnectedDeviceText(deviceName: String) {
 }
 
 @Composable
-private fun PairingCard(associated: Boolean, pairedName: String?, onPair: () -> Unit, onForget: () -> Unit) {
+private fun PairingCard(
+    associated: Boolean,
+    pairedName: String?,
+    onPair: () -> Unit,
+    onForget: () -> Unit
+) {
     Card(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
         ListItem(
             headlineContent = { Text(stringResource(R.string.ios_pairing_title)) },
@@ -510,7 +609,12 @@ private fun PairingCard(associated: Boolean, pairedName: String?, onPair: () -> 
 }
 
 @Composable
-private fun ForwardingCard(localDisplay: Boolean, meshMirror: Boolean, onLocal: (Boolean) -> Unit, onMesh: (Boolean) -> Unit) {
+private fun ForwardingCard(
+    localDisplay: Boolean,
+    meshMirror: Boolean,
+    onLocal: (Boolean) -> Unit,
+    onMesh: (Boolean) -> Unit
+) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -548,7 +652,13 @@ private fun CompactSwitchRow(label: String, checked: Boolean, onCheckedChange: (
 }
 
 @Composable
-private fun IosAppRow(app: IosApp, isOn: Boolean, canToggle: Boolean, icon: ImageBitmap?, onToggle: (Boolean) -> Unit) {
+private fun IosAppRow(
+    app: IosApp,
+    isOn: Boolean,
+    canToggle: Boolean,
+    icon: ImageBitmap?,
+    onToggle: (Boolean) -> Unit
+) {
     ListItem(
         modifier = if (canToggle) Modifier.clickable { onToggle(!isOn) } else Modifier,
         leadingContent = { AppIconSquare(icon) },
@@ -560,7 +670,13 @@ private fun IosAppRow(app: IosApp, isOn: Boolean, canToggle: Boolean, icon: Imag
                 overflow = TextOverflow.Ellipsis,
             )
         },
-        trailingContent = { Switch(checked = isOn, onCheckedChange = onToggle, enabled = canToggle) },
+        trailingContent = {
+            Switch(
+                checked = isOn,
+                onCheckedChange = onToggle,
+                enabled = canToggle
+            )
+        },
     )
 }
 
@@ -569,7 +685,10 @@ private fun AppIconSquare(icon: ImageBitmap?) {
     if (icon != null) {
         Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(40.dp))
     } else {
-        Box(Modifier.size(40.dp).clip(IosIconShape).background(MaterialTheme.colorScheme.surfaceVariant))
+        Box(
+            Modifier.size(40.dp).clip(IosIconShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        )
     }
 }
 

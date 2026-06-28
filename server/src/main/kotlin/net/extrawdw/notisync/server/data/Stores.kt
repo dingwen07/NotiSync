@@ -38,7 +38,7 @@ class EpochStore(private val db: NotiSyncDb) {
      * [minEpoch] this client has ever asserted (a replayed retired epoch), or a self-inconsistent bundle
      * (epoch < its own minEpoch, or < 1). An equal-epoch re-publish is idempotent (PK upsert). Returns
      * whether it was accepted. NOTE: this best-effort broker floor is NOT the security floor — the
-     * authoritative anti-rollback floor is the client's identity-signed trust store (Phase 4+).
+     * authoritative anti-rollback floor is the client's identity-signed trust store.
      */
     suspend fun put(e: StoredEpoch): Boolean = db.tx {
         if (e.epoch < 1 || e.epoch < e.minEpoch) return@tx false
@@ -212,7 +212,7 @@ class RelayStore(private val db: NotiSyncDb) {
         }
     }
 
-    /** The single queued envelope for ([recipientId], [messageId]), or null — the FCM-wake pull path. */
+    /** The single queued envelope for ([recipientId], [messageId]), or null — the background-wake pull path. */
     suspend fun getByMessage(recipientId: ClientId, messageId: String): ByteArray? = db.tx {
         Relay.selectAll().where { (Relay.recipientId eq recipientId.value) and (Relay.messageId eq messageId) }
             .firstOrNull()?.let { b64d.decode(it[Relay.envelopeB64]) }

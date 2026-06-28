@@ -10,8 +10,10 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalContext
 
-private val DarkColorScheme: ColorScheme = darkColorScheme(primary = Purple80, secondary = PurpleGrey80, tertiary = Pink80)
-private val LightColorScheme: ColorScheme = lightColorScheme(primary = Purple40, secondary = PurpleGrey40, tertiary = Pink40)
+private val DarkColorScheme: ColorScheme =
+    darkColorScheme(primary = Purple80, secondary = PurpleGrey80, tertiary = Pink80)
+private val LightColorScheme: ColorScheme =
+    lightColorScheme(primary = Purple40, secondary = PurpleGrey40, tertiary = Pink40)
 
 /**
  * Material 3 Expressive theme. [MaterialExpressiveTheme] applies the expressive motion scheme and
@@ -28,6 +30,7 @@ fun NotiSyncTheme(
             val context = LocalContext.current
             if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         }
+
         darkTheme -> DarkColorScheme
         else -> LightColorScheme
     }

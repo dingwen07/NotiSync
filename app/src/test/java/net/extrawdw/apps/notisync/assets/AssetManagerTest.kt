@@ -26,13 +26,20 @@ class AssetManagerTest {
         var uploads = 0
         private fun key(c: ClientId, id: String) = "${c.value}/$id"
 
-        override suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray): Boolean {
+        override suspend fun uploadPrivateAsset(
+            sourceClientId: ClientId,
+            assetId: String,
+            ciphertext: ByteArray
+        ): Boolean {
             uploads++
             store.putIfAbsent(key(sourceClientId, assetId), ciphertext)
             return true // 200 stored or 409 exists both mean "the broker holds it"
         }
 
-        override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? =
+        override suspend fun fetchPrivateAsset(
+            sourceClientId: ClientId,
+            assetId: String
+        ): ByteArray? =
             store[key(sourceClientId, assetId)]
 
         fun corrupt(sourceClientId: ClientId, assetId: String) {
@@ -42,7 +49,9 @@ class AssetManagerTest {
         override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) = Unit
         override suspend fun publishRoutes(routes: List<SignedBlob>) = Unit
         override suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int?): SignedBlob? = null
-        override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult = SendResult(false)
+        override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult =
+            SendResult(false)
+
         override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
     }
 
@@ -82,7 +91,12 @@ class AssetManagerTest {
         val transport = FakeTransport()
         val src = ClientId("sender")
         val (sender, _) = manager(transport)
-        val ref = sender.ensureUploaded(byteArrayOf(1, 2, 3, 4), AssetRole.LARGE_ICON, "image/webp", src)!!
+        val ref = sender.ensureUploaded(
+            byteArrayOf(1, 2, 3, 4),
+            AssetRole.LARGE_ICON,
+            "image/webp",
+            src
+        )!!
 
         transport.corrupt(src, ref.assetId) // simulate a malicious/garbled server substitution
 
@@ -96,7 +110,8 @@ class AssetManagerTest {
         val transport = FakeTransport()
         val src = ClientId("sender")
         val (sender, _) = manager(transport)
-        val ref = sender.ensureUploaded(byteArrayOf(9, 9, 9), AssetRole.LARGE_ICON, "image/webp", src)!!
+        val ref =
+            sender.ensureUploaded(byteArrayOf(9, 9, 9), AssetRole.LARGE_ICON, "image/webp", src)!!
         transport.store.clear() // server lost the blob (e.g. TTL expiry)
 
         val (receiver, cache) = manager(transport)

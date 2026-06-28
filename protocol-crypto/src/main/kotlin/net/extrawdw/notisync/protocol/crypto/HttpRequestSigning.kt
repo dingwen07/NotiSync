@@ -157,7 +157,7 @@ object PlayIntegrityBinding {
 }
 
 /**
- * Lightweight hashcash-style proof of work, used to make the unauthenticated /v1/integrity/verify
+ * Lightweight hashcash-style proof of work, used to make the unauthenticated /v2/integrity/verify
  * endpoint costly to flood (each accepted request gates a billed Play Integrity decode). The proof is
  * bound to the request's signature, so it can't be precomputed without first signing the request, and
  * to a timestamp so the server can bound and replay-protect it. Verifying is one SHA-256; solving is

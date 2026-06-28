@@ -5,7 +5,7 @@ import io.ktor.websocket.Frame
 import net.extrawdw.notisync.protocol.ClientId
 import java.util.concurrent.ConcurrentHashMap
 
-/** One authenticated live WebSocket connection (the dev push transport / foreground link). */
+/** One authenticated live WebSocket connection (the foreground delivery link). */
 class WsConnection(val clientId: ClientId, val session: DefaultWebSocketServerSession)
 
 /** Tracks live connections per client so the broker can deliver in realtime when a peer is online. */

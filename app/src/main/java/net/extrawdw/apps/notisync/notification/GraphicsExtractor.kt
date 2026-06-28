@@ -52,7 +52,15 @@ class GraphicsExtractor(private val context: Context) {
             NotificationCompat.MessagingStyle.extractMessagingStyleFromNotification(sbn.notification)
         }.getOrNull() ?: return emptyList()
         return messaging.messages.map { msg ->
-            msg.person?.icon?.let { runCatching { rasterize(it.toIcon(context), MAX_AVATAR_DIM, MAX_ICON_BYTES) }.getOrNull() }
+            msg.person?.icon?.let {
+                runCatching {
+                    rasterize(
+                        it.toIcon(context),
+                        MAX_AVATAR_DIM,
+                        MAX_ICON_BYTES
+                    )
+                }.getOrNull()
+            }
         }
     }
 
@@ -78,7 +86,10 @@ class GraphicsExtractor(private val context: Context) {
     private fun encode(bitmap: Bitmap, maxDim: Int, maxBytes: Int): ByteArray? {
         val scaled = if (maxOf(bitmap.width, bitmap.height) <= maxDim) bitmap else {
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
-            bitmap.scale(maxOf(1, (bitmap.width * scale).toInt()), maxOf(1, (bitmap.height * scale).toInt()))
+            bitmap.scale(
+                maxOf(1, (bitmap.width * scale).toInt()),
+                maxOf(1, (bitmap.height * scale).toInt())
+            )
         }
         for (quality in intArrayOf(80, 50, 30)) {
             val bytes = ByteArrayOutputStream().use {

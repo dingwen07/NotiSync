@@ -55,10 +55,12 @@ class AppStoreIconProvider(
                     mem.remove(bundleId) // drop any stale decode so cached() re-decodes the fresh bytes
                     true
                 }
+
                 IconFetchResult.NotFound -> {
                     cache.markMissing(bundleId) // durable miss — suppress re-querying for the TTL
                     false
                 }
+
                 IconFetchResult.TransientError -> false // do NOT poison the cache; retry on the next pass
             }
         }

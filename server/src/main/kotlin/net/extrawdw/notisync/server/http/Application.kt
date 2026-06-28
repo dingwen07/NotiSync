@@ -320,38 +320,42 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
             }
         }
 
-        // List the caller's queued message ids (signature-only, no JWT). The WorkManager drain backstop
-        // pulls this, then fetches + acks each via GET /v2/relay/{id} below. A cheap, low-frequency
-        // catch-all for wakes that FCM deferred (normal priority) or whose foreground fetch failed.
+        // List the caller's queued message ids (signature-only, no JWT). Background drain backstops pull this,
+        // then fetch each item below. A cheap, low-frequency catch-all for wakes that FCM/APNs deferred or whose
+        // foreground WebSocket delivery failed.
         get("/relay") {
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
             call.respond(RelayPending(broker.pendingMessageIds(principal.clientId)))
         }
 
-        // Single-message relay pull for the FCM background-wake path. When a notification is too large
-        // to inline in the FCM data message, the broker sends a wake pointer ("mid") and the client
-        // fetches exactly that one envelope here, then the broker drops it. Authenticated by request
-        // SIGNATURE ALONE (no JWT bearer) so a background wake still works when the client's attestation
-        // token has lapsed — it can always sign with its identity key. The body is opaque ciphertext.
+        // Single-message relay pull for background-wake paths. When a message is too large to inline, the
+        // broker sends a wake pointer ("mid") and the client fetches exactly that one envelope here.
+        // Default/legacy behavior is ack-on-fetch; clients that need ack-after-handle can send Peek: true and
+        // explicitly POST /v2/relay/ack after durable handling. Authenticated by request SIGNATURE ALONE (no JWT
+        // bearer) so a background wake still works when the client's attestation token has lapsed.
         get("/relay/{messageId}") {
             val messageId = call.parameters["messageId"].orEmpty()
+            val ackOnFetch = call.request.headers["Peek"]?.equals("true", ignoreCase = true) != true
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
             val envelope = broker.relayMessage(principal.clientId, messageId)
             if (envelope == null) {
                 call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_message"))
             } else {
                 call.respondBytes(envelope, CBOR)
-                // Ack only after the bytes are flushed; a failed send leaves the item for the next WS
-                // flush. Best-effort — a failed ack just re-delivers later (the client dedups by id).
-                runCatching { broker.ack(principal.clientId, messageId) }
+                if (ackOnFetch) {
+                    // Ack only after the bytes are flushed; a failed send leaves the item for the next WS
+                    // flush. Best-effort — a failed ack just re-delivers later (the client dedups by id).
+                    runCatching { broker.ack(principal.clientId, messageId) }
+                }
             }
         }
 
         // Batch-ack: drop many of the caller's queued messages in one signed request. Signature-only
-        // (no JWT) like the GET paths, so a background WorkManager run can ack even while attestation is
+        // (no JWT) like the GET paths, so a background drain job can ack even while attestation is
         // cooling down. The body is the signed JSON RelayAck — the signature commits to those exact
-        // bytes. Used for deliveries the broker can't observe being consumed: FCM-inline pushes (the
-        // envelope rides in the push, so it's never fetched here) and a local mirror dismissal.
+        // bytes. Used for deliveries the broker can't observe being consumed: inline pushes (the envelope
+        // rides in the push, so it's never fetched here), ack-after-handle relay fetches, and local mirror
+        // dismissal.
         post("/relay/ack") {
             val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))

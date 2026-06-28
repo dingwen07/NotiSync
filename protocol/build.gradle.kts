@@ -4,8 +4,8 @@ import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 // and the SAME kotlinx-serialization CBOR encoder compile to both the JVM (consumed unchanged by
 // :app/:server/:protocol-crypto via the jvm() variant) and Apple targets (shipped to the native iOS
 // client as an XCFramework). Sharing the codec is what makes signed payloads byte-identical across
-// platforms by construction; see the iOS plan §A. Sources stay in src/main + src/test (mapped via
-// srcDir) so the conversion is invisible to the existing JVM modules and to git history.
+// platforms by construction. Sources stay in src/main + src/test (mapped via srcDir) so the conversion
+// is invisible to the existing JVM modules and to git history.
 plugins {
     alias(libs.plugins.kotlin.multiplatform)
     alias(libs.plugins.kotlin.serialization)

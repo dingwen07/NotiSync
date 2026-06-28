@@ -104,5 +104,6 @@ object BundleIdMap {
     }
 
     /** Lowercased index backing the case-insensitive fallback in [lookup]. */
-    private val MAP_LC: Map<String, Entry> = MAP.entries.associate { it.key.lowercase() to it.value }
+    private val MAP_LC: Map<String, Entry> =
+        MAP.entries.associate { it.key.lowercase() to it.value }
 }

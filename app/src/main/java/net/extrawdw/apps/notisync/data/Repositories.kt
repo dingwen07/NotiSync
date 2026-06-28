@@ -20,7 +20,10 @@ import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
-class SettingsRepository(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
+class SettingsRepository(
+    private val store: DataStore<Preferences>,
+    private val scope: CoroutineScope
+) {
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
     private val deviceNameUpdatedKey = longPreferencesKey("device_name_updated_at")
@@ -38,7 +41,9 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
     val deviceName: StateFlow<String> =
-        store.data.map { it[deviceNameKey] ?: android.os.Build.MODEL }.stateInEager(scope, android.os.Build.MODEL)
+        store.data.map { it[deviceNameKey] ?: android.os.Build.MODEL }
+            .stateInEager(scope, android.os.Build.MODEL)
+
     /** Source-clock stamp of the last device-name change; 0 until the user first renames. Stamped into
      *  outgoing [ProfileUpdate]s so peers can apply last-writer-wins. */
     val deviceNameUpdatedAt: StateFlow<Long> =
@@ -51,9 +56,11 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     /** ANCS bridge master switch: whether to advertise + connect to a paired iPhone. Default off (opt-in). */
     val ancsBridgeEnabled: StateFlow<Boolean> =
         store.data.map { it[ancsBridgeKey] ?: false }.stateInEager(scope, false)
+
     /** Show captured iPhone notifications on THIS phone (like a smartwatch). Default on once bridging. */
     val ancsLocalDisplay: StateFlow<Boolean> =
         store.data.map { it[ancsLocalKey] ?: true }.stateInEager(scope, true)
+
     /** Mirror captured iPhone notifications to the user's other mesh devices. Default on once bridging. */
     val ancsMeshMirror: StateFlow<Boolean> =
         store.data.map { it[ancsMeshKey] ?: true }.stateInEager(scope, true)
@@ -71,6 +78,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         it[deviceNameKey] = name
         it[deviceNameUpdatedKey] = System.currentTimeMillis()
     }
+
     suspend fun setBatchLowPriority(on: Boolean) = store.edit { it[batchLowKey] = on }
     suspend fun setAdvancedDiagnostics(on: Boolean) = store.edit { it[advancedKey] = on }
 
@@ -97,6 +105,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
      *  never forge an epoch (every key-epoch is still identity-signed and floor-checked). */
     suspend fun selfEpochActivatedAt(): Long = store.data.first()[selfEpochActivatedKey] ?: 0L
     suspend fun setSelfEpochActivatedAt(at: Long) = store.edit { it[selfEpochActivatedKey] = at }
+
     /** Seed the epoch-age clock on first run with rotation enabled WITHOUT resetting an existing stamp, so the
      *  first scheduled rotation fires one interval from now rather than immediately. */
     suspend fun seedSelfEpochActivatedAt(at: Long) = store.edit {
@@ -113,7 +122,10 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         }
     }
 
-    private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInEager(scope: CoroutineScope, initial: T): StateFlow<T> =
+    private fun <T> kotlinx.coroutines.flow.Flow<T>.stateInEager(
+        scope: CoroutineScope,
+        initial: T
+    ): StateFlow<T> =
         stateIn(scope, SharingStarted.Eagerly, initial)
 
     companion object {
@@ -128,7 +140,10 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
  * Also tracks which apps have posted notifications (in-memory) so the picker can surface and sort
  * by recently-active apps.
  */
-class AppSelectionRepository(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
+class AppSelectionRepository(
+    private val store: DataStore<Preferences>,
+    private val scope: CoroutineScope
+) {
     private val enabledKey = stringPreferencesKey("enabled_packages_json")
     private val _enabled = MutableStateFlow(load())
     val enabled: StateFlow<Set<String>> = _enabled
@@ -170,7 +185,15 @@ class ActivityLog {
         now: Long,
         deliveryMode: DeliveryMode? = null,
     ) {
-        _events.value = (listOf(ActivityEvent(kind, title, detail, now, deliveryMode)) + _events.value).take(MAX)
+        _events.value = (listOf(
+            ActivityEvent(
+                kind,
+                title,
+                detail,
+                now,
+                deliveryMode
+            )
+        ) + _events.value).take(MAX)
     }
 
     companion object {

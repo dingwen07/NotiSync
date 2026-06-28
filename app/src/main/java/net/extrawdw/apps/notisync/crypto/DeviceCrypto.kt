@@ -41,13 +41,15 @@ enum class KeyBacking { UNKNOWN, UNKNOWN_SECURE, SOFTWARE, TEE, STRONGBOX }
  */
 object KeyFingerprint {
     /** Full SHA-256 fingerprint (32 bytes / 64 hex chars), colon-separated uppercase hex. */
-    fun of(publicKey: ByteArray): String = hex(MessageDigest.getInstance("SHA-256").digest(publicKey))
+    fun of(publicKey: ByteArray): String =
+        hex(MessageDigest.getInstance("SHA-256").digest(publicKey))
 
     /** The first [bytes] bytes of the SHA-256 fingerprint — a compact form for UI display (default 8). */
     fun short(publicKey: ByteArray, bytes: Int = 8): String =
         hex(MessageDigest.getInstance("SHA-256").digest(publicKey).copyOf(bytes))
 
-    private fun hex(bytes: ByteArray): String = bytes.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
+    private fun hex(bytes: ByteArray): String =
+        bytes.joinToString(":") { "%02X".format(it.toInt() and 0xFF) }
 }
 
 /**
@@ -76,7 +78,12 @@ class AndroidIdentitySigner private constructor(
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             (ks.getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
                 val spki = entry.certificate.publicKey.encoded
-                return AndroidIdentitySigner(spki, ClientIds.derive(spki), backingOf(entry.privateKey), entry.privateKey)
+                return AndroidIdentitySigner(
+                    spki,
+                    ClientIds.derive(spki),
+                    backingOf(entry.privateKey),
+                    entry.privateKey
+                )
             }
             val backing = generate()
             val entry = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
@@ -141,8 +148,8 @@ class AndroidIdentitySigner private constructor(
  * TRUSTED_ENVIRONMENT and reject a software-backed key. [clientId] is the device IDENTITY fingerprint
  * (stable across rotation), not this key's; [signerEpoch] is the epoch this key belongs to.
  *
- * Aliased per epoch (`notisync.operational.v1.epoch{N}`) so rotation can create the next and destroy the
- * retired alias. Not yet wired into the runtime — the client adopts operational signing in Phase 4.
+ * Aliased per epoch (`notisync.operational.v1.epoch{N}`) so rotation can create the next key and destroy
+ * the retired alias after its overlap window.
  */
 class AndroidOperationalSigner private constructor(
     override val operationalPublicKeySpki: ByteArray,
@@ -171,7 +178,11 @@ class AndroidOperationalSigner private constructor(
          * [attestationChallenge] (e.g. a Play Integrity nonce) on first generation to obtain a hardware
          * attestation chain proving the key lives in the TEE.
          */
-        fun loadOrCreate(clientId: ClientId, epoch: Int, attestationChallenge: ByteArray? = null): AndroidOperationalSigner {
+        fun loadOrCreate(
+            clientId: ClientId,
+            epoch: Int,
+            attestationChallenge: ByteArray? = null
+        ): AndroidOperationalSigner {
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val alias = aliasFor(epoch)
             (ks.getEntry(alias, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
@@ -185,7 +196,8 @@ class AndroidOperationalSigner private constructor(
         /** Destroy the operational key for [epoch] after its retirement window (rotation cleanup). */
         fun destroy(epoch: Int) {
             runCatching {
-                KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }.deleteEntry(aliasFor(epoch))
+                KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                    .deleteEntry(aliasFor(epoch))
             }
         }
 
@@ -206,16 +218,31 @@ class AndroidOperationalSigner private constructor(
             epoch: Int,
         ): AndroidOperationalSigner {
             val spki = entry.certificate.publicKey.encoded
-            val chain = (ks.getCertificateChain(alias) ?: arrayOf(entry.certificate)).map { it.encoded }
-            return AndroidOperationalSigner(spki, clientId, epoch, operationalBackingOf(entry.privateKey), chain, entry.privateKey)
+            val chain =
+                (ks.getCertificateChain(alias) ?: arrayOf(entry.certificate)).map { it.encoded }
+            return AndroidOperationalSigner(
+                spki,
+                clientId,
+                epoch,
+                operationalBackingOf(entry.privateKey),
+                chain,
+                entry.privateKey
+            )
         }
 
         private fun generate(alias: String, attestationChallenge: ByteArray?) {
-            val spec = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY)
+            val spec = KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY
+            )
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                 .setDigests(KeyProperties.DIGEST_SHA256)
                 // Deliberately NOT StrongBox — TEE for hot-path throughput.
-                .apply { if (attestationChallenge != null) setAttestationChallenge(attestationChallenge) }
+                .apply {
+                    if (attestationChallenge != null) setAttestationChallenge(
+                        attestationChallenge
+                    )
+                }
                 .build()
             KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC, ANDROID_KEYSTORE).run {
                 initialize(spec)
@@ -252,7 +279,10 @@ class KeyVault {
         (ks.getKey(ALIAS, null) as? javax.crypto.SecretKey) ?: run {
             KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).apply {
                 init(
-                    KeyGenParameterSpec.Builder(ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT)
+                    KeyGenParameterSpec.Builder(
+                        ALIAS,
+                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+                    )
                         .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
                         .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
                         .setKeySize(256)
@@ -264,7 +294,8 @@ class KeyVault {
     }
 
     fun wrap(plain: ByteArray): ByteArray {
-        val cipher = Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
+        val cipher =
+            Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
         val iv = cipher.iv
         return byteArrayOf(iv.size.toByte()) + iv + cipher.doFinal(plain)
     }
@@ -312,8 +343,8 @@ class HpkeKeyManager(context: Context, private val vault: KeyVault) {
  * NS2 epoch-indexed HPKE keysets: one keypair per [epoch], the private keyset wrapped at rest by
  * [KeyVault]. The receiver retains a RING of prior epochs' private keysets across a grace window (≥ the
  * relay TTL) so an in-flight envelope sealed to a now-rotated key still opens; [EnvelopeCrypto.open]
- * selects the keyset by the sender's `recipientEpoch`. Additive/dormant — wired in Phase 4; rotation
- * (mint next, [prune] retired) is Phase 6.
+ * selects the keyset by the sender's `recipientEpoch`. Rotation mints the next epoch and [prune] removes
+ * retired keysets after their grace window.
  */
 class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) {
     private val dir = context.filesDir
@@ -339,7 +370,9 @@ class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) {
     fun retainedEpochs(): List<Int> =
         dir.listFiles { f -> f.name.startsWith("hpke_private.epoch") }
             .orEmpty()
-            .mapNotNull { it.name.removePrefix("hpke_private.epoch").removeSuffix(".wrapped").toIntOrNull() }
+            .mapNotNull {
+                it.name.removePrefix("hpke_private.epoch").removeSuffix(".wrapped").toIntOrNull()
+            }
             .sorted()
 
     /** Destroy any retained keyset whose epoch is not in [keep] (rotation cleanup after the grace window). */
@@ -377,7 +410,11 @@ class KeyVaultAuthTokenStore(context: Context, private val vault: KeyVault) : Au
             return
         }
         runCatching {
-            file.writeBytes(vault.wrap(ProtocolCodec.encodeToJson(token).toByteArray(Charsets.UTF_8)))
+            file.writeBytes(
+                vault.wrap(
+                    ProtocolCodec.encodeToJson(token).toByteArray(Charsets.UTF_8)
+                )
+            )
         }
     }
 }

@@ -33,7 +33,8 @@ import java.util.concurrent.TimeUnit
  *
  * Deferrable + constrained (connected, battery-not-low) so it is near-free on battery.
  */
-class EpochMaintenanceWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+class EpochMaintenanceWorker(ctx: Context, params: WorkerParameters) :
+    CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         val graph = (applicationContext as NotiSyncApp).graph
 
@@ -64,20 +65,23 @@ class EpochMaintenanceWorker(ctx: Context, params: WorkerParameters) : Coroutine
 
     companion object {
         private const val UNIQUE_NAME = "epoch-maintenance"
+
         /** Daily — short enough that tick() always lands well inside the days-long overlap / grace windows. */
         private const val INTERVAL_HOURS = 24L
 
         /** Schedule the periodic upkeep. Idempotent (KEEP) — safe to call on every app start. */
         fun schedulePeriodic(context: Context) {
-            val request = PeriodicWorkRequestBuilder<EpochMaintenanceWorker>(INTERVAL_HOURS, TimeUnit.HOURS)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .setRequiresBatteryNotLow(true)
-                        .build()
-                )
-                .build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(UNIQUE_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+            val request =
+                PeriodicWorkRequestBuilder<EpochMaintenanceWorker>(INTERVAL_HOURS, TimeUnit.HOURS)
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .setRequiresBatteryNotLow(true)
+                            .build()
+                    )
+                    .build()
+            WorkManager.getInstance(context)
+                .enqueueUniquePeriodicWork(UNIQUE_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
         }
     }
 }

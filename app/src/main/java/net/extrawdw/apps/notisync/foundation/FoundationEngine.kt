@@ -80,7 +80,9 @@ class FoundationEngine(
         val nowMs = now()
         lastRefetch[id]?.let { if (nowMs - it < REFETCH_COOLDOWN_MS) return false }
         lastRefetch[id] = nowMs
-        val applied = runCatching { fetchKeyEpoch(id, null) }.getOrNull()?.let { trust.applyKeyEpoch(id, it) } ?: false
+        val applied =
+            runCatching { fetchKeyEpoch(id, null) }.getOrNull()?.let { trust.applyKeyEpoch(id, it) }
+                ?: false
         if (!applied && broadcastOnFailure) broadcastTrust()
         return applied
     }
@@ -99,7 +101,12 @@ class FoundationEngine(
     private suspend fun offerKeyEpoch(recipientId: ClientId, keyEpoch: SignedBlob) {
         channel.send(
             MessageType.DATA_SYNC,
-            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(keyEpoch.signerId, epochBlob = keyEpoch))),
+            ProtocolCodec.encodeToCbor(
+                DataSync(
+                    DataSyncKind.CARD,
+                    card = CardDelivery(keyEpoch.signerId, epochBlob = keyEpoch)
+                )
+            ),
             Recipients.Only(recipientId), Urgency.NORMAL,
         )
     }
@@ -116,14 +123,43 @@ class FoundationEngine(
         // convergence (§2.3); the card/key-epoch payloads ride along (CARD accepts any signer) and each
         // self-authenticates independently of the relaying envelope.
         val bodies = buildList {
-            add(ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.TRUST, trust = trust.buildTrustTable())))
+            add(
+                ProtocolCodec.encodeToCbor(
+                    DataSync(
+                        DataSyncKind.TRUST,
+                        trust = trust.buildTrustTable()
+                    )
+                )
+            )
             // Announce our own current key-epoch so own-mesh peers converge it E2E (no poll), per §5.
-            selfKeyEpoch()?.let { add(ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(channel.clientId, epochBlob = it)))) }
+            selfKeyEpoch()?.let {
+                add(
+                    ProtocolCodec.encodeToCbor(
+                        DataSync(
+                            DataSyncKind.CARD,
+                            card = CardDelivery(channel.clientId, epochBlob = it)
+                        )
+                    )
+                )
+            }
             trust.trustedCards().forEach { card ->
-                add(ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(card.signerId, card = card))))
+                add(
+                    ProtocolCodec.encodeToCbor(
+                        DataSync(
+                            DataSyncKind.CARD,
+                            card = CardDelivery(card.signerId, card = card)
+                        )
+                    )
+                )
             }
         }
-        channel.sendAll(MessageType.DATA_SYNC, bodies, Recipients.OwnMesh, Urgency.NORMAL, SignerSelection.IDENTITY)
+        channel.sendAll(
+            MessageType.DATA_SYNC,
+            bodies,
+            Recipients.OwnMesh,
+            Urgency.NORMAL,
+            SignerSelection.IDENTITY
+        )
     }
 
     /**
@@ -133,10 +169,17 @@ class FoundationEngine(
      */
     suspend fun broadcastProfile(update: ProfileUpdate) {
         val n = channel.send(
-            MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)),
-            Recipients.AllTrusted, Urgency.NORMAL, // profile updates reach own AND other devices
+            MessageType.DATA_SYNC,
+            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)),
+            Recipients.AllTrusted,
+            Urgency.NORMAL, // profile updates reach own AND other devices
         )
-        if (n > 0) activityLog.add(ActivityEvent.Kind.SENT, activityText.deviceNameTitle(), activityText.deviceNameUpdated(n), now())
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.SENT,
+            activityText.deviceNameTitle(),
+            activityText.deviceNameUpdated(n),
+            now()
+        )
     }
 
     /**
@@ -147,7 +190,12 @@ class FoundationEngine(
     suspend fun announceKeyEpoch(keyEpoch: SignedBlob) {
         channel.send(
             MessageType.DATA_SYNC,
-            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(channel.clientId, epochBlob = keyEpoch))),
+            ProtocolCodec.encodeToCbor(
+                DataSync(
+                    DataSyncKind.CARD,
+                    card = CardDelivery(channel.clientId, epochBlob = keyEpoch)
+                )
+            ),
             Recipients.OwnMesh, Urgency.NORMAL, SignerSelection.IDENTITY,
         )
     }
@@ -155,14 +203,22 @@ class FoundationEngine(
     /** Deliver a signed card to one own-mesh peer (keyless repair / card announce). */
     private suspend fun sendCard(recipientId: ClientId, clientId: ClientId, card: SignedBlob) {
         channel.send(
-            MessageType.DATA_SYNC, ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.CARD, card = CardDelivery(clientId, card))),
-            Recipients.Only(recipientId), Urgency.NORMAL,
+            MessageType.DATA_SYNC,
+            ProtocolCodec.encodeToCbor(
+                DataSync(
+                    DataSyncKind.CARD,
+                    card = CardDelivery(clientId, card)
+                )
+            ),
+            Recipients.Only(recipientId),
+            Urgency.NORMAL,
         )
     }
 
     /** Sole DATA_SYNC handler: decode once, sub-dispatch by kind. ASSET is forwarded to the app. */
     private fun onDataSync(msg: InboundMessage) {
-        val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(msg.body) }.getOrNull() ?: return
+        val sync =
+            runCatching { ProtocolCodec.decodeFromCbor<DataSync>(msg.body) }.getOrNull() ?: return
         when (sync.kind) {
             // The notification app owns asset repair; forward unconditionally and let it apply its own gate.
             DataSyncKind.ASSET -> onAsset(msg, sync)
@@ -204,20 +260,37 @@ class FoundationEngine(
                 }
                 // Repair any device the sender trusts but lacks a card for, that we can vouch for.
                 if (result.cardsToOffer.isNotEmpty()) {
-                    scope.launch { result.cardsToOffer.forEach { sendCard(msg.senderId, it.signerId, it) } }
+                    scope.launch {
+                        result.cardsToOffer.forEach {
+                            sendCard(
+                                msg.senderId,
+                                it.signerId,
+                                it
+                            )
+                        }
+                    }
                 }
                 // NS2 key-epoch repair: the sender advertised a device at an epoch BEHIND what we hold (incl.
                 // none) — relay our current key-epoch for it so the sender can reach it (e.g. A relays C's
                 // key-epoch to B when B trusts C but lacks its key). Self-authenticating, so B verifies it itself.
                 if (result.keyEpochsToOffer.isNotEmpty()) {
-                    scope.launch { result.keyEpochsToOffer.forEach { offerKeyEpoch(msg.senderId, it) } }
+                    scope.launch {
+                        result.keyEpochsToOffer.forEach {
+                            offerKeyEpoch(
+                                msg.senderId,
+                                it
+                            )
+                        }
+                    }
                 }
                 // Converge operational keys: pull a peer's key-epoch when the roster advertises a higher epoch
                 // than we hold (the §5 refetch trigger). Self-authenticating, so pulling is safe; idempotent +
                 // bounded (each id fetched only while its advertised epoch outruns ours).
-                val stale = table.entries.filter { it.epoch > trust.peerEpoch(it.clientId) && it.clientId != channel.clientId }
+                val stale =
+                    table.entries.filter { it.epoch > trust.peerEpoch(it.clientId) && it.clientId != channel.clientId }
                 if (stale.isNotEmpty()) scope.launch {
-                    for (e in stale) runCatching { fetchKeyEpoch(e.clientId, e.epoch) }.getOrNull()?.let { trust.applyKeyEpoch(e.clientId, it) }
+                    for (e in stale) runCatching { fetchKeyEpoch(e.clientId, e.epoch) }.getOrNull()
+                        ?.let { trust.applyKeyEpoch(e.clientId, it) }
                 }
                 // We just learned a keyless device — advertise it so a card holder repairs us.
                 if (result.needsBroadcast) scope.launch { broadcastTrust() }

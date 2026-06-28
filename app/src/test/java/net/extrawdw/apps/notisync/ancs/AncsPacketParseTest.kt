@@ -12,7 +12,16 @@ class AncsPacketParseTest {
     @Test
     fun parseSource_decodesEventAndLittleEndianUid() {
         // Added · Important+PositiveAction · Social · count 3 · UID 0x04030201
-        val packet = byteArrayOf(0, (Ancs.FLAG_IMPORTANT or Ancs.FLAG_POSITIVE_ACTION).toByte(), 4, 3, 1, 2, 3, 4)
+        val packet = byteArrayOf(
+            0,
+            (Ancs.FLAG_IMPORTANT or Ancs.FLAG_POSITIVE_ACTION).toByte(),
+            4,
+            3,
+            1,
+            2,
+            3,
+            4
+        )
         val p = Ancs.parseSource(packet)!!
         assertEquals(Ancs.EVENT_ADDED, p.eventId)
         assertTrue(p.isAdded)
@@ -59,7 +68,12 @@ class AncsPacketParseTest {
         }.toByteArray()
 
         // A partial buffer (one byte short) must not parse yet.
-        assertNull(Ancs.parseNotificationAttributes(full.copyOf(full.size - 1), Ancs.NOTIFICATION_ATTRS.size))
+        assertNull(
+            Ancs.parseNotificationAttributes(
+                full.copyOf(full.size - 1),
+                Ancs.NOTIFICATION_ATTRS.size
+            )
+        )
 
         val parsed = Ancs.parseNotificationAttributes(full, Ancs.NOTIFICATION_ATTRS.size)!!
         assertEquals(1, parsed.uid)
@@ -86,7 +100,8 @@ class AncsPacketParseTest {
     @Test
     fun parseAppAttributes_incompleteReturnsNull() {
         // Header only, no attribute tuple yet.
-        val buf = ByteArrayOutputStream().apply { write(1); write("a".toByteArray()); write(0) }.toByteArray()
+        val buf = ByteArrayOutputStream().apply { write(1); write("a".toByteArray()); write(0) }
+            .toByteArray()
         assertNull(Ancs.parseAppAttributes(buf))
     }
 

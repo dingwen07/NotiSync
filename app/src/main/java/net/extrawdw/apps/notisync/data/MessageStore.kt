@@ -45,8 +45,8 @@ class MessageStore(context: Context) :
         db.execSQL("CREATE TABLE IF NOT EXISTS pending_ack (message_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)")
         db.execSQL(
             "CREATE TABLE IF NOT EXISTS mirror_msg (" +
-                "source_client TEXT NOT NULL, source_key TEXT NOT NULL, message_id TEXT NOT NULL, " +
-                "recorded_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
+                    "source_client TEXT NOT NULL, source_key TEXT NOT NULL, message_id TEXT NOT NULL, " +
+                    "recorded_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
         )
     }
 
@@ -57,7 +57,10 @@ class MessageStore(context: Context) :
     // --- MessageDedup (channel) -------------------------------------------------------------------
 
     override fun seen(messageId: String): Boolean = runCatching {
-        readableDatabase.rawQuery("SELECT 1 FROM dedup WHERE message_id = ? LIMIT 1", arrayOf(messageId)).use {
+        readableDatabase.rawQuery(
+            "SELECT 1 FROM dedup WHERE message_id = ? LIMIT 1",
+            arrayOf(messageId)
+        ).use {
             it.moveToFirst()
         }
     }.getOrDefault(false)
@@ -108,7 +111,11 @@ class MessageStore(context: Context) :
         if (messageIds.isEmpty()) return
         runCatching {
             val placeholders = messageIds.joinToString(",") { "?" }
-            writableDatabase.delete("pending_ack", "message_id IN ($placeholders)", messageIds.toTypedArray())
+            writableDatabase.delete(
+                "pending_ack",
+                "message_id IN ($placeholders)",
+                messageIds.toTypedArray()
+            )
         }
     }
 

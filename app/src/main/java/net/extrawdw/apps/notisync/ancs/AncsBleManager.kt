@@ -66,23 +66,42 @@ class AncsBleManager(
     /** Broadcast a dismissal to the mesh ([MirrorEngine.dismissLocal]). */
     private val dismissMesh: suspend (ClientId, String) -> Unit,
 ) {
-    private val adapter = (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
+    private val adapter =
+        (context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager)?.adapter
     private var gattServer: BluetoothGattServer? = null
     private var advertiser: BluetoothLeAdvertiser? = null
-    @Volatile private var client: AncsGattClient? = null
-    @Volatile private var connectedDevice: BluetoothDevice? = null
-    @Volatile private var lastDevice: BluetoothDevice? = null // the iPhone we were last talking to, for targeted re-attach
-    @Volatile private var receiverRegistered = false
-    @Volatile private var adapterReceiverRegistered = false
-    @Volatile private var running = false
-    @Volatile private var advertisingSet: AdvertisingSet? = null
+
+    @Volatile
+    private var client: AncsGattClient? = null
+
+    @Volatile
+    private var connectedDevice: BluetoothDevice? = null
+
+    @Volatile
+    private var lastDevice: BluetoothDevice? =
+        null // the iPhone we were last talking to, for targeted re-attach
+
+    @Volatile
+    private var receiverRegistered = false
+
+    @Volatile
+    private var adapterReceiverRegistered = false
+
+    @Volatile
+    private var running = false
+
+    @Volatile
+    private var advertisingSet: AdvertisingSet? = null
 
     private val handler = Handler(Looper.getMainLooper())
     private val attachRunnable = Runnable { tryAttachConnected() }
     private var reconnectAttempts = 0
 
-    private val appNameCache = ConcurrentHashMap<String, String>() // bundleId -> resolved display name
-    private val uidToKey = ConcurrentHashMap<Int, String>()        // ANCS notification UID -> mirror sourceKey
+    private val appNameCache =
+        ConcurrentHashMap<String, String>() // bundleId -> resolved display name
+    private val uidToKey =
+        ConcurrentHashMap<Int, String>()        // ANCS notification UID -> mirror sourceKey
+
     // sourceKey -> reconnect-stable content key. Unlike [uidToKey] (session-scoped, cleared on disconnect) this
     // SURVIVES a reconnect — the manager outlives the BLE link — so a dismissal can still be matched to the same
     // notification when it replays under a fresh UID. Bounded LRU so a long session can't grow it without end.
@@ -91,10 +110,12 @@ class AncsBleManager(
             override fun removeEldestEntry(eldest: Map.Entry<String, String>): Boolean = size > 256
         }
     )
+
     // Content keys of mirrors dismissed (here or by a mesh peer) while we couldn't reach the iPhone — the link
     // was down, or the UID had already rotated. Drained in [onSourceEvent]: when such a notification replays we
     // clear it on the iPhone (with its fresh UID) instead of re-displaying it. Survives reconnect.
     private val pendingClear = java.util.Collections.synchronizedSet(HashSet<String>())
+
     // UIDs we asked the iPhone to clear ourselves (dismiss-through), awaiting their EVENT_REMOVED. That removal
     // must NOT re-broadcast to the mesh — the dismissal it answers already propagated there (it's what triggered
     // the clear), so re-sending it would echo back to the peer that dismissed. Session-scoped, like [uidToKey].
@@ -102,7 +123,12 @@ class AncsBleManager(
 
     fun start() {
         if (running) return // idempotent: the foreground service may re-deliver onStartCommand
-        if (!hasPermissions()) { Log.w(TAG, "missing BLUETOOTH_CONNECT/ADVERTISE"); deviceRepo.setStatus(AncsStatus.ERROR); return }
+        if (!hasPermissions()) {
+            Log.w(
+                TAG,
+                "missing BLUETOOTH_CONNECT/ADVERTISE"
+            ); deviceRepo.setStatus(AncsStatus.ERROR); return
+        }
         val a = adapter
         if (a == null) {
             Log.w(TAG, "no Bluetooth adapter on this device")
@@ -129,8 +155,8 @@ class AncsBleManager(
         Log.i(
             TAG,
             "ANCS bridge start: multiAdv=${a.isMultipleAdvertisementSupported} " +
-                "extAdv=${runCatching { a.isLeExtendedAdvertisingSupported }.getOrNull()} " +
-                "maxAdvData=${runCatching { a.leMaximumAdvertisingDataLength }.getOrNull()}",
+                    "extAdv=${runCatching { a.isLeExtendedAdvertisingSupported }.getOrNull()} " +
+                    "maxAdvData=${runCatching { a.leMaximumAdvertisingDataLength }.getOrNull()}",
         )
         advertiser = adv
         openGattServer()
@@ -149,8 +175,12 @@ class AncsBleManager(
         handler.removeCallbacks(attachRunnable)
         runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
         advertisingSet = null
-        if (receiverRegistered) runCatching { context.unregisterReceiver(bondReceiver) }.also { receiverRegistered = false }
-        if (adapterReceiverRegistered) runCatching { context.unregisterReceiver(adapterReceiver) }.also { adapterReceiverRegistered = false }
+        if (receiverRegistered) runCatching { context.unregisterReceiver(bondReceiver) }.also {
+            receiverRegistered = false
+        }
+        if (adapterReceiverRegistered) runCatching { context.unregisterReceiver(adapterReceiver) }.also {
+            adapterReceiverRegistered = false
+        }
         client?.disconnectAndClose(); client = null
         // Actively drop the iPhone's link to our GATT server too (not just release our handle, which leaves the
         // ACL up and the iPhone showing "Connected"/Sharing), then close the server.
@@ -182,8 +212,21 @@ class AncsBleManager(
         val scanResponse = AdvertiseData.Builder()
             .setIncludeDeviceName(true)
             .build()
-        runCatching { adv.startAdvertisingSet(params, data, scanResponse, null, null, advertisingSetCallback) }
-            .onFailure { Log.w(TAG, "startAdvertisingSet threw", it); deviceRepo.setStatus(AncsStatus.ERROR) }
+        runCatching {
+            adv.startAdvertisingSet(
+                params,
+                data,
+                scanResponse,
+                null,
+                null,
+                advertisingSetCallback
+            )
+        }
+            .onFailure {
+                Log.w(TAG, "startAdvertisingSet threw", it); deviceRepo.setStatus(
+                AncsStatus.ERROR
+            )
+            }
     }
 
     private val advertisingSetCallback = object : AdvertisingSetCallback() {
@@ -221,7 +264,10 @@ class AncsBleManager(
 
     private val gattServerCallback = object : BluetoothGattServerCallback() {
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
-            Log.i(TAG, "GATT server conn: ${device.address} status=$status newState=$newState bond=${device.bondState}")
+            Log.i(
+                TAG,
+                "GATT server conn: ${device.address} status=$status newState=$newState bond=${device.bondState}"
+            )
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> onCentralConnected(device)
                 BluetoothProfile.STATE_DISCONNECTED ->
@@ -240,11 +286,17 @@ class AncsBleManager(
         // Pairing a NEW iPhone is the CDM "Set up" flow (AncsCompanion.bondDevice) or iOS Settings; both bond at
         // the OS level, after which the iPhone reconnects bonded and lands here.
         if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            Log.i(TAG, "ignoring unbonded central ${device.address} (bond=${device.bondState}) — not the paired iPhone")
+            Log.i(
+                TAG,
+                "ignoring unbonded central ${device.address} (bond=${device.bondState}) — not the paired iPhone"
+            )
             return
         }
         handler.removeCallbacks(attachRunnable) // we're handling a connection; cancel any pending re-attach
-        Log.i(TAG, "iPhone connected as central: ${device.address} — opening ANCS GATT client back to it")
+        Log.i(
+            TAG,
+            "iPhone connected as central: ${device.address} — opening ANCS GATT client back to it"
+        )
         if (device.address != lastDevice?.address) deviceRepo.clearDeviceName() // a different iPhone: don't inherit the old name
         connectedDevice = device
         lastDevice = device
@@ -276,7 +328,9 @@ class AncsBleManager(
      * rotating random addresses. No-op if the iPhone has genuinely disconnected (a reconnect will retrigger us).
      */
     private fun onClientGone() {
-        connectedDevice?.let { lastDevice = it } // remember the iPhone so we re-attach to IT, not another bonded device
+        connectedDevice?.let {
+            lastDevice = it
+        } // remember the iPhone so we re-attach to IT, not another bonded device
         client = null
         connectedDevice = null
         scheduleAttach()
@@ -288,11 +342,19 @@ class AncsBleManager(
         val want = lastDevice?.address ?: return
         val mgr = context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager ?: return
         val connected = (
-            runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT_SERVER) }.getOrDefault(emptyList()) +
-                runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT) }.getOrDefault(emptyList())
-            ).distinctBy { it.address }
-        val target = connected.firstOrNull { it.address == want } ?: return // gone → a fresh connect event will retrigger us
-        Log.i(TAG, "re-attaching to still-connected iPhone ${target.address} (attempt $reconnectAttempts)")
+                runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT_SERVER) }.getOrDefault(
+                    emptyList()
+                ) +
+                        runCatching { mgr.getConnectedDevices(BluetoothProfile.GATT) }.getOrDefault(
+                            emptyList()
+                        )
+                ).distinctBy { it.address }
+        val target = connected.firstOrNull { it.address == want }
+            ?: return // gone → a fresh connect event will retrigger us
+        Log.i(
+            TAG,
+            "re-attaching to still-connected iPhone ${target.address} (attempt $reconnectAttempts)"
+        )
         onCentralConnected(target)
     }
 
@@ -335,7 +397,8 @@ class AncsBleManager(
         override fun onReceive(c: Context, intent: Intent) {
             if (intent.action != BluetoothDevice.ACTION_BOND_STATE_CHANGED) return
             val state = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, -1)
-            val device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
+            val device =
+                intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java)
             Log.i(TAG, "bond state -> $state for ${device?.address}")
             if (state == BluetoothDevice.BOND_BONDED) client?.onBonded()
         }
@@ -359,7 +422,10 @@ class AncsBleManager(
         override fun onReceive(c: Context, intent: Intent) {
             if (intent.action != BluetoothAdapter.ACTION_STATE_CHANGED) return
             when (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)) {
-                BluetoothAdapter.STATE_ON -> { Log.i(TAG, "Bluetooth on — restarting ANCS advertising"); start() }
+                BluetoothAdapter.STATE_ON -> {
+                    Log.i(TAG, "Bluetooth on — restarting ANCS advertising"); start()
+                }
+
                 BluetoothAdapter.STATE_TURNING_OFF, BluetoothAdapter.STATE_OFF -> onBluetoothOff()
             }
         }
@@ -396,23 +462,44 @@ class AncsBleManager(
     private fun onSourceEvent(packet: Ancs.SourcePacket) {
         val c = client ?: return
         scope.launch {
-            if (packet.isRemoved) { onRemoved(packet); return@launch }
+            if (packet.isRemoved) {
+                onRemoved(packet); return@launch
+            }
             // The Notification Source packet has no app id — we must fetch attributes first, then filter.
             val attrs = c.fetchNotificationAttributes(packet.notificationUid) ?: return@launch
             val bundleId = attrs.appId ?: return@launch
             val displayName = appNameCache.getOrPut(bundleId) {
-                BundleIdMap.displayName(bundleId) ?: c.fetchAppDisplayName(bundleId) ?: prettyName(bundleId)
+                BundleIdMap.displayName(bundleId) ?: c.fetchAppDisplayName(bundleId) ?: prettyName(
+                    bundleId
+                )
             }
-            registry.recordSeen(bundleId, displayName, System.currentTimeMillis()) // surface for opt-in even if not enabled
+            registry.recordSeen(
+                bundleId,
+                displayName,
+                System.currentTimeMillis()
+            ) // surface for opt-in even if not enabled
             if (!registry.isEnabled(bundleId)) return@launch
 
-            val record = AncsRecord(packet, bundleId, displayName, attrs.title, attrs.subtitle, attrs.message, attrs.date)
+            val record = AncsRecord(
+                packet,
+                bundleId,
+                displayName,
+                attrs.title,
+                attrs.subtitle,
+                attrs.message,
+                attrs.date
+            )
             val androidPkg = iconResolver.androidPackageForIos(bundleId, displayName)
             // A connect-time backlog (PreExisting) shouldn't blast every mesh device with old alerts: show it
             // locally but quietly, and don't mirror it. Fresh notifications flow to both sinks normally.
             val toMesh = !packet.isPreExisting && meshMirrorEnabled()
             var notif = AncsNotificationMapper.map(
-                clientId, record, iphoneId(), deviceRepo.deviceName.value, androidPkg, System.currentTimeMillis(),
+                clientId,
+                record,
+                iphoneId(),
+                deviceRepo.deviceName.value,
+                androidPkg,
+                System.currentTimeMillis(),
             )
             // Only ship the app icon as an asset when mirroring — a local render resolves the icon directly.
             if (toMesh) notif = attachAppIcon(notif, androidPkg)
@@ -438,7 +525,10 @@ class AncsBleManager(
 
     /** Attach the app icon as an asset when the mapped app is installed on THIS phone (else leave it to the
      *  consumer's resolution chain). Deduped by the asset layer, so it uploads at most once per app. */
-    private suspend fun attachAppIcon(notif: CapturedNotification, androidPkg: String?): CapturedNotification {
+    private suspend fun attachAppIcon(
+        notif: CapturedNotification,
+        androidPkg: String?
+    ): CapturedNotification {
         val pkg = androidPkg ?: return notif
         val bytes = appIconBytes(pkg) ?: return notif
         val ref = uploadAsset(bytes, AssetRole.APP_ICON, MIME_WEBP, clientId) ?: return notif

@@ -24,7 +24,13 @@ class AncsCompanionService : CompanionDeviceService() {
         // synchronous so it stays inside the companion-presence foreground-service exemption.
         if ((application as? NotiSyncApp)?.graph?.settings?.ancsBridgeEnabled?.value != true) return
         runCatching { AncsBridgeService.start(applicationContext) }
-            .onFailure { Log.w("AncsCompanionService", "onDeviceAppeared: bridge start denied", it) }
+            .onFailure {
+                Log.w(
+                    "AncsCompanionService",
+                    "onDeviceAppeared: bridge start denied",
+                    it
+                )
+            }
     }
 
     override fun onDeviceDisappeared(associationInfo: AssociationInfo) {

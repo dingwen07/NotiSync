@@ -2,7 +2,7 @@ package net.extrawdw.notisync.protocol
 
 import kotlinx.serialization.Serializable
 
-/** A wake/delivery mechanism. FCM is the first Android transport; others map to the same model. */
+/** A wake/delivery mechanism. Push and live transports all map to the same route model. */
 @Serializable
 enum class TransportType { FCM, WEBSOCKET, APNS, WEBPUSH }
 
@@ -29,7 +29,7 @@ data class RouteClaim(
     val clientId: ClientId,
     val transport: TransportType,
     val environment: RouteEnvironment,
-    /** Opaque transport endpoint: an FCM direct-send target, a WS session id, etc. */
+    /** Opaque transport endpoint: an FCM registration token, APNs device token, WS session id, etc. */
     val routeRef: String,
     val capabilities: RouteCapabilities,
     val epoch: Int,

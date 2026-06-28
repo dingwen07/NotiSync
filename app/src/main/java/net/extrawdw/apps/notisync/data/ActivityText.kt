@@ -69,7 +69,11 @@ class AndroidActivityText(private val context: Context) : ActivityText {
         context.getString(R.string.activity_detail_renamed_was, previousName)
 
     override fun trustUpdateFrom(name: String, prompt: TrustPrompt): String =
-        context.getString(R.string.activity_detail_trust_update_from, name, trustPromptLabel(prompt))
+        context.getString(
+            R.string.activity_detail_trust_update_from,
+            name,
+            trustPromptLabel(prompt)
+        )
 
     override fun pairedTitle(): String =
         context.getString(R.string.activity_title_paired)

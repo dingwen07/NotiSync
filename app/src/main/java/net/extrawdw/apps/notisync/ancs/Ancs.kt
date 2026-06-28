@@ -22,6 +22,7 @@ object Ancs {
     val NOTIFICATION_SOURCE: UUID = UUID.fromString("9FBF120D-6301-42D9-8C58-25E699A21DBD")
     val CONTROL_POINT: UUID = UUID.fromString("69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9")
     val DATA_SOURCE: UUID = UUID.fromString("22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB")
+
     /** Standard Client Characteristic Configuration descriptor (for enabling notifications). */
     val CCCD: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
 
@@ -74,7 +75,8 @@ object Ancs {
     const val ACTION_NEGATIVE = 1
 
     /** The attribute ids we request for each notification, in request order (drives response parsing). */
-    val NOTIFICATION_ATTRS = intArrayOf(ATTR_APP_IDENTIFIER, ATTR_TITLE, ATTR_SUBTITLE, ATTR_MESSAGE, ATTR_DATE)
+    val NOTIFICATION_ATTRS =
+        intArrayOf(ATTR_APP_IDENTIFIER, ATTR_TITLE, ATTR_SUBTITLE, ATTR_MESSAGE, ATTR_DATE)
 
     // ---- Notification Source ----
 
@@ -183,7 +185,9 @@ object Ancs {
     fun parseAppAttributes(buf: ByteArray, attrCount: Int = 1): AppAttributes? {
         if (buf.isEmpty() || (buf[0].toInt() and 0xFF) != CMD_GET_APP_ATTRIBUTES) return null
         var nul = -1
-        for (j in 1 until buf.size) if (buf[j].toInt() == 0) { nul = j; break }
+        for (j in 1 until buf.size) if (buf[j].toInt() == 0) {
+            nul = j; break
+        }
         if (nul < 0) return null
         val appId = String(buf, 1, nul - 1, Charsets.UTF_8)
         var i = nul + 1
@@ -206,12 +210,20 @@ object Ancs {
     /** The notification UID echoed in a GetNotificationAttributes response header (`[cmd][uid(4 LE)]`), or
      *  null if [buf] isn't (yet) such a response — used to correlate a Data Source fragment with its request. */
     fun notificationResponseUid(buf: ByteArray): Int? =
-        if (buf.size >= 5 && (buf[0].toInt() and 0xFF) == CMD_GET_NOTIFICATION_ATTRIBUTES) le32(buf, 1) else null
+        if (buf.size >= 5 && (buf[0].toInt() and 0xFF) == CMD_GET_NOTIFICATION_ATTRIBUTES) le32(
+            buf,
+            1
+        ) else null
 
     /** Parse the ANCS Date attribute (`yyyyMMdd'T'HHmmss`, device-local) to epoch millis, or null. */
     fun parseDate(s: String?): Long? {
         if (s.isNullOrBlank()) return null
-        return runCatching { SimpleDateFormat("yyyyMMdd'T'HHmmss", Locale.US).parse(s)?.time }.getOrNull()
+        return runCatching {
+            SimpleDateFormat(
+                "yyyyMMdd'T'HHmmss",
+                Locale.US
+            ).parse(s)?.time
+        }.getOrNull()
     }
 
     private fun le16(b: ByteArray, off: Int): Int =
@@ -219,13 +231,15 @@ object Ancs {
 
     private fun le32(b: ByteArray, off: Int): Int =
         (b[off].toInt() and 0xFF) or ((b[off + 1].toInt() and 0xFF) shl 8) or
-            ((b[off + 2].toInt() and 0xFF) shl 16) or ((b[off + 3].toInt() and 0xFF) shl 24)
+                ((b[off + 2].toInt() and 0xFF) shl 16) or ((b[off + 3].toInt() and 0xFF) shl 24)
 
     private fun writeLe16(out: ByteArrayOutputStream, v: Int) {
         out.write(v and 0xFF); out.write((v shr 8) and 0xFF)
     }
 
     private fun writeLe32(out: ByteArrayOutputStream, v: Int) {
-        out.write(v and 0xFF); out.write((v shr 8) and 0xFF); out.write((v shr 16) and 0xFF); out.write((v shr 24) and 0xFF)
+        out.write(v and 0xFF); out.write((v shr 8) and 0xFF); out.write((v shr 16) and 0xFF); out.write(
+            (v shr 24) and 0xFF
+        )
     }
 }

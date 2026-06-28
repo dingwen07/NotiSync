@@ -35,6 +35,7 @@ enum class TrustPrompt {
     RE_TRUST,    // a previously-revoked device is being re-introduced (resurrection — show the fingerprint)
     NEW_REVOKE,  // a peer revoked a device we currently trust (traffic is now paused pending our decision)
     CONFLICT,    // a device is being re-trusted while its removal is still pending — user must resolve
+
     // ---- "Other" devices (private contact list): already applied, the prompt is purely informational. ----
     OTHER_ADDED,    // another of our own devices added an other-device to the shared list
     OTHER_REMOVED,  // another of our own devices removed an other-device from the shared list
@@ -54,10 +55,17 @@ data class TrustResolution(val entry: TrustEntry, val prompt: TrustPrompt?)
 object TrustMachine {
 
     /** Fold a received (wire) assertion — only TRUSTED/REVOKED ever arrive — against the current entry. */
-    fun resolveIncoming(current: TrustEntry?, incoming: TrustTableEntry, sender: ClientId): TrustResolution {
+    fun resolveIncoming(
+        current: TrustEntry?,
+        incoming: TrustTableEntry,
+        sender: ClientId
+    ): TrustResolution {
         val id = incoming.clientId
         // Last-writer-wins staleness guard: nothing older-or-equal can change our state.
-        if (current != null && incoming.updatedAt <= current.updatedAt) return TrustResolution(current, null)
+        if (current != null && incoming.updatedAt <= current.updatedAt) return TrustResolution(
+            current,
+            null
+        )
         val ts = incoming.updatedAt
 
         // An "other" device (someone else's, in our private contact list) skips the consensus/pending
@@ -67,36 +75,93 @@ object TrustMachine {
         val isOwn = current?.ownDevice ?: incoming.ownDevice
         if (!isOwn) {
             fun other(status: TrustStatus, prompt: TrustPrompt?) = TrustResolution(
-                TrustEntry(id, status, ts, introducedBy = current?.introducedBy ?: sender, ownDevice = false), prompt,
+                TrustEntry(
+                    id,
+                    status,
+                    ts,
+                    introducedBy = current?.introducedBy ?: sender,
+                    ownDevice = false
+                ),
+                prompt,
             )
             return when (incoming.status) {
-                TrustStatus.TRUSTED -> other(TrustStatus.TRUSTED, if (current?.status == TrustStatus.TRUSTED) null else TrustPrompt.OTHER_ADDED)
-                TrustStatus.REVOKED -> other(TrustStatus.REVOKED, if (current?.status == TrustStatus.REVOKED) null else TrustPrompt.OTHER_REMOVED)
+                TrustStatus.TRUSTED -> other(
+                    TrustStatus.TRUSTED,
+                    if (current?.status == TrustStatus.TRUSTED) null else TrustPrompt.OTHER_ADDED
+                )
+
+                TrustStatus.REVOKED -> other(
+                    TrustStatus.REVOKED,
+                    if (current?.status == TrustStatus.REVOKED) null else TrustPrompt.OTHER_REMOVED
+                )
                 // PENDING_* never appears on the wire; ignore defensively.
-                else -> TrustResolution(current ?: TrustEntry(id, incoming.status, ts, ownDevice = false), null)
+                else -> TrustResolution(
+                    current ?: TrustEntry(
+                        id,
+                        incoming.status,
+                        ts,
+                        ownDevice = false
+                    ), null
+                )
             }
         }
 
         // Anything else is an own-mesh device; keep an existing local flag if set.
         fun res(status: TrustStatus, introducedBy: ClientId?, prompt: TrustPrompt?) =
-            TrustResolution(TrustEntry(id, status, ts, introducedBy, ownDevice = current?.ownDevice ?: true), prompt)
+            TrustResolution(
+                TrustEntry(
+                    id,
+                    status,
+                    ts,
+                    introducedBy,
+                    ownDevice = current?.ownDevice ?: true
+                ), prompt
+            )
 
         return when (incoming.status) {
             TrustStatus.TRUSTED -> when (current?.status) {
                 null -> res(TrustStatus.PENDING_TRUST, sender, TrustPrompt.NEW_TRUST)
-                TrustStatus.PENDING_TRUST -> res(TrustStatus.PENDING_TRUST, current.introducedBy, null)
+                TrustStatus.PENDING_TRUST -> res(
+                    TrustStatus.PENDING_TRUST,
+                    current.introducedBy,
+                    null
+                )
+
                 TrustStatus.TRUSTED -> res(TrustStatus.TRUSTED, current.introducedBy, null)
                 // Removal in progress: an incoming re-trust never silently restores it — keep it paused
                 // and surface the conflict for the user to resolve.
-                TrustStatus.PENDING_REVOKE -> res(TrustStatus.PENDING_REVOKE, current.introducedBy, TrustPrompt.CONFLICT)
+                TrustStatus.PENDING_REVOKE -> res(
+                    TrustStatus.PENDING_REVOKE,
+                    current.introducedBy,
+                    TrustPrompt.CONFLICT
+                )
                 // Clearing a tombstone always requires explicit user approval (with the fingerprint shown).
                 TrustStatus.REVOKED -> res(TrustStatus.PENDING_TRUST, sender, TrustPrompt.RE_TRUST)
             }
+
             TrustStatus.REVOKED -> when (current?.status) {
-                null -> res(TrustStatus.REVOKED, sender, null) // silent tombstone; suppresses later stale re-prompts
-                TrustStatus.PENDING_TRUST -> res(TrustStatus.REVOKED, sender, null) // never approved -> drop it
-                TrustStatus.TRUSTED -> res(TrustStatus.PENDING_REVOKE, sender, TrustPrompt.NEW_REVOKE)
-                TrustStatus.PENDING_REVOKE -> res(TrustStatus.PENDING_REVOKE, current.introducedBy, null)
+                null -> res(
+                    TrustStatus.REVOKED,
+                    sender,
+                    null
+                ) // silent tombstone; suppresses later stale re-prompts
+                TrustStatus.PENDING_TRUST -> res(
+                    TrustStatus.REVOKED,
+                    sender,
+                    null
+                ) // never approved -> drop it
+                TrustStatus.TRUSTED -> res(
+                    TrustStatus.PENDING_REVOKE,
+                    sender,
+                    TrustPrompt.NEW_REVOKE
+                )
+
+                TrustStatus.PENDING_REVOKE -> res(
+                    TrustStatus.PENDING_REVOKE,
+                    current.introducedBy,
+                    null
+                )
+
                 TrustStatus.REVOKED -> res(TrustStatus.REVOKED, current.introducedBy, null)
             }
             // PENDING_* must never appear on the wire; ignore defensively.
@@ -118,14 +183,16 @@ object TrustMachine {
         TrustEntry(id, TrustStatus.REVOKED, now, introducedBy = null, ownDevice = ownDevice)
 
     /** Approve a PENDING_TRUST -> TRUSTED. Agrees with the introducer; not re-broadcast immediately. */
-    fun approveTrust(current: TrustEntry, now: Long) = current.copy(status = TrustStatus.TRUSTED, updatedAt = now)
+    fun approveTrust(current: TrustEntry, now: Long) =
+        current.copy(status = TrustStatus.TRUSTED, updatedAt = now)
 
     /** Reject a PENDING_TRUST -> REVOKED. Overturns the introducer; becomes our own decision (propagates). */
     fun rejectTrust(current: TrustEntry, now: Long) =
         current.copy(status = TrustStatus.REVOKED, updatedAt = now, introducedBy = null)
 
     /** Confirm a PENDING_REVOKE -> REVOKED. Agrees with the revoker; not re-broadcast immediately. */
-    fun confirmRevoke(current: TrustEntry, now: Long) = current.copy(status = TrustStatus.REVOKED, updatedAt = now)
+    fun confirmRevoke(current: TrustEntry, now: Long) =
+        current.copy(status = TrustStatus.REVOKED, updatedAt = now)
 
     /** Keep a device whose PENDING_REVOKE we reject -> TRUSTED. Overturns the revoker (propagates). */
     fun keepTrusted(current: TrustEntry, now: Long) =

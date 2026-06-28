@@ -18,7 +18,8 @@ object PairingNfcController {
 
     fun enable(context: Context, pairingUrl: String) {
         val cardEmulation = cardEmulation(context) ?: return PairingNfcSession.clear()
-        val component = ComponentName(context.applicationContext, PairingHostApduService::class.java)
+        val component =
+            ComponentName(context.applicationContext, PairingHostApduService::class.java)
         if (!PairingNfcSession.setPairingUrl(pairingUrl)) return PairingNfcSession.clear()
         val registered = runCatching {
             cardEmulation.registerAidsForService(
@@ -80,14 +81,18 @@ class PairingHostApduService : HostApduService() {
                 selectedFile = CAPABILITY_CONTAINER_FILE_ID
                 STATUS_OK
             }
+
             commandApdu.isSelectFile(NDEF_FILE_ID) -> {
                 selectedFile = NDEF_FILE_ID
                 STATUS_OK
             }
+
             commandApdu.isReadBinary() -> {
-                val file = selectedFile?.let(PairingNfcSession::file) ?: return STATUS_CONDITIONS_NOT_SATISFIED
+                val file = selectedFile?.let(PairingNfcSession::file)
+                    ?: return STATUS_CONDITIONS_NOT_SATISFIED
                 commandApdu.readBinary(file)
             }
+
             else -> STATUS_INS_NOT_SUPPORTED
         }
     }
@@ -98,17 +103,17 @@ class PairingHostApduService : HostApduService() {
 
     private fun ByteArray.isSelectNdefApplication(): Boolean =
         size >= SELECT_NDEF_APPLICATION_PREFIX.size &&
-            SELECT_NDEF_APPLICATION_PREFIX.indices.all { this[it] == SELECT_NDEF_APPLICATION_PREFIX[it] }
+                SELECT_NDEF_APPLICATION_PREFIX.indices.all { this[it] == SELECT_NDEF_APPLICATION_PREFIX[it] }
 
     private fun ByteArray.isSelectFile(fileId: Int): Boolean =
         size >= 7 &&
-            u(0) == 0x00 &&
-            u(1) == 0xA4 &&
-            u(2) == 0x00 &&
-            (u(3) == 0x0C || u(3) == 0x00) &&
-            u(4) == 0x02 &&
-            u(5) == (fileId shr 8) &&
-            u(6) == (fileId and 0xFF)
+                u(0) == 0x00 &&
+                u(1) == 0xA4 &&
+                u(2) == 0x00 &&
+                (u(3) == 0x0C || u(3) == 0x00) &&
+                u(4) == 0x02 &&
+                u(5) == (fileId shr 8) &&
+                u(6) == (fileId and 0xFF)
 
     private fun ByteArray.isReadBinary(): Boolean =
         size >= 5 && u(0) == 0x00 && u(1) == 0xB0
@@ -153,7 +158,8 @@ class PairingHostApduService : HostApduService() {
 }
 
 private object PairingNfcSession {
-    @Volatile private var files: Files? = null
+    @Volatile
+    private var files: Files? = null
 
     val isActive: Boolean get() = files != null
 

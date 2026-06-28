@@ -50,10 +50,13 @@ class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         fun enqueue(context: Context, messageId: String) {
             val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
                 .setInputData(workDataOf(KEY_MESSAGE_ID to messageId))
-                .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                .setConstraints(
+                    Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
+                )
                 .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_SECONDS, TimeUnit.SECONDS)
                 .build()
-            WorkManager.getInstance(context).enqueueUniqueWork("wake-fetch-$messageId", ExistingWorkPolicy.KEEP, request)
+            WorkManager.getInstance(context)
+                .enqueueUniqueWork("wake-fetch-$messageId", ExistingWorkPolicy.KEEP, request)
         }
 
         private const val BACKOFF_SECONDS = 30L
@@ -90,7 +93,8 @@ class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         }
 
         // 2. Drain anything still queued and deliver it.
-        val ids = runCatching { graph.transport.fetchPendingRelayIds() }.getOrElse { return Result.retry() }
+        val ids =
+            runCatching { graph.transport.fetchPendingRelayIds() }.getOrElse { return Result.retry() }
         for (id in ids) {
             val envelope = runCatching { graph.transport.fetchRelayMessage(id) }.getOrNull()
             if (envelope != null) channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
@@ -103,22 +107,26 @@ class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
 
     companion object {
         private const val UNIQUE_NAME = "relay-drain"
+
         /** Bound the ack loop so a persistent clear failure can't spin it; the rest carries to next run. */
         private const val MAX_ACK_BATCHES = 40
+
         /** Low frequency by design: the FCM + foreground-WS paths are primary; this only sweeps the tail. */
         private const val INTERVAL_HOURS = 6L
 
         /** Schedule the periodic backstop. Idempotent (KEEP) — safe to call on every app start. */
         fun schedulePeriodic(context: Context) {
-            val request = PeriodicWorkRequestBuilder<RelayDrainWorker>(INTERVAL_HOURS, TimeUnit.HOURS)
-                .setConstraints(
-                    Constraints.Builder()
-                        .setRequiredNetworkType(NetworkType.CONNECTED)
-                        .setRequiresBatteryNotLow(true)
-                        .build()
-                )
-                .build()
-            WorkManager.getInstance(context).enqueueUniquePeriodicWork(UNIQUE_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
+            val request =
+                PeriodicWorkRequestBuilder<RelayDrainWorker>(INTERVAL_HOURS, TimeUnit.HOURS)
+                    .setConstraints(
+                        Constraints.Builder()
+                            .setRequiredNetworkType(NetworkType.CONNECTED)
+                            .setRequiresBatteryNotLow(true)
+                            .build()
+                    )
+                    .build()
+            WorkManager.getInstance(context)
+                .enqueueUniquePeriodicWork(UNIQUE_NAME, ExistingPeriodicWorkPolicy.KEEP, request)
         }
     }
 }

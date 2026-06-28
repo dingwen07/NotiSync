@@ -39,13 +39,18 @@ import kotlin.math.abs
 
 // Tuning for the expand/collapse + predictive-back container transform. Mirrors the values used by
 // the AskMyTimeline "Chat history" overlay this is modelled on.
-private const val BACK_DRAG_SCALE_DELTA = 0.16f          // max peek shrink while dragging back (× the cap below)
-private const val BACK_DRAG_PROGRESS_MULTIPLIER = 0.68f  // cap the live drag short of a full collapse
-private const val BACK_DRAG_TRANSLATION_RATIO = 0.64f    // how far the page slides toward the swipe edge
-private const val BACK_DRAG_VERTICAL_MULTIPLIER = 0.45f  // how much vertical finger travel nudges the page
+private const val BACK_DRAG_SCALE_DELTA =
+    0.16f          // max peek shrink while dragging back (× the cap below)
+private const val BACK_DRAG_PROGRESS_MULTIPLIER =
+    0.68f  // cap the live drag short of a full collapse
+private const val BACK_DRAG_TRANSLATION_RATIO =
+    0.64f    // how far the page slides toward the swipe edge
+private const val BACK_DRAG_VERTICAL_MULTIPLIER =
+    0.45f  // how much vertical finger travel nudges the page
 private const val BACK_DIM_ALPHA = 0.24f                 // scrim opacity behind the expanded page
 private const val BACK_COLLAPSE_MILLIS = 240             // expand + settle-to-button duration
-private const val BACK_CANCEL_MILLIS = 180               // spring-back when a back gesture is abandoned
+private const val BACK_CANCEL_MILLIS =
+    180               // spring-back when a back gesture is abandoned
 private val pairDragMaxOffsetY = 96.dp
 private val pairCollapsedCornerRadius = 28.dp
 private val predictiveBackEasing: Easing = CubicBezierEasing(0.1f, 0.1f, 0f, 1f)
@@ -91,7 +96,10 @@ internal fun PairingOverlay(
         collapseProgress.snapTo(0f)
         collapseProgress.animateTo(
             targetValue = 1f,
-            animationSpec = tween(durationMillis = BACK_COLLAPSE_MILLIS, easing = FastOutSlowInEasing),
+            animationSpec = tween(
+                durationMillis = BACK_COLLAPSE_MILLIS,
+                easing = FastOutSlowInEasing
+            ),
         )
         afterCollapse()
         onClose()
@@ -100,7 +108,10 @@ internal fun PairingOverlay(
     LaunchedEffect(Unit) {
         enterProgress.animateTo(
             targetValue = 1f,
-            animationSpec = tween(durationMillis = BACK_COLLAPSE_MILLIS, easing = FastOutSlowInEasing),
+            animationSpec = tween(
+                durationMillis = BACK_COLLAPSE_MILLIS,
+                easing = FastOutSlowInEasing
+            ),
         )
     }
 
@@ -126,7 +137,10 @@ internal fun PairingOverlay(
             collapseProgress.snapTo(0f)
             dragProgress.animateTo(
                 targetValue = 0f,
-                animationSpec = tween(durationMillis = BACK_CANCEL_MILLIS, easing = FastOutSlowInEasing),
+                animationSpec = tween(
+                    durationMillis = BACK_CANCEL_MILLIS,
+                    easing = FastOutSlowInEasing
+                ),
             )
             firstTouchY = Float.NaN
             currentTouchY = Float.NaN
@@ -146,7 +160,8 @@ internal fun PairingOverlay(
 
     // Live-drag "peek": a subtle uniform shrink + slide while the finger is down — shape-agnostic, so
     // it reads the same regardless of the button it will eventually fold into.
-    val activeTouchDeltaY = if (collapsing) collapseStartTouchDeltaY else touchDeltaY(firstTouchY, currentTouchY)
+    val activeTouchDeltaY =
+        if (collapsing) collapseStartTouchDeltaY else touchDeltaY(firstTouchY, currentTouchY)
     val dragYDirection = when {
         activeTouchDeltaY > 0f -> 1f
         activeTouchDeltaY < 0f -> -1f
@@ -155,7 +170,8 @@ internal fun PairingOverlay(
     val dragYProgress = (abs(activeTouchDeltaY) / height * 2f).coerceIn(0f, 1f)
     val dragScale = 1f - BACK_DRAG_SCALE_DELTA * drag
     val dragX = edgeDirection * width * (1f - dragScale) / 2f * BACK_DRAG_TRANSLATION_RATIO
-    val dragY = dragYDirection * dragMaxOffsetY * dragYProgress * drag * BACK_DRAG_VERTICAL_MULTIPLIER
+    val dragY =
+        dragYDirection * dragMaxOffsetY * dragYProgress * drag * BACK_DRAG_VERTICAL_MULTIPLIER
 
     // Settle target: the page's centre slides onto the button's centre…
     val targetBounds = pairButtonBounds
@@ -171,8 +187,10 @@ internal fun PairingOverlay(
     }
     // …and shrinks to the button's *actual* footprint. Non-uniform (wide, short) is the whole point of
     // the stripe adaptation: matching width and height independently lands the page exactly on the bar.
-    val targetScaleX = if (targetBounds != null) (targetBounds.width / width).coerceIn(0.05f, 1f) else 0.92f
-    val targetScaleY = if (targetBounds != null) (targetBounds.height / height).coerceIn(0.02f, 1f) else 0.08f
+    val targetScaleX =
+        if (targetBounds != null) (targetBounds.width / width).coerceIn(0.05f, 1f) else 0.92f
+    val targetScaleY =
+        if (targetBounds != null) (targetBounds.height / height).coerceIn(0.02f, 1f) else 0.08f
 
     val enterStartX = if (targetBounds != null) targetX else 0f
     val enterStartY = if (targetBounds != null) targetY else 0f

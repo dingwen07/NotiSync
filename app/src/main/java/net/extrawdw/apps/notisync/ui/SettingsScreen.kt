@@ -94,10 +94,16 @@ fun SettingsScreen() {
                 )
             }
             item {
-                ToggleRow(stringResource(R.string.settings_batch_low_priority), batchLow) { scope.launch { graph.settings.setBatchLowPriority(it) } }
+                ToggleRow(
+                    stringResource(R.string.settings_batch_low_priority),
+                    batchLow
+                ) { scope.launch { graph.settings.setBatchLowPriority(it) } }
             }
             item {
-                ToggleRow(stringResource(R.string.settings_advanced_diagnostics), advanced) { scope.launch { graph.settings.setAdvancedDiagnostics(it) } }
+                ToggleRow(
+                    stringResource(R.string.settings_advanced_diagnostics),
+                    advanced
+                ) { scope.launch { graph.settings.setAdvancedDiagnostics(it) } }
             }
             if (advanced) {
                 item {
@@ -124,8 +130,9 @@ fun SettingsScreen() {
                             if (oversizedTest !is OversizedTestState.Sending) {
                                 oversizedTest = OversizedTestState.Sending
                                 scope.launch {
-                                    oversizedTest = runCatching { OversizedTestState.Sent(graph.sendOversizedDiagnostic()) }
-                                        .getOrElse { OversizedTestState.Failed }
+                                    oversizedTest =
+                                        runCatching { OversizedTestState.Sent(graph.sendOversizedDiagnostic()) }
+                                            .getOrElse { OversizedTestState.Failed }
                                 }
                             }
                         },
@@ -198,7 +205,9 @@ private fun SettingsTextField(
 
     OutlinedTextField(
         value = textValue,
-        onValueChange = { textValue = it }, // local edit only — commit happens on focus loss / IME action
+        onValueChange = {
+            textValue = it
+        }, // local edit only — commit happens on focus loss / IME action
         label = label,
         supportingText = supportingText,
         singleLine = true,

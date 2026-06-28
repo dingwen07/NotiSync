@@ -60,7 +60,7 @@ data class ServerConfig(
     val metricsUser: String,
     val metricsPassword: String,
     val signedRequestMaxSkewMillis: Long,
-    /** Leading-hex-zero difficulty required of the /v1/integrity/verify proof of work (0 disables). */
+    /** Leading-hex-zero difficulty required of the /v2/integrity/verify proof of work (0 disables). */
     val powDifficulty: Int,
     val version: String,
 ) {

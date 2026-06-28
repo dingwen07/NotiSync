@@ -44,6 +44,7 @@ internal object IosBundleIdExclusions {
 class IosAppRegistry(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
     private val enabledKey = stringPreferencesKey("ancs_enabled_bundles_json")
     private val discoveredKey = stringPreferencesKey("ancs_discovered_apps_json")
+
     // Start empty and hydrate asynchronously: a blocking DataStore read in the constructor would stall the
     // main thread (this is built in AppGraph.init on every cold start). The bridge takes seconds to connect,
     // so the load lands well before the first notification; the UI just fills in once it arrives.
@@ -65,10 +66,12 @@ class IosAppRegistry(private val store: DataStore<Preferences>, private val scop
                 if (prefs != null) {
                     prefs[enabledKey]?.let { json ->
                         runCatching { ProtocolCodec.decodeFromJson<Set<String>>(json) }.getOrNull()
-                    }?.let { loaded -> _enabled.update { inSession -> loaded + inSession } } // keep any enable that raced in
+                    }
+                        ?.let { loaded -> _enabled.update { inSession -> loaded + inSession } } // keep any enable that raced in
                     prefs[discoveredKey]?.let { json ->
                         runCatching { ProtocolCodec.decodeFromJson<Map<String, IosApp>>(json) }.getOrNull()
-                    }?.let { loaded -> _discovered.update { inSession -> loaded + inSession } } // a recordSeen during load wins
+                    }
+                        ?.let { loaded -> _discovered.update { inSession -> loaded + inSession } } // a recordSeen during load wins
                 }
             } finally {
                 hydrated.complete(Unit) // always release awaiters, even on a failed/cancelled load
@@ -101,7 +104,13 @@ class IosAppRegistry(private val store: DataStore<Preferences>, private val scop
     fun recordSeen(bundleId: String, displayName: String, timeMillis: Long) {
         val existing = _discovered.value[bundleId]
         if (existing != null && timeMillis <= existing.lastSeen && displayName == existing.displayName) return
-        _discovered.update { it + (bundleId to IosApp(bundleId, displayName, maxOf(timeMillis, existing?.lastSeen ?: 0L))) }
+        _discovered.update {
+            it + (bundleId to IosApp(
+                bundleId,
+                displayName,
+                maxOf(timeMillis, existing?.lastSeen ?: 0L)
+            ))
+        }
         // Persist only when the app set or its display name changes — NOT on every lastSeen bump, which would
         // re-serialize the whole (unbounded) map and disk-write on every incoming notification. lastSeen stays
         // live in memory for sort order and is flushed opportunistically with the next new-app / rename write.

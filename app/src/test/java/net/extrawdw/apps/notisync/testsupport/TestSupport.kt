@@ -40,19 +40,32 @@ class CapturingTransport : Transport {
     val sent = mutableListOf<Pair<Envelope, Urgency>>()
     val envelopes: List<Envelope> get() = sent.map { it.first }
     val publishedKeyEpochs = mutableListOf<SignedBlob>()
+
     /** Key-epochs the engine can pull (keyed by clientId then epoch; epoch null ⇒ highest). */
     var keyEpochs: Map<ClientId, Map<Int, SignedBlob>> = emptyMap()
     override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult {
         sent.add(envelope to urgency); return SendResult(accepted = true)
     }
-    override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) { publishedKeyEpochs.add(keyEpoch) }
+
+    override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) {
+        publishedKeyEpochs.add(keyEpoch)
+    }
+
     override suspend fun publishRoutes(routes: List<SignedBlob>) = Unit
     override suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int?): SignedBlob? {
         val byEpoch = keyEpochs[clientId] ?: return null
         return if (epoch != null) byEpoch[epoch] else byEpoch.maxByOrNull { it.key }?.value
     }
-    override suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray) = true
-    override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? = null
+
+    override suspend fun uploadPrivateAsset(
+        sourceClientId: ClientId,
+        assetId: String,
+        ciphertext: ByteArray
+    ) = true
+
+    override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? =
+        null
+
     override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
 }
 
@@ -75,12 +88,16 @@ class FakeTrustState : TrustState {
 
     /** (clientId, epoch) → operational SPKI, for [peerOperationalSpki] resolution in deliver tests. */
     var operationalSpkis: Map<Pair<ClientId, Int>, ByteArray> = emptyMap()
+
     /** clientId → highest epoch we "hold", for [peerEpoch] (drives refetch-on-higher-epoch tests). */
     var peerEpochs: Map<ClientId, Int> = emptyMap()
+
     /** Trusted peer ids returned by [trustedClientIds] (drives the proactive key-epoch convergence pull). */
     var trustedIds: List<ClientId> = emptyList()
+
     /** Peers returned by [peersNeedingKeyEpoch] (missing-or-expired key — drives convergence + refetch). */
     var peersNeeding: List<ClientId> = emptyList()
+
     /** clientId → current key-epoch blob, for [currentKeyEpochBlob] (the repair-relay source). */
     var currentKeyEpochBlobs: Map<ClientId, SignedBlob> = emptyMap()
 
@@ -89,28 +106,50 @@ class FakeTrustState : TrustState {
     val appliedCards = mutableListOf<Pair<ClientId, SignedBlob>>()
     val appliedKeyEpochs = mutableListOf<Pair<ClientId, SignedBlob>>()
 
-    override fun displayName(clientId: ClientId): String? = peers.value.firstOrNull { it.clientId == clientId }?.displayName
+    override fun displayName(clientId: ClientId): String? =
+        peers.value.firstOrNull { it.clientId == clientId }?.displayName
+
     override fun buildTrustTable(): TrustTable = table
     override fun trustedCards(): List<SignedBlob> = cards
     override fun applyProfile(update: ProfileUpdate): Boolean {
         appliedProfiles.add(update)
         // Mutate the roster name like the real store, so a row built from displayName AFTER apply
         // would observe the new name — letting tests pin the capture-before-mutation ordering.
-        if (profileApplies) peers.value = peers.value.map { if (it.clientId == update.clientId) it.copy(displayName = update.displayName) else it }
+        if (profileApplies) peers.value =
+            peers.value.map { if (it.clientId == update.clientId) it.copy(displayName = update.displayName) else it }
         return profileApplies
     }
-    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult { foldedTables.add(sender to table); return incomingResult }
-    override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean { appliedCards.add(clientId to cardBlob); return true }
-    override fun applyKeyEpoch(clientId: ClientId, keyEpochBlob: SignedBlob): Boolean { appliedKeyEpochs.add(clientId to keyEpochBlob); return true }
-    override fun peerOperationalSpki(clientId: ClientId, epoch: Int): ByteArray? = operationalSpkis[clientId to epoch]
+
+    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
+        foldedTables.add(sender to table); return incomingResult
+    }
+
+    override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
+        appliedCards.add(clientId to cardBlob); return true
+    }
+
+    override fun applyKeyEpoch(clientId: ClientId, keyEpochBlob: SignedBlob): Boolean {
+        appliedKeyEpochs.add(clientId to keyEpochBlob); return true
+    }
+
+    override fun peerOperationalSpki(clientId: ClientId, epoch: Int): ByteArray? =
+        operationalSpkis[clientId to epoch]
+
     override fun peerEpoch(clientId: ClientId): Int = peerEpochs[clientId] ?: 0
     override fun trustedClientIds(): List<ClientId> = trustedIds
     override fun peersNeedingKeyEpoch(now: Long): List<ClientId> = peersNeeding
-    override fun currentKeyEpochBlob(clientId: ClientId): SignedBlob? = currentKeyEpochBlobs[clientId]
+    override fun currentKeyEpochBlob(clientId: ClientId): SignedBlob? =
+        currentKeyEpochBlobs[clientId]
+
     override fun selfEpoch(): Int = selfEpochValue
-    override fun advanceSelfEpoch(to: Int): Int { if (to > selfEpochValue) selfEpochValue = to; return selfEpochValue }
+    override fun advanceSelfEpoch(to: Int): Int {
+        if (to > selfEpochValue) selfEpochValue = to; return selfEpochValue
+    }
+
     override fun pendingRotation(): PendingRotation? = pendingRotationValue
-    override fun setPendingRotation(pending: PendingRotation?) { pendingRotationValue = pending }
+    override fun setPendingRotation(pending: PendingRotation?) {
+        pendingRotationValue = pending
+    }
 }
 
 private val enc = Base64.getEncoder()
@@ -151,7 +190,11 @@ fun keyEpochBlob(
     minEpoch: Int = epoch,
     notBefore: Long = 0L,
     notAfter: Long = Long.MAX_VALUE,
-    purposes: List<Purpose> = listOf(Purpose.ENVELOPE_SIGN, Purpose.REQUEST_AUTH, Purpose.HPKE_SEAL),
+    purposes: List<Purpose> = listOf(
+        Purpose.ENVELOPE_SIGN,
+        Purpose.REQUEST_AUTH,
+        Purpose.HPKE_SEAL
+    ),
 ): SignedBlob {
     val ke = ClientKeyEpoch(
         clientId = signer.clientId,
@@ -165,7 +208,12 @@ fun keyEpochBlob(
         minEpoch = minEpoch,
     )
     val payload = ProtocolCodec.encodeToCbor(ke)
-    return SignedBlob(SignedType.KEY_EPOCH, signerId = signer.clientId, payload = payload, sig = signer.sign(payload))
+    return SignedBlob(
+        SignedType.KEY_EPOCH,
+        signerId = signer.clientId,
+        payload = payload,
+        sig = signer.sign(payload)
+    )
 }
 
 /** Seal [body] from [sender]'s IDENTITY key (signerEpoch 0) to a single recipient — one identity-signed send. */
@@ -179,7 +227,15 @@ fun seal(
     seq: Long = 1L,
     createdAt: Long = 1L,
     recipientEpoch: Int = 0,
-): Envelope = EnvelopeCrypto.seal(sender, typ, body, listOf(RecipientKey(recipientId, recipientHpkePublic, recipientEpoch)), messageId, seq, createdAt)
+): Envelope = EnvelopeCrypto.seal(
+    sender,
+    typ,
+    body,
+    listOf(RecipientKey(recipientId, recipientHpkePublic, recipientEpoch)),
+    messageId,
+    seq,
+    createdAt
+)
 
 /** Seal [body] from [sender]'s OPERATIONAL key (signerEpoch ≥1) to a single recipient — the NS2 hot path. */
 fun sealOperational(
@@ -192,7 +248,15 @@ fun sealOperational(
     seq: Long = 1L,
     createdAt: Long = 1L,
     recipientEpoch: Int = 1,
-): Envelope = EnvelopeCrypto.seal(sender, typ, body, listOf(RecipientKey(recipientId, recipientHpkePublic, recipientEpoch)), messageId, seq, createdAt)
+): Envelope = EnvelopeCrypto.seal(
+    sender,
+    typ,
+    body,
+    listOf(RecipientKey(recipientId, recipientHpkePublic, recipientEpoch)),
+    messageId,
+    seq,
+    createdAt
+)
 
 /**
  * Construct a [SecureChannel] for tests with the NS2 dual-signer surface: a software operational signer for

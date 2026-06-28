@@ -76,12 +76,25 @@ object AncsCompanion {
     fun deviceFromPickerResult(intent: Intent?): BluetoothDevice? {
         if (intent == null) return null
         runCatching {
-            intent.getParcelableExtra(CompanionDeviceManager.EXTRA_ASSOCIATION, AssociationInfo::class.java)
+            intent.getParcelableExtra(
+                CompanionDeviceManager.EXTRA_ASSOCIATION,
+                AssociationInfo::class.java
+            )
                 ?.associatedDevice?.bluetoothDevice
         }.getOrNull()?.let { return it }
-        runCatching { intent.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, BluetoothDevice::class.java) }
+        runCatching {
+            intent.getParcelableExtra(
+                CompanionDeviceManager.EXTRA_DEVICE,
+                BluetoothDevice::class.java
+            )
+        }
             .getOrNull()?.let { return it }
-        runCatching { intent.getParcelableExtra(CompanionDeviceManager.EXTRA_DEVICE, ScanResult::class.java)?.device }
+        runCatching {
+            intent.getParcelableExtra(
+                CompanionDeviceManager.EXTRA_DEVICE,
+                ScanResult::class.java
+            )?.device
+        }
             .getOrNull()?.let { return it }
         return null
     }
@@ -106,7 +119,12 @@ object AncsCompanion {
     fun observePresence(context: Context) {
         val cdm = manager(context) ?: return
         runCatching { cdm.myAssociations }.getOrNull()?.forEach { info ->
-            runCatching { observe(cdm, info) }.onFailure { Log.w(TAG, "startObservingDevicePresence failed: ${it.message}") }
+            runCatching { observe(cdm, info) }.onFailure {
+                Log.w(
+                    TAG,
+                    "startObservingDevicePresence failed: ${it.message}"
+                )
+            }
         }
     }
 
@@ -139,5 +157,6 @@ object AncsCompanion {
     }
 
     @Suppress("DEPRECATION")
-    private fun stopObserving(cdm: CompanionDeviceManager, mac: String) = cdm.stopObservingDevicePresence(mac)
+    private fun stopObserving(cdm: CompanionDeviceManager, mac: String) =
+        cdm.stopObservingDevicePresence(mac)
 }

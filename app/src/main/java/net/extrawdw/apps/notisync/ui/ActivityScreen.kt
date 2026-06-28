@@ -38,10 +38,22 @@ fun ActivityScreen() {
 
     NotiScaffold(stringResource(R.string.tab_activity)) { modifier ->
         if (events.isEmpty()) {
-            Column(modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(Icons.Outlined.History, contentDescription = null, modifier = Modifier.size(48.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            Column(
+                modifier.fillMaxSize().padding(24.dp),
+                verticalArrangement = Arrangement.Center,
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Icon(
+                    Icons.Outlined.History,
+                    contentDescription = null,
+                    modifier = Modifier.size(48.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.size(12.dp))
-                Text(stringResource(R.string.activity_empty_title), style = MaterialTheme.typography.titleMedium)
+                Text(
+                    stringResource(R.string.activity_empty_title),
+                    style = MaterialTheme.typography.titleMedium
+                )
                 Text(
                     stringResource(R.string.activity_empty_body),
                     style = MaterialTheme.typography.bodyMedium,
@@ -52,7 +64,15 @@ fun ActivityScreen() {
             LazyColumn(modifier.fillMaxSize()) {
                 items(events) { e ->
                     ListItem(
-                        overlineContent = { Text(stringResource(R.string.activity_event_overline, activityKindLabel(e.kind), fmt.format(Date(e.timestamp)))) },
+                        overlineContent = {
+                            Text(
+                                stringResource(
+                                    R.string.activity_event_overline,
+                                    activityKindLabel(e.kind),
+                                    fmt.format(Date(e.timestamp))
+                                )
+                            )
+                        },
                         headlineContent = { Text(e.title) },
                         supportingContent = { Text(activityDetail(e)) },
                     )
@@ -66,7 +86,11 @@ fun ActivityScreen() {
 @Composable
 private fun activityDetail(event: ActivityEvent): String {
     val mode = event.deliveryMode ?: return event.detail
-    return stringResource(R.string.activity_detail_with_delivery, event.detail, deliveryModeLabel(mode))
+    return stringResource(
+        R.string.activity_detail_with_delivery,
+        event.detail,
+        deliveryModeLabel(mode)
+    )
 }
 
 @Composable

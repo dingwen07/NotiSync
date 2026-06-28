@@ -76,12 +76,23 @@ class AssetManager(
         val freshlyUploaded = ticket != null && now() - ticket.lastUploadedAt < assetTtlMillis
         val assetId = ticket?.assetId ?: AssetAead.generateAssetId()
         val assetKey = ticket?.let { b64d.decode(it.assetKeyB64) } ?: AssetAead.generateAssetKey()
-        val ref = PrivateAssetRef(role, assetHash, mimeType, plaintext.size, sourceClientId, assetId, assetKey)
+        val ref = PrivateAssetRef(
+            role,
+            assetHash,
+            mimeType,
+            plaintext.size,
+            sourceClientId,
+            assetId,
+            assetKey
+        )
 
         if (!freshlyUploaded) {
             val sealed = AssetAead.seal(ref, plaintext)
             if (!transport.uploadPrivateAsset(sourceClientId, assetId, sealed)) return null
-            tickets.put(assetHash, AssetTicket(assetId, b64e.encodeToString(assetKey), role, mimeType, now()))
+            tickets.put(
+                assetHash,
+                AssetTicket(assetId, b64e.encodeToString(assetKey), role, mimeType, now())
+            )
         }
         return ref
     }
@@ -93,7 +104,11 @@ class AssetManager(
             if (cache.has(ref.assetHash)) continue
             val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
             val plaintext = sealed?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
-            if (plaintext == null || !AssetHash.matches(plaintext, ref.assetHash)) { // missing / wrong key / corrupt / substituted
+            if (plaintext == null || !AssetHash.matches(
+                    plaintext,
+                    ref.assetHash
+                )
+            ) { // missing / wrong key / corrupt / substituted
                 stillMissing.add(ref)
                 continue
             }
@@ -107,7 +122,15 @@ class AssetManager(
     override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? {
         val plaintext = cache.read(assetHash) ?: return null
         val ticket = tickets.get(assetHash) ?: return null
-        val ref = PrivateAssetRef(ticket.role, assetHash, ticket.mimeType, plaintext.size, sourceClientId, ticket.assetId, b64d.decode(ticket.assetKeyB64))
+        val ref = PrivateAssetRef(
+            ticket.role,
+            assetHash,
+            ticket.mimeType,
+            plaintext.size,
+            sourceClientId,
+            ticket.assetId,
+            b64d.decode(ticket.assetKeyB64)
+        )
         val sealed = AssetAead.seal(ref, plaintext)
         if (!transport.uploadPrivateAsset(sourceClientId, ticket.assetId, sealed)) return null
         tickets.put(assetHash, ticket.copy(lastUploadedAt = now()))

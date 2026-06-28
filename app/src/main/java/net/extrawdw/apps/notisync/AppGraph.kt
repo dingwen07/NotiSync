@@ -162,12 +162,15 @@ class AppGraph(private val app: Application) {
     /** Resolves recognizable app icons (delivered asset → installed app → iOS bundle-id map). */
     var iconResolver: IconResolver? = null
         private set
+
     /** Per-bundle-id opt-in + discovered iOS apps for the iOS tab. */
     var iosAppRegistry: IosAppRegistry? = null
         private set
+
     /** The ANCS BLE bridge; hosted by [AncsBridgeService] while enabled. */
     var ancsManager: AncsBleManager? = null
         private set
+
     /** Live ANCS connection status + bonded iPhone name for the iOS tab. */
     val iosDeviceRepo = IosDeviceRepository()
 
@@ -219,7 +222,8 @@ class AppGraph(private val app: Application) {
             scope = scope,
         )
         val graphicsExtractor = GraphicsExtractor(app)
-        graphicsPipeline = GraphicsPipeline(NotificationRuleEngine(), graphicsExtractor, assetManager)
+        graphicsPipeline =
+            GraphicsPipeline(NotificationRuleEngine(), graphicsExtractor, assetManager)
         // The generic secure-messaging substrate: seal/sign/dedup/verify/open + per-MessageType routing.
         // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
         val channel = SecureChannel(
@@ -241,7 +245,15 @@ class AppGraph(private val app: Application) {
             },
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
-            onUnresolvedSender = { id -> scope.launch { runCatching { foundationEngine?.onUnresolvedSender(id) } } },
+            onUnresolvedSender = { id ->
+                scope.launch {
+                    runCatching {
+                        foundationEngine?.onUnresolvedSender(
+                            id
+                        )
+                    }
+                }
+            },
         )
         secureChannel = channel
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
@@ -268,7 +280,14 @@ class AppGraph(private val app: Application) {
             clientId = identity.clientId,
             iconResolver = resolver,
             appIconBytes = { pkg -> graphicsExtractor.appIcon(pkg) },
-            uploadAsset = { bytes, role, mime, cid -> assetManager.ensureUploaded(bytes, role, mime, cid) },
+            uploadAsset = { bytes, role, mime, cid ->
+                assetManager.ensureUploaded(
+                    bytes,
+                    role,
+                    mime,
+                    cid
+                )
+            },
             registry = registry,
             deviceRepo = iosDeviceRepo,
             localDisplayEnabled = { settings.ancsLocalDisplay.value },
@@ -310,7 +329,12 @@ class AppGraph(private val app: Application) {
                 identitySpki = identity.publicKeySpki,
                 identitySign = identity::sign,
                 trust = trust,
-                mintOperational = { epoch -> AndroidOperationalSigner.loadOrCreate(identity.clientId, epoch) },
+                mintOperational = { epoch ->
+                    AndroidOperationalSigner.loadOrCreate(
+                        identity.clientId,
+                        epoch
+                    )
+                },
                 mintHpke = { epoch -> epochHpke.loadOrCreate(epoch) },
                 onActivate = { signer, epoch ->
                     // Swap the live signer + advance the epoch counter ONLY. RotationManager.tick() republishes
@@ -343,7 +367,12 @@ class AppGraph(private val app: Application) {
             .onEach { peers ->
                 // Skip pruning while quarantined: activePeers is forced empty then, and we must not nuke
                 // the user's mirrored channels over a freeze that may be Approved back to the same roster.
-                if (!trust.quarantined.value) runCatching { MirrorChannels.gc(app, peers.map { it.clientId.value }.toSet()) }
+                if (!trust.quarantined.value) runCatching {
+                    MirrorChannels.gc(
+                        app,
+                        peers.map { it.clientId.value }.toSet()
+                    )
+                }
             }
             .launchIn(scope)
 
@@ -379,7 +408,10 @@ class AppGraph(private val app: Application) {
         // the boot exemption window; both are idempotent.
         scope.launch { resumeAncsBridgeIfEnabled() }
 
-        Log.i(TAG, "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}")
+        Log.i(
+            TAG,
+            "graph ready clientId=${identity.clientId.shortForm()} backing=${identity.backing}"
+        )
     }
 
     /** Friendly application label for a package, falling back to the package id when not installed. */
@@ -491,7 +523,8 @@ class AppGraph(private val app: Application) {
     fun gcStaleEpochs() {
         if (rotationManager == null || trust.pendingRotation() != null) return
         val live = trust.selfEpoch()
-        AndroidOperationalSigner.retainedEpochs().filter { it < live }.forEach { AndroidOperationalSigner.destroy(it) }
+        AndroidOperationalSigner.retainedEpochs().filter { it < live }
+            .forEach { AndroidOperationalSigner.destroy(it) }
         epochHpke.prune(epochHpke.retainedEpochs().filter { it >= live }.toSet())
     }
 
@@ -507,7 +540,11 @@ class AppGraph(private val app: Application) {
         stopLiveConnection()
         registerFcmRoute()
         scope.launch {
-            if (settings.deviceNameUpdatedAt.value > 0L) runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate()) }
+            if (settings.deviceNameUpdatedAt.value > 0L) runCatching {
+                foundationEngine?.broadcastProfile(
+                    buildProfileUpdate()
+                )
+            }
             runCatching { foundationEngine?.broadcastTrust() }
         }
     }
@@ -557,21 +594,56 @@ class AppGraph(private val app: Application) {
 
     /** Surface a pending trust decision as a local notification: tap opens Devices; add/re-add carry Approve/Reject. */
     private fun onTrustPrompt(clientId: ClientId, prompt: TrustPrompt, byName: String) {
-        if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        if (ContextCompat.checkSelfPermission(
+                app,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return
         runCatching {
             val channelId = "notisync.trust"
             (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
-                NotificationChannel(channelId, app.getString(R.string.trust_channel_name), NotificationManager.IMPORTANCE_DEFAULT),
+                NotificationChannel(
+                    channelId,
+                    app.getString(R.string.trust_channel_name),
+                    NotificationManager.IMPORTANCE_DEFAULT
+                ),
             )
             val subject = trust.displayName(clientId) ?: clientId.shortForm()
             val (title, text) = when (prompt) {
-                TrustPrompt.NEW_TRUST -> app.getString(R.string.trust_new_title) to app.getString(R.string.trust_new_text, byName, subject)
-                TrustPrompt.RE_TRUST -> app.getString(R.string.trust_retrust_title) to app.getString(R.string.trust_retrust_text, byName, subject)
-                TrustPrompt.NEW_REVOKE -> app.getString(R.string.trust_revoke_title) to app.getString(R.string.trust_revoke_text, byName, subject)
-                TrustPrompt.CONFLICT -> app.getString(R.string.trust_conflict_title) to app.getString(R.string.trust_conflict_text, subject)
+                TrustPrompt.NEW_TRUST -> app.getString(R.string.trust_new_title) to app.getString(
+                    R.string.trust_new_text,
+                    byName,
+                    subject
+                )
+
+                TrustPrompt.RE_TRUST -> app.getString(R.string.trust_retrust_title) to app.getString(
+                    R.string.trust_retrust_text,
+                    byName,
+                    subject
+                )
+
+                TrustPrompt.NEW_REVOKE -> app.getString(R.string.trust_revoke_title) to app.getString(
+                    R.string.trust_revoke_text,
+                    byName,
+                    subject
+                )
+
+                TrustPrompt.CONFLICT -> app.getString(R.string.trust_conflict_title) to app.getString(
+                    R.string.trust_conflict_text,
+                    subject
+                )
                 // "Other" devices are already applied — these prompts just keep the user informed.
-                TrustPrompt.OTHER_ADDED -> app.getString(R.string.trust_other_added_title) to app.getString(R.string.trust_other_added_text, byName, subject)
-                TrustPrompt.OTHER_REMOVED -> app.getString(R.string.trust_other_removed_title) to app.getString(R.string.trust_other_removed_text, byName, subject)
+                TrustPrompt.OTHER_ADDED -> app.getString(R.string.trust_other_added_title) to app.getString(
+                    R.string.trust_other_added_text,
+                    byName,
+                    subject
+                )
+
+                TrustPrompt.OTHER_REMOVED -> app.getString(R.string.trust_other_removed_title) to app.getString(
+                    R.string.trust_other_removed_text,
+                    byName,
+                    subject
+                )
             }
             val showFingerprint = prompt == TrustPrompt.NEW_TRUST || prompt == TrustPrompt.RE_TRUST
             // Expanded text carries the safety number so an inline Approve is still a real check, not a blind tap.
@@ -600,13 +672,31 @@ class AppGraph(private val app: Application) {
             // applied "other" change just opens the app (no decision to make).
             when (prompt) {
                 TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST -> {
-                    builder.addAction(0, app.getString(R.string.action_approve), trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId))
-                    builder.addAction(0, app.getString(R.string.action_reject), trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId))
+                    builder.addAction(
+                        0,
+                        app.getString(R.string.action_approve),
+                        trustActionPi(TrustActionReceiver.ACTION_APPROVE, clientId, notifId)
+                    )
+                    builder.addAction(
+                        0,
+                        app.getString(R.string.action_reject),
+                        trustActionPi(TrustActionReceiver.ACTION_REJECT, clientId, notifId)
+                    )
                 }
+
                 TrustPrompt.NEW_REVOKE -> {
-                    builder.addAction(0, app.getString(R.string.action_remove), trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId))
-                    builder.addAction(0, app.getString(R.string.action_keep), trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId))
+                    builder.addAction(
+                        0,
+                        app.getString(R.string.action_remove),
+                        trustActionPi(TrustActionReceiver.ACTION_CONFIRM_REVOKE, clientId, notifId)
+                    )
+                    builder.addAction(
+                        0,
+                        app.getString(R.string.action_keep),
+                        trustActionPi(TrustActionReceiver.ACTION_KEEP, clientId, notifId)
+                    )
                 }
+
                 TrustPrompt.CONFLICT, TrustPrompt.OTHER_ADDED, TrustPrompt.OTHER_REMOVED -> Unit
             }
             NotificationManagerCompat.from(app).notify(notifId, builder.build())
@@ -631,11 +721,19 @@ class AppGraph(private val app: Application) {
      * notification actions, since a stray tap must not bless or erase trust.
      */
     private fun postTamperAlert() {
-        if (ContextCompat.checkSelfPermission(app, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) return
+        if (ContextCompat.checkSelfPermission(
+                app,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) return
         runCatching {
             val channelId = "notisync.security"
             (app.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).createNotificationChannel(
-                NotificationChannel(channelId, app.getString(R.string.security_channel_name), NotificationManager.IMPORTANCE_HIGH),
+                NotificationChannel(
+                    channelId,
+                    app.getString(R.string.security_channel_name),
+                    NotificationManager.IMPORTANCE_HIGH
+                ),
             )
             val open = PendingIntent.getActivity(
                 app, TAMPER_NOTIF_ID,
@@ -649,7 +747,10 @@ class AppGraph(private val app: Application) {
                 .setSmallIcon(android.R.drawable.stat_sys_warning)
                 .setContentTitle(app.getString(R.string.tamper_alert_title))
                 .setContentText(app.getString(R.string.tamper_alert_text))
-                .setStyle(NotificationCompat.BigTextStyle().bigText(app.getString(R.string.tamper_alert_text)))
+                .setStyle(
+                    NotificationCompat.BigTextStyle()
+                        .bigText(app.getString(R.string.tamper_alert_text))
+                )
                 .setCategory(NotificationCompat.CATEGORY_ERROR)
                 .setContentIntent(open)
                 .setAutoCancel(false)
@@ -689,7 +790,12 @@ class AppGraph(private val app: Application) {
             createdAt = System.currentTimeMillis(),
         )
         val payload = ProtocolCodec.encodeToCbor(card)
-        return SignedBlob(SignedType.CLIENT_CARD, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+        return SignedBlob(
+            SignedType.CLIENT_CARD,
+            signerId = identity.clientId,
+            payload = payload,
+            sig = identity.sign(payload)
+        )
     }
 
     /**
@@ -723,7 +829,12 @@ class AppGraph(private val app: Application) {
             minEpoch = minEpoch,
         )
         val payload = ProtocolCodec.encodeToCbor(keyEpoch)
-        return SignedBlob(SignedType.KEY_EPOCH, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+        return SignedBlob(
+            SignedType.KEY_EPOCH,
+            signerId = identity.clientId,
+            payload = payload,
+            sig = identity.sign(payload)
+        )
     }
 
     /** This device's current mutable profile, stamped with when the name last changed (no key material). */
@@ -766,7 +877,12 @@ class AppGraph(private val app: Application) {
             issuedAt = System.currentTimeMillis(),
         )
         val payload = ProtocolCodec.encodeToCbor(claim)
-        return SignedBlob(SignedType.ROUTE_CLAIM, signerId = identity.clientId, payload = payload, sig = identity.sign(payload))
+        return SignedBlob(
+            SignedType.ROUTE_CLAIM,
+            signerId = identity.clientId,
+            payload = payload,
+            sig = identity.sign(payload)
+        )
     }
 
     /**
@@ -857,8 +973,9 @@ class AppGraph(private val app: Application) {
     suspend fun sendOversizedDiagnostic(): Int {
         val mirror = mirrorEngine ?: return 0
         // ~8 KB of body text: comfortably past the 3 KB base64 inline budget once sealed + encoded.
-        val filler = "NotiSync oversized diagnostic — this payload is deliberately too large to inline in " +
-            "an FCM data message, so the receiver must pull it from the broker relay over the wake path. "
+        val filler =
+            "NotiSync oversized diagnostic — this payload is deliberately too large to inline in " +
+                    "an FCM data message, so the receiver must pull it from the broker relay over the wake path. "
         val bigText = buildString { while (length < 8_000) append(filler) }
         val notif = CapturedNotification(
             sourceClientId = identity.clientId,

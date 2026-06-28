@@ -18,8 +18,10 @@ import kotlinx.serialization.json.Json
 sealed interface IconFetchResult {
     /** The icon bytes (a compact WebP). Not a data class: it holds a ByteArray (referential equality). */
     class Found(val bytes: ByteArray) : IconFetchResult
+
     /** Every storefront answered successfully, none had the app — a durable miss, safe to negative-cache. */
     data object NotFound : IconFetchResult
+
     /** A network/timeout/server error prevented a definitive answer — do not cache; retry later. */
     data object TransientError : IconFetchResult
 }
@@ -91,20 +93,25 @@ class AppStoreIconClient(
 
         // The trailing artwork transform segment, e.g. `/512x512bb.jpg` — Apple's CDN re-renders to whatever
         // size/format we substitute here, including `.webp`.
-        private val ARTWORK_SUFFIX = Regex("""/\d+x\d+[a-z]*\.(?:jpg|jpeg|png|webp)$""", RegexOption.IGNORE_CASE)
+        private val ARTWORK_SUFFIX =
+            Regex("""/\d+x\d+[a-z]*\.(?:jpg|jpeg|png|webp)$""", RegexOption.IGNORE_CASE)
 
         fun lookupUrl(bundleId: String, country: String): String =
             "https://itunes.apple.com/lookup?bundleId=$bundleId&country=$country&entity=software"
 
         /** Highest-res artwork URL in a lookup body, or null for an empty/!malformed result (no store entry). */
         fun parseArtworkUrl(body: String): String? {
-            val app = runCatching { json.decodeFromString<Lookup>(body) }.getOrNull()?.results?.firstOrNull()
+            val app =
+                runCatching { json.decodeFromString<Lookup>(body) }.getOrNull()?.results?.firstOrNull()
             return app?.artworkUrl512 ?: app?.artworkUrl100 ?: app?.artworkUrl60
         }
 
         /** Rewrite the size/format suffix to pull a square WebP at [sizePx]; pass non-templated URLs through. */
         fun toWebpUrl(artworkUrl: String, sizePx: Int): String =
-            if (ARTWORK_SUFFIX.containsMatchIn(artworkUrl)) ARTWORK_SUFFIX.replace(artworkUrl, "/${sizePx}x${sizePx}bb.webp")
+            if (ARTWORK_SUFFIX.containsMatchIn(artworkUrl)) ARTWORK_SUFFIX.replace(
+                artworkUrl,
+                "/${sizePx}x${sizePx}bb.webp"
+            )
             else artworkUrl
 
         private fun defaultClient(): HttpClient = HttpClient(OkHttp) {

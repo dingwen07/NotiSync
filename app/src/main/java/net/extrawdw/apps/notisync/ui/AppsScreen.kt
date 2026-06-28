@@ -85,6 +85,7 @@ internal class AppsViewModel(app: Application) : AndroidViewModel(app) {
 
     // null = still loading the launchable set; a (possibly empty) list = loaded.
     private val launchable = MutableStateFlow<List<InstalledApp>?>(null)
+
     // Resolved entries for seen packages absent from the launchable set, cached so each resolves once.
     private val seenOnly = MutableStateFlow<Map<String, InstalledApp>>(emptyMap())
 
@@ -111,7 +112,8 @@ internal class AppsViewModel(app: Application) : AndroidViewModel(app) {
                     val missing = seen.keys.filter { it !in known }
                     if (missing.isEmpty()) return@collect
                     val pm = getApplication<Application>().packageManager
-                    val resolved = withContext(Dispatchers.IO) { missing.associateWith { resolveApp(pm, it) } }
+                    val resolved =
+                        withContext(Dispatchers.IO) { missing.associateWith { resolveApp(pm, it) } }
                     seenOnly.value = seenOnly.value + resolved
                 }
             }
@@ -134,7 +136,9 @@ private fun loadLaunchableApps(context: Context): List<InstalledApp> {
             InstalledApp(
                 packageName = info.packageName,
                 label = pm.getApplicationLabel(info).toString(),
-                icon = runCatching { pm.getApplicationIcon(info).toImageBitmap(ICON_PX) }.getOrNull(),
+                icon = runCatching {
+                    pm.getApplicationIcon(info).toImageBitmap(ICON_PX)
+                }.getOrNull(),
             )
         }
         .toList()
@@ -184,11 +188,15 @@ fun AppsScreen() {
 
     fun norm(s: String) = s.lowercase(Locale.getDefault())
     val q = norm(query.trim())
-    fun matches(a: InstalledApp) = q.isEmpty() || norm(a.label).contains(q) || norm(a.packageName).contains(q)
+    fun matches(a: InstalledApp) =
+        q.isEmpty() || norm(a.label).contains(q) || norm(a.packageName).contains(q)
 
-    val enabledApps = apps.filter { it.packageName in enabled && matches(it) }.sortedBy { norm(it.label) }
+    val enabledApps =
+        apps.filter { it.packageName in enabled && matches(it) }.sortedBy { norm(it.label) }
     val otherApps = apps.filter { it.packageName !in enabled && matches(it) }
-        .sortedWith(compareByDescending<InstalledApp> { lastSeen[it.packageName] ?: 0L }.thenBy { norm(it.label) })
+        .sortedWith(compareByDescending<InstalledApp> {
+            lastSeen[it.packageName] ?: 0L
+        }.thenBy { norm(it.label) })
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
     NotiScaffold(stringResource(R.string.tab_apps)) { modifier ->
@@ -200,7 +208,12 @@ fun AppsScreen() {
                 leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
                 trailingIcon = {
                     if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) { Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.apps_clear_search)) }
+                        IconButton(onClick = { query = "" }) {
+                            Icon(
+                                Icons.Outlined.Close,
+                                contentDescription = stringResource(R.string.apps_clear_search)
+                            )
+                        }
                     }
                 },
                 singleLine = true,
@@ -213,21 +226,60 @@ fun AppsScreen() {
                     .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp),
             )
             when {
-                loading -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator() }
-                enabledApps.isEmpty() && otherApps.isEmpty() -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                loading -> Box(
+                    Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) { CircularProgressIndicator() }
+
+                enabledApps.isEmpty() && otherApps.isEmpty() -> Box(
+                    Modifier.fillMaxSize(),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        if (q.isEmpty()) stringResource(R.string.apps_empty) else stringResource(R.string.apps_no_match, query),
+                        if (q.isEmpty()) stringResource(R.string.apps_empty) else stringResource(
+                            R.string.apps_no_match,
+                            query
+                        ),
                         style = MaterialTheme.typography.bodyMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
+
                 else -> LazyColumn(Modifier.fillMaxSize()) {
                     if (enabledApps.isNotEmpty()) {
-                        stickyHeader(key = "header:mirroring") { SectionHeader(stringResource(R.string.apps_section_mirroring), enabledApps.size) }
-                        items(enabledApps, key = { "on:${it.packageName}" }) { AppRow(it, true, lastSeen[it.packageName], fmt, selection) }
+                        stickyHeader(key = "header:mirroring") {
+                            SectionHeader(
+                                stringResource(R.string.apps_section_mirroring),
+                                enabledApps.size
+                            )
+                        }
+                        items(enabledApps, key = { "on:${it.packageName}" }) {
+                            AppRow(
+                                it,
+                                true,
+                                lastSeen[it.packageName],
+                                fmt,
+                                selection
+                            )
+                        }
                     }
-                    stickyHeader(key = "header:all") { SectionHeader(if (q.isEmpty()) stringResource(R.string.apps_section_all) else stringResource(R.string.apps_section_other_results), otherApps.size) }
-                    items(otherApps, key = { "off:${it.packageName}" }) { AppRow(it, false, lastSeen[it.packageName], fmt, selection) }
+                    stickyHeader(key = "header:all") {
+                        SectionHeader(
+                            if (q.isEmpty()) stringResource(
+                                R.string.apps_section_all
+                            ) else stringResource(R.string.apps_section_other_results),
+                            otherApps.size
+                        )
+                    }
+                    items(otherApps, key = { "off:${it.packageName}" }) {
+                        AppRow(
+                            it,
+                            false,
+                            lastSeen[it.packageName],
+                            fmt,
+                            selection
+                        )
+                    }
                 }
             }
         }
@@ -250,20 +302,31 @@ private fun SectionHeader(title: String, count: Int) {
 }
 
 @Composable
-private fun AppRow(app: InstalledApp, isOn: Boolean, lastSeen: Long?, fmt: SimpleDateFormat, selection: net.extrawdw.apps.notisync.data.AppSelectionRepository) {
+private fun AppRow(
+    app: InstalledApp,
+    isOn: Boolean,
+    lastSeen: Long?,
+    fmt: SimpleDateFormat,
+    selection: net.extrawdw.apps.notisync.data.AppSelectionRepository
+) {
     ListItem(
         modifier = Modifier.clickable { selection.setEnabled(app.packageName, !isOn) },
         leadingContent = { AppIcon(app.icon) },
         headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
-                if (lastSeen != null) stringResource(R.string.apps_last_notification, fmt.format(Date(lastSeen))) else app.packageName,
+                if (lastSeen != null) stringResource(
+                    R.string.apps_last_notification,
+                    fmt.format(Date(lastSeen))
+                ) else app.packageName,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
             )
         },
         trailingContent = {
-            Switch(checked = isOn, onCheckedChange = { on -> selection.setEnabled(app.packageName, on) })
+            Switch(
+                checked = isOn,
+                onCheckedChange = { on -> selection.setEnabled(app.packageName, on) })
         },
     )
 }
@@ -271,9 +334,16 @@ private fun AppRow(app: InstalledApp, isOn: Boolean, lastSeen: Long?, fmt: Simpl
 @Composable
 private fun AppIcon(icon: ImageBitmap?) {
     if (icon != null) {
-        Image(bitmap = icon, contentDescription = null, modifier = Modifier.size(40.dp).clip(CircleShape))
+        Image(
+            bitmap = icon,
+            contentDescription = null,
+            modifier = Modifier.size(40.dp).clip(CircleShape)
+        )
     } else {
-        Box(Modifier.size(40.dp).clip(CircleShape).background(MaterialTheme.colorScheme.surfaceVariant))
+        Box(
+            Modifier.size(40.dp).clip(CircleShape)
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+        )
     }
 }
 

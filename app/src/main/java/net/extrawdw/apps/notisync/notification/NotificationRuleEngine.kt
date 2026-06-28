@@ -39,9 +39,10 @@ private interface NotificationRule {
 private object WeChatRule : NotificationRule {
     override fun matches(notif: CapturedNotification): Boolean =
         notif.packageName == "com.tencent.mm" &&
-            (notif.isConversation || notif.category == MirrorCategory.MESSAGE)
+                (notif.isConversation || notif.category == MirrorCategory.MESSAGE)
 
-    override fun apply(base: GraphicsPlan): GraphicsPlan = base.copy(largeIcon = LargeIconHandling.AS_AVATAR)
+    override fun apply(base: GraphicsPlan): GraphicsPlan =
+        base.copy(largeIcon = LargeIconHandling.AS_AVATAR)
 }
 
 /**
@@ -53,7 +54,8 @@ class NotificationRuleEngine {
     private val rules = listOf(WeChatRule)
 
     fun plan(notif: CapturedNotification): GraphicsPlan {
-        val base = GraphicsPlan(LargeIconHandling.MIRROR, GraphicsSlot.PRIVATE, GraphicsSlot.PRIVATE)
+        val base =
+            GraphicsPlan(LargeIconHandling.MIRROR, GraphicsSlot.PRIVATE, GraphicsSlot.PRIVATE)
         return rules.firstOrNull { it.matches(notif) }?.apply(base) ?: base
     }
 }

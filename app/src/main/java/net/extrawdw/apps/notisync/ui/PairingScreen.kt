@@ -88,7 +88,9 @@ fun PairingScreen(
             withContext(Dispatchers.Default) { pairing.inspect(content) }
                 .fold(
                     onSuccess = { pendingCandidate = it },
-                    onFailure = { result = resources.getString(R.string.pair_could_not_pair, it.message) },
+                    onFailure = {
+                        result = resources.getString(R.string.pair_could_not_pair, it.message)
+                    },
                 )
             inspecting = false
         }
@@ -116,7 +118,9 @@ fun PairingScreen(
         withContext(Dispatchers.Default) { pairing.inspect(payload) }
             .fold(
                 onSuccess = { pendingCandidate = it },
-                onFailure = { result = resources.getString(R.string.pair_could_not_open_link, it.message) },
+                onFailure = {
+                    result = resources.getString(R.string.pair_could_not_open_link, it.message)
+                },
             )
         inspecting = false
         onInitialPairingPayloadConsumed()
@@ -165,11 +169,19 @@ fun PairingScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.pair_a_device)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = stringResource(R.string.action_back)) }
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            Icons.AutoMirrored.Filled.ArrowBack,
+                            contentDescription = stringResource(R.string.action_back)
+                        )
+                    }
                 },
                 actions = {
                     IconButton(onClick = ::sharePairingUrl, enabled = pairingUrl != null) {
-                        Icon(Icons.Outlined.Share, contentDescription = stringResource(R.string.pair_share_title))
+                        Icon(
+                            Icons.Outlined.Share,
+                            contentDescription = stringResource(R.string.pair_share_title)
+                        )
                     }
                 },
             )
@@ -199,6 +211,7 @@ fun PairingScreen(
                         CircularProgressIndicator()
                     }
                 }
+
                 is PairingCodeState.Ready -> {
                     Image(
                         bitmap = state.bitmap.asImageBitmap(),
@@ -207,6 +220,7 @@ fun PairingScreen(
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
                     )
                 }
+
                 is PairingCodeState.Error -> {
                     Box(
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(24.dp),
@@ -220,7 +234,10 @@ fun PairingScreen(
                     }
                 }
             }
-            Text(stringResource(R.string.pair_verification_number, graph.identity.clientId.value), style = MaterialTheme.typography.bodySmall)
+            Text(
+                stringResource(R.string.pair_verification_number, graph.identity.clientId.value),
+                style = MaterialTheme.typography.bodySmall
+            )
 
             Button(
                 onClick = {
@@ -250,9 +267,16 @@ fun PairingScreen(
                 enabled = !scanning && !inspecting,
             ) {
                 if (scanning || inspecting) {
-                    CircularProgressIndicator(modifier = Modifier.size(ButtonDefaults.IconSize), strokeWidth = 2.dp)
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                        strokeWidth = 2.dp
+                    )
                 } else {
-                    Icon(Icons.Outlined.QrCodeScanner, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Icon(
+                        Icons.Outlined.QrCodeScanner,
+                        contentDescription = null,
+                        modifier = Modifier.size(ButtonDefaults.IconSize)
+                    )
                 }
                 Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                 Text(
@@ -266,7 +290,11 @@ fun PairingScreen(
 
             result?.let { message ->
                 Card(Modifier.fillMaxWidth()) {
-                    Text(message, style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(16.dp))
+                    Text(
+                        message,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             }
         }
@@ -307,7 +335,10 @@ private fun TrustDeviceDialog(
                     )
                     DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)
                     DeviceInfo(stringResource(R.string.pair_field_platform), candidate.platform)
-                    DeviceInfo(stringResource(R.string.pair_field_verification_number), candidate.safetyNumber)
+                    DeviceInfo(
+                        stringResource(R.string.pair_field_verification_number),
+                        candidate.safetyNumber
+                    )
                     DeviceInfo(
                         stringResource(R.string.pair_field_identity_key),
                         candidate.identityKeyFingerprint,
@@ -324,6 +355,7 @@ private fun TrustDeviceDialog(
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+
                         KeyEpochStatus.INVALID -> Text(
                             stringResource(R.string.pair_keys_invalid),
                             style = MaterialTheme.typography.bodySmall,

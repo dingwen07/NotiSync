@@ -127,15 +127,28 @@ class MainActivity : ComponentActivity() {
 
 /** Type-safe (serializable) navigation routes — the single source of truth for the back stack. */
 private sealed interface Route {
-    @Serializable data object Devices : Route
-    @Serializable data object Apps : Route
-    @Serializable data object Ios : Route
-    @Serializable data object Activity : Route
-    @Serializable data object Settings : Route
+    @Serializable
+    data object Devices : Route
+
+    @Serializable
+    data object Apps : Route
+
+    @Serializable
+    data object Ios : Route
+
+    @Serializable
+    data object Activity : Route
+
+    @Serializable
+    data object Settings : Route
 }
 
 /** The navigation-suite (bottom bar / rail / drawer) destinations, in display order. */
-private enum class TopLevelDestination(val route: Route, @param:StringRes val label: Int, val icon: ImageVector) {
+private enum class TopLevelDestination(
+    val route: Route,
+    @param:StringRes val label: Int,
+    val icon: ImageVector
+) {
     DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
     APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
     IOS(Route.Ios, R.string.tab_ios, Icons.Outlined.PhoneIphone),
@@ -184,7 +197,9 @@ fun NotiSyncRoot(
 
     Box(modifier = Modifier.fillMaxSize()) {
         NavigationSuiteScaffold(
-            layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(currentWindowAdaptiveInfo()),
+            layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(
+                currentWindowAdaptiveInfo()
+            ),
             navigationSuiteItems = {
                 TopLevelDestination.entries.forEach { dest ->
                     item(
@@ -239,9 +254,14 @@ fun NotiSyncRoot(
 
 @Composable
 private fun TopLevelNavIcon(dest: TopLevelDestination) {
-    val glyphSize = if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
+    val glyphSize =
+        if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
     Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
-        Icon(dest.icon, contentDescription = stringResource(dest.label), modifier = Modifier.size(glyphSize))
+        Icon(
+            dest.icon,
+            contentDescription = stringResource(dest.label),
+            modifier = Modifier.size(glyphSize)
+        )
     }
 }
 
@@ -299,8 +319,13 @@ private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier 
 }
 
 private fun readPermissions(context: Context): PermissionState {
-    val listenerEnabled = NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
-    val postGranted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
-        android.content.pm.PackageManager.PERMISSION_GRANTED
-    return PermissionState(listenerEnabled = listenerEnabled, postNotificationsGranted = postGranted)
+    val listenerEnabled =
+        NotificationManagerCompat.getEnabledListenerPackages(context).contains(context.packageName)
+    val postGranted =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) ==
+                android.content.pm.PackageManager.PERMISSION_GRANTED
+    return PermissionState(
+        listenerEnabled = listenerEnabled,
+        postNotificationsGranted = postGranted
+    )
 }

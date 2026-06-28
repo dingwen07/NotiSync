@@ -127,10 +127,14 @@ class TrustStore(
 ) : TrustState {
     private val selfId: ClientId = identity.clientId
     private val entriesKey = stringPreferencesKey("trust_entries_json")
-    private val cardsKey = stringPreferencesKey("trust_cards_json")     // clientId -> base64(CBOR(SignedBlob))
-    private val overlaysKey = stringPreferencesKey("trust_overlays_json") // clientId -> ProfileOverlay
-    private val epochsKey = stringPreferencesKey("trust_epochs_json")   // EpochSection: self counter + per-peer ring+floor
-    private val sigKey = stringPreferencesKey("trust_sig")              // identity signature over the four sections above
+    private val cardsKey =
+        stringPreferencesKey("trust_cards_json")     // clientId -> base64(CBOR(SignedBlob))
+    private val overlaysKey =
+        stringPreferencesKey("trust_overlays_json") // clientId -> ProfileOverlay
+    private val epochsKey =
+        stringPreferencesKey("trust_epochs_json")   // EpochSection: self counter + per-peer ring+floor
+    private val sigKey =
+        stringPreferencesKey("trust_sig")              // identity signature over the four sections above
 
     private data class State(
         val entries: Map<ClientId, TrustEntry>,
@@ -160,7 +164,8 @@ class TrustStore(
 
     // Exposed views are directly-updated StateFlows (refreshed in mutate), so a UI state change
     // recomposes synchronously on the action's thread — no derived-flow round trip.
-    private val _activePeers = MutableStateFlow(if (loaded.quarantined) emptyList<Peer>() else computeActivePeers(loaded.state))
+    private val _activePeers =
+        MutableStateFlow(if (loaded.quarantined) emptyList<Peer>() else computeActivePeers(loaded.state))
     private val _roster = MutableStateFlow(computeRoster(loaded.state))
 
     /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. Forced empty while [quarantined]. */
@@ -182,7 +187,11 @@ class TrustStore(
         mutate { st ->
             st.copy(
                 cards = putCard(st.cards, card.clientId, cardBlob),
-                entries = st.entries + (card.clientId to TrustMachine.localAdd(card.clientId, now, ownDevice)),
+                entries = st.entries + (card.clientId to TrustMachine.localAdd(
+                    card.clientId,
+                    now,
+                    ownDevice
+                )),
             )
         }
         return true
@@ -193,7 +202,13 @@ class TrustStore(
         // Keep the device's own/other classification on its tombstone — a revoke must never reclassify it.
         mutate { st ->
             val ownDevice = st.entries[clientId]?.ownDevice ?: true
-            st.copy(entries = st.entries + (clientId to TrustMachine.localRevoke(clientId, now, ownDevice)))
+            st.copy(
+                entries = st.entries + (clientId to TrustMachine.localRevoke(
+                    clientId,
+                    now,
+                    ownDevice
+                ))
+            )
         }
         return true // overturn/own-decision -> broadcast now
     }
@@ -223,24 +238,31 @@ class TrustStore(
     }
 
     /** Approve a PENDING_TRUST. Silent (anti-entropy carries it). */
-    fun approveTrust(clientId: ClientId, now: Long): Boolean = transition(clientId, now, broadcast = false) {
-        if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.approveTrust(it, now) else null
-    }
+    fun approveTrust(clientId: ClientId, now: Long): Boolean =
+        transition(clientId, now, broadcast = false) {
+            if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.approveTrust(it, now) else null
+        }
 
     /** Reject a PENDING_TRUST -> REVOKED. Overturn -> broadcast. */
-    fun rejectTrust(clientId: ClientId, now: Long): Boolean = transition(clientId, now, broadcast = true) {
-        if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.rejectTrust(it, now) else null
-    }
+    fun rejectTrust(clientId: ClientId, now: Long): Boolean =
+        transition(clientId, now, broadcast = true) {
+            if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.rejectTrust(it, now) else null
+        }
 
     /** Confirm a PENDING_REVOKE -> REVOKED. Silent. */
-    fun confirmRevoke(clientId: ClientId, now: Long): Boolean = transition(clientId, now, broadcast = false) {
-        if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.confirmRevoke(it, now) else null
-    }
+    fun confirmRevoke(clientId: ClientId, now: Long): Boolean =
+        transition(clientId, now, broadcast = false) {
+            if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.confirmRevoke(
+                it,
+                now
+            ) else null
+        }
 
     /** Reject a PENDING_REVOKE (keep the device) -> TRUSTED. Overturn -> broadcast. */
-    fun keepTrusted(clientId: ClientId, now: Long): Boolean = transition(clientId, now, broadcast = true) {
-        if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.keepTrusted(it, now) else null
-    }
+    fun keepTrusted(clientId: ClientId, now: Long): Boolean =
+        transition(clientId, now, broadcast = true) {
+            if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.keepTrusted(it, now) else null
+        }
 
     // ---- tamper quarantine (recover from a roster that fails its identity signature) ----
 
@@ -286,7 +308,11 @@ class TrustStore(
 
     /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
     override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
-        if (_quarantined.value) return IncomingTrustResult(emptyList(), emptyList(), needsBroadcast = false)
+        if (_quarantined.value) return IncomingTrustResult(
+            emptyList(),
+            emptyList(),
+            needsBroadcast = false
+        )
         val prompts = mutableListOf<Pair<ClientId, TrustPrompt>>()
         val offers = mutableListOf<SignedBlob>()
         val keyEpochOffers = mutableListOf<SignedBlob>()
@@ -312,12 +338,17 @@ class TrustStore(
                 }
                 // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender
                 // lacks it — for own AND other trusted devices, since both now propagate within the mesh.
-                val mine = entries[wire.clientId] // running accumulator, consistent with the fold above
+                val mine =
+                    entries[wire.clientId] // running accumulator, consistent with the fold above
                 if (mine?.status == TrustStatus.TRUSTED) {
                     if (!wire.keyAvailable) st.cards[wire.clientId]?.let { offers += it }
                     // NS2 key-epoch repair: if the sender's advertised epoch for this trusted device is BEHIND
                     // what we hold (incl. epoch 0 = none), relay our current key-epoch so it becomes reachable.
-                    if (wire.epoch < peerEpochOf(wire.clientId, st)) currentKeyEpochBlobOf(wire.clientId, st)?.let { keyEpochOffers += it }
+                    if (wire.epoch < peerEpochOf(
+                            wire.clientId,
+                            st
+                        )
+                    ) currentKeyEpochBlobOf(wire.clientId, st)?.let { keyEpochOffers += it }
                 }
             }
             st.copy(entries = entries)
@@ -342,7 +373,8 @@ class TrustStore(
     /** Cards we hold for every trusted device (own + other) — pushed alongside the roster (to our own
      *  devices only) so a peer can name a still-pending device or repair a keyless one. */
     override fun trustedCards(): List<SignedBlob> = _state.value.let { st ->
-        st.entries.values.filter { it.status == TrustStatus.TRUSTED }.mapNotNull { st.cards[it.clientId] }
+        st.entries.values.filter { it.status == TrustStatus.TRUSTED }
+            .mapNotNull { st.cards[it.clientId] }
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
@@ -350,13 +382,17 @@ class TrustStore(
         if (_quarantined.value) return false
         val st = _state.value
         if (st.entries[update.clientId]?.status != TrustStatus.TRUSTED) return false // only trusted devices' profiles converge
-        val card = st.cards[update.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() } ?: return false
+        val card =
+            st.cards[update.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }
+                ?: return false
         val floor = st.overlays[update.clientId]?.updatedAt ?: card.createdAt
         if (update.updatedAt <= floor) return false
         mutate {
-            it.copy(overlays = it.overlays + (update.clientId to ProfileOverlay(
-                update.displayName, update.platform, update.capabilities, update.updatedAt,
-            )))
+            it.copy(
+                overlays = it.overlays + (update.clientId to ProfileOverlay(
+                    update.displayName, update.platform, update.capabilities, update.updatedAt,
+                ))
+            )
         }
         return true
     }
@@ -374,7 +410,16 @@ class TrustStore(
                 .filter { it.clientId != selfId }
                 // keyAvailable stays card-based (the existing keyless-repair signal); the NS2 [epoch] column
                 // advertises the highest key-epoch we hold so a peer refetches when it sees a higher one.
-                .map { TrustTableEntry(it.clientId, it.status, it.updatedAt, keyAvailable = st.cards.containsKey(it.clientId), ownDevice = it.ownDevice, epoch = peerEpochOf(it.clientId, st)) },
+                .map {
+                    TrustTableEntry(
+                        it.clientId,
+                        it.status,
+                        it.updatedAt,
+                        keyAvailable = st.cards.containsKey(it.clientId),
+                        ownDevice = it.ownDevice,
+                        epoch = peerEpochOf(it.clientId, st)
+                    )
+                },
         )
     }
 
@@ -387,12 +432,16 @@ class TrustStore(
         val floor = existing?.floor ?: 0
         // Verify standalone and pin the identity anchor first-verified-wins (rejects any key swap): the pin
         // is the card's identity if held, else the newest ring entry's identity, else this blob bootstraps it.
-        val ke = KeyEpochs.verify(keyEpochBlob, pinnedIdentitySpki = pinnedIdentityOf(clientId, st)) ?: return false
+        val ke = KeyEpochs.verify(keyEpochBlob, pinnedIdentitySpki = pinnedIdentityOf(clientId, st))
+            ?: return false
         if (ke.clientId != clientId) return false
         if (ke.epoch < floor) return false        // rollback: an epoch below the floor is a retired/superseded key
         if (ke.minEpoch < floor) return false      // a replayed bundle must not assert a stale minEpoch to drag the floor down
         val newFloor = maxOf(floor, ke.minEpoch)
-        val next = PeerEpochs(mergeRing(existing?.ringB64.orEmpty(), keyEpochBlob, ke.epoch, newFloor), newFloor)
+        val next = PeerEpochs(
+            mergeRing(existing?.ringB64.orEmpty(), keyEpochBlob, ke.epoch, newFloor),
+            newFloor
+        )
         if (existing == next) return false          // idempotent re-apply of an already-held epoch
         mutate { it.copy(epochs = it.epochs.copy(peers = it.epochs.peers + (clientId.value to next))) }
         return true
@@ -409,7 +458,8 @@ class TrustStore(
     override fun peerEpoch(clientId: ClientId): Int = peerEpochOf(clientId, _state.value)
 
     override fun trustedClientIds(): List<ClientId> =
-        _state.value.entries.values.filter { it.status == TrustStatus.TRUSTED && it.clientId != selfId }.map { it.clientId }
+        _state.value.entries.values.filter { it.status == TrustStatus.TRUSTED && it.clientId != selfId }
+            .map { it.clientId }
 
     override fun peersNeedingKeyEpoch(now: Long): List<ClientId> {
         val st = _state.value
@@ -417,11 +467,18 @@ class TrustStore(
             .filter { it.status == TrustStatus.TRUSTED && it.clientId != selfId }
             // Refetch when the current key-epoch is missing, expired, OR stripped (a pairing-QR copy with no
             // identity anchor) — the last upgrades it to the full self-contained copy so it becomes relayable.
-            .filter { val ke = currentSealableEpoch(it.clientId, st, now); ke == null || ke.notAfter <= now || ke.identityPublicKey.isEmpty() }
+            .filter {
+                val ke = currentSealableEpoch(
+                    it.clientId,
+                    st,
+                    now
+                ); ke == null || ke.notAfter <= now || ke.identityPublicKey.isEmpty()
+            }
             .map { it.clientId }
     }
 
-    override fun currentKeyEpochBlob(clientId: ClientId): SignedBlob? = currentKeyEpochBlobOf(clientId, _state.value)
+    override fun currentKeyEpochBlob(clientId: ClientId): SignedBlob? =
+        currentKeyEpochBlobOf(clientId, _state.value)
 
     override fun selfEpoch(): Int = _state.value.epochs.selfEpoch
 
@@ -461,7 +518,8 @@ class TrustStore(
         // tombstone is still shown in the UI until purge, and its live (renamed) name must not revert to the
         // card's original pairing-time name. purgeRevoked() drops the overlay with the entry at permanent delete.
         val overlays = next0.overlays.filterKeys { next0.entries.containsKey(it) }
-        val next = if (overlays.size != next0.overlays.size) next0.copy(overlays = overlays) else next0
+        val next =
+            if (overlays.size != next0.overlays.size) next0.copy(overlays = overlays) else next0
         _state.value = next
         _activePeers.value = computeActivePeers(next)
         _roster.value = computeRoster(next)
@@ -473,15 +531,27 @@ class TrustStore(
         require(blob.typ == SignedType.CLIENT_CARD)
         val card = blob.decode<ClientCard>()
         require(card.clientId == blob.signerId)
-        require(IdentityVerifier.verifyBound(blob.signerId, card.identityPublicKey, blob.payload, blob.sig))
+        require(
+            IdentityVerifier.verifyBound(
+                blob.signerId,
+                card.identityPublicKey,
+                blob.payload,
+                blob.sig
+            )
+        )
         card
     }.getOrNull()
 
     /** First-verified-wins, immutable keys: keep the pinned card; never overwrite with a re-keyed one. */
-    private fun putCard(cards: Map<ClientId, SignedBlob>, id: ClientId, blob: SignedBlob): Map<ClientId, SignedBlob> =
+    private fun putCard(
+        cards: Map<ClientId, SignedBlob>,
+        id: ClientId,
+        blob: SignedBlob
+    ): Map<ClientId, SignedBlob> =
         if (cards.containsKey(id)) cards else cards + (id to blob)
 
-    private fun computeActivePeers(st: State): List<Peer> = st.entries.values.mapNotNull { toPeer(it, st) }
+    private fun computeActivePeers(st: State): List<Peer> =
+        st.entries.values.mapNotNull { toPeer(it, st) }
 
     /** All known devices — pending at the top, trusted in the middle, revoked tombstones at the bottom. */
     private fun computeRoster(st: State): List<RosterDevice> = st.entries.values
@@ -507,7 +577,8 @@ class TrustStore(
     }
 
     private fun displayNameFor(id: ClientId, st: State): String? =
-        st.overlays[id]?.displayName ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.displayName
+        st.overlays[id]?.displayName
+            ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.displayName
 
     // A peer is *sealable* (active) once we hold a usable key-epoch for it — that is what carries the
     // current operational + HPKE keys an NS2 envelope needs. The card (if held) only supplies the display
@@ -518,7 +589,8 @@ class TrustStore(
         // Anchor from the pinned identity (card first), NOT the key-epoch's own copy — a pairing-QR key-epoch
         // omits it. No anchor (no card, and only a stripped ring entry) ⇒ unverifiable ⇒ not sealable.
         val identity = pinnedIdentityOf(entry.clientId, st) ?: return null
-        val card = st.cards[entry.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }
+        val card =
+            st.cards[entry.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }
         val overlay = st.overlays[entry.clientId]
         return Peer(
             clientId = entry.clientId,
@@ -540,13 +612,20 @@ class TrustStore(
 
     private fun decodeRing(pe: PeerEpochs): List<Pair<ClientKeyEpoch, SignedBlob>> =
         pe.ringB64.mapNotNull { s ->
-            decodeBlobB64(s)?.let { blob -> runCatching { blob.decode<ClientKeyEpoch>() }.getOrNull()?.let { it to blob } }
+            decodeBlobB64(s)?.let { blob ->
+                runCatching { blob.decode<ClientKeyEpoch>() }.getOrNull()?.let { it to blob }
+            }
         }
 
     /** The peer's highest key-epoch that is ≥ its floor AND whose notBefore has arrived — what we seal to (§7). */
-    private fun currentSealableEpoch(id: ClientId, st: State, now: Long = System.currentTimeMillis()): ClientKeyEpoch? {
+    private fun currentSealableEpoch(
+        id: ClientId,
+        st: State,
+        now: Long = System.currentTimeMillis()
+    ): ClientKeyEpoch? {
         val pe = st.epochs.peers[id.value] ?: return null
-        return decodeRing(pe).map { it.first }.filter { it.epoch >= pe.floor && it.notBefore <= now }.maxByOrNull { it.epoch }
+        return decodeRing(pe).map { it.first }
+            .filter { it.epoch >= pe.floor && it.notBefore <= now }.maxByOrNull { it.epoch }
     }
 
     private fun peerEpochOf(id: ClientId, st: State): Int =
@@ -556,21 +635,35 @@ class TrustStore(
      *  peer). A stripped pairing-QR copy (no identity anchor) is NOT relayable — a card-less recipient
      *  couldn't verify it — so it is skipped; the background pull upgrades it to the full copy. */
     private fun currentKeyEpochBlobOf(id: ClientId, st: State): SignedBlob? =
-        st.epochs.peers[id.value]?.let { pe -> decodeRing(pe).filter { it.first.identityPublicKey.isNotEmpty() }.maxByOrNull { it.first.epoch }?.second }
+        st.epochs.peers[id.value]?.let { pe ->
+            decodeRing(pe).filter { it.first.identityPublicKey.isNotEmpty() }
+                .maxByOrNull { it.first.epoch }?.second
+        }
 
     /** First-verified-wins identity anchor for a peer: the card's identity if held, else the newest ring
      *  entry that carries one (a stripped pairing-QR key-epoch has none — the card is the source then). */
     private fun pinnedIdentityOf(id: ClientId, st: State): ByteArray? {
-        st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull()?.identityPublicKey?.takeIf { spki -> spki.isNotEmpty() }?.let { spki -> return spki } }
+        st.cards[id]?.let {
+            runCatching { it.decode<ClientCard>() }.getOrNull()?.identityPublicKey?.takeIf { spki -> spki.isNotEmpty() }
+                ?.let { spki -> return spki }
+        }
         val pe = st.epochs.peers[id.value] ?: return null
-        return decodeRing(pe).sortedByDescending { it.first.epoch }.firstNotNullOfOrNull { it.first.identityPublicKey.takeIf { spki -> spki.isNotEmpty() } }
+        return decodeRing(pe).sortedByDescending { it.first.epoch }
+            .firstNotNullOfOrNull { it.first.identityPublicKey.takeIf { spki -> spki.isNotEmpty() } }
     }
 
     /** Merge a verified key-epoch into a ring: drop below-[floor] generations, replace same-epoch, keep newest K. */
-    private fun mergeRing(ring: List<String>, blob: SignedBlob, epoch: Int, floor: Int): List<String> {
+    private fun mergeRing(
+        ring: List<String>,
+        blob: SignedBlob,
+        epoch: Int,
+        floor: Int
+    ): List<String> {
         val byEpoch = sortedMapOf<Int, String>()
         for (s in ring) {
-            val ke = decodeBlobB64(s)?.let { runCatching { it.decode<ClientKeyEpoch>() }.getOrNull() } ?: continue
+            val ke =
+                decodeBlobB64(s)?.let { runCatching { it.decode<ClientKeyEpoch>() }.getOrNull() }
+                    ?: continue
             if (ke.epoch >= floor) byEpoch[ke.epoch] = s
         }
         byEpoch[epoch] = b64e.encodeToString(ProtocolCodec.encodeToCbor(blob))
@@ -584,13 +677,29 @@ class TrustStore(
         val overlaysRaw = prefs[overlaysKey]
         val epochsRaw = prefs[epochsKey]
         val sigRaw = prefs[sigKey]
-        val entries = entriesRaw?.let { runCatching { ProtocolCodec.decodeFromJson<List<TrustEntry>>(it) }.getOrNull() }.orEmpty()
-        val cards = cardsRaw?.let { runCatching { ProtocolCodec.decodeFromJson<Map<String, String>>(it) }.getOrNull() }.orEmpty()
-        val overlays = overlaysRaw?.let { runCatching { ProtocolCodec.decodeFromJson<Map<String, ProfileOverlay>>(it) }.getOrNull() }.orEmpty()
-        val epochs = epochsRaw?.let { runCatching { ProtocolCodec.decodeFromJson<EpochSection>(it) }.getOrNull() } ?: EpochSection()
+        val entries =
+            entriesRaw?.let { runCatching { ProtocolCodec.decodeFromJson<List<TrustEntry>>(it) }.getOrNull() }
+                .orEmpty()
+        val cards =
+            cardsRaw?.let { runCatching { ProtocolCodec.decodeFromJson<Map<String, String>>(it) }.getOrNull() }
+                .orEmpty()
+        val overlays = overlaysRaw?.let {
+            runCatching {
+                ProtocolCodec.decodeFromJson<Map<String, ProfileOverlay>>(it)
+            }.getOrNull()
+        }.orEmpty()
+        val epochs =
+            epochsRaw?.let { runCatching { ProtocolCodec.decodeFromJson<EpochSection>(it) }.getOrNull() }
+                ?: EpochSection()
         val state = State(
             entries = entries.associateBy { it.clientId },
-            cards = cards.mapNotNull { (k, v) -> runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(b64d.decode(v)) }.getOrNull()?.let { ClientId(k) to it } }.toMap(),
+            cards = cards.mapNotNull { (k, v) ->
+                runCatching {
+                    ProtocolCodec.decodeFromCbor<SignedBlob>(
+                        b64d.decode(v)
+                    )
+                }.getOrNull()?.let { ClientId(k) to it }
+            }.toMap(),
             overlays = overlays.mapKeys { ClientId(it.key) },
             epochs = epochs,
         )
@@ -607,9 +716,25 @@ class TrustStore(
         val baseOk = sigRaw != null && entriesRaw != null && cardsRaw != null && overlaysRaw != null
         val verified = baseOk && when {
             epochsRaw != null ->
-                TrustStoreSigning.verify(identity.publicKeySpki, selfId, entriesRaw, cardsRaw, overlaysRaw, epochsRaw, sigRaw)
+                TrustStoreSigning.verify(
+                    identity.publicKeySpki,
+                    selfId,
+                    entriesRaw,
+                    cardsRaw,
+                    overlaysRaw,
+                    epochsRaw,
+                    sigRaw
+                )
+
             else ->
-                TrustStoreSigning.verifyLegacyThreeSection(identity.publicKeySpki, selfId, entriesRaw, cardsRaw, overlaysRaw, sigRaw)
+                TrustStoreSigning.verifyLegacyThreeSection(
+                    identity.publicKeySpki,
+                    selfId,
+                    entriesRaw,
+                    cardsRaw,
+                    overlaysRaw,
+                    sigRaw
+                )
         }
         val isEmpty = state.entries.isEmpty() && state.cards.isEmpty()
         Loaded(state, quarantined = !isEmpty && !verified)
@@ -629,10 +754,12 @@ class TrustStore(
     private fun writeSigned(st: State) {
         scope.launch {
             val entriesJson = ProtocolCodec.encodeToJson(st.entries.values.toList())
-            val cardsJson = ProtocolCodec.encodeToJson(st.cards.mapKeys { it.key.value }.mapValues { b64e.encodeToString(ProtocolCodec.encodeToCbor(it.value)) })
+            val cardsJson = ProtocolCodec.encodeToJson(st.cards.mapKeys { it.key.value }
+                .mapValues { b64e.encodeToString(ProtocolCodec.encodeToCbor(it.value)) })
             val overlaysJson = ProtocolCodec.encodeToJson(st.overlays.mapKeys { it.key.value })
             val epochsJson = ProtocolCodec.encodeToJson(st.epochs)
-            val sig = TrustStoreSigning.sign(identity, entriesJson, cardsJson, overlaysJson, epochsJson)
+            val sig =
+                TrustStoreSigning.sign(identity, entriesJson, cardsJson, overlaysJson, epochsJson)
             store.edit {
                 it[entriesKey] = entriesJson
                 it[cardsKey] = cardsJson

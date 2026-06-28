@@ -266,7 +266,7 @@ data class TrustTable(val entries: List<TrustTableEntry>)
  * self-authenticating (clientId == fingerprint(identityKey) + identity signature, carrying the identity
  * key), so the receiver verifies each independently — the enclosing envelope only attests the relay and
  * [clientId] need not be the sender. NS1 populates [card]; NS2 populates [epochBlob] (an epoch-only push
- * carries no card, since the profile travels via [ProfileUpdate]). `GET /v1/keyepoch/{clientId}` is the
+ * carries no card, since the profile travels via [ProfileUpdate]). `GET /v2/keyepoch/{clientId}` is the
  * pull fallback for a peer that missed an [epochBlob] push.
  */
 @Serializable

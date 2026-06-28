@@ -59,9 +59,9 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * Ktor-based client implementing the transport-neutral [Transport]. The control plane is plain HTTP
- * with CBOR bodies; live delivery uses an authenticated WebSocket (the dev push transport). FCM is
- * the production wake path and is handled separately by the messaging service + broker.
+ * Ktor-based client implementing the transport-neutral [Transport]. The control plane is signed HTTP
+ * with CBOR bodies; live delivery uses an authenticated foreground WebSocket. FCM is the Android
+ * background wake path and is handled separately by the messaging service + broker.
  */
 class BrokerClient(
     private val signer: IdentitySigner,
@@ -92,6 +92,7 @@ class BrokerClient(
 
     @Volatile
     private var cachedAuth: IntegrityVerificationResponse? = null
+
     @Volatile
     private var lastAuthFailure: AuthFailure? = null
     private val refreshInFlight = AtomicBoolean(false)
@@ -100,11 +101,13 @@ class BrokerClient(
         // The JWT is just a cached proof of a passing attestation (valid for days), so reuse a still-valid one
         // across process death — a force-stop/relaunch shouldn't force a fresh attestation. Ignore a token
         // minted for a different identity (signing key regenerated); it would only earn a 401 and re-attest.
-        cachedAuth = runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
+        cachedAuth =
+            runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
     }
 
     private fun wsBase(): String = baseUrlProvider().trimEnd('/')
-    private fun httpBase(): String = wsBase().replaceFirst("ws://", "http://").replaceFirst("wss://", "https://")
+    private fun httpBase(): String =
+        wsBase().replaceFirst("ws://", "http://").replaceFirst("wss://", "https://")
 
     override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) {
         // Identity-signed request (signerEpoch 0): the broker pins our identity from the first key-epoch and
@@ -120,26 +123,45 @@ class BrokerClient(
     override suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int?): SignedBlob? {
         val q = if (epoch != null) "?epoch=$epoch" else ""
         val resp = authedGet("${httpBase()}/v2/keyepoch/${clientId.value}$q")
-        return if (resp.status.isSuccess()) runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(resp.readRawBytes()) }.getOrNull() else null
+        return if (resp.status.isSuccess()) runCatching {
+            ProtocolCodec.decodeFromCbor<SignedBlob>(
+                resp.readRawBytes()
+            )
+        }.getOrNull() else null
     }
 
     override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult {
         // Operational-signed request (hot path): the envelope inside is already operational-signed; the
         // broker accepts an operational request signature (floor + window + REQUEST_AUTH) and self-heals to
         // identity attestation on a 401 if our epoch isn't yet known there.
-        val resp = authedPost("${httpBase()}/v2/send", ProtocolCodec.encodeToCbor(envelope), operational = true)
+        val resp = authedPost(
+            "${httpBase()}/v2/send",
+            ProtocolCodec.encodeToCbor(envelope),
+            operational = true
+        )
         return runCatching { ProtocolCodec.decodeFromJson<SendResult>(resp.bodyAsText()) }
             .getOrDefault(SendResult(accepted = false))
     }
 
-    override suspend fun uploadPrivateAsset(sourceClientId: ClientId, assetId: String, ciphertext: ByteArray): Boolean {
-        val resp = authedPost("${httpBase()}/v2/assets/${sourceClientId.value}/$assetId", ciphertext, operational = true)
+    override suspend fun uploadPrivateAsset(
+        sourceClientId: ClientId,
+        assetId: String,
+        ciphertext: ByteArray
+    ): Boolean {
+        val resp = authedPost(
+            "${httpBase()}/v2/assets/${sourceClientId.value}/$assetId",
+            ciphertext,
+            operational = true
+        )
         // 200 stored or 409 already-exists both mean the broker holds it.
         return resp.status.isSuccess() || resp.status == HttpStatusCode.Conflict
     }
 
     override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? {
-        val resp = authedGet("${httpBase()}/v2/assets/${sourceClientId.value}/$assetId", operational = true)
+        val resp = authedGet(
+            "${httpBase()}/v2/assets/${sourceClientId.value}/$assetId",
+            operational = true
+        )
         return if (resp.status.isSuccess()) resp.readRawBytes() else null
     }
 
@@ -156,7 +178,15 @@ class BrokerClient(
     suspend fun fetchRelayMessage(messageId: String): Envelope? {
         val url = "${httpBase()}/v2/relay/$messageId"
         var resp = runCatching {
-            client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull(), operational = true) }
+            client.get(url) {
+                signedHeaders(
+                    "GET",
+                    url,
+                    ByteArray(0),
+                    cachedBearerOrNull(),
+                    operational = true
+                )
+            }
         }.getOrNull() ?: return null
         // unknown_epoch → 401: the broker doesn't yet know our operational epoch; retry once on the
         // always-valid identity root (still signature-only — never attests).
@@ -180,7 +210,9 @@ class BrokerClient(
             client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
         }.getOrNull() ?: return emptyList()
         if (!resp.status.isSuccess()) return emptyList()
-        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrDefault(emptyList())
+        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrDefault(
+            emptyList()
+        )
     }
 
     /**
@@ -237,7 +269,15 @@ class BrokerClient(
     // unavailable — a broker with Play Integrity disabled still accepts it), and only attest-or-throw
     // on a real 401. So the client works against an attestation-disabled broker without Play Integrity.
     private suspend fun authedGet(url: String, operational: Boolean = false): HttpResponse {
-        var resp = client.get(url) { signedHeaders("GET", url, ByteArray(0), bearerTokenOrNull(), operational) }
+        var resp = client.get(url) {
+            signedHeaders(
+                "GET",
+                url,
+                ByteArray(0),
+                bearerTokenOrNull(),
+                operational
+            )
+        }
         if (resp.status == HttpStatusCode.Unauthorized) {
             storeAuth(null)
             val token = bearerToken()
@@ -246,7 +286,12 @@ class BrokerClient(
         return resp
     }
 
-    private suspend fun authedPost(url: String, body: ByteArray, contentType: ContentType? = null, operational: Boolean = false): HttpResponse {
+    private suspend fun authedPost(
+        url: String,
+        body: ByteArray,
+        contentType: ContentType? = null,
+        operational: Boolean = false
+    ): HttpResponse {
         var resp = client.post(url) {
             contentType?.let { contentType(it) }
             signedHeaders("POST", url, body, bearerTokenOrNull(), operational)
@@ -334,7 +379,12 @@ class BrokerClient(
                 val retryable = (it as? IntegrityException)?.retryable ?: true
                 val attempt = (lastAuthFailure?.attempt ?: 0) + 1
                 val cooldown = backoffCooldownMs(retryable, attempt)
-                lastAuthFailure = AuthFailure(System.currentTimeMillis(), it.message ?: it.javaClass.simpleName, cooldown, attempt)
+                lastAuthFailure = AuthFailure(
+                    System.currentTimeMillis(),
+                    it.message ?: it.javaClass.simpleName,
+                    cooldown,
+                    attempt
+                )
             }
             .getOrThrow()
             .also { storeAuth(it) }
@@ -408,8 +458,12 @@ class BrokerClient(
             setBody(body)
         }
         if (!resp.status.isSuccess()) {
-            val retryable = resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
-            throw IntegrityException("Attestation verification failed: ${resp.status} ${resp.bodyAsText()}", retryable)
+            val retryable =
+                resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
+            throw IntegrityException(
+                "Attestation verification failed: ${resp.status} ${resp.bodyAsText()}",
+                retryable
+            )
         }
         return ProtocolCodec.decodeFromJson(resp.bodyAsText())
     }
@@ -419,7 +473,10 @@ class BrokerClient(
     private suspend fun powDifficulty(): Int =
         fetchVerificationStatus()?.powDifficulty ?: ProofOfWork.DEFAULT_DIFFICULTY
 
-    private fun HttpRequestBuilder.applySigned(signed: HttpRequestSigning.Headers, bearerToken: String?) {
+    private fun HttpRequestBuilder.applySigned(
+        signed: HttpRequestSigning.Headers,
+        bearerToken: String?
+    ) {
         bearerToken?.let { header(HttpHeaders.Authorization, "Bearer $it") }
         header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
         header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
@@ -437,7 +494,13 @@ class BrokerClient(
      * WS). Pass [operational] = true for the hot data plane (`send`, asset I/O), which signs with the
      * current operational key so the StrongBox root stays off the burst path.
      */
-    private fun HttpRequestBuilder.signedHeaders(method: String, url: String, body: ByteArray, bearerToken: String?, operational: Boolean = false) {
+    private fun HttpRequestBuilder.signedHeaders(
+        method: String,
+        url: String,
+        body: ByteArray,
+        bearerToken: String?,
+        operational: Boolean = false
+    ) {
         val signed = if (operational) {
             HttpRequestSigning.sign(operationalSigner(), method, pathAndQuery(url), body)
         } else {
@@ -472,23 +535,49 @@ class BrokerClient(
                 client.webSocket(url, request = {
                     signedHeaders("GET", url, ByteArray(0), token)
                 }) {
-                    val challenge = ProtocolCodec.decodeFromJson<WsChallenge>((incoming.receive() as Frame.Text).readText())
+                    val challenge =
+                        ProtocolCodec.decodeFromJson<WsChallenge>((incoming.receive() as Frame.Text).readText())
                     // Sign the handshake nonce with the identity root (epoch 0): always valid, never floored —
                     // the live socket connects regardless of operational-epoch convergence (§3.4).
-                    val sig = Base64.getEncoder().encodeToString(signer.sign(challenge.nonce.toByteArray()))
-                    send(Frame.Text(ProtocolCodec.encodeToJson(WsAuth(signer.clientId, challenge.nonce, sig, epoch = 0))))
+                    val sig = Base64.getEncoder()
+                        .encodeToString(signer.sign(challenge.nonce.toByteArray()))
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                WsAuth(
+                                    signer.clientId,
+                                    challenge.nonce,
+                                    sig,
+                                    epoch = 0
+                                )
+                            )
+                        )
+                    )
                     backoffMs = 1_000L
                     consecutiveFailures = 0
                     for (frame in incoming) {
                         if (frame !is Frame.Text) continue
-                        val msg = runCatching { ProtocolCodec.decodeFromJson<WsMessage>(frame.readText()) }.getOrNull() ?: continue
+                        val msg =
+                            runCatching { ProtocolCodec.decodeFromJson<WsMessage>(frame.readText()) }.getOrNull()
+                                ?: continue
                         if (msg.kind == WsKind.DELIVER && msg.envelopeB64 != null) {
                             val env = runCatching {
-                                ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(msg.envelopeB64))
+                                ProtocolCodec.decodeFromCbor<Envelope>(
+                                    Base64.getDecoder().decode(msg.envelopeB64)
+                                )
                             }.getOrNull() ?: continue
                             onEnvelope(env) // verify + decrypt + post, inline (SecureChannel.deliver is non-suspend)
                             // ACK only now: the broker drops the relay item once we've durably handled it.
-                            send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = env.messageId))))
+                            send(
+                                Frame.Text(
+                                    ProtocolCodec.encodeToJson(
+                                        WsMessage(
+                                            kind = WsKind.ACK,
+                                            messageId = env.messageId
+                                        )
+                                    )
+                                )
+                            )
                         }
                     }
                 }
@@ -514,9 +603,11 @@ class BrokerClient(
 
     private companion object {
         const val AUTH_REFRESH_SKEW_MS = 60_000L
+
         // Refresh a still-valid token once it's within a day of expiry (stale-while-revalidate), so the
         // multi-day JWT is renewed in the background long before any request would have to block to re-attest.
         const val AUTH_PROACTIVE_REFRESH_MS = 24L * 60 * 60 * 1000
+
         // Re-attestation backoff: the nth consecutive failure waits base·2^(n-1), shift- then total-capped,
         // plus jitter (see [backoffCooldownMs]). Retryable (429/5xx/stale) starts gentle at 5s; a definitive
         // reject (bad device/app/signature) starts at 60s. Both reset on the next successful attestation.
@@ -528,7 +619,12 @@ class BrokerClient(
         const val WS_PING_SECONDS = 30L
     }
 
-    private data class AuthFailure(val atMillis: Long, val message: String, val cooldownMs: Long, val attempt: Int)
+    private data class AuthFailure(
+        val atMillis: Long,
+        val message: String,
+        val cooldownMs: Long,
+        val attempt: Int
+    )
 
     private class IntegrityException(message: String, val retryable: Boolean) : Exception(message)
 }

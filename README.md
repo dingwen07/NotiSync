@@ -5,10 +5,6 @@ Secure, end-to-end-encrypted notification mirroring across your trusted devices.
 mirrored from them. A lightweight broker server only relays opaque ciphertext and coordinates push
 delivery — it can never read your notifications.
 
-> Status: **working vertical slice** (v1). The full pipeline — identity → QR pairing → capture →
-> E2E-encrypt → broker → deliver → display → dismissal sync — is implemented, builds, and is tested.
-> See [Status & scope](#status--scope) for what is complete vs. deferred.
-
 ## Architecture
 
 A single Gradle build with shared protocol/crypto code consumed by **both** the Android client and
@@ -108,26 +104,3 @@ Link (`https://notisync.apps.extrawdw.net/pair?...`), so Camera/QR scanner apps 
 pairing screen directly and show a trust prompt with the device details. On each device:
 **Devices → Pair a device**, show your code, then trust the other device's signed card. Both add each
 other as trusted peers.
-
-## Status & scope
-
-**Complete & tested**
-- Shared protocol + crypto with round-trip / determinism / tamper tests.
-- Broker: signed card & route verification, store-and-forward, authenticated WebSocket relay,
-  FCM adapter, recoverable SQLite cache, health endpoints — verified end-to-end (a recipient
-  decrypts an E2E payload routed through the real server in an integration test).
-- Android app builds to an APK: identity, HPKE keys, capture, mirror render + bidirectional
-  dismissal sync, FCM service, WebSocket transport, QR pairing, Material 3 Expressive UI.
-
-**v1 scope decisions** (see [docs/ADR.md](docs/ADR.md))
-- Text + MessagingStyle notifications. Binary attachments (icons/big pictures) are modeled in the
-  protocol but not yet transferred (text-first slice).
-- Display + dismissal only — no remote reply/actions.
-- Mutual in-person QR pairing — the SPAKE-style relay handshake for remote pairing is deferred.
-- Manual DI + DataStore instead of Hilt/Room/KSP, to avoid the unsettled AGP-9 + KSP2 + Hilt
-  annotation-processing toolchain on this Kotlin 2.2.10 build. (`coil` is likewise omitted in v1.)
-
-**Next steps**
-- Encrypted blob transfer for rich media; on-device validation across two emulators/devices.
-- Foreground-service lifecycle hardening and WorkManager batching/retention jobs.
-- Group membership cards + revocation distribution; route-repair sync flows.

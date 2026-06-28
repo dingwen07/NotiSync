@@ -121,10 +121,22 @@ fun DevicesScreen(
                 )
             }
             item {
-                Button(onClick = onPair, enabled = !quarantined, modifier = Modifier.fillMaxWidth().then(pairButtonModifier)) {
-                    Icon(Icons.Outlined.QrCode2, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Button(
+                    onClick = onPair,
+                    enabled = !quarantined,
+                    modifier = Modifier.fillMaxWidth().then(pairButtonModifier)
+                ) {
+                    Icon(
+                        Icons.Outlined.QrCode2,
+                        contentDescription = null,
+                        modifier = Modifier.size(ButtonDefaults.IconSize)
+                    )
                     Spacer(Modifier.size(4.dp))
-                    Icon(Icons.Outlined.Contactless, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                    Icon(
+                        Icons.Outlined.Contactless,
+                        contentDescription = null,
+                        modifier = Modifier.size(ButtonDefaults.IconSize)
+                    )
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                     Text(stringResource(R.string.pair_a_device))
                 }
@@ -169,7 +181,12 @@ fun DevicesScreen(
 }
 
 @Composable
-private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.extrawdw.apps.notisync.AppGraph, enabled: Boolean = true) {
+private fun DeviceListCard(
+    devices: List<RosterDevice>,
+    now: Long,
+    graph: net.extrawdw.apps.notisync.AppGraph,
+    enabled: Boolean = true
+) {
     Card(Modifier.fillMaxWidth()) {
         Column {
             devices.forEachIndexed { index, device ->
@@ -178,11 +195,41 @@ private fun DeviceListCard(devices: List<RosterDevice>, now: Long, graph: net.ex
                     now = now,
                     enabled = enabled,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
-                    onApprove = { if (graph.trust.approveTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                    onDeny = { if (graph.trust.rejectTrust(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                    onRemoveConfirm = { if (graph.trust.confirmRevoke(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                    onKeep = { if (graph.trust.keepTrusted(it, System.currentTimeMillis())) graph.broadcastTrust() },
-                    onRemove = { if (graph.trust.revokeLocal(it, System.currentTimeMillis())) graph.broadcastTrust() },
+                    onApprove = {
+                        if (graph.trust.approveTrust(
+                                it,
+                                System.currentTimeMillis()
+                            )
+                        ) graph.broadcastTrust()
+                    },
+                    onDeny = {
+                        if (graph.trust.rejectTrust(
+                                it,
+                                System.currentTimeMillis()
+                            )
+                        ) graph.broadcastTrust()
+                    },
+                    onRemoveConfirm = {
+                        if (graph.trust.confirmRevoke(
+                                it,
+                                System.currentTimeMillis()
+                            )
+                        ) graph.broadcastTrust()
+                    },
+                    onKeep = {
+                        if (graph.trust.keepTrusted(
+                                it,
+                                System.currentTimeMillis()
+                            )
+                        ) graph.broadcastTrust()
+                    },
+                    onRemove = {
+                        if (graph.trust.revokeLocal(
+                                it,
+                                System.currentTimeMillis()
+                            )
+                        ) graph.broadcastTrust()
+                    },
                     onPurge = { graph.trust.purgeRevoked(it) },
                 )
                 if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
@@ -206,8 +253,14 @@ private fun QuarantineCard(onApprove: () -> Unit, onClear: () -> Unit) {
         ),
     ) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.devices_tamper_title), style = MaterialTheme.typography.titleMedium)
-            Text(stringResource(R.string.devices_tamper_body), style = MaterialTheme.typography.bodyMedium)
+            Text(
+                stringResource(R.string.devices_tamper_title),
+                style = MaterialTheme.typography.titleMedium
+            )
+            Text(
+                stringResource(R.string.devices_tamper_body),
+                style = MaterialTheme.typography.bodyMedium
+            )
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = onApprove) { Text(stringResource(R.string.devices_tamper_approve)) }
                 OutlinedButton(onClick = onClear) { Text(stringResource(R.string.devices_tamper_clear)) }
@@ -230,9 +283,16 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, backing: KeyBacki
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Outlined.Smartphone, contentDescription = null, modifier = Modifier.size(40.dp))
+            Icon(
+                Icons.Outlined.Smartphone,
+                contentDescription = null,
+                modifier = Modifier.size(40.dp)
+            )
             Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(stringResource(R.string.devices_this_device), style = MaterialTheme.typography.labelMedium)
+                Text(
+                    stringResource(R.string.devices_this_device),
+                    style = MaterialTheme.typography.labelMedium
+                )
                 Text(name, style = MaterialTheme.typography.headlineSmall)
                 Text(
                     stringResource(R.string.devices_verification_number, safetyNumber),
@@ -305,7 +365,11 @@ private fun DeviceRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(Icons.Outlined.Smartphone, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Icon(
+                Icons.Outlined.Smartphone,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.primary
+            )
             Column(Modifier.weight(1f)) {
                 Text(
                     name,
@@ -325,41 +389,84 @@ private fun DeviceRow(
             }
             when (device.status) {
                 // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
-                TrustStatus.TRUSTED -> IconButton(onClick = { onRemove(device.clientId) }, enabled = enabled) {
-                    Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_remove_desc, name))
+                TrustStatus.TRUSTED -> IconButton(
+                    onClick = { onRemove(device.clientId) },
+                    enabled = enabled
+                ) {
+                    Icon(
+                        Icons.Filled.Delete,
+                        contentDescription = stringResource(R.string.device_remove_desc, name)
+                    )
                 }
+
                 TrustStatus.REVOKED -> {
                     // Permanently forgettable only after the tombstone has outlived the stale-trust window.
                     val canPurge = device.revokedAt != null &&
-                        now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
-                    IconButton(onClick = { onPurge(device.clientId) }, enabled = canPurge && enabled) {
-                        Icon(Icons.Filled.Delete, contentDescription = stringResource(R.string.device_permanently_delete_desc, name))
+                            now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
+                    IconButton(
+                        onClick = { onPurge(device.clientId) },
+                        enabled = canPurge && enabled
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = stringResource(
+                                R.string.device_permanently_delete_desc,
+                                name
+                            )
+                        )
                     }
                 }
+
                 else -> Unit
             }
         }
         when (device.status) {
             TrustStatus.PENDING_TRUST -> {
-                Text(stringResource(R.string.device_added_by, by), style = MaterialTheme.typography.bodyMedium)
-                Text(stringResource(R.string.devices_verification_number, device.clientId.value), style = MaterialTheme.typography.bodySmall)
+                Text(
+                    stringResource(R.string.device_added_by, by),
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                Text(
+                    stringResource(R.string.devices_verification_number, device.clientId.value),
+                    style = MaterialTheme.typography.bodySmall
+                )
                 Text(
                     stringResource(R.string.device_approve_hint),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onApprove(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_approve)) }
-                    OutlinedButton(onClick = { onDeny(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_deny)) }
+                    Button(onClick = { onApprove(device.clientId) }, enabled = enabled) {
+                        Text(
+                            stringResource(R.string.action_approve)
+                        )
+                    }
+                    OutlinedButton(onClick = { onDeny(device.clientId) }, enabled = enabled) {
+                        Text(
+                            stringResource(R.string.action_deny)
+                        )
+                    }
                 }
             }
+
             TrustStatus.PENDING_REVOKE -> {
-                Text(stringResource(R.string.device_removed_by, by), style = MaterialTheme.typography.bodyMedium)
+                Text(
+                    stringResource(R.string.device_removed_by, by),
+                    style = MaterialTheme.typography.bodyMedium
+                )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = { onRemoveConfirm(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_remove)) }
-                    OutlinedButton(onClick = { onKeep(device.clientId) }, enabled = enabled) { Text(stringResource(R.string.action_keep)) }
+                    Button(
+                        onClick = { onRemoveConfirm(device.clientId) },
+                        enabled = enabled
+                    ) { Text(stringResource(R.string.action_remove)) }
+                    OutlinedButton(onClick = { onKeep(device.clientId) }, enabled = enabled) {
+                        Text(
+                            stringResource(R.string.action_keep)
+                        )
+                    }
                 }
             }
+
             else -> Unit
         }
     }

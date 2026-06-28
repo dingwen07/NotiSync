@@ -30,7 +30,10 @@ class ShippedIcons(
 
     /** A bundled icon for the [iosBundleId] (preferred) or [packageName], or null if the pack has none. */
     fun bitmap(iosBundleId: String?, packageName: String?): Bitmap? {
-        for (key in ShippedIconKeys.candidates(iosBundleId, packageName)) load(key)?.let { return it }
+        for (key in ShippedIconKeys.candidates(
+            iosBundleId,
+            packageName
+        )) load(key)?.let { return it }
         return null
     }
 
