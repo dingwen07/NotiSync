@@ -62,6 +62,8 @@ data class ServerConfig(
     val signedRequestMaxSkewMillis: Long,
     /** Leading-hex-zero difficulty required of the /v2/integrity/verify proof of work (0 disables). */
     val powDifficulty: Int,
+    /** Optional JSON scenario file for root /demo Experience Mode. Blank uses the bundled default. */
+    val demoConfigPath: String,
     val version: String,
 ) {
     companion object {
@@ -134,6 +136,7 @@ data class ServerConfig(
                 signedRequestMaxSkewMillis = env("NOTISYNC_SIGNED_REQUEST_MAX_SKEW_MS")?.toLongOrNull()
                     ?: (5L * 60 * 1000),
                 powDifficulty = env("NOTISYNC_POW_DIFFICULTY")?.toIntOrNull() ?: 4,
+                demoConfigPath = env("NOTISYNC_DEMO_CONFIG_PATH").orEmpty(),
                 version = VERSION,
             )
         }

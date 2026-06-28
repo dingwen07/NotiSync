@@ -1,0 +1,144 @@
+{
+  "displayName": "Experience Mode",
+  "platform": "demo-server",
+  "defaultIntervalMillis": 7500,
+  "keyLifetimeMillis": 1800000,
+  "assets": [
+    {
+      "id": "messages-icon",
+      "role": "APP_ICON",
+      "mimeType": "image/png",
+      "filename": "messages-icon.png",
+      "path": "demo-assets/messages-icon.png"
+    },
+    {
+      "id": "calendar-icon",
+      "role": "APP_ICON",
+      "mimeType": "image/png",
+      "filename": "calendar-icon.png",
+      "path": "demo-assets/calendar-icon.png"
+    },
+    {
+      "id": "mail-icon",
+      "role": "APP_ICON",
+      "mimeType": "image/png",
+      "filename": "mail-icon.png",
+      "path": "demo-assets/mail-icon.png"
+    },
+    {
+      "id": "delivery-icon",
+      "role": "APP_ICON",
+      "mimeType": "image/png",
+      "filename": "delivery-icon.png",
+      "path": "demo-assets/delivery-icon.png"
+    },
+    {
+      "id": "delivery-photo",
+      "role": "BIG_PICTURE",
+      "mimeType": "image/jpeg",
+      "filename": "delivery-photo.jpg",
+      "path": "demo-assets/delivery-photo.jpg"
+    },
+    {
+      "id": "maya-avatar",
+      "role": "AVATAR",
+      "mimeType": "image/png",
+      "filename": "maya-avatar.png",
+      "path": "demo-assets/maya-avatar.png"
+    },
+    {
+      "id": "riley-avatar",
+      "role": "AVATAR",
+      "mimeType": "image/png",
+      "filename": "riley-avatar.png",
+      "path": "demo-assets/riley-avatar.png"
+    }
+  ],
+  "notifications": [
+    {
+      "packageName": "demo.messages",
+      "appLabel": "Messages",
+      "title": "Weekend plan",
+      "text": "Perfect. See you at 10.",
+      "style": "MESSAGING",
+      "conversationTitle": "Weekend plan",
+      "isGroupConversation": true,
+      "category": "MESSAGE",
+      "appIconAsset": "messages-icon",
+      "messages": [
+        { "sender": "Maya", "text": "Are we still on for coffee?", "avatarAsset": "maya-avatar" },
+        { "sender": null, "text": "Yes, 10 works." },
+        { "sender": "Maya", "text": "Perfect. See you at 10.", "avatarAsset": "maya-avatar" }
+      ]
+    },
+    {
+      "intervalMillis": 10000,
+      "packageName": "demo.delivery",
+      "appLabel": "GrubDash Eats",
+      "title": "Courier is nearby",
+      "text": "☝️⏱️ Give Steve a moment to leave your order at the door. You'll get an alert when it's here.",
+      "style": "BIG_PICTURE",
+      "category": "SERVICE",
+      "appIconAsset": "delivery-icon"
+    },
+    {
+      "packageName": "demo.calendar",
+      "appLabel": "Calendar",
+      "title": "Design review in 10 minutes",
+      "text": "NotiSync demo walkthrough",
+      "category": "EVENT",
+      "appIconAsset": "calendar-icon"
+    },
+    {
+      "packageName": "demo.messages",
+      "appLabel": "Messages",
+      "title": "Riley",
+      "text": "I just got my new iPhone! Can you help me set it up?",
+      "style": "MESSAGING",
+      "conversationTitle": "Riley",
+      "isGroupConversation": false,
+      "category": "MESSAGE",
+      "appIconAsset": "messages-icon",
+      "messages": [
+        { "sender": "Riley", "text": "I just got my new iPhone! Can you help me set it up?", "avatarAsset": "riley-avatar" }
+      ]
+    },
+    {
+      "intervalMillis": 10000,
+      "packageName": "demo.mail",
+      "appLabel": "Mail",
+      "title": "Build is ready",
+      "text": "The latest test build finished successfully.",
+      "category": "EMAIL",
+      "appIconAsset": "mail-icon"
+    },
+    {
+      "packageName": "demo.messages",
+      "appLabel": "Messages",
+      "title": "Weekend plan",
+      "text": "How about 10:30? I might need to adjust my schedule.",
+      "style": "MESSAGING",
+      "conversationTitle": "Weekend plan",
+      "isGroupConversation": true,
+      "category": "MESSAGE",
+      "appIconAsset": "messages-icon",
+      "messages": [
+        { "sender": "Maya", "text": "Are we still on for coffee?", "avatarAsset": "maya-avatar" },
+        { "sender": null, "text": "Yes, 10 works." },
+        { "sender": "Maya", "text": "Perfect. See you at 10.", "avatarAsset": "maya-avatar" },
+        { "sender": "Maya", "text": "How about 10:30? I might need to adjust my schedule.", "avatarAsset": "maya-avatar" }
+      ]
+    },
+    {
+      "intervalMillis": 10000,
+      "packageName": "demo.delivery",
+      "appLabel": "GrubDash Eats",
+      "title": "Arrived on target!",
+      "text": "Grab your order at the door, and don't forget to rate and tip.",
+      "style": "BIG_PICTURE",
+      "category": "SERVICE",
+      "appIconAsset": "delivery-icon",
+      "bigPictureAsset": "delivery-photo"
+    }
+  ]
+}

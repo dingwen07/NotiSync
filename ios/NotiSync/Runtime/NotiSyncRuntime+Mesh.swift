@@ -1,6 +1,20 @@
 import Foundation
 import SwiftData
 
+private enum ExperienceModeError: LocalizedError {
+    case runtimeNotReady
+    case missingPairingURL
+
+    var errorDescription: String? {
+        switch self {
+        case .runtimeNotReady:
+            return String(localized: "error.experience.runtimeNotReady", defaultValue: "NotiSync is still starting up.", comment: "Error shown when Experience Mode starts before the runtime is ready.")
+        case .missingPairingURL:
+            return String(localized: "error.experience.missingPairingURL", defaultValue: "Could not build this device's pairing link.", comment: "Error shown when Experience Mode cannot build a local pairing link.")
+        }
+    }
+}
+
 /// Mesh identity & keys: self-heal key-epochs we can't seal to, run the key-rotation lifecycle (#8 — mint →
 /// pre-warm → activate → retire), and drive pairing + trust (accept/approve/reject/revoke, roster + profile
 /// broadcast). All of this is own-mesh convergence: keeping the user's devices mutually reachable and named.
@@ -159,22 +173,49 @@ extension NotiSyncRuntime {
     }
 
     func acceptPairing(_ scanned: String, ownDevice: Bool = true) {
-        guard let engine else { return }
         Task {
             do {
-                let name = try await Task.detached(priority: .userInitiated) {
-                    try engine.acceptPairing(scanned, ownDevice: ownDevice)
-                }.value
-                addActivity(.paired, .paired, detail: .text, detailArg: name)
-                refreshPeerRows()
-                settings().pairingStatusValue = .paired
-                try? modelContext?.save()
-                await publishCurrentRoute()
-                await broadcastTrust()   // #5 — announce the new device to the rest of the own-mesh
+                _ = try await acceptPairingAndSync(scanned, ownDevice: ownDevice)
             } catch {
                 record(error: error, domain: .pairing)
             }
         }
+    }
+
+    func startExperienceMode() async -> Bool {
+        guard let broker else {
+            record(error: ExperienceModeError.runtimeNotReady, domain: .pairing)
+            return false
+        }
+        if pairingPayload == nil { await makePairingPayloadAsync() }
+        guard let pairingUrl = pairingPayload else {
+            record(error: ExperienceModeError.missingPairingURL, domain: .pairing)
+            return false
+        }
+        do {
+            let demoPairingUrl = try await broker.startDemoExperience(pairingUrl: pairingUrl)
+            _ = try await acceptPairingAndSync(demoPairingUrl, ownDevice: true)
+            startForegroundWebSocket()
+            return true
+        } catch {
+            record(error: error, domain: .pairing)
+            return false
+        }
+    }
+
+    @discardableResult
+    private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
+        guard let engine else { throw ExperienceModeError.runtimeNotReady }
+        let name = try await Task.detached(priority: .userInitiated) {
+            try engine.acceptPairing(scanned, ownDevice: ownDevice)
+        }.value
+        addActivity(.paired, .paired, detail: .text, detailArg: name)
+        refreshPeerRows()
+        settings().pairingStatusValue = .paired
+        try? modelContext?.save()
+        await publishCurrentRoute()
+        await broadcastTrust()   // #5 — announce the new device to the rest of the own-mesh
+        return name
     }
 
     /// #6 — locally revoke a peer, mark its Devices row, and broadcast the revocation to the own-mesh so it

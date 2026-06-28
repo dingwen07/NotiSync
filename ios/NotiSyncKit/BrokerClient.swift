@@ -39,6 +39,14 @@ nonisolated struct StoredBrokerAuth: Codable, Sendable {
     var expiresAt: Int64
 }
 
+private nonisolated struct DemoStartRequest: Codable, Sendable {
+    var pairingUrl: String
+}
+
+private nonisolated struct DemoStartResponse: Codable, Sendable {
+    var pairingUrl: String
+}
+
 nonisolated enum BrokerAuthStore {
     private static let jwtAccount = "broker.jwt"
 
@@ -181,6 +189,21 @@ actor BrokerClient {
         guard !routes.isEmpty else { return }
         _ = try await authed(path: "/v2/routes", method: "POST",
                              body: ProtocolCodec.encodeSignedBlobList(routes), contentType: "application/cbor", operational: false)
+    }
+
+    func startDemoExperience(pairingUrl: String) async throws -> String {
+        let u = try url("/demo")
+        let body = try JSONEncoder().encode(DemoStartRequest(pairingUrl: pairingUrl))
+        var req = URLRequest(url: u)
+        req.httpMethod = "POST"
+        req.httpBody = body
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let (data, resp) = try await session.data(for: req)
+        guard let http = resp as? HTTPURLResponse else { throw BrokerError.http(0, "no response") }
+        guard (200..<300).contains(http.statusCode) else {
+            throw BrokerError.http(http.statusCode, String(decoding: data, as: UTF8.self))
+        }
+        return try JSONDecoder().decode(DemoStartResponse.self, from: data).pairingUrl
     }
 
     @discardableResult

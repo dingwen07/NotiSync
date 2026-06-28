@@ -70,6 +70,8 @@ import net.extrawdw.notisync.server.data.NotiSyncDb
 import net.extrawdw.notisync.server.data.PrivateAssetStore
 import net.extrawdw.notisync.server.data.RelayStore
 import net.extrawdw.notisync.server.data.RouteStore
+import net.extrawdw.notisync.server.demo.DemoExperience
+import net.extrawdw.notisync.server.demo.DemoStartRequest
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
@@ -113,6 +115,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
     val push = CompositePushTransport.create(config)
     val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
+    val demo = DemoExperience(broker, this, config.demoConfigPath)
     // Pluggable attestation: Play Integrity is always available (legacy/transition); App Check is added when
     // configured. New "ways" (e.g. Apple App Attest) join here without touching the endpoint or downstream.
     val metrics = AttestationMetrics()
@@ -168,6 +171,22 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
         // They report process health, not the wire contract, so they must not move when the API version does.
         get("/healthz") { call.respond(HealthResponse("ok", config.version)) }
         get("/readyz") { call.respond(HealthResponse("ready", config.version)) }
+
+        // Experience Mode: an iOS client POSTs its pairing URL, the server trusts that public card for this
+        // ephemeral session, returns a synthetic demo client's pairing URL, then sends a short burst of
+        // regular E2E-encrypted notifications through the broker.
+        post("/demo") {
+            val body = call.receiveCapped(MAX_VERIFY_BODY_BYTES)
+                ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
+            val req = runCatching {
+                ProtocolCodec.decodeFromJson<DemoStartRequest>(body.toString(Charsets.UTF_8))
+            }.getOrNull() ?: return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_demo_request"))
+            val response = runCatching { demo.start(req.pairingUrl) }.getOrElse {
+                log.info("demo start rejected: {}", it.message)
+                return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_pairing"))
+            }
+            call.respond(response)
+        }
 
         // Clean NS2 API — everything version-specific (its own JWT key, the NS2 wire contract) is served
         // under /v2 (the legacy NS1 JAR owns /v1). No NS1 code path.

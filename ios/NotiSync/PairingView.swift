@@ -13,6 +13,8 @@ struct PairingView: View {
     @State private var queuedCandidate: CandidateItem?
     @State private var qrImage: UIImage?
     @State private var scanError: String?
+    @State private var experienceInProgress = false
+    @State private var experienceMessage: String?
 
     var body: some View {
         NavigationStack {
@@ -48,6 +50,22 @@ struct PairingView: View {
                         }
                     } label: {
                         InlineIconLabel("Paste pairing code", systemImage: "doc.on.clipboard")
+                    }
+                    Button {
+                        startExperienceMode()
+                    } label: {
+                        if experienceInProgress {
+                            HStack(spacing: 8) {
+                                ProgressView()
+                                Text("Starting Experience Mode")
+                            }
+                        } else {
+                            InlineIconLabel("Experience Mode", systemImage: "sparkles")
+                        }
+                    }
+                    .disabled(experienceInProgress)
+                    if let experienceMessage {
+                        Text(verbatim: experienceMessage).font(.footnote).foregroundStyle(.secondary)
                     }
                     if let scanError {
                         Text(verbatim: scanError).font(.footnote).foregroundStyle(.red)
@@ -100,6 +118,21 @@ struct PairingView: View {
                         activeSheet = nil
                     }
                 }
+            }
+        }
+    }
+
+    private func startExperienceMode() {
+        Task { @MainActor in
+            experienceInProgress = true
+            experienceMessage = nil
+            scanError = nil
+            let started = await runtime.startExperienceMode()
+            experienceInProgress = false
+            if started {
+                experienceMessage = String(localized: "pairing.experience.started", defaultValue: "Experience Mode paired. Demo notifications will arrive shortly.", comment: "Shown after Experience Mode starts from the pairing sheet.")
+            } else {
+                scanError = runtime.lastError ?? String(localized: "pairing.experience.failed", defaultValue: "Experience Mode could not start.", comment: "Shown when Experience Mode fails to start.")
             }
         }
     }
