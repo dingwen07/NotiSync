@@ -248,7 +248,7 @@ struct DevicesView: View {
                 }
                 Section("Trusted Peers") {
                     ForEach(devices.filter { $0.status == .trusted }) { device in
-                        TrustedPeerRow(device: device, opensFilters: !isIosPeer(device)) {
+                        TrustedPeerRow(device: device, supportsNotificationFilters: !isIosPeer(device)) {
                             selectedFilterDevice = .android(device)
                         }
                             .swipeActions(edge: .trailing) {
@@ -373,7 +373,7 @@ struct DevicesView: View {
 private struct TrustedPeerRow: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     let device: TrustedDevice
-    let opensFilters: Bool
+    let supportsNotificationFilters: Bool
     let openFilters: () -> Void
 
     var body: some View {
@@ -381,20 +381,22 @@ private struct TrustedPeerRow: View {
             DeviceLabel(device: device)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if opensFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
+                    if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
                         openFilters()
                     }
                 }
-            HStack {
-                Toggle(isOn: Binding(
-                    get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
-                    set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
-                )) {
-                    NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
+            if supportsNotificationFilters {
+                HStack {
+                    Toggle(isOn: Binding(
+                        get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
+                        set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
+                    )) {
+                        NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    Spacer()
                 }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                Spacer()
             }
         }
     }
@@ -547,7 +549,7 @@ private struct NotificationPostingLabel: View {
 
     var body: some View {
         if isEnabled {
-            InlineIconLabel("Post Notifications", systemImage: "bell")
+            InlineIconLabel("Posting Notifications", systemImage: "bell")
         } else {
             InlineIconLabel("Notifications Silenced", systemImage: "bell.slash")
         }
@@ -783,6 +785,7 @@ struct SettingsView: View {
     @State private var brokerURL = ""
     @State private var deviceName = ""
     @State private var environment: RouteEnvironment = NotiSyncConfig.defaultAPNSEnvironment
+    @State private var releaseHiddenSettingsUnlocked = SettingsHiddenControlsUnlock.isUnlocked
 
     var body: some View {
         NavigationStack {
@@ -802,13 +805,15 @@ struct SettingsView: View {
                     LabeledContent("Pairing", value: LocalizedText.pairingStatus(settingsRows.first?.pairingStatusValue ?? .unpaired))
                 }
                 Section("Broker") {
-                    LabeledContent("Address") {
-                        TextField("Address", text: $brokerURL)
-                            .textInputAutocapitalization(.never)
-                            .keyboardType(.URL)
-                            .autocorrectionDisabled()
-                            .lineLimit(1)
-                            .multilineTextAlignment(.trailing)
+                    if showsHiddenSettings {
+                        LabeledContent("Address") {
+                            TextField("Address", text: $brokerURL)
+                                .textInputAutocapitalization(.never)
+                                .keyboardType(.URL)
+                                .autocorrectionDisabled()
+                                .lineLimit(1)
+                                .multilineTextAlignment(.trailing)
+                        }
                     }
                     LabeledContent("Device Name") {
                         TextField("Device Name", text: $deviceName)
@@ -841,10 +846,12 @@ struct SettingsView: View {
                                 .font(.footnote)
                                 .foregroundStyle(.red)
                         }
-                        Button {
-                            runtime.simulateLocalStateLossRecovery()
-                        } label: {
-                            InlineIconLabel("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
+                        if showsHiddenSettings {
+                            Button {
+                                runtime.simulateLocalStateLossRecovery()
+                            } label: {
+                                InlineIconLabel("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
+                            }
                         }
                     }
                 }
@@ -853,19 +860,21 @@ struct SettingsView: View {
                         LabeledContent("Current epoch", value: "\(info.epoch)")
                         VerificationValueRow("Signing key", value: info.signingKeyFingerprint)
                         VerificationValueRow("Encryption key", value: info.encryptionKeyFingerprint)
-                        Text(verbatim: LocalizedText.rotationStatus(info))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        TimelineView(.periodic(from: .now, by: 60)) { timeline in
+                            Text(verbatim: LocalizedText.rotationStatus(info, now: timeline.date))
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     }
                     Button {
                         runtime.rotateNow()
                     } label: {
-                        InlineIconLabel("Rotate Now (debug)", systemImage: "arrow.triangle.2.circlepath")
+                        InlineIconLabel("Rotate Now", systemImage: "arrow.triangle.2.circlepath")
                     }
                 } header: {
                     Text("Key Rotation")
                 } footer: {
-                    Text("Forces a key rotation immediately (debug). Normally rotates ~monthly. The old epoch's keys are retained through the overlap so in-flight notifications still decrypt.")
+                    Text("Forces a key rotation immediately. Normally rotates ~monthly. The old epoch's keys are retained through the overlap so in-flight notifications still decrypt.")
                 }
             }
             .navigationTitle("Settings")
@@ -877,9 +886,29 @@ struct SettingsView: View {
                     } label: {
                         Label("Drain", systemImage: "arrow.clockwise")
                     }
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.7).onEnded { _ in
+                            revealHiddenSettingsForProcess()
+                        }
+                    )
                 }
             }
         }
+    }
+
+    private var showsHiddenSettings: Bool {
+        #if DEBUG
+        true
+        #else
+        releaseHiddenSettingsUnlocked
+        #endif
+    }
+
+    private func revealHiddenSettingsForProcess() {
+        #if !DEBUG
+        SettingsHiddenControlsUnlock.isUnlocked = true
+        releaseHiddenSettingsUnlocked = true
+        #endif
     }
 
     private var hasSettingsChanges: Bool {
@@ -897,4 +926,8 @@ struct SettingsView: View {
         environment = NotiSyncConfig.effectiveAPNSEnvironment(settings.apnsEnvironment)
     }
 
+}
+
+private enum SettingsHiddenControlsUnlock {
+    static var isUnlocked = false
 }

@@ -123,11 +123,11 @@ enum LocalizedText {
                           comment: "Delivery mode for a local preview notification.")
         case .apnsInline:
             return String(localized: "delivery.apnsInline",
-                          defaultValue: "APNs inline",
+                          defaultValue: "APNs Inline",
                           comment: "Delivery mode for an inline APNs payload.")
         case .apnsRelayFetch:
             return String(localized: "delivery.apnsRelayFetch",
-                          defaultValue: "APNs relay fetch",
+                          defaultValue: "APNs + Fetch",
                           comment: "Delivery mode for an APNs wake followed by a relay fetch.")
         case .foregroundWebSocket:
             return String(localized: "delivery.foregroundWebSocket",
@@ -143,11 +143,11 @@ enum LocalizedText {
                           comment: "Delivery mode for background refresh delivery.")
         case .apnsAlertInline:
             return String(localized: "delivery.apnsAlertInline",
-                          defaultValue: "APNs",
+                          defaultValue: "APNs Inline (NSE)",
                           comment: "Delivery mode for an alerting APNs notification carrying inline ciphertext.")
         case .apnsAlertRelay:
-            return String(localized: "delivery.apnsAlertRelay",
-                          defaultValue: "APNs + fetch",
+            return String(localized: "delivery.apnsAlertRelayFetch",
+                          defaultValue: "APNs + Fetch (NSE)",
                           comment: "Delivery mode for an alerting APNs notification followed by a relay fetch.")
         }
     }
@@ -265,8 +265,8 @@ enum LocalizedText {
                           comment: "Activity title for retiring an old key rotation epoch.")
         case .rotatedDebug:
             return String(localized: "activity.title.rotatedDebug",
-                          defaultValue: "Rotated (debug)",
-                          comment: "Activity title for a debug key rotation.")
+                          defaultValue: "Rotated",
+                          comment: "Activity title for a manual key rotation.")
         case .localStateRecovered:
             return String(localized: "activity.title.localStateRecovered",
                           defaultValue: "Recovered local state",
@@ -397,29 +397,51 @@ enum LocalizedText {
         return String.localizedStringWithFormat(format, Int64(count))
     }
 
-    static func rotationStatus(_ info: RotationKeyInfo) -> String {
+    static func rotationStatus(_ info: RotationKeyInfo, now: Date = .now) -> String {
         guard info.nextEventAtMillis > 0 else {
             return String(localized: "rotation.status.noneScheduled",
                           defaultValue: "No rotation scheduled",
                           comment: "Shown when there is no key rotation scheduled.")
         }
-        let when = Date(timeIntervalSince1970: TimeInterval(info.nextEventAtMillis) / 1000)
-            .formatted(.relative(presentation: .named))
+        let eventDate = Date(timeIntervalSince1970: TimeInterval(info.nextEventAtMillis) / 1000)
+        let remaining = rotationCountdown(until: eventDate, now: now)
         if let target = info.pendingTargetEpoch {
             if info.pendingActivated {
                 let format = String(localized: "rotation.status.retiringPreviousEpoch",
-                                    defaultValue: "Retiring previous epoch %@",
-                                    comment: "Key rotation status. The placeholder is a relative time.")
-                return String(format: format, locale: .current, when)
+                                    defaultValue: "Disabling previous epoch in %@",
+                                    comment: "Key rotation status. The placeholder is an exact days/hours/minutes countdown.")
+                return String(format: format, locale: .current, remaining)
             }
             let format = String(localized: "rotation.status.activatingEpoch",
-                                defaultValue: "Activating epoch %lld %@",
-                                comment: "Key rotation status. The placeholders are the target epoch and a relative time.")
-            return String(format: format, locale: .current, Int64(target), when)
+                                defaultValue: "Activating epoch %lld in %@",
+                                comment: "Key rotation status. The placeholders are the target epoch and an exact days/hours/minutes countdown.")
+            return String(format: format, locale: .current, Int64(target), remaining)
         }
         let format = String(localized: "rotation.status.nextRotation",
-                            defaultValue: "Next rotation %@",
-                            comment: "Key rotation status. The placeholder is a relative time.")
-        return String(format: format, locale: .current, when)
+                            defaultValue: "Next rotation in %@",
+                            comment: "Key rotation status. The placeholder is an exact days/hours/minutes countdown.")
+        return String(format: format, locale: .current, remaining)
+    }
+
+    private static func rotationCountdown(until eventDate: Date, now: Date) -> String {
+        let interval = eventDate.timeIntervalSince(now)
+        guard interval > 0 else {
+            return String(localized: "rotation.duration.now",
+                          defaultValue: "now",
+                          comment: "Countdown value for an event that is due now.")
+        }
+        guard interval >= 60 else {
+            return String(localized: "rotation.duration.lessThanMinute",
+                          defaultValue: "less than 1 minute",
+                          comment: "Countdown value for an event due in under one minute.")
+        }
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute]
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 3
+        formatter.zeroFormattingBehavior = .dropAll
+        return formatter.string(from: interval) ?? String(localized: "rotation.duration.lessThanMinute",
+                                                          defaultValue: "less than 1 minute",
+                                                          comment: "Countdown value for an event due in under one minute.")
     }
 }
