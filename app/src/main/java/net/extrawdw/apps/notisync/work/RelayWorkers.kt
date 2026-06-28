@@ -18,15 +18,15 @@ import net.extrawdw.apps.notisync.transport.DeliveryMode
 import java.util.concurrent.TimeUnit
 
 /**
- * Retry an FCM-wake relay fetch out-of-band. The messaging service enqueues this ONLY when its inline
- * fetch failed (e.g. no network in the wake window). Unlike the inline path it survives process death
- * and retries with backoff once the network returns, so an oversized notification still lands rather
- * than waiting for the next app foreground. Delivery is idempotent (the channel dedups by message id).
+ * Handle an FCM-wake relay fetch out-of-band. The messaging service always enqueues wake pointers here so
+ * the FCM callback does not block on graph init, network, or relay fetch time. It survives process death and
+ * retries with backoff once the network returns, so an oversized notification still lands rather than waiting
+ * for the next app foreground. Delivery is idempotent (the channel dedups by message id).
  */
 class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
         val messageId = inputData.getString(KEY_MESSAGE_ID) ?: return Result.success()
-        val graph = (applicationContext as NotiSyncApp).graph
+        val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return Result.retry()
         val channel = graph.secureChannel ?: return Result.retry()
         val envelope = runCatching { graph.transport.fetchRelayMessage(messageId) }.getOrNull()
         return when {
@@ -77,7 +77,7 @@ class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
  */
 class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
-        val graph = (applicationContext as NotiSyncApp).graph
+        val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return Result.retry()
         val channel = graph.secureChannel ?: return Result.success()
         val store = graph.messageStore
 

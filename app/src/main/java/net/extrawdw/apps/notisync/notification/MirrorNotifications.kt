@@ -28,6 +28,7 @@ import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.graphics.drawable.IconCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -666,11 +667,12 @@ class RemoteNotificationPoster(
 /** Fires when the user swipes away a mirrored notification → propagate the dismissal to peers. */
 class DismissReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val app = context.applicationContext as NotiSyncApp
-        val engine = app.graph.mirrorEngine ?: return
+        val app = context.applicationContext as? NotiSyncApp ?: return
         val pending = goAsync()
-        app.graph.scope.launch {
+        CoroutineScope(Dispatchers.Default).launch {
             try {
+                val graph = app.awaitGraphReady() ?: return@launch
+                val engine = graph.mirrorEngine ?: return@launch
                 val groupKey = intent.getStringExtra(EXTRA_GROUP_KEY)
                 if (groupKey != null) {
                     dismissGroup(context, engine, groupKey)

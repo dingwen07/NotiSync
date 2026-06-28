@@ -27,11 +27,11 @@ class AncsBootReceiver : BroadcastReceiver() {
             Intent.ACTION_BOOT_COMPLETED, Intent.ACTION_MY_PACKAGE_REPLACED -> Unit
             else -> return
         }
-        val graph = (context.applicationContext as? NotiSyncApp)?.graph ?: return
+        val app = context.applicationContext as? NotiSyncApp ?: return
         val pending = goAsync()
         CoroutineScope(Dispatchers.Default).launch {
             try {
-                graph.resumeAncsBridgeIfEnabled()
+                app.awaitGraphReady()?.resumeAncsBridgeIfEnabled()
             } catch (t: Throwable) {
                 Log.w("AncsBootReceiver", "resume failed", t)
             } finally {

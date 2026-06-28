@@ -46,26 +46,60 @@ class AncsBridgeService : Service() {
      *  must not stack duplicate collectors that each re-post the notification on every state change. */
     @Volatile
     private var collecting = false
-    private val repo get() = (application as NotiSyncApp).graph.iosDeviceRepo
     private val notificationManager get() = getSystemService(NotificationManager::class.java)
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        ensureChannel()
-        ServiceCompat.startForeground(
-            this, NOTIF_ID, buildNotification(repo.status.value, repo.deviceName.value),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-        )
-        if (!collecting) {
-            collecting = true; observeStatus()
+        if (!hasPermissions(this)) {
+            (application as? NotiSyncApp)?.graphIfReady?.iosDeviceRepo?.setStatus(AncsStatus.ERROR)
+            stopSelf(startId)
+            return START_NOT_STICKY
         }
-        runCatching { (application as NotiSyncApp).graph.ancsManager?.start() }
+        ensureChannel()
+        val app = application as NotiSyncApp
+        val graph = app.graphIfReady
+        val repo = graph?.iosDeviceRepo
+        val foregroundStarted = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIF_ID,
+                buildNotification(
+                    repo?.status?.value ?: AncsStatus.CONNECTING,
+                    repo?.deviceName?.value
+                ),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        }.isSuccess
+        if (!foregroundStarted) {
+            repo?.setStatus(AncsStatus.ERROR)
+            stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        if (graph != null && repo != null) {
+            startBridge(graph, repo)
+        } else {
+            scope.launch {
+                val ready = app.awaitGraphReady() ?: run {
+                    stopSelf(startId)
+                    return@launch
+                }
+                startBridge(ready, ready.iosDeviceRepo)
+            }
+        }
         return START_STICKY
     }
 
     override fun onDestroy() {
         scope.cancel()
-        runCatching { (application as NotiSyncApp).graph.ancsManager?.stop() }
+        runCatching { (application as? NotiSyncApp)?.graphIfReady?.ancsManager?.stop() }
         super.onDestroy()
+    }
+
+    private fun startBridge(graph: net.extrawdw.apps.notisync.AppGraph, repo: IosDeviceRepository) {
+        if (!collecting) {
+            collecting = true
+            observeStatus(repo)
+        }
+        runCatching { graph.ancsManager?.start() }
     }
 
     /**
@@ -82,7 +116,7 @@ class AncsBridgeService : Service() {
      * is immediate (unlike `debounce`, which delays every post), the final value is never lost, and posts
      * stay ≥ a window apart (≤ ~4/sec) regardless of how fast the bridge churns.
      */
-    private fun observeStatus() {
+    private fun observeStatus(repo: IosDeviceRepository) {
         scope.launch {
             combine(repo.status, repo.deviceName) { status, name -> status to name }
                 .distinctUntilChanged()

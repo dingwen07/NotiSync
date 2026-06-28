@@ -4,6 +4,9 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.NotificationManagerCompat
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.notisync.protocol.ClientId
 
@@ -17,15 +20,23 @@ class TrustActionReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? NotiSyncApp ?: return
         val clientId = ClientId(intent.getStringExtra(EXTRA_CLIENT_ID) ?: return)
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, 0)
-        val trust = app.graph.trust
-        val now = System.currentTimeMillis()
-        when (intent.action) {
-            ACTION_APPROVE -> trust.approveTrust(clientId, now)
-            ACTION_REJECT -> if (trust.rejectTrust(clientId, now)) app.graph.broadcastTrust()
-            ACTION_CONFIRM_REVOKE -> trust.confirmRevoke(clientId, now)
-            ACTION_KEEP -> if (trust.keepTrusted(clientId, now)) app.graph.broadcastTrust()
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.Default).launch {
+            try {
+                val graph = app.awaitGraphReady() ?: return@launch
+                val trust = graph.trust
+                val now = System.currentTimeMillis()
+                when (intent.action) {
+                    ACTION_APPROVE -> trust.approveTrust(clientId, now)
+                    ACTION_REJECT -> if (trust.rejectTrust(clientId, now)) graph.broadcastTrust()
+                    ACTION_CONFIRM_REVOKE -> trust.confirmRevoke(clientId, now)
+                    ACTION_KEEP -> if (trust.keepTrusted(clientId, now)) graph.broadcastTrust()
+                }
+                if (notifId != 0) NotificationManagerCompat.from(context).cancel(notifId)
+            } finally {
+                pending.finish()
+            }
         }
-        if (notifId != 0) NotificationManagerCompat.from(context).cancel(notifId)
     }
 
     companion object {

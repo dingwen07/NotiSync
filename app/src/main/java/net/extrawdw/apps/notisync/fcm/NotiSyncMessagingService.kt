@@ -13,8 +13,8 @@ import java.util.Base64
 
 /**
  * FCM data-message handler. The broker sends data-only messages: an inline encrypted envelope ("ct")
- * for small payloads, or a wake pointer ("mid") for large ones — which we pull from the broker's relay
- * by id (see [AppGraph.fetchWakeMessage]) rather than waiting for the next foreground WebSocket flush.
+ * for small payloads, or a wake pointer ("mid") for large ones — which WorkManager pulls from the
+ * broker's relay by id rather than waiting for the next foreground WebSocket flush.
  * Decryption happens locally in the [SecureChannel] — FCM never sees plaintext. [SecureChannel.deliver]
  * is non-suspend and runs inline here, preserving the synchronous-completion contract of this thread.
  */
@@ -25,29 +25,33 @@ import java.util.Base64
 class NotiSyncMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val graph = (applicationContext as NotiSyncApp).graph
-        val channel = graph.secureChannel ?: return
         val ct = message.data["ct"]
         if (ct != null) {
             val envelope = runCatching {
                 ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(ct))
             }.getOrNull() ?: return
+            val graph = (applicationContext as NotiSyncApp)
+                .awaitGraphReadyBlocking(INLINE_GRAPH_WAIT_MS)
+                ?: return
+            val channel = graph.secureChannel ?: return
             // Inline delivery never gets fetched, so the broker can't drop its relay copy on its own —
             // queue it for the worker's batch ack (skipped for a dropped-unhandled message).
             val outcome = channel.deliver(envelope, DeliveryMode.FCM_INLINE)
             graph.onInlineDelivered(envelope.messageId, outcome)
             return
         }
-        // Wake-only message ("typ"="wake"): the payload was too large to inline. Pull exactly the
-        // referenced envelope from the broker's relay and deliver it now, instead of waiting for the
-        // next foreground WebSocket flush (which could be far off while the app is backgrounded). If the
-        // inline fetch fails (e.g. no network this instant), hand off to a retrying background worker.
+        // Wake-only message ("typ"="wake"): the payload was too large to inline. Hand off immediately
+        // to WorkManager so this FCM callback never blocks on graph init, network, or relay fetch time.
         message.data["mid"]?.let { mid ->
-            if (!graph.fetchWakeMessage(mid)) WakeFetchWorker.enqueue(applicationContext, mid)
+            WakeFetchWorker.enqueue(applicationContext, mid)
         }
     }
 
     override fun onRegistered(installationId: String) {
-        (applicationContext as NotiSyncApp).graph.onFcmRegistered(installationId)
+        (applicationContext as NotiSyncApp).runWhenGraphReady { it.onFcmRegistered(installationId) }
+    }
+
+    private companion object {
+        const val INLINE_GRAPH_WAIT_MS = 10_000L
     }
 }

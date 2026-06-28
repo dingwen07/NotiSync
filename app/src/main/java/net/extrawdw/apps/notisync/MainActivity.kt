@@ -16,6 +16,7 @@ import androidx.compose.animation.ExitTransition
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
@@ -80,15 +81,23 @@ class MainActivity : ComponentActivity() {
         consumeOpenDevices(intent)
         enableEdgeToEdge()
         setContent {
+            val app = applicationContext as NotiSyncApp
+            val graphReady by app.graphReady.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             NotiSyncTheme {
-                NotiSyncRoot(
-                    pendingPairingPayload = pairingPayload,
-                    onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
-                    openDevices = openDevices,
-                    onOpenDevicesConsumed = { pendingOpenDevices.value = false },
-                )
+                if (graphReady) {
+                    NotiSyncRoot(
+                        pendingPairingPayload = pairingPayload,
+                        onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                        openDevices = openDevices,
+                        onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                    )
+                } else {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator()
+                    }
+                }
             }
         }
     }

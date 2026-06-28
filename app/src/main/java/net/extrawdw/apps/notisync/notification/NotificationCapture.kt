@@ -10,8 +10,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
-import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -19,9 +19,11 @@ import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import java.util.concurrent.ConcurrentHashMap
 
 /** Turns a platform [StatusBarNotification] into the normalized, transport-neutral form. */
 class NotificationNormalizer(private val pm: PackageManager) {
+    private val labelCache = ConcurrentHashMap<String, String>()
 
     fun normalize(
         sbn: StatusBarNotification,
@@ -103,9 +105,12 @@ class NotificationNormalizer(private val pm: PackageManager) {
         else -> null // UNSPECIFIED / unknown -> consumer falls back
     }
 
-    private fun appLabel(pkg: String): String = runCatching {
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-    }.getOrDefault(pkg)
+    private fun appLabel(pkg: String): String =
+        labelCache.getOrPut(pkg) {
+            runCatching {
+                pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
+            }.getOrDefault(pkg)
+        }
 
     private fun categoryOf(category: String?): MirrorCategory = when (category) {
         Notification.CATEGORY_MESSAGE -> MirrorCategory.MESSAGE
@@ -133,7 +138,6 @@ class NotificationNormalizer(private val pm: PackageManager) {
 class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler {
 
     private val app get() = applicationContext as NotiSyncApp
-    private val engine: MirrorEngine? get() = app.graph.mirrorEngine
     private val normalizer by lazy { NotificationNormalizer(packageManager) }
 
     /**
@@ -178,20 +182,24 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         java.util.Collections.synchronizedMap(HashMap())
 
     override fun onListenerConnected() {
-        engine?.originalCanceler = this
-        // Backfill on (re)connect, but don't RE-send notifications we already mirrored before a restart
-        // (e.g. after a NotiSync update). They're still registered so their dismissals sync — only the
-        // SEND is gated by the persisted high-water mark of mirrored post times.
-        app.graph.scope.launch {
-            val cutoff = runCatching { app.graph.settings.lastSeenPostTime() }.getOrDefault(0L)
-            runCatching { activeNotifications }.getOrNull()?.forEach { handlePosted(it, cutoff) }
+        app.runWhenGraphReady { graph ->
+            graph.mirrorEngine?.originalCanceler = this
+            // Backfill on (re)connect, but don't RE-send notifications we already mirrored before a restart
+            // (e.g. after a NotiSync update). They're still registered so their dismissals sync — only the
+            // SEND is gated by the persisted high-water mark of mirrored post times.
+            graph.scope.launch {
+                val cutoff = runCatching { graph.settings.lastSeenPostTime() }.getOrDefault(0L)
+                runCatching { activeNotifications }.getOrNull()
+                    ?.forEach { handlePosted(it, cutoff, graph) }
+            }
         }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
         // A (re)post cancels any pending debounced dismissal for this key — it's an update, not removal.
         pendingDismissals.remove(sbn.key)?.cancel()
-        handlePosted(sbn, backfillCutoff = null)
+        val graph = app.graphIfReady ?: return // onListenerConnected backfill covers posts during init.
+        handlePosted(sbn, backfillCutoff = null, graph)
     }
 
     override fun onNotificationRemoved(
@@ -207,12 +215,13 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
             Log.d(TAG, "skip dismissal for unmirrored key reason=$reason pkg=${sbn.packageName}")
             return
         }
-        val eng = engine ?: return
-        val clientId = app.graph.clientId ?: return
+        val graph = app.graphIfReady ?: return
+        val eng = graph.mirrorEngine ?: return
+        val clientId = graph.clientId ?: return
         // Debounce: apps that update by cancel+repost re-post within the window, which cancels this
         // (see onNotificationPosted). Only a genuine removal commits the dismissal + clears the dedup
         // signature, so cancel+repost of identical content neither flickers nor leaves a stale mirror.
-        val job = app.graph.scope.launch {
+        val job = graph.scope.launch {
             delay(DISMISS_DEBOUNCE_MS)
             pendingDismissals.remove(sbn.key)
             lastSentSignature.remove(sbn.key)
@@ -233,36 +242,41 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         runCatching { cancelNotification(sourceKey) }
     }
 
-    private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?) {
+    private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?, graph: AppGraph) {
         if (sbn.packageName == packageName) return                              // never mirror ourselves
         val n = sbn.notification
         // The payload can represent source summaries, but this provider avoids forwarding them as
         // duplicate visible rows; the receiver builds its own local summary from mirrored children.
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return            // group summaries
         // Learn which apps post notifications (for the picker + recency sort), even if not enabled.
-        app.graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)
+        graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)
         if (sbn.isOngoing && !sbn.isClearable) return                          // media / transport / service
-        if (app.graph.appSelection?.isEnabled(sbn.packageName) != true) return // opt-in: default OFF
-        val eng = engine ?: return
-        val clientId = app.graph.clientId ?: return
+        if (graph.appSelection?.isEnabled(sbn.packageName) != true) return // opt-in: default OFF
+        val eng = graph.mirrorEngine ?: return
+        val clientId = graph.clientId ?: return
         val ranking = NotificationListenerService.Ranking()
         val haveRanking =
             runCatching { currentRanking?.getRanking(sbn.key, ranking) == true }.getOrDefault(false)
+        // Normalize + dedup synchronously on the (single-threaded) listener callback so per-key ordering
+        // is preserved: rapid same-key updates can't race or invert on graph.scope's multi-threaded
+        // dispatcher. Only the graphics attach + send is offloaded below.
         val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId)
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 
         val signature = captured.copy(postTime = 0L).hashCode()
-        // Always register (even when we won't re-send) so dismissals still sync and live dedup works.
+        // Register only once content is non-blank (a blank capture is never mirrored, so it must not be
+        // registered — otherwise its later removal would propagate a dismissal for something peers never
+        // saw). Always register even when we won't re-send, so dismissals still sync and live dedup works.
         mirroredKeys.add(sbn.key)
         val unchanged = lastSentSignature.put(sbn.key, signature) == signature
         // Skip the SEND for identical re-posts, and for backfilled notifications we already mirrored
         // before a restart (postTime at/under the persisted high-water mark).
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
-        app.graph.settings.updateLastSeenPostTime(sbn.postTime)
+        graph.settings.updateLastSeenPostTime(sbn.postTime)
         // Off the listener thread: extract/upload private graphics (best-effort), then seal + send.
-        val pipeline = app.graph.graphicsPipeline
-        app.graph.scope.launch {
+        val pipeline = graph.graphicsPipeline
+        graph.scope.launch {
             // Guard the whole send: a re-attestation in cooldown throws (see BrokerClient.bearerToken),
             // and this bare launch would otherwise surface it as an uncaught exception that crashes the
             // scope. attach() can throw too (it uploads private graphics via the same authed path). A

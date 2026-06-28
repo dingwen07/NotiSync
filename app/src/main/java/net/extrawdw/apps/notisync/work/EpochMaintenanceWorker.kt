@@ -36,7 +36,7 @@ import java.util.concurrent.TimeUnit
 class EpochMaintenanceWorker(ctx: Context, params: WorkerParameters) :
     CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
-        val graph = (applicationContext as NotiSyncApp).graph
+        val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return Result.retry()
 
         // 1. Anti-entropy: pull peers whose key-epoch is missing / expired / stripped (flag-independent).
         runCatching { graph.foundationEngine?.convergeKeyEpochs() }

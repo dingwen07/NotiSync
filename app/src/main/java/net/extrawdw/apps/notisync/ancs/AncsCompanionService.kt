@@ -22,7 +22,9 @@ class AncsCompanionService : CompanionDeviceService() {
         // the association). Reliable while warm; on a cold start spawned by this callback, AppGraph.init() also
         // runs resumeAncsBridgeIfEnabled() (a persisted read) to cover the not-yet-loaded window. The start is
         // synchronous so it stays inside the companion-presence foreground-service exemption.
-        if ((application as? NotiSyncApp)?.graph?.settings?.ancsBridgeEnabled?.value != true) return
+        if (!AncsBridgeService.hasPermissions(applicationContext)) return
+        val graph = (application as? NotiSyncApp)?.graphIfReady ?: return
+        if (graph.settings.ancsBridgeEnabled.value != true) return
         runCatching { AncsBridgeService.start(applicationContext) }
             .onFailure {
                 Log.w(

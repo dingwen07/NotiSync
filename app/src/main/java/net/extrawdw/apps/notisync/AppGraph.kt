@@ -8,6 +8,8 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -16,22 +18,25 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.FirebaseMessaging
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
@@ -389,10 +394,7 @@ class AppGraph(private val app: Application) {
         //  * The live WebSocket is opened ONLY while the app UI is in the foreground (instant
         //    bidirectional updates), and closed the moment the app is backgrounded.
         publishSelf()
-        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
-            override fun onStart(owner: LifecycleOwner) = startLiveConnection()
-            override fun onStop(owner: LifecycleOwner) = onAppBackgrounded()
-        })
+        observeProcessLifecycle()
         observeProfileChanges()
         // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
         // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
@@ -422,6 +424,28 @@ class AppGraph(private val app: Application) {
 
     @Volatile
     private var liveJob: Job? = null
+
+    private fun observeProcessLifecycle() {
+        val lifecycle = ProcessLifecycleOwner.get().lifecycle
+        val observer = object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = startLiveConnection()
+            override fun onStop(owner: LifecycleOwner) = onAppBackgrounded()
+        }
+
+        fun addObserver() {
+            lifecycle.addObserver(observer)
+            // AppGraph now initializes off the main thread; if the process is already foregrounded by the time
+            // this observer is installed, start the foreground socket explicitly instead of waiting for a future
+            // onStart event that already happened.
+            if (lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) startLiveConnection()
+        }
+
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            addObserver()
+        } else {
+            Handler(Looper.getMainLooper()).post { addObserver() }
+        }
+    }
 
     /** Publish our key-epoch (the broker's canonical key store), then our FCM route (key-epoch first so the
      *  broker can resolve the route claim's signer). The profile never reaches the broker (QR + E2E only). */
@@ -917,31 +941,6 @@ class AppGraph(private val app: Application) {
     }
 
     /**
-     * Handle an FCM wake pointer: the broker had a notification too large to inline, so it pushed only
-     * the message id. Pull exactly that envelope from the relay and deliver it now — otherwise it would
-     * wait, undelivered, until the next foreground WebSocket flush (minutes/hours while backgrounded).
-     * Returns true iff the envelope was fetched and delivered; the FCM service enqueues a retry worker
-     * on false (e.g. no network in this wake window).
-     *
-     * Called from [net.extrawdw.apps.notisync.fcm.NotiSyncMessagingService.onMessageReceived] on FCM's
-     * background thread, so we block (within a timeout) to keep the process alive until delivery
-     * completes. Delivery is idempotent — [SecureChannel] dedups by message id — so a later foreground
-     * flush or drain re-delivering the same id is harmless, and the broker acks/drops the item on fetch.
-     */
-    fun fetchWakeMessage(messageId: String): Boolean {
-        val channel = secureChannel ?: return false
-        return runBlocking {
-            withTimeoutOrNull(WAKE_FETCH_TIMEOUT_MS) {
-                val envelope = runCatching { transport.fetchRelayMessage(messageId) }.getOrNull()
-                    ?: return@withTimeoutOrNull false
-                channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
-                true
-            } ?: false
-        }
-        // No relay-ack queued here: the GET /v2/relay/{id} fetch already dropped the item server-side.
-    }
-
-    /**
      * After an FCM-inline delivery, queue the message for batch relay-ack — UNLESS it was dropped
      * unhandled (unknown sender / bad signature / decrypt fail), which must stay queued so it can still
      * deliver once trust/keys converge. The inline path is the one delivery the broker can't observe
@@ -1004,8 +1003,6 @@ class AppGraph(private val app: Application) {
         /** Collapse per-keystroke renames in the Settings field into a single broadcast. */
         private const val PROFILE_BROADCAST_DEBOUNCE_MS = 800L
 
-        /** Upper bound on a background FCM-wake fetch — within FCM's high-priority wakelock window. */
-        private const val WAKE_FETCH_TIMEOUT_MS = 15_000L
     }
 }
 
@@ -1014,8 +1011,43 @@ class NotiSyncApp : Application() {
     lateinit var graph: AppGraph
         private set
 
+    private val initScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val graphDeferred = CompletableDeferred<AppGraph>()
+    private val _graphReady = MutableStateFlow(false)
+    val graphReady: StateFlow<Boolean> = _graphReady
+    val isGraphReady: Boolean get() = _graphReady.value
+    val graphIfReady: AppGraph? get() = if (isGraphReady && ::graph.isInitialized) graph else null
+
     override fun onCreate() {
         super.onCreate()
-        graph = AppGraph(this).also { it.init() }
+        graph = AppGraph(this)
+        initScope.launch {
+            runCatching {
+                graph.init()
+                _graphReady.value = true
+                graphDeferred.complete(graph)
+            }.onFailure { t ->
+                Log.e("NotiSyncApp", "graph init failed", t)
+                graphDeferred.completeExceptionally(t)
+            }
+        }
+    }
+
+    suspend fun awaitGraphReady(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =
+        graphIfReady ?: runCatching {
+            withTimeoutOrNull(timeoutMillis) { graphDeferred.await() }
+        }.getOrNull()
+
+    fun awaitGraphReadyBlocking(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =
+        graphIfReady ?: kotlinx.coroutines.runBlocking { awaitGraphReady(timeoutMillis) }
+
+    fun runWhenGraphReady(block: (AppGraph) -> Unit) {
+        graphIfReady?.let(block) ?: initScope.launch {
+            runCatching { awaitGraphReady() }.getOrNull()?.let(block)
+        }
+    }
+
+    companion object {
+        const val GRAPH_INIT_TIMEOUT_MS = 30_000L
     }
 }
