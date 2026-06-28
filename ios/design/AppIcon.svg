@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  NotiSync brand / Play Store high-res icon.
+  Vector source for asset/icon-512.png. Geometry mirrors the Android adaptive
+  launcher icon (300x300 authoring viewport): a tablet + phone device pair, a
+  trust mesh on the tablet, a padlock on the phone, two-way sync arrows, and a
+  notification dot. Render full-square for the Play Store (Google rounds corners).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 300 300">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="300" y2="300" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#2C50B4" />
+      <stop offset="0.55" stop-color="#1B306E" />
+      <stop offset="1" stop-color="#121E50" />
+    </linearGradient>
+  </defs>
+
+  <!-- background -->
+  <rect width="300" height="300" fill="url(#bg)" />
+
+  <!-- foreground enlarged 1.5x about the centre to match the on-device (mask-zoomed) appearance -->
+  <g transform="translate(150 150) scale(1.5) translate(-150 -150)">
+
+  <!-- two-way sync arrows, passing under the devices -->
+  <path d="M244,-3.4L79.64,160.96" fill="none" stroke="#C9DDFF" stroke-width="22" stroke-linecap="round" />
+  <path d="M56,303.4L220.36,139.04" fill="none" stroke="#C9DDFF" stroke-width="22" stroke-linecap="round" />
+  <path d="M62.67,177.93L93.78,175.1L65.5,146.82Z" fill="#C9DDFF" />
+  <path d="M237.33,122.07L234.5,153.18L206.22,124.9Z" fill="#C9DDFF" />
+
+  <g transform="translate(0 -6)">
+
+  <!-- tablet (back device, upper-left) -->
+  <path d="M103,96L153,96A14,14 0 0 1 167,110L167,190A14,14 0 0 1 153,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96Z" fill="#FFFFFF" />
+  <path d="M105,105L151,105A7,7 0 0 1 158,112L158,188A7,7 0 0 1 151,195L105,195A7,7 0 0 1 98,188L98,112A7,7 0 0 1 105,105Z" fill="#FFFFFF" stroke="#16265A" stroke-width="2.5" />
+  <!-- trust mesh filling the tablet screen -->
+  <path d="M128,114L106,150M128,114L150,150M106,150L150,150M106,150L128,186M150,150L128,186" fill="none" stroke="#16265A" stroke-width="3" stroke-linecap="round" />
+  <path d="M122,114a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM100,150a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM144,150a6,6 0 1 0 12,0a6,6 0 1 0 -12,0ZM122,186a6,6 0 1 0 12,0a6,6 0 1 0 -12,0Z" fill="#16265A" />
+
+  <!-- phone (front device, offset lower, overlapping deeply) -->
+  <path d="M156,118L194,118A15,15 0 0 1 209,133L209,203A15,15 0 0 1 194,218L156,218A15,15 0 0 1 141,203L141,133A15,15 0 0 1 156,118Z" fill="#FFFFFF" stroke="#16265A" stroke-width="3.5" />
+  <!-- padlock on the phone screen (centered) -->
+  <path d="M167,165L167,157A8,8 0 0 1 183,157L183,165" fill="none" stroke="#16265A" stroke-width="4.5" stroke-linecap="round" />
+  <path d="M166,165L184,165A4,4 0 0 1 188,169L188,182A4,4 0 0 1 184,186L166,186A4,4 0 0 1 162,182L162,169A4,4 0 0 1 166,165Z" fill="#16265A" />
+  <path d="M172,175a3,3 0 1 0 6,0a3,3 0 1 0 -6,0Z" fill="#FFFFFF" />
+  <path d="M173.5,175L176.5,175L176.5,181L173.5,181Z" fill="#FFFFFF" />
+  <path d="M171,210L179,210A2,2 0 0 1 179,214L171,214A2,2 0 0 1 171,210Z" fill="#16265A" />
+
+  <!-- notification dot, just off the tablet corner -->
+  <path d="M83,99a8,8 0 1 0 16,0a8,8 0 1 0 -16,0Z" fill="#FF5A5F" stroke="#16265A" stroke-width="2" />
+  </g>
+  </g>
+</svg>

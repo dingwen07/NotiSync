@@ -7,13 +7,14 @@ delivery — it can never read your notifications.
 
 ## Architecture
 
-A single Gradle build with shared protocol/crypto code consumed by **both** the Android client and
-the Kotlin/Ktor broker, so the wire format and signature verification can never drift between them.
+A single Gradle build with shared protocol/crypto code consumed by **Android**, **iOS**, and the
+Kotlin/Ktor broker, so the wire format and signature verification can never drift between them.
 
 ```
-:protocol         Pure-Kotlin/JVM. @Serializable CBOR DTOs (cards, route claims, envelope,
-                  captured notification, dismissal), the versioned cipher-suite tag, the
-                  transport-neutral Transport interface, and the JSON control-plane DTOs.
+:protocol         Kotlin Multiplatform (JVM + Apple). @Serializable CBOR DTOs (cards, route
+                  claims, envelope, captured notification, dismissal), the versioned cipher-suite
+                  tag, the transport-neutral Transport interface, JSON control-plane DTOs, and the
+                  iOS XCFramework codec facade.
 :protocol-crypto  Pure-Kotlin/JVM. Tink-based envelope sealing/opening (random DEK → AES-256-GCM
                   body + HPKE per-recipient DEK), ECDSA-P256 signing/verification, client-id
                   derivation. Shared verbatim by client and server.
