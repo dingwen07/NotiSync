@@ -30,11 +30,6 @@ private nonisolated struct TrustTableApplyResult: Sendable {
     )
 }
 
-private nonisolated struct AttachmentFile: Sendable {
-    var identifier: String
-    var url: URL
-}
-
 /// Inbound delivery: foreground WebSocket / relay drain / silent-push envelopes → dedup → open → render
 /// mirrors (single or per-message MESSAGING), apply DataSync (CARD/ASSET/PROFILE/TRUST), and resolve the
 /// private assets (icons, avatars, attachments) that mirrors display.
@@ -324,7 +319,7 @@ extension NotiSyncRuntime {
     private func fetchAttachments(for n: CapturedNotification) async -> [UNNotificationAttachment] {
         var attachments: [UNNotificationAttachment] = []
         for ref in [n.largeIcon, n.bigPicture].compactMap({ $0 }) {
-            guard let plaintext = await loadAsset(ref), let attachment = await Self.attachment(plaintext, ref: ref) else {
+            guard let plaintext = await loadAsset(ref), let attachment = await MirrorPresentation.attachment(plaintext, ref: ref) else {
                 scheduleAssetRepair(ref)
                 continue
             }
@@ -349,34 +344,6 @@ extension NotiSyncRuntime {
         let item = AssetSyncItem(assetHash: ref.assetHash, assetId: ref.assetId, ref: nil)
         guard let env = try? engine.sealAssetRepairRequest(to: ref.sourceClientId, items: [item]) else { return false }
         return (try? await broker.send(env)) != nil
-    }
-
-    private static func attachment(_ data: Data, ref: PrivateAssetRef) async -> UNNotificationAttachment? {
-        guard let file = await Task.detached(priority: .utility, operation: {
-            Self.prepareAttachmentFile(data, ref: ref)
-        }).value else { return nil }
-        return try? UNNotificationAttachment(identifier: file.identifier, url: file.url, options: nil)
-    }
-
-    private nonisolated static func prepareAttachmentFile(_ data: Data, ref: PrivateAssetRef) -> AttachmentFile? {
-        // UNNotificationAttachment only accepts PNG/JPEG/GIF. Android delivers graphics as WebP, which it
-        // rejects — decode + re-encode those (and any unknown type) to PNG so the image still renders (#12).
-        let mime = ref.mimeType.lowercased()
-        let writeData: Data
-        let ext: String
-        if mime.contains("png") {
-            writeData = data; ext = "png"
-        } else if mime.contains("jpeg") || mime.contains("jpg") {
-            writeData = data; ext = "jpg"
-        } else if mime.contains("gif") {
-            writeData = data; ext = "gif"
-        } else {
-            guard let png = UIImage(data: data)?.pngData() else { return nil }
-            writeData = png; ext = "png"
-        }
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(ref.assetId).\(ext)")
-        guard (try? writeData.write(to: url)) != nil else { return nil }
-        return AttachmentFile(identifier: ref.assetId, url: url)
     }
 
     // MARK: Local test

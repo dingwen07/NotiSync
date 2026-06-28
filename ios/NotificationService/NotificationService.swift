@@ -67,6 +67,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 if !filterAlert {
                     MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
                 }
+                let attachments = await fetchAttachments(for: n, engine: engine)
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
                 let prepared: UNNotificationContent
@@ -74,7 +75,8 @@ final class NotificationService: UNNotificationServiceExtension {
                 if n.style == .MESSAGING, let last = n.messages.last {
                     let senderImage = senderImage(for: n, message: last)
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
-                                                                 senderImage: senderImage.data, alerting: true)
+                                                                 attachments: attachments, senderImage: senderImage.data,
+                                                                 alerting: true)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
                     // path (#13) doesn't re-post it under a different id once it processes a later envelope.
@@ -86,7 +88,8 @@ final class NotificationService: UNNotificationServiceExtension {
                     }
                 } else {
                     let senderImage = senderImage(for: n)
-                    prepared = MirrorPresentation.content(for: n, messageId: messageId, senderImage: senderImage.data)
+                    prepared = MirrorPresentation.content(for: n, messageId: messageId,
+                                                          attachments: attachments, senderImage: senderImage.data)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                 }
                 bestAttempt = filterAlert ? MirrorPresentation.passiveContent(prepared, removeActions: true) : prepared
@@ -111,9 +114,11 @@ final class NotificationService: UNNotificationServiceExtension {
                 if let data = await fetchSenderImage(fetch, engine: engine) {
                     if n.style == .MESSAGING, let last = n.messages.last {
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
-                                                                    senderImage: data, alerting: true)
+                                                                    attachments: attachments, senderImage: data,
+                                                                    alerting: true)
                     } else {
-                        content = MirrorPresentation.content(for: n, messageId: messageId, senderImage: data)
+                        content = MirrorPresentation.content(for: n, messageId: messageId,
+                                                             attachments: attachments, senderImage: data)
                     }
                 } else {
                     content = prepared
@@ -165,6 +170,16 @@ final class NotificationService: UNNotificationServiceExtension {
         case .none:
             return nil
         }
+    }
+
+    private func fetchAttachments(for n: CapturedNotification, engine: NotiSyncEngine) async -> [UNNotificationAttachment] {
+        var attachments: [UNNotificationAttachment] = []
+        for ref in [n.largeIcon, n.bigPicture].compactMap({ $0 }) {
+            guard let plaintext = await privateAsset(ref, engine: engine),
+                  let attachment = await MirrorPresentation.attachment(plaintext, ref: ref) else { continue }
+            attachments.append(attachment)
+        }
+        return attachments
     }
 
     private func privateAsset(_ ref: PrivateAssetRef, engine: NotiSyncEngine) async -> Data? {

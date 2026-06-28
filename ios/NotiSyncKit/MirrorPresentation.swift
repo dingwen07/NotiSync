@@ -9,6 +9,11 @@ import UserNotifications
 /// iOS `threadIdentifier`, Android channel → iOS `categoryIdentifier`), and rendering as a
 /// **Communication Notification** (message style + sender avatar).
 nonisolated enum MirrorPresentation {
+    private struct AttachmentFile: Sendable {
+        var identifier: String
+        var url: URL
+    }
+
     static let baseCategoryId = "notisync.mirror"
     static let dismissActionId = "notisync.dismiss"
 
@@ -86,7 +91,8 @@ nonisolated enum MirrorPresentation {
     /// messages of a conversation share the same `threadIdentifier`; only `alerting` messages play a sound,
     /// so backfilled history posts silently while the newest message alerts.
     static func messageContent(for n: CapturedNotification, message: ConversationMessage,
-                               messageId: String, senderImage: Data?, alerting: Bool) -> UNNotificationContent {
+                               messageId: String, attachments: [UNNotificationAttachment] = [],
+                               senderImage: Data?, alerting: Bool) -> UNNotificationContent {
         let content = UNMutableNotificationContent()
         let senderName = message.sender?.nonBlank ?? n.conversationTitle?.nonBlank ?? n.title?.nonBlank ?? n.appLabel
         content.title = senderName
@@ -94,6 +100,7 @@ nonisolated enum MirrorPresentation {
         if n.isGroupConversation, let convTitle = n.conversationTitle?.nonBlank { content.subtitle = convTitle }
         content.categoryIdentifier = categoryIdentifier(for: n)
         content.threadIdentifier = threadIdentifier(for: n)
+        content.attachments = attachments
         content.userInfo = userInfo(for: n, messageId: messageId)
         applyAlerting(content, importance: alerting ? n.effectiveImportance : .MIN)
         return communicationStyled(content, for: n, senderName: senderName, senderImage: senderImage) ?? content
@@ -166,7 +173,10 @@ nonisolated enum MirrorPresentation {
         let interaction = INInteraction(intent: intent, response: nil)
         interaction.direction = .incoming
         interaction.donate(completion: nil)
-        return try? base.updating(from: intent)
+        guard let updated = try? base.updating(from: intent),
+              let mutable = updated.mutableCopy() as? UNMutableNotificationContent else { return nil }
+        mutable.attachments = base.attachments
+        return mutable
     }
 
     // MARK: Image normalization (#12)
@@ -176,6 +186,34 @@ nonisolated enum MirrorPresentation {
     static func normalizedImageData(_ data: Data) -> Data {
         if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) || data.starts(with: [0xFF, 0xD8, 0xFF]) { return data }
         return UIImage(data: data)?.pngData() ?? data
+    }
+
+    static func attachment(_ data: Data, ref: PrivateAssetRef) async -> UNNotificationAttachment? {
+        guard let file = await Task.detached(priority: .utility, operation: {
+            prepareAttachmentFile(data, ref: ref)
+        }).value else { return nil }
+        return try? UNNotificationAttachment(identifier: file.identifier, url: file.url, options: nil)
+    }
+
+    private static func prepareAttachmentFile(_ data: Data, ref: PrivateAssetRef) -> AttachmentFile? {
+        // UNNotificationAttachment only accepts PNG/JPEG/GIF. Android delivers graphics as WebP, which it
+        // rejects, so decode + re-encode those (and any unknown type) to PNG so the image still renders (#12).
+        let mime = ref.mimeType.lowercased()
+        let writeData: Data
+        let ext: String
+        if mime.contains("png") {
+            writeData = data; ext = "png"
+        } else if mime.contains("jpeg") || mime.contains("jpg") {
+            writeData = data; ext = "jpg"
+        } else if mime.contains("gif") {
+            writeData = data; ext = "gif"
+        } else {
+            guard let png = UIImage(data: data)?.pngData() else { return nil }
+            writeData = png; ext = "png"
+        }
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(ref.assetId).\(ext)")
+        guard (try? writeData.write(to: url)) != nil else { return nil }
+        return AttachmentFile(identifier: ref.assetId, url: url)
     }
 
     // MARK: Helpers
