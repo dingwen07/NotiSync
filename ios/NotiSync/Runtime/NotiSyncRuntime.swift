@@ -46,6 +46,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     private var foregroundSyncTask: Task<Void, Never>?
     private var foregroundSyncGeneration = 0
     private var foregroundSyncRerunRequested = false
+    private var foregroundActive = false
     private var bgRegistered = false
     var lastReconcileAt = Date.distantPast
     var repairRequested: Set<String> = []   // assetHash → already asked the source to re-upload
@@ -109,13 +110,20 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     }
 
     func appBecameActive() {
+        guard !foregroundActive else { return }
+        foregroundActive = true
         startForegroundWebSocket()   // the WS flushes any queued relay messages on connect (broker.flushPending)
         startForegroundSync()
     }
 
-    private func startForegroundSync() {
+    func refreshForegroundNow() {
+        startForegroundWebSocket()
+        startForegroundSync(rerunIfBusy: true)
+    }
+
+    private func startForegroundSync(rerunIfBusy: Bool = false) {
         if foregroundSyncTask != nil {
-            foregroundSyncRerunRequested = true
+            if rerunIfBusy { foregroundSyncRerunRequested = true }
             return
         }
         foregroundSyncGeneration += 1
@@ -175,6 +183,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     }
 
     func appLeftForeground() {
+        foregroundActive = false
         foregroundSyncGeneration += 1
         foregroundSyncRerunRequested = false
         foregroundSyncTask?.cancel()

@@ -429,7 +429,7 @@ struct SettingsView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        runtime.appBecameActive()
+                        runtime.refreshForegroundNow()
                     } label: {
                         Label("Drain", systemImage: "arrow.clockwise")
                     }
