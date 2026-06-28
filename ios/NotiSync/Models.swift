@@ -19,6 +19,102 @@ enum TrustStatusRaw: String, Codable, CaseIterable {
     case quarantined
 }
 
+// MARK: - Status tokens
+//
+// These enums are the persisted, stable representation of UI status — never English display text. Producers
+// in the runtime set them; `LocalizedText` turns them into localized strings at render time. This keeps the
+// model layer free of presentation, mirroring how Android resolves an `R.string` per value at the call site.
+
+/// APNs push-route state shown in Devices / Diagnostics.
+enum PushStatus: String, Codable {
+    case unregistered
+    case apnsRegistered
+    case apnsFailed
+    case apnsUnregistered
+    case routePublished
+    case routePending
+}
+
+/// How reachable/trustworthy the broker is. The broker version (when known) is carried separately.
+enum BrokerReachability: String, Codable {
+    case unknown
+    case unreachable
+    case reachable
+    case verified
+}
+
+/// System notification-authorization state, normalized for display.
+enum NotificationPermissionStatus: String, Codable {
+    case unknown
+    case granted
+    case denied
+    case notRequested
+}
+
+/// Whether this device has at least one paired peer.
+enum PairingStatus: String, Codable {
+    case unpaired
+    case paired
+}
+
+/// The semantic title of an activity-log row.
+///
+/// Most cases are fully static phrases. `appLabel` carries a dynamic, non-localized app name in
+/// `ActivityRecord.titleArg`; `error` carries an `ErrorDomain` raw value there.
+enum ActivityTitleToken: String, Codable {
+    case dismissedLocally
+    case dismissed
+    case remoteDismissal
+    case relayDrained
+    case assetSync
+    case renamed
+    case trustUpdated
+    case rotationStarted
+    case rotationActivated
+    case rotationRetired
+    case rotatedDebug
+    case paired
+    case revoked
+    case approved
+    case rejected
+    case revokeConfirmed
+    case keptTrusted
+    case apnsRegistered
+    case routePublished
+    case appLabel
+    case error
+}
+
+/// How an activity-log row's detail is rendered. Dynamic values live in `ActivityRecord.detailArg`
+/// (free text / enum raw) and `ActivityRecord.detailNum` (epoch / count).
+enum ActivityDetailStyle: String, Codable {
+    case none
+    case text
+    case ongoingNotSynced
+    case syncedToMesh
+    case noPeers
+    case toEpoch
+    case nowEpoch
+    case epoch
+    case messageCount
+    case routeEnvironment
+    case deliveryMode
+}
+
+/// The operation that failed, used as an error activity's localized title.
+enum ErrorDomain: String, Codable {
+    case identity
+    case notificationPermission
+    case apnsRegistration
+    case routePublish
+    case rotation
+    case trustBroadcast
+    case profileBroadcast
+    case envelopeDelivery
+    case dismissSync
+    case pairing
+}
+
 @Model
 final class InboxNotification {
     @Attribute(.unique) var messageId: String
@@ -147,18 +243,45 @@ final class TrustedDevice {
 final class ActivityRecord {
     var at: Date
     var kindRaw: String
-    var title: String
-    var detail: String
+    /// `ActivityTitleToken` raw value — localized at render time.
+    var titleTokenRaw: String
+    /// Dynamic title text: an app label (for `.appLabel`) or an `ErrorDomain` raw (for `.error`).
+    var titleArg: String
+    /// `ActivityDetailStyle` raw value — selects how `detailArg` / `detailNum` are rendered.
+    var detailStyleRaw: String
+    /// Dynamic detail text: free text, or an enum raw value (`RouteEnvironment` / `DeliveryMode`).
+    var detailArg: String
+    /// Dynamic numeric detail: a key epoch or a message count.
+    var detailNum: Int
 
-    init(kind: ActivityKind, title: String, detail: String, at: Date = .now) {
+    init(
+        kind: ActivityKind,
+        title: ActivityTitleToken,
+        titleArg: String = "",
+        detail: ActivityDetailStyle = .none,
+        detailArg: String = "",
+        detailNum: Int = 0,
+        at: Date = .now
+    ) {
         self.kindRaw = kind.rawValue
-        self.title = title
-        self.detail = detail
+        self.titleTokenRaw = title.rawValue
+        self.titleArg = titleArg
+        self.detailStyleRaw = detail.rawValue
+        self.detailArg = detailArg
+        self.detailNum = detailNum
         self.at = at
     }
 
     var kind: ActivityKind {
         ActivityKind(rawValue: kindRaw) ?? .error
+    }
+
+    var titleToken: ActivityTitleToken {
+        ActivityTitleToken(rawValue: titleTokenRaw) ?? .error
+    }
+
+    var detailStyle: ActivityDetailStyle {
+        ActivityDetailStyle(rawValue: detailStyleRaw) ?? .none
     }
 }
 
@@ -170,9 +293,15 @@ final class AppSettings {
     var apnsToken: String?
     var apnsEnvironmentRaw: String
     var routeEpoch: Int
+    /// `NotificationPermissionStatus` raw value.
     var notificationPermission: String
+    /// `PushStatus` raw value.
     var pushStatus: String
+    /// `BrokerReachability` raw value.
     var brokerStatus: String
+    /// Broker version string reported by the last health/verification probe, when known.
+    var brokerVersion: String?
+    /// `PairingStatus` raw value.
     var pairingStatus: String
     var lastDeliveryMode: String?
     var lastRoutePublishAt: Date?
@@ -183,23 +312,47 @@ final class AppSettings {
         id: String = AppSettings.singletonId,
         brokerURL: String = NotiSyncConfig.defaultBrokerURL,
         deviceName: String = "iPhone",
-        apnsEnvironment: RouteEnvironment = .DEVELOPMENT,
+        apnsEnvironment: RouteEnvironment = NotiSyncConfig.defaultAPNSEnvironment,
         routeEpoch: Int = 1
     ) {
         self.id = id
         self.brokerURL = brokerURL
         self.deviceName = deviceName
-        self.apnsEnvironmentRaw = apnsEnvironment.rawValue
+        self.apnsEnvironmentRaw = NotiSyncConfig.effectiveAPNSEnvironment(apnsEnvironment).rawValue
         self.routeEpoch = routeEpoch
-        self.notificationPermission = "unknown"
-        self.pushStatus = "unregistered"
-        self.brokerStatus = "unknown"
-        self.pairingStatus = "unpaired"
+        self.notificationPermission = NotificationPermissionStatus.unknown.rawValue
+        self.pushStatus = PushStatus.unregistered.rawValue
+        self.brokerStatus = BrokerReachability.unknown.rawValue
+        self.pairingStatus = PairingStatus.unpaired.rawValue
     }
 
     var apnsEnvironment: RouteEnvironment {
-        get { RouteEnvironment(rawValue: apnsEnvironmentRaw) ?? .DEVELOPMENT }
-        set { apnsEnvironmentRaw = newValue.rawValue }
+        get {
+            NotiSyncConfig.effectiveAPNSEnvironment(
+                RouteEnvironment(rawValue: apnsEnvironmentRaw) ?? NotiSyncConfig.defaultAPNSEnvironment)
+        }
+        set { apnsEnvironmentRaw = NotiSyncConfig.effectiveAPNSEnvironment(newValue).rawValue }
+    }
+
+    /// Token-typed accessors over the persisted raw strings — producers read/write these, never the raw text.
+    var notificationPermissionValue: NotificationPermissionStatus {
+        get { NotificationPermissionStatus(rawValue: notificationPermission) ?? .unknown }
+        set { notificationPermission = newValue.rawValue }
+    }
+
+    var pushStatusValue: PushStatus {
+        get { PushStatus(rawValue: pushStatus) ?? .unregistered }
+        set { pushStatus = newValue.rawValue }
+    }
+
+    var brokerReachability: BrokerReachability {
+        get { BrokerReachability(rawValue: brokerStatus) ?? .unknown }
+        set { brokerStatus = newValue.rawValue }
+    }
+
+    var pairingStatusValue: PairingStatus {
+        get { PairingStatus(rawValue: pairingStatus) ?? .unpaired }
+        set { pairingStatus = newValue.rawValue }
     }
 
     static let singletonId = "settings"

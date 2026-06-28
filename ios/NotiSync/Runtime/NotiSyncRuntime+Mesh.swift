@@ -68,10 +68,10 @@ extension NotiSyncRuntime {
             engine.setPendingRotation(SelfPendingRotation(
                 targetEpoch: target, notBefore: nb, notAfter: targetNotAfter,
                 retiredEpoch: n, retireRetiredAt: retireNotAfter + NotiSyncConfig.Rotation.graceMs))
-            addActivity(.route, "Rotation started", "→ epoch \(target)")
+            addActivity(.route, .rotationStarted, detail: .toEpoch, detailNum: Int(target))
             return target
         } catch {
-            record(error: error, title: "Rotation")
+            record(error: error, domain: .rotation)
             return nil
         }
     }
@@ -86,14 +86,14 @@ extension NotiSyncRuntime {
             engine.advanceSelfEpoch(to: p.targetEpoch)
             _ = try? await broker.publishKeyEpoch(engine.buildKeyEpochBlob(
                 epoch: p.targetEpoch, notBefore: p.notBefore, notAfter: p.notAfter, minEpoch: p.retiredEpoch))
-            addActivity(.route, "Rotation activated", "epoch \(p.targetEpoch)")
+            addActivity(.route, .rotationActivated, detail: .epoch, detailNum: Int(p.targetEpoch))
         }
         if now >= p.retireRetiredAt {
             _ = try? await broker.publishKeyEpoch(engine.buildKeyEpochBlob(
                 epoch: p.targetEpoch, notBefore: p.notBefore, notAfter: p.notAfter, minEpoch: p.targetEpoch))
             engine.destroyEpoch(p.retiredEpoch)
             engine.setPendingRotation(nil)
-            addActivity(.route, "Rotation retired", "epoch \(p.retiredEpoch)")
+            addActivity(.route, .rotationRetired, detail: .epoch, detailNum: Int(p.retiredEpoch))
         }
     }
 
@@ -103,7 +103,7 @@ extension NotiSyncRuntime {
         Task {
             guard let target = await beginRotation(leadMillis: 0) else { await refreshRotationInfoAsync(); return }
             await tickRotation()
-            addActivity(.route, "Rotated (debug)", "now epoch \(target)")
+            addActivity(.route, .rotatedDebug, detail: .nowEpoch, detailNum: Int(target))
             await refreshRotationInfoAsync()
         }
     }
@@ -165,14 +165,14 @@ extension NotiSyncRuntime {
                 let name = try await Task.detached(priority: .userInitiated) {
                     try engine.acceptPairing(scanned, ownDevice: ownDevice)
                 }.value
-                addActivity(.paired, "Paired", name)
+                addActivity(.paired, .paired, detail: .text, detailArg: name)
                 refreshPeerRows()
-                settings().pairingStatus = "paired"
+                settings().pairingStatusValue = .paired
                 try? modelContext?.save()
                 await publishCurrentRoute()
                 await broadcastTrust()   // #5 — announce the new device to the rest of the own-mesh
             } catch {
-                record(error: error, title: "Pairing")
+                record(error: error, domain: .pairing)
             }
         }
     }
@@ -186,7 +186,7 @@ extension NotiSyncRuntime {
             row.updatedAt = .now
             try? modelContext?.save()
         }
-        addActivity(.paired, "Revoked", clientId)
+        addActivity(.paired, .revoked, detail: .text, detailArg: clientId)
         Task { await broadcastTrust() }
     }
 
@@ -198,7 +198,7 @@ extension NotiSyncRuntime {
             if let env = try engine.sealTrustTable() { try await broker.send(env) }
             for env in try engine.sealTrustCards() { _ = try? await broker.send(env) }
         } catch {
-            record(error: error, title: "Trust broadcast")
+            record(error: error, domain: .trustBroadcast)
         }
     }
 
@@ -206,7 +206,8 @@ extension NotiSyncRuntime {
     /// reachable, and re-broadcast our roster so the rest of the mesh learns our decision.
     func approveTrust(clientId: String) {
         guard let engine, engine.approveTrust(clientId) else { return }
-        addActivity(.paired, "Approved", engine.trustedPeers().first { $0.clientId == clientId }?.displayName ?? clientId)
+        addActivity(.paired, .approved, detail: .text,
+                    detailArg: engine.trustedPeers().first { $0.clientId == clientId }?.displayName ?? clientId)
         refreshPeerRows()
         Task {
             await refetchKeyEpoch(clientId)   // pull the now-trusted device's key-epoch so it's reachable
@@ -218,7 +219,7 @@ extension NotiSyncRuntime {
     func rejectTrust(clientId: String) {
         guard let engine, engine.rejectTrust(clientId) else { return }
         if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; try? modelContext?.save() }
-        addActivity(.paired, "Rejected", clientId)
+        addActivity(.paired, .rejected, detail: .text, detailArg: clientId)
         refreshPeerRows()
         Task { await broadcastTrust() }
     }
@@ -227,14 +228,14 @@ extension NotiSyncRuntime {
     func confirmRevoke(clientId: String) {
         guard let engine, engine.confirmRevoke(clientId) else { return }
         if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; try? modelContext?.save() }
-        addActivity(.paired, "Revoke confirmed", clientId)
+        addActivity(.paired, .revokeConfirmed, detail: .text, detailArg: clientId)
         refreshPeerRows()
     }
 
     /// #3 — keep a device whose revoke (suggested by a peer) we reject (→ TRUSTED). Propagate the overturn.
     func keepTrusted(clientId: String) {
         guard let engine, engine.keepTrusted(clientId) else { return }
-        addActivity(.paired, "Kept trusted", clientId)
+        addActivity(.paired, .keptTrusted, detail: .text, detailArg: clientId)
         refreshPeerRows()
         Task { await broadcastTrust() }
     }
@@ -247,7 +248,7 @@ extension NotiSyncRuntime {
             try await Self.sendProfile(displayName: name, updatedAt: updatedAt, engine: engine, broker: broker)
         }.result
         if case let .failure(error) = result {
-            record(error: error, title: "Profile broadcast")
+            record(error: error, domain: .profileBroadcast)
         }
     }
 

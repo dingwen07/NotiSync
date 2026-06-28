@@ -67,7 +67,7 @@ extension NotiSyncRuntime {
         s.lastRelayDrainAt = .now
         s.lastDeliveryMode = deliveryMode.rawValue
         try? modelContext?.save()
-        if !ids.isEmpty { addActivity(.received, "Relay drained", "\(ids.count) message(s)") }
+        if !ids.isEmpty { addActivity(.received, .relayDrained, detail: .messageCount, detailNum: ids.count) }
     }
 
     @discardableResult
@@ -102,7 +102,7 @@ extension NotiSyncRuntime {
             log.info("dropping envelope: \(e.localizedDescription, privacy: .public)")
             return false
         case .failure(let error):
-            record(error: error, title: "Envelope delivery")
+            record(error: error, domain: .envelopeDelivery)
             // Non-silent failures (bad signature, malformed body, unsupported payload shape) will not become
             // deliverable by retrying the same relay item forever. Treat them as handled so peek fetches ack.
             return true
@@ -137,7 +137,7 @@ extension NotiSyncRuntime {
             .first { $0.messageId == messageId }
         let displayMode = prior?.deliveryMode ?? mode.rawValue
         upsertInbox(n, messageId: messageId, identifier: identifier, deliveryMode: displayMode)
-        addActivity(.received, n.appLabel, displayMode)
+        addActivity(.received, .appLabel, titleArg: n.appLabel, detail: .deliveryMode, detailArg: displayMode)
         guard prior == nil else { return }
         // Register the per-channel category (carrying the Dismiss action) before posting under it (#15).
         MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
@@ -237,7 +237,7 @@ extension NotiSyncRuntime {
                 }
                 bumpIconRevision()   // re-provisioned assets are cached now — let monogram rows re-resolve
             }
-            addActivity(.received, "Asset sync", ds.asset?.kind.rawValue ?? "")
+            addActivity(.received, .assetSync, detail: .text, detailArg: ds.asset?.kind.rawValue ?? "")
         case .PROFILE:
             // #5 — a peer renamed itself (or changed platform); apply LWW and refresh its Devices row.
             guard let engine, let p = ds.profile else { return }
@@ -246,7 +246,7 @@ extension NotiSyncRuntime {
             }.value
             if changed {
                 refreshPeerRows()
-                addActivity(.paired, "Renamed", p.displayName)
+                addActivity(.paired, .renamed, detail: .text, detailArg: p.displayName)
             }
         case .TRUST:
             // #5/#3 — an own-mesh device broadcast its roster. Fold it (propagating revocations + creating
@@ -274,7 +274,7 @@ extension NotiSyncRuntime {
             if result.needsBroadcast { await broadcastTrust() }
             if result.changed {
                 refreshPeerRows()
-                addActivity(.paired, "Trust updated", signerId)
+                addActivity(.paired, .trustUpdated, detail: .text, detailArg: signerId)
             }
         }
     }
@@ -386,7 +386,8 @@ extension NotiSyncRuntime {
                 sourceClientId: clientId.isEmpty ? "local" : clientId,
                 sourceKey: "local-test|\(UUID().uuidString)",
                 packageName: NotiSyncConfig.bundleId, appLabel: "NotiSync",
-                title: "Local notification", text: "Posted by NotiSync without APNs.",
+                title: String(localized: "notification.localTest.title", defaultValue: "Local notification", comment: "Title for a local test notification."),
+                text: String(localized: "notification.localTest.body", defaultValue: "Posted by NotiSync without APNs.", comment: "Body for a local test notification."),
                 category: .STATUS, importance: .HIGH, postTime: NotiSyncEngine.nowMillis(),
                 originDeviceName: settings().deviceName
             )

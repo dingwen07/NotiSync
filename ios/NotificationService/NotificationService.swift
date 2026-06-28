@@ -34,7 +34,7 @@ final class NotificationService: UNNotificationServiceExtension {
                                                        keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
             }
             guard let envelopeBytes = bytes else { finish(best); return }
-            let deliveryMode = inline ? "APNs alert (inline)" : "APNs alert (relay)"
+            let deliveryMode = (inline ? DeliveryMode.apnsAlertInline : .apnsAlertRelay).rawValue
             let dedupId = (info["mid"] as? String) ?? (try? engine.envelopeMessageId(envelopeBytes))
             if let dedupId {
                 switch MessageDedupStore.claim(dedupId) {

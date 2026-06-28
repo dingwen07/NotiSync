@@ -44,13 +44,13 @@ struct PairingView: View {
                         if let text = UIPasteboard.general.string {
                             inspectPairingCode(text, fromScanner: false)
                         } else {
-                            scanError = "No valid pairing code on the clipboard."
+                            scanError = String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
                         }
                     } label: {
                         InlineIconLabel("Paste pairing code", systemImage: "doc.on.clipboard")
                     }
                     if let scanError {
-                        Text(scanError).font(.footnote).foregroundStyle(.red)
+                        Text(verbatim: scanError).font(.footnote).foregroundStyle(.red)
                     }
                 }
             }
@@ -132,7 +132,9 @@ struct PairingView: View {
                     activeSheet = .candidate(item)
                 }
             } else {
-                scanError = fromScanner ? "That code could not be verified." : "No valid pairing code on the clipboard."
+                scanError = fromScanner
+                    ? String(localized: "pairing.error.codeNotVerified", defaultValue: "That code could not be verified.", comment: "Shown when a scanned QR pairing code cannot be verified.")
+                    : String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
                 activeSheet = fromScanner ? nil : activeSheet
             }
         }
@@ -168,8 +170,10 @@ struct PairingConfirmView: View {
         NavigationStack {
             Form {
                 Section("Device") {
-                    LabeledContent("Name", value: candidate.displayName)
-                    LabeledContent("Platform", value: candidate.platform)
+                    LabeledContent("Name") {
+                        Text(verbatim: candidate.displayName)
+                    }
+                    LabeledContent("Platform", value: LocalizedText.platform(candidate.platform))
                     VerificationValueRow("Safety number", value: candidate.safetyNumber)
                 }
                 Section("Keys") {
@@ -274,7 +278,7 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
         guard let device = AVCaptureDevice.default(for: .video),
               let input = try? AVCaptureDeviceInput(device: device),
               session.canAddInput(input) else {
-            report(.failure("Camera unavailable."))
+            report(.failure(String(localized: "scanner.error.cameraUnavailable", defaultValue: "Camera unavailable.", comment: "Shown when the QR scanner cannot access a camera.")))
             return
         }
         session.beginConfiguration()
@@ -282,7 +286,7 @@ final class QRScannerController: UIViewController, AVCaptureMetadataOutputObject
         let output = AVCaptureMetadataOutput()
         guard session.canAddOutput(output) else {
             session.commitConfiguration()
-            report(.failure("Camera unavailable."))
+            report(.failure(String(localized: "scanner.error.cameraUnavailable", defaultValue: "Camera unavailable.", comment: "Shown when the QR scanner cannot access a camera.")))
             return
         }
         session.addOutput(output)

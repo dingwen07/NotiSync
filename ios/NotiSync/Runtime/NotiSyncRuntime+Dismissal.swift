@@ -20,7 +20,7 @@ extension NotiSyncRuntime {
         }
         clearMirrors(sourceClientId: sourceClientId, sourceKey: sourceKey)
         guard clearable else {
-            addActivity(.dismissed, "Dismissed locally", "Ongoing — not synced")
+            addActivity(.dismissed, .dismissedLocally, detail: .ongoingNotSynced)
             return
         }
         guard let engine, let broker else { return }
@@ -30,12 +30,12 @@ extension NotiSyncRuntime {
         do {
             if let env = try engine.sealDismissal(sourceClientId: sourceClientId, sourceKey: sourceKey) {
                 try await broker.send(env)
-                addActivity(.dismissed, "Dismissed", "Synced to mesh")
+                addActivity(.dismissed, .dismissed, detail: .syncedToMesh)
             } else {
-                addActivity(.dismissed, "Dismissed", "No peers")
+                addActivity(.dismissed, .dismissed, detail: .noPeers)
             }
         } catch {
-            record(error: error, title: "Dismiss sync")
+            record(error: error, domain: .dismissSync)
         }
     }
 
@@ -49,7 +49,7 @@ extension NotiSyncRuntime {
     func removeRemoteDismissal(_ d: DismissEvent) {
         removeMirrors(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
         clearMirrors(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
-        addActivity(.dismissed, "Remote dismissal", d.sourceClientId)
+        addActivity(.dismissed, .remoteDismissal, detail: .text, detailArg: d.sourceClientId)
     }
 
     /// Remove every delivered/pending mirror for a source (NSE- and app-posted), echo-marking each so the

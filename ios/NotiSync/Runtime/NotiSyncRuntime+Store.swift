@@ -29,10 +29,10 @@ extension NotiSyncRuntime {
         let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
         let s = settings()
         switch status {
-        case .authorized, .provisional, .ephemeral: s.notificationPermission = "granted"
-        case .denied: s.notificationPermission = "denied"
-        case .notDetermined: s.notificationPermission = "not requested"
-        @unknown default: s.notificationPermission = "unknown"
+        case .authorized, .provisional, .ephemeral: s.notificationPermissionValue = .granted
+        case .denied: s.notificationPermissionValue = .denied
+        case .notDetermined: s.notificationPermissionValue = .notRequested
+        @unknown default: s.notificationPermissionValue = .unknown
         }
         try? modelContext?.save()
     }
@@ -236,17 +236,26 @@ extension NotiSyncRuntime {
         try? modelContext.save()
     }
 
-    func addActivity(_ kind: ActivityKind, _ title: String, _ detail: String) {
-        modelContext?.insert(ActivityRecord(kind: kind, title: title, detail: detail))
+    func addActivity(
+        _ kind: ActivityKind,
+        _ title: ActivityTitleToken,
+        titleArg: String = "",
+        detail: ActivityDetailStyle = .none,
+        detailArg: String = "",
+        detailNum: Int = 0
+    ) {
+        modelContext?.insert(ActivityRecord(
+            kind: kind, title: title, titleArg: titleArg,
+            detail: detail, detailArg: detailArg, detailNum: detailNum))
         pruneOldest(ActivityRecord.self, by: \.at, keeping: Self.activityRowLimit)
         try? modelContext?.save()
     }
 
-    func record(error: Error, title: String) {
+    func record(error: Error, domain: ErrorDomain) {
         let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         lastError = message
         settings().lastError = message
-        addActivity(.error, title, message)
+        addActivity(.error, .error, titleArg: domain.rawValue, detail: .text, detailArg: message)
         try? modelContext?.save()
     }
 

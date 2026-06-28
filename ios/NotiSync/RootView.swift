@@ -80,7 +80,7 @@ struct InboxRow: View {
             InboxIconView(notification: notification)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Text(notification.appLabel)
+                    Text(verbatim: notification.appLabel)
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     Text(notification.receivedAt, style: .time)
@@ -88,12 +88,12 @@ struct InboxRow: View {
                         .foregroundStyle(.secondary)
                 }
                 if let title = notification.title, !title.isEmpty {
-                    Text(title)
+                    Text(verbatim: title)
                         .font(.body)
                         .lineLimit(1)
                 }
                 if let body = notification.body, !body.isEmpty {
-                    Text(body)
+                    Text(verbatim: body)
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                         .lineLimit(2)
@@ -102,7 +102,7 @@ struct InboxRow: View {
                     if let originLabel {
                         InlineIconLabel(verbatim: originLabel, systemImage: originSystemImage)
                     }
-                    InlineIconLabel(verbatim: notification.deliveryMode, systemImage: "arrow.down.circle")
+                    InlineIconLabel(verbatim: LocalizedText.deliveryMode(notification.deliveryMode), systemImage: "arrow.down.circle")
                 }
                 .font(.caption2)
                 .foregroundStyle(.secondary)
@@ -163,7 +163,7 @@ struct InboxIconView: View {
     }
 
     private var fallbackText: some View {
-        Text(String(notification.appLabel.prefix(1)).uppercased())
+        Text(verbatim: String(notification.appLabel.prefix(1)).uppercased())
             .font(.headline)
             .foregroundStyle(.secondary)
     }
@@ -181,11 +181,15 @@ struct DevicesView: View {
         NavigationStack {
             List {
                 Section("This Device") {
-                    VerificationValueRow("Client ID", value: runtime.clientId.isEmpty ? "pending" : runtime.clientId)
+                    VerificationValueRow("Client ID", value: runtime.clientId.isEmpty ? LocalizedText.pendingClientId : runtime.clientId)
                     if let settings {
-                        LabeledContent("Route", value: settings.pushStatus)
-                        LabeledContent("APNs", value: settings.apnsToken == nil ? "unregistered" : settings.apnsEnvironment.rawValue)
-                        LabeledContent("Broker", value: settings.brokerStatus)
+                        LabeledContent("Route", value: LocalizedText.pushStatus(settings.pushStatusValue))
+                        LabeledContent("APNs", value: settings.apnsToken == nil
+                                       ? LocalizedText.unregistered
+                                       : LocalizedText.routeEnvironment(
+                                           NotiSyncConfig.effectiveAPNSEnvironment(settings.apnsEnvironment)))
+                        LabeledContent("Broker", value: LocalizedText.brokerStatus(
+                            reachability: settings.brokerReachability, version: settings.brokerVersion))
                     }
                 }
                 let pending = devices.filter { $0.status == .pendingTrust || $0.status == .pendingRevoke }
@@ -241,12 +245,17 @@ struct DeviceLabel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(device.displayName.isEmpty ? "Unnamed device" : device.displayName)
-                .font(.body.weight(.medium))
+            if device.displayName.isEmpty {
+                Text("Unnamed device")
+                    .font(.body.weight(.medium))
+            } else {
+                Text(verbatim: device.displayName)
+                    .font(.body.weight(.medium))
+            }
             if device.displayName.isEmpty {
                 VerificationValueText(device.clientId)
             }
-            Text("\(device.platform.isEmpty ? "—" : device.platform) • \(device.status.rawValue)")
+            Text(verbatim: "\(device.platform.isEmpty ? "—" : LocalizedText.platform(device.platform)) • \(LocalizedText.trustStatus(device.status))")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             if let safetyNumber = device.safetyNumber,
@@ -316,14 +325,14 @@ struct ActivityLogView: View {
             List(records) { record in
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        InlineIconLabel(verbatim: record.title, systemImage: icon(for: record.kind))
+                        InlineIconLabel(verbatim: LocalizedText.activityTitle(record), systemImage: icon(for: record.kind))
                             .font(.body.weight(.medium))
                         Spacer()
                         Text(record.at, style: .time)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
-                    Text(record.detail)
+                    Text(verbatim: LocalizedText.activityDetail(record))
                         .font(.subheadline)
                         .foregroundStyle(.secondary)
                 }
@@ -355,7 +364,7 @@ struct SettingsView: View {
     @Query private var settingsRows: [AppSettings]
     @State private var brokerURL = ""
     @State private var deviceName = ""
-    @State private var environment: RouteEnvironment = .DEVELOPMENT
+    @State private var environment: RouteEnvironment = NotiSyncConfig.defaultAPNSEnvironment
 
     var body: some View {
         NavigationStack {
@@ -371,19 +380,31 @@ struct SettingsView: View {
                     } label: {
                         InlineIconLabel("Test Local Notification", systemImage: "bell.and.waves.left.and.right")
                     }
-                    LabeledContent("Permission", value: settingsRows.first?.notificationPermission ?? "unknown")
-                    LabeledContent("Pairing", value: settingsRows.first?.pairingStatus ?? "unpaired")
+                    LabeledContent("Permission", value: LocalizedText.notificationPermission(settingsRows.first?.notificationPermissionValue ?? .unknown))
+                    LabeledContent("Pairing", value: LocalizedText.pairingStatus(settingsRows.first?.pairingStatusValue ?? .unpaired))
                 }
                 Section("Broker") {
-                    TextField("Broker URL", text: $brokerURL)
-                        .textInputAutocapitalization(.never)
-                        .keyboardType(.URL)
-                    TextField("Device Name", text: $deviceName)
-                    Picker("APNs", selection: $environment) {
-                        ForEach(RouteEnvironment.allCases) { env in
-                            Text(env.rawValue.capitalized).tag(env)
+                    LabeledContent("Address") {
+                        TextField("Address", text: $brokerURL)
+                            .textInputAutocapitalization(.never)
+                            .keyboardType(.URL)
+                            .autocorrectionDisabled()
+                            .lineLimit(1)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    LabeledContent("Device Name") {
+                        TextField("Device Name", text: $deviceName)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    #if DEBUG
+                    if NotiSyncConfig.allowsAPNSEnvironmentSelection {
+                        Picker("APNs", selection: $environment) {
+                            ForEach(RouteEnvironment.allCases) { env in
+                                Text(verbatim: LocalizedText.routeEnvironment(env)).tag(env)
+                            }
                         }
                     }
+                    #endif
                     Button {
                         runtime.saveSettings(brokerURL: brokerURL, deviceName: deviceName, environment: environment)
                     } label: {
@@ -393,12 +414,12 @@ struct SettingsView: View {
                 }
                 Section("Diagnostics") {
                     if let settings = settingsRows.first {
-                        LabeledContent("Push Route", value: settings.pushStatus)
-                        LabeledContent("Last Delivery", value: settings.lastDeliveryMode ?? "none")
-                        LabeledContent("Last Route", value: settings.lastRoutePublishAt?.formatted(date: .abbreviated, time: .shortened) ?? "none")
-                        LabeledContent("Last Drain", value: settings.lastRelayDrainAt?.formatted(date: .abbreviated, time: .shortened) ?? "none")
+                        LabeledContent("Push Route", value: LocalizedText.pushStatus(settings.pushStatusValue))
+                        LabeledContent("Last Delivery", value: settings.lastDeliveryMode.map { LocalizedText.deliveryMode($0) } ?? LocalizedText.none)
+                        LabeledContent("Last Route", value: settings.lastRoutePublishAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedText.none)
+                        LabeledContent("Last Drain", value: settings.lastRelayDrainAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedText.none)
                         if let error = settings.lastError {
-                            Text(error)
+                            Text(verbatim: error)
                                 .font(.footnote)
                                 .foregroundStyle(.red)
                         }
@@ -409,7 +430,7 @@ struct SettingsView: View {
                         LabeledContent("Current epoch", value: "\(info.epoch)")
                         VerificationValueRow("Signing key", value: info.signingKeyFingerprint)
                         VerificationValueRow("Encryption key", value: info.encryptionKeyFingerprint)
-                        Text(Self.rotationStatus(info))
+                        Text(verbatim: LocalizedText.rotationStatus(info))
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -442,23 +463,15 @@ struct SettingsView: View {
         guard let settings = settingsRows.first else { return false }
         return brokerURL != settings.brokerURL
             || deviceName != settings.deviceName
-            || environment != settings.apnsEnvironment
+            || NotiSyncConfig.effectiveAPNSEnvironment(environment)
+                != NotiSyncConfig.effectiveAPNSEnvironment(settings.apnsEnvironment)
     }
 
     private func loadSettings() {
         guard let settings = settingsRows.first else { return }
         brokerURL = settings.brokerURL
         deviceName = settings.deviceName
-        environment = settings.apnsEnvironment
+        environment = NotiSyncConfig.effectiveAPNSEnvironment(settings.apnsEnvironment)
     }
 
-    private static func rotationStatus(_ info: RotationKeyInfo) -> String {
-        guard info.nextEventAtMillis > 0 else { return "No rotation scheduled" }
-        let when = Date(timeIntervalSince1970: TimeInterval(info.nextEventAtMillis) / 1000)
-            .formatted(.relative(presentation: .named))
-        if let target = info.pendingTargetEpoch {
-            return info.pendingActivated ? "Retiring previous epoch \(when)" : "Activating epoch \(target) \(when)"
-        }
-        return "Next rotation \(when)"
-    }
 }

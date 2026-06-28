@@ -1,16 +1,6 @@
 import Foundation
 import SwiftUI
 
-/// How an inbound envelope reached us — surfaced in the UI / diagnostics.
-nonisolated enum DeliveryMode: String {
-    case localPreview = "Local preview"
-    case apnsInline = "APNs inline"
-    case apnsRelayFetch = "APNs relay fetch"
-    case foregroundWebSocket = "Foreground WebSocket"
-    case foregroundDrain = "Foreground relay drain"
-    case backgroundRefresh = "Background refresh"
-}
-
 struct InlineIconLabel: View {
     private let title: Text
     private let systemImage: String

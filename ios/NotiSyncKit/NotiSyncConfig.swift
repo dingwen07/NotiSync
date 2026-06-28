@@ -18,8 +18,22 @@ nonisolated enum NotiSyncConfig {
 
     static let platform = "ios"
 
-    /// Default broker — the auth-enforced NS2 test instance (PI + App Check).
+    #if DEBUG
+    static let allowsAPNSEnvironmentSelection = true
+    static let defaultAPNSEnvironment: RouteEnvironment = .DEVELOPMENT
+    static func effectiveAPNSEnvironment(_ value: RouteEnvironment) -> RouteEnvironment { value }
+    #else
+    static let allowsAPNSEnvironmentSelection = false
+    static let defaultAPNSEnvironment: RouteEnvironment = .PRODUCTION
+    static func effectiveAPNSEnvironment(_ value: RouteEnvironment) -> RouteEnvironment { .PRODUCTION }
+    #endif
+
+    /// Default broker — debug builds use the auth-enforced NS2 test instance; release builds use production.
+    #if DEBUG
     static let defaultBrokerURL = "https://notisync-api-test.extrawdw.net"
+    #else
+    static let defaultBrokerURL = "https://notisync-api.extrawdw.net"
+    #endif
 
     /// Largest inline APNs payload we advertise in our route claim (bytes of base64 envelope).
     static let inlinePayloadLimitBytes = 3072

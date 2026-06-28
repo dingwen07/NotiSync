@@ -48,7 +48,8 @@ nonisolated enum MirrorPresentation {
     /// A notification category (base or per-channel) carrying the Dismiss action. Every mirror category
     /// includes `.customDismissAction` so a swipe is reported for dismissal sync.
     static func category(id: String = baseCategoryId) -> UNNotificationCategory {
-        let dismiss = UNNotificationAction(identifier: dismissActionId, title: "Dismiss", options: [])
+        let title = String(localized: "notification.action.dismiss", defaultValue: "Dismiss", comment: "Action title that dismisses a mirrored notification.")
+        let dismiss = UNNotificationAction(identifier: dismissActionId, title: title, options: [])
         return UNNotificationCategory(identifier: id, actions: [dismiss], intentIdentifiers: [],
                                       options: [.customDismissAction])
     }

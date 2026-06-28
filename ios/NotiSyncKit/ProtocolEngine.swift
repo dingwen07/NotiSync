@@ -32,12 +32,30 @@ nonisolated enum EngineError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case let .unknownSender(id): return "No trusted keys for sender \(id)."
-        case let .unresolvedSender(id): return "No current key-epoch for sender \(id)."
-        case let .untrustedSender(id): return "Sender \(id) is not a trusted device."
-        case .verificationFailed: return "Envelope signature did not verify."
-        case let .noHpkeKey(epoch): return "No HPKE private key for epoch \(epoch)."
-        case .notForUs: return "Envelope is not addressed to this device."
+        case let .unknownSender(id):
+            return String(
+                format: String(localized: "error.engine.unknownSender", defaultValue: "No trusted keys for sender %@.", comment: "Error shown when a sender has no trusted keys."),
+                id
+            )
+        case let .unresolvedSender(id):
+            return String(
+                format: String(localized: "error.engine.unresolvedSender", defaultValue: "No current key-epoch for sender %@.", comment: "Error shown when a sender has no current key epoch."),
+                id
+            )
+        case let .untrustedSender(id):
+            return String(
+                format: String(localized: "error.engine.untrustedSender", defaultValue: "Sender %@ is not a trusted device.", comment: "Error shown when a sender is not trusted."),
+                id
+            )
+        case .verificationFailed:
+            return String(localized: "error.engine.verificationFailed", defaultValue: "Envelope signature did not verify.", comment: "Error shown when an envelope signature is invalid.")
+        case let .noHpkeKey(epoch):
+            return String(
+                format: String(localized: "error.engine.noHpkeKey", defaultValue: "No HPKE private key for epoch %d.", comment: "Error shown when this device cannot decrypt an envelope for the given key epoch."),
+                epoch
+            )
+        case .notForUs:
+            return String(localized: "error.engine.notForUs", defaultValue: "Envelope is not addressed to this device.", comment: "Error shown when an envelope has no recipient entry for this device.")
         }
     }
 }

@@ -93,7 +93,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             log.info("engine ready client=\(engine.selfClientId, privacy: .public) epoch=\(engine.epoch)")
         } catch {
             log.error("engine init failed: \(error.localizedDescription, privacy: .public)")
-            record(error: error, title: "Identity")
+            record(error: error, domain: .identity)
         }
     }
 
@@ -170,15 +170,17 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     private func refreshBrokerStatus() async {
         guard let broker else { return }
-        let status: String
+        let s = settings()
         if let v = await broker.verificationStatus() {
-            status = v.verified ? "Verified • v\(v.version)" : "Reachable • v\(v.version)"
+            s.brokerReachability = v.verified ? .verified : .reachable
+            s.brokerVersion = v.version
         } else if let h = await broker.health() {
-            status = "Reachable • v\(h.version)"
+            s.brokerReachability = .reachable
+            s.brokerVersion = h.version
         } else {
-            status = "Unreachable"
+            s.brokerReachability = .unreachable
+            s.brokerVersion = nil
         }
-        settings().brokerStatus = status
         try? modelContext?.save()
     }
 
@@ -199,13 +201,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             do {
                 let granted = try await UNUserNotificationCenter.current().requestAuthorization(
                     options: [.alert, .badge, .sound])
-                settings().notificationPermission = granted ? "granted" : "denied"
+                settings().notificationPermissionValue = granted ? .granted : .denied
                 if granted {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
                 try? modelContext?.save()
             } catch {
-                record(error: error, title: "Notification permission")
+                record(error: error, domain: .notificationPermission)
             }
         }
     }
@@ -214,16 +216,16 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         let token = deviceToken.lowercaseHex
         let s = settings()
         s.apnsToken = token
-        s.pushStatus = "APNs registered"
+        s.pushStatusValue = .apnsRegistered
         s.routeEpoch += 1
         try? modelContext?.save()
-        addActivity(.route, "APNs registered", String(token.prefix(12)) + "…")
+        addActivity(.route, .apnsRegistered, detail: .text, detailArg: String(token.prefix(12)) + "…")
         Task { await publishCurrentRoute() }
     }
 
     func didFailToRegisterForRemoteNotifications(error: Error) {
-        settings().pushStatus = "APNs failed"
-        record(error: error, title: "APNs registration")
+        settings().pushStatusValue = .apnsFailed
+        record(error: error, domain: .apnsRegistration)
     }
 
     /// Silent background push (DISMISSAL / DATA_SYNC) plus inline notification fallback on legacy brokers.
@@ -261,13 +263,14 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func saveSettings(brokerURL: String, deviceName: String, environment: RouteEnvironment) {
         let s = settings()
+        let effectiveEnvironment = NotiSyncConfig.effectiveAPNSEnvironment(environment)
         let brokerChanged = s.brokerURL != brokerURL
         let renamed = s.deviceName != deviceName
-        let routeChanged = brokerChanged || s.apnsEnvironment != environment
+        let routeChanged = brokerChanged || s.apnsEnvironment != effectiveEnvironment
         guard renamed || routeChanged else { return }
         s.brokerURL = brokerURL
         s.deviceName = deviceName
-        s.apnsEnvironment = environment
+        s.apnsEnvironment = effectiveEnvironment
         if routeChanged { s.routeEpoch += 1 }
         try? modelContext?.save()
         if brokerChanged { NotiSyncConfig.brokerURL = brokerURL }
@@ -282,20 +285,26 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func publishCurrentRoute() async {
         let s = settings()
         guard let engine, let broker else { return }
-        guard let token = s.apnsToken, !token.isEmpty else { s.pushStatus = "APNs unregistered"; return }
-        let snapshot = RoutePublishSnapshot(routeRef: token, environment: s.apnsEnvironment, routeEpoch: s.routeEpoch)
+        let environment = NotiSyncConfig.effectiveAPNSEnvironment(s.apnsEnvironment)
+        if s.apnsEnvironment != environment {
+            s.apnsEnvironment = environment
+            s.routeEpoch += 1
+            try? modelContext?.save()
+        }
+        guard let token = s.apnsToken, !token.isEmpty else { s.pushStatusValue = .apnsUnregistered; return }
+        let snapshot = RoutePublishSnapshot(routeRef: token, environment: environment, routeEpoch: s.routeEpoch)
         let result = await Task.detached(priority: .utility) {
             try await Self.publishRoute(snapshot: snapshot, engine: engine, broker: broker)
         }.result
         switch result {
         case .success:
-            s.pushStatus = "Route published"
+            s.pushStatusValue = .routePublished
             s.lastRoutePublishAt = .now
-            addActivity(.route, "Route published", s.apnsEnvironment.rawValue)
+            addActivity(.route, .routePublished, detail: .routeEnvironment, detailArg: environment.rawValue)
             try? modelContext?.save()
         case let .failure(error):
-            s.pushStatus = "Route pending"
-            record(error: error, title: "Route publish")
+            s.pushStatusValue = .routePending
+            record(error: error, domain: .routePublish)
         }
     }
 

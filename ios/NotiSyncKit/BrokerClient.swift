@@ -8,10 +8,22 @@ nonisolated enum BrokerError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .badURL: return "The broker URL is not valid."
-        case let .http(code, detail): return "Broker returned \(code): \(detail)"
-        case let .attestationFailed(code, detail): return "Attestation failed (\(code)): \(detail)"
-        case .unauthorized: return "Broker rejected the request (401)."
+        case .badURL:
+            return String(localized: "error.broker.badURL", defaultValue: "The broker URL is not valid.", comment: "Error shown when the configured broker URL cannot be parsed.")
+        case let .http(code, detail):
+            return String(
+                format: String(localized: "error.broker.http", defaultValue: "Broker returned %d: %@", comment: "Broker HTTP error with status code and server detail."),
+                code,
+                detail
+            )
+        case let .attestationFailed(code, detail):
+            return String(
+                format: String(localized: "error.broker.attestationFailed", defaultValue: "Attestation failed (%d): %@", comment: "Device attestation error with status code and server detail."),
+                code,
+                detail
+            )
+        case .unauthorized:
+            return String(localized: "error.broker.unauthorized", defaultValue: "Broker rejected the request (401).", comment: "Broker unauthorized error.")
         }
     }
 }

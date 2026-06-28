@@ -10,10 +10,17 @@ nonisolated enum DeviceKeyError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .generationFailed: return "Could not create a NotiSync key."
-        case .publicKeyUnavailable: return "Could not export a NotiSync public key."
-        case .signatureFailed: return "Could not sign with a NotiSync key."
-        case let .hpkeKeyMissing(epoch): return "No HPKE private key for epoch \(epoch)."
+        case .generationFailed:
+            return String(localized: "error.deviceKey.generationFailed", defaultValue: "Could not create a NotiSync key.", comment: "Error shown when key generation fails.")
+        case .publicKeyUnavailable:
+            return String(localized: "error.deviceKey.publicKeyUnavailable", defaultValue: "Could not export a NotiSync public key.", comment: "Error shown when a public key cannot be exported.")
+        case .signatureFailed:
+            return String(localized: "error.deviceKey.signatureFailed", defaultValue: "Could not sign with a NotiSync key.", comment: "Error shown when signing fails.")
+        case let .hpkeKeyMissing(epoch):
+            return String(
+                format: String(localized: "error.deviceKey.hpkeKeyMissing", defaultValue: "No HPKE private key for epoch %d.", comment: "Error shown when an HPKE private key is missing for a key epoch."),
+                epoch
+            )
         }
     }
 }

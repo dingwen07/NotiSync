@@ -27,7 +27,19 @@ struct NotiSyncApp: App {
         do {
             return try ModelContainer(for: schema, configurations: [modelConfiguration])
         } catch {
-            fatalError("Could not create ModelContainer: \(error)")
+            // The app is pre-release: a model-schema change can make the existing on-disk store
+            // unopenable. Rather than crash (forcing a manual delete/reinstall), wipe the store and
+            // rebuild it. Destructive — drops local Inbox, Activity, Devices, and Settings rows; the
+            // mesh re-converges peers/notifications and Settings fall back to defaults.
+            let fm = FileManager.default
+            for suffix in ["", "-wal", "-shm"] {
+                try? fm.removeItem(at: URL(fileURLWithPath: modelConfiguration.url.path + suffix))
+            }
+            do {
+                return try ModelContainer(for: schema, configurations: [modelConfiguration])
+            } catch {
+                fatalError("Could not create ModelContainer after reset: \(error)")
+            }
         }
     }()
 
