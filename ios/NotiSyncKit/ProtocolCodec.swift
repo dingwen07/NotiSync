@@ -513,7 +513,9 @@ nonisolated enum KMPProtocolBridge {
             sender: value.sender,
             text: value.text,
             timestamp: value.timestamp,
-            avatar: fromKmp(value.avatar)
+            avatar: fromKmp(value.avatar),
+            dataMimeType: value.dataMimeType,
+            data: fromKmp(value.data)
         )
     }
 

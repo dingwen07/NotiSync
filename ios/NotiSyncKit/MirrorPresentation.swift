@@ -27,7 +27,7 @@ nonisolated enum MirrorPresentation {
     /// history so iOS replaces in place instead of duplicating. Shares the conversation's (sourceClientId,
     /// sourceKey) so a dismissal still clears every message of the conversation.
     static func messageIdentifier(base: String, message: ConversationMessage) -> String {
-        let token = stableToken("\(message.sender ?? "")\u{1f}\(message.text)\u{1f}\(message.timestamp)")
+        let token = stableToken("\(message.sender ?? "")\u{1f}\(message.text)\u{1f}\(message.timestamp)\u{1f}\(message.data?.assetHash ?? "")")
         return "\(base)#m.\(token)"
     }
 

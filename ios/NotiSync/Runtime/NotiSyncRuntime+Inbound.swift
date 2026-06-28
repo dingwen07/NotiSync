@@ -168,8 +168,10 @@ extension NotiSyncRuntime {
             let id = MirrorPresentation.messageIdentifier(base: base, message: message)
             guard existing[id] == nil else { continue }   // this message is already shown — don't re-post/re-alert
             let avatar = await messageAvatar(message, fallback: n)
+            let attachments = await fetchAttachments(for: message)
             let content = MirrorPresentation.messageContent(for: n, message: message, messageId: messageId,
-                                                            senderImage: avatar, alerting: i == lastIndex)
+                                                            attachments: attachments, senderImage: avatar,
+                                                            alerting: i == lastIndex)
             try? await UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: id, content: content, trigger: nil))
             MirrorMapStore.put(MirrorMapEntry(identifier: id, sourceClientId: n.sourceClientId,
@@ -326,6 +328,16 @@ extension NotiSyncRuntime {
             attachments.append(attachment)
         }
         return attachments
+    }
+
+    private func fetchAttachments(for message: ConversationMessage) async -> [UNNotificationAttachment] {
+        guard let ref = message.data else { return [] }
+        guard let plaintext = await loadAsset(ref),
+              let attachment = await MirrorPresentation.attachment(plaintext, ref: ref) else {
+            scheduleAssetRepair(ref)
+            return []
+        }
+        return [attachment]
     }
 
     func scheduleAssetRepair(_ ref: PrivateAssetRef) {

@@ -197,6 +197,12 @@ class ProtocolCodecTest {
             assetKey = ByteArray(32) { it.toByte() },
         )
         val avatar = largeIcon.copy(role = AssetRole.AVATAR, assetHash = "def456", assetId = "zzz9other")
+        val inlineImage = largeIcon.copy(
+            role = AssetRole.INLINE_IMAGE,
+            assetHash = "img789",
+            mimeType = "image/png",
+            assetId = "inline9",
+        )
         val notif = CapturedNotification(
             sourceClientId = ClientId("phone"),
             sourceKey = "0|com.example|1|tag",
@@ -204,7 +210,16 @@ class ProtocolCodecTest {
             appLabel = "Chat",
             largeIcon = largeIcon,
             style = NotifStyle.MESSAGING,
-            messages = listOf(ConversationMessage(sender = "Alice", text = "Hi", timestamp = 1L, avatar = avatar)),
+            messages = listOf(
+                ConversationMessage(
+                    sender = "Alice",
+                    text = "Hi",
+                    timestamp = 1L,
+                    avatar = avatar,
+                    dataMimeType = "image/png",
+                    data = inlineImage,
+                )
+            ),
             postTime = 1_750_000_000_000L,
         )
         val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
@@ -216,6 +231,9 @@ class ProtocolCodecTest {
         assertArrayEquals(largeIcon.assetKey, decoded.largeIcon?.assetKey)
         assertEquals(AssetRole.AVATAR, decoded.messages[0].avatar?.role)
         assertEquals("def456", decoded.messages[0].avatar?.assetHash)
+        assertEquals("image/png", decoded.messages[0].dataMimeType)
+        assertEquals(AssetRole.INLINE_IMAGE, decoded.messages[0].data?.role)
+        assertEquals("img789", decoded.messages[0].data?.assetHash)
     }
 
     @Test

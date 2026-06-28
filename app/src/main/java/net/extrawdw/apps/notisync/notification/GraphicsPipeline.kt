@@ -52,6 +52,10 @@ class GraphicsPipeline(
             result = attachMessageAvatars(sbn, result)
         }
 
+        if (result.style == NotifStyle.MESSAGING) {
+            result = attachMessageData(sbn, result)
+        }
+
         return attachAppIcon(result)
     }
 
@@ -67,8 +71,12 @@ class GraphicsPipeline(
         return captured
     }
 
-    private suspend fun upload(bytes: ByteArray, role: AssetRole, notif: CapturedNotification) =
-        assets.ensureUploaded(bytes, role, MIME_WEBP, notif.sourceClientId)
+    private suspend fun upload(
+        bytes: ByteArray,
+        role: AssetRole,
+        notif: CapturedNotification,
+        mimeType: String = MIME_WEBP,
+    ) = assets.ensureUploaded(bytes, role, mimeType, notif.sourceClientId)
 
     private suspend fun attachMessageAvatars(
         sbn: StatusBarNotification,
@@ -83,6 +91,32 @@ class GraphicsPipeline(
             if (message.avatar == null && bytes != null) {
                 val ref = upload(bytes, AssetRole.AVATAR, notif)
                 updated.add(if (ref != null) message.copy(avatar = ref) else message)
+            } else {
+                updated.add(message)
+            }
+        }
+        return notif.copy(messages = updated)
+    }
+
+    private suspend fun attachMessageData(
+        sbn: StatusBarNotification,
+        notif: CapturedNotification
+    ): CapturedNotification {
+        val messageData = extractor.messageData(sbn)
+        if (messageData.isEmpty()) return notif
+        val updated = ArrayList<ConversationMessage>(notif.messages.size)
+        for (i in notif.messages.indices) {
+            val message = notif.messages[i]
+            val data = messageData.getOrNull(i)
+            if (message.data == null && data != null) {
+                val ref = upload(data.bytes, AssetRole.INLINE_IMAGE, notif, data.mimeType)
+                updated.add(
+                    if (ref != null) {
+                        message.copy(dataMimeType = data.mimeType, data = ref)
+                    } else {
+                        message
+                    }
+                )
             } else {
                 updated.add(message)
             }

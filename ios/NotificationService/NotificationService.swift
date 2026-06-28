@@ -67,12 +67,12 @@ final class NotificationService: UNNotificationServiceExtension {
                 if !filterAlert {
                     MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
                 }
-                let attachments = await fetchAttachments(for: n, engine: engine)
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
                 let prepared: UNNotificationContent
                 let fetch: SenderImageFetch?
                 if n.style == .MESSAGING, let last = n.messages.last {
+                    let attachments = await fetchAttachments(for: last, engine: engine)
                     let senderImage = senderImage(for: n, message: last)
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                  attachments: attachments, senderImage: senderImage.data,
@@ -87,6 +87,7 @@ final class NotificationService: UNNotificationServiceExtension {
                                                           isClearable: n.isClearable))
                     }
                 } else {
+                    let attachments = await fetchAttachments(for: n, engine: engine)
                     let senderImage = senderImage(for: n)
                     prepared = MirrorPresentation.content(for: n, messageId: messageId,
                                                           attachments: attachments, senderImage: senderImage.data)
@@ -113,10 +114,12 @@ final class NotificationService: UNNotificationServiceExtension {
                 let content: UNNotificationContent
                 if let data = await fetchSenderImage(fetch, engine: engine) {
                     if n.style == .MESSAGING, let last = n.messages.last {
+                        let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                     attachments: attachments, senderImage: data,
                                                                     alerting: true)
                     } else {
+                        let attachments = await fetchAttachments(for: n, engine: engine)
                         content = MirrorPresentation.content(for: n, messageId: messageId,
                                                              attachments: attachments, senderImage: data)
                     }
@@ -180,6 +183,13 @@ final class NotificationService: UNNotificationServiceExtension {
             attachments.append(attachment)
         }
         return attachments
+    }
+
+    private func fetchAttachments(for message: ConversationMessage, engine: NotiSyncEngine) async -> [UNNotificationAttachment] {
+        guard let ref = message.data,
+              let plaintext = await privateAsset(ref, engine: engine),
+              let attachment = await MirrorPresentation.attachment(plaintext, ref: ref) else { return [] }
+        return [attachment]
     }
 
     private func privateAsset(_ ref: PrivateAssetRef, engine: NotiSyncEngine) async -> Data? {

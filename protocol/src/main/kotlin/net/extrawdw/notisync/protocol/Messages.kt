@@ -76,6 +76,8 @@ data class ConversationMessage(
     val text: String,
     val timestamp: Long,
     val avatar: PrivateAssetRef? = null,
+    val dataMimeType: String? = null,
+    val data: PrivateAssetRef? = null,
 )
 
 /**

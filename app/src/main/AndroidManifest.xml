@@ -170,6 +170,17 @@
             android:name=".notification.DismissReceiver"
             android:exported="false" />
 
+        <!-- Shares decrypted private-asset blobs with System UI for MessagingStyle inline media. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.assetprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/asset_file_paths" />
+        </provider>
+
         <!-- Handles Approve / Reject actions on a pending-trust notification. -->
         <receiver
             android:name=".trust.TrustActionReceiver"

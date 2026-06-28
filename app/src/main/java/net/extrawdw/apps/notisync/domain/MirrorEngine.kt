@@ -287,6 +287,7 @@ class MirrorEngine(
     }
 }
 
-/** Every private graphic referenced by a notification body (large icon, big picture, app icon, avatars). */
+/** Every private asset referenced by a notification body (icons, pictures, avatars, inline media). */
 private fun CapturedNotification.privateRefs(): List<PrivateAssetRef> =
-    listOfNotNull(largeIcon, bigPicture, appIcon) + messages.mapNotNull { it.avatar }
+    listOfNotNull(largeIcon, bigPicture, appIcon) +
+        messages.flatMap { listOfNotNull(it.avatar, it.data) }

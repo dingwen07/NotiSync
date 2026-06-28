@@ -49,7 +49,8 @@ class NotificationNormalizer(private val pm: PackageManager) {
             ConversationMessage(
                 sender = it.person?.name?.toString(),
                 text = it.text?.toString() ?: "",
-                timestamp = it.timestamp
+                timestamp = it.timestamp,
+                dataMimeType = it.dataMimeType,
             )
         } ?: emptyList()
 

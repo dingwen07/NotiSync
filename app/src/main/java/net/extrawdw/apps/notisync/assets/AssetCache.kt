@@ -13,17 +13,21 @@ import java.io.File
  */
 class AssetCache(baseDir: File, private val maxBytes: Long = DEFAULT_MAX_BYTES) {
     private val dir = File(baseDir, "blobs").apply { mkdirs() }
-    private fun file(assetHash: String) = File(dir, assetHash)
+    private fun blobFile(assetHash: String) = File(dir, assetHash)
 
-    fun has(assetHash: String): Boolean = file(assetHash).exists()
+    fun has(assetHash: String): Boolean = blobFile(assetHash).exists()
 
-    fun read(assetHash: String): ByteArray? = file(assetHash).takeIf { it.exists() }?.also {
+    fun read(assetHash: String): ByteArray? = blobFile(assetHash).takeIf { it.exists() }?.also {
         it.setLastModified(System.currentTimeMillis()) // mark as recently used for LRU
     }?.readBytes()
 
+    fun fileForRead(assetHash: String): File? = blobFile(assetHash).takeIf { it.exists() }?.also {
+        it.setLastModified(System.currentTimeMillis()) // mark as recently used for LRU
+    }
+
     /** Atomic write (temp + rename) so a concurrent reader never observes a partial file. */
     fun write(assetHash: String, bytes: ByteArray) {
-        val target = file(assetHash)
+        val target = blobFile(assetHash)
         if (target.exists()) return // content-addressed: identical bytes already present
         val tmp = File(dir, "$assetHash.tmp")
         tmp.writeBytes(bytes)

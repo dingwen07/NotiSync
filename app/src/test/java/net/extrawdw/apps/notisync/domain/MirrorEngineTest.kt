@@ -17,6 +17,7 @@ import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -47,6 +48,17 @@ class MirrorEngineTest {
     private class MissingResolver(private val missing: List<PrivateAssetRef>) : AssetResolver {
         override suspend fun ensureLocal(refs: List<PrivateAssetRef>) =
             ResolveResult(newlyAvailable = false, stillMissing = missing)
+
+        override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? =
+            null
+    }
+
+    private class RecordingMissingResolver : AssetResolver {
+        var requested: List<PrivateAssetRef> = emptyList()
+        override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
+            requested = refs
+            return ResolveResult(newlyAvailable = false, stillMissing = refs)
+        }
 
         override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? =
             null
@@ -368,5 +380,61 @@ class MirrorEngineTest {
         assertEquals(1, transport.sent.size)
         assertEquals(MessageType.DATA_SYNC, transport.envelopes.single().typ)
         assertEquals(setOf(sender.clientId), transport.envelopes.single().recipientIds().toSet())
+    }
+
+    @Test
+    fun messageDataAsset_isResolvedAndRepairable() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, ownDevice = true))
+        }
+        val resolver = RecordingMissingResolver()
+        val transport = CapturingTransport()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = RecordingRenderer(),
+            activityLog = ActivityLog(),
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+            assetResolver = resolver,
+        )
+        mirror.register()
+
+        val inline = ref(sender.clientId).copy(
+            role = AssetRole.INLINE_IMAGE,
+            assetHash = "inline",
+            mimeType = "image/png",
+            assetId = "inline-asset",
+        )
+        val notif = sampleNotif(sender.clientId).copy(
+            style = NotifStyle.MESSAGING,
+            messages = listOf(
+                ConversationMessage(
+                    sender = "Alice",
+                    text = "photo",
+                    timestamp = 2L,
+                    dataMimeType = "image/png",
+                    data = inline,
+                )
+            )
+        )
+
+        channel.deliver(
+            seal(
+                sender,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(notif),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
+
+        assertEquals(listOf(inline.assetHash), resolver.requested.map { it.assetHash })
+        assertEquals(1, transport.sent.size)
     }
 }

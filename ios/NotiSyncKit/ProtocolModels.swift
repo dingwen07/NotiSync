@@ -146,6 +146,8 @@ nonisolated struct ConversationMessage: Sendable {
     var text: String
     var timestamp: Int64
     var avatar: PrivateAssetRef?
+    var dataMimeType: String?
+    var data: PrivateAssetRef?
 }
 
 nonisolated struct PrivateAssetRef: Sendable {

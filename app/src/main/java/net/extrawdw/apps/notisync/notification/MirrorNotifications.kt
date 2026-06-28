@@ -17,12 +17,14 @@ import android.graphics.Canvas
 import android.graphics.Matrix
 import android.graphics.Paint
 import android.graphics.Shader
+import android.net.Uri
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
 import androidx.core.content.ContextCompat
+import androidx.core.content.FileProvider
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.graphics.drawable.IconCompat
@@ -44,6 +46,7 @@ import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
 import net.extrawdw.notisync.protocol.OriginPlatform
+import net.extrawdw.notisync.protocol.PrivateAssetRef
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
@@ -346,13 +349,17 @@ class RemoteNotificationPoster(
                             }
                             .build()
                     }
-                    style.addMessage(
-                        NotificationCompat.MessagingStyle.Message(
-                            m.text,
-                            m.timestamp,
-                            person
-                        )
+                    val message = NotificationCompat.MessagingStyle.Message(
+                        m.text,
+                        m.timestamp,
+                        person
                     )
+                    m.data?.let { dataRef ->
+                        messageDataUri(dataRef)?.let { uri ->
+                            message.setData(m.dataMimeType ?: dataRef.mimeType, uri)
+                        }
+                    }
+                    style.addMessage(message)
                 }
                 builder.setStyle(style)
                 // If the newest message is the user's own (sender == null — e.g. an inline reply sent
@@ -552,6 +559,14 @@ class RemoteNotificationPoster(
 
     private fun avatarIcon(assetHash: String): IconCompat? =
         cachedBitmap(assetHash)?.let { IconCompat.createWithBitmap(it.circularAvatar()) }
+
+    private fun messageDataUri(ref: PrivateAssetRef?): Uri? {
+        ref ?: return null
+        val file = assets.fileForRead(ref.assetHash) ?: return null
+        return runCatching {
+            FileProvider.getUriForFile(context, "${context.packageName}.assetprovider", file)
+        }.getOrNull()
+    }
 
     private fun Bitmap.circularAvatar(): Bitmap {
         if (width <= 0 || height <= 0) return this
