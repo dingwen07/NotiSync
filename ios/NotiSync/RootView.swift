@@ -55,6 +55,23 @@ struct InboxView: View {
                                 )
                             }
                         }
+                        .contextMenu {
+                            if let deviceKey = runtime.filterDeviceKey(for: notification),
+                               let appId = runtime.filterAppIdentifier(for: notification) {
+                                Button {
+                                    runtime.setAppNotificationsEnabled(false, deviceKey: deviceKey, appId: appId)
+                                } label: {
+                                    Label("Filter This App", systemImage: "bell.slash")
+                                }
+                            }
+                            if runtime.canFilterNotificationsLike(notification) {
+                                Button {
+                                    runtime.filterNotificationsLike(notification)
+                                } label: {
+                                    Label(filterDeviceTitle(for: notification), systemImage: "bell.slash")
+                                }
+                            }
+                        }
                 }
             }
             .navigationTitle("Inbox")
@@ -68,6 +85,13 @@ struct InboxView: View {
 
     private func device(for notification: InboxNotification) -> TrustedDevice? {
         devices.first { $0.clientId == notification.sourceClientId }
+    }
+
+    private func filterDeviceTitle(for notification: InboxNotification) -> String {
+        switch runtime.originPlatform(for: notification) {
+        case .ANDROID_LOCAL: "Filter This Peer"
+        case .IOS_ANCS: "Filter This iOS Device"
+        }
     }
 }
 
@@ -172,8 +196,10 @@ struct InboxIconView: View {
 struct DevicesView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Query(sort: \TrustedDevice.updatedAt, order: .reverse) private var devices: [TrustedDevice]
+    @Query(sort: \InboxNotification.receivedAt, order: .reverse) private var notifications: [InboxNotification]
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
+    @State private var selectedFilterDevice: FilterDeviceSelection?
 
     private var settings: AppSettings? { settingsRows.first }
 
@@ -205,7 +231,9 @@ struct DevicesView: View {
                 }
                 Section("Trusted Peers") {
                     ForEach(devices.filter { $0.status == .trusted }) { device in
-                        DeviceLabel(device: device)
+                        TrustedPeerRow(device: device) {
+                            selectedFilterDevice = .android(device)
+                        }
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     runtime.revokePeer(clientId: device.clientId)
@@ -213,6 +241,10 @@ struct DevicesView: View {
                             }
                     }
                 }
+                IosDevicesSection(
+                    devices: iosDeviceRows,
+                    peerName: peerName,
+                    onOpenFilters: { selectedFilterDevice = .ios($0) })
             }
             .navigationTitle("Devices")
             .toolbar {
@@ -233,6 +265,208 @@ struct DevicesView: View {
             }
             .sheet(isPresented: $showingPairing) {
                 PairingView().environmentObject(runtime)
+            }
+            .sheet(item: $selectedFilterDevice) { selection in
+                AppFilterSheet(
+                    title: selection.title(peerName: peerName),
+                    deviceKey: selection.deviceKey,
+                    apps: appFilterItems(for: selection))
+                    .environmentObject(runtime)
+            }
+        }
+    }
+
+    private var iosDeviceRows: [FilteredIosDeviceRecord] {
+        var rowsByPeer = Dictionary(uniqueKeysWithValues: runtime.iosDevices().map { ($0.peerClientId, $0) })
+        for notification in notifications where runtime.originPlatform(for: notification) == .IOS_ANCS {
+            guard !notification.sourceClientId.isEmpty else { continue }
+            let name = notification.originDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let displayName = name?.isEmpty == false ? name ?? "iOS Device" : "iOS Device"
+            rowsByPeer[notification.sourceClientId] = FilteredIosDeviceRecord(
+                peerClientId: notification.sourceClientId,
+                deviceName: displayName,
+                updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
+        }
+        return rowsByPeer.values.sorted {
+            $0.deviceName.localizedCaseInsensitiveCompare($1.deviceName) == .orderedAscending
+        }
+    }
+
+    private func peerName(_ clientId: String) -> String {
+        let name = devices.first { $0.clientId == clientId }?.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name?.isEmpty == false ? name ?? clientId : clientId
+    }
+
+    private func appFilterItems(for selection: FilterDeviceSelection) -> [AppFilterItem] {
+        var items: [String: AppFilterItem] = [:]
+        for notification in notifications where selection.matches(notification, runtime: runtime) {
+            guard let appId = runtime.filterAppIdentifier(for: notification) else { continue }
+            let label = notification.appLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            items[appId] = AppFilterItem(
+                appId: appId,
+                appLabel: label.isEmpty ? appId : label,
+                detail: appId)
+        }
+        return items.values.sorted {
+            $0.appLabel.localizedCaseInsensitiveCompare($1.appLabel) == .orderedAscending
+        }
+    }
+}
+
+private struct TrustedPeerRow: View {
+    @EnvironmentObject private var runtime: NotiSyncRuntime
+    let device: TrustedDevice
+    let openFilters: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            DeviceLabel(device: device)
+            HStack {
+                Toggle(isOn: Binding(
+                    get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
+                    set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
+                )) {
+                    InlineIconLabel("Post Notifications", systemImage: "bell")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                Spacer()
+                Button(action: openFilters) {
+                    InlineIconLabel("App Filters", systemImage: "line.3.horizontal.decrease.circle")
+                }
+                .font(.caption)
+                .disabled(!runtime.androidLocalNotificationsEnabled(for: device.clientId))
+            }
+        }
+    }
+}
+
+private enum FilterDeviceSelection: Identifiable {
+    case android(TrustedDevice)
+    case ios(FilteredIosDeviceRecord)
+
+    var id: String {
+        switch self {
+        case .android(let device): "android:\(device.clientId)"
+        case .ios(let record): "ios:\(record.peerClientId)"
+        }
+    }
+
+    var deviceKey: String {
+        id
+    }
+
+    func title(peerName: (String) -> String) -> String {
+        switch self {
+        case .android(let device):
+            let name = device.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return name.isEmpty ? "Peer Apps" : "\(name) Apps"
+        case .ios(let record):
+            return "\(record.deviceName) Apps"
+        }
+    }
+
+    func matches(_ notification: InboxNotification, runtime: NotiSyncRuntime) -> Bool {
+        switch self {
+        case .android(let device):
+            return runtime.originPlatform(for: notification) == .ANDROID_LOCAL
+                && notification.sourceClientId == device.clientId
+        case .ios(let record):
+            return runtime.originPlatform(for: notification) == .IOS_ANCS
+                && notification.sourceClientId == record.peerClientId
+        }
+    }
+}
+
+private struct AppFilterItem: Identifiable {
+    var appId: String
+    var appLabel: String
+    var detail: String
+
+    var id: String { appId }
+}
+
+private struct IosDevicesSection: View {
+    @EnvironmentObject private var runtime: NotiSyncRuntime
+    let devices: [FilteredIosDeviceRecord]
+    let peerName: (String) -> String
+    let onOpenFilters: (FilteredIosDeviceRecord) -> Void
+
+    var body: some View {
+        if !devices.isEmpty {
+            Section("iOS Devices") {
+                ForEach(devices) { device in
+                    VStack(alignment: .leading, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: "\(device.deviceName) (via \(peerName(device.peerClientId)))")
+                                .font(.body.weight(.medium))
+                            VerificationValueText(device.peerClientId)
+                        }
+                        HStack {
+                            Toggle(isOn: Binding(
+                                get: { runtime.iosNotificationsEnabled(forPeerClientId: device.peerClientId) },
+                                set: {
+                                    runtime.setIosNotificationsEnabled(
+                                        $0,
+                                        forPeerClientId: device.peerClientId,
+                                        deviceName: device.deviceName)
+                                }
+                            )) {
+                                InlineIconLabel("Post Notifications", systemImage: "bell")
+                            }
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            Spacer()
+                            Button {
+                                onOpenFilters(device)
+                            } label: {
+                                InlineIconLabel("App Filters", systemImage: "line.3.horizontal.decrease.circle")
+                            }
+                            .font(.caption)
+                            .disabled(!runtime.iosNotificationsEnabled(forPeerClientId: device.peerClientId))
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct AppFilterSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var runtime: NotiSyncRuntime
+    let title: String
+    let deviceKey: String
+    let apps: [AppFilterItem]
+
+    var body: some View {
+        NavigationStack {
+            List {
+                ForEach(apps) { app in
+                    Toggle(isOn: Binding(
+                        get: { runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: app.appId) },
+                        set: { runtime.setAppNotificationsEnabled($0, deviceKey: deviceKey, appId: app.appId) }
+                    )) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(verbatim: app.appLabel)
+                                .font(.body.weight(.medium))
+                            Text(verbatim: app.detail)
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
+            .navigationTitle(title)
+            .overlay {
+                if apps.isEmpty {
+                    ContentUnavailableView("No apps yet", systemImage: "app.badge")
+                }
+            }
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
             }
         }
     }

@@ -60,10 +60,12 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// Bumped whenever a new app icon lands in `iconBytesByApp`; Inbox rows key their icon load on it so a
     /// row still showing the monogram re-resolves once a sibling notification (or a repair) supplies the icon.
     @Published private(set) var iconRevision = 0
+    @Published private(set) var notificationFilterRevision = 0
 
     /// Bump `iconRevision`, whose setter stays `private(set)` so only the runtime mutates it. Called from the
     /// `+Inbound` / `+Store` extensions when an icon is cached or re-provisioned, nudging monogram rows.
     func bumpIconRevision() { iconRevision += 1 }
+    func bumpNotificationFilterRevision() { notificationFilterRevision += 1 }
 
     // MARK: Lifecycle
 

@@ -3,7 +3,8 @@ import Foundation
 
 /// JSON files in the shared App Group container — the only state the app and the NSE both touch:
 /// shared runtime config, the trust roster (sender keys/epochs the NSE needs to verify+open), the
-/// self record (clientId + current epoch), the mirror identifier map, and the dismissal reconciliation sets.
+/// self record (clientId + current epoch), mirror display preferences, the mirror identifier map, and the
+/// dismissal reconciliation sets.
 nonisolated enum AppGroupStore {
     private static let fallbackLock = NSLock()
     private static var cachedLockDirectory: URL?
@@ -91,6 +92,260 @@ nonisolated enum AppGroupStore {
         static let dedup = "dedup.json"
         static let rotation = "rotation.json"
         static let cards = "cards.json"
+        static let notificationFilters = "notification-filters.json"
+    }
+}
+
+/// User-maintained mirror display rules shared by the app and Notification Service Extension. These rules
+/// affect presentation only: matching notifications are still decoded and handed to the app Inbox.
+nonisolated struct FilteredIosDeviceRecord: Codable, Hashable, Identifiable, Sendable {
+    var peerClientId: String
+    var deviceName: String
+    var updatedAt: Int64
+
+    var id: String { peerClientId }
+}
+
+nonisolated struct NotificationFilterPreferences: Codable, Sendable {
+    var filteredAndroidLocalPeerIds: Set<String> = []
+    var iosDevices: [FilteredIosDeviceRecord] = []
+    var filteredIosPeerIds: Set<String> = []
+    var filteredAppIdsByDeviceKey: [String: Set<String>] = [:]
+
+    init(
+        filteredAndroidLocalPeerIds: Set<String> = [],
+        iosDevices: [FilteredIosDeviceRecord] = [],
+        filteredIosPeerIds: Set<String> = [],
+        filteredAppIdsByDeviceKey: [String: Set<String>] = [:]
+    ) {
+        self.filteredAndroidLocalPeerIds = filteredAndroidLocalPeerIds
+        self.iosDevices = iosDevices
+        self.filteredIosPeerIds = filteredIosPeerIds
+        self.filteredAppIdsByDeviceKey = filteredAppIdsByDeviceKey
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        filteredAndroidLocalPeerIds = try container.decodeIfPresent(Set<String>.self, forKey: .filteredAndroidLocalPeerIds) ?? []
+        iosDevices = try container.decodeIfPresent([FilteredIosDeviceRecord].self, forKey: .iosDevices) ?? []
+        filteredIosPeerIds = try container.decodeIfPresent(Set<String>.self, forKey: .filteredIosPeerIds) ?? []
+        filteredAppIdsByDeviceKey = try container.decodeIfPresent([String: Set<String>].self, forKey: .filteredAppIdsByDeviceKey) ?? [:]
+    }
+}
+
+nonisolated enum NotificationFilterStore {
+    private static let fileName = AppGroupStore.Files.notificationFilters
+    private static let legacyIgnoreFileName = "notification-ignores.json"
+
+    static func preferences() -> NotificationFilterPreferences {
+        AppGroupStore.withLock(fileName) {
+            if let prefs = AppGroupStore.read(NotificationFilterPreferences.self, fileName) { return prefs }
+            if let legacy = AppGroupStore.read(LegacyIgnorePreferences.self, legacyIgnoreFileName) {
+                let migrated = NotificationFilterPreferences(
+                    filteredAndroidLocalPeerIds: legacy.disabledAndroidLocalPeerIds,
+                    iosDevices: [],
+                    filteredIosPeerIds: [],
+                    filteredAppIdsByDeviceKey: [:])
+                AppGroupStore.write(migrated, fileName)
+                return migrated
+            }
+            return NotificationFilterPreferences()
+        }
+    }
+
+    static func androidLocalNotificationsEnabled(for clientId: String) -> Bool {
+        guard !clientId.isEmpty else { return true }
+        return !preferences().filteredAndroidLocalPeerIds.contains(clientId)
+    }
+
+    static func setAndroidLocalNotificationsEnabled(_ enabled: Bool, for clientId: String) {
+        let normalized = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return }
+        AppGroupStore.withLock(fileName) {
+            var prefs = preferencesUnlocked()
+            if enabled {
+                prefs.filteredAndroidLocalPeerIds.remove(normalized)
+            } else {
+                prefs.filteredAndroidLocalPeerIds.insert(normalized)
+            }
+            AppGroupStore.write(prefs, fileName)
+        }
+    }
+
+    static func iosDevices() -> [FilteredIosDeviceRecord] {
+        preferences().iosDevices.sorted {
+            $0.deviceName.localizedCaseInsensitiveCompare($1.deviceName) == .orderedAscending
+        }
+    }
+
+    static func recordIosDevice(peerClientId: String, deviceName: String?) {
+        let peerId = peerClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peerId.isEmpty else { return }
+        let name = cleanText(deviceName) ?? "iOS Device"
+        AppGroupStore.withLock(fileName) {
+            var prefs = preferencesUnlocked()
+            if let index = prefs.iosDevices.firstIndex(where: { $0.peerClientId == peerId }) {
+                prefs.iosDevices[index].deviceName = name
+                prefs.iosDevices[index].updatedAt = nowMillis()
+            } else {
+                prefs.iosDevices.append(FilteredIosDeviceRecord(
+                    peerClientId: peerId,
+                    deviceName: name,
+                    updatedAt: nowMillis()))
+            }
+            AppGroupStore.write(prefs, fileName)
+        }
+    }
+
+    static func removeIosDevice(peerClientId: String) {
+        let peerId = peerClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peerId.isEmpty else { return }
+        AppGroupStore.withLock(fileName) {
+            var prefs = preferencesUnlocked()
+            prefs.iosDevices.removeAll { $0.peerClientId == peerId }
+            prefs.filteredIosPeerIds.remove(peerId)
+            if let key = iosDeviceKey(peerClientId: peerId) {
+                prefs.filteredAppIdsByDeviceKey.removeValue(forKey: key)
+            }
+            AppGroupStore.write(prefs, fileName)
+        }
+    }
+
+    static func iosNotificationsEnabled(forPeerClientId peerClientId: String) -> Bool {
+        let peerId = peerClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peerId.isEmpty else { return true }
+        return !preferences().filteredIosPeerIds.contains(peerId)
+    }
+
+    static func setIosNotificationsEnabled(_ enabled: Bool, forPeerClientId peerClientId: String, deviceName: String?) {
+        let peerId = peerClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !peerId.isEmpty else { return }
+        AppGroupStore.withLock(fileName) {
+            var prefs = preferencesUnlocked()
+            if let name = cleanText(deviceName) {
+                if let index = prefs.iosDevices.firstIndex(where: { $0.peerClientId == peerId }) {
+                    prefs.iosDevices[index].deviceName = name
+                    prefs.iosDevices[index].updatedAt = nowMillis()
+                } else {
+                    prefs.iosDevices.append(FilteredIosDeviceRecord(peerClientId: peerId, deviceName: name, updatedAt: nowMillis()))
+                }
+            }
+            if enabled {
+                prefs.filteredIosPeerIds.remove(peerId)
+            } else {
+                prefs.filteredIosPeerIds.insert(peerId)
+            }
+            AppGroupStore.write(prefs, fileName)
+        }
+    }
+
+    static func appNotificationsEnabled(deviceKey: String, appId: String) -> Bool {
+        let normalized = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deviceKey.isEmpty, !normalized.isEmpty else { return true }
+        return !(preferences().filteredAppIdsByDeviceKey[deviceKey]?.contains(normalized) ?? false)
+    }
+
+    static func setAppNotificationsEnabled(_ enabled: Bool, deviceKey: String, appId: String) {
+        let normalized = appId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !deviceKey.isEmpty, !normalized.isEmpty else { return }
+        AppGroupStore.withLock(fileName) {
+            var prefs = preferencesUnlocked()
+            var filtered = prefs.filteredAppIdsByDeviceKey[deviceKey] ?? []
+            if enabled {
+                filtered.remove(normalized)
+            } else {
+                filtered.insert(normalized)
+            }
+            prefs.filteredAppIdsByDeviceKey[deviceKey] = filtered.isEmpty ? nil : filtered
+            AppGroupStore.write(prefs, fileName)
+        }
+    }
+
+    static func shouldFilterNotification(_ n: CapturedNotification) -> Bool {
+        switch n.originPlatform {
+        case .ANDROID_LOCAL:
+            guard androidLocalNotificationsEnabled(for: n.sourceClientId) else { return true }
+            guard let appId = appIdentifier(packageName: n.packageName, iosBundleId: n.iosBundleId),
+                  let deviceKey = androidDeviceKey(n.sourceClientId) else { return false }
+            return !appNotificationsEnabled(deviceKey: deviceKey, appId: appId)
+        case .IOS_ANCS:
+            recordIosDevice(peerClientId: n.sourceClientId, deviceName: n.originDeviceName)
+            guard let deviceKey = iosDeviceKey(peerClientId: n.sourceClientId) else { return false }
+            guard iosNotificationsEnabled(forPeerClientId: n.sourceClientId) else { return true }
+            guard let appId = appIdentifier(packageName: n.packageName, iosBundleId: n.iosBundleId) else { return false }
+            return !appNotificationsEnabled(deviceKey: deviceKey, appId: appId)
+        }
+    }
+
+    static func shouldFilterNotification(
+        originPlatform: String?,
+        sourceClientId: String,
+        originDeviceName: String?,
+        packageName: String?,
+        iosBundleId: String?
+    ) -> Bool {
+        let platform = originPlatform.flatMap(OriginPlatform.init(rawValue:)) ?? .ANDROID_LOCAL
+        switch platform {
+        case .ANDROID_LOCAL:
+            guard androidLocalNotificationsEnabled(for: sourceClientId) else { return true }
+            guard let appId = appIdentifier(packageName: packageName, iosBundleId: iosBundleId),
+                  let deviceKey = androidDeviceKey(sourceClientId) else { return false }
+            return !appNotificationsEnabled(deviceKey: deviceKey, appId: appId)
+        case .IOS_ANCS:
+            recordIosDevice(peerClientId: sourceClientId, deviceName: originDeviceName)
+            guard let deviceKey = iosDeviceKey(peerClientId: sourceClientId) else { return false }
+            guard iosNotificationsEnabled(forPeerClientId: sourceClientId) else { return true }
+            guard let appId = appIdentifier(packageName: packageName, iosBundleId: iosBundleId) else { return false }
+            return !appNotificationsEnabled(deviceKey: deviceKey, appId: appId)
+        }
+    }
+
+    static func filteredIosDeviceName(from originDeviceName: String?) -> String? {
+        guard let name = cleanText(originDeviceName), !name.isEmpty else { return nil }
+        return name
+    }
+
+    static func androidDeviceKey(_ clientId: String) -> String? {
+        let normalized = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        return "android:\(normalized)"
+    }
+
+    static func iosDeviceKey(peerClientId: String) -> String? {
+        let normalized = peerClientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else { return nil }
+        return "ios:\(normalized)"
+    }
+
+    static func appIdentifier(packageName: String?, iosBundleId: String?) -> String? {
+        if let bundleId = cleanText(iosBundleId), !bundleId.isEmpty { return bundleId }
+        if let packageName = cleanText(packageName), !packageName.isEmpty { return packageName }
+        return nil
+    }
+
+    private static func preferencesUnlocked() -> NotificationFilterPreferences {
+        if let prefs = AppGroupStore.read(NotificationFilterPreferences.self, fileName) { return prefs }
+        if let legacy = AppGroupStore.read(LegacyIgnorePreferences.self, legacyIgnoreFileName) {
+            return NotificationFilterPreferences(
+                filteredAndroidLocalPeerIds: legacy.disabledAndroidLocalPeerIds,
+                iosDevices: [],
+                filteredIosPeerIds: [],
+                filteredAppIdsByDeviceKey: [:])
+        }
+        return NotificationFilterPreferences()
+    }
+
+    private static func cleanText(_ value: String?) -> String? {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func nowMillis() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
+    }
+
+    private struct LegacyIgnorePreferences: Codable, Sendable {
+        var disabledAndroidLocalPeerIds: Set<String> = []
+        var ignoredIosDeviceNames: [String] = []
     }
 }
 

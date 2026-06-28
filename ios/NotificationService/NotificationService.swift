@@ -62,8 +62,11 @@ final class NotificationService: UNNotificationServiceExtension {
                     return
                 }
                 let messageId = dedupId ?? env.messageId
+                let filterAlert = NotificationFilterStore.shouldFilterNotification(n)
                 // Register the per-channel category (with the Dismiss action) for this push (#15).
-                MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+                if !filterAlert {
+                    MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+                }
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
                 let prepared: UNNotificationContent
@@ -75,23 +78,27 @@ final class NotificationService: UNNotificationServiceExtension {
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
                     // path (#13) doesn't re-post it under a different id once it processes a later envelope.
-                    let perMsgId = MirrorPresentation.messageIdentifier(base: MirrorPresentation.identifier(for: n), message: last)
-                    MirrorMapStore.put(MirrorMapEntry(identifier: perMsgId, sourceClientId: n.sourceClientId,
-                                                      sourceKey: n.sourceKey, messageId: messageId, deliveryMode: deliveryMode,
-                                                      isClearable: n.isClearable))
+                    if !filterAlert {
+                        let perMsgId = MirrorPresentation.messageIdentifier(base: MirrorPresentation.identifier(for: n), message: last)
+                        MirrorMapStore.put(MirrorMapEntry(identifier: perMsgId, sourceClientId: n.sourceClientId,
+                                                          sourceKey: n.sourceKey, messageId: messageId, deliveryMode: deliveryMode,
+                                                          isClearable: n.isClearable))
+                    }
                 } else {
                     let senderImage = senderImage(for: n)
                     prepared = MirrorPresentation.content(for: n, messageId: messageId, senderImage: senderImage.data)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                 }
-                bestAttempt = prepared
+                bestAttempt = filterAlert ? MirrorPresentation.passiveContent(prepared, removeActions: true) : prepared
 
                 // The system fixes the delivered notification's identifier to this push's request id (APNs),
                 // so record the mapping under THAT id for dismissal reconciliation + remote-dismissal removal.
-                MirrorMapStore.put(MirrorMapEntry(identifier: request.identifier, sourceClientId: n.sourceClientId,
-                                                  sourceKey: n.sourceKey, messageId: messageId, deliveryMode: deliveryMode,
-                                                  isClearable: n.isClearable))
-                ShownStore.markShowing(request.identifier)
+                if !filterAlert {
+                    MirrorMapStore.put(MirrorMapEntry(identifier: request.identifier, sourceClientId: n.sourceClientId,
+                                                      sourceKey: n.sourceKey, messageId: messageId, deliveryMode: deliveryMode,
+                                                      isClearable: n.isClearable))
+                    ShownStore.markShowing(request.identifier)
+                }
                 // Hand the mirror to the app's Inbox: we're about to ack (below), so the app will never see
                 // this message again over WS/drain — it can only reach the SwiftData Inbox via this queue.
                 PendingInboxStore.append(PendingInboxItem(from: n, messageId: messageId,
@@ -115,7 +122,7 @@ final class NotificationService: UNNotificationServiceExtension {
                                       identitySigner: engine.identitySigner,
                                       operationalSigner: engine.operationalSigner,
                                       keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
-                finish(content)
+                finish(filterAlert ? MirrorPresentation.passiveContent(content, removeActions: true) : content)
             } catch {
                 releaseClaim(dedupId)
                 finish(best) // placeholder; the app recovers it on next foreground / relay drain

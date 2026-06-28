@@ -42,7 +42,17 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         _ center: UNUserNotificationCenter,
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
-        [.banner, .list, .sound]
+        let info = notification.request.content.userInfo
+        if NotificationFilterStore.shouldFilterNotification(
+            originPlatform: info["originPlatform"] as? String,
+            sourceClientId: info["sourceClientId"] as? String ?? "",
+            originDeviceName: info["originDeviceName"] as? String,
+            packageName: info["packageName"] as? String,
+            iosBundleId: info["iosBundleId"] as? String
+        ) {
+            return []
+        }
+        return [.banner, .list, .sound]
     }
 
     func userNotificationCenter(

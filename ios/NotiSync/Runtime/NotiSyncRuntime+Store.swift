@@ -11,6 +11,94 @@ extension NotiSyncRuntime {
 
     func ensureSettings() { _ = settings(); try? modelContext?.save() }
 
+    func androidLocalNotificationsEnabled(for clientId: String) -> Bool {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.androidLocalNotificationsEnabled(for: clientId)
+    }
+
+    func setAndroidLocalNotificationsEnabled(_ enabled: Bool, for clientId: String) {
+        NotificationFilterStore.setAndroidLocalNotificationsEnabled(enabled, for: clientId)
+        bumpNotificationFilterRevision()
+    }
+
+    func iosDevices() -> [FilteredIosDeviceRecord] {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.iosDevices()
+    }
+
+    func recordIosDevice(peerClientId: String, deviceName: String?) {
+        NotificationFilterStore.recordIosDevice(peerClientId: peerClientId, deviceName: deviceName)
+        bumpNotificationFilterRevision()
+    }
+
+    func removeIosDevice(peerClientId: String) {
+        NotificationFilterStore.removeIosDevice(peerClientId: peerClientId)
+        bumpNotificationFilterRevision()
+    }
+
+    func iosNotificationsEnabled(forPeerClientId peerClientId: String) -> Bool {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.iosNotificationsEnabled(forPeerClientId: peerClientId)
+    }
+
+    func setIosNotificationsEnabled(_ enabled: Bool, forPeerClientId peerClientId: String, deviceName: String?) {
+        NotificationFilterStore.setIosNotificationsEnabled(enabled, forPeerClientId: peerClientId, deviceName: deviceName)
+        bumpNotificationFilterRevision()
+    }
+
+    func appNotificationsEnabled(deviceKey: String, appId: String) -> Bool {
+        _ = notificationFilterRevision
+        return NotificationFilterStore.appNotificationsEnabled(deviceKey: deviceKey, appId: appId)
+    }
+
+    func setAppNotificationsEnabled(_ enabled: Bool, deviceKey: String, appId: String) {
+        NotificationFilterStore.setAppNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId)
+        bumpNotificationFilterRevision()
+    }
+
+    func filterNotificationsLike(_ notification: InboxNotification) {
+        let platform = originPlatform(for: notification)
+        switch platform {
+        case .ANDROID_LOCAL:
+            setAndroidLocalNotificationsEnabled(false, for: notification.sourceClientId)
+        case .IOS_ANCS:
+            if let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) {
+                recordIosDevice(peerClientId: notification.sourceClientId, deviceName: name)
+                setIosNotificationsEnabled(false, forPeerClientId: notification.sourceClientId, deviceName: name)
+            }
+        }
+    }
+
+    func canFilterNotificationsLike(_ notification: InboxNotification) -> Bool {
+        let platform = originPlatform(for: notification)
+        switch platform {
+        case .ANDROID_LOCAL:
+            return !notification.sourceClientId.isEmpty
+        case .IOS_ANCS:
+            return NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) != nil
+        }
+    }
+
+    func originPlatform(for notification: InboxNotification) -> OriginPlatform {
+        if let platform = notification.originPlatform.flatMap(OriginPlatform.init(rawValue:)) {
+            return platform
+        }
+        return notification.isIPhoneOrigin ? .IOS_ANCS : .ANDROID_LOCAL
+    }
+
+    func filterDeviceKey(for notification: InboxNotification) -> String? {
+        switch originPlatform(for: notification) {
+        case .ANDROID_LOCAL:
+            return NotificationFilterStore.androidDeviceKey(notification.sourceClientId)
+        case .IOS_ANCS:
+            return NotificationFilterStore.iosDeviceKey(peerClientId: notification.sourceClientId)
+        }
+    }
+
+    func filterAppIdentifier(for notification: InboxNotification) -> String? {
+        NotificationFilterStore.appIdentifier(packageName: notification.packageName, iosBundleId: notification.iosBundleId)
+    }
+
     func settings() -> AppSettings {
         guard let modelContext else { return AppSettings() }
         if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first { return existing }

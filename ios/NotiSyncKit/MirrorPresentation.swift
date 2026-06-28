@@ -115,6 +115,15 @@ nonisolated enum MirrorPresentation {
         }
     }
 
+    /// Demote a notification that must still complete an APNs alert delivery (NSE path) but should not alert.
+    static func passiveContent(_ content: UNNotificationContent, removeActions: Bool = false) -> UNNotificationContent {
+        guard let mutable = content.mutableCopy() as? UNMutableNotificationContent else { return content }
+        mutable.interruptionLevel = .passive
+        mutable.sound = nil
+        if removeActions { mutable.categoryIdentifier = "" }
+        return mutable
+    }
+
     // MARK: userInfo
 
     private static func userInfo(for n: CapturedNotification, messageId: String) -> [String: Any] {
@@ -124,6 +133,7 @@ nonisolated enum MirrorPresentation {
             "messageId": messageId,
             "packageName": n.packageName,
             "iosBundleId": n.iosBundleId ?? "",
+            "originPlatform": n.originPlatform.rawValue,
             "originDeviceName": n.originDeviceName ?? "",
             "appLabel": n.appLabel,
             "isClearable": n.isClearable,   // #14 — a swipe of a non-clearable mirror must not sync-dismiss

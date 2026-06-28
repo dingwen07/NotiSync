@@ -139,6 +139,7 @@ extension NotiSyncRuntime {
         upsertInbox(n, messageId: messageId, identifier: identifier, deliveryMode: displayMode)
         addActivity(.received, .appLabel, titleArg: n.appLabel, detail: .deliveryMode, detailArg: displayMode)
         guard prior == nil else { return }
+        guard !NotificationFilterStore.shouldFilterNotification(n) else { return }
         // Register the per-channel category (carrying the Dismiss action) before posting under it (#15).
         MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
         if n.style == .MESSAGING, !n.messages.isEmpty {
