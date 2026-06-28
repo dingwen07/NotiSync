@@ -161,6 +161,12 @@ class RouteStore(private val db: NotiSyncDb) {
         Unit
     }
 
+    /** Clear this client/transport route. Used for route-epoch recovery when the client lost its counter. */
+    suspend fun clear(clientId: ClientId, transport: TransportType) = db.tx {
+        Routes.deleteWhere { (Routes.clientId eq clientId.value) and (Routes.transport eq transport.name) }
+        Unit
+    }
+
     suspend fun routesFor(clientId: ClientId): List<StoredRoute> = db.tx {
         Routes.selectAll().where { Routes.clientId eq clientId.value }.mapNotNull { row ->
             val blob = b64d.decode(row[Routes.signedBlobB64])

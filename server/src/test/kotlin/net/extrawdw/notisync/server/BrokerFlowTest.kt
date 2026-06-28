@@ -54,16 +54,22 @@ import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
 import net.extrawdw.notisync.protocol.crypto.SoftwareOperationalSigner
 import net.extrawdw.notisync.server.auth.JwtIssuer
+import net.extrawdw.notisync.server.broker.Broker
 import net.extrawdw.notisync.server.crypto.Verification
+import net.extrawdw.notisync.server.data.PrivateAssetStore
 import net.extrawdw.notisync.server.http.brokerModule
 import net.extrawdw.notisync.server.http.module
 import net.extrawdw.notisync.server.integrity.AppCheckJwks
 import net.extrawdw.notisync.server.integrity.IntegrityPayload
 import net.extrawdw.notisync.server.integrity.MetricsSnapshot
 import net.extrawdw.notisync.server.integrity.PlayIntegrityDecoder
+import net.extrawdw.notisync.server.data.RelayStore
+import net.extrawdw.notisync.server.data.RouteStore
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.NotiSyncDb
 import net.extrawdw.notisync.server.data.StoredEpoch
+import net.extrawdw.notisync.server.delivery.DisabledPushTransport
+import net.extrawdw.notisync.server.delivery.WebSocketHub
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
@@ -107,6 +113,7 @@ class BrokerFlowTest {
         routeRef: String,
         transport: TransportType = TransportType.FCM,
         environment: RouteEnvironment = RouteEnvironment.PRODUCTION,
+        epoch: Int = 1,
     ): SignedBlob {
         val claim = RouteClaim(
             clientId = signer.clientId,
@@ -114,7 +121,7 @@ class BrokerFlowTest {
             environment = environment,
             routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
-            epoch = 1,
+            epoch = epoch,
             issuedAt = 1_750_000_000_000L,
         )
         val payload = ProtocolCodec.encodeToCbor(claim)
@@ -316,6 +323,94 @@ class BrokerFlowTest {
         store.purgeExpired(now = 10_000L, retentionGrace = 0L)
         assertEquals("floor durable across GC", 5, store.floor(cid))
         assertNotNull(store.get(cid, 6))
+    }
+
+    @Test
+    fun emptyRouteClaimClearsRouteSoClientCanRecoverLostRouteEpoch() = runBlocking {
+        val tmp = File.createTempFile("notisync-route-reset", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        val config = ServerConfig.fromEnv()
+        val db = NotiSyncDb.connect(config)
+        val routes = RouteStore(db)
+        val broker = Broker(
+            routes,
+            RelayStore(db),
+            PrivateAssetStore(db),
+            EpochStore(db),
+            WebSocketHub(),
+            DisabledPushTransport,
+            config,
+        )
+        val signer = SoftwareIdentitySigner.generate()
+        val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val hpke = Hpke.generateKeyPair()
+        assertTrue(broker.uploadKeyEpoch(keyEpochBlob(signer, op, hpke, epoch = 1)))
+
+        assertEquals(1, broker.uploadRoutes(listOf(routeBlob(signer, "new-token", epoch = 2))))
+        assertEquals("new-token", routes.routesFor(signer.clientId).single().routeRef)
+
+        assertEquals(1, broker.uploadRoutes(listOf(routeBlob(signer, "", epoch = 1))))
+        assertTrue(routes.routesFor(signer.clientId).isEmpty())
+
+        assertEquals(1, broker.uploadRoutes(listOf(routeBlob(signer, "recovered-token", epoch = 1))))
+        assertEquals("recovered-token", routes.routesFor(signer.clientId).single().routeRef)
+    }
+
+    @Test
+    fun routeResetRequiresIdentitySignedHttpRequest() = testApplication {
+        val tmp = File.createTempFile("notisync-route-reset-auth", ".db").also { it.deleteOnExit() }
+        val jwtKey = File.createTempFile("notisync-route-reset-authjwt", ".pem").also { it.delete() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_JWT_PRIVATE_KEY_PATH", jwtKey.absolutePath)
+        application { brokerModule(allGoodDecoder()) }
+
+        val signer = SoftwareIdentitySigner.generate()
+        val hpke = Hpke.generateKeyPair()
+        val op = SoftwareOperationalSigner.generate(signer.clientId, signerEpoch = 1)
+        val token = client.attest(signer, keyEpochBlob(signer, op, hpke, epoch = 1))
+        val routes = RouteStore(NotiSyncDb.connect(ServerConfig.fromEnv()))
+
+        val routeBody = ProtocolCodec.encodeToCbor(listOf(routeBlob(signer, "new-token", epoch = 2)))
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/routes") {
+                signedHeaders(signer, "POST", "/v2/routes", routeBody, token)
+                setBody(routeBody)
+            }.status,
+        )
+        assertEquals("new-token", routes.routesFor(signer.clientId).single().routeRef)
+
+        val resetBody = ProtocolCodec.encodeToCbor(listOf(routeBlob(signer, "", epoch = 1)))
+        assertEquals(
+            HttpStatusCode.Unauthorized,
+            client.post("/v2/routes") {
+                operationalSignedHeaders(op, "POST", "/v2/routes", resetBody, token)
+                setBody(resetBody)
+            }.status,
+        )
+        assertEquals("new-token", routes.routesFor(signer.clientId).single().routeRef)
+
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/routes") {
+                signedHeaders(signer, "POST", "/v2/routes", resetBody, token)
+                setBody(resetBody)
+            }.status,
+        )
+        assertTrue(routes.routesFor(signer.clientId).isEmpty())
+
+        val recoveredBody = ProtocolCodec.encodeToCbor(listOf(routeBlob(signer, "recovered-token", epoch = 1)))
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/routes") {
+                signedHeaders(signer, "POST", "/v2/routes", recoveredBody, token)
+                setBody(recoveredBody)
+            }.status,
+        )
+        assertEquals("recovered-token", routes.routesFor(signer.clientId).single().routeRef)
     }
 
     @Test

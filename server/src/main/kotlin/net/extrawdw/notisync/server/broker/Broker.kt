@@ -117,6 +117,11 @@ class Broker(
         for (blob in signedRoutes) {
             val spki = clientSpki(blob.signerId) ?: continue
             val claim = Verification.verifyRouteClaim(blob, spki) ?: continue
+            if (claim.routeRef.isEmpty()) {
+                routes.clear(claim.clientId, claim.transport)
+                accepted++
+                continue
+            }
             routes.put(
                 StoredRoute(
                     claim.clientId,

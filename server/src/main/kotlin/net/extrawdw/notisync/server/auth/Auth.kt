@@ -77,6 +77,15 @@ class ServerAuth(
             }
         }
 
+    suspend fun requireJwtIdentitySigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthPrincipal? =
+        when (val result = authenticateJwtIdentitySigned(call, body, broker)) {
+            is AuthResult.Accepted -> result.principal
+            is AuthResult.Rejected -> {
+                call.respond(result.status, ErrorResponse(result.reason))
+                null
+            }
+        }
+
     suspend fun requireSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthPrincipal? =
         when (val result = authenticateSigned(call, body, broker)) {
             is AuthResult.Accepted -> result.principal
@@ -116,6 +125,16 @@ class ServerAuth(
             .accepted(principal)
     }
 
+    suspend fun authenticateJwtIdentitySigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
+        if (!config.playIntegrityEnabled) {
+            return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))
+        }
+        val principal = authenticateBearer(call) ?: return AuthResult.Rejected("auth_required")
+        val spki = broker.clientSpki(principal.clientId) ?: return AuthResult.Rejected("unknown_client")
+        return verifyIdentitySignedRequest(call, body, principal.clientId, spki)
+            .accepted(principal)
+    }
+
     /**
      * Resolve the public key the request signature should verify against, by its NS2 signer-epoch header:
      * epoch 0 (or absent) → the identity key (NS1-compatible, always-valid root); ≥1 → the operational
@@ -152,6 +171,17 @@ class ServerAuth(
             return SignatureCheck.Rejected("signature_replay")
         }
         return SignatureCheck.Accepted
+    }
+
+    fun verifyIdentitySignedRequest(
+        call: ApplicationCall,
+        body: ByteArray,
+        expectedClientId: ClientId,
+        identitySpki: ByteArray,
+    ): SignatureCheck {
+        val headers = signedHeaders(call) ?: return SignatureCheck.Rejected("signature_required")
+        if (headers.signerEpoch != 0) return SignatureCheck.Rejected("identity_signature_required")
+        return verifySignedRequest(call, body, expectedClientId, identitySpki)
     }
 
     private fun authenticateBearer(call: ApplicationCall): AuthPrincipal? {

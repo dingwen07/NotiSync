@@ -29,7 +29,8 @@ data class RouteClaim(
     val clientId: ClientId,
     val transport: TransportType,
     val environment: RouteEnvironment,
-    /** Opaque transport endpoint: an FCM registration token, APNs device token, WS session id, etc. */
+    /** Opaque transport endpoint: an FCM registration token, APNs device token, WS session id, etc.
+     * Empty means "clear my existing route for this transport" on the broker. */
     val routeRef: String,
     val capabilities: RouteCapabilities,
     val epoch: Int,

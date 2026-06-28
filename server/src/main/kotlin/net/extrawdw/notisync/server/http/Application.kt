@@ -40,8 +40,10 @@ import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
+import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
 import net.extrawdw.notisync.protocol.WsKind
@@ -292,13 +294,23 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
         post("/routes") {
             val body = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
-            val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
             val list = runCatching {
                 ProtocolCodec.decodeFromCbor<List<SignedBlob>>(body)
             }.getOrNull()
             if (list == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_routes"))
-            } else if (config.playIntegrityEnabled && list.any { it.signerId != principal.clientId }) {
+                return@post
+            }
+            val hasReset = list.any { blob ->
+                blob.typ == SignedType.ROUTE_CLAIM &&
+                    runCatching { blob.decode<RouteClaim>().routeRef.isEmpty() }.getOrDefault(false)
+            }
+            val principal = if (hasReset) {
+                auth.requireJwtIdentitySigned(call, body, broker) ?: return@post
+            } else {
+                auth.requireJwtSigned(call, body, broker) ?: return@post
+            }
+            if (config.playIntegrityEnabled && list.any { it.signerId != principal.clientId }) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 val accepted = broker.uploadRoutes(list)
