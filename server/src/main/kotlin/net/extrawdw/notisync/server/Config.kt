@@ -17,7 +17,12 @@ data class ServerConfig(
     val apnsKeyIdSandbox: String,
     val apnsPrivateKeyPathSandbox: String,
     val apnsTopic: String,
-    /** Max ciphertext bytes delivered inline in an FCM data message; larger ones send a wake pointer. */
+    /**
+     * Operator ceiling on the base64 ciphertext delivered inline in a push data message; larger ones send
+     * a wake pointer. A soft policy knob (push-bandwidth control): the broker independently floors the
+     * inline size per-transport under the wire hard limit (see `Broker.hardInlineCtBudget`), so raising
+     * this only widens how much the broker is *willing* to inline — it can never produce an oversize push.
+     */
     val inlineBudgetBytes: Int,
     /** How long the broker retains an undelivered encrypted relay item. */
     val relayTtlMillis: Long,
@@ -108,7 +113,7 @@ data class ServerConfig(
                 apnsKeyIdSandbox = env("NOTISYNC_APNS_KEY_ID_SANDBOX").orEmpty(),
                 apnsPrivateKeyPathSandbox = env("NOTISYNC_APNS_PRIVATE_KEY_PATH_SANDBOX").orEmpty(),
                 apnsTopic = env("NOTISYNC_APNS_TOPIC") ?: "net.extrawdw.apps.NotiSync",
-                inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 3072,
+                inlineBudgetBytes = env("NOTISYNC_INLINE_BUDGET")?.toIntOrNull() ?: 4096,
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
                 privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
                 maxPrivateAssetBytes = env("NOTISYNC_MAX_ASSET_BYTES")?.toIntOrNull() ?: (1024 * 1024),

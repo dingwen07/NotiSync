@@ -53,9 +53,6 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     private var foregroundActive = false
     private var bgRegistered = false
     var lastReconcileAt = Date.distantPast
-    /// In-memory heartbeat clock for `announcePeriodicStateIfDue` (profile / key-epoch / filter re-announce).
-    /// Starts at 0 so the first foreground pass after launch announces once, then gates by the config interval.
-    var lastPeriodicAnnounceAt: Int64 = 0
     /// Coalesces a burst of filter toggles into one outbound FILTER announce (see `notificationFiltersDidChange`).
     var filterAnnounceTask: Task<Void, Never>?
     var repairRequested: Set<String> = []   // assetHash → already asked the source to re-upload

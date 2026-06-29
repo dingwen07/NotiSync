@@ -35,16 +35,17 @@ nonisolated enum NotiSyncConfig {
     static let defaultBrokerURL = "https://notisync-api.extrawdw.net"
     #endif
 
-    /// Largest inline APNs payload we advertise in our route claim (bytes of base64 envelope).
-    static let inlinePayloadLimitBytes = 3072
+    /// Largest inline APNs payload we advertise in our route claim (base64 envelope chars).
+    static let inlinePayloadLimitBytes = 3500
 
     /// The first operational/HPKE epoch. Persisted in `RotationStore`; rotation advances it from here.
     static let initialEpoch = 1
 
     /// Heartbeat cadence for re-announcing mutable own-mesh state — our profile, our current key-epoch (in
     /// case the broker lost it), and our notification filters — so peers (and the broker) converge even with
-    /// no explicit change. Runs once per launch (the in-memory clock starts at 0) and at most this often
-    /// after; a filter *change* announces immediately (debounced), independent of this gate.
+    /// no explicit change. The "due" clock is persisted (`PeriodicAnnounceStore`) so this fires at most once
+    /// per interval across cold launches / background wakes, not once per launch; a filter *change* (debounced)
+    /// and a device *rename* still announce immediately, independent of this gate.
     static let periodicAnnounceIntervalMs: Int64 = 6 * 60 * 60 * 1000   // 6h
 
     /// NS2 §7 self key-rotation timing (mint → pre-warm → activate → retire). Mirrors the Android

@@ -115,13 +115,26 @@ class Broker(
     suspend fun uploadRoutes(signedRoutes: List<SignedBlob>): Int {
         var accepted = 0
         for (blob in signedRoutes) {
-            val spki = clientSpki(blob.signerId) ?: continue
-            val claim = Verification.verifyRouteClaim(blob, spki) ?: continue
+            val spki = clientSpki(blob.signerId)
+            if (spki == null) {
+                log.info("route claim skipped: no known signing key signer={}", blob.signerId.shortForm())
+                continue
+            }
+            val claim = Verification.verifyRouteClaim(blob, spki)
+            if (claim == null) {
+                log.info("route claim skipped: verify failed signer={}", blob.signerId.shortForm())
+                continue
+            }
             if (claim.routeRef.isEmpty()) {
+                log.info("route claim clear client={} transport={} epoch={}", claim.clientId.shortForm(), claim.transport, claim.epoch)
                 routes.clear(claim.clientId, claim.transport)
                 accepted++
                 continue
             }
+            log.info(
+                "route claim upload client={} transport={} epoch={} inlineBudget={} env={}",
+                claim.clientId.shortForm(), claim.transport, claim.epoch, claim.capabilities.inlinePayloadLimitBytes, claim.environment,
+            )
             routes.put(
                 StoredRoute(
                     claim.clientId,
@@ -174,12 +187,18 @@ class Broker(
             var anyInvalid = false
             var pushed = false
             for (route in candidates) {
-                val outcome = push.wake(route, buildPushData(envelope.messageId, envelope.typ, recipientBytes, inlineBudgetFor(route)), urgency)
+                val budget = inlineBudgetFor(route)
+                val payload = buildPushData(envelope.messageId, envelope.typ, recipientBytes, budget)
+                val outcome = push.wake(route, payload.data, urgency)
                 log.info(
-                    "push wake transport={} recipient={} mid={} outcome={}",
+                    "push wake transport={} recipient={} mid={} inline={} ctChars={} budget={} urgency={} outcome={}",
                     route.transport,
                     recipient.shortForm(),
                     envelope.messageId,
+                    payload.inline,
+                    payload.ctChars,
+                    budget,
+                    urgency,
                     outcome,
                 )
                 when (outcome) {
@@ -231,16 +250,21 @@ class Broker(
         return ProtocolCodec.encodeToCbor(stripped)
     }
 
-    private fun buildPushData(messageId: String, messageType: MessageType, envelopeBytes: ByteArray, inlineBudget: Int): Map<String, String> {
+    /** A built push payload plus the inline decision and ct size, surfaced so [send] can log them. */
+    private data class PushPayload(val data: Map<String, String>, val inline: Boolean, val ctChars: Int)
+
+    private fun buildPushData(messageId: String, messageType: MessageType, envelopeBytes: ByteArray, inlineBudget: Int): PushPayload {
         val b64env = b64.encodeToString(envelopeBytes)
         // "mtyp" carries the E2E message type (broker-visible on the envelope) so APNs can branch
         // alert+mutable-content (NOTIFICATION → NSE decrypts) vs silent background (DISMISSAL/DATA_SYNC).
         // FCM/Android ignores it.
         val base = mapOf("mtyp" to messageType.name)
+        // ctChars is the base64 envelope length on BOTH branches (the size the budget gates), so the log
+        // shows how big the payload was even when it was too big to inline and fell back to a wake pointer.
         return if (b64env.length <= inlineBudget) {
-            base + mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env)
+            PushPayload(base + mapOf("typ" to "notif", "mid" to messageId, "ct" to b64env), inline = true, ctChars = b64env.length)
         } else {
-            base + mapOf("typ" to "wake", "mid" to messageId) // too big to inline; client pulls from relay
+            PushPayload(base + mapOf("typ" to "wake", "mid" to messageId), inline = false, ctChars = b64env.length) // too big; pulls from relay
         }
     }
 
@@ -248,10 +272,28 @@ class Broker(
      * Effective inline budget for a route: the limit the client advertised in its signed route claim
      * (decoded once in [RouteStore.routesFor], so this is just a field read), capped by the server's own
      * ceiling ([ServerConfig.inlineBudgetBytes]) so a client can't force a payload larger than the broker
-     * is willing to push.
+     * is willing to push, and finally floored by the transport's hard wire ceiling ([hardInlineCtBudget])
+     * so neither a client over-claim nor a mis-set server ceiling can ever produce a rejectable push.
      */
     private fun inlineBudgetFor(route: StoredRoute): Int =
-        route.inlinePayloadLimitBytes.coerceAtMost(config.inlineBudgetBytes)
+        route.inlinePayloadLimitBytes
+            .coerceAtMost(config.inlineBudgetBytes)
+            .coerceAtMost(hardInlineCtBudget(route.transport))
+
+    /**
+     * Absolute ceiling on the inline ct (base64 chars) for [transport], independent of advertised or
+     * configured budgets: the wire hard limit (4 KB on both FCM data messages and APNs alert payloads)
+     * minus this transport's fixed envelope overhead ([buildPushData]'s other keys, plus the APNs `aps`
+     * alert dict) and a safety margin. This is the guard that keeps oversize structurally impossible — an
+     * over-budget item degrades to a wake pointer in [buildPushData] rather than being sent and rejected.
+     * It matters because FCM reports an oversize push as INVALID_ARGUMENT, indistinguishable from a bad
+     * token, which [net.extrawdw.notisync.server.delivery.push.FcmPushTransport] retires as a dead route.
+     */
+    private fun hardInlineCtBudget(transport: TransportType): Int = when (transport) {
+        TransportType.FCM -> PUSH_INLINE_HARD_LIMIT - FCM_INLINE_OVERHEAD - PUSH_INLINE_MARGIN
+        TransportType.APNS -> PUSH_INLINE_HARD_LIMIT - APNS_INLINE_OVERHEAD - PUSH_INLINE_MARGIN
+        else -> Int.MAX_VALUE
+    }
 
     private fun pushPreference(transport: TransportType): Int =
         when (transport) {
@@ -314,5 +356,11 @@ class Broker(
     private companion object {
         const val ASSET_ID_BYTES = 24 // 192-bit opaque id; rejects content-derived/short ids
         val EMPTY_DEK = ByteArray(0) // placeholder sealedDek for non-target recipients
+
+        // Per-transport hard ceiling for the inline ct, in base64 chars (see [hardInlineCtBudget]).
+        const val PUSH_INLINE_HARD_LIMIT = 4096 // FCM data-message limit & APNs alert-payload limit (4 KB)
+        const val PUSH_INLINE_MARGIN = 160      // slack for push-service framing / future envelope fields
+        const val FCM_INLINE_OVERHEAD = 72      // mtyp/typ/mid keys+values + the "ct" key (~65 B, rounded up)
+        const val APNS_INLINE_OVERHEAD = 208    // aps alert dict + the JSON data keys (~191 B, rounded up)
     }
 }

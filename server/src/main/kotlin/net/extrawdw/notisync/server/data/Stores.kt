@@ -147,7 +147,13 @@ class RouteStore(private val db: NotiSyncDb) {
             .maxOfOrNull { it[Routes.epoch] }
         // Only reject strictly-older claims; an equal-epoch re-publish refreshes a rotated/stale token
         // (e.g. after a reinstall, where the client's epoch counter resets to 1).
-        if (existingEpoch != null && existingEpoch > route.epoch) return@tx
+        if (existingEpoch != null && existingEpoch > route.epoch) {
+            log.info(
+                "route put REJECTED stale-epoch client={} transport={} incomingEpoch={} storedEpoch={} incomingInlineBudget={}",
+                route.clientId.shortForm(), route.transport, route.epoch, existingEpoch, route.inlinePayloadLimitBytes,
+            )
+            return@tx
+        }
         Routes.deleteWhere { (Routes.clientId eq route.clientId.value) and (Routes.transport eq route.transport.name) }
         Routes.insert {
             it[clientId] = route.clientId.value
@@ -158,6 +164,10 @@ class RouteStore(private val db: NotiSyncDb) {
             it[signedBlobB64] = b64e.encodeToString(route.signedBlob)
             it[updatedAt] = System.currentTimeMillis()
         }
+        log.info(
+            "route put ACCEPTED client={} transport={} epoch={} storedEpoch={} inlineBudget={}",
+            route.clientId.shortForm(), route.transport, route.epoch, existingEpoch, route.inlinePayloadLimitBytes,
+        )
         Unit
     }
 

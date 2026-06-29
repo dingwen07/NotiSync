@@ -881,16 +881,9 @@ struct SettingsView: View {
             .onAppear { loadSettings(); runtime.refreshRotationInfo() }
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
-                    Button {
-                        runtime.refreshForegroundNow()
-                    } label: {
-                        Label("Drain", systemImage: "arrow.clockwise")
-                    }
-                    .simultaneousGesture(
-                        LongPressGesture(minimumDuration: 0.7).onEnded { _ in
-                            revealHiddenSettingsForProcess()
-                        }
-                    )
+                    SettingsRefreshToolbarButton(
+                        onRefresh: { runtime.refreshForegroundNow() },
+                        onRevealHiddenSettings: { revealHiddenSettingsForProcess() })
                 }
             }
         }
@@ -930,4 +923,36 @@ struct SettingsView: View {
 
 private enum SettingsHiddenControlsUnlock {
     static var isUnlocked = false
+}
+
+private struct SettingsRefreshToolbarButton: View {
+    let onRefresh: () -> Void
+    let onRevealHiddenSettings: () -> Void
+
+    var body: some View {
+        Label("Drain", systemImage: "arrow.clockwise")
+            .labelStyle(.iconOnly)
+            .imageScale(.large)
+            .foregroundStyle(.tint)
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
+            .gesture(refreshOrRevealGesture)
+            .accessibilityLabel("Drain")
+            .accessibilityAddTraits(.isButton)
+    }
+
+    private var refreshOrRevealGesture: some Gesture {
+        ExclusiveGesture(
+            LongPressGesture(minimumDuration: 0.7),
+            TapGesture()
+        )
+        .onEnded { value in
+            switch value {
+            case .first:
+                onRevealHiddenSettings()
+            case .second:
+                onRefresh()
+            }
+        }
+    }
 }

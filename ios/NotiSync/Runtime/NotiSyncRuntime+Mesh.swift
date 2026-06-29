@@ -309,13 +309,20 @@ extension NotiSyncRuntime {
     /// Heartbeat: re-announce mutable own-mesh state so peers (and the broker) converge without an explicit
     /// change — re-broadcast our profile and trust roster (+ trusted cards), re-publish our current key-epoch
     /// (in case the broker lost it), and re-send our notification filters to the source peers they target.
-    /// iOS can't run background tasks reliably, so this also runs at app launch (the in-memory clock starts at
-    /// 0), then gates to once per [NotiSyncConfig.periodicAnnounceIntervalMs] so a busy foreground / repeated
-    /// launches don't spam the mesh. (Route publishing stays on its own per-pass path in `publishCurrentRoute`.)
+    /// The "due" clock is PERSISTED (`PeriodicAnnounceStore`, App Group) so the gate holds across process
+    /// restarts: a fresh install (stored 0) announces once, then at most once per
+    /// [NotiSyncConfig.periodicAnnounceIntervalMs] no matter how often iOS cold-launches or background-wakes
+    /// us — the in-memory clock it replaced reset to 0 each launch, so every launch re-announced. (A device
+    /// *rename* still announces immediately via `saveSettings`; route publishing stays on its own per-pass
+    /// path in `publishCurrentRoute`.)
     func announcePeriodicStateIfDue() async {
         let now = NotiSyncEngine.nowMillis()
-        guard now - lastPeriodicAnnounceAt >= NotiSyncConfig.periodicAnnounceIntervalMs else { return }
-        lastPeriodicAnnounceAt = now
+        let due = await Task.detached(priority: .utility) { () -> Bool in
+            guard now - PeriodicAnnounceStore.lastAnnounceAt() >= NotiSyncConfig.periodicAnnounceIntervalMs else { return false }
+            PeriodicAnnounceStore.setLastAnnounceAt(now)
+            return true
+        }.value
+        guard due else { return }
         await broadcastProfile()
         await broadcastTrust()
         await publishSelfKeyEpoch()

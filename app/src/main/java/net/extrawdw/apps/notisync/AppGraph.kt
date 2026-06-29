@@ -903,7 +903,7 @@ class AppGraph(private val app: Application) {
             transport = TransportType.FCM,
             environment = RouteEnvironment.PRODUCTION,
             routeRef = routeRef,
-            capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3072),
+            capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3600),
             epoch = epoch,
             issuedAt = System.currentTimeMillis(),
         )

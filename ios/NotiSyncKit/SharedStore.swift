@@ -91,10 +91,9 @@ nonisolated enum AppGroupStore {
         static let pendingInbox = "pending-inbox.json"
         static let dedup = "dedup.json"
         static let rotation = "rotation.json"
+        static let periodicAnnounce = "periodic-announce.json"
         static let cards = "cards.json"
         static let notificationFilters = "notification-filters.json"
-        /// Peers this device last announced a non-empty notification filter to (so a now-empty snapshot
-        /// can send one clearing FILTER instead of silently leaving a stale filter on the peer).
         static let filterAnnounce = "notification-filter-announce.json"
     }
 }
@@ -761,6 +760,21 @@ nonisolated struct RotationKeyInfo: Sendable {
     var pendingTargetEpoch: Int?
     var pendingActivated: Bool
     var nextEventAtMillis: Int64
+}
+
+/// Persisted "due" clock for the periodic own-mesh re-announce (`announcePeriodicStateIfDue` — profile /
+/// key-epoch / notification filters), in the App Group so the interval gate SURVIVES process restarts.
+nonisolated struct PeriodicAnnounceStore: Codable, Sendable {
+    var lastAnnounceAt: Int64
+
+    /// Millis of the last periodic announce, or 0 if never (so the first announce after install still fires).
+    static func lastAnnounceAt() -> Int64 {
+        AppGroupStore.read(PeriodicAnnounceStore.self, AppGroupStore.Files.periodicAnnounce)?.lastAnnounceAt ?? 0
+    }
+
+    static func setLastAnnounceAt(_ millis: Int64) {
+        AppGroupStore.write(PeriodicAnnounceStore(lastAnnounceAt: millis), AppGroupStore.Files.periodicAnnounce)
+    }
 }
 
 /// Persisted identifier → mirror mapping (for dismissal reconciliation + relay-ack), shared with the NSE.
