@@ -4,10 +4,10 @@ import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
 
 /**
- * Method-specific data captured for the /v2/metrics endpoint, carried on [IntegrityDecision]. Null/empty
- * fields don't apply to the method: **Play Integrity** fills the verdicts (the decode payload is rich);
- * **App Check** fills only [appId] — it exposes no device verdicts to a custom backend (Firebase enforces
- * those at token issuance), which is the verdict-granularity tradeoff of the migration.
+ * Method-specific data captured for the /v2/metrics endpoint, carried on [IntegrityDecision]. The live
+ * method, **App Check**, fills only [appId] — it exposes no device verdicts to a custom backend (Firebase
+ * enforces those at token issuance). The verdict fields are legacy (the retired Play Integrity path filled
+ * them); no current verifier populates them, but they're retained so historical metrics still deserialize.
  */
 data class VerificationDetail(
     val appLicensingVerdict: String? = null,
@@ -20,12 +20,12 @@ data class VerificationDetail(
 
 /**
  * In-memory attestation metrics for the /v2/metrics diagnostics endpoint: per-[bucketMillis] aggregates
- * (accept/reject counts, reject reasons, debug-bypass count, and — for Play Integrity — verdict tallies)
- * plus a recent-events ring buffer.
+ * (accept/reject counts, reject reasons, debug-bypass count, and any per-method verdict tallies) plus a
+ * recent-events ring buffer.
  *
- * Purpose: diagnose attestation health, and watch the legacy `playIntegrity` method count trend toward zero
- * so we know "when to drop" it (and, later, observe Apple App Attest the same way). State is in-memory and
- * resets on restart — scrape the endpoint periodically (Prometheus / a cron file) for long-term history.
+ * Purpose: diagnose attestation health — e.g. watch App Check accepts climb (and, later, observe Apple App
+ * Attest the same way) before flipping `NOTISYNC_INTEGRITY_REQUIRED` on. State is in-memory and resets on
+ * restart — scrape the endpoint periodically (Prometheus / a cron file) for long-term history.
  */
 class AttestationMetrics(
     private val bucketMillis: Long = 30 * 60 * 1000L,
@@ -140,7 +140,7 @@ data class MetricsSnapshot(
 data class MetricsBucket(
     /** Bucket start, epoch millis (aligned to [MetricsSnapshot.bucketMillis]). */
     val start: Long,
-    /** Per attestation method (see AttestationType): playIntegrity / firebaseAppCheck / … */
+    /** Per attestation method (see AttestationType): firebaseAppCheck / … (legacy playIntegrity for history). */
     val methods: Map<String, MethodStats>,
 )
 
@@ -150,7 +150,7 @@ data class MethodStats(
     val rejected: Int,
     val debugBypass: Int,
     val rejectReasons: Map<String, Int>,
-    /** Play Integrity only: verdict dimension → label → count (appLicensing, appRecognition, deviceRecognition, …). */
+    /** Legacy (retired Play Integrity): verdict dimension → label → count. Empty for the App Check method. */
     val verdicts: Map<String, Map<String, Int>>,
     /** App Check only: appId (token `sub`) → count. */
     val apps: Map<String, Int>,

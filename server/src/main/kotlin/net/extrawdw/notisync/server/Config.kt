@@ -10,12 +10,22 @@ data class ServerConfig(
     val fcmProjectId: String,
     val apnsEnabled: Boolean,
     val apnsTeamId: String,
-    /** Production (api.push.apple.com) or unscoped APNs auth key. Apple now scopes keys per environment. */
+    /**
+     * APNs auth keys are split per environment because Apple now issues **environment-scoped** `.p8` keys:
+     * a key can be created as Sandbox-only, Production-only (Production also covers Sandbox), and is
+     * additionally **restricted to specific Topics (app bundle ids)** at creation. A key minted for one
+     * environment/topic is rejected on the other endpoint (`InvalidProviderToken` 403), so the broker holds
+     * one key per environment and routes by the recipient's [net.extrawdw.notisync.protocol.RouteEnvironment]:
+     * PRODUCTION → api.push.apple.com with [apnsKeyId]; DEVELOPMENT → api.sandbox.push.apple.com with
+     * [apnsKeyIdSandbox]. Both keys must be scoped to [apnsTopic]. A legacy unscoped key can serve both:
+     * leave the sandbox fields blank and they fall back to [apnsKeyId].
+     */
     val apnsKeyId: String,
     val apnsPrivateKeyPath: String,
     /** Sandbox (api.sandbox.push.apple.com) APNs auth key; falls back to [apnsKeyId] for an unscoped key. */
     val apnsKeyIdSandbox: String,
     val apnsPrivateKeyPathSandbox: String,
+    /** APNs topic (the iOS app bundle id). Both [apnsKeyId] and [apnsKeyIdSandbox] must be authorized for it. */
     val apnsTopic: String,
     /**
      * Operator ceiling on the base64 ciphertext delivered inline in a push data message; larger ones send
@@ -31,28 +41,24 @@ data class ServerConfig(
     /** Max ciphertext bytes accepted for a single private-asset upload. */
     val maxPrivateAssetBytes: Int,
     /**
-     * Master switch: when on, the broker enforces signed + JWT auth AND real Play Integrity
-     * attestation. When off, all of that is bypassed (local protocol testing only).
+     * Master security switch (`NOTISYNC_SECURITY_ENABLED`): when on, the broker enforces signed + JWT auth.
+     * When off, all of that is bypassed (local protocol testing only). Whether a *passing* client-integrity
+     * attestation is additionally required to mint a bearer is the separate [integrityRequired] axis.
      */
-    val playIntegrityEnabled: Boolean,
-    val playIntegrityPackageName: String,
-    val playIntegrityMaxTokenAgeMillis: Long,
-    val debugKey: String,
+    val securityEnabled: Boolean,
+    /**
+     * When on (`NOTISYNC_INTEGRITY_REQUIRED`), the broker requires a passing client-integrity attestation
+     * (a configured "way" — Firebase App Check today) to issue a bearer. When off (default), the broker
+     * still verifies and records any attestation presented but issues a bearer to any validly-signed client
+     * — the safe posture while a method (e.g. App Check) is being rolled out. Only meaningful when
+     * [securityEnabled] is on; with security off, everything is bypassed regardless.
+     */
+    val integrityRequired: Boolean,
     val jwtIssuer: String,
     val jwtTtlMillis: Long,
     val jwtPrivateKeyPath: String,
-    val requiredAppLicensingVerdicts: Set<String>,
-    val requiredAppRecognitionVerdicts: Set<String>,
-    val requiredDeviceRecognitionVerdicts: Set<String>,
-    /**
-     * Allow-list over the 5 known device-activity levels (LEVEL_1..LEVEL_4, UNEVALUATED). The default
-     * permits everything except LEVEL_4 (>50 token requests/hour — a strong abuse signal); null and any
-     * future/unknown level fail closed.
-     */
-    val allowedDeviceActivityLevels: Set<String>,
-    val requiredPlayProtectVerdicts: Set<String>,
     // --- Firebase App Check (verified locally as an RS256 JWT against the App Check JWKS) ---
-    /** When on, the broker also accepts the firebaseAppCheck attestation method (alongside Play Integrity). */
+    /** When on, the broker accepts the firebaseAppCheck attestation method (the live client-integrity "way"). */
     val appCheckEnabled: Boolean,
     /** Numeric Firebase project number; an App Check token's iss/aud must match it. */
     val appCheckProjectNumber: String,
@@ -99,9 +105,13 @@ data class ServerConfig(
                 ?.resolve("jwt-es256-private.pem")
                 ?.path
                 ?: "data/jwt-es256-private.pem"
-            // Single master switch: on => enforce signed + JWT auth AND real Play Integrity attestation;
-            // off => all of that is bypassed (local protocol testing only). Read from env/sysprop only.
-            val playIntegrityEnabled = secureEnv("NOTISYNC_PLAY_INTEGRITY_ENABLED")?.toBooleanStrictOrNull() ?: true
+            // Master security switch: on => enforce signed + JWT auth; off => all of that is bypassed
+            // (local protocol testing only). Read from env/sysprop only (never a stray local.properties).
+            val securityEnabled = secureEnv("NOTISYNC_SECURITY_ENABLED")?.toBooleanStrictOrNull() ?: true
+            // Whether a passing client-integrity attestation is *required* to mint a bearer. Defaults off so
+            // removing/rolling a method (e.g. App Check) can't strand validly-signed clients; flip on once a
+            // "way" is proven. Security-critical (it tightens acceptance) → env/sysprop only.
+            val integrityRequired = secureEnv("NOTISYNC_INTEGRITY_REQUIRED")?.toBooleanStrictOrNull() ?: false
             return ServerConfig(
                 dbPath = dbPath,
                 fcmEnabled = env("NOTISYNC_FCM_ENABLED")?.toBooleanStrictOrNull() ?: true,
@@ -117,18 +127,11 @@ data class ServerConfig(
                 relayTtlMillis = env("NOTISYNC_RELAY_TTL_MS")?.toLongOrNull() ?: (48L * 60 * 60 * 1000),
                 privateAssetTtlMillis = env("NOTISYNC_ASSET_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
                 maxPrivateAssetBytes = env("NOTISYNC_MAX_ASSET_BYTES")?.toIntOrNull() ?: (1024 * 1024),
-                playIntegrityEnabled = playIntegrityEnabled,
-                playIntegrityPackageName = env("NOTISYNC_PLAY_INTEGRITY_PACKAGE") ?: "net.extrawdw.apps.notisync",
-                playIntegrityMaxTokenAgeMillis = env("NOTISYNC_PLAY_INTEGRITY_MAX_AGE_MS")?.toLongOrNull() ?: (5L * 60 * 1000),
-                debugKey = secureEnv("NOTISYNC_DEBUG_KEY").orEmpty(),
+                securityEnabled = securityEnabled,
+                integrityRequired = integrityRequired,
                 jwtIssuer = env("NOTISYNC_JWT_ISSUER") ?: "notisync-broker",
                 jwtTtlMillis = env("NOTISYNC_JWT_TTL_MS")?.toLongOrNull() ?: (7L * 24 * 60 * 60 * 1000),
                 jwtPrivateKeyPath = env("NOTISYNC_JWT_PRIVATE_KEY_PATH") ?: jwtDefaultPath,
-                requiredAppLicensingVerdicts = csv("NOTISYNC_REQUIRE_APP_LICENSING", "LICENSED"),
-                requiredAppRecognitionVerdicts = csv("NOTISYNC_REQUIRE_APP_RECOGNITION", "PLAY_RECOGNIZED"),
-                requiredDeviceRecognitionVerdicts = csv("NOTISYNC_REQUIRE_DEVICE_RECOGNITION", "MEETS_DEVICE_INTEGRITY"),
-                allowedDeviceActivityLevels = csv("NOTISYNC_ALLOW_DEVICE_ACTIVITY", "LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED"),
-                requiredPlayProtectVerdicts = csv("NOTISYNC_REQUIRE_PLAY_PROTECT", "NO_ISSUES"),
                 // App Check enable is security-critical (it widens accepted attestation) → env/sysprop only.
                 appCheckEnabled = secureEnv("NOTISYNC_APPCHECK_ENABLED")?.toBooleanStrictOrNull() ?: false,
                 appCheckProjectNumber = env("NOTISYNC_APPCHECK_PROJECT_NUMBER").orEmpty(),

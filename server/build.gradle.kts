@@ -37,8 +37,7 @@ dependencies {
     implementation(libs.hikari)
 
     implementation(libs.firebase.admin)
-    implementation(libs.google.api.services.playintegrity)
-    implementation(libs.google.auth.library.oauth2.http)
+    implementation(libs.google.auth.library.oauth2.http) // GoogleCredentials for FCM HTTP v1 auth (Fcm.kt)
     implementation(libs.logback.classic)
 
     testImplementation(platform(libs.ktor.bom))

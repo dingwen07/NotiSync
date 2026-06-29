@@ -46,7 +46,7 @@ class AppCheckVerifierTest {
             "NOTISYNC_APPCHECK_PROJECT_NUMBER",
             "NOTISYNC_APPCHECK_APP_IDS",
             "NOTISYNC_APPCHECK_MAX_AGE_MS",
-            "NOTISYNC_PLAY_INTEGRITY_ENABLED",
+            "NOTISYNC_SECURITY_ENABLED",
         ).forEach(System::clearProperty)
     }
 
@@ -158,7 +158,7 @@ class AppCheckVerifierTest {
 
     @Test
     fun dispatchRoutesByTypeAndRejectsUnknown() = runBlocking {
-        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "true")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "true")
         val svc = AttestationService(
             ServerConfig.fromEnv(),
             listOf(
@@ -174,7 +174,7 @@ class AppCheckVerifierTest {
 
     @Test
     fun dispatchMasterSwitchOffAcceptsEveryMethod() = runBlocking {
-        System.setProperty("NOTISYNC_PLAY_INTEGRITY_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
         val svc = AttestationService(
             ServerConfig.fromEnv(),
             listOf(stub(AttestationType.PLAY_INTEGRITY, IntegrityDecision.Rejected("should_not_run"))),

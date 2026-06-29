@@ -129,38 +129,11 @@ object HttpRequestSigning {
     }
 }
 
-object PlayIntegrityBinding {
-    const val VERSION = "notisync-play-integrity-v1"
-
-    fun requestHash(clientId: ClientId, requestNonce: String): String {
-        val bytes = "$VERSION\n${clientId.value}\n$requestNonce".toByteArray(Charsets.UTF_8)
-        return Base64.getUrlEncoder().withoutPadding()
-            .encodeToString(MessageDigest.getInstance("SHA-256").digest(bytes))
-    }
-
-    fun debugProof(debugKey: String, clientId: ClientId, requestNonce: String, requestHash: String): String? {
-        val keyBytes = if (debugKey.isBlank()) return null else runCatching {
-            Base64.getDecoder().decode(debugKey)
-        }.getOrNull() ?: return null
-        val mac = javax.crypto.Mac.getInstance("HmacSHA256").apply {
-            init(javax.crypto.spec.SecretKeySpec(keyBytes, "HmacSHA256"))
-            update(VERSION.toByteArray(Charsets.UTF_8))
-            update('\n'.code.toByte())
-            update(clientId.value.toByteArray(Charsets.UTF_8))
-            update('\n'.code.toByte())
-            update(requestNonce.toByteArray(Charsets.UTF_8))
-            update('\n'.code.toByte())
-            update(requestHash.toByteArray(Charsets.UTF_8))
-        }.doFinal()
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(mac)
-    }
-}
-
 /**
  * Lightweight hashcash-style proof of work, used to make the unauthenticated /v2/integrity/verify
- * endpoint costly to flood (each accepted request gates a billed Play Integrity decode). The proof is
- * bound to the request's signature, so it can't be precomputed without first signing the request, and
- * to a timestamp so the server can bound and replay-protect it. Verifying is one SHA-256; solving is
+ * endpoint costly to flood (each accepted request gates an attestation verification and bearer mint). The
+ * proof is bound to the request's signature, so it can't be precomputed without first signing the request,
+ * and to a timestamp so the server can bound and replay-protect it. Verifying is one SHA-256; solving is
  * ~16^difficulty hashes (difficulty 3 ≈ 4096, sub-millisecond on a phone).
  */
 object ProofOfWork {

@@ -52,9 +52,9 @@ Prerequisites: JDK 21, Android SDK (platform 37), Gradle wrapper (bundled).
 ### Broker server
 
 ```bash
-# Run locally. Play Integrity enforcement is on by default; for local-only protocol tests set
-# NOTISYNC_PLAY_INTEGRITY_ENABLED=false — the single master switch turns off signed/JWT auth and
-# attestation together, and the client tolerates it and works without a token.
+# Run locally. Signed/JWT enforcement is on by default; for local-only protocol tests set
+# NOTISYNC_SECURITY_ENABLED=false — the master switch turns off signed/JWT auth (and attestation)
+# together, and the client tolerates it and works without a token.
 ./gradlew :server:run
 
 # Or build a deployable fat jar and container:
@@ -67,20 +67,22 @@ Configuration (environment variables): `NOTISYNC_DB_PATH`, `NOTISYNC_FCM_ENABLED
 `NOTISYNC_FCM_PROJECT_ID`, `NOTISYNC_APNS_ENABLED`, `NOTISYNC_APNS_TEAM_ID`,
 `NOTISYNC_APNS_KEY_ID`, `NOTISYNC_APNS_PRIVATE_KEY_PATH`, `NOTISYNC_APNS_TOPIC`,
 `NOTISYNC_INLINE_BUDGET`, `NOTISYNC_RELAY_TTL_MS`, `NOTISYNC_ASSET_TTL_MS`,
-`NOTISYNC_PLAY_INTEGRITY_ENABLED` (master security switch), `NOTISYNC_PLAY_INTEGRITY_PACKAGE`,
-`NOTISYNC_REQUIRE_APP_LICENSING`, `NOTISYNC_REQUIRE_APP_RECOGNITION`,
-`NOTISYNC_REQUIRE_DEVICE_RECOGNITION`, `NOTISYNC_ALLOW_DEVICE_ACTIVITY` (allow-list; default rejects
-only `LEVEL_4`), `NOTISYNC_REQUIRE_PLAY_PROTECT`, `NOTISYNC_DEBUG_KEY`,
-`NOTISYNC_JWT_PRIVATE_KEY_PATH`, `NOTISYNC_JWT_TTL_MS` (default 7 days), and
-`NOTISYNC_POW_DIFFICULTY` (leading-hex-zero proof-of-work on `/v1/integrity/verify`, default 4).
+`NOTISYNC_SECURITY_ENABLED` (master switch: enforce signed + JWT auth; default on),
+`NOTISYNC_INTEGRITY_REQUIRED` (require a passing client-integrity attestation — App Check today — to
+mint a bearer; default off, so a validly-signed client is still issued a bearer while a method is
+rolled out), `NOTISYNC_APPCHECK_ENABLED`, `NOTISYNC_APPCHECK_PROJECT_NUMBER`,
+`NOTISYNC_APPCHECK_APP_IDS`, `NOTISYNC_JWT_PRIVATE_KEY_PATH`, `NOTISYNC_JWT_TTL_MS` (default 7 days),
+and `NOTISYNC_POW_DIFFICULTY` (leading-hex-zero proof-of-work on `/v2/integrity/verify`, default 4).
 The broker exposes its JWT verification key at `/.well-known/jwks.json`, and an unauthenticated
-`/v1/status` for clients to discover whether attestation is required and whether their token is still
-valid. The security-sensitive switches (`NOTISYNC_PLAY_INTEGRITY_ENABLED`, `NOTISYNC_DEBUG_KEY`) are
-read from the environment / system properties only — never from `local.properties`.
+`/v2/status` for clients to discover whether the broker is secured / requires integrity and whether
+their token is still valid. The security-sensitive switches (`NOTISYNC_SECURITY_ENABLED`,
+`NOTISYNC_INTEGRITY_REQUIRED`, `NOTISYNC_APPCHECK_ENABLED`) are read from the environment / system
+properties only — never from `local.properties`.
 
-To enable Play Integrity token decoding and real FCM, give the server Application Default Credentials:
-`gcloud auth application-default login` (local), or mount a service-account key and set
-`GOOGLE_APPLICATION_CREDENTIALS` + `NOTISYNC_FCM_ENABLED=true`.
+Client integrity is verified via Firebase App Check (the broker validates the App Check token locally
+against the App Check JWKS — no Google API credentials needed for it). For real FCM, give the server
+Application Default Credentials: `gcloud auth application-default login` (local), or mount a
+service-account key and set `GOOGLE_APPLICATION_CREDENTIALS` + `NOTISYNC_FCM_ENABLED=true`.
 
 To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file and set
 `NOTISYNC_APNS_ENABLED=true`, `NOTISYNC_APNS_TEAM_ID`, `NOTISYNC_APNS_KEY_ID`,

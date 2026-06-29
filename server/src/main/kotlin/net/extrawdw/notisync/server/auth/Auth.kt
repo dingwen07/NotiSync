@@ -99,14 +99,14 @@ class ServerAuth(
      * Authenticate by request signature ALONE — no JWT bearer required. The clientId is read from the
      * signed headers and bound by the signature (verified against that client's stored identity key).
      * Used by background relay fetch/ack paths, which must work even when the client holds no valid
-     * attestation token — it can always sign with its identity key. When attestation is disabled the
+     * attestation token — it can always sign with its identity key. When security is disabled the
      * signature is trusted as-is, mirroring [authenticateJwtSigned].
      */
     suspend fun authenticateSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
         val clientId = call.request.headers[HttpRequestSigning.HEADER_CLIENT_ID]?.takeIf { it.isNotBlank() }
             ?.let { ClientId(it) }
             ?: return AuthResult.Rejected("signature_required")
-        if (!config.playIntegrityEnabled) {
+        if (!config.securityEnabled) {
             return AuthResult.Accepted(AuthPrincipal(clientId, Long.MAX_VALUE))
         }
         val (spki, reason) = resolveSignerSpki(call, broker, clientId)
@@ -115,7 +115,7 @@ class ServerAuth(
     }
 
     suspend fun authenticateJwtSigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
-        if (!config.playIntegrityEnabled) {
+        if (!config.securityEnabled) {
             return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))
         }
         val principal = authenticateBearer(call) ?: return AuthResult.Rejected("auth_required")
@@ -126,7 +126,7 @@ class ServerAuth(
     }
 
     suspend fun authenticateJwtIdentitySigned(call: ApplicationCall, body: ByteArray, broker: Broker): AuthResult {
-        if (!config.playIntegrityEnabled) {
+        if (!config.securityEnabled) {
             return AuthResult.Accepted(AuthPrincipal(ClientId("auth-disabled"), Long.MAX_VALUE))
         }
         val principal = authenticateBearer(call) ?: return AuthResult.Rejected("auth_required")
@@ -152,7 +152,7 @@ class ServerAuth(
         expectedClientId: ClientId,
         signerSpki: ByteArray,
     ): SignatureCheck {
-        if (!config.playIntegrityEnabled) return SignatureCheck.Accepted
+        if (!config.securityEnabled) return SignatureCheck.Accepted
         val headers = signedHeaders(call) ?: return SignatureCheck.Rejected("signature_required")
         if (headers.clientId != expectedClientId) return SignatureCheck.Rejected("signature_client_mismatch")
         val now = System.currentTimeMillis()

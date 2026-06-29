@@ -59,9 +59,16 @@ data class RelayAck(
     }
 }
 
-/** The pluggable client-integrity methods the broker can verify, named by
- *  [IntegrityVerificationRequest.attestationType]. Absent/legacy requests are [PLAY_INTEGRITY]. */
+/**
+ * The pluggable client-integrity methods the broker can verify, named by
+ * [IntegrityVerificationRequest.attestationType]. [FIREBASE_APP_CHECK] is the live method (App Check uses
+ * Play Integrity / App Attest internally on the device); [APPLE_APP_ATTEST] is reserved for a future native
+ * path. [PLAY_INTEGRITY] is the retired legacy method: the broker no longer verifies it (the direct Play
+ * Integrity decode was removed), but the constant is kept as the historical wire/metrics label and the
+ * absent-field default for old requests.
+ */
 object AttestationType {
+    /** Retired: the broker no longer has a Play Integrity verifier. Kept only as a legacy label/default. */
     const val PLAY_INTEGRITY = "playIntegrity"
     const val FIREBASE_APP_CHECK = "firebaseAppCheck"
     const val APPLE_APP_ATTEST = "appleAppAttest"
@@ -79,13 +86,13 @@ data class IntegrityVerificationRequest(
     val attestationType: String = AttestationType.PLAY_INTEGRITY,
     /** Generic attestation token: a Firebase App Check JWT today; future methods can reuse this slot. */
     val attestationToken: String? = null,
-    /** Reserved for App Attest's per-install hardware key id. Unused by Play Integrity / App Check. */
+    /** Reserved for App Attest's per-install hardware key id. Unused by App Check. */
     val attestationKeyId: String? = null,
-    /** Play Integrity (legacy) only: client-generated nonce bound into [requestHash]. */
+    /** Retired Play Integrity field, ignored by the broker. Kept so in-flight legacy clients still decode. */
     val requestNonce: String = "",
-    /** Play Integrity (legacy) only: Standard API requestHash hash("notisync-play-integrity-v1\\n<clientId>\\n<requestNonce>"). */
+    /** Retired Play Integrity field, ignored by the broker. Kept so in-flight legacy clients still decode. */
     val requestHash: String = "",
-    /** Play Integrity (legacy) only: the Play Integrity token. */
+    /** Retired Play Integrity field, ignored by the broker. Kept so in-flight legacy clients still decode. */
     val integrityToken: String = "",
     /**
      * NS2 (`/v2`): the self-authenticating [ClientKeyEpoch] blob, sent on first contact / key refresh so the
@@ -94,7 +101,7 @@ data class IntegrityVerificationRequest(
     val clientKeyEpoch: SignedBlob? = null,
     /** NS1 (`/v1`, legacy) only: the client card. The NS2 server ignores this; use [clientKeyEpoch]. */
     val clientCard: SignedBlob? = null,
-    /** Debug-only HMAC proof over the Play Integrity binding; never send the raw debug key. */
+    /** Retired Play Integrity debug-bypass proof, ignored by the broker. Kept for legacy-client decode. */
     val debugProof: String? = null,
 )
 
@@ -111,7 +118,12 @@ data class IntegrityVerificationResponse(
 @Serializable
 data class VerificationStatusResponse(
     val version: String,
-    /** Whether the broker requires client-integrity attestation plus signed/JWT auth at all. */
+    /**
+     * Legacy field name, kept for wire compatibility with deployed clients: whether the broker enforces
+     * signed/JWT auth at all — i.e. the `NOTISYNC_SECURITY_ENABLED` master switch. A client reads this to
+     * distinguish an open/local broker (false) from a secured one (true). The attestation requirement is
+     * a separate axis — see [integrityRequired].
+     */
     val playIntegrityRequired: Boolean,
     /** True iff this request carried a currently-valid bearer token. */
     val verified: Boolean,
@@ -123,6 +135,13 @@ data class VerificationStatusResponse(
     val powDifficulty: Int = 0,
     /** Attestation methods this broker accepts (see [AttestationType]); the client picks one it supports. */
     val acceptedAttestationMethods: List<String> = emptyList(),
+    /**
+     * Whether the broker *requires* a passing client-integrity attestation (App Check / App Attest) to mint
+     * a bearer (`NOTISYNC_INTEGRITY_REQUIRED`). When false the broker still accepts and records attestation
+     * but issues a bearer to any validly-signed client. Defaults false so old clients reading an old server
+     * (which omits this field) see the lenient posture.
+     */
+    val integrityRequired: Boolean = false,
 )
 
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */

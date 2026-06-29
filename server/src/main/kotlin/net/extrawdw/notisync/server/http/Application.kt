@@ -63,8 +63,6 @@ import net.extrawdw.notisync.server.integrity.AppCheckVerifier
 import net.extrawdw.notisync.server.integrity.AttestationMetrics
 import net.extrawdw.notisync.server.integrity.AttestationService
 import net.extrawdw.notisync.server.integrity.IntegrityDecision
-import net.extrawdw.notisync.server.integrity.PlayIntegrityDecoder
-import net.extrawdw.notisync.server.integrity.PlayIntegrityVerifier
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.NotiSyncDb
 import net.extrawdw.notisync.server.data.PrivateAssetStore
@@ -98,11 +96,11 @@ private suspend fun ApplicationCall.receiveCapped(maxBytes: Int): ByteArray? {
 fun Application.module() = brokerModule()
 
 /**
- * The broker application. [decoder] and [appCheckJwks] are test seams for the Play Integrity decoder and
- * the App Check JWKS source; production passes null and uses the real Google-backed decoder / live JWKS.
- * Kept off [module] so Ktor's reflective module loader (application.yaml) binds the no-arg entry point.
+ * The broker application. [appCheckJwks] is a test seam for the App Check JWKS source; production passes
+ * null and uses the live JWKS. Kept off [module] so Ktor's reflective module loader (application.yaml)
+ * binds the no-arg entry point.
  */
-fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks: AppCheckJwks? = null) {
+fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
     val log = LoggerFactory.getLogger("NotiSyncBroker")
     val config = ServerConfig.fromEnv()
     val db = NotiSyncDb.connect(config)
@@ -116,13 +114,13 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
     val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
     val demo = DemoExperience(broker, this, config.demoConfigPath)
-    // Pluggable attestation: Play Integrity is always available (legacy/transition); App Check is added when
-    // configured. New "ways" (e.g. Apple App Attest) join here without touching the endpoint or downstream.
+    // Pluggable attestation: App Check is the live "way", added when configured. New methods (e.g. Apple App
+    // Attest) join here without touching the endpoint or downstream. With no verifier configured, attestation
+    // can't pass — fine when NOTISYNC_INTEGRITY_REQUIRED is off (a bearer is still issued to signed clients).
     val metrics = AttestationMetrics()
     val attestation = AttestationService(
         config,
         buildList {
-            add(if (decoder != null) PlayIntegrityVerifier(config, decoder) else PlayIntegrityVerifier(config))
             if (config.appCheckEnabled) {
                 add(if (appCheckJwks != null) AppCheckVerifier(config, appCheckJwks) else AppCheckVerifier(config))
             }
@@ -156,14 +154,23 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
     }
 
     log.info(
-        "NotiSync broker {} starting (db={}, fcm={}, apns={}, playIntegrity={}, appCheck={})",
+        "NotiSync broker {} starting (db={}, fcm={}, apns={}, security={}, integrityRequired={}, appCheck={})",
         config.version,
         config.dbPath,
         config.fcmEnabled,
         config.apnsEnabled,
-        config.playIntegrityEnabled,
+        config.securityEnabled,
+        config.integrityRequired,
         config.appCheckEnabled,
     )
+    // Contradictory posture: the master switch wins. With security off, signed/JWT auth AND attestation are all
+    // bypassed, so a requested integrity requirement can't be honored — surface it loudly rather than silently.
+    if (!config.securityEnabled && config.integrityRequired) {
+        log.warn(
+            "NOTISYNC_INTEGRITY_REQUIRED=true is IGNORED because NOTISYNC_SECURITY_ENABLED=false — the master " +
+                "switch bypasses all signed/JWT auth and attestation. Set NOTISYNC_SECURITY_ENABLED=true to enforce integrity.",
+        )
+    }
 
     routing {
         // Liveness/readiness stay UNVERSIONED at the root: load balancers, container probes, uptime
@@ -195,7 +202,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
 
         // Attestation metrics (HTTP Basic Auth; 404 when NOTISYNC_METRICS_PASSWORD is unset). Grouped under
         // /integrity alongside /integrity/verify. Per-30-min buckets + a recent-events ring — diagnostics, and
-        // watching the legacy playIntegrity count trend to zero ("when to drop"). At <host>/v2/integrity/metrics.
+        // watching App Check accepts climb before requiring integrity. At <host>/v2/integrity/metrics.
         get("/integrity/metrics") {
             if (config.metricsPassword.isBlank()) return@get call.respond(HttpStatusCode.NotFound, ErrorResponse("not_found"))
             if (!auth.metricsAuthorized(call)) {
@@ -205,19 +212,22 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
             call.respond(metrics.snapshot())
         }
 
-        // Unauthenticated discovery: a client learns whether attestation is required, and — if it
-        // presents a bearer — whether that token is currently valid (so it can decide to re-attest).
+        // Unauthenticated discovery: a client learns whether the broker is secured (and whether a passing
+        // integrity attestation is required), and — if it presents a bearer — whether that token is currently
+        // valid (so it can decide to re-attest). `playIntegrityRequired` is the legacy wire name for the
+        // master security switch; `integrityRequired` is the separate attestation-required gate.
         get("/status") {
             val principal = auth.bearerPrincipal(call)
             call.respond(
                 VerificationStatusResponse(
                     version = config.version,
-                    playIntegrityRequired = config.playIntegrityEnabled,
+                    playIntegrityRequired = config.securityEnabled,
                     verified = principal != null,
                     clientId = principal?.clientId,
                     expiresAt = principal?.expiresAtMillis,
                     powDifficulty = config.powDifficulty,
                     acceptedAttestationMethods = attestation.acceptedMethods,
+                    integrityRequired = config.integrityRequired,
                 )
             )
         }
@@ -247,9 +257,9 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
                 is SignatureCheck.Rejected -> return@post call.respond(HttpStatusCode.Unauthorized, ErrorResponse(sig.reason))
             }
 
-            // First-contact verification must carry a proof of work; this gates the billed Play
-            // Integrity decode against unauthenticated floods. A refresh that presents a still-valid
-            // bearer for this client skips PoW but is still re-attested below.
+            // First-contact verification must carry a proof of work; this gates attestation + the bearer mint
+            // against unauthenticated floods. A refresh that presents a still-valid bearer for this client
+            // skips PoW but is still re-attested below.
             val refreshing = auth.bearerPrincipal(call)?.clientId == req.clientId
             if (!refreshing) {
                 auth.checkProofOfWork(call)?.let {
@@ -257,30 +267,34 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
                 }
             }
 
-            when (val decision = attestation.verify(req)) {
-                is IntegrityDecision.Rejected -> return@post call.respond(
+            // The verifier's real verdict is always recorded (metrics); whether a rejection BLOCKS the bearer
+            // is policy. Only NOTISYNC_INTEGRITY_REQUIRED makes a failed/missing attestation fatal; otherwise a
+            // validly-signed client still gets a bearer (safe posture while a method like App Check is rolled
+            // out, or where some clients can't attest). Request signing + PoW still gated this endpoint above.
+            val decision = attestation.verify(req)
+            if (decision is IntegrityDecision.Rejected && config.integrityRequired) {
+                return@post call.respond(
                     if (decision.retryable) HttpStatusCode.TooManyRequests else HttpStatusCode.Forbidden,
                     ErrorResponse(decision.reason),
                 )
-                is IntegrityDecision.Accepted -> {
-                    // Persist the carried key-epoch BEFORE minting a token. A non-null blob that fails to
-                    // store (stale/below-floor, or an identity-pin mismatch) must not silently yield a
-                    // bearer the client would then use with a signer epoch the broker never recorded.
-                    val ke = req.clientKeyEpoch
-                    if (ke != null && !broker.uploadKeyEpoch(ke)) {
-                        return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("stale_key_epoch"))
-                    }
-                    val issued = auth.issue(req.clientId)
-                    call.respond(
-                        HttpStatusCode.OK,
-                        IntegrityVerificationResponse(
-                            token = issued.token,
-                            clientId = req.clientId,
-                            expiresAt = issued.expiresAtMillis,
-                        ),
-                    )
-                }
             }
+
+            // Persist the carried key-epoch BEFORE minting a token. A non-null blob that fails to store
+            // (stale/below-floor, or an identity-pin mismatch) must not silently yield a bearer the client
+            // would then use with a signer epoch the broker never recorded.
+            val ke = req.clientKeyEpoch
+            if (ke != null && !broker.uploadKeyEpoch(ke)) {
+                return@post call.respond(HttpStatusCode.Conflict, ErrorResponse("stale_key_epoch"))
+            }
+            val issued = auth.issue(req.clientId)
+            call.respond(
+                HttpStatusCode.OK,
+                IntegrityVerificationResponse(
+                    token = issued.token,
+                    clientId = req.clientId,
+                    expiresAt = issued.expiresAtMillis,
+                ),
+            )
         }
 
         // Publish/rotate a self-contained key-epoch (the server's identity + operational-key source).
@@ -289,7 +303,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, body, broker) ?: return@post
             val blob = runCatching { ProtocolCodec.decodeFromCbor<SignedBlob>(body) }.getOrNull()
-            if (config.playIntegrityEnabled && blob?.signerId != principal.clientId) {
+            if (config.securityEnabled && blob?.signerId != principal.clientId) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             }
             if (blob == null || !broker.uploadKeyEpoch(blob)) {
@@ -329,7 +343,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
             } else {
                 auth.requireJwtSigned(call, body, broker) ?: return@post
             }
-            if (config.playIntegrityEnabled && list.any { it.signerId != principal.clientId }) {
+            if (config.securityEnabled && list.any { it.signerId != principal.clientId }) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 val accepted = broker.uploadRoutes(list)
@@ -344,7 +358,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
             val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(bytes) }.getOrNull()
             if (envelope == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_envelope"))
-            } else if (config.playIntegrityEnabled && envelope.signerId != principal.clientId) {
+            } else if (config.securityEnabled && envelope.signerId != principal.clientId) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
                 call.respond(HttpStatusCode.OK, broker.send(bytes, envelope))
@@ -410,7 +424,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
             }
             val bytes = call.receiveStream().readBytes()
             val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
-            if (config.playIntegrityEnabled && src != principal.clientId) {
+            if (config.securityEnabled && src != principal.clientId) {
                 return@post call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             }
             if (bytes.isEmpty()) return@post call.respond(HttpStatusCode.BadRequest, ErrorResponse("empty_asset"))
@@ -443,7 +457,7 @@ fun Application.brokerModule(decoder: PlayIntegrityDecoder? = null, appCheckJwks
 
             val authFrame = incoming.receiveCatching().getOrNull() as? Frame.Text
             val auth = authFrame?.let { runCatching { ProtocolCodec.decodeFromJson<WsAuth>(it.readText()) }.getOrNull() }
-            if (auth == null || auth.nonce != nonce || (config.playIntegrityEnabled && auth.clientId != principal.clientId)) {
+            if (auth == null || auth.nonce != nonce || (config.securityEnabled && auth.clientId != principal.clientId)) {
                 return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth_failed"))
             }
             // epoch 0 = identity (root) key, ≥1 = the operational key of that key-epoch.
