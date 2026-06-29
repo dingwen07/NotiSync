@@ -12,6 +12,10 @@
 	<array>
 		<string>group.net.extrawdw.apps.NotiSync</string>
 	</array>
+	<key>com.apple.developer.associated-domains</key>
+	<array>
+		<string>applinks:notisync.apps.extrawdw.net</string>
+	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync</string>
