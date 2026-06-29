@@ -93,9 +93,13 @@ extension NotiSyncRuntime {
             // Drop quietly — an envelope from a sender we don't (fully) trust or can't currently open is
             // routine in a multi-device mesh (broadcasts from not-yet-approved peers, pre-convergence). Log
             // to the console only; surfacing one per envelope floods the activity feed. Matches Android,
-            // which `log.warn`s to logcat and returns DROPPED. Left unacked so it can deliver once converged.
-            log.info("dropping envelope: \(e.localizedDescription, privacy: .public)")
-            return false
+            // which `log.warn`s to logcat and returns DROPPED. Convergence drops stay unacked; missing local
+            // HPKE private keys are unrecoverable, so those are treated as handled and acked.
+            let envelope = try? ProtocolCodec.decodeEnvelope(bytes)
+            let signerId = envelope?.signerId ?? "unknown"
+            let messageId = envelope?.messageId ?? "unknown"
+            log.info("dropping envelope signerId=\(signerId, privacy: .public) messageId=\(messageId, privacy: .public): \(e.localizedDescription, privacy: .public)")
+            return e.ackAfterSilentDrop
         case .failure(let error):
             record(error: error, domain: .envelopeDelivery)
             // Non-silent failures (bad signature, malformed body, unsupported payload shape) will not become

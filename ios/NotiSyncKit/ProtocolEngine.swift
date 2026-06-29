@@ -30,6 +30,13 @@ nonisolated enum EngineError: Error, LocalizedError {
         }
     }
 
+    var ackAfterSilentDrop: Bool {
+        switch self {
+        case .noHpkeKey: return true
+        case .unknownSender, .untrustedSender, .unresolvedSender, .notForUs, .verificationFailed: return false
+        }
+    }
+
     var errorDescription: String? {
         switch self {
         case let .unknownSender(id):
