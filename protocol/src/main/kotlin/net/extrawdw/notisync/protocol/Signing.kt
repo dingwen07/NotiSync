@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 
@@ -24,7 +26,7 @@ object SignedType {
 @Serializable
 data class SignedBlob(
     val typ: String,
-    val suite: String = CipherSuite.CURRENT_ID,
+    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
     val signerId: ClientId,
     @ByteString val payload: ByteArray,
     @ByteString val sig: ByteArray,

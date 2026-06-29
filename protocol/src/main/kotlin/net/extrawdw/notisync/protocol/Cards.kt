@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 
@@ -30,7 +32,7 @@ enum class Purpose { ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL }
  */
 @Serializable
 data class ClientKeyEpoch(
-    val suite: String = CipherSuite.CURRENT_ID,
+    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
     val clientId: ClientId,
     @ByteString val identityPublicKey: ByteArray,   // X.509 SPKI, EC P-256 — the anchor (constant across epochs)
     val epoch: Int,                                  // ≥ 1, strictly monotonic per clientId
@@ -54,7 +56,7 @@ data class ClientKeyEpoch(
  */
 @Serializable
 data class ClientCard(
-    val suite: String = CipherSuite.CURRENT_ID,
+    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
     val clientId: ClientId,
     @ByteString val identityPublicKey: ByteArray,   // X.509 SubjectPublicKeyInfo, EC P-256
     val displayName: String,

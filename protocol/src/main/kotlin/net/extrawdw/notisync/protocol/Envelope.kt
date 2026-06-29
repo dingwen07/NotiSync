@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 
@@ -28,8 +30,8 @@ data class PerRecipientKey(
  */
 @Serializable
 data class Envelope(
-    val v: Int = 1,
-    val suite: String = CipherSuite.CURRENT_ID,
+    @EncodeDefault(ALWAYS) val v: Int = 1,
+    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
     val typ: MessageType,
     val signerId: ClientId,
     /**

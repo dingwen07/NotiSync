@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.protocol
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 
@@ -51,7 +53,7 @@ data class PrivateAssetRef(
     /** Per-asset AES-256-GCM key, delivered only inside this E2E body. */
     @ByteString val assetKey: ByteArray,
     /** The suite that ENCRYPTED the blob; the consumer rebuilds the AAD from this, not the envelope. */
-    val suite: String = CipherSuite.CURRENT_ID,
+    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
 )
 
 /**

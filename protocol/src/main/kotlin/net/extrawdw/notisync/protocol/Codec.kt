@@ -19,7 +19,14 @@ import kotlinx.serialization.json.Json
 object ProtocolCodec {
     val cbor: Cbor = Cbor {
         ignoreUnknownKeys = true
-        encodeDefaults = true
+        // Omit fields equal to their default, shrinking the wire and the inline-push budget (FCM/APNs).
+        // Safe across versions: every field has a default, so a missing key decodes back to it, and
+        // ignoreUnknownKeys absorbs the reverse — old and new peers interoperate (mixed fleet). The two
+        // structs re-encoded on both ends for crypto ([EnvelopeAuth], [AssetAad]) carry NO defaults, so
+        // their signature/AAD bytes are identical regardless of this flag.
+        // INVARIANT: never give a nullable field a non-null default (an absent key would be ambiguous).
+        // Version/suite discriminators that must outlive a suite bump are pinned with @EncodeDefault(ALWAYS).
+        encodeDefaults = false
     }
 
     val json: Json = Json {
