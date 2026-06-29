@@ -204,6 +204,10 @@ nonisolated struct CapturedNotification: Sendable {
     var iosBundleId: String?
     /// Stable id of the originating device for a bridged capture — lets the consumer group per origin.
     var originDeviceId: String?
+    /// The source's per-post `FLAG_ONLY_ALERT_ONCE` intent: an update to this key should not re-alert while
+    /// it is still showing (e.g. a messaging app attaching an inline image to a message it already alerted).
+    /// Carried for parity with the protocol; the iOS mirror does not act on it yet.
+    var onlyAlertOnce: Bool = false
 
     /// The importance that drives alerting: the source channel's importance if present, else the
     /// per-notification importance (mirrors Android `importanceOf`).

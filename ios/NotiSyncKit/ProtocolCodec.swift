@@ -557,7 +557,8 @@ nonisolated enum KMPProtocolBridge {
             originPlatform: OriginPlatform(rawValue: value.originPlatform.name) ?? .ANDROID_LOCAL,
             originDeviceName: value.originDeviceName,
             iosBundleId: value.iosBundleId,
-            originDeviceId: value.originDeviceId
+            originDeviceId: value.originDeviceId,
+            onlyAlertOnce: value.onlyAlertOnce
         )
     }
 

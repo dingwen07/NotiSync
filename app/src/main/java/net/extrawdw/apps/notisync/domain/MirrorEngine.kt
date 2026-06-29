@@ -25,7 +25,13 @@ import net.extrawdw.notisync.protocol.Urgency
 
 /** Renders / clears mirrored notifications. Implemented by the notification layer. */
 interface MirrorRenderer {
-    fun render(notif: CapturedNotification)
+    /**
+     * Post (or update) the mirror for [notif]. [silent] suppresses this one post's sound/heads-up without
+     * touching the channel — set for a re-render that only refreshes graphics on an already-posted
+     * notification (an asset finished downloading), which must never re-alert. The first render of a post
+     * leaves it false and lets the source's own [CapturedNotification.onlyAlertOnce] decide.
+     */
+    fun render(notif: CapturedNotification, silent: Boolean = false)
     fun clear(sourceClientId: ClientId, sourceKey: String)
 }
 
@@ -108,6 +114,20 @@ class MirrorEngine(
             }
         )
 
+    /**
+     * Activity titles of notifications we've shown, keyed by ([ClientId], sourceKey), so a later dismissal row
+     * reads the same as its posted row — e.g. "WhatsApp (Dingwen's iPhone)". A [DismissEvent] carries only the
+     * opaque source key, which for a bridged iPhone notification names the iPhone id (not the app), so resolving
+     * the title from the key alone would surface that raw id. Bounded LRU; lost on a restart, after which a
+     * dismissal row falls back to [dismissedAppName].
+     */
+    private val originTitles: MutableMap<String, String> =
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, String>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: Map.Entry<String, String>): Boolean = size > 256
+            }
+        )
+
     /** Register inbound handlers. Call during graph construction, before the channel starts delivering. */
     fun register() {
         channel.onMessage(MessageType.NOTIFICATION, ::onNotification)
@@ -122,9 +142,10 @@ class MirrorEngine(
             Recipients.OwnMesh,
             Urgency.HIGH
         )
+        rememberTitle(notif)
         if (n > 0) activityLog.add(
             ActivityEvent.Kind.SENT,
-            notif.appLabel,
+            originTitle(notif),
             activityText.mirroredToDevices(n),
             now()
         )
@@ -148,7 +169,7 @@ class MirrorEngine(
         )
         if (n > 0) activityLog.add(
             ActivityEvent.Kind.DISMISSED,
-            dismissedAppName(sourceKey),
+            dismissedTitle(sourceClientId, sourceKey),
             activityText.syncedToDevices(n),
             now()
         )
@@ -164,9 +185,10 @@ class MirrorEngine(
         // (drop the still-queued copy) instead of letting it be redelivered and reappear.
         ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
         renderer.render(notif) // text + any already-cached graphics, posted immediately
+        rememberTitle(notif)
         activityLog.add(
             ActivityEvent.Kind.RECEIVED,
-            notif.appLabel,
+            originTitle(notif),
             activityText.fromDevice(peerNameResolver(msg.senderId)),
             now(),
             deliveryMode = msg.deliveryMode.ifKnown(),
@@ -179,7 +201,9 @@ class MirrorEngine(
         if (resolver != null && refs.isNotEmpty()) {
             scope.launch {
                 val result = resolver.ensureLocal(refs)
-                if (result.newlyAvailable) renderer.render(notif)
+                // Silent: the notification was already posted above; this only attaches the now-downloaded
+                // graphics, so it must refresh in place without a second alert.
+                if (result.newlyAvailable) renderer.render(notif, silent = true)
                 if (result.stillMissing.isNotEmpty()) {
                     result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
                     sendAssetSync(
@@ -204,7 +228,7 @@ class MirrorEngine(
         iosOriginCanceler?.cancel(event.sourceKey)
         activityLog.add(
             ActivityEvent.Kind.DISMISSED,
-            dismissedAppName(event.sourceKey),
+            dismissedTitle(event.sourceClientId, event.sourceKey),
             activityText.byDevice(peerNameResolver(msg.senderId)),
             now(),
             deliveryMode = msg.deliveryMode.ifKnown(),
@@ -260,7 +284,9 @@ class MirrorEngine(
         for (item in items) {
             val ref = item.ref ?: continue
             if (resolver.ensureLocal(listOf(ref)).newlyAvailable) {
-                pendingAssetRenders.remove(ref.assetHash)?.let { renderer.render(it) }
+                // Silent: a repaired asset arriving for a notification that was already posted (render now,
+                // re-render when the graphic lands) — refresh it in place, don't re-alert.
+                pendingAssetRenders.remove(ref.assetHash)?.let { renderer.render(it, silent = true) }
             }
         }
     }
@@ -276,15 +302,39 @@ class MirrorEngine(
     }
 
     /**
-     * Best-effort app name for a dismissal Activity row. A [DismissEvent] carries only the opaque
-     * source key — the origin device's Android notification key, `userId|package|id|tag|uid` — so we
-     * recover the package from it and resolve a friendly label when that app is installed on this
-     * device. Otherwise we fall back to the package (still tells the user which app), then the key.
+     * Best-effort app name for a dismissal Activity row when no posted title was remembered (cold cache).
+     * A [DismissEvent] carries only the opaque source key. An Android key is `userId|package|id|tag|uid`,
+     * so the app is the package (index 1). A bridged iPhone key is `ancs|iphoneId|bundleId|uid`, so the app
+     * is the bundle id (index 2) — index 1 there is the *iPhone id*, which must never surface as the "app".
+     * We resolve a friendly label when that app is installed here, else fall back to the field, then the key.
      */
     private fun dismissedAppName(sourceKey: String): String {
-        val pkg = sourceKey.split('|').getOrNull(1)?.takeIf { it.isNotBlank() } ?: return sourceKey
+        val parts = sourceKey.split('|')
+        val appField = if (parts.firstOrNull() == "ancs") parts.getOrNull(2) else parts.getOrNull(1)
+        val pkg = appField?.takeIf { it.isNotBlank() } ?: return sourceKey
         return appLabelResolver(pkg)
     }
+
+    /**
+     * An Activity row's app title: the app label, suffixed with the originating device's name for a bridged
+     * capture (an iPhone notification relayed over ANCS) — "WhatsApp (Dingwen's iPhone)" — to match the
+     * mirror's notification group label. Just the app label for a local Android capture ([originDeviceName] null).
+     */
+    private fun originTitle(notif: CapturedNotification): String =
+        notif.originDeviceName?.takeIf { it.isNotBlank() }
+            ?.let { "${notif.appLabel} ($it)" } ?: notif.appLabel
+
+    /** Remember [notif]'s Activity title so its eventual dismissal row matches its posted row. */
+    private fun rememberTitle(notif: CapturedNotification) {
+        originTitles[titleKey(notif.sourceClientId, notif.sourceKey)] = originTitle(notif)
+    }
+
+    /** The dismissal row's title: the remembered posted title, else a best-effort app name from the key. */
+    private fun dismissedTitle(sourceClientId: ClientId, sourceKey: String): String =
+        originTitles[titleKey(sourceClientId, sourceKey)] ?: dismissedAppName(sourceKey)
+
+    private fun titleKey(sourceClientId: ClientId, sourceKey: String): String =
+        "${sourceClientId.value}|$sourceKey"
 }
 
 /** Every private asset referenced by a notification body (icons, pictures, avatars, inline media). */

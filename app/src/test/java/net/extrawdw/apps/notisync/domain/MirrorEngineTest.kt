@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.testsupport.testChannel
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
@@ -23,6 +24,7 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import org.junit.Assert.assertEquals
@@ -34,9 +36,11 @@ class MirrorEngineTest {
 
     private class RecordingRenderer : MirrorRenderer {
         var renders = 0
+        var silentRenders = 0
         val cleared = mutableListOf<Pair<ClientId, String>>()
-        override fun render(notif: CapturedNotification) {
+        override fun render(notif: CapturedNotification, silent: Boolean) {
             renders++
+            if (silent) silentRenders++
         }
 
         override fun clear(sourceClientId: ClientId, sourceKey: String) {
@@ -64,6 +68,15 @@ class MirrorEngineTest {
             null
     }
 
+    /** Reports every ref as freshly available, so onNotification fires the silent enrichment re-render. */
+    private class AvailableResolver : AssetResolver {
+        override suspend fun ensureLocal(refs: List<PrivateAssetRef>) =
+            ResolveResult(newlyAvailable = true, stillMissing = emptyList())
+
+        override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? =
+            null
+    }
+
     private fun ref(source: ClientId) = PrivateAssetRef(
         role = AssetRole.LARGE_ICON, assetHash = "h", mimeType = "image/png", sizeBytes = 1,
         sourceClientId = source, assetId = "a", assetKey = byteArrayOf(1),
@@ -73,6 +86,15 @@ class MirrorEngineTest {
         sourceClientId = source, sourceKey = "0|com.x|1|t", packageName = "com.x", appLabel = "X",
         title = "t", text = "x", style = NotifStyle.DEFAULT, category = MirrorCategory.MESSAGE,
         importance = MirrorImportance.DEFAULT, postTime = 1L,
+    )
+
+    /** A notification bridged from an iPhone over ANCS: ANCS-shaped key, IOS_ANCS origin, iPhone name. */
+    private fun iosNotif(source: ClientId) = CapturedNotification(
+        sourceClientId = source, sourceKey = "ancs|ip|com.x|7", packageName = "com.x",
+        appLabel = "WhatsApp", title = "t", text = "x", style = NotifStyle.DEFAULT,
+        category = MirrorCategory.MESSAGE, importance = MirrorImportance.HIGH, postTime = 1L,
+        originPlatform = OriginPlatform.IOS_ANCS, originDeviceName = "Dingwen's iPhone",
+        originDeviceId = "ip",
     )
 
     private fun engine(
@@ -275,6 +297,139 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun receivedIosNotification_titleCarriesOriginDeviceName() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val activityLog = ActivityLog()
+        val (channel, _) = engine(
+            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
+        )
+
+        channel.deliver(
+            seal(
+                own,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(iosNotif(own.clientId)),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
+
+        // A bridged iPhone notification's posted row reads "App (iPhone)", not just the app label.
+        val row = activityLog.events.value.single()
+        assertEquals(ActivityEvent.Kind.RECEIVED, row.kind)
+        assertEquals("WhatsApp (Dingwen's iPhone)", row.title)
+    }
+
+    @Test
+    fun remoteDismissalOfIosNotification_titleMatchesPostedRow() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val activityLog = ActivityLog()
+        val (channel, _) = engine(
+            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
+        )
+
+        // Receive the iPhone notification (remembers its title) …
+        channel.deliver(
+            seal(
+                own,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(iosNotif(own.clientId)),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
+        // … then a peer dismisses it. The DismissEvent carries only the opaque ANCS key (whose 2nd
+        // segment is the iPhone id, not the app), yet the row must still read "App (iPhone)".
+        channel.deliver(
+            seal(
+                own,
+                MessageType.DISMISSAL,
+                ProtocolCodec.encodeToCbor(DismissEvent(own.clientId, "ancs|ip|com.x|7", 2L)),
+                me.clientId,
+                myHpke.publicKeyset,
+                "d1"
+            )
+        )
+
+        val dismissed = activityLog.events.value.first()
+        assertEquals(ActivityEvent.Kind.DISMISSED, dismissed.kind)
+        assertEquals("WhatsApp (Dingwen's iPhone)", dismissed.title)
+    }
+
+    @Test
+    fun dismissalOfIosNotification_coldCache_namesAppNotIphoneId() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val activityLog = ActivityLog()
+        val (channel, _) = engine(
+            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
+        )
+
+        // No prior posted row (e.g. the process restarted while the mirror sat in the tray): the ANCS key's
+        // app field is the bundle id, never the iPhone id — so the row names the app, not the opaque hash.
+        channel.deliver(
+            seal(
+                own,
+                MessageType.DISMISSAL,
+                ProtocolCodec.encodeToCbor(
+                    DismissEvent(own.clientId, "ancs|a3f9deadbeef|net.whatsapp.WhatsApp|7", 1L)
+                ),
+                me.clientId,
+                myHpke.publicKeyset,
+                "d1"
+            )
+        )
+
+        val row = activityLog.events.value.single()
+        assertEquals(ActivityEvent.Kind.DISMISSED, row.kind)
+        assertEquals("net.whatsapp.WhatsApp", row.title)
+    }
+
+    @Test
+    fun capturedIosNotification_titleCarriesDeviceName_andSurvivesLocalDismissal() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val activityLog = ActivityLog()
+        val (_, mirror) = engine(
+            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
+        )
+
+        // Bridge side: capture from the iPhone (Sent row) then locally swipe the mirror (Dismissed row).
+        mirror.captureLocal(iosNotif(me.clientId))
+        mirror.dismissLocal(me.clientId, "ancs|ip|com.x|7")
+
+        val rows = activityLog.events.value // newest first
+        assertEquals(ActivityEvent.Kind.DISMISSED, rows[0].kind)
+        assertEquals("WhatsApp (Dingwen's iPhone)", rows[0].title)
+        assertEquals(ActivityEvent.Kind.SENT, rows[1].kind)
+        assertEquals("WhatsApp (Dingwen's iPhone)", rows[1].title)
+    }
+
+    @Test
     fun captureLocal_sealsNotificationToOwnMesh() = runBlocking {
         val me = newSigner();
         val myHpke = newHpke()
@@ -380,6 +535,46 @@ class MirrorEngineTest {
         assertEquals(1, transport.sent.size)
         assertEquals(MessageType.DATA_SYNC, transport.envelopes.single().typ)
         assertEquals(setOf(sender.clientId), transport.envelopes.single().recipientIds().toSet())
+    }
+
+    @Test
+    fun assetEnrichmentReRender_isSilent_soItDoesNotReAlert() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val renderer = RecordingRenderer()
+        val channel = testChannel(me, myHpke.privateKeyset, trust)
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = renderer,
+            activityLog = ActivityLog(),
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+            assetResolver = AvailableResolver(),
+        )
+        mirror.register()
+
+        // A notification carrying a private graphic is posted immediately (text), then re-rendered once the
+        // asset resolves. The first render alerts per the source's own onlyAlertOnce flag; the asset-arrival
+        // re-render must be silent so it refreshes the image in place without a second alert.
+        val notif = sampleNotif(own.clientId).copy(largeIcon = ref(own.clientId))
+        channel.deliver(
+            seal(
+                own,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(notif),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
+
+        assertEquals(2, renderer.renders)        // immediate + asset-arrival re-render
+        assertEquals(1, renderer.silentRenders)  // only the re-render is silent
     }
 
     @Test

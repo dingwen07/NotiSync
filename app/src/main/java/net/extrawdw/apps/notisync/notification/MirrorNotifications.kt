@@ -252,12 +252,13 @@ class RemoteNotificationPoster(
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
     private val iconUpgradesInFlight = ConcurrentHashMap.newKeySet<String>()
 
-    override fun render(notif: CapturedNotification) = render(notif, silent = false)
-
-    /** [silent] posts just this one notification without sound/heads-up — used for the connect-time ANCS backlog
-     *  replay — while leaving the channel's importance untouched, so the next live notification on the same (HIGH)
-     *  channel still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). */
-    fun render(notif: CapturedNotification, silent: Boolean) {
+    /** [silent] posts just this one notification without sound/heads-up — the connect-time ANCS backlog replay,
+     *  or a re-render that only attaches a now-downloaded graphic to an already-posted notification — while
+     *  leaving the channel's importance untouched, so the next live notification on the same (HIGH) channel
+     *  still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). The
+     *  cross-update alerting cadence (e.g. a messaging app enriching a message it already alerted) is carried by
+     *  the source's own [CapturedNotification.onlyAlertOnce], applied on the builder below. */
+    override fun render(notif: CapturedNotification, silent: Boolean) {
         // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
         // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
@@ -319,6 +320,11 @@ class RemoteNotificationPoster(
                 )
             ) // marks the notification as mirrored
             .setAutoCancel(true)
+            // Mirror the source's own per-post intent: when the app marked this post "only alert once" (an
+            // enrichment update — e.g. attaching an inline image to a message it already alerted), the OS
+            // refreshes the already-showing mirror without re-alerting. A new message is a separate post the
+            // app leaves alerting, so it still heads-up.
+            .setOnlyAlertOnce(notif.onlyAlertOnce)
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
@@ -327,8 +333,9 @@ class RemoteNotificationPoster(
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
         if (shortcutId != null) builder.setShortcutId(shortcutId)
-        // Quiet this one post (ANCS backlog replay) without lowering the channel — the channel stays HIGH so the
-        // next live notification still heads-up. MessagingStyle below may also silence its own self-reply case.
+        // Quiet this one post (ANCS backlog replay, or an asset-arrival re-render) without lowering the channel
+        // — the channel stays HIGH so the next live notification still heads-up. MessagingStyle below may also
+        // silence its own self-reply case.
         if (silent) builder.setSilent(true)
 
         when (notif.style) {

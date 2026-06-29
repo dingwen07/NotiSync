@@ -7,8 +7,8 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		1F718FF82FF101BB005C6496 /* NotiSyncProtocol.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F718FAB2FF0FFE5005C6496 /* NotiSyncProtocol.xcframework */; };
-		1F718FF92FF101BB005C6496 /* NotiSyncProtocol.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F718FAB2FF0FFE5005C6496 /* NotiSyncProtocol.xcframework */; };
+		1F7192392FF21EDA005C6496 /* NotiSyncProtocol.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F718FAB2FF0FFE5005C6496 /* NotiSyncProtocol.xcframework */; };
+		1F71923C2FF21EE1005C6496 /* NotiSyncProtocol.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F718FAB2FF0FFE5005C6496 /* NotiSyncProtocol.xcframework */; };
 		297BF63FAE3921D0B297ADB3 /* FirebaseCore in Frameworks */ = {isa = PBXBuildFile; productRef = 8F8FD9FE59183A9D305DC2E6 /* FirebaseCore */; };
 		5108C6857E4B1F964A2957D6 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 242BAD2A41779DEE51CB0A55 /* FirebaseAppCheck */; };
 		7A6718B52323AFA1FB1F5E58 /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C207CE506E8E55724AF9B3F7 /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -67,7 +67,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				297BF63FAE3921D0B297ADB3 /* FirebaseCore in Frameworks */,
-				1F718FF82FF101BB005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
+				1F71923C2FF21EE1005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
 				5108C6857E4B1F964A2957D6 /* FirebaseAppCheck in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -76,7 +76,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				1F718FF92FF101BB005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
+				1F7192392FF21EDA005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -386,13 +386,14 @@
 		1F712D152FEDE20B00A49D22 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APP_ATTEST_ENVIRONMENT = development;
 				APS_ENVIRONMENT = development;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = NotiSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_APP_SANDBOX = YES;
@@ -425,13 +426,14 @@
 		1F712D162FEDE20B00A49D22 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+				APP_ATTEST_ENVIRONMENT = production;
 				APS_ENVIRONMENT = production;
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = NotiSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_APP_SANDBOX = YES;
@@ -470,7 +472,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
@@ -501,7 +503,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 2;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;

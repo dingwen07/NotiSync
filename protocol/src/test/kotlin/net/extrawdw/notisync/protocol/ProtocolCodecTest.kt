@@ -260,6 +260,7 @@ class ProtocolCodecTest {
             iosBundleId = "net.whatsapp.WhatsApp",
             originDeviceId = "iph0nehash",
             shouldVibrate = true,
+            onlyAlertOnce = true,
         )
         val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
         // PrivateAssetRef holds a ByteArray key (reference equality), so compare fields, not the whole object.
@@ -270,6 +271,7 @@ class ProtocolCodecTest {
         assertEquals("net.whatsapp.WhatsApp", decoded.iosBundleId)
         assertEquals("iph0nehash", decoded.originDeviceId)
         assertTrue(decoded.shouldVibrate)
+        assertTrue(decoded.onlyAlertOnce)
         assertEquals(AssetRole.APP_ICON, decoded.appIcon?.role)
         assertEquals("appiconid", decoded.appIcon?.assetId)
         assertArrayEquals(appIcon.assetKey, decoded.appIcon?.assetKey)
@@ -293,6 +295,7 @@ class ProtocolCodecTest {
         assertNull(decoded.appIcon)
         assertNull(decoded.originDeviceName)
         assertNull(decoded.iosBundleId)
+        assertFalse(decoded.onlyAlertOnce) // older producer omitting the flag → not "only alert once"
     }
 
     @Test

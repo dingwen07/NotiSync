@@ -159,6 +159,14 @@ data class CapturedNotification(
      *  consumer group/channel notifications per origin: once one client bridges another device, [sourceClientId]
      *  alone no longer identifies the source (its own Android vs the paired iPhone). Null for a local capture. */
     val originDeviceId: String? = null,
+    /** The source's per-post `FLAG_ONLY_ALERT_ONCE` (Android: `Notification.flags`): the app's own intent
+     *  that an update to this key must NOT re-alert (sound / heads-up) while the notification is still
+     *  showing — set on enrichment updates like a messaging app attaching an inline image to a message it
+     *  already alerted, or a download refreshing its progress. The consumer mirrors it verbatim into
+     *  `setOnlyAlertOnce`, so the mirror reproduces the source's exact alerting cadence rather than
+     *  re-buzzing on every update; a genuinely new message is a separate post the app leaves alerting, so it
+     *  still heads-up. Appended with a default so an older producer (no field) decodes unchanged. */
+    val onlyAlertOnce: Boolean = false,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */

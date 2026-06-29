@@ -84,6 +84,10 @@ class NotificationNormalizer(private val pm: PackageManager) {
             isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0,
             isOngoing = sbn.isOngoing,
             isClearable = sbn.isClearable,
+            // The source app's own "don't re-alert on update" intent, mirrored verbatim by the consumer so an
+            // enrichment re-post (e.g. WhatsApp attaching an inline image to a message it already alerted) updates
+            // the mirror silently, while a genuinely new message — a separate post without this flag — still alerts.
+            onlyAlertOnce = n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
             channelId = channel?.id,
             channelName = runCatching { channel?.name?.toString() }.getOrNull(),
             channelGroupId = runCatching { channel?.group }.getOrNull(),
