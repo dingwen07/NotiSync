@@ -28,6 +28,10 @@
     <string name="apps_section_other_results">其他结果</string>
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">最近通知 %1$s</string>
+    <string name="apps_section_recent">最近</string>
+    <string name="apps_sort_menu">排序</string>
+    <string name="apps_enable_all">开启全部镜像</string>
+    <string name="apps_disable_all">关闭全部镜像</string>
 
     <!-- Activity screen -->
     <string name="activity_empty_title">暂无动态</string>

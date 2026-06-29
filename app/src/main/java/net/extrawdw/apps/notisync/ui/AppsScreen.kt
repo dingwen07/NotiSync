@@ -22,15 +22,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -185,45 +179,52 @@ fun AppsScreen() {
 
     val loading = loaded == null
     val apps = loaded.orEmpty()
+    var mode by rememberSaveable { mutableStateOf(AppListMode.MIRRORING) }
 
     fun norm(s: String) = s.lowercase(Locale.getDefault())
     val q = norm(query.trim())
     fun matches(a: InstalledApp) =
         q.isEmpty() || norm(a.label).contains(q) || norm(a.packageName).contains(q)
 
-    val enabledApps =
-        apps.filter { it.packageName in enabled && matches(it) }.sortedBy { norm(it.label) }
-    val otherApps = apps.filter { it.packageName !in enabled && matches(it) }
-        .sortedWith(compareByDescending<InstalledApp> {
-            lastSeen[it.packageName] ?: 0L
-        }.thenBy { norm(it.label) })
+    val matching = apps.filter { matches(it) }
+    val byRecency = compareByDescending<InstalledApp> { lastSeen[it.packageName] ?: 0L }
+        .thenBy { norm(it.label) }
+    val mirroringTitle = stringResource(R.string.apps_section_mirroring)
+    val recentTitle = stringResource(R.string.apps_section_recent)
+    val allTitle = stringResource(R.string.apps_section_all)
+    val otherResultsTitle = stringResource(R.string.apps_section_other_results)
+    val sections: List<AppSection<InstalledApp>> = when (mode) {
+        AppListMode.MIRRORING -> buildList {
+            val on = matching.filter { it.packageName in enabled }.sortedBy { norm(it.label) }
+            val off = matching.filter { it.packageName !in enabled }.sortedWith(byRecency)
+            if (on.isNotEmpty()) add(AppSection("on", mirroringTitle, on))
+            add(AppSection("all", if (q.isEmpty()) allTitle else otherResultsTitle, off))
+        }
+        AppListMode.NAME ->
+            listOf(AppSection("all", allTitle, matching.sortedBy { norm(it.label) }))
+        AppListMode.RECENT -> buildList {
+            val recent = matching.filter { (lastSeen[it.packageName] ?: 0L) > 0L }
+                .sortedWith(byRecency).take(RECENT_APP_COUNT)
+            val recentKeys = recent.mapTo(HashSet()) { it.packageName }
+            val rest = matching.filter { it.packageName !in recentKeys }.sortedBy { norm(it.label) }
+            if (recent.isNotEmpty()) add(AppSection("recent", recentTitle, recent))
+            add(AppSection("all", allTitle, rest))
+        }
+    }
+    val allEnabled = matching.isNotEmpty() && matching.all { it.packageName in enabled }
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
     NotiScaffold(stringResource(R.string.tab_apps)) { modifier ->
         Column(modifier.fillMaxSize()) {
-            OutlinedTextField(
-                value = query,
-                onValueChange = { query = it },
-                placeholder = { Text(stringResource(R.string.apps_search_hint)) },
-                leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-                trailingIcon = {
-                    if (query.isNotEmpty()) {
-                        IconButton(onClick = { query = "" }) {
-                            Icon(
-                                Icons.Outlined.Close,
-                                contentDescription = stringResource(R.string.apps_clear_search)
-                            )
-                        }
-                    }
-                },
-                singleLine = true,
-                shape = CircleShape,
-                // A persistent 8.dp gap (outside the scrolling list) so rows never scroll up flush
-                // against the search bar. Combined with the sticky header's 8.dp top padding, the
-                // resting search-bar-to-header gap is 16.dp — matching the top-app-bar-to-search gap.
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp),
+            AppListSearchBar(
+                query = query,
+                onQueryChange = { query = it },
+                placeholder = stringResource(R.string.apps_search_hint),
+                mode = mode,
+                onModeChange = { mode = it },
+                allEnabled = allEnabled,
+                canToggleAll = matching.isNotEmpty(),
+                onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
             )
             when {
                 loading -> Box(
@@ -231,7 +232,7 @@ fun AppsScreen() {
                     contentAlignment = Alignment.Center
                 ) { CircularProgressIndicator() }
 
-                enabledApps.isEmpty() && otherApps.isEmpty() -> Box(
+                matching.isEmpty() -> Box(
                     Modifier.fillMaxSize(),
                     contentAlignment = Alignment.Center
                 ) {
@@ -246,59 +247,24 @@ fun AppsScreen() {
                 }
 
                 else -> LazyColumn(Modifier.fillMaxSize()) {
-                    if (enabledApps.isNotEmpty()) {
-                        stickyHeader(key = "header:mirroring") {
-                            SectionHeader(
-                                stringResource(R.string.apps_section_mirroring),
-                                enabledApps.size
-                            )
+                    sections.forEach { section ->
+                        stickyHeader(key = "header:${section.key}") {
+                            SectionHeader(section.title, section.items.size)
                         }
-                        items(enabledApps, key = { "on:${it.packageName}" }) {
+                        items(section.items, key = { "${section.key}:${it.packageName}" }) { app ->
                             AppRow(
-                                it,
-                                true,
-                                lastSeen[it.packageName],
+                                app,
+                                app.packageName in enabled,
+                                lastSeen[app.packageName],
                                 fmt,
-                                selection
+                                selection,
                             )
                         }
-                    }
-                    stickyHeader(key = "header:all") {
-                        SectionHeader(
-                            if (q.isEmpty()) stringResource(
-                                R.string.apps_section_all
-                            ) else stringResource(R.string.apps_section_other_results),
-                            otherApps.size
-                        )
-                    }
-                    items(otherApps, key = { "off:${it.packageName}" }) {
-                        AppRow(
-                            it,
-                            false,
-                            lastSeen[it.packageName],
-                            fmt,
-                            selection
-                        )
                     }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun SectionHeader(title: String, count: Int) {
-    Text(
-        stringResource(R.string.section_header, title, count),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        // Opaque background matching the screen so list rows scroll *under* the pinned header
-        // rather than showing through it.
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-    )
 }
 
 @Composable

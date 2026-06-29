@@ -165,6 +165,15 @@ class AppSelectionRepository(
         scope.launch { store.edit { it[enabledKey] = json } }
     }
 
+    /** Bulk-set mirroring for [packageNames] in a single persisted write (backs "turn on/off all"). */
+    fun setEnabled(packageNames: Collection<String>, enabled: Boolean) {
+        if (packageNames.isEmpty()) return
+        _enabled.value =
+            if (enabled) _enabled.value + packageNames else _enabled.value - packageNames
+        val json = ProtocolCodec.encodeToJson(_enabled.value)
+        scope.launch { store.edit { it[enabledKey] = json } }
+    }
+
     /** Record that [packageName] just posted a notification (drives recency sorting in the picker). */
     fun recordSeen(packageName: String, timeMillis: Long) {
         if (timeMillis > (_lastSeen.value[packageName] ?: 0L)) {

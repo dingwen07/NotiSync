@@ -28,6 +28,10 @@
     <string name="apps_section_other_results">Other results</string>
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">Last notification %1$s</string>
+    <string name="apps_section_recent">Recents</string>
+    <string name="apps_sort_menu">Sort apps</string>
+    <string name="apps_enable_all">Turn on all mirroring</string>
+    <string name="apps_disable_all">Turn off all mirroring</string>
 
     <!-- Activity screen -->
     <string name="activity_empty_title">No activity yet</string>

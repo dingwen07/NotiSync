@@ -26,8 +26,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 19
-        versionName = "1.4.0-rc.1"
+        versionCode = 20
+        versionName = "1.4.1-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // NS2 epoch rotation: the foundation (operational key at epoch 1, key-epoch publish, signed floor +
         // generation ring) is always on; this flag gates ONLY whether the client ever mints a SECOND epoch

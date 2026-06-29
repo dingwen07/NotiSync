@@ -30,18 +30,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -252,6 +245,7 @@ fun IosScreen() {
     val discovered by registry.discovered.collectAsStateWithLifecycle()
     val icons by viewModel<IosAppsViewModel>().icons.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
+    var mode by rememberSaveable { mutableStateOf(AppListMode.MIRRORING) }
 
     val permissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
@@ -385,17 +379,44 @@ fun IosScreen() {
         q.isEmpty() || norm(app.displayName).contains(q) || norm(app.bundleId).contains(q)
 
     val effectiveEnabled = IosBundleIdExclusions.filterEnabled(enabled)
-    val enabledApps = discovered.values
-        .filter { it.bundleId in effectiveEnabled && matches(it) }
-        .sortedBy { norm(it.displayName) }
-    val otherApps = discovered.values
-        .filter { it.bundleId !in effectiveEnabled && matches(it) }
-        .sortedWith(compareByDescending<IosApp> { it.lastSeen }.thenBy { norm(it.displayName) })
+    val matching = discovered.values.filter { matches(it) }
+    val byRecency = compareByDescending<IosApp> { it.lastSeen }.thenBy { norm(it.displayName) }
+    val mirroringTitle = stringResource(R.string.ios_apps_section_mirroring)
+    val recentTitle = stringResource(R.string.apps_section_recent)
+    val iphoneTitle = stringResource(R.string.ios_apps_section)
+    val sections: List<AppSection<IosApp>> = when (mode) {
+        AppListMode.MIRRORING -> buildList {
+            val on = matching.filter { it.bundleId in effectiveEnabled }
+                .sortedBy { norm(it.displayName) }
+            val off = matching.filter { it.bundleId !in effectiveEnabled }.sortedWith(byRecency)
+            if (on.isNotEmpty()) add(AppSection("on", mirroringTitle, on))
+            add(AppSection("iphone", iphoneTitle, off))
+        }
+        AppListMode.NAME ->
+            listOf(AppSection("iphone", iphoneTitle, matching.sortedBy { norm(it.displayName) }))
+        AppListMode.RECENT -> buildList {
+            val recent =
+                matching.filter { it.lastSeen > 0L }.sortedWith(byRecency).take(RECENT_APP_COUNT)
+            val recentKeys = recent.mapTo(HashSet()) { it.bundleId }
+            val rest = matching.filter { it.bundleId !in recentKeys }
+                .sortedBy { norm(it.displayName) }
+            if (recent.isNotEmpty()) add(AppSection("recent", recentTitle, recent))
+            add(AppSection("iphone", iphoneTitle, rest))
+        }
+    }
+    val toggleable = matching.filterNot { IosBundleIdExclusions.isExcluded(it.bundleId) }
+    val allEnabled = toggleable.isNotEmpty() && toggleable.all { it.bundleId in effectiveEnabled }
     NotiScaffold(stringResource(R.string.tab_ios)) { modifier ->
         Column(modifier.fillMaxSize()) {
-            IosAppsSearchField(
+            AppListSearchBar(
                 query = query,
                 onQueryChange = { query = it },
+                placeholder = stringResource(R.string.ios_apps_search_hint),
+                mode = mode,
+                onModeChange = { mode = it },
+                allEnabled = allEnabled,
+                canToggleAll = toggleable.isNotEmpty(),
+                onToggleAll = { on -> registry.setEnabled(toggleable.map { it.bundleId }, on) },
             )
             LazyColumn(Modifier.weight(1f)) {
                 item("connection") {
@@ -435,9 +456,9 @@ fun IosScreen() {
                         onMesh = { on -> scope.launch { settings.setAncsMeshMirror(on) } },
                     )
                 }
-                if (enabledApps.isEmpty() && otherApps.isEmpty()) {
+                if (matching.isEmpty()) {
                     stickyHeader(key = "header:iphone") {
-                        SectionHeader(stringResource(R.string.ios_apps_section), 0)
+                        SectionHeader(iphoneTitle, 0)
                     }
                     item("apps-empty") {
                         Box(
@@ -455,78 +476,24 @@ fun IosScreen() {
                         }
                     }
                 } else {
-                    if (enabledApps.isNotEmpty()) {
-                        stickyHeader(key = "header:mirroring") {
-                            SectionHeader(
-                                stringResource(R.string.ios_apps_section_mirroring),
-                                enabledApps.size
-                            )
+                    sections.forEach { section ->
+                        stickyHeader(key = "header:${section.key}") {
+                            SectionHeader(section.title, section.items.size)
                         }
-                        items(enabledApps, key = { "on:${it.bundleId}" }) { app ->
+                        items(section.items, key = { "${section.key}:${it.bundleId}" }) { app ->
                             IosAppRow(
                                 app = app,
-                                isOn = true,
-                                canToggle = true,
+                                isOn = app.bundleId in effectiveEnabled,
+                                canToggle = !IosBundleIdExclusions.isExcluded(app.bundleId),
                                 icon = icons[app.bundleId],
                                 onToggle = { on -> registry.setEnabled(app.bundleId, on) },
                             )
                         }
                     }
-                    stickyHeader(key = "header:iphone") {
-                        SectionHeader(stringResource(R.string.ios_apps_section), otherApps.size)
-                    }
-                    items(otherApps, key = { "off:${it.bundleId}" }) { app ->
-                        IosAppRow(
-                            app = app,
-                            isOn = false,
-                            canToggle = !IosBundleIdExclusions.isExcluded(app.bundleId),
-                            icon = icons[app.bundleId],
-                            onToggle = { on -> registry.setEnabled(app.bundleId, on) },
-                        )
-                    }
                 }
             }
         }
     }
-}
-
-@Composable
-private fun IosAppsSearchField(query: String, onQueryChange: (String) -> Unit) {
-    OutlinedTextField(
-        value = query,
-        onValueChange = onQueryChange,
-        placeholder = { Text(stringResource(R.string.ios_apps_search_hint)) },
-        leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
-        trailingIcon = {
-            if (query.isNotEmpty()) {
-                IconButton(onClick = { onQueryChange("") }) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = stringResource(R.string.apps_clear_search)
-                    )
-                }
-            }
-        },
-        singleLine = true,
-        shape = CircleShape,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 8.dp),
-    )
-}
-
-@Composable
-private fun SectionHeader(title: String, count: Int) {
-    Text(
-        stringResource(R.string.section_header, title, count),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 8.dp),
-    )
 }
 
 @Composable

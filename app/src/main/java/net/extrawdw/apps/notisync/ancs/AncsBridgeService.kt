@@ -148,9 +148,8 @@ class AncsBridgeService : Service() {
             .setContentText(getString(statusText(status)))
             .setOngoing(true)
             .setShowWhen(false)
-            // Private singleton group summary -> SystemUI keeps this FGS out of mirrored notification bundles.
             .setGroup(GROUP_ID)
-            .setGroupSummary(true)
+            //.setGroupSummary(true)
             .build()
     }
 

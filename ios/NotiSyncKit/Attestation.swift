@@ -20,6 +20,7 @@ nonisolated struct NoAttestor: Attestor {
 #if canImport(FirebaseAppCheck)
 import FirebaseAppCheck
 import FirebaseCore
+import os
 
 /// Firebase App Check attestor. Requires `FirebaseApp.configure()` + a provider factory at launch
 /// (see `FirebaseBootstrap.configure()`), a `GoogleService-Info.plist` for this iOS app, and the app's
@@ -29,7 +30,13 @@ nonisolated struct FirebaseAppCheckAttestor: Attestor {
 
     func token() async -> String? {
         await withCheckedContinuation { cont in
-            AppCheck.appCheck().token(forcingRefresh: false) { token, _ in
+            AppCheck.appCheck().token(forcingRefresh: false) { token, error in
+                if let error {
+                    // Surface provider failures (e.g. App Attest unsupported on iOS-app-on-Mac); otherwise
+                    // they silently become a nil token and the broker only ever reports missing_appcheck_token.
+                    Logger(subsystem: "net.extrawdw.apps.NotiSync", category: "appcheck")
+                        .error("App Check token fetch failed: \(error.localizedDescription, privacy: .public)")
+                }
                 cont.resume(returning: token?.token)
             }
         }
@@ -37,12 +44,17 @@ nonisolated struct FirebaseAppCheckAttestor: Attestor {
 }
 
 /// App Attest in release, the Firebase debug provider in DEBUG (register the printed debug token in the
-/// Firebase console). DeviceCheck is the pre-App-Attest fallback.
+/// Firebase console). DeviceCheck is the fallback: pre-iOS-14, and the iOS-app-on-Apple-Silicon-Mac
+/// runtime where App Attest can't attest (`DCAppAttestService.isSupported == false`). DeviceCheck is
+/// configured in the Firebase console, so Mac clients still attest — more weakly (device validity, not
+/// app integrity), and only where `DCDevice.isSupported` holds on that Mac.
 final class NotiSyncAppCheckProviderFactory: NSObject, AppCheckProviderFactory {
     func createProvider(with app: FirebaseApp) -> (any AppCheckProvider)? {
         #if DEBUG
         return AppCheckDebugProvider(app: app)
         #else
+        // App Attest is unavailable when the iOS app runs on a Mac; DeviceCheck is the only attested path there.
+        if ProcessInfo.processInfo.isiOSAppOnMac { return DeviceCheckProvider(app: app) }
         if #available(iOS 14.0, *) { return AppAttestProvider(app: app) }
         return DeviceCheckProvider(app: app)
         #endif

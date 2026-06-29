@@ -100,6 +100,17 @@ class IosAppRegistry(private val store: DataStore<Preferences>, private val scop
         scope.launch { store.edit { it[enabledKey] = json } }
     }
 
+    /** Bulk-set mirroring for [bundleIds] in a single persisted write; excluded ids are never enabled. */
+    fun setEnabled(bundleIds: Collection<String>, enabled: Boolean) {
+        if (bundleIds.isEmpty()) return
+        _enabled.update { current ->
+            if (enabled) current + bundleIds.filterNot { IosBundleIdExclusions.isExcluded(it) }
+            else current - bundleIds
+        }
+        val json = ProtocolCodec.encodeToJson(_enabled.value)
+        scope.launch { store.edit { it[enabledKey] = json } }
+    }
+
     /** Record that [bundleId] (named [displayName]) just posted, so the tab can surface it for opt-in. */
     fun recordSeen(bundleId: String, displayName: String, timeMillis: Long) {
         val existing = _discovered.value[bundleId]
