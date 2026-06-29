@@ -53,6 +53,10 @@ nonisolated struct TrustedPeerRecord: Codable, Sendable {
     }
 
     var isTrusted: Bool { status == TrustStatus.TRUSTED.rawValue }
+    /// True when this peer is the broker's Experience Mode demo device, identified by the server-set,
+    /// identity-signed card `platform` (pinned verbatim at pairing). Experience peers are pruned (deleted,
+    /// not revoked) before a new Experience session and never appear in — nor receive — the trust roster.
+    var isExperienceMode: Bool { platform == NotiSyncConfig.experiencePlatform }
 }
 
 private nonisolated struct TrustFile: Codable {
@@ -112,6 +116,15 @@ nonisolated final class TrustStore {
         record.status = TrustStatus.TRUSTED.rawValue
         record.updatedAt = nowMillis
         peers[card.clientId] = record
+    }
+
+    /// Remove (delete — not revoke) every Experience Mode peer from the roster. Returns the removed client
+    /// ids so the caller can prune their held cards + UI rows. A clean slate before a new Experience session.
+    @discardableResult
+    func removeExperiencePeers() -> [String] {
+        let ids = peers.values.filter(\.isExperienceMode).map(\.clientId)
+        for id in ids { peers.removeValue(forKey: id) }
+        return ids
     }
 
     /// Apply a verified key-epoch: enforce the anti-rollback floor + `minEpoch` (#1), record the epoch with
@@ -291,9 +304,9 @@ nonisolated final class TrustStore {
     }
 
     /// Signed cards for every TRUSTED device — pushed alongside the roster so a peer can name a newly
-    /// introduced device. (#3)
+    /// introduced device. (#3) Experience Mode peers are never broadcast, so their cards are withheld.
     func trustedCardBlobs() -> [SignedBlob] {
-        peers.values.filter(\.isTrusted).compactMap { CardStore.blob($0.clientId) }
+        peers.values.filter { $0.isTrusted && !$0.isExperienceMode }.compactMap { CardStore.blob($0.clientId) }
     }
 
     /// The highest relayable, self-contained key-epoch blob we hold for a peer. Stripped QR copies are
@@ -327,11 +340,14 @@ nonisolated final class TrustStore {
     }
 
     /// Recipients to seal an own-mesh broadcast to (dismissals, data-sync). Skips peers with no usable
-    /// (at-or-above-floor, already-active) sealable epoch.
-    func ownMeshRecipients(excluding excluded: String? = nil) -> [EnvelopeCrypto.RecipientKey] {
+    /// (at-or-above-floor, already-active) sealable epoch. `includingExperience: false` also skips Experience
+    /// Mode peers — used by the trust-roster seal, which must never reach a demo device.
+    func ownMeshRecipients(excluding excluded: String? = nil, includingExperience: Bool = true) -> [EnvelopeCrypto.RecipientKey] {
         let now = Self.nowMillis()
         return trustedOwnDevices.compactMap { peer in
-            guard peer.clientId != excluded, let e = peer.sealable(now: now) else { return nil }
+            guard peer.clientId != excluded else { return nil }
+            if !includingExperience, peer.isExperienceMode { return nil }
+            guard let e = peer.sealable(now: now) else { return nil }
             return EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
         }
     }
@@ -363,8 +379,9 @@ nonisolated final class TrustStore {
     func buildTrustTable(excluding selfId: String) -> TrustTable {
         // PENDING_* rows travel as informational repair beacons: receivers do not apply a peer's pending
         // state as a trust decision, but they can use `keyAvailable=false` / `epoch` to offer missing material.
+        // Experience Mode peers are never advertised — a demo device must stay invisible to the real mesh.
         let entries = peers.values
-            .filter { $0.clientId != selfId }
+            .filter { $0.clientId != selfId && !$0.isExperienceMode }
             .map { peer in
                 TrustTableEntry(clientId: peer.clientId, status: TrustStatus(rawValue: peer.status) ?? .TRUSTED,
                                 updatedAt: peer.updatedAt, keyAvailable: CardStore.blob(peer.clientId) != nil,

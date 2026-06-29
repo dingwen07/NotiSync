@@ -492,6 +492,19 @@ nonisolated final class NotiSyncEngine: Sendable {
         }
     }
 
+    /// Delete (not revoke) every Experience Mode peer from the roster + drop their held cards — a clean slate
+    /// before a new Experience Mode session. Returns the removed client ids so the app can prune mirror rows.
+    @discardableResult
+    func pruneExperiencePeers() -> [String] {
+        var removed: [String] = []
+        _ = mutateTrust { store in
+            removed = store.removeExperiencePeers()
+            return !removed.isEmpty
+        }
+        for id in removed { CardStore.remove(id) }
+        return removed
+    }
+
     /// Approve a PENDING_TRUST device → TRUSTED (the user accepts a mesh introduction). (#3)
     @discardableResult func approveTrust(_ clientId: String) -> Bool { mutateTrust { $0.approveTrust(clientId, at: Self.nowMillis()) } }
     /// Reject a PENDING_TRUST device → REVOKED (overturn — propagates). (#3)
@@ -505,7 +518,7 @@ nonisolated final class NotiSyncEngine: Sendable {
     /// identity root and verify without epoch convergence). Returns nil if there are no own-mesh recipients.
     func sealTrustTable() throws -> Envelope? {
         let store = trust()
-        let recipients = store.ownMeshRecipients(excluding: selfClientId)
+        let recipients = store.ownMeshRecipients(excluding: selfClientId, includingExperience: false)
         guard !recipients.isEmpty else { return nil }
         let body = ProtocolCodec.encode(DataSync(kind: .TRUST, trust: store.buildTrustTable(excluding: selfClientId)))
         return try EnvelopeCrypto.seal(signer: identitySigner, typ: .DATA_SYNC, bodyPlaintext: body,
@@ -516,7 +529,7 @@ nonisolated final class NotiSyncEngine: Sendable {
     /// the trust table so a peer can NAME a device this device just introduced (#3). One envelope per card.
     func sealTrustCards() throws -> [Envelope] {
         let store = trust()
-        let recipients = store.ownMeshRecipients(excluding: selfClientId)
+        let recipients = store.ownMeshRecipients(excluding: selfClientId, includingExperience: false)
         guard !recipients.isEmpty else { return [] }
         return try store.trustedCardBlobs().map { cardBlob in
             let body = ProtocolCodec.encode(DataSync(kind: .CARD, card: CardDelivery(clientId: cardBlob.signerId, card: cardBlob, epochBlob: nil)))

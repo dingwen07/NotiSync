@@ -268,9 +268,10 @@ extension NotiSyncRuntime {
     }
 
     /// Inbox + activity logs stay persisted but bounded — drop the oldest rows past these caps so storage
-    /// and the SwiftData working set don't grow without limit. The activity log keeps far more history.
-    static let inboxRowLimit = 80
-    static let activityRowLimit = 640
+    /// and the SwiftData working set don't grow without limit. The Inbox is the primary surface and keeps the
+    /// larger history; the activity log is diagnostic and kept smaller.
+    static let inboxRowLimit = 200
+    static let activityRowLimit = 600
 
     /// Delete the oldest rows of `T` (by a `Date` key) beyond `keeping`. Cheap: a COUNT, then a bounded
     /// fetch of just the overflow. The caller's `save()` persists the deletions.
@@ -380,6 +381,21 @@ extension NotiSyncRuntime {
         let descriptor = FetchDescriptor<InboxNotification>(
             predicate: #Predicate { $0.sourceClientId == sourceClientId && $0.sourceKey == sourceKey })
         try? modelContext.fetch(descriptor).forEach { $0.isDismissed = true }
+        try? modelContext.save()
+    }
+
+    /// Delete every Inbox notification from local storage (the Inbox "Delete All" action). Storage-only — it
+    /// does not sync a dismissal to peers; it just prunes the mirrored rows on this device.
+    func deleteAllInboxNotifications() {
+        guard let modelContext else { return }
+        (try? modelContext.fetch(FetchDescriptor<InboxNotification>()))?.forEach { modelContext.delete($0) }
+        try? modelContext.save()
+    }
+
+    /// Delete every Activity log entry from local storage (the Activity "Delete All" action).
+    func deleteAllActivity() {
+        guard let modelContext else { return }
+        (try? modelContext.fetch(FetchDescriptor<ActivityRecord>()))?.forEach { modelContext.delete($0) }
         try? modelContext.save()
     }
 

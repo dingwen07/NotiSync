@@ -86,6 +86,23 @@ struct InboxView: View {
                 }
             }
             .navigationTitle("Inbox")
+            .toolbar {
+                if !notifications.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // A Menu (not a dialog) is the second confirmation: tapping the trash reveals one
+                        // destructive "Delete All N" item — the native pull-down/popover style.
+                        Menu {
+                            Button(role: .destructive) {
+                                runtime.deleteAllInboxNotifications()
+                            } label: {
+                                Label("Delete All \(notifications.count) Notifications", systemImage: "trash")
+                            }
+                        } label: {
+                            Label("Delete All", systemImage: "trash")
+                        }
+                    }
+                }
+            }
             .overlay {
                 if notifications.isEmpty {
                     ContentUnavailableView("No mirrored notifications", systemImage: "tray")
@@ -738,6 +755,7 @@ private struct PendingDeviceActions: View {
 }
 
 struct ActivityLogView: View {
+    @EnvironmentObject private var runtime: NotiSyncRuntime
     @Query(sort: \ActivityRecord.at, order: .reverse) private var records: [ActivityRecord]
 
     var body: some View {
@@ -759,6 +777,22 @@ struct ActivityLogView: View {
                 .padding(.vertical, 2)
             }
             .navigationTitle("Activity")
+            .toolbar {
+                if !records.isEmpty {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        // Same native Menu confirmation as the Inbox — one destructive "Delete All N" item.
+                        Menu {
+                            Button(role: .destructive) {
+                                runtime.deleteAllActivity()
+                            } label: {
+                                Label("Delete All \(records.count) Activities", systemImage: "trash")
+                            }
+                        } label: {
+                            Label("Delete All", systemImage: "trash")
+                        }
+                    }
+                }
+            }
             .overlay {
                 if records.isEmpty {
                     ContentUnavailableView("No activity", systemImage: "waveform.path.ecg")
@@ -841,7 +875,7 @@ struct SettingsView: View {
                         LabeledContent("Last Delivery", value: settings.lastDeliveryMode.map { LocalizedText.deliveryMode($0) } ?? LocalizedText.none)
                         LabeledContent("Last Route", value: settings.lastRoutePublishAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedText.none)
                         LabeledContent("Last Drain", value: settings.lastRelayDrainAt?.formatted(date: .abbreviated, time: .shortened) ?? LocalizedText.none)
-                        if let error = settings.lastError {
+                        if showsHiddenSettings, let error = settings.lastError {
                             Text(verbatim: error)
                                 .font(.footnote)
                                 .foregroundStyle(.red)
@@ -851,6 +885,11 @@ struct SettingsView: View {
                                 runtime.simulateLocalStateLossRecovery()
                             } label: {
                                 InlineIconLabel("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
+                            }
+                            Button {
+                                runtime.clearBrokerToken()
+                            } label: {
+                                InlineIconLabel("Remove Client Integrity Token", systemImage: "key.slash")
                             }
                         }
                     }

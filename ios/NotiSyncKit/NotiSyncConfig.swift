@@ -18,6 +18,12 @@ nonisolated enum NotiSyncConfig {
 
     static let platform = "ios"
 
+    /// `ClientCard.platform` the broker's Experience Mode demo peer advertises (server
+    /// `DemoScenarioConfig.platform` / `demo-experience.json`). Identity-signed in the card, so a peer pinned
+    /// with this platform is authentically the demo device — used to wall demo peers off from trust broadcast
+    /// and to prune them before a new session.
+    static let experiencePlatform = "demo-server"
+
     #if DEBUG
     static let allowsAPNSEnvironmentSelection = true
     static let defaultAPNSEnvironment: RouteEnvironment = .DEVELOPMENT

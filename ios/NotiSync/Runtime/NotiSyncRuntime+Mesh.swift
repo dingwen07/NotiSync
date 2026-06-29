@@ -187,6 +187,7 @@ extension NotiSyncRuntime {
             record(error: ExperienceModeError.runtimeNotReady, domain: .pairing)
             return false
         }
+        pruneExperiencePeers()   // delete (not revoke) any prior Experience Mode peers before a fresh session
         if pairingPayload == nil { await makePairingPayloadAsync() }
         guard let pairingUrl = pairingPayload else {
             record(error: ExperienceModeError.missingPairingURL, domain: .pairing)
@@ -203,6 +204,20 @@ extension NotiSyncRuntime {
         }
     }
 
+    /// Delete (not revoke) every Experience Mode peer — from the protocol roster (+ its held cards) and the
+    /// mirrored Devices rows — so a new Experience Mode session starts from a clean slate. Experience peers
+    /// are identified by the demo card's server-set platform and are never broadcast in the trust roster.
+    func pruneExperiencePeers() {
+        guard let engine else { return }
+        let removed = engine.pruneExperiencePeers()
+        guard !removed.isEmpty, let modelContext else { return }
+        for id in removed {
+            if let row = fetchDevice(clientId: id) { modelContext.delete(row) }
+        }
+        try? modelContext.save()
+        refreshPeerRows()
+    }
+
     @discardableResult
     private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
         guard let engine else { throw ExperienceModeError.runtimeNotReady }
@@ -214,6 +229,9 @@ extension NotiSyncRuntime {
         settings().pairingStatusValue = .paired
         try? modelContext?.save()
         await publishCurrentRoute()
+        // Enforcement that Experience Mode never broadcasts the trust roster lives in the seal (`sealTrustTable`
+        // / `sealTrustCards` exclude demo peers from both the table and its recipients), so it holds for every
+        // `broadcastTrust()` caller — pairing, approve/reject/revoke, and the periodic heartbeat alike.
         await broadcastTrust()   // #5 — announce the new device to the rest of the own-mesh
         return name
     }

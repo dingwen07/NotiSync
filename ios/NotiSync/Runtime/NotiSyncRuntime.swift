@@ -414,6 +414,16 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         }
     }
 
+    /// Diagnostics: drop the saved broker bearer (JWT) from memory + Keychain so the next request
+    /// re-attests from scratch (App Check → broker). Mirrors Android's Settings→Diagnostics "clear local
+    /// token". Then refresh the broker status so the UI reflects the now-unverified state.
+    func clearBrokerToken() {
+        Task {
+            await broker?.clearCachedAuth()
+            await refreshBrokerStatus()
+        }
+    }
+
     // MARK: Acks
 
     func flushPendingAcks() async {
