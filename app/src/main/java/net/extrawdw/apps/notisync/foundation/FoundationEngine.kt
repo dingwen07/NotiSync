@@ -25,9 +25,9 @@ import net.extrawdw.notisync.protocol.Urgency
 /**
  * The device-trust / profile / card FOUNDATION's wire I/O — a first-class [SecureChannel] client
  * beside [TrustStore]. It owns the outbound trust/profile/card broadcasts and the inbound DATA_SYNC
- * handling for `TRUST` / `CARD` / `PROFILE` (forwarding `ASSET` to the notification application via
- * [onAsset]). All trust STATE stays in [TrustStore] / `TrustMachine`; this is purely the messaging
- * half that used to be stranded inside MirrorEngine.
+ * handling for `TRUST` / `CARD` / `PROFILE` (forwarding `ASSET` and `FILTER` to the notification
+ * application via [onAsset] / [onFilter]). All trust STATE stays in [TrustStore] / `TrustMachine`; this is
+ * purely the messaging half that used to be stranded inside MirrorEngine.
  *
  * It is the SOLE registrant for [MessageType.DATA_SYNC]: it decodes the [DataSync] body once and
  * sub-dispatches by [DataSyncKind], so the channel stays ignorant of sub-kinds and the body is
@@ -42,6 +42,9 @@ class FoundationEngine(
     private val onTrustPrompt: (subject: ClientId, prompt: TrustPrompt, byName: String) -> Unit,
     /** Hands a DATA_SYNC `ASSET` sub-body to the notification app (the single-decode-point forward). */
     private val onAsset: (InboundMessage, DataSync) -> Unit,
+    /** Hands a DATA_SYNC `FILTER` sub-body to the notification app (a peer's request to suppress some of the
+     *  captures this device sends it). Defaults to a no-op for tests / provider-only builds. */
+    private val onFilter: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     private val activityText: ActivityText,
     /** Our own current key-epoch [SignedBlob], announced E2E in each trust broadcast so own-mesh peers
      *  converge it without polling the broker. Null when the NS2 operational layer isn't available. */
@@ -222,6 +225,10 @@ class FoundationEngine(
         when (sync.kind) {
             // The notification app owns asset repair; forward unconditionally and let it apply its own gate.
             DataSyncKind.ASSET -> onAsset(msg, sync)
+
+            // A peer's notification-suppression request — notification-app business, like ASSET; forward and
+            // let it apply its own own-mesh gate + persistence.
+            DataSyncKind.FILTER -> onFilter(msg, sync)
 
             DataSyncKind.PROFILE -> {
                 val update = sync.profile ?: return

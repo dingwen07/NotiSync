@@ -387,6 +387,52 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun dataSync_filterRoundTripsAcrossOriginsAndScopes() {
+        val body = DataSync(
+            kind = DataSyncKind.FILTER,
+            filter = FilterSync(
+                rules = listOf(
+                    // Android: whole-device, one app, one channel of an app.
+                    NotificationFilterRule(OriginPlatform.ANDROID_LOCAL),
+                    NotificationFilterRule(OriginPlatform.ANDROID_LOCAL, appId = "com.whatsapp"),
+                    NotificationFilterRule(OriginPlatform.ANDROID_LOCAL, appId = "com.slack", channelId = "dms"),
+                    // iOS (ANCS): whole bridged device, one app — never channel-scoped.
+                    NotificationFilterRule(OriginPlatform.IOS_ANCS),
+                    NotificationFilterRule(OriginPlatform.IOS_ANCS, appId = "net.whatsapp.WhatsApp"),
+                ),
+                updatedAt = 1_750_000_000_000L,
+            ),
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(body))
+        assertEquals(DataSyncKind.FILTER, decoded.kind)
+        assertEquals(5, decoded.filter?.rules?.size)
+        assertEquals(1_750_000_000_000L, decoded.filter?.updatedAt)
+        val deviceRule = decoded.filter?.rules?.get(0)
+        assertEquals(OriginPlatform.ANDROID_LOCAL, deviceRule?.originPlatform)
+        assertNull("a device-level rule carries no app", deviceRule?.appId)
+        assertNull(deviceRule?.channelId)
+        assertEquals("com.slack", decoded.filter?.rules?.get(2)?.appId)
+        assertEquals("dms", decoded.filter?.rules?.get(2)?.channelId)
+        assertEquals(OriginPlatform.IOS_ANCS, decoded.filter?.rules?.get(4)?.originPlatform)
+        assertEquals("net.whatsapp.WhatsApp", decoded.filter?.rules?.get(4)?.appId)
+        assertNull("the asset sub-body must be absent for a filter", decoded.asset)
+        assertNull(decoded.card)
+    }
+
+    @Test
+    fun dataSync_filterAbsentFieldDecodesNull_forBackCompat() {
+        // An older producer (no `filter` column) must still decode — the field defaults to null. We assert
+        // this by decoding a non-FILTER DataSync, which never populates `filter`.
+        val legacy = DataSync(DataSyncKind.PROFILE, profile = ProfileUpdate(ClientId("p"), "P", "android", emptyList(), 1L))
+        assertNull(ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(legacy)).filter)
+        // An empty-rules FILTER (the "clear my filter" snapshot) round-trips to an empty list, not null.
+        val cleared = DataSync(DataSyncKind.FILTER, filter = FilterSync(rules = emptyList(), updatedAt = 7L))
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(ProtocolCodec.encodeToCbor(cleared))
+        assertEquals(0, decoded.filter?.rules?.size)
+        assertEquals(7L, decoded.filter?.updatedAt)
+    }
+
+    @Test
     fun dataSync_cardDeliveryRoundTripsAndDecodesInnerCard() {
         val card = ClientCard(
             clientId = ClientId("c"),

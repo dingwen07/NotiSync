@@ -76,6 +76,11 @@
     </plurals>
     <string name="activity_detail_renamed_was">renamed (was %1$s)</string>
     <string name="activity_detail_trust_update_from">trust update from %1$s (%2$s)</string>
+    <plurals name="activity_detail_filters_updated">
+        <item quantity="one">updated notification filters (%1$d rule)</item>
+        <item quantity="other">updated notification filters (%1$d rules)</item>
+    </plurals>
+    <string name="activity_detail_filters_cleared">cleared notification filters</string>
     <string name="activity_trust_prompt_new_trust">new device</string>
     <string name="activity_trust_prompt_re_trust">rejoining device</string>
     <string name="activity_trust_prompt_new_revoke">device removal</string>
@@ -186,6 +191,19 @@
     <string name="device_introducer_unknown">another device</string>
     <string name="device_remove_desc">Remove %1$s</string>
     <string name="device_permanently_delete_desc">Permanently delete %1$s</string>
+    <string name="device_restore_desc">Restore %1$s</string>
+    <!-- Notification filters a peer device asked this device to apply (DATA_SYNC FILTER). -->
+    <string name="device_filters_button_desc">Notifications hidden from %1$s</string>
+    <string name="device_filters_title">Hidden from %1$s</string>
+    <string name="device_filters_desc">This device won\'t forward these notifications to it:</string>
+    <string name="device_filters_empty">This device isn\'t hiding any notifications from it.</string>
+    <string name="device_filters_origin_android">Android</string>
+    <string name="device_filters_origin_ios">iPhone (ANCS)</string>
+    <string name="device_filters_scope_all">All notifications</string>
+    <string name="device_filters_scope_app">App: %1$s</string>
+    <string name="device_filters_scope_channel">App: %1$s · Channel: %2$s</string>
+    <string name="device_filters_updated">Updated %1$s</string>
+    <string name="device_filters_clear">Clear all filters</string>
     <string name="device_added_by">Added by %1$s</string>
     <string name="device_approve_hint">Approve only if it matches the device\'s own verification number.</string>
     <string name="device_removed_by">Removed by %1$s</string>

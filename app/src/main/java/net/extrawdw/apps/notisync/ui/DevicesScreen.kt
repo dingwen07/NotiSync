@@ -13,7 +13,9 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Contactless
+import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.QrCode2
+import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -23,12 +25,15 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -46,6 +51,9 @@ import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.FilterSync
+import net.extrawdw.notisync.protocol.NotificationFilterRule
+import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.TrustStatus
 
 // pairButtonModifier targets the pair button specifically, not the composable root (which takes its modifier
@@ -75,6 +83,8 @@ fun DevicesScreen(
     }
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
+    // The own device whose received notification-filters sheet is open (null = closed).
+    var filterSheetFor by remember { mutableStateOf<RosterDevice?>(null) }
 
     NotiScaffold(stringResource(R.string.tab_devices)) { modifier ->
         LazyColumn(
@@ -157,7 +167,12 @@ fun DevicesScreen(
                     )
                 }
             } else {
-                item { DeviceListCard(ownDevices, now, graph, enabled = !quarantined) }
+                item {
+                    DeviceListCard(
+                        ownDevices, now, graph, enabled = !quarantined,
+                        onShowFilters = { filterSheetFor = it },
+                    )
+                }
             }
             if (otherDevices.isNotEmpty()) {
                 item {
@@ -177,6 +192,16 @@ fun DevicesScreen(
                 item { DeviceListCard(otherDevices, now, graph, enabled = !quarantined) }
             }
         }
+
+        filterSheetFor?.let { device ->
+            val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
+            NotificationFilterSheet(
+                deviceName = device.displayName ?: stringResource(R.string.device_unknown),
+                filter = filters[device.clientId.value],
+                onClear = { graph.notificationFilters.remove(device.clientId) },
+                onDismiss = { filterSheetFor = null },
+            )
+        }
     }
 }
 
@@ -185,8 +210,10 @@ private fun DeviceListCard(
     devices: List<RosterDevice>,
     now: Long,
     graph: net.extrawdw.apps.notisync.AppGraph,
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    onShowFilters: (RosterDevice) -> Unit = {},
 ) {
+    val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
     Card(Modifier.fillMaxWidth()) {
         Column {
             devices.forEachIndexed { index, device ->
@@ -194,6 +221,8 @@ private fun DeviceListCard(
                     device = device,
                     now = now,
                     enabled = enabled,
+                    onShowFilters = { onShowFilters(device) },
+                    hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                     onApprove = {
                         if (graph.trust.approveTrust(
@@ -230,7 +259,13 @@ private fun DeviceListCard(
                             )
                         ) graph.broadcastTrust()
                     },
-                    onPurge = { graph.trust.purgeRevoked(it) },
+                    onPurge = {
+                        graph.trust.purgeRevoked(it)
+                        graph.notificationFilters.remove(it) // forget any filter this device had sent us
+                    },
+                    onRestore = {
+                        if (graph.trust.restoreTrust(it, System.currentTimeMillis())) graph.broadcastTrust()
+                    },
                 )
                 if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))
             }
@@ -331,12 +366,15 @@ private fun DeviceRow(
     device: RosterDevice,
     now: Long,
     enabled: Boolean = true,
+    onShowFilters: () -> Unit = {},
+    hasFilters: Boolean = false,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
     onKeep: (ClientId) -> Unit,
     onRemove: (ClientId) -> Unit,
     onPurge: (ClientId) -> Unit,
+    onRestore: (ClientId) -> Unit = {},
 ) {
     val name = device.displayName ?: stringResource(R.string.device_unknown)
     val isRevoked = device.status == TrustStatus.REVOKED
@@ -389,17 +427,37 @@ private fun DeviceRow(
             }
             when (device.status) {
                 // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
-                TrustStatus.TRUSTED -> IconButton(
-                    onClick = { onRemove(device.clientId) },
-                    enabled = enabled
-                ) {
-                    Icon(
-                        Icons.Filled.Delete,
-                        contentDescription = stringResource(R.string.device_remove_desc, name)
-                    )
+                // Own devices also expose the notification-filters this device received from them (DATA_SYNC
+                // FILTER) — what this device won't forward to that peer.
+                TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Only own devices send filters; disabled when this device is hiding nothing from them.
+                    if (device.ownDevice) {
+                        IconButton(onClick = onShowFilters, enabled = enabled && hasFilters) {
+                            Icon(
+                                Icons.Outlined.NotificationsOff,
+                                contentDescription = stringResource(R.string.device_filters_button_desc, name)
+                            )
+                        }
+                    }
+                    IconButton(
+                        onClick = { onRemove(device.clientId) },
+                        enabled = enabled
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = stringResource(R.string.device_remove_desc, name)
+                        )
+                    }
                 }
 
-                TrustStatus.REVOKED -> {
+                TrustStatus.REVOKED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    // Revert an accidental delete: re-trust the device (peers re-confirm via RE_TRUST).
+                    IconButton(onClick = { onRestore(device.clientId) }, enabled = enabled) {
+                        Icon(
+                            Icons.Outlined.Restore,
+                            contentDescription = stringResource(R.string.device_restore_desc, name)
+                        )
+                    }
                     // Permanently forgettable only after the tombstone has outlived the stale-trust window.
                     val canPurge = device.revokedAt != null &&
                             now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
@@ -470,4 +528,84 @@ private fun DeviceRow(
             else -> Unit
         }
     }
+}
+
+/**
+ * A bottom sheet listing the notification-suppression filter a peer device sent this device (DATA_SYNC
+ * FILTER) — i.e. what this device will NOT forward to that peer. Deliberately plain: a text listing, one
+ * line per rule, no per-app rendering (per the feature brief).
+ */
+// rememberModalBottomSheetState is the stable Material3 factory; the Expressive artifact on the classpath
+// marks it deprecated in favor of an alpha replacement, which we deliberately don't adopt here.
+@Suppress("DEPRECATION")
+@Composable
+private fun NotificationFilterSheet(
+    deviceName: String,
+    filter: FilterSync?,
+    onClear: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Text(
+                stringResource(R.string.device_filters_title, deviceName),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            val rules = filter?.rules.orEmpty()
+            if (rules.isEmpty()) {
+                Text(
+                    stringResource(R.string.device_filters_empty),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            } else {
+                Text(
+                    stringResource(R.string.device_filters_desc),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                rules.forEach { rule ->
+                    Text("•  ${filterRuleLabel(rule)}", style = MaterialTheme.typography.bodyMedium)
+                }
+                filter?.updatedAt?.takeIf { it > 0L }?.let { at ->
+                    val stamp = java.text.DateFormat
+                        .getDateTimeInstance(java.text.DateFormat.MEDIUM, java.text.DateFormat.SHORT)
+                        .format(java.util.Date(at))
+                    Text(
+                        stringResource(R.string.device_filters_updated, stamp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                // Clear this peer's filters locally (it resumes receiving). The peer still owns the list, so
+                // it may re-announce on its next change/heartbeat — this is a local reset, not a remote one.
+                OutlinedButton(onClick = onClear, modifier = Modifier.padding(top = 4.dp)) {
+                    Text(stringResource(R.string.device_filters_clear))
+                }
+            }
+        }
+    }
+}
+
+/** A single filter rule as one readable line: "<origin> · <scope>" (device / app / app+channel). */
+@Composable
+private fun filterRuleLabel(rule: NotificationFilterRule): String {
+    val origin = when (rule.originPlatform) {
+        OriginPlatform.ANDROID_LOCAL -> stringResource(R.string.device_filters_origin_android)
+        OriginPlatform.IOS_ANCS -> stringResource(R.string.device_filters_origin_ios)
+    }
+    val appId = rule.appId
+    val channelId = rule.channelId
+    val scope = when {
+        appId == null -> stringResource(R.string.device_filters_scope_all)
+        channelId == null -> stringResource(R.string.device_filters_scope_app, appId)
+        else -> stringResource(R.string.device_filters_scope_channel, appId, channelId)
+    }
+    return "$origin · $scope"
 }

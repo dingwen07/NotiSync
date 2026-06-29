@@ -22,4 +22,6 @@ object TestActivityText : ActivityText {
         "trust update from $name ($prompt)"
 
     override fun pairedTitle() = "Paired"
+    override fun filtersUpdated(count: Int) = "updated filters ($count)"
+    override fun filtersCleared() = "cleared filters"
 }

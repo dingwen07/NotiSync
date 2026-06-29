@@ -49,6 +49,7 @@ import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.AndroidActivityText
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
+import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
@@ -148,6 +149,9 @@ class AppGraph(private val app: Application) {
         private set
     lateinit var trust: TrustStore
         private set
+    /** Notification-suppression filters peers asked this device to apply (DATA_SYNC FILTER), keyed by requester. */
+    lateinit var notificationFilters: NotificationFilterStore
+        private set
     lateinit var transport: BrokerClient
         private set
     lateinit var poster: RemoteNotificationPoster
@@ -193,6 +197,7 @@ class AppGraph(private val app: Application) {
         settings = SettingsRepository(ds, scope)
         trust = TrustStore(ds, scope, identity)
         appSelection = AppSelectionRepository(ds, scope)
+        notificationFilters = NotificationFilterStore(ds, scope)
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
         // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
         // epoch's TEE operational signing key + HPKE keyset. Rotation (Phase 6) advances the epoch + swaps
@@ -272,6 +277,7 @@ class AppGraph(private val app: Application) {
             peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
             activityText = activityText,
             ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
+            notificationFilters = notificationFilters, // honor peers' suppression requests when forwarding
         )
         mirrorEngine = mirror
         // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the
@@ -313,6 +319,7 @@ class AppGraph(private val app: Application) {
             scope = scope,
             onTrustPrompt = ::onTrustPrompt,
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
+            onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             activityText = activityText,
             // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
             // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.

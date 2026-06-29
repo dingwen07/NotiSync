@@ -315,7 +315,7 @@ enum LocalizedText {
                           comment: "Activity detail for an ongoing notification that was not synced.")
         case .syncedToMesh:
             return String(localized: "activity.detail.syncedToMesh",
-                          defaultValue: "Synced to mesh",
+                          defaultValue: "Synced to other devices",
                           comment: "Activity detail for an action synced to peer devices.")
         case .noPeers:
             return String(localized: "activity.detail.noPeers",

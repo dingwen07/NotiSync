@@ -285,6 +285,18 @@ nonisolated final class NotiSyncEngine: Sendable {
                                        recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
+    /// Seal a DATA_SYNC notification-filter snapshot (requester → source peer) asking the peer to stop
+    /// delivering matching notifications to us. A full snapshot (an empty [rules] clears it); the receiver
+    /// keys it by our signer id and resolves races last-writer-wins on [updatedAt]. Nil if the recipient is
+    /// not a trusted, currently-sealable peer.
+    func sealNotificationFilter(to recipientId: String, rules: [NotificationFilterRule], updatedAt: Int64) throws -> Envelope? {
+        guard let peer = trust().peers[recipientId], peer.isTrusted, let e = peer.sealable(now: Self.nowMillis()) else { return nil }
+        let body = ProtocolCodec.encode(DataSync(kind: .FILTER, filter: FilterSync(rules: rules, updatedAt: updatedAt)))
+        let recipient = EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
+        return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
+                                       recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
+    }
+
     // MARK: Assets
 
     /// Fetch + decrypt + integrity-check a private asset blob via the broker. Returns plaintext or nil.

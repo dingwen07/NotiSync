@@ -364,13 +364,26 @@ nonisolated enum KMPProtocolBridge {
         )
     }
 
+    static func toKmp(_ value: NotificationFilterRule) -> NotiSyncProtocol.NotificationFilterRule {
+        NotiSyncProtocol.NotificationFilterRule(
+            originPlatform: kmp(value.originPlatform),
+            appId: value.appId,
+            channelId: value.channelId
+        )
+    }
+
+    static func toKmp(_ value: FilterSync) -> NotiSyncProtocol.FilterSync {
+        NotiSyncProtocol.FilterSync(rules: value.rules.map(toKmp), updatedAt: value.updatedAt)
+    }
+
     static func toKmp(_ value: DataSync) -> NotiSyncProtocol.DataSync {
         NotiSyncProtocol.DataSync(
             kind: kmp(value.kind),
             asset: value.asset.map { toKmp($0) },
             profile: value.profile.map { toKmp($0) },
             trust: value.trust.map { toKmp($0) },
-            card: value.card.map { toKmp($0) }
+            card: value.card.map { toKmp($0) },
+            filter: value.filter.map { toKmp($0) }
         )
     }
 
@@ -624,13 +637,27 @@ nonisolated enum KMPProtocolBridge {
         return TrustTable(entries: value.entries.map(fromKmp))
     }
 
+    static func fromKmp(_ value: NotiSyncProtocol.NotificationFilterRule) -> NotificationFilterRule {
+        NotificationFilterRule(
+            originPlatform: OriginPlatform(rawValue: value.originPlatform.name) ?? .ANDROID_LOCAL,
+            appId: value.appId,
+            channelId: value.channelId
+        )
+    }
+
+    static func fromKmp(_ value: NotiSyncProtocol.FilterSync?) -> FilterSync? {
+        guard let value else { return nil }
+        return FilterSync(rules: value.rules.map(fromKmp), updatedAt: value.updatedAt)
+    }
+
     static func fromKmp(_ value: NotiSyncProtocol.DataSync) throws -> DataSync {
         DataSync(
             kind: DataSyncKind(rawValue: value.kind.name) ?? .ASSET,
             asset: value.asset.map(fromKmp),
             profile: fromKmp(value.profile),
             trust: fromKmp(value.trust),
-            card: value.card.map(fromKmp)
+            card: value.card.map(fromKmp),
+            filter: fromKmp(value.filter)
         )
     }
 
@@ -667,6 +694,10 @@ nonisolated enum KMPProtocolBridge {
 
     static func kmp(_ value: DataSyncKind) -> NotiSyncProtocol.DataSyncKind {
         NotiSyncProtocol.DataSyncKind.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.DataSyncKind.asset
+    }
+
+    static func kmp(_ value: OriginPlatform) -> NotiSyncProtocol.OriginPlatform {
+        NotiSyncProtocol.OriginPlatform.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.OriginPlatform.androidLocal
     }
 
     static func kmp(_ value: TransportType) -> NotiSyncProtocol.TransportType {

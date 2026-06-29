@@ -303,4 +303,72 @@ extension NotiSyncRuntime {
             try await broker.send(env)
         }
     }
+
+    // MARK: Periodic announces (profile + key-epoch + notification filters)
+
+    /// Heartbeat: re-announce mutable own-mesh state so peers (and the broker) converge without an explicit
+    /// change — re-broadcast our profile and trust roster (+ trusted cards), re-publish our current key-epoch
+    /// (in case the broker lost it), and re-send our notification filters to the source peers they target.
+    /// iOS can't run background tasks reliably, so this also runs at app launch (the in-memory clock starts at
+    /// 0), then gates to once per [NotiSyncConfig.periodicAnnounceIntervalMs] so a busy foreground / repeated
+    /// launches don't spam the mesh. (Route publishing stays on its own per-pass path in `publishCurrentRoute`.)
+    func announcePeriodicStateIfDue() async {
+        let now = NotiSyncEngine.nowMillis()
+        guard now - lastPeriodicAnnounceAt >= NotiSyncConfig.periodicAnnounceIntervalMs else { return }
+        lastPeriodicAnnounceAt = now
+        await broadcastProfile()
+        await broadcastTrust()
+        await publishSelfKeyEpoch()
+        await broadcastNotificationFilters()
+    }
+
+    /// Re-publish this device's current (never-expiring) key-epoch to the broker so a peer can always pull it
+    /// (`GET /v2/keyepoch`) — a recovery for a broker that lost it. Skipped mid-rotation, where the lifecycle
+    /// already publishes the finite-window blobs and this would clobber them (mirrors `publishRoute`'s guard).
+    func publishSelfKeyEpoch() async {
+        guard let engine, let broker, engine.pendingRotation() == nil else { return }
+        _ = try? await broker.publishKeyEpoch(try engine.buildClientKeyEpochBlob())
+    }
+
+    /// Announce this device's notification-suppression filters to the source peers they target (iOS-only — the
+    /// NSE can't drop an APNs push locally). NOT a broadcast: each peer gets only the rules about its own
+    /// captures (`filterRulesByPeer`), unicast as a full snapshot (last-writer-wins). A peer whose snapshot
+    /// just became empty gets one clearing FILTER (tracked in `lastAnnouncedFilterPeers`), so it doesn't keep
+    /// a stale filter; a failed clear is retried on the next announce.
+    func broadcastNotificationFilters() async {
+        guard let engine, let broker else { return }
+        let snapshots = await Task.detached(priority: .utility) {
+            NotificationFilterStore.filterRulesByPeer()
+        }.value
+        let lastAnnounced = await Task.detached(priority: .utility) {
+            NotificationFilterStore.lastAnnouncedFilterPeers()
+        }.value
+        let now = NotiSyncEngine.nowMillis()
+        let currentPeers = Set(snapshots.keys)
+
+        // Send the current non-empty snapshot to each targeted source peer. A seal failure (we hold no usable
+        // key-epoch yet) just skips — the peer stays in currentPeers and the next heartbeat retries.
+        for (peerId, rules) in snapshots {
+            if let env = try? engine.sealNotificationFilter(to: peerId, rules: rules, updatedAt: now) {
+                _ = try? await broker.send(env)
+            }
+        }
+
+        // Clear peers that had a non-empty filter but no longer do. Keep a peer tracked if its clear can't be
+        // sent yet, so the clear is retried rather than silently dropped (leaving a stale filter on the peer).
+        var nextAnnounced = currentPeers
+        for peerId in lastAnnounced.subtracting(currentPeers) {
+            let sent: Bool
+            if let env = try? engine.sealNotificationFilter(to: peerId, rules: [], updatedAt: now) {
+                sent = (try? await broker.send(env)) != nil
+            } else {
+                sent = false
+            }
+            if !sent { nextAnnounced.insert(peerId) }
+        }
+
+        await Task.detached(priority: .utility) {
+            NotificationFilterStore.setLastAnnouncedFilterPeers(nextAnnounced)
+        }.value
+    }
 }

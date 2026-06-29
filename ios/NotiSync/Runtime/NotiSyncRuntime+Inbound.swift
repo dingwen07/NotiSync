@@ -274,6 +274,10 @@ extension NotiSyncRuntime {
                 refreshPeerRows()
                 addActivity(.paired, .trustUpdated, detail: .text, detailArg: signerId)
             }
+        case .FILTER:
+            // A peer's request to suppress notifications we send IT. This device is a consumer, not a source
+            // peer's filter target, and its NSE already filters locally — so iOS ignores an inbound FILTER.
+            break
         }
     }
 

@@ -8,6 +8,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
+import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.foundation.SendPolicy
 import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.notisync.protocol.AssetSync
@@ -91,6 +92,9 @@ class MirrorEngine(
     private val peerNameResolver: (ClientId) -> String = { it.shortForm() },
     /** Records mirror→message mappings and queues a relay-ack on local dismissal; null disables both. */
     private val ackIndex: MirrorAckIndex? = null,
+    /** Peer notification-suppression filters: consulted when forwarding a capture (drop a peer that asked not
+     *  to receive it) and updated by an inbound `FILTER` ([onFilterSync]). Null disables filtering entirely. */
+    private val notificationFilters: NotificationFilterStore? = null,
 ) {
     @Volatile
     var originalCanceler: OriginalCanceler? = null
@@ -134,12 +138,15 @@ class MirrorEngine(
         channel.onMessage(MessageType.DISMISSAL, ::onDismissal)
     }
 
-    /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. */
+    /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. A peer that asked
+     *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set. */
     suspend fun captureLocal(notif: CapturedNotification): Int {
+        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val scope = if (excluded.isEmpty()) Recipients.OwnMesh else Recipients.OwnMeshExcluding(excluded)
         val n = channel.send(
             MessageType.NOTIFICATION,
             ProtocolCodec.encodeToCbor(notif),
-            Recipients.OwnMesh,
+            scope,
             Urgency.HIGH
         )
         rememberTitle(notif)
@@ -254,6 +261,30 @@ class MirrorEngine(
 
             AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(asset.items, resolver) }
         }
+    }
+
+    /**
+     * A peer's notification-suppression request, forwarded from the foundation's sole DATA_SYNC handler. The
+     * peer (chiefly the iOS client) asks this device — a notification source — to stop delivering matching
+     * captures to it; we save the snapshot keyed by the requester and honor it on the next [captureLocal].
+     * Own-mesh only (the same gate as ASSET, since notifications only flow within the own mesh), and a no-op
+     * without a filter store.
+     */
+    fun onFilterSync(msg: InboundMessage, sync: DataSync) {
+        if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.FILTER, msg.senderOwnDevice)) return
+        val filter = sync.filter ?: return
+        val store = notificationFilters ?: return
+        // Log a RECEIVED row (with how it was delivered) only on a real change — the source re-announces the
+        // same filter periodically, and those idempotent repeats must not spam the activity feed.
+        if (!store.apply(msg.senderId, filter)) return
+        activityLog.add(
+            ActivityEvent.Kind.RECEIVED,
+            peerNameResolver(msg.senderId),
+            if (filter.rules.isEmpty()) activityText.filtersCleared()
+            else activityText.filtersUpdated(filter.rules.size),
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     /** Provider side: re-upload each requested asset under its existing id and reply ASSET_READY. */

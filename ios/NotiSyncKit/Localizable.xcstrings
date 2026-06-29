@@ -141,13 +141,13 @@
         "en" : {
           "stringUnit" : {
             "state" : "new",
-            "value" : "Synced to mesh"
+            "value" : "Synced to other devices"
           }
         },
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "已同步到设备网"
+            "value" : "已同步到其它设备"
           }
         }
       }

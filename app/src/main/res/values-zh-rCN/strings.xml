@@ -72,6 +72,10 @@
     </plurals>
     <string name="activity_detail_renamed_was">已重命名（原名 %1$s）</string>
     <string name="activity_detail_trust_update_from">来自 %1$s 的信任更新（%2$s）</string>
+    <plurals name="activity_detail_filters_updated">
+        <item quantity="other">已更新通知过滤（%1$d 条规则）</item>
+    </plurals>
+    <string name="activity_detail_filters_cleared">已清除通知过滤</string>
     <string name="activity_trust_prompt_new_trust">新设备</string>
     <string name="activity_trust_prompt_re_trust">设备重新加入</string>
     <string name="activity_trust_prompt_new_revoke">设备移除</string>
@@ -178,6 +182,19 @@
     <string name="device_introducer_unknown">另一台设备</string>
     <string name="device_remove_desc">移除 %1$s</string>
     <string name="device_permanently_delete_desc">永久删除 %1$s</string>
+    <string name="device_restore_desc">恢复 %1$s</string>
+    <!-- 对端设备通过 DATA_SYNC FILTER 请求本设备应用的通知过滤。 -->
+    <string name="device_filters_button_desc">对 %1$s 隐藏的通知</string>
+    <string name="device_filters_title">对 %1$s 隐藏</string>
+    <string name="device_filters_desc">本设备不会向其转发以下通知：</string>
+    <string name="device_filters_empty">本设备没有对其隐藏任何通知。</string>
+    <string name="device_filters_origin_android">Android</string>
+    <string name="device_filters_origin_ios">iPhone（ANCS）</string>
+    <string name="device_filters_scope_all">全部通知</string>
+    <string name="device_filters_scope_app">应用：%1$s</string>
+    <string name="device_filters_scope_channel">应用：%1$s · 渠道：%2$s</string>
+    <string name="device_filters_updated">更新于 %1$s</string>
+    <string name="device_filters_clear">清除全部过滤</string>
     <string name="device_added_by">由 %1$s 添加</string>
     <string name="device_approve_hint">仅当它与该设备自身的验证码一致时才批准。</string>
     <string name="device_removed_by">由 %1$s 移除</string>

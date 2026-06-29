@@ -264,6 +264,14 @@ class TrustStore(
             if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.keepTrusted(it, now) else null
         }
 
+    /** Revert a local delete: REVOKED -> TRUSTED. Own decision -> broadcast (peers re-confirm via RE_TRUST).
+     *  Its card/key-epoch survive a revoke (only [purgeRevoked] drops them), so the device becomes reachable
+     *  again as soon as its key-epoch is held. */
+    fun restoreTrust(clientId: ClientId, now: Long): Boolean =
+        transition(clientId, now, broadcast = true) {
+            if (it.status == TrustStatus.REVOKED) TrustMachine.restoreTrust(it, now) else null
+        }
+
     // ---- tamper quarantine (recover from a roster that fails its identity signature) ----
 
     /**

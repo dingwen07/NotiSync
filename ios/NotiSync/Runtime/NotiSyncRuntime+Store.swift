@@ -18,7 +18,7 @@ extension NotiSyncRuntime {
 
     func setAndroidLocalNotificationsEnabled(_ enabled: Bool, for clientId: String) {
         NotificationFilterStore.setAndroidLocalNotificationsEnabled(enabled, for: clientId)
-        bumpNotificationFilterRevision()
+        notificationFiltersDidChange()
     }
 
     func iosDevices() -> [FilteredIosDeviceRecord] {
@@ -36,7 +36,8 @@ extension NotiSyncRuntime {
 
     func removeIosDevice(deviceKey: String) {
         NotificationFilterStore.removeIosDevice(deviceKey: deviceKey)
-        bumpNotificationFilterRevision()
+        // Removing a device clears its filters too — announce so the source peer drops them (a clearing FILTER).
+        notificationFiltersDidChange()
     }
 
     func iosNotificationsEnabled(deviceKey: String) -> Bool {
@@ -51,7 +52,7 @@ extension NotiSyncRuntime {
             peerClientId: device.peerClientId,
             originDeviceId: device.originDeviceId,
             deviceName: device.deviceName)
-        bumpNotificationFilterRevision()
+        notificationFiltersDidChange()
     }
 
     func appNotificationsEnabled(deviceKey: String, appId: String) -> Bool {
@@ -61,7 +62,7 @@ extension NotiSyncRuntime {
 
     func setAppNotificationsEnabled(_ enabled: Bool, deviceKey: String, appId: String) {
         NotificationFilterStore.setAppNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId)
-        bumpNotificationFilterRevision()
+        notificationFiltersDidChange()
     }
 
     func filteredAppIdentifiers(deviceKey: String) -> Set<String> {
@@ -76,7 +77,7 @@ extension NotiSyncRuntime {
 
     func setChannelNotificationsEnabled(_ enabled: Bool, deviceKey: String, appId: String, channelId: String) {
         NotificationFilterStore.setChannelNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId, channelId: channelId)
-        bumpNotificationFilterRevision()
+        notificationFiltersDidChange()
     }
 
     func filteredChannelIdentifiers(deviceKey: String, appId: String) -> Set<String> {
@@ -109,7 +110,7 @@ extension NotiSyncRuntime {
                     peerClientId: device.peerClientId,
                     originDeviceId: device.originDeviceId,
                     deviceName: device.deviceName)
-                bumpNotificationFilterRevision()
+                notificationFiltersDidChange()
             }
         }
     }

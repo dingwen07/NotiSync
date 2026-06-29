@@ -41,6 +41,12 @@ nonisolated enum NotiSyncConfig {
     /// The first operational/HPKE epoch. Persisted in `RotationStore`; rotation advances it from here.
     static let initialEpoch = 1
 
+    /// Heartbeat cadence for re-announcing mutable own-mesh state — our profile, our current key-epoch (in
+    /// case the broker lost it), and our notification filters — so peers (and the broker) converge even with
+    /// no explicit change. Runs once per launch (the in-memory clock starts at 0) and at most this often
+    /// after; a filter *change* announces immediately (debounced), independent of this gate.
+    static let periodicAnnounceIntervalMs: Int64 = 6 * 60 * 60 * 1000   // 6h
+
     /// NS2 §7 self key-rotation timing (mint → pre-warm → activate → retire). Mirrors the Android
     /// `RotationManager` constants. Overlap ≥ relay TTL so a retired HPKE keyset is retained long enough to
     /// open in-flight (relayed) notifications.

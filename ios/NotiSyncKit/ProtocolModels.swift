@@ -23,7 +23,7 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD }
+nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum Capability: String, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
@@ -262,12 +262,32 @@ nonisolated struct CardDelivery: Sendable {
     var epochBlob: SignedBlob?
 }
 
+/// One suppression rule a client asks a source peer to apply to deliveries bound for the requester.
+/// Mirrors the source-side filter keys: capture origin, app, and (Android only) channel.
+nonisolated struct NotificationFilterRule: Sendable {
+    var originPlatform: OriginPlatform
+    /// Android package name (ANDROID_LOCAL) or iOS bundle id (IOS_ANCS); nil = whole origin (device-level).
+    var appId: String?
+    /// Channel within `appId` (ANDROID_LOCAL only); nil = all channels of the app.
+    var channelId: String?
+}
+
+/// A full snapshot of the suppression rules a requester asks a source peer to apply to its deliveries.
+/// Carried over `DataSyncKind.FILTER`; the receiver replaces the requester's prior filter (LWW on
+/// `updatedAt`). The iOS client emits these from its local NotificationFilterStore; it never applies an
+/// inbound one (its NSE already filters locally).
+nonisolated struct FilterSync: Sendable {
+    var rules: [NotificationFilterRule]
+    var updatedAt: Int64
+}
+
 nonisolated struct DataSync: Sendable {
     var kind: DataSyncKind
     var asset: AssetSync?
     var profile: ProfileUpdate?
     var trust: TrustTable?
     var card: CardDelivery?
+    var filter: FilterSync?
 }
 
 // MARK: - JSON control-plane DTOs (Decodable; the broker's REST layer)

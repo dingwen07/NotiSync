@@ -206,7 +206,44 @@ data class AssetSyncItem(
 
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable. */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER }
+
+/**
+ * One suppression rule a client asks a peer (the notification *source*) to apply to deliveries bound
+ * for the requester. A notification the source captures matches the rule when its capture origin, app,
+ * and (Android only) channel match — the same fields a source-side filter keys on.
+ */
+@Serializable
+data class NotificationFilterRule(
+    /** Which capture origin this rule targets. ANDROID_LOCAL = the source's own NotificationListener
+     *  captures; IOS_ANCS = notifications the source bridges from a paired iPhone over ANCS. */
+    val originPlatform: OriginPlatform,
+    /** App scope: an Android package name (ANDROID_LOCAL) or an iOS bundle id (IOS_ANCS). null = every
+     *  app of this origin — a device-level master switch for that origin on the target. */
+    val appId: String? = null,
+    /** Channel scope within [appId] (ANDROID_LOCAL only; iOS has no channels). null = all channels of
+     *  [appId]. Ignored when [appId] is null. */
+    val channelId: String? = null,
+)
+
+/**
+ * A client's request that a peer (the notification *source*) stop delivering matching notifications to
+ * the requester. Carried over [DataSyncKind.FILTER]. It is a FULL snapshot: the receiver REPLACES the
+ * requester's prior filter (last-writer-wins on [updatedAt]); an empty [rules] clears it. The requester
+ * is the envelope signer, so the receiver keys the stored filter by that signer id and, when a captured
+ * notification matches, drops the requester from the recipient list — the notification never reaches it.
+ *
+ * Mainly used by the iOS client (its Notification Service Extension cannot suppress an APNs push
+ * locally); an Android peer honors it when forwarding its own captures. Per design, IOS_ANCS rules are
+ * NOT keyed by the bridged iPhone's `originDeviceId` — each ANCS-bridged app is a master switch per
+ * trusted (bridging) device.
+ */
+@Serializable
+data class FilterSync(
+    val rules: List<NotificationFilterRule>,
+    /** Source-clock time the requester built this snapshot; the receiver resolves races last-writer-wins. */
+    val updatedAt: Long,
+)
 
 /**
  * The body of a [MessageType.DATA_SYNC] envelope: the group's low-urgency (FCM NORMAL), end-to-end-
@@ -226,6 +263,8 @@ data class DataSync(
     val trust: TrustTable? = null,
     /** A self-authenticating delivery (a client card and/or a key-epoch) — iff [kind] == [DataSyncKind.CARD]. */
     val card: CardDelivery? = null,
+    /** A peer's request to suppress notifications bound for it — populated iff [kind] == [DataSyncKind.FILTER]. */
+    val filter: FilterSync? = null,
 )
 
 /**

@@ -25,6 +25,10 @@ sealed interface Recipients {
     /** Every trusted device — own AND "other" (used only by profile updates). */
     data object AllTrusted : Recipients
 
+    /** This user's own devices except [excluded] — the devices that asked, over a DATA_SYNC FILTER, not to
+     *  receive a given capture. Used by notification forwarding to honor a peer's suppression request. */
+    data class OwnMeshExcluding(val excluded: Set<ClientId>) : Recipients
+
     /** A single device by id (unicast: card / asset repair). */
     data class Only(val id: ClientId) : Recipients
 }

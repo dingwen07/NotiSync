@@ -53,6 +53,11 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     private var foregroundActive = false
     private var bgRegistered = false
     var lastReconcileAt = Date.distantPast
+    /// In-memory heartbeat clock for `announcePeriodicStateIfDue` (profile / key-epoch / filter re-announce).
+    /// Starts at 0 so the first foreground pass after launch announces once, then gates by the config interval.
+    var lastPeriodicAnnounceAt: Int64 = 0
+    /// Coalesces a burst of filter toggles into one outbound FILTER announce (see `notificationFiltersDidChange`).
+    var filterAnnounceTask: Task<Void, Never>?
     var repairRequested: Set<String> = []   // assetHash → already asked the source to re-upload
     var iconBytesByApp: [String: Data] = [:]   // appKey (ios:bundleId / and:packageName) → icon bytes
     var iconTokensByApp: [String: String] = [:]   // appKey → source token for the cached icon bytes
@@ -66,6 +71,20 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// `+Inbound` / `+Store` extensions when an icon is cached or re-provisioned, nudging monogram rows.
     func bumpIconRevision() { iconRevision += 1 }
     func bumpNotificationFilterRevision() { notificationFilterRevision += 1 }
+
+    /// A local notification-filter setting changed: refresh dependent UI, then announce the new snapshot to the
+    /// source peers it targets so they stop/resume delivering to us. A short debounce coalesces a rapid burst
+    /// of toggles into one send of the final state and (via cancel-previous) prevents an older snapshot from
+    /// landing after a newer one; it is NOT cancelled when the app backgrounds, so the send still fires.
+    func notificationFiltersDidChange() {
+        bumpNotificationFilterRevision()
+        filterAnnounceTask?.cancel()
+        filterAnnounceTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            guard !Task.isCancelled, let self else { return }
+            await self.broadcastNotificationFilters()
+        }
+    }
 
     // MARK: Lifecycle
 
@@ -181,6 +200,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         await convergeKeyEpochs()
         guard shouldContinueForegroundSync(generation) else { return }
         await rotationMaintenance()   // initiate-if-due / advance an in-flight rotation (#8)
+        guard shouldContinueForegroundSync(generation) else { return }
+        await announcePeriodicStateIfDue()   // heartbeat: re-announce profile / key-epoch / notification filters
     }
 
     private func shouldContinueForegroundSync(_ generation: Int) -> Bool {
@@ -435,6 +456,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             await reconcileDismissals()
             await convergeKeyEpochs()
             await rotationMaintenance()  // time-driven rotation upkeep (#8)
+            guard !Task.isCancelled else { return false }
+            await announcePeriodicStateIfDue()   // heartbeat: profile / key-epoch / notification filters
             return !Task.isCancelled
         }
         let success = await work?.value ?? false

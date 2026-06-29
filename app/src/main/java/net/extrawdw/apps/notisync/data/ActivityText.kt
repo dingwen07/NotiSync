@@ -21,6 +21,8 @@ interface ActivityText {
     fun renamedWas(previousName: String): String
     fun trustUpdateFrom(name: String, prompt: TrustPrompt): String
     fun pairedTitle(): String
+    fun filtersUpdated(count: Int): String
+    fun filtersCleared(): String
 }
 
 class AndroidActivityText(private val context: Context) : ActivityText {
@@ -77,6 +79,12 @@ class AndroidActivityText(private val context: Context) : ActivityText {
 
     override fun pairedTitle(): String =
         context.getString(R.string.activity_title_paired)
+
+    override fun filtersUpdated(count: Int): String =
+        resources.getQuantityString(R.plurals.activity_detail_filters_updated, count, count)
+
+    override fun filtersCleared(): String =
+        context.getString(R.string.activity_detail_filters_cleared)
 
     private fun trustPromptLabel(prompt: TrustPrompt): String = when (prompt) {
         TrustPrompt.NEW_TRUST -> context.getString(R.string.activity_trust_prompt_new_trust)

@@ -197,4 +197,9 @@ object TrustMachine {
     /** Keep a device whose PENDING_REVOKE we reject -> TRUSTED. Overturns the revoker (propagates). */
     fun keepTrusted(current: TrustEntry, now: Long) =
         current.copy(status = TrustStatus.TRUSTED, updatedAt = now, introducedBy = null)
+
+    /** Revert a local delete: REVOKED -> TRUSTED. Our own decision (propagates; peers see RE_TRUST and
+     *  re-confirm). Stamped at [now] so it wins last-writer-wins over the tombstone it overturns. */
+    fun restoreTrust(current: TrustEntry, now: Long) =
+        current.copy(status = TrustStatus.TRUSTED, updatedAt = now, introducedBy = null)
 }

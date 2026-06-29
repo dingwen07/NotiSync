@@ -93,6 +93,9 @@ nonisolated enum AppGroupStore {
         static let rotation = "rotation.json"
         static let cards = "cards.json"
         static let notificationFilters = "notification-filters.json"
+        /// Peers this device last announced a non-empty notification filter to (so a now-empty snapshot
+        /// can send one clearing FILTER instead of silently leaving a stale filter on the peer).
+        static let filterAnnounce = "notification-filter-announce.json"
     }
 }
 
@@ -371,6 +374,85 @@ nonisolated enum NotificationFilterStore {
         if let bundleId = cleanText(iosBundleId), !bundleId.isEmpty { return bundleId }
         if let packageName = cleanText(packageName), !packageName.isEmpty { return packageName }
         return nil
+    }
+
+    // MARK: Filter export (DATA_SYNC FILTER) — describe what each *source* peer should suppress for us.
+
+    /// Build the per-source-peer filter snapshots to announce over `DataSyncKind.FILTER`, keyed by the peer
+    /// client id that is the notification *source* — its own Android-local captures and/or its ANCS bridge.
+    /// The local store keys an iOS-origin filter by `(peerClientId, originDeviceId)`, but the wire snapshot
+    /// DROPS `originDeviceId`: each ANCS-bridged app is a master switch per trusted (bridging) device, so two
+    /// bridged iPhones under the same peer collapse to one rule (deduped here).
+    static func filterRulesByPeer() -> [String: [NotificationFilterRule]] {
+        let prefs = preferences()
+        var byPeer: [String: [NotificationFilterRule]] = [:]
+        var seen: [String: Set<String>] = [:]   // peerId → rule signatures (dedup collapsed iOS rules)
+
+        func add(_ rawPeerId: String, _ rule: NotificationFilterRule) {
+            let peerId = rawPeerId.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !peerId.isEmpty else { return }
+            let sig = "\(rule.originPlatform.rawValue)\u{1f}\(rule.appId ?? "")\u{1f}\(rule.channelId ?? "")"
+            if seen[peerId]?.contains(sig) == true { return }
+            seen[peerId, default: []].insert(sig)
+            byPeer[peerId, default: []].append(rule)
+        }
+
+        // Android-local device-level master switch — keyed by the source client id.
+        for peerId in prefs.filteredAndroidLocalPeerIds {
+            add(peerId, NotificationFilterRule(originPlatform: .ANDROID_LOCAL, appId: nil, channelId: nil))
+        }
+        // iOS (ANCS) device-level master switch — collapse originDeviceId to the bridging peer.
+        for deviceKey in prefs.filteredIosDeviceKeys {
+            guard let parsed = parseFilterDeviceKey(deviceKey), parsed.platform == .IOS_ANCS else { continue }
+            add(parsed.peerId, NotificationFilterRule(originPlatform: .IOS_ANCS, appId: nil, channelId: nil))
+        }
+        // App-level (both origins): key is "android:<peer>" or "ios:<peer>[:<originId>]".
+        for (deviceKey, appIds) in prefs.filteredAppIdsByDeviceKey {
+            guard let parsed = parseFilterDeviceKey(deviceKey) else { continue }
+            for appId in appIds where !appId.isEmpty {
+                add(parsed.peerId, NotificationFilterRule(originPlatform: parsed.platform, appId: appId, channelId: nil))
+            }
+        }
+        // Channel-level (Android only): key is "<deviceKey>\u{1f}<appId>".
+        for (deviceAppKey, channelIds) in prefs.filteredChannelIdsByDeviceAppKey {
+            let parts = deviceAppKey.components(separatedBy: "\u{1f}")
+            guard parts.count == 2, let parsed = parseFilterDeviceKey(parts[0]),
+                  parsed.platform == .ANDROID_LOCAL, !parts[1].isEmpty else { continue }
+            for channelId in channelIds where !channelId.isEmpty {
+                add(parsed.peerId, NotificationFilterRule(originPlatform: .ANDROID_LOCAL, appId: parts[1], channelId: channelId))
+            }
+        }
+        return byPeer
+    }
+
+    /// Parse a stored deviceKey into (origin, source-peer client id), DROPPING the iOS originDeviceId.
+    /// "android:<clientId>" → (.ANDROID_LOCAL, clientId); "ios:<peerId>[:<originId>]" → (.IOS_ANCS, peerId).
+    /// Client ids are colon-free base32, so the first ":" after the prefix bounds the peer id.
+    private static func parseFilterDeviceKey(_ deviceKey: String) -> (platform: OriginPlatform, peerId: String)? {
+        if deviceKey.hasPrefix("android:") {
+            let peer = String(deviceKey.dropFirst("android:".count))
+            return peer.isEmpty ? nil : (.ANDROID_LOCAL, peer)
+        }
+        if deviceKey.hasPrefix("ios:") {
+            let rest = deviceKey.dropFirst("ios:".count)
+            let peer = rest.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                .first.map(String.init) ?? ""
+            return peer.isEmpty ? nil : (.IOS_ANCS, peer)
+        }
+        return nil
+    }
+
+    /// Peers we last announced a non-empty FILTER to — so a now-empty snapshot sends one clearing FILTER.
+    static func lastAnnouncedFilterPeers() -> Set<String> {
+        AppGroupStore.withLock(AppGroupStore.Files.filterAnnounce) {
+            Set(AppGroupStore.read([String].self, AppGroupStore.Files.filterAnnounce) ?? [])
+        }
+    }
+
+    static func setLastAnnouncedFilterPeers(_ peers: Set<String>) {
+        _ = AppGroupStore.withLock(AppGroupStore.Files.filterAnnounce) {
+            AppGroupStore.write(Array(peers).sorted(), AppGroupStore.Files.filterAnnounce)
+        }
     }
 
     private static func preferencesUnlocked() -> NotificationFilterPreferences {
