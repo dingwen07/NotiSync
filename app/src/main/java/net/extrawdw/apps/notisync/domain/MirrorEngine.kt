@@ -2,7 +2,6 @@ package net.extrawdw.apps.notisync.domain
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
-import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.channel.InboundMessage
 import net.extrawdw.apps.notisync.channel.Recipients
 import net.extrawdw.apps.notisync.channel.SecureChannel
@@ -208,33 +207,20 @@ class MirrorEngine(
         val resolver = assetResolver
         if (resolver != null && refs.isNotEmpty()) {
             scope.launch {
-                // This asset fetch + enriched re-render runs OFF the inline deliver path, so it is NOT part of
-                // the `notification_delivery` trace (which ends at the immediate cached-content render) — trace
-                // it here to capture the "+ asset fetch" enrichment latency + outcome. `outcome=cached` means
-                // the refs were already local (no network); enriched/partial/still_missing mean a real transfer.
-                perfTrace("mirror_asset_resolve") { span ->
-                    span.metric("refs", refs.size.toLong())
-                    val result = resolver.ensureLocal(refs)
-                    // Silent: the notification was already posted above; this only attaches the now-downloaded
-                    // graphics, so it must refresh in place without a second alert.
-                    if (result.newlyAvailable) renderer.render(notif, silent = true)
-                    if (result.stillMissing.isNotEmpty()) {
-                        result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
-                        sendAssetSync(
-                            notif.sourceClientId,
-                            AssetSync(
-                                AssetSyncKind.ASSET_MISSING,
-                                result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
-                        )
-                    }
-                    span.attr(
-                        "outcome",
-                        when {
-                            result.newlyAvailable && result.stillMissing.isEmpty() -> "enriched"
-                            result.newlyAvailable -> "partial"
-                            result.stillMissing.isNotEmpty() -> "still_missing"
-                            else -> "cached"
-                        }
+                // The asset fetch + enriched re-render is timed by the `asset_fetch` trace inside ensureLocal
+                // (split cached vs fetched metrics there); it runs OFF the inline deliver path, so it is not
+                // part of `notification_delivery` (which ends at the immediate cached-content render).
+                val result = resolver.ensureLocal(refs)
+                // Silent: the notification was already posted above; this only attaches the now-downloaded
+                // graphics, so it must refresh in place without a second alert.
+                if (result.newlyAvailable) renderer.render(notif, silent = true)
+                if (result.stillMissing.isNotEmpty()) {
+                    result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
+                    sendAssetSync(
+                        notif.sourceClientId,
+                        AssetSync(
+                            AssetSyncKind.ASSET_MISSING,
+                            result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
                     )
                 }
             }

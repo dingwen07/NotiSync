@@ -98,45 +98,57 @@ class AssetManager(
         return ref
     }
 
-    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult =
-        // Fetching a missing asset (network + decrypt) can block a mirror's final render by 100–500ms, so
-        // time it. `result` separates a pure cache hit from a fetch/miss; `bytes` sizes the transfer.
-        perfTrace("asset_fetch") { span ->
+    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
+        // Don't trace an all-cached resolve — it's a no-op AND the steady-state majority (shared avatars/app
+        // icons stay cached after their first fetch, so most notifications resolve entirely from cache).
+        // Emitting `asset_fetch` with fetched_ms=0 for each of those would drag the metric's average to ~0 and
+        // bury real fetch latency — the "fetched_ms mostly 0" symptom. Only genuine fetches are traced below.
+        if (refs.all { cache.has(it.assetHash) }) return ResolveResult(false, emptyList())
+        return perfTrace("asset_fetch") { span ->
+            // A traced resolve fetched ≥1 ref, but the batch can still MIX hits and fetches. `fetched_ms`
+            // times ONLY the network+decrypt+verify work, so cache hits in the same batch (counted in
+            // `cached_count`) never inflate the fetch latency. `result` is a quick filter; `bytes` sizes it.
             var newlyAvailable = false
             var fetchedBytes = 0L
+            var cachedCount = 0
             var fetchedCount = 0
+            var fetchedNanos = 0L
             val stillMissing = ArrayList<PrivateAssetRef>()
             for (ref in refs) {
-                if (cache.has(ref.assetHash)) continue
-                val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
-                val plaintext = sealed?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
-                if (plaintext == null || !AssetHash.matches(
-                        plaintext,
-                        ref.assetHash
-                    )
-                ) { // missing / wrong key / corrupt / substituted
+                if (cache.has(ref.assetHash)) {
+                    cachedCount++
+                    continue
+                }
+                fetchedCount++
+                val startNanos = System.nanoTime()
+                val plaintext = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
+                    ?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
+                    ?.takeIf { AssetHash.matches(it, ref.assetHash) }
+                fetchedNanos += System.nanoTime() - startNanos
+                if (plaintext == null) { // missing / wrong key / corrupt / substituted
                     stillMissing.add(ref)
                     continue
                 }
                 cache.write(ref.assetHash, plaintext)
                 newlyAvailable = true
                 fetchedBytes += plaintext.size
-                fetchedCount++
             }
-            span.metric("refs", refs.size.toLong())
-            span.metric("fetched", fetchedCount.toLong())
+            span.metric("cached_count", cachedCount.toLong())
+            span.metric("fetched_count", fetchedCount.toLong())
+            span.metric("fetched_ms", fetchedNanos / 1_000_000)
+            span.metric("missing_count", stillMissing.size.toLong())
             span.metric("bytes", fetchedBytes)
             span.attr(
                 "result",
                 when {
-                    stillMissing.isNotEmpty() && fetchedCount > 0 -> "partial"
-                    stillMissing.isNotEmpty() -> "miss"
-                    fetchedCount > 0 -> "fetched"
-                    else -> "cache_hit"
+                    stillMissing.isEmpty() -> "fetched"
+                    newlyAvailable -> "partial"
+                    else -> "miss"
                 }
             )
             ResolveResult(newlyAvailable, stillMissing)
         }
+    }
 
     /** Provider repair: re-seal the cached plaintext under its existing id and re-upload it. */
     override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? {

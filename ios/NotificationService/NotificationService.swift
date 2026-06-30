@@ -18,8 +18,14 @@ final class NotificationService: UNNotificationServiceExtension {
     private var perfTransport = "inline"
     private var perfStyle = "?"
     private var perfReported = false
-    private var perfAssetNetworkCount = 0   // network icon/avatar/attachment fetches (cache misses) this push
-    private var perfAssetNetworkMs: Int64 = 0
+    // Per-push asset accounting, split by source and deduped by asset key (the second render pass re-reads
+    // already-fetched assets from cache — those aren't recounted). "cached" = served from the App Group
+    // cache; "fetched" = network fetch + decrypt (cache miss).
+    private var perfAssetSeen = Set<String>()
+    private var perfAssetCachedCount = 0
+    private var perfAssetCachedMs: Int64 = 0
+    private var perfAssetFetchedCount = 0
+    private var perfAssetFetchedMs: Int64 = 0
 
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
@@ -164,7 +170,7 @@ final class NotificationService: UNNotificationServiceExtension {
     /// A sender-avatar cache miss deliberately does not fall back to the app icon.
     private func senderImage(for n: CapturedNotification, message: ConversationMessage) -> (data: Data?, fetch: SenderImageFetch?) {
         if let ref = message.avatar {
-            return (AssetCache.read(ref.assetHash), .privateAsset(ref))
+            return (cachedAssetRead(key: ref.assetHash, read: { AssetCache.read(ref.assetHash) }), .privateAsset(ref))
         }
         return senderImage(for: n)
     }
@@ -173,10 +179,11 @@ final class NotificationService: UNNotificationServiceExtension {
     /// captured private launcher icon. Cache hits are used immediately; misses are fetched after prepare.
     private func senderImage(for n: CapturedNotification) -> (data: Data?, fetch: SenderImageFetch?) {
         if let bundleId = n.iosBundleId, !bundleId.isEmpty {
-            return (AppIconFetcher.cachedIconData(iosBundleId: bundleId), .appStoreIcon(bundleId))
+            let data = cachedAssetRead(key: "icon:\(bundleId)", read: { AppIconFetcher.cachedIconData(iosBundleId: bundleId) })
+            return (data, .appStoreIcon(bundleId))
         }
         if let ref = n.appIcon ?? n.largeIcon {
-            return (AssetCache.read(ref.assetHash), .privateAsset(ref))
+            return (cachedAssetRead(key: ref.assetHash, read: { AssetCache.read(ref.assetHash) }), .privateAsset(ref))
         }
         return (nil, nil)
     }
@@ -187,8 +194,7 @@ final class NotificationService: UNNotificationServiceExtension {
             // Reached only after the synchronous cache check missed, so this is a real iTunes network fetch.
             let start = Date()
             let data = await AppIconFetcher.iconData(iosBundleId: bundleId)
-            perfAssetNetworkMs += Int64(Date().timeIntervalSince(start) * 1000)
-            perfAssetNetworkCount += 1
+            recordAssetTiming(key: "icon:\(bundleId)", cached: false, ms: Int64(Date().timeIntervalSince(start) * 1000))
             return data
         case .privateAsset(let ref):
             return await privateAsset(ref, engine: engine)
@@ -215,17 +221,39 @@ final class NotificationService: UNNotificationServiceExtension {
     }
 
     private func privateAsset(_ ref: PrivateAssetRef, engine: NotiSyncEngine) async -> Data? {
-        if let cached = AssetCache.read(ref.assetHash) { return cached }
+        if let cached = cachedAssetRead(key: ref.assetHash, read: { AssetCache.read(ref.assetHash) }) { return cached }
         let start = Date()
         let ciphertext = await RelayClient.fetchAsset(ref,
                                                       identitySigner: engine.identitySigner,
                                                       operationalSigner: engine.operationalSigner,
                                                       keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
-        perfAssetNetworkMs += Int64(Date().timeIntervalSince(start) * 1000)
-        perfAssetNetworkCount += 1
-        guard let ciphertext, let plaintext = engine.openAsset(ref, ciphertext: ciphertext) else { return nil }
+        let plaintext = ciphertext.flatMap { engine.openAsset(ref, ciphertext: $0) }
+        recordAssetTiming(key: ref.assetHash, cached: false, ms: Int64(Date().timeIntervalSince(start) * 1000))
+        guard let plaintext else { return nil }
         AssetCache.write(ref.assetHash, plaintext)
         return plaintext
+    }
+
+    /// Time a synchronous cache read; on a hit, attribute it to the "cached" asset bucket. A miss isn't
+    /// recorded here (the caller's network fetch records it as "fetched").
+    private func cachedAssetRead(key: String, read: () -> Data?) -> Data? {
+        let start = Date()
+        let data = read()
+        if data != nil { recordAssetTiming(key: key, cached: true, ms: Int64(Date().timeIntervalSince(start) * 1000)) }
+        return data
+    }
+
+    /// Attribute one asset access to the cached or fetched bucket, counting each asset at most once per push
+    /// (the second render pass re-reads already-fetched assets from cache — don't double-count those).
+    private func recordAssetTiming(key: String, cached: Bool, ms: Int64) {
+        guard perfAssetSeen.insert(key).inserted else { return }
+        if cached {
+            perfAssetCachedCount += 1
+            perfAssetCachedMs += ms
+        } else {
+            perfAssetFetchedCount += 1
+            perfAssetFetchedMs += ms
+        }
     }
 
     private func finish(_ content: UNNotificationContent) {
@@ -246,25 +274,30 @@ final class NotificationService: UNNotificationServiceExtension {
     /// path's e2e home — the app-render `mirror_e2e_latency` deliberately does NOT cover the NSE (no dup).
     ///
     /// Attributes separate the alert variants: `transport` is the envelope source (inline `ct` vs oversized
-    /// relay `mid` fetch), and `asset_fetch` is whether rendering the mirror also went to the network for an
-    /// icon/avatar/attachment (cache miss) vs served everything from cache. So APNs-inline, APNs+relay-fetch,
-    /// and the +asset-fetch variant of each are all distinguishable (`asset_ms` quantifies the cost).
+    /// relay `mid` fetch), and `asset_fetch` is whether rendering the mirror touched the network for an
+    /// icon/avatar/attachment (`network`), served them all from cache (`cache`), or needed none (`none`). The
+    /// `asset_cached_*` / `asset_fetched_*` metrics split count + time by source (each asset counted once).
     private func reportPerf(_ result: String, postTime: Int64? = nil) {
         guard !perfReported else { return }
         perfReported = true
         var metrics: [String: Int64] = ["duration_ms": Int64(Date().timeIntervalSince(startedAt) * 1000)]
-        if perfAssetNetworkCount > 0 {
-            metrics["asset_ms"] = perfAssetNetworkMs
-            metrics["asset_count"] = Int64(perfAssetNetworkCount)
+        if perfAssetCachedCount > 0 {
+            metrics["asset_cached_ms"] = perfAssetCachedMs
+            metrics["asset_cached_count"] = Int64(perfAssetCachedCount)
+        }
+        if perfAssetFetchedCount > 0 {
+            metrics["asset_fetched_ms"] = perfAssetFetchedMs
+            metrics["asset_fetched_count"] = Int64(perfAssetFetchedCount)
         }
         if let postTime {
             let value = Int64(Date().timeIntervalSince1970 * 1000) - postTime
             if value >= 0, value <= 6 * 60 * 60 * 1000 { metrics["e2e_ms"] = value }
         }
+        let assetFetch = perfAssetFetchedCount > 0 ? "network" : (perfAssetCachedCount > 0 ? "cache" : "none")
         PerfEventStore.append(DeferredPerfTrace(
             name: "nse_delivery",
             attributes: ["result": result, "transport": perfTransport, "style": perfStyle,
-                         "asset_fetch": perfAssetNetworkCount > 0 ? "network" : "none"],
+                         "asset_fetch": assetFetch],
             metrics: metrics))
     }
 
