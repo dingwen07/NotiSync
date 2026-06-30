@@ -9,6 +9,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
+    alias(libs.plugins.firebase.crashlytics)
+    alias(libs.plugins.firebase.perf)
 }
 
 val localProperties = Properties().apply {
@@ -26,8 +28,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 23
-        versionName = "1.5.2-rc.1"
+        versionCode = 24
+        versionName = "1.5.3-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -128,6 +130,8 @@ dependencies {
     // FCM
     implementation(platform(libs.firebase.bom))
     implementation(libs.firebase.messaging)
+    implementation(libs.firebase.crashlytics)
+    implementation(libs.firebase.perf)
 
     // App Check — genuine-app/device attestation (Play Integrity provider, handled internally by Firebase).
     // The broker verifies the App Check JWT locally against the App Check JWKS. Debug builds use the debug

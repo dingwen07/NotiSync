@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import net.extrawdw.apps.notisync.analytics.AnalyticsController
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
 import net.extrawdw.apps.notisync.crypto.EpochHpkeKeyManager
@@ -195,6 +196,14 @@ class AppGraph(private val app: Application) {
         val vault = KeyVault()
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
+        // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
+        // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
+        // eager `true` default), then re-apply on every toggle — DataStore stays the single source of
+        // truth, since both SDKs otherwise auto-collect by default.
+        scope.launch {
+            AnalyticsController.apply(settings.analyticsEnabledNow())
+            settings.analyticsEnabled.onEach(AnalyticsController::apply).launchIn(this)
+        }
         trust = TrustStore(ds, scope, identity)
         appSelection = AppSelectionRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)

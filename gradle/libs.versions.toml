@@ -11,7 +11,7 @@ coroutines = "1.11.0"
 tink = "1.22.0"
 
 # Server
-ktor = "3.5.0"
+ktor = "3.5.1"
 exposed = "1.0.0"
 sqliteJdbc = "3.50.1.0"
 postgresql = "42.7.7"
@@ -47,6 +47,8 @@ zxing = "3.5.4"
 # Firebase (client)
 firebaseBom = "34.15.0"
 googleServices = "4.5.0"
+firebaseCrashlyticsPlugin = "3.0.7"
+firebasePerfPlugin = "2.0.2"
 
 # Test
 junit = "4.13.2"
@@ -142,6 +144,8 @@ ktor-client-content-negotiation = { group = "io.ktor", name = "ktor-client-conte
 # --- Android: FCM ---
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+firebase-crashlytics = { group = "com.google.firebase", name = "firebase-crashlytics" }
+firebase-perf = { group = "com.google.firebase", name = "firebase-perf" }
 firebase-appcheck = { group = "com.google.firebase", name = "firebase-appcheck" }
 firebase-appcheck-playintegrity = { group = "com.google.firebase", name = "firebase-appcheck-playintegrity" }
 firebase-appcheck-debug = { group = "com.google.firebase", name = "firebase-appcheck-debug" }
@@ -167,3 +171,5 @@ ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
 hilt = { id = "com.google.dagger.hilt.android", version.ref = "hilt" }
 ktor = { id = "io.ktor.plugin", version.ref = "ktor" }
 google-services = { id = "com.google.gms.google-services", version.ref = "googleServices" }
+firebase-crashlytics = { id = "com.google.firebase.crashlytics", version.ref = "firebaseCrashlyticsPlugin" }
+firebase-perf = { id = "com.google.firebase.firebase-perf", version.ref = "firebasePerfPlugin" }

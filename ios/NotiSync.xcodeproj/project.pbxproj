@@ -13,6 +13,8 @@
 		5108C6857E4B1F964A2957D6 /* FirebaseAppCheck in Frameworks */ = {isa = PBXBuildFile; productRef = 242BAD2A41779DEE51CB0A55 /* FirebaseAppCheck */; };
 		7A6718B52323AFA1FB1F5E58 /* NotificationService.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = C207CE506E8E55724AF9B3F7 /* NotificationService.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA1F0000000000000000F101 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = AA1F0000000000000000F100 /* InfoPlist.xcstrings */; };
+		AA1F0000000000000000F201 /* FirebaseCrashlytics in Frameworks */ = {isa = PBXBuildFile; productRef = AA1F0000000000000000F204 /* FirebaseCrashlytics */; };
+		AA1F0000000000000000F202 /* FirebasePerformance in Frameworks */ = {isa = PBXBuildFile; productRef = AA1F0000000000000000F205 /* FirebasePerformance */; };
 		DC1B4BC713FCAD4503688855 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D743FA77445C7AC5BB98D0A /* NotificationService.swift */; };
 /* End PBXBuildFile section */
 
@@ -82,6 +84,8 @@
 				297BF63FAE3921D0B297ADB3 /* FirebaseCore in Frameworks */,
 				1F71923C2FF21EE1005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
 				5108C6857E4B1F964A2957D6 /* FirebaseAppCheck in Frameworks */,
+				AA1F0000000000000000F201 /* FirebaseCrashlytics in Frameworks */,
+				AA1F0000000000000000F202 /* FirebasePerformance in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -152,6 +156,7 @@
 				1F712D042FEDE20A00A49D22 /* Frameworks */,
 				1F712D052FEDE20A00A49D22 /* Resources */,
 				2D7D1AADADCB473F6274F150 /* Embed Foundation Extensions */,
+				AA1F0000000000000000F203 /* Upload Crashlytics Symbols */,
 			);
 			buildRules = (
 			);
@@ -166,6 +171,8 @@
 			packageProductDependencies = (
 				8F8FD9FE59183A9D305DC2E6 /* FirebaseCore */,
 				242BAD2A41779DEE51CB0A55 /* FirebaseAppCheck */,
+				AA1F0000000000000000F204 /* FirebaseCrashlytics */,
+				AA1F0000000000000000F205 /* FirebasePerformance */,
 			);
 			productName = NotiSync;
 			productReference = 1F712D072FEDE20A00A49D22 /* NotiSync.app */;
@@ -247,6 +254,33 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		AA1F0000000000000000F203 /* Upload Crashlytics Symbols */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(TARGET_BUILD_DIR)/$(UNLOCALIZED_RESOURCES_FOLDER_PATH)/GoogleService-Info.plist",
+				"$(TARGET_BUILD_DIR)/$(EXECUTABLE_PATH)",
+				"$(BUILD_DIR)/../../SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run",
+				"$(BUILD_DIR)/../../SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/upload-symbols",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Info.plist",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}",
+				"${DWARF_DSYM_FOLDER_PATH}/${DWARF_DSYM_FILE_NAME}/Contents/Resources/DWARF/${PRODUCT_NAME}.debug.dylib",
+			);
+			name = "Upload Crashlytics Symbols";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${BUILD_DIR%/Build/*}/SourcePackages/checkouts/firebase-ios-sdk/Crashlytics/run\"\n";
+			showEnvVarsInLog = 0;
+		};
+/* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1F712D032FEDE20A00A49D22 /* Sources */ = {
@@ -406,8 +440,9 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = NotiSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -421,6 +456,10 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.5.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.extrawdw.apps.NotiSync;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -446,8 +485,9 @@
 				ASSETCATALOG_COMPILER_INCLUDE_ALL_APPICON_ASSETS = NO;
 				CODE_SIGN_ENTITLEMENTS = NotiSync.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEAD_CODE_STRIPPING = YES;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_HARDENED_RUNTIME = YES;
@@ -461,6 +501,10 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.5.2;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-ObjC",
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = net.extrawdw.apps.NotiSync;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				REGISTER_APP_GROUPS = YES;
@@ -485,7 +529,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
@@ -516,7 +560,7 @@
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				CODE_SIGN_ENTITLEMENTS = NotificationService/NotificationService.entitlements;
 				CODE_SIGN_STYLE = Automatic;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 475KZ2S33S;
 				ENABLE_USER_SCRIPT_SANDBOXING = YES;
 				"EXCLUDED_ARCHS[sdk=iphonesimulator*]" = x86_64;
@@ -590,6 +634,16 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 061E06B8FC7A178C0C2140DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebaseCore;
+		};
+		AA1F0000000000000000F204 /* FirebaseCrashlytics */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 061E06B8FC7A178C0C2140DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebaseCrashlytics;
+		};
+		AA1F0000000000000000F205 /* FirebasePerformance */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 061E06B8FC7A178C0C2140DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
+			productName = FirebasePerformance;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

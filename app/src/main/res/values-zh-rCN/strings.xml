@@ -89,6 +89,7 @@
     <string name="settings_broker_url">Broker 地址 (ws://…)</string>
     <string name="settings_batch_low_priority">合并低优先级通知</string>
     <string name="settings_advanced_diagnostics">高级诊断</string>
+    <string name="settings_analytics">分享崩溃和性能报告</string>
     <string name="settings_diagnostics">诊断</string>
     <string name="settings_client_id">客户端 ID：%1$s</string>
     <string name="settings_key_backing">密钥存储：%1$s</string>

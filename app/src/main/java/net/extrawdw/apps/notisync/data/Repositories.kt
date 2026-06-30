@@ -29,6 +29,7 @@ class SettingsRepository(
     private val deviceNameUpdatedKey = longPreferencesKey("device_name_updated_at")
     private val batchLowKey = booleanPreferencesKey("batch_low_priority")
     private val advancedKey = booleanPreferencesKey("advanced_diagnostics")
+    private val analyticsEnabledKey = booleanPreferencesKey("analytics_enabled")
     private val groupKey = stringPreferencesKey("group_id")
     private val epochKey = intPreferencesKey("route_epoch")
     private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
@@ -52,6 +53,17 @@ class SettingsRepository(
         store.data.map { it[batchLowKey] ?: false }.stateInEager(scope, false)
     val advancedDiagnostics: StateFlow<Boolean> =
         store.data.map { it[advancedKey] ?: false }.stateInEager(scope, false)
+
+    /** Opt-out analytics master switch covering Firebase Crashlytics + Performance collection. Default on
+     *  (opt-out): both SDKs auto-collect unless disabled, so turning this off stops telemetry. Applied by
+     *  the AppGraph collector wiring it into the Firebase SDKs. */
+    val analyticsEnabled: StateFlow<Boolean> =
+        store.data.map { it[analyticsEnabledKey] ?: true }.stateInEager(scope, true)
+
+    /** The PERSISTED analytics switch, read directly from DataStore — use this (not [analyticsEnabled].value,
+     *  which is still the `true` default during early startup) when applying the opt-out to the SDKs on
+     *  process start, so an opted-out user isn't briefly re-enabled. */
+    suspend fun analyticsEnabledNow(): Boolean = store.data.first()[analyticsEnabledKey] ?: true
 
     /** ANCS bridge master switch: whether to advertise + connect to a paired iPhone. Default off (opt-in). */
     val ancsBridgeEnabled: StateFlow<Boolean> =
@@ -81,6 +93,7 @@ class SettingsRepository(
 
     suspend fun setBatchLowPriority(on: Boolean) = store.edit { it[batchLowKey] = on }
     suspend fun setAdvancedDiagnostics(on: Boolean) = store.edit { it[advancedKey] = on }
+    suspend fun setAnalyticsEnabled(on: Boolean) = store.edit { it[analyticsEnabledKey] = on }
 
     suspend fun groupId(): String? = store.data.first()[groupKey]
     suspend fun setGroupId(id: String) = store.edit { it[groupKey] = id }

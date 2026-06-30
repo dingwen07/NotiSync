@@ -94,6 +94,7 @@
     <string name="settings_broker_url">Broker URL (ws://…)</string>
     <string name="settings_batch_low_priority">Batch low-priority notifications</string>
     <string name="settings_advanced_diagnostics">Advanced diagnostics</string>
+    <string name="settings_analytics">Share crash &amp; performance reports</string>
     <string name="settings_diagnostics">Diagnostics</string>
     <string name="settings_client_id">Client ID: %1$s</string>
     <string name="settings_key_backing">Key backing: %1$s</string>
