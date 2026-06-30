@@ -212,10 +212,10 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             call.respond(metrics.snapshot())
         }
 
-        // Unauthenticated discovery: a client learns whether the broker is secured (and whether a passing
-        // integrity attestation is required), and — if it presents a bearer — whether that token is currently
-        // valid (so it can decide to re-attest). `playIntegrityRequired` is the legacy wire name for the
-        // master security switch; `integrityRequired` is the separate attestation-required gate.
+        // Unauthenticated discovery: a client learns whether the broker is secured (`securityEnabled`) and
+        // whether a passing integrity attestation is required (`integrityRequired`), and — if it presents a
+        // bearer — whether that token is currently valid (so it can decide to re-attest). `playIntegrityRequired`
+        // is the legacy alias for `securityEnabled`, emitted unchanged for older clients (pending removal).
         get("/status") {
             val principal = auth.bearerPrincipal(call)
             call.respond(
@@ -228,6 +228,7 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
                     powDifficulty = config.powDifficulty,
                     acceptedAttestationMethods = attestation.acceptedMethods,
                     integrityRequired = config.integrityRequired,
+                    securityEnabled = config.securityEnabled,
                 )
             )
         }

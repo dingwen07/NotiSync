@@ -586,6 +586,8 @@ class BrokerFlowTest {
         assertTrue(AttestationType.FIREBASE_APP_CHECK in status.acceptedAttestationMethods)
         assertFalse(AttestationType.PLAY_INTEGRITY in status.acceptedAttestationMethods)
         assertTrue(status.integrityRequired)
+        assertTrue(status.securityEnabled)
+        assertTrue("legacy playIntegrityRequired mirrors securityEnabled", status.playIntegrityRequired)
         assertEquals(4, status.powDifficulty)
 
         val signer = SoftwareIdentitySigner.generate()
@@ -649,6 +651,7 @@ class BrokerFlowTest {
         application { brokerModule() }
 
         val status = ProtocolCodec.decodeFromJson<VerificationStatusResponse>(client.get("/v2/status").bodyAsText())
+        assertTrue("security on", status.securityEnabled)
         assertTrue("security on ⇒ legacy playIntegrityRequired flag true", status.playIntegrityRequired)
         assertFalse("integrity not required", status.integrityRequired)
 

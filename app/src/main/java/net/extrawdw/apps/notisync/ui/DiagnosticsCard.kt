@@ -171,7 +171,8 @@ fun DiagnosticsCard(
             val (attValue, attTone) = when {
                 loading -> stringResource(R.string.diag_checking) to Tone.NEUTRAL
                 status == null -> stringResource(R.string.diag_attestation_unknown) to Tone.NEUTRAL
-                !status.playIntegrityRequired -> stringResource(R.string.diag_attestation_not_required) to Tone.NEUTRAL
+                !(status.securityEnabled && status.integrityRequired) ->
+                    stringResource(R.string.diag_attestation_not_required) to Tone.NEUTRAL
                 status.verified -> stringResource(R.string.diag_attestation_verified) to Tone.GOOD
                 else -> stringResource(R.string.diag_attestation_unverified) to Tone.WARN
             }

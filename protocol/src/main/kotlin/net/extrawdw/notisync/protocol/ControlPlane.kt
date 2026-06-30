@@ -119,10 +119,7 @@ data class IntegrityVerificationResponse(
 data class VerificationStatusResponse(
     val version: String,
     /**
-     * Legacy field name, kept for wire compatibility with deployed clients: whether the broker enforces
-     * signed/JWT auth at all — i.e. the `NOTISYNC_SECURITY_ENABLED` master switch. A client reads this to
-     * distinguish an open/local broker (false) from a secured one (true). The attestation requirement is
-     * a separate axis — see [integrityRequired].
+     * DEPRECATED — pending removal. Legacy alias for [securityEnabled], carrying the same value
      */
     val playIntegrityRequired: Boolean,
     /** True iff this request carried a currently-valid bearer token. */
@@ -142,6 +139,10 @@ data class VerificationStatusResponse(
      * (which omits this field) see the lenient posture.
      */
     val integrityRequired: Boolean = false,
+    /**
+     * Whether the broker enforces signed requests and JWT auth
+     */
+    val securityEnabled: Boolean = false,
 )
 
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */
