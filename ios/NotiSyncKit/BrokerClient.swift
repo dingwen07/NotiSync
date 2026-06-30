@@ -140,11 +140,31 @@ actor BrokerClient {
         return u
     }
 
+    /// Normalize a request path to a stable Performance-Monitoring label, collapsing id-bearing segments
+    /// (`/v2/relay/<id>` → `/v2/relay/_id_`) so high-cardinality paths aggregate to one URL pattern instead
+    /// of fragmenting — or being dropped once Firebase's per-pattern budget is exceeded.
+    private static func metricTemplate(forPath path: String) -> String {
+        let withoutQuery = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        let parts = withoutQuery.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        guard parts.first == "v2", parts.count >= 2 else { return withoutQuery }
+        switch parts[1] {
+        case "keyepoch": return parts.count > 2 ? "/v2/keyepoch/_id_" : "/v2/keyepoch"
+        case "relay":
+            if parts.count == 2 { return "/v2/relay" }
+            if parts.count >= 3, parts[2] == "ack" { return "/v2/relay/ack" }
+            return "/v2/relay/_id_"
+        case "assets": return "/v2/assets/_id_/_id_"
+        default: return "/v2/" + parts[1]   // send, status, routes, connect, integrity, …
+        }
+    }
+
     // MARK: Public endpoints
 
     func health() async -> HealthResponse? {
         guard let u = URL(string: httpBase() + "/healthz") else { return nil }
-        guard let (data, resp) = try? await session.data(from: u), Self.ok(resp) else { return nil }
+        guard let (data, resp) = try? await PerfMonitor.http(url: u, method: "GET", requestBytes: 0, template: "/healthz", {
+            try await self.session.data(from: u)
+        }), Self.ok(resp) else { return nil }
         return try? ProtocolCodec.decodeHealthResponse(data)
     }
 
@@ -152,7 +172,10 @@ actor BrokerClient {
         guard let u = try? url("/v2/status") else { return nil }
         var req = URLRequest(url: u)
         if let token = cachedBearerForRefresh() { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        guard let (data, resp) = try? await session.data(for: req), Self.ok(resp) else { return nil }
+        let statusReq = req
+        guard let (data, resp) = try? await PerfMonitor.http(url: statusReq.url, method: "GET", requestBytes: 0, template: "/v2/status", {
+            try await self.session.data(for: statusReq)
+        }), Self.ok(resp) else { return nil }
         return try? ProtocolCodec.decodeVerificationStatusResponse(data)
     }
 
@@ -181,7 +204,10 @@ actor BrokerClient {
         if let token = cachedBearerForRefresh() {
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         }
-        guard let (data, resp) = try? await session.data(for: req), Self.ok(resp) else { return nil }
+        let epochReq = req
+        guard let (data, resp) = try? await PerfMonitor.http(url: epochReq.url, method: "GET", requestBytes: 0, template: "/v2/keyepoch/_id_", {
+            try await self.session.data(for: epochReq)
+        }), Self.ok(resp) else { return nil }
         return try? ProtocolCodec.decodeSignedBlob(data)
     }
 
@@ -198,7 +224,10 @@ actor BrokerClient {
         req.httpMethod = "POST"
         req.httpBody = body
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let (data, resp) = try await session.data(for: req)
+        let demoReq = req
+        let (data, resp) = try await PerfMonitor.http(url: demoReq.url, method: "POST", requestBytes: body.count, template: "/demo", {
+            try await self.session.data(for: demoReq)
+        })
         guard let http = resp as? HTTPURLResponse else { throw BrokerError.http(0, "no response") }
         guard (200..<300).contains(http.statusCode) else {
             throw BrokerError.http(http.statusCode, String(decoding: data, as: UTF8.self))
@@ -294,18 +323,34 @@ actor BrokerClient {
             throw BrokerError.unauthorized
         }
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
-        if let token = await bearerTokenOrNil() { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        var attachedBearer = false
+        if let token = await bearerTokenOrNil() {
+            req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+            attachedBearer = true
+        }
 
+        // The live-delivery WebSocket is invisible to Firebase's automatic network monitoring (it only
+        // captures data/upload/download tasks), so trace connect + nonce-handshake latency and reconnect churn.
+        let connectSpan = PerfMonitor.startSpan("ws_connect")
+        connectSpan.attribute("had_bearer", attachedBearer ? "true" : "false")
         let task = session.webSocketTask(with: req)
         task.resume()
         defer { task.cancel(with: .goingAway, reason: nil) }
 
-        let challengeText = try await task.receiveText()
-        guard let challenge = try? ProtocolCodec.decodeWsChallenge(challengeText) else {
-            throw BrokerError.unauthorized
+        do {
+            let challengeText = try await task.receiveText()
+            guard let challenge = try? ProtocolCodec.decodeWsChallenge(challengeText) else {
+                throw BrokerError.unauthorized
+            }
+            let sig = try identitySigner.sign(Data(challenge.nonce.utf8)).base64EncodedString()  // WS sig = base64 STANDARD
+            try await task.send(.string(ProtocolCodec.encodeWsAuth(clientId: identitySigner.clientId, nonce: challenge.nonce, signatureB64: sig)))
+            connectSpan.attribute("result", "ok")
+            connectSpan.stop()
+        } catch {
+            connectSpan.attribute("result", "fail")
+            connectSpan.stop()
+            throw error
         }
-        let sig = try identitySigner.sign(Data(challenge.nonce.utf8)).base64EncodedString()  // WS sig = base64 STANDARD
-        try await task.send(.string(ProtocolCodec.encodeWsAuth(clientId: identitySigner.clientId, nonce: challenge.nonce, signatureB64: sig)))
         onConnected()
 
         try await withThrowingTaskGroup(of: WebSocketLoopEvent.self) { group in
@@ -364,7 +409,11 @@ actor BrokerClient {
         let signer: EnvelopeSigner = operational ? operationalSigner : identitySigner
         var req = try signedRequest(path: path, method: method, body: body, signer: signer, contentType: contentType)
         if let token = await bearerTokenOrNil() { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        var (data, resp) = try await session.data(for: req)
+        let template = Self.metricTemplate(forPath: path)
+        let firstReq = req
+        var (data, resp) = try await PerfMonitor.http(url: firstReq.url, method: method, requestBytes: body.count, template: template, {
+            try await self.session.data(for: firstReq)
+        })
         if (resp as? HTTPURLResponse)?.statusCode == 401 {
             storeAuth(nil)
             let token = try await bearerToken()
@@ -374,7 +423,10 @@ actor BrokerClient {
             req = try signedRequest(path: path, method: method, body: body,
                                     signer: operational ? identitySigner : signer, contentType: contentType)
             req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-            (data, resp) = try await session.data(for: req)
+            let retryReq = req
+            (data, resp) = try await PerfMonitor.http(url: retryReq.url, method: method, requestBytes: body.count, template: template, {
+                try await self.session.data(for: retryReq)
+            })
         }
         guard let http = resp as? HTTPURLResponse else { throw BrokerError.http(0, "no response") }
         guard (200..<300).contains(http.statusCode) else {
@@ -389,7 +441,11 @@ actor BrokerClient {
         var req = try signedRequest(path: path, method: method, body: body, signer: operationalSigner, contentType: contentType)
         for (key, value) in extraHeaders { req.setValue(value, forHTTPHeaderField: key) }
         if let token { req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
-        var (data, resp) = try await session.data(for: req)
+        let template = Self.metricTemplate(forPath: path)
+        let firstReq = req
+        var (data, resp) = try await PerfMonitor.http(url: firstReq.url, method: method, requestBytes: body.count, template: template, {
+            try await self.session.data(for: firstReq)
+        })
         if (resp as? HTTPURLResponse)?.statusCode == 401 {
             if token != nil { storeAuth(nil) }
             let retryToken = await bearerTokenOrNil()
@@ -397,7 +453,10 @@ actor BrokerClient {
             req = try signedRequest(path: path, method: method, body: body, signer: identitySigner, contentType: contentType)
             for (key, value) in extraHeaders { req.setValue(value, forHTTPHeaderField: key) }
             if let retryToken { req.setValue("Bearer \(retryToken)", forHTTPHeaderField: "Authorization") }
-            (data, resp) = try await session.data(for: req)
+            let retryReq = req
+            (data, resp) = try await PerfMonitor.http(url: retryReq.url, method: method, requestBytes: body.count, template: template, {
+                try await self.session.data(for: retryReq)
+            })
         }
         guard let http = resp as? HTTPURLResponse else { throw BrokerError.http(0, "no response") }
         return (data, http)
@@ -421,7 +480,10 @@ actor BrokerClient {
         guard var req = try? signedRequest(path: "/v2/keyepoch", method: "POST", body: body,
                                            signer: identitySigner, contentType: "application/cbor") else { return }
         if let bearerToken { req.setValue("Bearer \(bearerToken)", forHTTPHeaderField: "Authorization") }
-        _ = try? await session.data(for: req)
+        let epochReq = req
+        _ = try? await PerfMonitor.http(url: epochReq.url, method: "POST", requestBytes: body.count, template: "/v2/keyepoch", {
+            try await self.session.data(for: epochReq)
+        })
     }
 
     private func cachedBearerOrNull() -> String? {
@@ -441,15 +503,24 @@ actor BrokerClient {
 
     private func bearerToken() async throws -> String {
         if let t = cachedBearerOrNull() { return t }
-        if let until = lastFailureAt, Date().timeIntervalSince(until) < failureCooldown { throw BrokerError.unauthorized }
+        // Only the attest path is traced (the cache hit above returns first). Covers App Check + PoW + the
+        // /integrity/verify round-trip — and flags cooldown lockouts, which silently stall all delivery.
+        let span = PerfMonitor.startSpan("bearer_acquire")
+        defer { span.stop() }
+        if let until = lastFailureAt, Date().timeIntervalSince(until) < failureCooldown {
+            span.attribute("result", "cooldown")
+            throw BrokerError.unauthorized
+        }
         do {
             let auth = try await verifyIntegrity()
             lastFailureAt = nil; failureCooldown = 0
             storeAuth(auth)
+            span.attribute("result", "ok")
             return auth.token
         } catch {
             lastFailureAt = Date()
             failureCooldown = min((failureCooldown == 0 ? 5 : failureCooldown) * 2, 300)
+            span.attribute("result", "fail")
             throw error
         }
     }
@@ -483,7 +554,10 @@ actor BrokerClient {
                 req.setValue("\(ts)", forHTTPHeaderField: ProofOfWork.headerTimestamp)
             }
         }
-        let (data, resp) = try await session.data(for: req)
+        let verifyReq = req
+        let (data, resp) = try await PerfMonitor.http(url: verifyReq.url, method: "POST", requestBytes: body.count, template: "/v2/integrity/verify", {
+            try await self.session.data(for: verifyReq)
+        })
         guard let http = resp as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             throw BrokerError.attestationFailed(code, String(decoding: data, as: UTF8.self))

@@ -29,6 +29,8 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import net.extrawdw.apps.notisync.analytics.FirebasePerfHttpInterceptor
+import net.extrawdw.apps.notisync.analytics.perfSpan
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.ClientId
@@ -81,10 +83,15 @@ class BrokerClient(
 
     private val client = HttpClient(OkHttp) {
         engine {
-            // Keepalive at the OkHttp layer: ping the broker periodically so a half-open socket
-            // (NAT/proxy idle drop) is detected — a missed pong fails the socket instead of the read
-            // loop blocking forever, surfacing as the exception that drives reconnect in runLiveDelivery().
-            config { pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS) }
+            config {
+                // Keepalive at the OkHttp layer: ping the broker periodically so a half-open socket
+                // (NAT/proxy idle drop) is detected — a missed pong fails the socket instead of the read
+                // loop blocking forever, surfacing as the exception that drives reconnect in runLiveDelivery().
+                pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS)
+                // Per-call Firebase Performance HttpMetric (normalised URL, status, payload sizes). Added on
+                // the OkHttp builder so it observes every Ktor request; it skips the WS upgrade internally.
+                addInterceptor(FirebasePerfHttpInterceptor())
+            }
         }
         install(WebSockets)
     }
@@ -428,44 +435,62 @@ class BrokerClient(
     }
 
     private suspend fun verifyIntegrity(): IntegrityVerificationResponse {
-        // App Check proves this is a genuine, unmodified app on a genuine device (Play Integrity under the
-        // hood, handled by Firebase). The token is bound to this clientId/nonce/timestamp by the identity
-        // request signature below, and the broker verifies it locally against the App Check JWKS.
-        val request = IntegrityVerificationRequest(
-            clientId = signer.clientId,
-            attestationType = AttestationType.FIREBASE_APP_CHECK,
-            attestationToken = integrity.token(),
-            // NS2: carry the self-contained key-epoch so the broker learns our identity + operational keys and
-            // stores them BEFORE issuing the bearer (so a subsequent operational-signed request resolves).
-            clientKeyEpoch = clientKeyEpochProvider(),
-        )
-        val body = ProtocolCodec.encodeToJson(request).toByteArray(Charsets.UTF_8)
-        val url = "${httpBase()}/v2/integrity/verify"
-        // A still-valid token lets the broker treat this as a refresh (re-attests, skips proof of work).
-        val refreshToken = cachedBearerForRefresh()
-        val signed = HttpRequestSigning.sign(signer, "POST", pathAndQuery(url), body)
-        val resp = client.post(url) {
-            contentType(ContentType.Application.Json)
-            applySigned(signed, bearerToken = refreshToken)
-            if (refreshToken == null) {
-                // First contact: solve the proof of work at the broker's advertised difficulty, bound to
-                // this request's signature so it can't be precomputed.
-                val powTimestamp = System.currentTimeMillis()
-                val powNonce = ProofOfWork.solve(signed.signature, powTimestamp, powDifficulty())
-                header(ProofOfWork.HEADER_NONCE, powNonce)
-                header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
-            }
-            setBody(body)
-        }
-        if (!resp.status.isSuccess()) {
-            val retryable =
-                resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
-            throw IntegrityException(
-                "Attestation verification failed: ${resp.status} ${resp.bodyAsText()}",
-                retryable
+        // The slowest security operation on any request path: the App Check token round-trip (Play Integrity
+        // under the hood) plus the broker verify POST. `token_ms` isolates the Firebase/Play Integrity cost
+        // from the broker leg; `result` distinguishes a token-fetch failure from a broker reject/transient.
+        val span = perfSpan("app_check_attestation")
+        var result = "token_failed"
+        try {
+            // App Check proves this is a genuine, unmodified app on a genuine device (Play Integrity under the
+            // hood, handled by Firebase). The token is bound to this clientId/nonce/timestamp by the identity
+            // request signature below, and the broker verifies it locally against the App Check JWKS.
+            val tokenStartNanos = System.nanoTime()
+            val attestationToken = integrity.token()
+            span.metric("token_ms", (System.nanoTime() - tokenStartNanos) / 1_000_000)
+            result = "post_failed"
+            val request = IntegrityVerificationRequest(
+                clientId = signer.clientId,
+                attestationType = AttestationType.FIREBASE_APP_CHECK,
+                attestationToken = attestationToken,
+                // NS2: carry the self-contained key-epoch so the broker learns our identity + operational keys
+                // and stores them BEFORE issuing the bearer (so a subsequent operational-signed request resolves).
+                clientKeyEpoch = clientKeyEpochProvider(),
             )
+            val body = ProtocolCodec.encodeToJson(request).toByteArray(Charsets.UTF_8)
+            val url = "${httpBase()}/v2/integrity/verify"
+            // A still-valid token lets the broker treat this as a refresh (re-attests, skips proof of work).
+            val refreshToken = cachedBearerForRefresh()
+            span.attr("had_pow", (refreshToken == null).toString())
+            val signed = HttpRequestSigning.sign(signer, "POST", pathAndQuery(url), body)
+            val resp = client.post(url) {
+                contentType(ContentType.Application.Json)
+                applySigned(signed, bearerToken = refreshToken)
+                if (refreshToken == null) {
+                    // First contact: solve the proof of work at the broker's advertised difficulty, bound to
+                    // this request's signature so it can't be precomputed.
+                    val powTimestamp = System.currentTimeMillis()
+                    val powNonce = ProofOfWork.solve(signed.signature, powTimestamp, powDifficulty())
+                    header(ProofOfWork.HEADER_NONCE, powNonce)
+                    header(ProofOfWork.HEADER_TIMESTAMP, powTimestamp.toString())
+                }
+                setBody(body)
+            }
+            if (!resp.status.isSuccess()) {
+                val retryable =
+                    resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
+                result = if (retryable) "retryable" else "rejected"
+                throw IntegrityException(
+                    "Attestation verification failed: ${resp.status} ${resp.bodyAsText()}",
+                    retryable
+                )
+            }
+            val response = ProtocolCodec.decodeFromJson<IntegrityVerificationResponse>(resp.bodyAsText())
+            result = "ok"
+            return response
+        } finally {
+            span.attr("result", result)
+            span.stop()
         }
-        return ProtocolCodec.decodeFromJson(resp.bodyAsText())
     }
 
     /** The PoW difficulty the broker currently requires (advertised on /v2/status); falls back to the
@@ -529,6 +554,9 @@ class BrokerClient(
         var backoffMs = 1_000L
         var consecutiveFailures = 0
         while (currentCoroutineContext().isActive) {
+            val span = perfSpan("ws_connect")
+            span.metric("attempt", (consecutiveFailures + 1).toLong())
+            var connected = false
             try {
                 val url = "${wsBase()}/v2/connect"
                 val token = bearerTokenOrNull()
@@ -553,6 +581,11 @@ class BrokerClient(
                             )
                         )
                     )
+                    // Handshake + auth complete. Stop the connect trace here — before the long-lived receive
+                    // loop — so `ws_connect` measures connect+auth latency, not the whole session length.
+                    connected = true
+                    span.attr("result", "ok")
+                    span.stop()
                     backoffMs = 1_000L
                     consecutiveFailures = 0
                     for (frame in incoming) {
@@ -582,10 +615,13 @@ class BrokerClient(
                     }
                 }
             } catch (e: CancellationException) {
-                throw e // cooperative cancellation (app backgrounded / scope cancelled): not a reconnectable failure
+                // Cooperative cancellation (app backgrounded / scope cancelled): not a reconnectable failure.
+                if (!connected) { span.attr("result", "cancelled"); span.stop() }
+                throw e
             } catch (_: Exception) {
                 // A run of failed handshakes while we still hold a cached token may mean the broker
                 // rotated its JWT key; drop it so the next attempt re-attests. (HTTP calls self-heal on 401.)
+                if (!connected) { span.attr("result", "failed"); span.stop() }
                 if (++consecutiveFailures >= WS_REAUTH_AFTER_FAILURES) {
                     storeAuth(null)
                     consecutiveFailures = 0

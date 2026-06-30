@@ -35,6 +35,8 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
 import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.apps.notisync.assets.AssetCache
@@ -267,6 +269,15 @@ class RemoteNotificationPoster(
                 Manifest.permission.POST_NOTIFICATIONS
             ) != PackageManager.PERMISSION_GRANTED
         ) return
+        perfTrace("mirror_render") { span ->
+            span.attr("style", notif.style.name.lowercase())
+            span.attr("silent", silent.toString())
+            renderGranted(notif, silent, span)
+        }
+    }
+
+    /** The render body, after the POST_NOTIFICATIONS guard. Traced as `mirror_render` by [render]. */
+    private fun renderGranted(notif: CapturedNotification, silent: Boolean, span: PerfSpan) {
         // Prefer the originating device's name (e.g. the bridged iPhone) over this sender's own name, so an
         // iOS mirror reads "WhatsApp (Dingwen's iPhone)", not the Android bridge phone's name.
         val groupDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
@@ -274,6 +285,7 @@ class RemoteNotificationPoster(
         val receiverGroupKey = receiverGroupKey(notif)
         val receiverGroupTitle = MirrorChannels.groupName(notif.appLabel, groupDeviceName)
         if (notif.isGroupSummary) {
+            span.attr("kind", "group_summary")
             updateGroupSummary(
                 receiverGroupKey,
                 parentChannelId,
@@ -284,6 +296,7 @@ class RemoteNotificationPoster(
             )
             return
         }
+        span.attr("kind", "notification")
         var postChannelId = parentChannelId
         var shortcutId: String? = null
 
@@ -410,6 +423,9 @@ class RemoteNotificationPoster(
         applyLargeIcon(builder, notif)
 
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
+        if (notif.style == NotifStyle.MESSAGING) {
+            span.metric("message_count", notif.messages.size.toLong())
+        }
         updateGroupSummary(
             receiverGroupKey,
             postChannelId,

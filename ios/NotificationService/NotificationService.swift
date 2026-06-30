@@ -11,13 +11,23 @@ final class NotificationService: UNNotificationServiceExtension {
     private var processingTask: Task<Void, Never>?
     private var claimedDedupId: String?
 
+    // Perf instrumentation. The NSE deliberately does not link Firebase (configuring it would add tens of ms
+    // to this time-boxed path and extension uploads are unreliable), so it measures the outcome + latency and
+    // hands them to the app via the App Group; the app replays them into Performance (see PerfEventStore).
+    private let startedAt = Date()
+    private var perfTransport = "inline"
+    private var perfStyle = "?"
+    private var perfReported = false
+    private var perfAssetNetworkCount = 0   // network icon/avatar/attachment fetches (cache misses) this push
+    private var perfAssetNetworkMs: Int64 = 0
+
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
         self.contentHandler = contentHandler
         let best = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
         self.bestAttempt = best
 
-        guard let engine = NotiSyncEngine(forExtension: true) else { finish(best); return }
+        guard let engine = NotiSyncEngine(forExtension: true) else { reportPerf("no_engine"); finish(best); return }
         let info = request.content.userInfo
 
         processingTask = Task {
@@ -26,6 +36,7 @@ final class NotificationService: UNNotificationServiceExtension {
             // relay-fetched (oversized) one — both are "APNs alert" (NSE-displayed), but by different paths.
             var bytes: Data?
             let inline = info["ct"] != nil
+            perfTransport = inline ? "inline" : "relay"
             if let ct = info["ct"] as? String { bytes = Data(base64Encoded: ct) }
             if bytes == nil, let mid = info["mid"] as? String {
                 bytes = await RelayClient.fetchMessage(mid,
@@ -33,7 +44,7 @@ final class NotificationService: UNNotificationServiceExtension {
                                                        operationalSigner: engine.operationalSigner,
                                                        keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
             }
-            guard let envelopeBytes = bytes else { finish(best); return }
+            guard let envelopeBytes = bytes else { reportPerf("no_bytes"); finish(best); return }
             let deliveryMode = (inline ? DeliveryMode.apnsAlertInline : .apnsAlertRelay).rawValue
             let dedupId = (info["mid"] as? String) ?? (try? engine.envelopeMessageId(envelopeBytes))
             if let dedupId {
@@ -46,9 +57,11 @@ final class NotificationService: UNNotificationServiceExtension {
                                           identitySigner: engine.identitySigner,
                                           operationalSigner: engine.operationalSigner,
                                           keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
+                    reportPerf("dup")
                     finish(best)
                     return
                 case .inFlight:
+                    reportPerf("inflight")
                     finish(best)
                     return
                 }
@@ -58,9 +71,11 @@ final class NotificationService: UNNotificationServiceExtension {
                 let (env, inbound) = try engine.openEnvelope(envelopeBytes)
                 guard case let .notification(n) = inbound else {
                     releaseClaim(dedupId)
+                    reportPerf("not_notification")
                     finish(best)
                     return
                 }
+                perfStyle = n.style.rawValue
                 let messageId = dedupId ?? env.messageId
                 let filterAlert = NotificationFilterStore.shouldFilterNotification(n)
                 // Register the per-channel category (with the Dismiss action) for this push (#15).
@@ -130,9 +145,11 @@ final class NotificationService: UNNotificationServiceExtension {
                                       identitySigner: engine.identitySigner,
                                       operationalSigner: engine.operationalSigner,
                                       keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
+                reportPerf(filterAlert ? "filtered" : "delivered", postTime: n.postTime)
                 finish(filterAlert ? MirrorPresentation.passiveContent(content, removeActions: true) : content)
             } catch {
                 releaseClaim(dedupId)
+                reportPerf("error")
                 finish(best) // placeholder; the app recovers it on next foreground / relay drain
             }
         }
@@ -167,7 +184,12 @@ final class NotificationService: UNNotificationServiceExtension {
     private func fetchSenderImage(_ fetch: SenderImageFetch?, engine: NotiSyncEngine) async -> Data? {
         switch fetch {
         case .appStoreIcon(let bundleId):
-            return await AppIconFetcher.iconData(iosBundleId: bundleId)
+            // Reached only after the synchronous cache check missed, so this is a real iTunes network fetch.
+            let start = Date()
+            let data = await AppIconFetcher.iconData(iosBundleId: bundleId)
+            perfAssetNetworkMs += Int64(Date().timeIntervalSince(start) * 1000)
+            perfAssetNetworkCount += 1
+            return data
         case .privateAsset(let ref):
             return await privateAsset(ref, engine: engine)
         case .none:
@@ -194,11 +216,14 @@ final class NotificationService: UNNotificationServiceExtension {
 
     private func privateAsset(_ ref: PrivateAssetRef, engine: NotiSyncEngine) async -> Data? {
         if let cached = AssetCache.read(ref.assetHash) { return cached }
-        guard let ciphertext = await RelayClient.fetchAsset(ref,
-                                                            identitySigner: engine.identitySigner,
-                                                            operationalSigner: engine.operationalSigner,
-                                                            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }),
-              let plaintext = engine.openAsset(ref, ciphertext: ciphertext) else { return nil }
+        let start = Date()
+        let ciphertext = await RelayClient.fetchAsset(ref,
+                                                      identitySigner: engine.identitySigner,
+                                                      operationalSigner: engine.operationalSigner,
+                                                      keyEpochProvider: { try engine.buildClientKeyEpochBlob() })
+        perfAssetNetworkMs += Int64(Date().timeIntervalSince(start) * 1000)
+        perfAssetNetworkCount += 1
+        guard let ciphertext, let plaintext = engine.openAsset(ref, ciphertext: ciphertext) else { return nil }
         AssetCache.write(ref.assetHash, plaintext)
         return plaintext
     }
@@ -210,9 +235,43 @@ final class NotificationService: UNNotificationServiceExtension {
         contentHandler(content)
     }
 
+    /// Hand the NSE's outcome + latency to the app for replay into Performance Monitoring. The `result`
+    /// includes "expired" — the user saw the placeholder instead of the decrypted mirror — the most important
+    /// health signal for the alert fast-path. Idempotent: reports once per push, whichever exit (or the
+    /// timeout) fires first.
+    ///
+    /// This is a REPLAYED trace (the NSE has no Firebase), so the trace's own duration is ~0 — read the
+    /// metrics: `duration_ms` is the NSE's own processing (didReceive → display); `e2e_ms` is source-capture →
+    /// display (`postTime` → now, the user-perceived latency, a superset of `duration_ms`). This is the alert
+    /// path's e2e home — the app-render `mirror_e2e_latency` deliberately does NOT cover the NSE (no dup).
+    ///
+    /// Attributes separate the alert variants: `transport` is the envelope source (inline `ct` vs oversized
+    /// relay `mid` fetch), and `asset_fetch` is whether rendering the mirror also went to the network for an
+    /// icon/avatar/attachment (cache miss) vs served everything from cache. So APNs-inline, APNs+relay-fetch,
+    /// and the +asset-fetch variant of each are all distinguishable (`asset_ms` quantifies the cost).
+    private func reportPerf(_ result: String, postTime: Int64? = nil) {
+        guard !perfReported else { return }
+        perfReported = true
+        var metrics: [String: Int64] = ["duration_ms": Int64(Date().timeIntervalSince(startedAt) * 1000)]
+        if perfAssetNetworkCount > 0 {
+            metrics["asset_ms"] = perfAssetNetworkMs
+            metrics["asset_count"] = Int64(perfAssetNetworkCount)
+        }
+        if let postTime {
+            let value = Int64(Date().timeIntervalSince1970 * 1000) - postTime
+            if value >= 0, value <= 6 * 60 * 60 * 1000 { metrics["e2e_ms"] = value }
+        }
+        PerfEventStore.append(DeferredPerfTrace(
+            name: "nse_delivery",
+            attributes: ["result": result, "transport": perfTransport, "style": perfStyle,
+                         "asset_fetch": perfAssetNetworkCount > 0 ? "network" : "none"],
+            metrics: metrics))
+    }
+
     override func serviceExtensionTimeWillExpire() {
         processingTask?.cancel()
         releaseClaim(claimedDedupId)
+        reportPerf("expired")
         if let bestAttempt { finish(bestAttempt) }
     }
 

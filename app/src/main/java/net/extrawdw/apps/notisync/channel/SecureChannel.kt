@@ -1,5 +1,7 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.apps.notisync.analytics.perfSpan
+import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
@@ -157,10 +159,14 @@ class SecureChannel(
             // throwing out of the send, mirroring deliver()'s defensive open. (Only the non-suspending seal is
             // wrapped, so coroutine cancellation from transport.send still propagates normally.)
             val envelope = runCatching {
-                if (op != null) {
-                    EnvelopeCrypto.seal(op, typ, body, recipients, messageId, seqN, createdAt)
-                } else {
-                    EnvelopeCrypto.seal(signer, typ, body, recipients, messageId, seqN, createdAt)
+                perfTrace("envelope_seal") { span ->
+                    span.attr("signer", if (op != null) "operational" else "identity")
+                    span.metric("recipient_count", recipients.size.toLong())
+                    if (op != null) {
+                        EnvelopeCrypto.seal(op, typ, body, recipients, messageId, seqN, createdAt)
+                    } else {
+                        EnvelopeCrypto.seal(signer, typ, body, recipients, messageId, seqN, createdAt)
+                    }
                 }
             }.getOrElse {
                 log.warn("seal failed for $typ ($messageId); skipping send: ${it.message}")
@@ -200,6 +206,12 @@ class SecureChannel(
         // other backs off as IN_FLIGHT — not yet durably recorded, so its caller must NOT ack it (the
         // winning handler may still fail). Released in `finally` so a DROPPED id can be retried later.
         if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
+        // Trace the verified-receive pipeline (post-dedup, so high-volume duplicates don't flood it). The
+        // `result` attribute pins down WHY a drop happened (verify vs key vs decrypt), and `e2e_latency_ms`
+        // estimates cross-device delivery time on the handled path.
+        val span = perfSpan("notification_delivery")
+        span.attr("delivery_mode", deliveryMode.name.lowercase())
+        var result = "dropped"
         try {
             // Resolve the verify key for the CLAIMED signerEpoch. For an operational epoch this is the
             // anti-rollback gate: a retired/floored/non-ENVELOPE_SIGN epoch resolves to null and we drop
@@ -210,13 +222,17 @@ class SecureChannel(
                 // We hold no usable key-epoch for this sender (none, or not the epoch it signed with) — ask the
                 // handler to fetch it so the relayed copy can be re-delivered + verified once we converge.
                 onUnresolvedSender(envelope.signerId)
+                result = "sender_unresolved"
                 return DeliveryOutcome.DROPPED
             }
+            val verifyStartNanos = System.nanoTime()
             if (!EnvelopeCrypto.verify(envelope, sender.verifySpki)) {
                 log.warn("signature verification failed for $id")
                 onBadSignature(envelope.signerId, now(), deliveryMode)
+                result = "verify_failed"
                 return DeliveryOutcome.DROPPED
             }
+            span.metric("verify_ms", (System.nanoTime() - verifyStartNanos) / 1_000_000)
             // Open with the private HPKE keyset for the epoch the sender sealed to us (selected from our
             // retained ring). A missing keyset (we no longer retain that epoch) is an undecryptable DROPPED —
             // deliberately left unacked (matching a decrypt failure) so the relay redelivers once we re-converge;
@@ -227,15 +243,20 @@ class SecureChannel(
             val myKeyset = myEpoch?.let { myHpkePrivate(it) }
             if (myKeyset == null) {
                 log.warn("no retained HPKE keyset for recipient epoch $myEpoch to open $id — dropping unacked for relay redelivery")
+                result = "key_missing"
                 return DeliveryOutcome.DROPPED
             }
             val body = runCatching {
                 EnvelopeCrypto.open(envelope, signer.clientId, myKeyset)
             }.getOrElse {
                 log.warn("decrypt failed for $id: ${it.message}")
+                result = "decrypt_failed"
                 return DeliveryOutcome.DROPPED
             }
-            val handler = handlers[envelope.typ] ?: return DeliveryOutcome.DROPPED
+            val handler = handlers[envelope.typ] ?: run {
+                result = "no_handler"
+                return DeliveryOutcome.DROPPED
+            }
             // Report which key-kind signed (0 = identity, ≥1 = operational) so the handler can enforce the
             // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
             handler(
@@ -252,8 +273,15 @@ class SecureChannel(
             // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
             recent.add(id)
             dedup?.record(id)
+            // Approximate cross-device delivery latency: this receiver's clock minus the sender's sealed-at
+            // stamp. Clock skew between devices makes this a distribution signal (watch P50/P90), not an
+            // exact per-event value; clamp skew-induced negatives to 0.
+            span.metric("e2e_latency_ms", (now() - envelope.createdAt).coerceAtLeast(0))
+            result = "handled"
             return DeliveryOutcome.HANDLED
         } finally {
+            span.attr("result", result)
+            span.stop()
             inFlight.remove(id)
         }
     }

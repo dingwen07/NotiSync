@@ -179,10 +179,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     }
 
     private func performForegroundSyncPass(generation: Int) async {
+        let span = PerfMonitor.startSpan("foreground_sync_pass")
+        defer { span.stop() }
         guard shouldContinueForegroundSync(generation) else { return }
         await refreshNotificationPermissionStatusAsync()
         guard shouldContinueForegroundSync(generation) else { return }
         await drainPendingInbox() // pull mirrors the NSE displayed-and-acked into the SwiftData Inbox
+        drainDeferredPerfTraces() // replay NSE-measured perf traces (the NSE has no Firebase) into Performance
         guard shouldContinueForegroundSync(generation) else { return }
         await refreshBrokerStatus()
         guard shouldContinueForegroundSync(generation) else { return }
@@ -457,6 +460,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         work = Task { @MainActor in
             ensureCoreReady()
             await drainPendingInbox()    // NSE-delivered (APNs alert) mirrors land here, not in the relay
+            drainDeferredPerfTraces()    // replay NSE-measured perf traces into Performance
             guard !Task.isCancelled else { return false }
             await drainRelay(deliveryMode: .backgroundRefresh)
             guard !Task.isCancelled else { return false }
@@ -476,5 +480,14 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         let request = BGAppRefreshTaskRequest(identifier: Self.relayRefreshTaskId)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 60 * 30)
         try? BGTaskScheduler.shared.submit(request)
+    }
+
+    /// Replay perf traces measured where Firebase can't run live — the NSE (which does not link Firebase) and
+    /// the SwiftData container built before `FirebaseApp.configure()` — into Performance Monitoring. Drains
+    /// the App Group hand-off queue; each record becomes a one-shot value trace.
+    private func drainDeferredPerfTraces() {
+        for trace in PerfEventStore.drainAll() {
+            PerfMonitor.recordValueTrace(trace.name, attributes: trace.attributes, metrics: trace.metrics)
+        }
     }
 }

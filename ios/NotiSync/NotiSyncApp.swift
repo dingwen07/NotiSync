@@ -35,6 +35,9 @@ struct NotiSyncApp: App {
             for suffix in ["", "-wal", "-shm"] {
                 try? fm.removeItem(at: URL(fileURLWithPath: modelConfiguration.url.path + suffix))
             }
+            // Flag the destructive reset so the app can report its rate to Performance once Firebase is up
+            // (this runs before FirebaseApp.configure()). A nonzero rate signals silent local data loss.
+            PerfEventStore.append(DeferredPerfTrace(name: "swiftdata_reset", attributes: ["did_reset": "true"]))
             do {
                 return try ModelContainer(for: schema, configurations: [modelConfiguration])
             } catch {

@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.assets
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.domain.AssetResolver
 import net.extrawdw.apps.notisync.domain.ResolveResult
 import net.extrawdw.notisync.protocol.AssetRole
@@ -97,26 +98,45 @@ class AssetManager(
         return ref
     }
 
-    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
-        var newlyAvailable = false
-        val stillMissing = ArrayList<PrivateAssetRef>()
-        for (ref in refs) {
-            if (cache.has(ref.assetHash)) continue
-            val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
-            val plaintext = sealed?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
-            if (plaintext == null || !AssetHash.matches(
-                    plaintext,
-                    ref.assetHash
-                )
-            ) { // missing / wrong key / corrupt / substituted
-                stillMissing.add(ref)
-                continue
+    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult =
+        // Fetching a missing asset (network + decrypt) can block a mirror's final render by 100–500ms, so
+        // time it. `result` separates a pure cache hit from a fetch/miss; `bytes` sizes the transfer.
+        perfTrace("asset_fetch") { span ->
+            var newlyAvailable = false
+            var fetchedBytes = 0L
+            var fetchedCount = 0
+            val stillMissing = ArrayList<PrivateAssetRef>()
+            for (ref in refs) {
+                if (cache.has(ref.assetHash)) continue
+                val sealed = transport.fetchPrivateAsset(ref.sourceClientId, ref.assetId)
+                val plaintext = sealed?.let { runCatching { AssetAead.open(ref, it) }.getOrNull() }
+                if (plaintext == null || !AssetHash.matches(
+                        plaintext,
+                        ref.assetHash
+                    )
+                ) { // missing / wrong key / corrupt / substituted
+                    stillMissing.add(ref)
+                    continue
+                }
+                cache.write(ref.assetHash, plaintext)
+                newlyAvailable = true
+                fetchedBytes += plaintext.size
+                fetchedCount++
             }
-            cache.write(ref.assetHash, plaintext)
-            newlyAvailable = true
+            span.metric("refs", refs.size.toLong())
+            span.metric("fetched", fetchedCount.toLong())
+            span.metric("bytes", fetchedBytes)
+            span.attr(
+                "result",
+                when {
+                    stillMissing.isNotEmpty() && fetchedCount > 0 -> "partial"
+                    stillMissing.isNotEmpty() -> "miss"
+                    fetchedCount > 0 -> "fetched"
+                    else -> "cache_hit"
+                }
+            )
+            ResolveResult(newlyAvailable, stillMissing)
         }
-        return ResolveResult(newlyAvailable, stillMissing)
-    }
 
     /** Provider repair: re-seal the cached plaintext under its existing id and re-upload it. */
     override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? {

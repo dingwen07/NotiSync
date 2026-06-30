@@ -39,6 +39,8 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
+import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
 import net.extrawdw.apps.notisync.crypto.EpochHpkeKeyManager
@@ -191,8 +193,11 @@ class AppGraph(private val app: Application) {
 
     val clientId: ClientId? get() = if (::identity.isInitialized) identity.clientId else null
 
-    fun init() {
+    fun init(initSpan: PerfSpan) {
+        val identityStartNanos = System.nanoTime()
         identity = AndroidIdentitySigner.loadOrCreate()
+        // StrongBox identity-key load/generate dominates first-run cold start; isolate it from the rest.
+        initSpan.metric("identity_load_ms", (System.nanoTime() - identityStartNanos) / 1_000_000)
         val vault = KeyVault()
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
@@ -204,7 +209,10 @@ class AppGraph(private val app: Application) {
             AnalyticsController.apply(settings.analyticsEnabledNow())
             settings.analyticsEnabled.onEach(AnalyticsController::apply).launchIn(this)
         }
+        val trustStartNanos = System.nanoTime()
         trust = TrustStore(ds, scope, identity)
+        // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
+        initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
         appSelection = AppSelectionRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
@@ -1039,7 +1047,9 @@ class NotiSyncApp : Application() {
         graph = AppGraph(this)
         initScope.launch {
             runCatching {
-                graph.init()
+                // Cold-start init runs off the main thread (so the automatic `_app_start` trace can't see
+                // it); `app_graph_init` captures its duration + the StrongBox/TrustStore sub-metrics.
+                perfTrace("app_graph_init") { span -> graph.init(span) }
                 _graphReady.value = true
                 graphDeferred.complete(graph)
             }.onFailure { t ->

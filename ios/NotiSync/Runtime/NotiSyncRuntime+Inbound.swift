@@ -68,25 +68,38 @@ extension NotiSyncRuntime {
     @discardableResult
     func receiveEnvelope(_ bytes: Data, mode: DeliveryMode, retryOnUnresolved: Bool = true) async -> Bool {
         guard let engine else { return false }
+        let span = PerfMonitor.startSpan("inbound_envelope")
+        span.attribute("delivery_mode", mode.rawValue)
+        defer { span.stop() }
         let result = await Task.detached(priority: .userInitiated) {
             try Self.openInboundEnvelope(bytes, engine: engine)
         }.result
         switch result {
         case .success(.alreadyHandled):
+            span.attribute("result", "already_handled")
             return true
         case .success(.inFlight):
+            span.attribute("result", "in_flight")
             return false
         case .success(.opened(let opened)):
             switch opened.inbound {
-            case let .notification(n): await renderNotification(n, messageId: opened.env.messageId, mode: mode)
-            case let .dismissal(d): removeRemoteDismissal(d)
-            case let .dataSync(ds): await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
+            case let .notification(n):
+                span.attribute("inbound_kind", "notification")
+                await renderNotification(n, messageId: opened.env.messageId, mode: mode)
+            case let .dismissal(d):
+                span.attribute("inbound_kind", "dismissal")
+                removeRemoteDismissal(d)
+            case let .dataSync(ds):
+                span.attribute("inbound_kind", "data_sync")
+                await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
             }
             MessageDedupStore.record(opened.dedupId)   // mark handled only after the handler ran
             settings().lastDeliveryMode = mode.rawValue
             try? modelContext?.save()
+            span.attribute("result", "handled")
             return true
         case .failure(EngineError.unresolvedSender(let id)) where retryOnUnresolved:
+            span.attribute("result", "retry_unresolved")
             await refetchKeyEpoch(id)
             return await receiveEnvelope(bytes, mode: mode, retryOnUnresolved: false)
         case .failure(let e as EngineError) where e.isSilentDrop:
@@ -99,11 +112,13 @@ extension NotiSyncRuntime {
             let signerId = envelope?.signerId ?? "unknown"
             let messageId = envelope?.messageId ?? "unknown"
             log.info("dropping envelope signerId=\(signerId, privacy: .public) messageId=\(messageId, privacy: .public): \(e.localizedDescription, privacy: .public)")
+            span.attribute("result", "silent_drop")
             return e.ackAfterSilentDrop
         case .failure(let error):
             record(error: error, domain: .envelopeDelivery)
             // Non-silent failures (bad signature, malformed body, unsupported payload shape) will not become
             // deliverable by retrying the same relay item forever. Treat them as handled so peek fetches ack.
+            span.attribute("result", "error")
             return true
         }
     }
@@ -120,6 +135,8 @@ extension NotiSyncRuntime {
             }
         }
         do {
+            let span = PerfMonitor.startSpan("envelope_open")
+            defer { span.stop() }
             let (env, inbound) = try engine.openEnvelope(bytes)
             return .opened(OpenedEnvelopeResult(env: env, inbound: inbound, dedupId: dedupId ?? env.messageId))
         } catch {
@@ -129,16 +146,20 @@ extension NotiSyncRuntime {
     }
 
     private func renderNotification(_ n: CapturedNotification, messageId: String, mode: DeliveryMode) async {
+        let span = PerfMonitor.startSpan("mirror_render")
+        span.attribute("style", n.style.rawValue)
+        defer { span.stop() }
         let identifier = MirrorPresentation.identifier(for: n)
         // If the NSE (or an earlier path) already delivered this message, reflect ITS delivery mode in the
         // Inbox rather than the later drain/WS, and don't post a duplicate banner.
         let prior = MirrorMapStore.entries(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
             .first { $0.messageId == messageId }
         let displayMode = prior?.deliveryMode ?? mode.rawValue
+        span.attribute("delivery_mode", displayMode)
         upsertInbox(n, messageId: messageId, identifier: identifier, deliveryMode: displayMode)
         addActivity(.received, .appLabel, titleArg: n.appLabel, detail: .deliveryMode, detailArg: displayMode)
-        guard prior == nil else { return }
-        guard !NotificationFilterStore.shouldFilterNotification(n) else { return }
+        guard prior == nil else { span.attribute("result", "duplicate"); return }
+        guard !NotificationFilterStore.shouldFilterNotification(n) else { span.attribute("result", "filtered"); return }
         // Register the per-channel category (carrying the Dismiss action) before posting under it (#15).
         MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
         if n.style == .MESSAGING, !n.messages.isEmpty {
@@ -146,6 +167,24 @@ extension NotiSyncRuntime {
         } else {
             await postSingleMirror(n, messageId: messageId, identifier: identifier, mode: mode)
         }
+        span.attribute("result", "posted")
+        recordMirrorLatency(n, deliveryMode: displayMode)
+    }
+
+    /// The product's north-star metric: source-capture → on-device-display latency (the whole pipeline —
+    /// source app, broker, transport, decrypt, render). `postTime` is the SOURCE device's clock, so guard
+    /// against skew/garbage (negative or absurdly large) before recording; the noise averages out in
+    /// aggregate. Recorded only for mirrors this path actually posts (the NSE alert path reports its own
+    /// `nse_delivery` e2e instead, since the app only upserts those into the Inbox).
+    private func recordMirrorLatency(_ n: CapturedNotification, deliveryMode: String) {
+        let latency = NotiSyncEngine.nowMillis() - n.postTime
+        guard latency >= 0, latency <= 6 * 60 * 60 * 1000 else { return }
+        PerfMonitor.recordValueTrace(
+            "mirror_e2e_latency",
+            attributes: ["delivery_mode": deliveryMode,
+                         "origin_platform": n.originPlatform.rawValue,
+                         "style": n.style.rawValue],
+            metrics: ["latency_ms": latency])
     }
 
     /// A non-messaging mirror: one notification keyed by the (sourceClientId, sourceKey) identifier.
@@ -203,16 +242,30 @@ extension NotiSyncRuntime {
     /// Fetch + decrypt + integrity-check a private asset, cached by content hash (App Group; shared with the
     /// NSE for its avatar lookups). Read-through: cache → broker fetch → decrypt → cache.
     func loadAsset(_ ref: PrivateAssetRef) async -> Data? {
+        let span = PerfMonitor.startSpan("asset_resolve")
+        span.attribute("asset_role", ref.role.rawValue)
+        defer { span.stop() }
         if let cached = await Task.detached(priority: .utility, operation: {
             AssetCache.read(ref.assetHash)
-        }).value { return cached }
+        }).value {
+            span.attribute("cache_hit", "true")
+            span.metric("bytes", Int64(cached.count))
+            return cached
+        }
+        span.attribute("cache_hit", "false")
         guard let broker, let engine,
-              let ciphertext = await broker.fetchAsset(sourceClientId: ref.sourceClientId, assetId: ref.assetId) else { return nil }
-        return await Task.detached(priority: .utility) {
+              let ciphertext = await broker.fetchAsset(sourceClientId: ref.sourceClientId, assetId: ref.assetId) else {
+            span.attribute("result", "fetch_failed")
+            return nil
+        }
+        let plaintext = await Task.detached(priority: .utility) { () -> Data? in
             guard let plaintext = engine.openAsset(ref, ciphertext: ciphertext) else { return nil }
             AssetCache.write(ref.assetHash, plaintext)
             return plaintext
         }.value
+        span.attribute("result", plaintext != nil ? "fetched" : "decrypt_failed")
+        if let plaintext { span.metric("bytes", Int64(plaintext.count)) }
+        return plaintext
     }
 
     private func handleDataSync(_ ds: DataSync, from signerId: String, signerEpoch: Int) async {

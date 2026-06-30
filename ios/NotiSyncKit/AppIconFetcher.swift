@@ -22,12 +22,16 @@ nonisolated enum AppIconFetcher {
             URLQueryItem(name: "entity", value: "software"),
         ]
         guard let lookupURL = components.url,
-              let (json, _) = try? await URLSession.shared.data(from: lookupURL),
+              let (json, _) = try? await PerfMonitor.http(url: lookupURL, method: "GET", requestBytes: 0, template: "/lookup", {
+                  try await URLSession.shared.data(from: lookupURL)
+              }),
               let object = try? JSONSerialization.jsonObject(with: json) as? [String: Any],
               let results = object["results"] as? [[String: Any]],
               let artwork = results.first?["artworkUrl100"] as? String,
               let artworkURL = URL(string: artwork),
-              let (image, _) = try? await URLSession.shared.data(from: artworkURL) else { return nil }
+              let (image, _) = try? await PerfMonitor.http(url: artworkURL, method: "GET", requestBytes: 0, template: "/artwork", {
+                  try await URLSession.shared.data(from: artworkURL)
+              }) else { return nil }
 
         await Task.detached(priority: .utility) {
             _ = AppGroupStore.writeData(image, cacheName(bundleId))

@@ -95,6 +95,7 @@ nonisolated enum AppGroupStore {
         static let cards = "cards.json"
         static let notificationFilters = "notification-filters.json"
         static let filterAnnounce = "notification-filter-announce.json"
+        static let perfEvents = "perf-events.json"
     }
 }
 

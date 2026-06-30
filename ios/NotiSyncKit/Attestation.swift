@@ -29,7 +29,9 @@ nonisolated struct FirebaseAppCheckAttestor: Attestor {
     let attestationType = AttestationType.firebaseAppCheck
 
     func token() async -> String? {
-        await withCheckedContinuation { cont in
+        let start = Date()
+        let type = attestationType
+        return await withCheckedContinuation { cont in
             AppCheck.appCheck().token(forcingRefresh: false) { token, error in
                 if let error {
                     // Surface provider failures (e.g. App Attest unsupported on iOS-app-on-Mac); otherwise
@@ -37,6 +39,14 @@ nonisolated struct FirebaseAppCheckAttestor: Attestor {
                     Logger(subsystem: "net.extrawdw.apps.NotiSync", category: "appcheck")
                         .error("App Check token fetch failed: \(error.localizedDescription, privacy: .public)")
                 }
+                // Attestation failures push the broker client into an auth cooldown that stalls delivery, so
+                // track fetch latency + outcome. Done here (not via a span) because this completion is
+                // `@Sendable` and a live `PerfSpan` is not Sendable.
+                let result = error != nil ? "error" : (token?.token == nil ? "empty" : "ok")
+                PerfMonitor.recordValueTrace(
+                    "appcheck_token",
+                    attributes: ["attestation_type": type, "result": result],
+                    metrics: ["duration_ms": Int64(Date().timeIntervalSince(start) * 1000)])
                 cont.resume(returning: token?.token)
             }
         }
@@ -78,6 +88,9 @@ nonisolated enum FirebaseBootstrap {
         AppCheck.setAppCheckProviderFactory(NotiSyncAppCheckProviderFactory())
         FirebaseApp.configure()
         didConfigureDefaultApp = true
+        // Apply the telemetry data-collection preference now that the default app exists. Defaults on; wire
+        // the user's setting here once iOS gains the opt-out toggle (Android already has it).
+        PerfMonitor.configure(dataCollectionEnabled: true)
         #endif
     }
 
