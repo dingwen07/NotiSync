@@ -97,7 +97,7 @@ class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
             runCatching { graph.transport.fetchPendingRelayIds() }.getOrElse { return Result.retry() }
         for (id in ids) {
             val envelope = runCatching { graph.transport.fetchRelayMessage(id) }.getOrNull()
-            if (envelope != null) channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
+            if (envelope != null) channel.deliver(envelope, DeliveryMode.RELAY_DRAIN)
         }
 
         // 3. Trim dedup/mapping/ack history past its retention window.

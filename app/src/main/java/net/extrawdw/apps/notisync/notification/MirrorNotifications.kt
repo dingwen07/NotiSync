@@ -42,6 +42,7 @@ import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
+import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -260,7 +261,7 @@ class RemoteNotificationPoster(
      *  still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). The
      *  cross-update alerting cadence (e.g. a messaging app enriching a message it already alerted) is carried by
      *  the source's own [CapturedNotification.onlyAlertOnce], applied on the builder below. */
-    override fun render(notif: CapturedNotification, silent: Boolean) {
+    override fun render(notif: CapturedNotification, silent: Boolean, phase: RenderPhase) {
         // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
         // can't post. Mirrors the guard in AppGraph.onTrustPrompt.
@@ -271,7 +272,11 @@ class RemoteNotificationPoster(
         ) return
         perfTrace("mirror_render") { span ->
             span.attr("style", notif.style.name.lowercase())
-            span.attr("silent", silent.toString())
+            span.attr("phase", phase.name.lowercase())
+            // Source-post → render wall-clock. For ENRICH/ICON_UPGRADE this includes the fetch/upgrade wait
+            // (time-until-enriched), so it MUST be segmented by phase; cross-device clock skew makes it a
+            // distribution signal, not an exact per-event value.
+            span.metric("latency_ms", (System.currentTimeMillis() - notif.postTime).coerceAtLeast(0))
             renderGranted(notif, silent, span)
         }
     }
@@ -286,6 +291,7 @@ class RemoteNotificationPoster(
         val receiverGroupTitle = MirrorChannels.groupName(notif.appLabel, groupDeviceName)
         if (notif.isGroupSummary) {
             span.attr("kind", "group_summary")
+            val summaryStartNanos = System.nanoTime()
             updateGroupSummary(
                 receiverGroupKey,
                 parentChannelId,
@@ -294,9 +300,19 @@ class RemoteNotificationPoster(
                 notif.iosBundleId,
                 notif.appIcon?.assetHash,
             )
+            span.metric("group_summary_ms", (System.nanoTime() - summaryStartNanos) / 1_000_000)
             return
         }
         span.attr("kind", "notification")
+        // Of this notification's private assets, how many are locally available at render time (hit) vs still
+        // pending an async fetch (miss); asset_count = hit + miss. A high miss rate → users see text first,
+        // graphics later.
+        val assetRefs = listOfNotNull(notif.largeIcon, notif.bigPicture, notif.appIcon) +
+            notif.messages.flatMap { listOfNotNull(it.avatar, it.data) }
+        val assetHits = assetRefs.count { assets.has(it.assetHash) }
+        span.metric("asset_count", assetRefs.size.toLong())
+        span.metric("asset_hit_count", assetHits.toLong())
+        span.metric("asset_miss_count", (assetRefs.size - assetHits).toLong())
         var postChannelId = parentChannelId
         var shortcutId: String? = null
 
@@ -422,10 +438,13 @@ class RemoteNotificationPoster(
 
         applyLargeIcon(builder, notif)
 
+        val notifyStartNanos = System.nanoTime()
         runCatching { NotificationManagerCompat.from(context).notify(tag, id, builder.build()) }
+        span.metric("notify_ms", (System.nanoTime() - notifyStartNanos) / 1_000_000)
         if (notif.style == NotifStyle.MESSAGING) {
             span.metric("message_count", notif.messages.size.toLong())
         }
+        val summaryStartNanos = System.nanoTime()
         updateGroupSummary(
             receiverGroupKey,
             postChannelId,
@@ -434,6 +453,7 @@ class RemoteNotificationPoster(
             notif.iosBundleId,
             notif.appIcon?.assetHash,
         )
+        span.metric("group_summary_ms", (System.nanoTime() - summaryStartNanos) / 1_000_000)
 
         maybeUpgradeIcon(notif)
     }
@@ -563,7 +583,8 @@ class RemoteNotificationPoster(
         if (!iconUpgradesInFlight.add(bundleId)) return  // a fetch for this app is already running
         scope.launch {
             try {
-                if (provider.ensureCached(bundleId)) render(notif) // colorIcon now hits the App Store cache
+                // colorIcon now hits the App Store cache
+                if (provider.ensureCached(bundleId)) render(notif, phase = RenderPhase.ICON_UPGRADE)
             } finally {
                 iconUpgradesInFlight.remove(bundleId)
             }

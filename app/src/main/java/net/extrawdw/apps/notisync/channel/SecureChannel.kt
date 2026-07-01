@@ -206,10 +206,12 @@ class SecureChannel(
         // other backs off as IN_FLIGHT — not yet durably recorded, so its caller must NOT ack it (the
         // winning handler may still fail). Released in `finally` so a DROPPED id can be retried later.
         if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
-        // Trace the verified-receive pipeline (post-dedup, so high-volume duplicates don't flood it). The
-        // `result` attribute pins down WHY a drop happened (verify vs key vs decrypt), and `e2e_latency_ms`
-        // estimates cross-device delivery time on the handled path.
-        val span = perfSpan("notification_delivery")
+        // Trace the verified-receive pipeline for EVERY envelope type (post-dedup, so high-volume duplicates
+        // don't flood it). `type` (notification/dismissal/data_sync) and `delivery_mode` are the segmentation
+        // axes — e.g. e2e latency for notifications over the live socket vs the relay-drain backstop; `result`
+        // pins down WHY a drop happened (verify vs key vs decrypt).
+        val span = perfSpan("envelope_delivery")
+        span.attr("type", envelope.typ.name.lowercase())
         span.attr("delivery_mode", deliveryMode.name.lowercase())
         var result = "dropped"
         try {
@@ -246,6 +248,7 @@ class SecureChannel(
                 result = "key_missing"
                 return DeliveryOutcome.DROPPED
             }
+            val decryptStartNanos = System.nanoTime()
             val body = runCatching {
                 EnvelopeCrypto.open(envelope, signer.clientId, myKeyset)
             }.getOrElse {
@@ -253,12 +256,15 @@ class SecureChannel(
                 result = "decrypt_failed"
                 return DeliveryOutcome.DROPPED
             }
+            span.metric("decrypt_ms", (System.nanoTime() - decryptStartNanos) / 1_000_000)
             val handler = handlers[envelope.typ] ?: run {
                 result = "no_handler"
                 return DeliveryOutcome.DROPPED
             }
             // Report which key-kind signed (0 = identity, ≥1 = operational) so the handler can enforce the
             // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
+            // handler_ms spans the inline handler dispatch (for NOTIFICATION that includes the immediate render).
+            val handlerStartNanos = System.nanoTime()
             handler(
                 InboundMessage(
                     envelope.signerId,
@@ -270,6 +276,7 @@ class SecureChannel(
                     deliveryMode
                 )
             )
+            span.metric("handler_ms", (System.nanoTime() - handlerStartNanos) / 1_000_000)
             // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
             recent.add(id)
             dedup?.record(id)

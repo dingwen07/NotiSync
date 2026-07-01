@@ -73,6 +73,7 @@ import net.extrawdw.apps.notisync.channel.DeliveryOutcome
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
+import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.RotationManager
@@ -321,7 +322,9 @@ class AppGraph(private val app: Application) {
             localDisplayEnabled = { settings.ancsLocalDisplay.value },
             meshMirrorEnabled = { settings.ancsMeshMirror.value },
             captureToMesh = { notif -> mirror.captureLocal(notif) },
-            renderLocal = { notif, silent -> poster.render(notif, silent) },
+            renderLocal = { notif, silent ->
+                poster.render(notif, silent, if (silent) RenderPhase.REPLAY else RenderPhase.INITIAL)
+            },
             clearLocal = { cid, key -> poster.clear(cid, key) },
             dismissMesh = { cid, key -> mirror.dismissLocal(cid, key) },
         )

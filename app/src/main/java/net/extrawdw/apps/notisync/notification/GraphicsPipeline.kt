@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.notification
 
 import android.service.notification.StatusBarNotification
+import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
@@ -20,32 +22,43 @@ class GraphicsPipeline(
     suspend fun attach(
         sbn: StatusBarNotification,
         captured: CapturedNotification
-    ): CapturedNotification {
+    ): CapturedNotification = perfTrace("graphics_attach") { span ->
         val plan = ruleEngine.plan(captured)
         var result = captured
+        // `*_ms` time the rasterize/encode (the CPU cost); each graphic's seal+upload is timed separately in
+        // `asset_upload`. `omitted_count` = graphics the rule dropped OR that overran their WEBP size budget
+        // (the extractor returns null) — i.e. graphics a peer will not receive. Counts are derived from the
+        // enriched result below, so the message helpers stay untouched.
+        var omitted = 0
 
         when (plan.largeIcon) {
-            LargeIconHandling.MIRROR -> extractor.largeIcon(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.LARGE_ICON, captured)?.let {
-                    result = result.copy(largeIcon = it)
-                }
+            LargeIconHandling.MIRROR -> {
+                val t0 = System.nanoTime()
+                val bytes = extractor.largeIcon(sbn)
+                span.metric("large_icon_ms", (System.nanoTime() - t0) / 1_000_000)
+                if (bytes == null) omitted++
+                else upload(bytes, AssetRole.LARGE_ICON, captured)?.let { result = result.copy(largeIcon = it) }
             }
 
-            LargeIconHandling.AS_AVATAR -> extractor.largeIcon(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.AVATAR, captured)?.let {
-                    result = asConversation(result, it)
-                }
+            LargeIconHandling.AS_AVATAR -> {
+                val t0 = System.nanoTime()
+                val bytes = extractor.largeIcon(sbn)
+                span.metric("large_icon_ms", (System.nanoTime() - t0) / 1_000_000)
+                if (bytes == null) omitted++
+                else upload(bytes, AssetRole.AVATAR, captured)?.let { result = asConversation(result, it) }
             }
 
-            LargeIconHandling.OMIT -> Unit
+            LargeIconHandling.OMIT -> omitted++
         }
 
         if (result.style == NotifStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.PRIVATE) {
-            extractor.bigPicture(sbn)?.let { bytes ->
-                upload(bytes, AssetRole.BIG_PICTURE, captured)?.let {
-                    result = result.copy(bigPicture = it)
-                }
-            }
+            val t0 = System.nanoTime()
+            val bytes = extractor.bigPicture(sbn)
+            span.metric("big_picture_ms", (System.nanoTime() - t0) / 1_000_000)
+            if (bytes == null) omitted++
+            else upload(bytes, AssetRole.BIG_PICTURE, captured)?.let { result = result.copy(bigPicture = it) }
+        } else if (result.style == NotifStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.OMIT) {
+            omitted++
         }
 
         if (result.style == NotifStyle.MESSAGING && plan.avatar == GraphicsSlot.PRIVATE) {
@@ -56,7 +69,16 @@ class GraphicsPipeline(
             result = attachMessageData(sbn, result)
         }
 
-        return attachAppIcon(result)
+        result = attachAppIcon(result, span)
+
+        val avatarCount = result.messages.count { it.avatar != null }
+        val inlineCount = result.messages.count { it.data != null }
+        val singles = listOfNotNull(result.largeIcon, result.bigPicture, result.appIcon).size
+        span.metric("avatar_count", avatarCount.toLong())
+        span.metric("inline_image_count", inlineCount.toLong())
+        span.metric("attached_count", (singles + avatarCount + inlineCount).toLong())
+        span.metric("omitted_count", omitted.toLong())
+        result
     }
 
     /**
@@ -64,9 +86,15 @@ class GraphicsPipeline(
      * app installed still renders the real icon (the small/status-bar icon is never transferred). The
      * asset layer content-addresses it, so this uploads once per app and is reference-only thereafter.
      */
-    suspend fun attachAppIcon(captured: CapturedNotification): CapturedNotification {
-        extractor.appIcon(captured.packageName)?.let { bytes ->
-            upload(bytes, AssetRole.APP_ICON, captured)?.let { return captured.copy(appIcon = it) }
+    suspend fun attachAppIcon(
+        captured: CapturedNotification,
+        span: PerfSpan? = null,
+    ): CapturedNotification {
+        val t0 = System.nanoTime()
+        val bytes = extractor.appIcon(captured.packageName)
+        span?.metric("app_icon_ms", (System.nanoTime() - t0) / 1_000_000)
+        bytes?.let {
+            upload(it, AssetRole.APP_ICON, captured)?.let { ref -> return captured.copy(appIcon = ref) }
         }
         return captured
     }

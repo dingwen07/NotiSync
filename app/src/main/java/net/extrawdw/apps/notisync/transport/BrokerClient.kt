@@ -29,7 +29,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import net.extrawdw.apps.notisync.analytics.FirebasePerfHttpInterceptor
 import net.extrawdw.apps.notisync.analytics.perfSpan
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.notisync.protocol.AttestationType
@@ -83,15 +82,13 @@ class BrokerClient(
 
     private val client = HttpClient(OkHttp) {
         engine {
-            config {
-                // Keepalive at the OkHttp layer: ping the broker periodically so a half-open socket
-                // (NAT/proxy idle drop) is detected — a missed pong fails the socket instead of the read
-                // loop blocking forever, surfacing as the exception that drives reconnect in runLiveDelivery().
-                pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS)
-                // Per-call Firebase Performance HttpMetric (normalised URL, status, payload sizes). Added on
-                // the OkHttp builder so it observes every Ktor request; it skips the WS upgrade internally.
-                addInterceptor(FirebasePerfHttpInterceptor())
-            }
+            // Keepalive at the OkHttp layer: ping the broker periodically so a half-open socket
+            // (NAT/proxy idle drop) is detected — a missed pong fails the socket instead of the read
+            // loop blocking forever, surfacing as the exception that drives reconnect in runLiveDelivery().
+            // Network request timing comes from Firebase's automatic OkHttp monitoring (it captures the Ktor
+            // engine's calls) plus custom URL patterns in the console — no manual HttpMetric, which would
+            // double-count against the automatic instrumentation.
+            config { pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS) }
         }
         install(WebSockets)
     }

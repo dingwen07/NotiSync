@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.domain
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.analytics.PerfSpan
 import net.extrawdw.apps.notisync.channel.InboundMessage
 import net.extrawdw.apps.notisync.channel.Recipients
 import net.extrawdw.apps.notisync.channel.SecureChannel
@@ -25,14 +26,24 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 
 /** Renders / clears mirrored notifications. Implemented by the notification layer. */
+/** Which render in a mirror's lifecycle this is — the segmentation axis for `mirror_render` latency: an
+ *  ENRICH re-render (after an asset arrives) or ICON_UPGRADE has a very different `latency_ms` than the
+ *  INITIAL post, so averaging them together would be meaningless. */
+enum class RenderPhase { INITIAL, ENRICH, REPLAY, ICON_UPGRADE }
+
 interface MirrorRenderer {
     /**
      * Post (or update) the mirror for [notif]. [silent] suppresses this one post's sound/heads-up without
      * touching the channel — set for a re-render that only refreshes graphics on an already-posted
      * notification (an asset finished downloading), which must never re-alert. The first render of a post
-     * leaves it false and lets the source's own [CapturedNotification.onlyAlertOnce] decide.
+     * leaves it false and lets the source's own [CapturedNotification.onlyAlertOnce] decide. [phase] is
+     * instrumentation only — it tags the `mirror_render` trace and does not affect behaviour.
      */
-    fun render(notif: CapturedNotification, silent: Boolean = false)
+    fun render(
+        notif: CapturedNotification,
+        silent: Boolean = false,
+        phase: RenderPhase = RenderPhase.INITIAL,
+    )
     fun clear(sourceClientId: ClientId, sourceKey: String)
 }
 
@@ -58,10 +69,17 @@ interface MirrorAckIndex {
 /** The outcome of resolving a batch of private-asset refs on the consumer side. */
 data class ResolveResult(val newlyAvailable: Boolean, val stillMissing: List<PrivateAssetRef>)
 
+/** Why an [AssetResolver.ensureLocal] ran — separates the initial delivery fetch from a post-repair fetch
+ *  (which already paid an ASSET_MISSING mesh round-trip). Instrumentation only; does not affect behaviour. */
+enum class AssetTrigger { INITIAL, REPAIR }
+
 /** Fetches/repairs private graphics for the mirror engine (consumer + provider sides). */
 interface AssetResolver {
     /** Fetch + decrypt + verify any [refs] not already cached (consumer side). */
-    suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult
+    suspend fun ensureLocal(
+        refs: List<PrivateAssetRef>,
+        trigger: AssetTrigger = AssetTrigger.INITIAL,
+    ): ResolveResult
 
     /**
      * Re-seal + re-upload a previously-sent asset under its existing id (provider repair). Returns a
@@ -140,15 +158,16 @@ class MirrorEngine(
 
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. A peer that asked
      *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set. */
-    suspend fun captureLocal(notif: CapturedNotification): Int {
+    suspend fun captureLocal(notif: CapturedNotification, span: PerfSpan? = null): Int {
         val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
         val scope = if (excluded.isEmpty()) Recipients.OwnMesh else Recipients.OwnMeshExcluding(excluded)
-        val n = channel.send(
-            MessageType.NOTIFICATION,
-            ProtocolCodec.encodeToCbor(notif),
-            scope,
-            Urgency.HIGH
-        )
+        val payload = ProtocolCodec.encodeToCbor(notif)
+        span?.metric("payload_bytes", payload.size.toLong())
+        span?.metric("asset_count", notif.privateRefs().size.toLong())
+        val sendStartNanos = System.nanoTime()
+        val n = channel.send(MessageType.NOTIFICATION, payload, scope, Urgency.HIGH)
+        span?.metric("send_ms", (System.nanoTime() - sendStartNanos) / 1_000_000)
+        span?.metric("recipient_count", n.toLong())
         rememberTitle(notif)
         if (n > 0) activityLog.add(
             ActivityEvent.Kind.SENT,
@@ -207,13 +226,14 @@ class MirrorEngine(
         val resolver = assetResolver
         if (resolver != null && refs.isNotEmpty()) {
             scope.launch {
-                // The asset fetch + enriched re-render is timed by the `asset_fetch` trace inside ensureLocal
+                // The asset fetch + enriched re-render is timed by the `asset_resolve` trace inside ensureLocal
                 // (split cached vs fetched metrics there); it runs OFF the inline deliver path, so it is not
-                // part of `notification_delivery` (which ends at the immediate cached-content render).
+                // part of `envelope_delivery` (which ends at the immediate cached-content render). The ENRICH
+                // re-render's own latency is captured by `mirror_render{phase=enrich}`.
                 val result = resolver.ensureLocal(refs)
                 // Silent: the notification was already posted above; this only attaches the now-downloaded
                 // graphics, so it must refresh in place without a second alert.
-                if (result.newlyAvailable) renderer.render(notif, silent = true)
+                if (result.newlyAvailable) renderer.render(notif, silent = true, phase = RenderPhase.ENRICH)
                 if (result.stillMissing.isNotEmpty()) {
                     result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
                     sendAssetSync(
@@ -317,10 +337,12 @@ class MirrorEngine(
     private suspend fun applyRepaired(items: List<AssetSyncItem>, resolver: AssetResolver) {
         for (item in items) {
             val ref = item.ref ?: continue
-            if (resolver.ensureLocal(listOf(ref)).newlyAvailable) {
+            if (resolver.ensureLocal(listOf(ref), AssetTrigger.REPAIR).newlyAvailable) {
                 // Silent: a repaired asset arriving for a notification that was already posted (render now,
                 // re-render when the graphic lands) — refresh it in place, don't re-alert.
-                pendingAssetRenders.remove(ref.assetHash)?.let { renderer.render(it, silent = true) }
+                pendingAssetRenders.remove(ref.assetHash)?.let {
+                    renderer.render(it, silent = true, phase = RenderPhase.ENRICH)
+                }
             }
         }
     }

@@ -12,6 +12,7 @@ import androidx.core.app.NotificationCompat
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.analytics.perfSpan
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -265,7 +266,9 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         // Normalize + dedup synchronously on the (single-threaded) listener callback so per-key ordering
         // is preserved: rapid same-key updates can't race or invert on graph.scope's multi-threaded
         // dispatcher. Only the graphics attach + send is offloaded below.
+        val normalizeStartNanos = System.nanoTime()
         val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId)
+        val normalizeNanos = System.nanoTime() - normalizeStartNanos
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 
         val signature = captured.copy(postTime = 0L).hashCode()
@@ -279,16 +282,26 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
         graph.settings.updateLastSeenPostTime(sbn.postTime)
-        // Off the listener thread: extract/upload private graphics (best-effort), then seal + send.
+        // Off the listener thread: extract/upload private graphics (best-effort), then seal + send. One
+        // `mirror_capture` span covers both threads — opened here (recording the listener-thread normalize)
+        // and closed after the async send — so it times the whole capture→sent path for a mirrored post.
         val pipeline = graph.graphicsPipeline
+        val captureSpan = perfSpan("mirror_capture")
+        captureSpan.metric("normalize_ms", normalizeNanos / 1_000_000)
         graph.scope.launch {
             // Guard the whole send: a re-attestation in cooldown throws (see BrokerClient.bearerToken),
             // and this bare launch would otherwise surface it as an uncaught exception that crashes the
             // scope. attach() can throw too (it uploads private graphics via the same authed path). A
             // dropped mirror is re-delivered by the live socket / relay drain backstop.
-            runCatching {
-                val withGraphics = pipeline?.attach(sbn, captured) ?: captured
-                eng.captureLocal(withGraphics)
+            try {
+                runCatching {
+                    val graphicsStartNanos = System.nanoTime()
+                    val withGraphics = pipeline?.attach(sbn, captured) ?: captured
+                    captureSpan.metric("graphics_ms", (System.nanoTime() - graphicsStartNanos) / 1_000_000)
+                    eng.captureLocal(withGraphics, captureSpan)
+                }
+            } finally {
+                captureSpan.stop()
             }
         }
     }

@@ -98,7 +98,9 @@ private fun deliveryModeLabel(mode: DeliveryMode): String = when (mode) {
     DeliveryMode.UNKNOWN -> stringResource(R.string.activity_delivery_unknown)
     DeliveryMode.WEBSOCKET -> stringResource(R.string.activity_delivery_websocket)
     DeliveryMode.FCM_INLINE -> stringResource(R.string.activity_delivery_fcm_inline)
-    DeliveryMode.FCM_RELAY_FETCH -> stringResource(R.string.activity_delivery_fcm_relay_fetch)
+    // Both relay-fetch modes share one user-facing label; the wake-vs-drain split is a perf-trace concern.
+    DeliveryMode.FCM_RELAY_FETCH, DeliveryMode.RELAY_DRAIN ->
+        stringResource(R.string.activity_delivery_fcm_relay_fetch)
 }
 
 @Composable

@@ -38,7 +38,7 @@ class MirrorEngineTest {
         var renders = 0
         var silentRenders = 0
         val cleared = mutableListOf<Pair<ClientId, String>>()
-        override fun render(notif: CapturedNotification, silent: Boolean) {
+        override fun render(notif: CapturedNotification, silent: Boolean, phase: RenderPhase) {
             renders++
             if (silent) silentRenders++
         }
@@ -50,7 +50,7 @@ class MirrorEngineTest {
 
     /** Reports every ref as still-missing so onNotification fires an ASSET_MISSING repair request. */
     private class MissingResolver(private val missing: List<PrivateAssetRef>) : AssetResolver {
-        override suspend fun ensureLocal(refs: List<PrivateAssetRef>) =
+        override suspend fun ensureLocal(refs: List<PrivateAssetRef>, trigger: AssetTrigger) =
             ResolveResult(newlyAvailable = false, stillMissing = missing)
 
         override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? =
@@ -59,7 +59,10 @@ class MirrorEngineTest {
 
     private class RecordingMissingResolver : AssetResolver {
         var requested: List<PrivateAssetRef> = emptyList()
-        override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
+        override suspend fun ensureLocal(
+            refs: List<PrivateAssetRef>,
+            trigger: AssetTrigger,
+        ): ResolveResult {
             requested = refs
             return ResolveResult(newlyAvailable = false, stillMissing = refs)
         }
@@ -70,7 +73,7 @@ class MirrorEngineTest {
 
     /** Reports every ref as freshly available, so onNotification fires the silent enrichment re-render. */
     private class AvailableResolver : AssetResolver {
-        override suspend fun ensureLocal(refs: List<PrivateAssetRef>) =
+        override suspend fun ensureLocal(refs: List<PrivateAssetRef>, trigger: AssetTrigger) =
             ResolveResult(newlyAvailable = true, stillMissing = emptyList())
 
         override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? =

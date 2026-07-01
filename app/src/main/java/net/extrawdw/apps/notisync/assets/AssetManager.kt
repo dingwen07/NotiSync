@@ -5,6 +5,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.domain.AssetResolver
+import net.extrawdw.apps.notisync.domain.AssetTrigger
 import net.extrawdw.apps.notisync.domain.ResolveResult
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.ClientId
@@ -64,15 +65,21 @@ class AssetManager(
     private val b64e = Base64.getEncoder()
     private val b64d = Base64.getDecoder()
 
-    /** Returns a ref to embed in the notification body, or null if the blob couldn't be uploaded. */
+    /** Returns a ref to embed in the notification body, or null if the blob couldn't be uploaded. Traced as
+     *  `asset_upload`: `seal_ms`/`upload_ms` are recorded only on a real upload — a within-TTL dedup skips
+     *  both and reports `result=deduped`, so the network cost isn't diluted by the common re-reference path. */
     suspend fun ensureUploaded(
         plaintext: ByteArray,
         role: AssetRole,
         mimeType: String,
         sourceClientId: ClientId,
-    ): PrivateAssetRef? {
+    ): PrivateAssetRef? = perfTrace("asset_upload") { span ->
+        span.attr("role", role.name.lowercase())
+        span.metric("bytes", plaintext.size.toLong())
         val assetHash = AssetHash.of(plaintext)
+        val cacheStartNanos = System.nanoTime()
         cache.write(assetHash, plaintext) // keep locally so we can answer a future repair request
+        span.metric("cache_write_ms", (System.nanoTime() - cacheStartNanos) / 1_000_000)
         val ticket = tickets.get(assetHash)
         val freshlyUploaded = ticket != null && now() - ticket.lastUploadedAt < assetTtlMillis
         val assetId = ticket?.assetId ?: AssetAead.generateAssetId()
@@ -87,27 +94,38 @@ class AssetManager(
             assetKey
         )
 
-        if (!freshlyUploaded) {
-            val sealed = AssetAead.seal(ref, plaintext)
-            if (!transport.uploadPrivateAsset(sourceClientId, assetId, sealed)) return null
-            tickets.put(
-                assetHash,
-                AssetTicket(assetId, b64e.encodeToString(assetKey), role, mimeType, now())
-            )
+        if (freshlyUploaded) {
+            span.attr("result", "deduped") // still within TTL — the broker already holds it; skip the network
+            return@perfTrace ref
         }
-        return ref
+        val sealStartNanos = System.nanoTime()
+        val sealed = AssetAead.seal(ref, plaintext)
+        span.metric("seal_ms", (System.nanoTime() - sealStartNanos) / 1_000_000)
+        val uploadStartNanos = System.nanoTime()
+        val uploaded = transport.uploadPrivateAsset(sourceClientId, assetId, sealed)
+        span.metric("upload_ms", (System.nanoTime() - uploadStartNanos) / 1_000_000)
+        if (!uploaded) {
+            span.attr("result", "failed")
+            return@perfTrace null
+        }
+        tickets.put(
+            assetHash,
+            AssetTicket(assetId, b64e.encodeToString(assetKey), role, mimeType, now())
+        )
+        span.attr("result", "uploaded")
+        ref
     }
 
-    override suspend fun ensureLocal(refs: List<PrivateAssetRef>): ResolveResult {
-        // Don't trace an all-cached resolve — it's a no-op AND the steady-state majority (shared avatars/app
-        // icons stay cached after their first fetch, so most notifications resolve entirely from cache).
-        // Emitting `asset_fetch` with fetched_ms=0 for each of those would drag the metric's average to ~0 and
-        // bury real fetch latency — the "fetched_ms mostly 0" symptom. Only genuine fetches are traced below.
-        if (refs.all { cache.has(it.assetHash) }) return ResolveResult(false, emptyList())
-        return perfTrace("asset_fetch") { span ->
-            // A traced resolve fetched ≥1 ref, but the batch can still MIX hits and fetches. `fetched_ms`
-            // times ONLY the network+decrypt+verify work, so cache hits in the same batch (counted in
-            // `cached_count`) never inflate the fetch latency. `result` is a quick filter; `bytes` sizes it.
+    override suspend fun ensureLocal(
+        refs: List<PrivateAssetRef>,
+        trigger: AssetTrigger,
+    ): ResolveResult =
+        // Trace EVERY resolve (incl. all-cached) so cache-hit rate is visible via `cached_count`. `fetched_ms`
+        // is set ONLY when a real fetch ran — Firebase aggregates a metric only over the samples that report
+        // it, so cache-hit no-ops don't dilute the fetch-latency average, and a mixed batch times only its
+        // fetched refs. `trigger` separates initial delivery from a post-repair fetch.
+        perfTrace("asset_resolve") { span ->
+            span.attr("trigger", trigger.name.lowercase())
             var newlyAvailable = false
             var fetchedBytes = 0L
             var cachedCount = 0
@@ -133,14 +151,16 @@ class AssetManager(
                 newlyAvailable = true
                 fetchedBytes += plaintext.size
             }
+            span.metric("asset_count", refs.size.toLong())
             span.metric("cached_count", cachedCount.toLong())
             span.metric("fetched_count", fetchedCount.toLong())
-            span.metric("fetched_ms", fetchedNanos / 1_000_000)
+            if (fetchedCount > 0) span.metric("fetched_ms", fetchedNanos / 1_000_000)
             span.metric("missing_count", stillMissing.size.toLong())
             span.metric("bytes", fetchedBytes)
             span.attr(
                 "result",
                 when {
+                    fetchedCount == 0 -> "cache_hit"
                     stillMissing.isEmpty() -> "fetched"
                     newlyAvailable -> "partial"
                     else -> "miss"
@@ -148,7 +168,6 @@ class AssetManager(
             )
             ResolveResult(newlyAvailable, stillMissing)
         }
-    }
 
     /** Provider repair: re-seal the cached plaintext under its existing id and re-upload it. */
     override suspend fun repair(assetHash: String, sourceClientId: ClientId): PrivateAssetRef? {
