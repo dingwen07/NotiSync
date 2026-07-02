@@ -1,5 +1,30 @@
 import Foundation
 import SwiftUI
+import UIKit
+
+/// SF Symbols ship as SVG renditions that CoreUI parses on the symbol's FIRST render in the process
+/// (`CGSVGDocumentCreateFromData` — on the main thread, and heavily amplified under a debugger). Glyphs
+/// that first appear inside a gesture — swipe actions, menus — pay that parse mid-interaction, which
+/// profiled as the "first swipe on a Devices row stutters" report. Rasterizing them once at launch on a
+/// background thread warms the process-wide rendition cache so the gesture only hits cached artwork.
+/// (UIImage and UIGraphicsImageRenderer are thread-safe.)
+nonisolated enum GestureSymbolPrewarm {
+    /// Symbols whose first on-screen appearance is gesture-gated: swipe-action buttons (Revoke /
+    /// Clear Filter) and menu items (Delete All, Silence…). Symbols visible at page render don't need
+    /// this — their parse happens during navigation, masked by the transition.
+    private static let gestureGatedSymbols = ["hand.raised.slash", "bell", "bell.slash", "trash"]
+
+    static func run() {
+        Task.detached(priority: .utility) {
+            for name in gestureGatedSymbols {
+                guard let image = UIImage(systemName: name) else { continue }
+                _ = UIGraphicsImageRenderer(size: image.size).image { _ in
+                    image.draw(at: .zero)
+                }
+            }
+        }
+    }
+}
 
 struct InlineIconLabel: View {
     private let title: Text

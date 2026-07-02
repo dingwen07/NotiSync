@@ -40,9 +40,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published var incomingPairing: PairingCandidate?
 
     var modelContext: ModelContext?
+    /// The AppSettings singleton row, memoized after the first fetch — `settings()` is called on nearly
+    /// every runtime operation and a per-call FetchDescriptor round-trip is main-thread SQLite work.
+    var cachedSettings: AppSettings?
     var createdSettingsThisLaunch = false
     var engine: NotiSyncEngine?
     var broker: BrokerClient?
+    private var coreBringUpTask: Task<Void, Never>?
     var liveTask: Task<Void, Never>?
     private var foregroundSyncTask: Task<Void, Never>?
     private var foregroundSyncGeneration = 0
@@ -87,22 +91,62 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func configure(modelContext: ModelContext) {
         self.modelContext = modelContext
-        MirrorCategoryRegistry.registerAll()   // base + any persisted per-channel categories (#15)
-        ShownStore.clearSuspicions()
+        self.cachedSettings = nil
+        // Every mutation path already saves explicitly (saveModelContext / withCoalescedSaves), so autosave
+        // only adds nondeterministic commits — including WAL checkpoints outside the background-task
+        // assertion that guards against the 0xdead10cc suspension kill.
+        modelContext.autosaveEnabled = false
         ensureSettings()
-        NotiSyncConfig.brokerURL = settings().brokerURL
-        setupEngine()
-        refreshRotationInfo()
-        ensureThisDeviceRow()
-        scheduleRelayRefresh()
-        // .onChange(of: scenePhase) doesn't fire for the initial .active, so kick off the foreground
-        // flows (broker status, route publish, WS, drain) on cold launch too.
-        appBecameActive()
+        let brokerURL = settings().brokerURL
+        // Everything below touches the Keychain / Secure Enclave / App Group files — keep it off the
+        // launch frames (it used to run synchronously here and surfaced as a hitch on the first gesture).
+        Task { [weak self] in
+            guard let self else { return }
+            await Task.detached(priority: .userInitiated) {
+                NotiSyncConfig.brokerURL = brokerURL
+                MirrorCategoryRegistry.registerAll()   // base + any persisted per-channel categories (#15)
+                ShownStore.clearSuspicions()
+            }.value
+            await self.bringUpCore()
+            self.refreshRotationInfo()
+            self.ensureThisDeviceRow()
+            self.scheduleRelayRefresh()
+            // .onChange(of: scenePhase) doesn't fire for the initial .active, so kick off the foreground
+            // flows (broker status, route publish, WS, drain) on cold launch here. If the scene handler
+            // already flipped foregroundActive while the core was still coming up, its WS/sync starts were
+            // no-ops (no broker yet) — force them now instead of appBecameActive (which would bail).
+            if self.foregroundActive {
+                self.startForegroundWebSocket()
+                self.startForegroundSync(rerunIfBusy: true)
+            } else if UIApplication.shared.applicationState != .background {
+                self.appBecameActive()
+            }
+            // else: backgrounded before the core was ready — the next scenePhase .active runs the kick.
+        }
     }
 
-    private func setupEngine() {
-        do {
-            let engine = try NotiSyncEngine()
+    /// Bring up the engine + broker with the Keychain + Secure Enclave roundtrips off the main thread.
+    /// Single-flight and idempotent: concurrent callers (cold-launch configure, a silent push, the BG
+    /// refresh task, a pairing deep link) await the same bring-up; a failed attempt is retried by the
+    /// next caller (the old `ensureCoreReady` semantics).
+    func bringUpCore() async {
+        if engine != nil, broker != nil { return }
+        if let coreBringUpTask {
+            await coreBringUpTask.value
+            return
+        }
+        let task = Task { await self.performCoreBringUp() }
+        coreBringUpTask = task
+        await task.value
+        coreBringUpTask = nil
+    }
+
+    private func performCoreBringUp() async {
+        let result = await Task.detached(priority: .userInitiated) { () -> Result<NotiSyncEngine, Error> in
+            do { return .success(try NotiSyncEngine()) } catch { return .failure(error) }
+        }.value
+        switch result {
+        case .success(let engine):
             self.engine = engine
             self.clientId = engine.selfClientId
             self.broker = BrokerClient(
@@ -119,17 +163,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             self.localStateRecoveryUsesCurrentKeychainBase =
                 swiftDataRecoveredWithExistingIdentity && !engine.recoveredAfterLocalStateLoss
             if swiftDataRecoveredWithExistingIdentity {
-                KeychainEpochStore.setAPNsRouteResetPending(true)
+                await Task.detached { KeychainEpochStore.setAPNsRouteResetPending(true) }.value
             }
             log.info("engine ready client=\(engine.selfClientId, privacy: .public) epoch=\(engine.epoch)")
-        } catch {
+        case .failure(let error):
             log.error("engine init failed: \(error.localizedDescription, privacy: .public)")
             record(error: error, domain: .identity)
         }
-    }
-
-    private func ensureCoreReady() {
-        if engine == nil || broker == nil { setupEngine() }
     }
 
     func registerBackgroundTasks() {
@@ -150,6 +190,10 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func refreshForegroundNow() {
         startForegroundWebSocket()
         startForegroundSync(rerunIfBusy: true)
+    }
+
+    func shouldContinueDelivery(mode: DeliveryMode) -> Bool {
+        !Task.isCancelled && (mode != .foregroundWebSocket || foregroundActive)
     }
 
     private func startForegroundSync(rerunIfBusy: Bool = false) {
@@ -210,18 +254,23 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     private func refreshBrokerStatus() async {
         guard let broker else { return }
-        let s = settings()
+        let reachability: BrokerReachability
+        let version: String?
         if let v = await broker.verificationStatus() {
-            s.brokerReachability = v.verified ? .verified : .reachable
-            s.brokerVersion = v.version
+            reachability = v.verified ? .verified : .reachable
+            version = v.version
         } else if let h = await broker.health() {
-            s.brokerReachability = .reachable
-            s.brokerVersion = h.version
+            reachability = .reachable
+            version = h.version
         } else {
-            s.brokerReachability = .unreachable
-            s.brokerVersion = nil
+            reachability = .unreachable
+            version = nil
         }
-        try? modelContext?.save()
+        // Same-value writes still dirty the row and force a commit; this runs every foreground pass.
+        let s = settings()
+        if s.brokerReachability != reachability { s.brokerReachability = reachability }
+        if s.brokerVersion != version { s.brokerVersion = version }
+        saveModelContext()
     }
 
     func appLeftForeground() {
@@ -245,7 +294,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
                 if granted {
                     UIApplication.shared.registerForRemoteNotifications()
                 }
-                try? modelContext?.save()
+                saveModelContext()
             } catch {
                 record(error: error, domain: .notificationPermission)
             }
@@ -257,7 +306,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         let s = settings()
         _ = s.epochForAPNsRoute(routeRef: token, environment: s.apnsEnvironment)
         s.pushStatusValue = .apnsRegistered
-        try? modelContext?.save()
+        saveModelContext()
         addActivity(.route, .apnsRegistered, detail: .text, detailArg: String(token.prefix(12)) + "…")
         Task { await publishCurrentRoute() }
     }
@@ -269,7 +318,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     /// Silent background push (DISMISSAL / DATA_SYNC) plus inline notification fallback on legacy brokers.
     func handleRemoteNotification(_ userInfo: [AnyHashable: Any]) async -> UIBackgroundFetchResult {
-        ensureCoreReady()
+        await bringUpCore()
         if let ct = userInfo["ct"] as? String, let bytes = Data(base64Encoded: ct) {
             let handled = await receiveEnvelope(bytes, mode: .apnsInline)
             if handled, let mid = (userInfo["mid"] as? String) ?? (try? engine?.envelopeMessageId(bytes)) {
@@ -315,7 +364,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         } else {
             s.apnsEnvironment = effectiveEnvironment
         }
-        try? modelContext?.save()
+        saveModelContext()
         if brokerChanged { NotiSyncConfig.brokerURL = brokerURL }
         if renamed { ensureThisDeviceRow() }
         let profileUpdatedAt = NotiSyncEngine.nowMillis()
@@ -334,8 +383,10 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         let environment = NotiSyncConfig.effectiveAPNSEnvironment(s.apnsEnvironment)
         guard let token = s.apnsToken, !token.isEmpty else { s.pushStatusValue = .apnsUnregistered; return }
         let routeEpoch = s.epochForAPNsRoute(routeRef: token, environment: environment)
-        try? modelContext?.save()
-        let resetRouteFirst = KeychainEpochStore.apnsRouteResetPending()
+        saveModelContext()
+        let resetRouteFirst = await Task.detached(priority: .utility) {
+            KeychainEpochStore.apnsRouteResetPending()   // up to two Keychain roundtrips — off main
+        }.value
         let snapshot = RoutePublishSnapshot(routeRef: token, environment: environment, routeEpoch: routeEpoch)
         let result = await Task.detached(priority: .utility) {
             try await Self.publishRoute(snapshot: snapshot, engine: engine, broker: broker, resetRouteFirst: resetRouteFirst)
@@ -343,12 +394,12 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         switch result {
         case .success:
             if resetRouteFirst {
-                KeychainEpochStore.setAPNsRouteResetPending(false)
+                await Task.detached(priority: .utility) { KeychainEpochStore.setAPNsRouteResetPending(false) }.value
             }
             s.pushStatusValue = .routePublished
             s.lastRoutePublishAt = .now
             addActivity(.route, .routePublished, detail: .routeEnvironment, detailArg: environment.rawValue)
-            try? modelContext?.save()
+            saveModelContext()
         case let .failure(error):
             s.pushStatusValue = .routePending
             record(error: error, domain: .routePublish)
@@ -435,7 +486,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         guard !pending.isEmpty else { return }
         if await broker.ackRelayMessages(pending.map(\.messageId)) {
             for ack in pending { modelContext?.delete(ack) }
-            try? modelContext?.save()
+            saveModelContext()
         }
     }
 
@@ -446,7 +497,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         }
         if fetchPendingAck(messageId: messageId) == nil {
             modelContext?.insert(PendingRelayAck(messageId: messageId))
-            try? modelContext?.save()
+            saveModelContext()
         }
         await flushPendingAcks()
     }
@@ -458,7 +509,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         var work: Task<Bool, Never>?
         task.expirationHandler = { work?.cancel() }
         work = Task { @MainActor in
-            ensureCoreReady()
+            await bringUpCore()
             await drainPendingInbox()    // NSE-delivered (APNs alert) mirrors land here, not in the relay
             drainDeferredPerfTraces()    // replay NSE-measured perf traces into Performance
             guard !Task.isCancelled else { return false }

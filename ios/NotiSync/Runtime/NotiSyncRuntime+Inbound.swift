@@ -42,7 +42,8 @@ extension NotiSyncRuntime {
         liveTask = Task { [weak self, broker] in
             guard let runtime = self else { return }
             await broker.liveDelivery { bytes in
-                await runtime.receiveEnvelope(bytes, mode: .foregroundWebSocket)
+                guard await runtime.shouldContinueDelivery(mode: .foregroundWebSocket) else { return false }
+                return await runtime.receiveEnvelope(bytes, mode: .foregroundWebSocket)
             }
             await MainActor.run { runtime.liveTask = nil }
         }
@@ -50,24 +51,26 @@ extension NotiSyncRuntime {
 
     func drainRelay(deliveryMode: DeliveryMode) async {
         guard let broker else { return }
-        await flushPendingAcks()
-        let ids = await broker.pendingRelayIds()
-        for id in ids {
-            guard let bytes = await broker.fetchRelayMessage(id) else { continue }
-            if await receiveEnvelope(bytes, mode: deliveryMode) {
-                await queueAndFlushAck(messageId: id)
+        await withCoalescedSaves {
+            await flushPendingAcks()
+            let ids = await broker.pendingRelayIds()
+            for id in ids {
+                guard let bytes = await broker.fetchRelayMessage(id) else { continue }
+                if await receiveEnvelope(bytes, mode: deliveryMode) {
+                    await queueAndFlushAck(messageId: id)
+                }
             }
+            let s = settings()
+            s.lastRelayDrainAt = .now
+            s.lastDeliveryMode = deliveryMode.rawValue
+            if !ids.isEmpty { addActivity(.received, .relayDrained, detail: .messageCount, detailNum: ids.count) }
         }
-        let s = settings()
-        s.lastRelayDrainAt = .now
-        s.lastDeliveryMode = deliveryMode.rawValue
-        try? modelContext?.save()
-        if !ids.isEmpty { addActivity(.received, .relayDrained, detail: .messageCount, detailNum: ids.count) }
     }
 
     @discardableResult
     func receiveEnvelope(_ bytes: Data, mode: DeliveryMode, retryOnUnresolved: Bool = true) async -> Bool {
         guard let engine else { return false }
+        guard shouldContinueDelivery(mode: mode) else { return false }
         let span = PerfMonitor.startSpan("inbound_envelope")
         span.attribute("delivery_mode", mode.rawValue)
         defer { span.stop() }
@@ -82,20 +85,33 @@ extension NotiSyncRuntime {
             span.attribute("result", "in_flight")
             return false
         case .success(.opened(let opened)):
-            switch opened.inbound {
-            case let .notification(n):
-                span.attribute("inbound_kind", "notification")
-                await renderNotification(n, messageId: opened.env.messageId, mode: mode)
-            case let .dismissal(d):
-                span.attribute("inbound_kind", "dismissal")
-                removeRemoteDismissal(d)
-            case let .dataSync(ds):
-                span.attribute("inbound_kind", "data_sync")
-                await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
+            guard shouldContinueDelivery(mode: mode) else {
+                let dedupId = opened.dedupId
+                await Task.detached(priority: .userInitiated) { MessageDedupStore.release(dedupId) }.value
+                span.attribute("result", "cancelled")
+                return false
             }
-            MessageDedupStore.record(opened.dedupId)   // mark handled only after the handler ran
-            settings().lastDeliveryMode = mode.rawValue
-            try? modelContext?.save()
+            // One SQLite commit per envelope: the handler's Inbox upsert, activity rows, and the settings
+            // stamp below all land in the batch's single save (which must complete before we return true —
+            // the caller acks on true, and an acked-but-unpersisted envelope would be lost for good).
+            await withCoalescedSaves {
+                switch opened.inbound {
+                case let .notification(n):
+                    span.attribute("inbound_kind", "notification")
+                    await renderNotification(n, messageId: opened.env.messageId, mode: mode)
+                case let .dismissal(d):
+                    span.attribute("inbound_kind", "dismissal")
+                    await removeRemoteDismissal(d)
+                case let .dataSync(ds):
+                    span.attribute("inbound_kind", "data_sync")
+                    await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
+                }
+                let s = settings()
+                if s.lastDeliveryMode != mode.rawValue { s.lastDeliveryMode = mode.rawValue }
+            }
+            let dedupId = opened.dedupId
+            // Mark handled only after the handler ran AND its writes are committed.
+            await Task.detached(priority: .userInitiated) { MessageDedupStore.record(dedupId) }.value
             span.attribute("result", "handled")
             return true
         case .failure(EngineError.unresolvedSender(let id)) where retryOnUnresolved:
@@ -152,16 +168,25 @@ extension NotiSyncRuntime {
         let identifier = MirrorPresentation.identifier(for: n)
         // If the NSE (or an earlier path) already delivered this message, reflect ITS delivery mode in the
         // Inbox rather than the later drain/WS, and don't post a duplicate banner.
-        let prior = MirrorMapStore.entries(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
-            .first { $0.messageId == messageId }
+        let prior = await Task.detached(priority: .userInitiated) {
+            MirrorMapStore.entries(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
+                .first { $0.messageId == messageId }
+        }.value
         let displayMode = prior?.deliveryMode ?? mode.rawValue
         span.attribute("delivery_mode", displayMode)
         upsertInbox(n, messageId: messageId, identifier: identifier, deliveryMode: displayMode)
         addActivity(.received, .appLabel, titleArg: n.appLabel, detail: .deliveryMode, detailArg: displayMode)
         guard prior == nil else { span.attribute("result", "duplicate"); return }
-        guard !NotificationFilterStore.shouldFilterNotification(n) else { span.attribute("result", "filtered"); return }
+        // Filter check + category registration touch App Group files (the iOS-origin path even writes the
+        // bridged-device record) — off the main actor.
+        let filtered = await Task.detached(priority: .userInitiated) {
+            NotificationFilterStore.shouldFilterNotification(n)
+        }.value
+        guard !filtered else { span.attribute("result", "filtered"); return }
         // Register the per-channel category (carrying the Dismiss action) before posting under it (#15).
-        MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+        await Task.detached(priority: .userInitiated) {
+            MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+        }.value
         if n.style == .MESSAGING, !n.messages.isEmpty {
             await postMessagingMirror(n, messageId: messageId, mode: mode)
         } else {
@@ -194,10 +219,13 @@ extension NotiSyncRuntime {
                                                  attachments: await fetchAttachments(for: n), senderImage: senderImage)
         try? await UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
-        MirrorMapStore.put(MirrorMapEntry(identifier: identifier, sourceClientId: n.sourceClientId,
-                                          sourceKey: n.sourceKey, messageId: messageId, deliveryMode: mode.rawValue,
-                                          isClearable: n.isClearable))
-        ShownStore.markShowing(identifier)
+        let entry = MirrorMapEntry(identifier: identifier, sourceClientId: n.sourceClientId,
+                                   sourceKey: n.sourceKey, messageId: messageId, deliveryMode: mode.rawValue,
+                                   isClearable: n.isClearable)
+        await Task.detached(priority: .userInitiated) {
+            MirrorMapStore.put(entry)
+            ShownStore.markShowing(entry.identifier)
+        }.value
     }
 
     /// A messaging mirror: one notification per conversation message, all sharing the conversation's
@@ -205,7 +233,7 @@ extension NotiSyncRuntime {
     /// overlapping history idempotent; only the newest message alerts (earlier ones post silently).
     private func postMessagingMirror(_ n: CapturedNotification, messageId: String, mode: DeliveryMode) async {
         let base = MirrorPresentation.identifier(for: n)
-        let existing = MirrorMapStore.all()
+        let existing = await Task.detached(priority: .userInitiated) { MirrorMapStore.all() }.value
         let lastIndex = n.messages.indices.last
         for (i, message) in n.messages.enumerated() {
             let id = MirrorPresentation.messageIdentifier(base: base, message: message)
@@ -217,10 +245,13 @@ extension NotiSyncRuntime {
                                                             alerting: i == lastIndex)
             try? await UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: id, content: content, trigger: nil))
-            MirrorMapStore.put(MirrorMapEntry(identifier: id, sourceClientId: n.sourceClientId,
-                                              sourceKey: n.sourceKey, messageId: messageId, deliveryMode: mode.rawValue,
-                                              isClearable: n.isClearable))
-            ShownStore.markShowing(id)
+            let entry = MirrorMapEntry(identifier: id, sourceClientId: n.sourceClientId,
+                                       sourceKey: n.sourceKey, messageId: messageId, deliveryMode: mode.rawValue,
+                                       isClearable: n.isClearable)
+            await Task.detached(priority: .userInitiated) {
+                MirrorMapStore.put(entry)
+                ShownStore.markShowing(entry.identifier)
+            }.value
         }
     }
 
@@ -281,7 +312,7 @@ extension NotiSyncRuntime {
                 if let blob = ds.card?.epochBlob, engine.applyFetchedKeyEpoch(blob) { changed = true }
                 return changed
             }.value
-            if changed { refreshPeerRows() }
+            if changed { await refreshPeerRowsAsync() }
         case .ASSET:
             // The source re-provided assets it had dropped (our ASSET_MISSING repair request). Fetch +
             // decrypt + cache them now so the Inbox icon / avatar resolves without another round-trip.
@@ -300,7 +331,7 @@ extension NotiSyncRuntime {
                 engine.applyProfile(p, from: signerId)
             }.value
             if changed {
-                refreshPeerRows()
+                await refreshPeerRowsAsync()
                 addActivity(.paired, .renamed, detail: .text, detailArg: p.displayName)
             }
         case .TRUST:
@@ -328,7 +359,7 @@ extension NotiSyncRuntime {
             await convergeFromTable(t)
             if result.needsBroadcast { await broadcastTrust() }
             if result.changed {
-                refreshPeerRows()
+                await refreshPeerRowsAsync()
                 addActivity(.paired, .trustUpdated, detail: .text, detailArg: signerId)
             }
         case .FILTER:
@@ -374,7 +405,7 @@ extension NotiSyncRuntime {
                 applied = true
             }
         }
-        if applied { refreshPeerRows() }
+        if applied { await refreshPeerRowsAsync() }
     }
 
     // MARK: Assets

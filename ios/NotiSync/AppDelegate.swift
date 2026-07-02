@@ -10,6 +10,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         FirebaseBootstrap.configure()
         UNUserNotificationCenter.current().delegate = self
         NotiSyncRuntime.shared.registerBackgroundTasks()
+        GestureSymbolPrewarm.run()
         return true
     }
 

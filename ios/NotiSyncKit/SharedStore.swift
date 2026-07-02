@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import os
 
 /// JSON files in the shared App Group container — the only state the app and the NSE both touch:
 /// shared runtime config, the trust roster (sender keys/epochs the NSE needs to verify+open), the
@@ -65,12 +66,50 @@ nonisolated enum AppGroupStore {
     @discardableResult
     static func writeData(_ data: Data, _ name: String) -> Bool {
         guard let url = url(name) else { return false }
-        return (try? data.write(to: url, options: .atomic)) != nil
+        guard (try? data.write(to: url, options: .atomic)) != nil else { return false }
+        _ = decodedCache.withLock { $0.removeValue(forKey: name) }
+        return true
     }
 
-    static func read<T: Decodable>(_ type: T.Type, _ name: String) -> T? {
-        guard let data = readData(name) else { return nil }
-        return try? JSONDecoder().decode(T.self, from: data)
+    // MARK: Decoded-JSON read cache
+    //
+    // These files are read far more often than they change — several per inbound envelope and per SwiftUI
+    // body evaluation, some on the main thread — so a full read + JSON decode per call shows up as jank.
+    // Cache the decoded value per file, validated on every read against the file's (inode, mtime, size), so
+    // a write from the other process (app ↔ NSE) is picked up on the very next read. Writes only invalidate
+    // (never populate) the cache: a stat taken after our own write could belong to a racing writer's file,
+    // and pairing it with our value would serve stale data until the write after that.
+
+    private struct FileStamp: Equatable {
+        var ino: UInt64
+        var mtimeSec: Int
+        var mtimeNsec: Int
+        var size: Int64
+    }
+
+    private static let decodedCache =
+        OSAllocatedUnfairLock<[String: (stamp: FileStamp, value: any Sendable)]>(initialState: [:])
+
+    private static func stamp(_ url: URL) -> FileStamp? {
+        var st = stat()
+        // lstat (not stat): the unqualified function name collides with the `stat` struct; the store never
+        // writes symlinks, so the two are equivalent here.
+        guard lstat(url.path, &st) == 0 else { return nil }
+        return FileStamp(ino: UInt64(st.st_ino), mtimeSec: st.st_mtimespec.tv_sec,
+                         mtimeNsec: st.st_mtimespec.tv_nsec, size: Int64(st.st_size))
+    }
+
+    static func read<T: Decodable & Sendable>(_ type: T.Type, _ name: String) -> T? {
+        guard let url = url(name), let stamp = stamp(url) else { return nil }
+        if let hit = decodedCache.withLock({ $0[name] }), hit.stamp == stamp, let value = hit.value as? T {
+            return value
+        }
+        // Stamp before content: if the file is replaced in between, the cached stamp is older than the
+        // content, so the next read misses and reloads — the cache can be redundant but never stale.
+        guard let data = try? Data(contentsOf: url),
+              let value = try? JSONDecoder().decode(T.self, from: data) else { return nil }
+        decodedCache.withLock { $0[name] = (stamp, value) }
+        return value
     }
 
     @discardableResult

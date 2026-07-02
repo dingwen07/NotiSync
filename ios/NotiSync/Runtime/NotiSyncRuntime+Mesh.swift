@@ -35,7 +35,7 @@ extension NotiSyncRuntime {
         let applied = await Task.detached(priority: .utility) {
             engine.applyFetchedKeyEpoch(blob)
         }.value
-        if applied { refreshPeerRows() }
+        if applied { await refreshPeerRowsAsync() }
     }
 
     // MARK: Key rotation (#8 — mint → pre-warm → activate → retire)
@@ -143,6 +143,7 @@ extension NotiSyncRuntime {
     }
 
     func makePairingPayloadAsync() async {
+        await bringUpCore()   // the pairing sheet can open before the deferred cold-launch bring-up finishes
         guard let engine else { return }
         let displayName = settings().deviceName
         if let payload = await Task.detached(priority: .userInitiated, operation: {
@@ -168,6 +169,7 @@ extension NotiSyncRuntime {
     func handlePairingURL(_ url: URL) {
         guard PairingLinks.isPairing(url) else { return }
         Task {
+            await bringUpCore()   // a cold-launch deep link can arrive before the deferred bring-up finishes
             incomingPairing = await inspectPairingAsync(url.absoluteString)
         }
     }
@@ -183,6 +185,7 @@ extension NotiSyncRuntime {
     }
 
     func startExperienceMode() async -> Bool {
+        await bringUpCore()
         guard let broker else {
             record(error: ExperienceModeError.runtimeNotReady, domain: .pairing)
             return false
@@ -214,7 +217,7 @@ extension NotiSyncRuntime {
         for id in removed {
             if let row = fetchDevice(clientId: id) { modelContext.delete(row) }
         }
-        try? modelContext.save()
+        saveModelContext(modelContext)
         refreshPeerRows()
     }
 
@@ -225,9 +228,9 @@ extension NotiSyncRuntime {
             try engine.acceptPairing(scanned, ownDevice: ownDevice)
         }.value
         addActivity(.paired, .paired, detail: .text, detailArg: name)
-        refreshPeerRows()
+        await refreshPeerRowsAsync()
         settings().pairingStatusValue = .paired
-        try? modelContext?.save()
+        saveModelContext()
         await publishCurrentRoute()
         // Enforcement that Experience Mode never broadcasts the trust roster lives in the seal (`sealTrustTable`
         // / `sealTrustCards` exclude demo peers from both the table and its recipients), so it holds for every
@@ -243,7 +246,7 @@ extension NotiSyncRuntime {
         if let row = fetchDevice(clientId: clientId) {
             row.status = .revoked
             row.updatedAt = .now
-            try? modelContext?.save()
+            saveModelContext()
         }
         addActivity(.paired, .revoked, detail: .text, detailArg: clientId)
         Task { await broadcastTrust() }
@@ -254,8 +257,14 @@ extension NotiSyncRuntime {
     func broadcastTrust() async {
         guard let engine, let broker else { return }
         do {
-            if let env = try engine.sealTrustTable() { try await broker.send(env) }
-            for env in try engine.sealTrustCards() { _ = try? await broker.send(env) }
+            // Each seal loads + verifies the trust roster and signs in the Secure Enclave (one signature
+            // per card envelope) — off the main actor.
+            if let env = try await Task.detached(priority: .utility, operation: { try engine.sealTrustTable() }).value {
+                try await broker.send(env)
+            }
+            for env in try await Task.detached(priority: .utility, operation: { try engine.sealTrustCards() }).value {
+                _ = try? await broker.send(env)
+            }
         } catch {
             record(error: error, domain: .trustBroadcast)
         }
@@ -277,7 +286,7 @@ extension NotiSyncRuntime {
     /// #3 — reject a pending introduction (→ REVOKED) and propagate the overturn.
     func rejectTrust(clientId: String) {
         guard let engine, engine.rejectTrust(clientId) else { return }
-        if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; try? modelContext?.save() }
+        if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; saveModelContext() }
         addActivity(.paired, .rejected, detail: .text, detailArg: clientId)
         refreshPeerRows()
         Task { await broadcastTrust() }
@@ -286,7 +295,7 @@ extension NotiSyncRuntime {
     /// #3 — confirm a peer's revoke of a device we trusted (→ REVOKED). Silent (anti-entropy carries it).
     func confirmRevoke(clientId: String) {
         guard let engine, engine.confirmRevoke(clientId) else { return }
-        if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; try? modelContext?.save() }
+        if let row = fetchDevice(clientId: clientId) { row.status = .revoked; row.updatedAt = .now; saveModelContext() }
         addActivity(.paired, .revokeConfirmed, detail: .text, detailArg: clientId)
         refreshPeerRows()
     }
@@ -351,8 +360,13 @@ extension NotiSyncRuntime {
     /// (`GET /v2/keyepoch`) — a recovery for a broker that lost it. Skipped mid-rotation, where the lifecycle
     /// already publishes the finite-window blobs and this would clobber them (mirrors `publishRoute`'s guard).
     func publishSelfKeyEpoch() async {
-        guard let engine, let broker, engine.pendingRotation() == nil else { return }
-        _ = try? await broker.publishKeyEpoch(try engine.buildClientKeyEpochBlob())
+        guard let engine, let broker else { return }
+        let blob = await Task.detached(priority: .utility) { () -> SignedBlob? in
+            guard engine.pendingRotation() == nil else { return nil }
+            return try? engine.buildClientKeyEpochBlob()
+        }.value
+        guard let blob else { return }
+        _ = try? await broker.publishKeyEpoch(blob)
     }
 
     /// Announce this device's notification-suppression filters to the source peers they target (iOS-only — the
@@ -372,24 +386,31 @@ extension NotiSyncRuntime {
         let currentPeers = Set(snapshots.keys)
 
         // Send the current non-empty snapshot to each targeted source peer. A seal failure (we hold no usable
-        // key-epoch yet) just skips — the peer stays in currentPeers and the next heartbeat retries.
-        for (peerId, rules) in snapshots {
-            if let env = try? engine.sealNotificationFilter(to: peerId, rules: rules, updatedAt: now) {
-                _ = try? await broker.send(env)
+        // key-epoch yet) just skips — the peer stays in currentPeers and the next heartbeat retries. All
+        // seals are built off-main in one hop (roster load + Secure Enclave signature per envelope).
+        let sealedSnapshots = await Task.detached(priority: .utility) { () -> [Envelope] in
+            snapshots.compactMap { peerId, rules in
+                (try? engine.sealNotificationFilter(to: peerId, rules: rules, updatedAt: now)).flatMap { $0 }
             }
+        }.value
+        for env in sealedSnapshots {
+            _ = try? await broker.send(env)
         }
 
         // Clear peers that had a non-empty filter but no longer do. Keep a peer tracked if its clear can't be
         // sent yet, so the clear is retried rather than silently dropped (leaving a stale filter on the peer).
         var nextAnnounced = currentPeers
-        for peerId in lastAnnounced.subtracting(currentPeers) {
-            let sent: Bool
-            if let env = try? engine.sealNotificationFilter(to: peerId, rules: [], updatedAt: now) {
-                sent = (try? await broker.send(env)) != nil
-            } else {
-                sent = false
+        let clearTargets = lastAnnounced.subtracting(currentPeers)
+        if !clearTargets.isEmpty {
+            let clears = await Task.detached(priority: .utility) { () -> [(String, Envelope?)] in
+                clearTargets.map { peerId in
+                    (peerId, (try? engine.sealNotificationFilter(to: peerId, rules: [], updatedAt: now)).flatMap { $0 })
+                }
+            }.value
+            for (peerId, env) in clears {
+                let sent = if let env { (try? await broker.send(env)) != nil } else { false }
+                if !sent { nextAnnounced.insert(peerId) }
             }
-            if !sent { nextAnnounced.insert(peerId) }
         }
 
         await Task.detached(priority: .utility) {

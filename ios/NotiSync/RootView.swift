@@ -229,11 +229,16 @@ struct InboxIconView: View {
 
 struct DevicesView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
+    @Environment(\.modelContext) private var modelContext
     @Query(sort: \TrustedDevice.updatedAt, order: .reverse) private var devices: [TrustedDevice]
-    @Query(sort: \InboxNotification.receivedAt, order: .reverse) private var notifications: [InboxNotification]
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
+    /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
+    /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
+    /// was up. Loaded on page entry / pull-to-refresh, and re-derived when the user edits a filter (so a
+    /// "Clear Filter" swipe removes its row immediately).
+    @State private var iosDeviceRows: [FilteredIosDeviceRecord] = []
 
     private var settings: AppSettings? { settingsRows.first }
 
@@ -281,6 +286,9 @@ struct DevicesView: View {
                     onOpenFilters: { selectedFilterDevice = .ios($0) })
             }
             .navigationTitle("Devices")
+            .task { reloadIosDeviceRows() }
+            .refreshable { reloadIosDeviceRows() }
+            .onChange(of: runtime.notificationFilterRevision) { _, _ in reloadIosDeviceRows() }
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
@@ -303,20 +311,22 @@ struct DevicesView: View {
             .sheet(item: $selectedFilterDevice) { selection in
                 AppFilterSheet(
                     title: selection.title(peerName: peerName),
-                    deviceKey: selection.deviceKey,
-                    supportsChannels: selection.supportsChannels,
-                    apps: appFilterItems(for: selection))
+                    selection: selection)
                     .environmentObject(runtime)
             }
         }
     }
 
-    private var iosDeviceRows: [FilteredIosDeviceRecord] {
+    private func reloadIosDeviceRows() {
         var rowsByKey: [String: FilteredIosDeviceRecord] = [:]
         for device in runtime.iosDevices() {
             rowsByKey[device.deviceKey] = device
         }
-        for notification in notifications where runtime.originPlatform(for: notification) == .IOS_ANCS {
+        let ancsRaw = OriginPlatform.IOS_ANCS.rawValue
+        let descriptor = FetchDescriptor<InboxNotification>(
+            predicate: #Predicate { $0.originPlatform == ancsRaw },
+            sortBy: [SortDescriptor(\.receivedAt, order: .reverse)])
+        for notification in (try? modelContext.fetch(descriptor)) ?? [] {
             guard !notification.sourceClientId.isEmpty,
                   let deviceKey = runtime.filterDeviceKey(for: notification) else { continue }
             let name = notification.originDeviceName?.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -327,7 +337,7 @@ struct DevicesView: View {
                 deviceName: displayName,
                 updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
         }
-        return rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
+        iosDeviceRows = rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
     }
 
     private func areIosDevicesInDisplayOrder(_ lhs: FilteredIosDeviceRecord, _ rhs: FilteredIosDeviceRecord) -> Bool {
@@ -345,45 +355,6 @@ struct DevicesView: View {
 
     private func isIosPeer(_ device: TrustedDevice) -> Bool {
         device.platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "ios"
-    }
-
-    private func appFilterItems(for selection: FilterDeviceSelection) -> [AppFilterItem] {
-        var items: [String: AppFilterItem] = [:]
-        for notification in notifications where selection.matches(notification, runtime: runtime) {
-            guard let appId = runtime.filterAppIdentifier(for: notification) else { continue }
-            let label = notification.appLabel.trimmingCharacters(in: .whitespacesAndNewlines)
-            var item = items[appId] ?? AppFilterItem(
-                appId: appId,
-                appLabel: label.isEmpty ? appId : label,
-                detail: appId,
-                channels: [:])
-            if selection.supportsChannels,
-               let channelId = notification.channelId?.trimmingCharacters(in: .whitespacesAndNewlines),
-               !channelId.isEmpty {
-                let channelName = notification.channelName?.trimmingCharacters(in: .whitespacesAndNewlines)
-                item.channels[channelId] = ChannelFilterItem(
-                    channelId: channelId,
-                    channelName: channelName?.isEmpty == false ? channelName ?? channelId : channelId)
-            }
-            items[appId] = item
-        }
-        for appId in runtime.filteredAppIdentifiers(deviceKey: selection.deviceKey) where items[appId] == nil {
-            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
-        }
-        for appId in runtime.appIdentifiersWithFilteredChannels(deviceKey: selection.deviceKey) where items[appId] == nil {
-            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
-        }
-        for appId in Array(items.keys) {
-            var item = items[appId] ?? AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
-            for channelId in runtime.filteredChannelIdentifiers(deviceKey: selection.deviceKey, appId: appId)
-                where item.channels[channelId] == nil {
-                item.channels[channelId] = ChannelFilterItem(channelId: channelId, channelName: channelId)
-            }
-            items[appId] = item
-        }
-        return items.values.sorted {
-            $0.appLabel.localizedCaseInsensitiveCompare($1.appLabel) == .orderedAscending
-        }
     }
 }
 
@@ -576,10 +547,53 @@ private struct NotificationPostingLabel: View {
 private struct AppFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var runtime: NotiSyncRuntime
+    /// The full Inbox is scanned to enumerate the selected device's apps/channels — queried HERE (not in
+    /// DevicesView) so the 200-row fetch + scan only happens while the sheet is actually open.
+    @Query(sort: \InboxNotification.receivedAt, order: .reverse) private var notifications: [InboxNotification]
     let title: String
-    let deviceKey: String
-    let supportsChannels: Bool
-    let apps: [AppFilterItem]
+    let selection: FilterDeviceSelection
+
+    private var deviceKey: String { selection.deviceKey }
+    private var supportsChannels: Bool { selection.supportsChannels }
+
+    private var apps: [AppFilterItem] {
+        var items: [String: AppFilterItem] = [:]
+        for notification in notifications where selection.matches(notification, runtime: runtime) {
+            guard let appId = runtime.filterAppIdentifier(for: notification) else { continue }
+            let label = notification.appLabel.trimmingCharacters(in: .whitespacesAndNewlines)
+            var item = items[appId] ?? AppFilterItem(
+                appId: appId,
+                appLabel: label.isEmpty ? appId : label,
+                detail: appId,
+                channels: [:])
+            if selection.supportsChannels,
+               let channelId = notification.channelId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !channelId.isEmpty {
+                let channelName = notification.channelName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                item.channels[channelId] = ChannelFilterItem(
+                    channelId: channelId,
+                    channelName: channelName?.isEmpty == false ? channelName ?? channelId : channelId)
+            }
+            items[appId] = item
+        }
+        for appId in runtime.filteredAppIdentifiers(deviceKey: deviceKey) where items[appId] == nil {
+            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+        }
+        for appId in runtime.appIdentifiersWithFilteredChannels(deviceKey: deviceKey) where items[appId] == nil {
+            items[appId] = AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+        }
+        for appId in Array(items.keys) {
+            var item = items[appId] ?? AppFilterItem(appId: appId, appLabel: appId, detail: appId, channels: [:])
+            for channelId in runtime.filteredChannelIdentifiers(deviceKey: deviceKey, appId: appId)
+                where item.channels[channelId] == nil {
+                item.channels[channelId] = ChannelFilterItem(channelId: channelId, channelName: channelId)
+            }
+            items[appId] = item
+        }
+        return items.values.sorted {
+            $0.appLabel.localizedCaseInsensitiveCompare($1.appLabel) == .orderedAscending
+        }
+    }
 
     var body: some View {
         NavigationStack {

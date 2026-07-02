@@ -59,7 +59,7 @@ nonisolated struct TrustedPeerRecord: Codable, Sendable {
     var isExperienceMode: Bool { platform == NotiSyncConfig.experiencePlatform }
 }
 
-private nonisolated struct TrustFile: Codable {
+private nonisolated struct TrustFile: Codable, Sendable {
     var peers: [TrustedPeerRecord]
     var signature: Data
 }

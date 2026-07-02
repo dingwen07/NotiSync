@@ -1,5 +1,6 @@
 import Foundation
 import SwiftData
+import UIKit
 import UserNotifications
 
 /// SwiftData-backed persistence + the in-memory icon cache: settings/device/inbox/activity rows (bounded by
@@ -9,7 +10,52 @@ extension NotiSyncRuntime {
 
     // MARK: SwiftData helpers
 
-    func ensureSettings() { _ = settings(); try? modelContext?.save() }
+    /// Task-local flag marking a `withCoalescedSaves` scope, where intermediate `saveModelContext` calls
+    /// become no-ops and one commit happens at the scope's end. Task-local (not a stored property) so two
+    /// envelope deliveries interleaving on the main actor can't leak each other's deferral.
+    private enum SaveCoalescing {
+        @TaskLocal static var isActive = false
+    }
+
+    @discardableResult
+    func saveModelContext(_ context: ModelContext? = nil) -> Bool {
+        if SaveCoalescing.isActive { return true }   // the enclosing withCoalescedSaves commits
+        return persistModelContext(context)
+    }
+
+    /// Batch a multi-write flow (an inbound envelope upserts an Inbox row, logs activity, and stamps the
+    /// settings row — three commits without this) into a single SQLite commit at the end of `body`. Nested
+    /// scopes each commit at their own boundary, so an inner `receiveEnvelope`'s save-before-ack contract
+    /// holds even when an outer drain loop is also batching (the outer commit then finds no changes).
+    func withCoalescedSaves<T>(_ body: () async -> T) async -> T {
+        let result = await SaveCoalescing.$isActive.withValue(true, operation: body)
+        persistModelContext(nil)
+        return result
+    }
+
+    @discardableResult
+    private func persistModelContext(_ context: ModelContext?) -> Bool {
+        guard let context = context ?? modelContext else { return false }
+        guard context.hasChanges else { return true }
+        // Hold a background assertion across the commit: a WAL checkpoint inside save() can block on fsync,
+        // and being suspended at that point is the 0xdead10cc kill. The empty expiration handler is fine —
+        // save() blocks this (main) thread, so the handler couldn't run until save() returns anyway, at
+        // which point the defer ends the task.
+        let task = UIApplication.shared.beginBackgroundTask(withName: "NotiSync SwiftData Save") {}
+        defer {
+            if task != .invalid {
+                UIApplication.shared.endBackgroundTask(task)
+            }
+        }
+        do {
+            try context.save()
+            return true
+        } catch {
+            return false
+        }
+    }
+
+    func ensureSettings() { _ = settings(); saveModelContext() }
 
     func androidLocalNotificationsEnabled(for clientId: String) -> Bool {
         _ = notificationFilterRevision
@@ -148,11 +194,18 @@ extension NotiSyncRuntime {
     }
 
     func settings() -> AppSettings {
+        if let cachedSettings { return cachedSettings }
+        // No context yet (pre-configure): hand out a throwaway row and do NOT cache it — its writes are
+        // intentionally dropped, and caching would shadow the persistent row once the context arrives.
         guard let modelContext else { return AppSettings() }
-        if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first { return existing }
+        if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first {
+            cachedSettings = existing
+            return existing
+        }
         let created = AppSettings()
         createdSettingsThisLaunch = true
         modelContext.insert(created)
+        cachedSettings = created
         return created
     }
 
@@ -165,32 +218,50 @@ extension NotiSyncRuntime {
     func refreshNotificationPermissionStatusAsync() async {
         let status = await UNUserNotificationCenter.current().notificationSettings().authorizationStatus
         let s = settings()
-        switch status {
-        case .authorized, .provisional, .ephemeral: s.notificationPermissionValue = .granted
-        case .denied: s.notificationPermissionValue = .denied
-        case .notDetermined: s.notificationPermissionValue = .notRequested
-        @unknown default: s.notificationPermissionValue = .unknown
+        let newValue: NotificationPermissionStatus = switch status {
+        case .authorized, .provisional, .ephemeral: .granted
+        case .denied: .denied
+        case .notDetermined: .notRequested
+        @unknown default: .unknown
         }
-        try? modelContext?.save()
+        // Same-value writes still dirty the row and force a commit; this runs every foreground pass.
+        if s.notificationPermissionValue != newValue { s.notificationPermissionValue = newValue }
+        saveModelContext()
     }
 
     func ensureThisDeviceRow() {
         let s = settings()
         guard !clientId.isEmpty else { return }
         if let device = fetchDevice(clientId: clientId) {
-            device.displayName = s.deviceName
-            device.updatedAt = .now
-            device.status = .thisDevice
+            // Touch the row only on an actual change — this runs on every launch, and an unconditional
+            // updatedAt bump forced a main-thread commit each time.
+            if device.displayName != s.deviceName || device.status != .thisDevice {
+                device.displayName = s.deviceName
+                device.updatedAt = .now
+                device.status = .thisDevice
+            }
         } else {
             modelContext?.insert(TrustedDevice(clientId: clientId, displayName: s.deviceName, platform: "ios",
                                                status: .thisDevice, safetyNumber: clientId))
         }
-        try? modelContext?.save()
+        saveModelContext()
     }
 
     func refreshPeerRows() {
         guard let engine else { return }
-        for peer in engine.trustedPeers() where peer.clientId != clientId {
+        applyPeerRows(engine.trustedPeers())
+    }
+
+    /// Off-main variant for async flows (inbound data-sync, key-epoch convergence): loading the trust
+    /// roster re-reads and signature-verifies the whole file — not main-thread work.
+    func refreshPeerRowsAsync() async {
+        guard let engine else { return }
+        let peers = await Task.detached(priority: .utility) { engine.trustedPeers() }.value
+        applyPeerRows(peers)
+    }
+
+    private func applyPeerRows(_ peers: [TrustedPeerRecord]) {
+        for peer in peers where peer.clientId != clientId {
             let status = Self.rowStatus(for: peer)
             if let row = fetchDevice(clientId: peer.clientId) {
                 row.displayName = peer.displayName
@@ -203,7 +274,7 @@ extension NotiSyncRuntime {
                                                    safetyNumber: peer.clientId))
             }
         }
-        try? modelContext?.save()
+        saveModelContext()
     }
 
     /// Map a peer's protocol trust status to the Devices-UI row status (incl. revoked, #6).
@@ -263,7 +334,7 @@ extension NotiSyncRuntime {
                 iconAssetHash: iconRef?.assetHash, iconAssetRefData: iconRefData))
             pruneOldest(InboxNotification.self, by: \.receivedAt, keeping: Self.inboxRowLimit)
         }
-        try? modelContext?.save()
+        saveModelContext()
         if shouldRefreshIcons { bumpIconRevision() }
     }
 
@@ -290,9 +361,12 @@ extension NotiSyncRuntime {
         let items = await Task.detached(priority: .utility) {
             PendingInboxStore.drainAll()
         }.value
-        for item in items {
-            upsertInbox(item.capturedNotification, messageId: item.messageId,
-                        identifier: item.identifier, deliveryMode: item.deliveryMode)
+        guard !items.isEmpty else { return }
+        await withCoalescedSaves {
+            for item in items {
+                upsertInbox(item.capturedNotification, messageId: item.messageId,
+                            identifier: item.identifier, deliveryMode: item.deliveryMode)
+            }
         }
     }
 
@@ -381,7 +455,7 @@ extension NotiSyncRuntime {
         let descriptor = FetchDescriptor<InboxNotification>(
             predicate: #Predicate { $0.sourceClientId == sourceClientId && $0.sourceKey == sourceKey })
         try? modelContext.fetch(descriptor).forEach { $0.isDismissed = true }
-        try? modelContext.save()
+        saveModelContext(modelContext)
     }
 
     /// Delete every Inbox notification from local storage (the Inbox "Delete All" action). Storage-only — it
@@ -389,14 +463,14 @@ extension NotiSyncRuntime {
     func deleteAllInboxNotifications() {
         guard let modelContext else { return }
         (try? modelContext.fetch(FetchDescriptor<InboxNotification>()))?.forEach { modelContext.delete($0) }
-        try? modelContext.save()
+        saveModelContext(modelContext)
     }
 
     /// Delete every Activity log entry from local storage (the Activity "Delete All" action).
     func deleteAllActivity() {
         guard let modelContext else { return }
         (try? modelContext.fetch(FetchDescriptor<ActivityRecord>()))?.forEach { modelContext.delete($0) }
-        try? modelContext.save()
+        saveModelContext(modelContext)
     }
 
     func addActivity(
@@ -411,7 +485,7 @@ extension NotiSyncRuntime {
             kind: kind, title: title, titleArg: titleArg,
             detail: detail, detailArg: detailArg, detailNum: detailNum))
         pruneOldest(ActivityRecord.self, by: \.at, keeping: Self.activityRowLimit)
-        try? modelContext?.save()
+        saveModelContext()
     }
 
     func record(error: Error, domain: ErrorDomain) {
@@ -419,7 +493,7 @@ extension NotiSyncRuntime {
         lastError = message
         settings().lastError = message
         addActivity(.error, .error, titleArg: domain.rawValue, detail: .text, detailArg: message)
-        try? modelContext?.save()
+        saveModelContext()
     }
 
     func fetchNotification(messageId: String) -> InboxNotification? {
