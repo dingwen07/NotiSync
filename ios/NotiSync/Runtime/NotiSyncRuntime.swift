@@ -67,11 +67,18 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// row still showing the monogram re-resolves once a sibling notification (or a repair) supplies the icon.
     @Published private(set) var iconRevision = 0
     @Published private(set) var notificationFilterRevision = 0
+    /// Bumped after every Inbox mutation (upsert, dismissal, delete-all). The Inbox list is paged
+    /// (`InboxListModel`) rather than a live `@Query`, so this is its re-fetch signal.
+    @Published private(set) var inboxRevision = 0
+    /// FTS5 sidecar over the Inbox's searchable text. Every Inbox mutation goes through this runtime,
+    /// which mirrors it into the index; `reconcileSearchIndexIfNeeded` self-heals any drift at launch.
+    nonisolated let searchIndex = InboxSearchIndex()
 
     /// Bump `iconRevision`, whose setter stays `private(set)` so only the runtime mutates it. Called from the
     /// `+Inbound` / `+Store` extensions when an icon is cached or re-provisioned, nudging monogram rows.
     func bumpIconRevision() { iconRevision += 1 }
     func bumpNotificationFilterRevision() { notificationFilterRevision += 1 }
+    func bumpInboxRevision() { inboxRevision += 1 }
 
     /// A local notification-filter setting changed: refresh dependent UI, then announce the new snapshot to the
     /// source peers it targets so they stop/resume delivering to us. A short debounce coalesces a rapid burst
@@ -111,6 +118,9 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             self.refreshRotationInfo()
             self.ensureThisDeviceRow()
             self.scheduleRelayRefresh()
+            // Self-heal the Inbox search sidecar (first launch with the feature, schema bump, store
+            // reset, drift) — its own low-priority task so the foreground kicks below aren't held up.
+            Task(priority: .utility) { await self.reconcileSearchIndexIfNeeded() }
             // .onChange(of: scenePhase) doesn't fire for the initial .active, so kick off the foreground
             // flows (broker status, route publish, WS, drain) on cold launch here. If the scene handler
             // already flipped foregroundActive while the core was still coming up, its WS/sync starts were

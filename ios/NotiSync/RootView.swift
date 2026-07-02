@@ -37,14 +37,28 @@ struct RootView: View {
 
 struct InboxView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
-    @Query(sort: \InboxNotification.receivedAt, order: .reverse) private var notifications: [InboxNotification]
+    @Environment(\.modelContext) private var modelContext
+    /// Paged window over the (unbounded) Inbox — a live `@Query` would materialize every row. Re-fetched
+    /// on `runtime.inboxRevision` bumps; extended by the sentinel row as the user scrolls.
+    @StateObject private var list = InboxListModel()
+    @State private var searchText = ""
+    @State private var appFilter: InboxListModel.AppFilter?
+    /// The filtered app's icon, resolved once when the filter is applied (the tapped row was already
+    /// displaying it, so this is a memoized-cache hit). Nil falls back to a generic filter glyph.
+    @State private var appFilterIcon: UIImage?
+    /// How far the list is rubber-banded past its top edge. The floating accessory line rides the bounce
+    /// with the content — pinned while the list scrolls beneath it, but not sitting detached while
+    /// overscrolled rows drag away under it.
+    @State private var topOverscroll: CGFloat = 0
+    @State private var unreadOnly = false
     @Query private var devices: [TrustedDevice]
 
     var body: some View {
         NavigationStack {
             List {
-                ForEach(notifications) { notification in
-                    InboxRow(notification: notification, sourceDevice: device(for: notification))
+                ForEach(list.rows) { notification in
+                    InboxRow(notification: notification, sourceDevice: device(for: notification),
+                             onTapAppIcon: { toggleAppFilter(for: notification) })
                         .contentShape(Rectangle())
                         .onTapGesture {
                             guard !notification.isDismissed else { return }
@@ -84,31 +98,230 @@ struct InboxView: View {
                             }
                         }
                 }
+                if list.hasMore {
+                    // Sentinel: rendering it means the user reached the loaded window's end.
+                    HStack {
+                        Spacer()
+                        ProgressView()
+                        Spacer()
+                    }
+                    .onAppear { list.loadMore() }
+                }
+            }
+            // Pinned (`.always`) so the field stays visible while scrolling instead of collapsing away
+            // with the drawer.
+            .searchable(text: $searchText, placement: .navigationBarDrawer(displayMode: .always),
+                        prompt: Text("Search notifications"))
+            // The accessory line (active-filter pill; red delete-results button while searching) FLOATS
+            // over the list (no safe-area inset, no opaque bar): an inset with a solid background under
+            // the navigation bar defeated its scroll-edge glass. The content margin keeps the top row
+            // readable at rest while still scrolling under the floating elements.
+            .overlay(alignment: .top) {
+                if appFilter != nil || showsSearchDelete {
+                    topAccessoryBar
+                }
+            }
+            .contentMargins(.top, appFilter != nil || showsSearchDelete ? 54 : 0, for: .scrollContent)
+            .onScrollGeometryChange(for: CGFloat.self) { geometry in
+                // At rest contentOffset.y == -contentInsets.top; anything below that is rubber-band.
+                max(0, -(geometry.contentOffset.y + geometry.contentInsets.top))
+            } action: { _, overscroll in
+                topOverscroll = overscroll
             }
             .navigationTitle("Inbox")
             .toolbar {
-                if !notifications.isEmpty {
+                // Keep the menu reachable while Unread Only is on (it's the only way to toggle it back off)
+                // even if that filter currently matches nothing.
+                if list.hasLoaded, list.totalCount > 0 || unreadOnly {
                     ToolbarItem(placement: .topBarTrailing) {
-                        // A Menu (not a dialog) is the second confirmation: tapping the trash reveals one
-                        // destructive "Delete All N" item — the native pull-down/popover style.
-                        Menu {
-                            Button(role: .destructive) {
-                                runtime.deleteAllInboxNotifications()
-                            } label: {
-                                Label("Delete All \(notifications.count) Notifications", systemImage: "trash")
-                            }
-                        } label: {
-                            Label("Delete All", systemImage: "trash")
-                        }
+                        inboxMenu
                     }
                 }
             }
             .overlay {
-                if notifications.isEmpty {
-                    ContentUnavailableView("No mirrored notifications", systemImage: "tray")
+                if list.hasLoaded && list.rows.isEmpty {
+                    if !searchText.isEmpty {
+                        ContentUnavailableView.search(text: searchText)
+                    } else if unreadOnly {
+                        ContentUnavailableView("No Unread Notifications", systemImage: "checkmark.circle")
+                    } else if appFilter != nil {
+                        ContentUnavailableView("No Notifications for This App",
+                                               systemImage: "line.3.horizontal.decrease.circle")
+                    } else {
+                        ContentUnavailableView("No mirrored notifications", systemImage: "tray")
+                    }
                 }
             }
+            .onAppear { list.configure(context: modelContext, index: runtime.searchIndex) }
+            // One task per (searchText, appFilter, unreadOnly) state — a keystroke cancels the previous
+            // one, giving the debounce; filter/unread toggles and cleared text apply immediately.
+            .task(id: queryKey) {
+                if !searchText.isEmpty, searchText != list.appliedSearch {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    guard !Task.isCancelled else { return }
+                }
+                await list.apply(search: searchText, filter: appFilter, unreadOnly: unreadOnly)
+            }
+            .onChange(of: runtime.inboxRevision) { _, _ in list.refreshAfterChange() }
         }
+    }
+
+    /// The Inbox actions menu. All/Unread is a picker (checkmark on the active choice, All by default).
+    /// Action scope tracks what the list shows: Mark as Read and Delete All follow the active app
+    /// filter, and their counts are the counts on screen. Delete All hides while a search or Unread
+    /// narrows the list further (the visible subset would belie the count — searches get their own
+    /// delete button on the accessory line). The destructive item living one level into the menu is
+    /// the second confirmation (the pre-menu design's trash button worked the same way).
+    private var inboxMenu: some View {
+        Menu {
+            // The Picker is implicitly its own menu section — the system draws the split after it, so
+            // no explicit Divider (stacking one doubled the section gap).
+            Picker("Show", selection: $unreadOnly) {
+                Label("All", systemImage: "tray").tag(false)
+                Label("Unread", systemImage: "envelope.badge").tag(true)
+            }
+            if searchText.isEmpty {
+                Button {
+                    let predicate = InboxListModel.predicate(filter: appFilter, unreadOnly: true)
+                    Task { await runtime.markAllAsRead(matching: predicate) }
+                } label: {
+                    if let appFilter {
+                        Label("Mark Notifications from \(appFilter.label) as Read", systemImage: "checkmark.circle")
+                    } else {
+                        Label("Read All", systemImage: "checkmark.circle")
+                    }
+                }
+                .disabled(list.unreadCount == 0)
+            }
+            if searchText.isEmpty, !unreadOnly, list.totalCount > 0 {
+                Button(role: .destructive) {
+                    if let appFilter, let predicate = InboxListModel.predicate(filter: appFilter, unreadOnly: false) {
+                        runtime.deleteInboxNotifications(matching: predicate, appKey: appFilter.appKey)
+                    } else {
+                        runtime.deleteAllInboxNotifications()
+                    }
+                } label: {
+                    if let appFilter {
+                        Label("Delete All \(list.totalCount) from \(appFilter.label)", systemImage: "trash")
+                    } else {
+                        Label("Delete All \(list.totalCount) Notifications", systemImage: "trash")
+                    }
+                }
+            }
+        } label: {
+            Label("Inbox Options", systemImage: "line.3.horizontal.decrease")
+        }
+    }
+
+    private var queryKey: String { "\(unreadOnly)\u{1f}\(appFilter?.appKey ?? "")\u{1f}\(searchText)" }
+
+    /// The delete-results button shows only when the search's total is trustworthy: Unread Only narrows
+    /// the visible rows below what the sidecar counted, so the pair would advertise one number and
+    /// delete another.
+    private var showsSearchDelete: Bool {
+        InboxSearchIndex.matchExpression(for: searchText) != nil && !unreadOnly && list.totalCount > 0
+    }
+
+    /// Floating accessory line under the search field: the active-filter pill (centered) and, while a
+    /// search is up, its red delete-results button (trailing). Offset by the rubber-band distance so it
+    /// bounces with the content.
+    private var topAccessoryBar: some View {
+        ZStack {
+            if showsSearchDelete {
+                HStack {
+                    Spacer()
+                    searchDeleteMenu
+                }
+            }
+            if let appFilter {
+                appFilterPill(appFilter)
+                    // Keep the centered pill's truncation clear of the trailing delete button.
+                    .padding(.horizontal, showsSearchDelete ? 56 : 0)
+            }
+        }
+        .padding(.top, 6)
+        .padding(.horizontal, 16)
+        .offset(y: topOverscroll)
+        .transition(.opacity.combined(with: .move(edge: .top)))
+    }
+
+    /// Same double-confirmation shape as the Inbox menu's Delete All: the trash reveals one destructive
+    /// item, labeled with the full match count (every result, not just the loaded page).
+    private var searchDeleteMenu: some View {
+        Menu {
+            Button(role: .destructive) {
+                let match = InboxSearchIndex.matchExpression(for: searchText)
+                let appKey = appFilter?.appKey
+                Task { [match, appKey] in
+                    guard let match else { return }
+                    await runtime.deleteInboxSearchResults(matching: match, appKey: appKey)
+                }
+            } label: {
+                Label("Delete \(list.totalCount) Results", systemImage: "trash")
+            }
+        } label: {
+            Image(systemName: "trash")
+                .foregroundStyle(.red)
+                .frame(width: 40, height: 40)
+                .contentShape(Rectangle())
+        }
+        .modifier(FloatingGlassCapsule())
+        .accessibilityLabel("Delete Search Results")
+    }
+
+    private func toggleAppFilter(for notification: InboxNotification) {
+        let tapped = InboxListModel.AppFilter(notification)
+        if appFilter == tapped {
+            clearAppFilter()
+            return
+        }
+        withAnimation { appFilter = tapped }
+        appFilterIcon = nil
+        Task {
+            if let data = await runtime.appIconBytes(for: notification), appFilter == tapped {
+                appFilterIcon = UIImage(data: data)
+            }
+        }
+    }
+
+    private func clearAppFilter() {
+        withAnimation {
+            appFilter = nil
+            appFilterIcon = nil
+        }
+    }
+
+    private func appFilterPill(_ filter: InboxListModel.AppFilter) -> some View {
+        HStack(spacing: 6) {
+            if let appFilterIcon {
+                Image(uiImage: appFilterIcon)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: 22, height: 22)
+                    .clipShape(RoundedRectangle(cornerRadius: 5))
+            } else {
+                Image(systemName: "line.3.horizontal.decrease")
+                    .imageScale(.small)
+            }
+            Text(verbatim: filter.label)
+                .font(.subheadline.weight(.medium))
+                .lineLimit(1)
+            Button {
+                clearAppFilter()
+            } label: {
+                // The visible glyph is small; the 36pt frame is the actual tap target.
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 36, height: 36)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Clear App Filter")
+        }
+        .padding(.leading, 12)
+        .padding(.trailing, 2)
+        .padding(.vertical, 2)
+        .modifier(FloatingGlassCapsule())
     }
 
     private func device(for notification: InboxNotification) -> TrustedDevice? {
@@ -129,13 +342,31 @@ struct InboxView: View {
     }
 }
 
+/// Liquid-glass capsule for elements floating over scrolling content (the Inbox's active-filter chip):
+/// the real `glassEffect` on iOS 26, a material capsule on earlier systems (the app deploys to 18.6).
+private struct FloatingGlassCapsule: ViewModifier {
+    func body(content: Content) -> some View {
+        if #available(iOS 26.0, *) {
+            content.glassEffect(.regular.interactive(), in: .capsule)
+        } else {
+            content.background(.regularMaterial, in: Capsule())
+        }
+    }
+}
+
 struct InboxRow: View {
     let notification: InboxNotification
     let sourceDevice: TrustedDevice?
+    /// Tap on the app icon — the Inbox filters to that app. The inner gesture wins over the row's
+    /// tap-to-dismiss, so the icon is the one non-dismiss tap target in the row.
+    var onTapAppIcon: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 12) {
             InboxIconView(notification: notification)
+                .onTapGesture { onTapAppIcon?() }
+                .accessibilityAddTraits(.isButton)
+                .accessibilityLabel("Filter by App")
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
                     Text(verbatim: notification.appLabel)
@@ -323,9 +554,12 @@ struct DevicesView: View {
             rowsByKey[device.deviceKey] = device
         }
         let ancsRaw = OriginPlatform.IOS_ANCS.rawValue
-        let descriptor = FetchDescriptor<InboxNotification>(
+        var descriptor = FetchDescriptor<InboxNotification>(
             predicate: #Predicate { $0.originPlatform == ancsRaw },
             sortBy: [SortDescriptor(\.receivedAt, order: .reverse)])
+        // Recent history suffices to (re)derive bridged devices — persisted filter records already seed
+        // rowsByKey, and the Inbox is unbounded, so cap the scan instead of materializing everything.
+        descriptor.fetchLimit = 2000
         for notification in (try? modelContext.fetch(descriptor)) ?? [] {
             guard !notification.sourceClientId.isEmpty,
                   let deviceKey = runtime.filterDeviceKey(for: notification) else { continue }
@@ -367,6 +601,7 @@ private struct TrustedPeerRow: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             DeviceLabel(device: device)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
                     if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
@@ -472,6 +707,7 @@ private struct IosDevicesSection: View {
                                 .font(.body.weight(.medium))
                             iosDeviceSubtitle(device)
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             if runtime.iosNotificationsEnabled(deviceKey: device.deviceKey) {
@@ -547,9 +783,13 @@ private struct NotificationPostingLabel: View {
 private struct AppFilterSheet: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var runtime: NotiSyncRuntime
-    /// The full Inbox is scanned to enumerate the selected device's apps/channels — queried HERE (not in
-    /// DevicesView) so the 200-row fetch + scan only happens while the sheet is actually open.
-    @Query(sort: \InboxNotification.receivedAt, order: .reverse) private var notifications: [InboxNotification]
+    @Environment(\.modelContext) private var modelContext
+    /// The selected device's apps/channels are enumerated from RECENT Inbox history — the Inbox is
+    /// unbounded, so the scan is capped rather than materializing every row, and fetched once per
+    /// presentation (not live): filter toggles re-render via runtime state, and arrivals while the
+    /// sheet is up aren't worth a live query.
+    @State private var notifications: [InboxNotification] = []
+    private static let recentScanLimit = 2000
     let title: String
     let selection: FilterDeviceSelection
 
@@ -675,6 +915,12 @@ private struct AppFilterSheet: View {
             }
             .listSectionSpacing(.compact)
             .navigationTitle(title)
+            .task {
+                var descriptor = FetchDescriptor<InboxNotification>(
+                    sortBy: [SortDescriptor(\.receivedAt, order: .reverse)])
+                descriptor.fetchLimit = Self.recentScanLimit
+                notifications = (try? modelContext.fetch(descriptor)) ?? []
+            }
             .overlay {
                 if apps.isEmpty {
                     ContentUnavailableView("No apps yet", systemImage: "app.badge")

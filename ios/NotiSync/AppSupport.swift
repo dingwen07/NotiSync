@@ -10,9 +10,12 @@ import UIKit
 /// (UIImage and UIGraphicsImageRenderer are thread-safe.)
 nonisolated enum GestureSymbolPrewarm {
     /// Symbols whose first on-screen appearance is gesture-gated: swipe-action buttons (Revoke /
-    /// Clear Filter) and menu items (Delete All, Silence…). Symbols visible at page render don't need
-    /// this — their parse happens during navigation, masked by the transition.
-    private static let gestureGatedSymbols = ["hand.raised.slash", "bell", "bell.slash", "trash"]
+    /// Clear Filter), menu items (Delete All, Silence…, Mark as Read), and the Inbox filter chip
+    /// (appears on icon tap). Symbols visible at page render don't need this — their parse happens
+    /// during navigation, masked by the transition.
+    private static let gestureGatedSymbols = ["hand.raised.slash", "bell", "bell.slash", "trash",
+                                              "checkmark.circle", "xmark.circle.fill", "tray",
+                                              "envelope.badge"]
 
     static func run() {
         Task.detached(priority: .utility) {

@@ -3,9 +3,11 @@ import SwiftData
 import UIKit
 import UserNotifications
 
-/// SwiftData-backed persistence + the in-memory icon cache: settings/device/inbox/activity rows (bounded by
-/// pruning), the Devices roster mirrored from the protocol trust store, unified Inbox-row icon resolution
-/// (App Store artwork for iOS-origin, decrypted launcher icons for Android-origin), and activity/error logging.
+/// SwiftData-backed persistence + the in-memory icon cache: settings/device/inbox/activity rows (the Inbox
+/// unbounded — paged by `InboxListModel`, text-searched via the `InboxSearchIndex` FTS5 sidecar; activity
+/// bounded by pruning), the Devices roster mirrored from the protocol trust store, unified Inbox-row icon
+/// resolution (App Store artwork for iOS-origin, decrypted launcher icons for Android-origin), and
+/// activity/error logging.
 extension NotiSyncRuntime {
 
     // MARK: SwiftData helpers
@@ -294,6 +296,7 @@ extension NotiSyncRuntime {
         var shouldRefreshIcons = false
         if let existing = fetchNotification(messageId: messageId) {
             existing.receivedAt = .now
+            searchIndex.touch(messageId: messageId, receivedAt: existing.receivedAt)
             existing.deliveryMode = deliveryMode
             if existing.originPlatform == nil {
                 existing.originPlatform = n.originPlatform.rawValue
@@ -321,7 +324,7 @@ extension NotiSyncRuntime {
         } else {
             // The icon (App Store artwork for iOS-origin, decrypted APP_ICON for Android-origin) is resolved
             // lazily + uniformly by `appIconBytes` at display time; the row only needs the asset reference.
-            modelContext?.insert(InboxNotification(
+            let inserted = InboxNotification(
                 messageId: messageId, sourceClientId: n.sourceClientId, sourceKey: n.sourceKey,
                 packageName: n.packageName, iosBundleId: n.iosBundleId, appLabel: n.appLabel,
                 title: n.title, body: n.bigText ?? n.text, subtitle: n.subText,
@@ -331,17 +334,23 @@ extension NotiSyncRuntime {
                 importance: n.importance.rawValue,
                 postTime: Date(timeIntervalSince1970: TimeInterval(n.postTime) / 1000), receivedAt: .now,
                 localNotificationId: identifier, deliveryMode: deliveryMode,
-                iconAssetHash: iconRef?.assetHash, iconAssetRefData: iconRefData))
-            pruneOldest(InboxNotification.self, by: \.receivedAt, keeping: Self.inboxRowLimit)
+                iconAssetHash: iconRef?.assetHash, iconAssetRefData: iconRefData)
+            // Index only what persists: with no context (pre-configure) the row is dropped, and a
+            // phantom index entry would surface unopenable search hits until the next reconcile.
+            if let modelContext {
+                modelContext.insert(inserted)
+                searchIndex.insert(InboxSearchEntry(inserted))
+            }
         }
         saveModelContext()
+        bumpInboxRevision()
         if shouldRefreshIcons { bumpIconRevision() }
     }
 
-    /// Inbox + activity logs stay persisted but bounded — drop the oldest rows past these caps so storage
-    /// and the SwiftData working set don't grow without limit. The Inbox is the primary surface and keeps the
-    /// larger history; the activity log is diagnostic and kept smaller.
-    static let inboxRowLimit = 200
+    /// Activity rows stay persisted but bounded — drop the oldest past the cap so the diagnostic log
+    /// doesn't grow without limit. The Inbox is intentionally NOT capped: history is the product surface,
+    /// the UI pages it (`InboxListModel`) instead of materializing it, and search goes through the FTS5
+    /// sidecar — so retained rows cost disk, not working set.
     static let activityRowLimit = 600
 
     /// Delete the oldest rows of `T` (by a `Date` key) beyond `keeping`. Cheap: a COUNT, then a bounded
@@ -456,14 +465,101 @@ extension NotiSyncRuntime {
             predicate: #Predicate { $0.sourceClientId == sourceClientId && $0.sourceKey == sourceKey })
         try? modelContext.fetch(descriptor).forEach { $0.isDismissed = true }
         saveModelContext(modelContext)
+        bumpInboxRevision()
+    }
+
+    /// Mark every Inbox row matching `predicate` as read (the Inbox menu's "Mark … as Read") — the FULL
+    /// dismissal flow, batched: each distinct (source, key) clears its local mirrors, acks, and seals a
+    /// DismissEvent to the mesh (so the source device dismisses too), exactly as if the user tapped
+    /// every row. Rows dim progressively as the pass advances; non-clearable (ongoing) sources keep
+    /// their existing skip-the-outbound-send handling inside `locallyDismiss`.
+    func markAllAsRead(matching predicate: Predicate<InboxNotification>?) async {
+        guard let modelContext else { return }
+        let rows = (try? modelContext.fetch(FetchDescriptor<InboxNotification>(predicate: predicate))) ?? []
+        var seen = Set<String>()
+        var sources: [(clientId: String, key: String)] = []
+        for row in rows where seen.insert("\(row.sourceClientId)\u{1f}\(row.sourceKey)").inserted {
+            sources.append((row.sourceClientId, row.sourceKey))
+        }
+        guard !sources.isEmpty else { return }
+        await withCoalescedSaves {
+            for source in sources {
+                await locallyDismiss(sourceClientId: source.clientId, sourceKey: source.key)
+            }
+        }
     }
 
     /// Delete every Inbox notification from local storage (the Inbox "Delete All" action). Storage-only — it
     /// does not sync a dismissal to peers; it just prunes the mirrored rows on this device.
     func deleteAllInboxNotifications() {
         guard let modelContext else { return }
-        (try? modelContext.fetch(FetchDescriptor<InboxNotification>()))?.forEach { modelContext.delete($0) }
+        // Batch form: fetching every row just to delete it is O(history) in memory, and the Inbox is unbounded.
+        try? modelContext.delete(model: InboxNotification.self)
         saveModelContext(modelContext)
+        searchIndex.deleteAll()
+        bumpInboxRevision()
+    }
+
+    /// Delete one app's Inbox rows (the Inbox menu's Delete All while an app filter is active). Same
+    /// storage-only semantics as `deleteAllInboxNotifications`.
+    func deleteInboxNotifications(matching predicate: Predicate<InboxNotification>, appKey: String) {
+        guard let modelContext else { return }
+        try? modelContext.delete(model: InboxNotification.self, where: predicate)
+        saveModelContext(modelContext)
+        searchIndex.deleteApp(appKey: appKey)
+        bumpInboxRevision()
+    }
+
+    /// Delete every Inbox row matching an active search — ALL matches from the sidecar, not just the
+    /// loaded page. The id list comes from the index, so a row the index missed (drift) survives; it was
+    /// invisible to the search either way, and the launch reconcile re-converges the two stores.
+    func deleteInboxSearchResults(matching match: String, appKey: String?) async {
+        guard let modelContext else { return }
+        let ids = await searchIndex.search(matching: match, appKey: appKey, limit: Int(Int32.max), offset: 0)
+        guard !ids.isEmpty else { return }
+        var start = 0
+        while start < ids.count {
+            let chunk = Array(ids[start..<min(start + 500, ids.count)])
+            try? modelContext.delete(model: InboxNotification.self,
+                                     where: #Predicate { chunk.contains($0.messageId) })
+            start += 500
+        }
+        saveModelContext(modelContext)
+        searchIndex.deleteMessages(ids)
+        bumpInboxRevision()
+    }
+
+    /// Launch-time self-heal for the FTS sidecar: SwiftData is the source of truth and the index is
+    /// disposable, so any drift (a crash between store commit and index write, the pre-release destructive
+    /// store reset, a schema/tokenizer bump, first launch over existing history) is repaired by rebuilding
+    /// from the store. Cheap when healthy: one COUNT on each side.
+    func reconcileSearchIndexIfNeeded() async {
+        guard let modelContext else { return }
+        let storeCount = (try? modelContext.fetchCount(FetchDescriptor<InboxNotification>())) ?? 0
+        guard await searchIndex.needsRebuild(expectedCount: storeCount) else { return }
+        let started = Date()
+        var entries: [InboxSearchEntry] = []
+        entries.reserveCapacity(storeCount)
+        // Page the enumeration and yield between pages — the context is main-actor, and a large history
+        // fetched in one shot would materialize every row inside a single main-thread frame.
+        let batchSize = 500
+        var offset = 0
+        while true {
+            var descriptor = FetchDescriptor<InboxNotification>(
+                sortBy: [SortDescriptor(\.receivedAt), SortDescriptor(\.messageId)])
+            descriptor.fetchLimit = batchSize
+            descriptor.fetchOffset = offset
+            let page = (try? modelContext.fetch(descriptor)) ?? []
+            entries.append(contentsOf: page.map(InboxSearchEntry.init))
+            if page.count < batchSize { break }
+            offset += batchSize
+            await Task.yield()
+        }
+        await searchIndex.rebuild(entries)
+        PerfMonitor.recordValueTrace(
+            "inbox_index_rebuild",
+            metrics: ["rows": Int64(entries.count),
+                      "duration_ms": Int64(Date().timeIntervalSince(started) * 1000)])
     }
 
     /// Delete every Activity log entry from local storage (the Activity "Delete All" action).
