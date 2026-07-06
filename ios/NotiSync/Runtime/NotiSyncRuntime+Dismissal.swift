@@ -11,13 +11,15 @@ extension NotiSyncRuntime {
 
     func locallyDismiss(sourceClientId: String, sourceKey: String) async {
         await withCoalescedSaves {
+            let pair = DismissedSourcePair(sourceClientId: sourceClientId, sourceKey: sourceKey)
+            let dismissedAt = NotiSyncEngine.nowMillis()
             let entries = await Task.detached(priority: .userInitiated) {
                 MirrorMapStore.entries(sourceClientId: sourceClientId, sourceKey: sourceKey)
             }.value
             // #14 — a non-clearable (ongoing) source notification must not be cleared on the source by a
             // local swipe: remove the local copy but skip the outbound DismissEvent.
             let clearable = entries.allSatisfy { $0.isClearable ?? true }
-            await removeMirrors(entries, sourceClientId: sourceClientId, sourceKey: sourceKey)
+            let markedInbox = await removeMirrors(entries, sourceClientId: sourceClientId, sourceKey: sourceKey)
             for entry in entries {
                 await queueAndFlushAck(messageId: entry.messageId)
             }
@@ -25,9 +27,11 @@ extension NotiSyncRuntime {
             // Tombstone the pair so a still-queued/replayed copy of this mirror renders suppressed instead
             // of resurrecting what the user just swiped (same guard a remote dismissal gets).
             await Task.detached(priority: .userInitiated) {
-                DismissalTombstoneStore.record(
-                    DismissedSourcePair(sourceClientId: sourceClientId, sourceKey: sourceKey),
-                    dismissedAt: NotiSyncEngine.nowMillis())
+                DismissalTombstoneStore.record(pair, dismissedAt: dismissedAt)
+                if !markedInbox {
+                    PendingDismissalStore.append(PendingDismissalItem(
+                        sourceClientId: sourceClientId, sourceKey: sourceKey, dismissedAt: dismissedAt))
+                }
             }.value
             guard clearable else {
                 addActivity(.dismissed, .dismissedLocally, detail: .ongoingNotSynced)
@@ -70,7 +74,12 @@ extension NotiSyncRuntime {
                 DismissedSourcePair(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey),
                 dismissedAt: d.dismissedAt, queueForApp: false)
         }.value
-        markDismissed(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
+        if !markDismissed(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey) {
+            await Task.detached(priority: .userInitiated) {
+                PendingDismissalStore.append(PendingDismissalItem(
+                    sourceClientId: d.sourceClientId, sourceKey: d.sourceKey, dismissedAt: d.dismissedAt))
+            }.value
+        }
         addActivity(.dismissed, .remoteDismissal, detail: .text, detailArg: d.sourceClientId)
     }
 
@@ -80,6 +89,7 @@ extension NotiSyncRuntime {
     /// dismissed and log the activity. The dismissal analog of `drainPendingInbox` — run right after it so
     /// a suppressed mirror's freshly-drained Inbox row lands already-dismissed.
     func drainPendingDismissals() async {
+        guard modelContext != nil else { return }
         let items = await Task.detached(priority: .utility) { PendingDismissalStore.drainAll() }.value
         guard !items.isEmpty else { return }
         await withCoalescedSaves {
@@ -105,7 +115,7 @@ extension NotiSyncRuntime {
 
     /// Remove every delivered/pending mirror for a source (NSE- and app-posted), echo-marking each so the
     /// reconciler doesn't read the removal back as a user dismissal.
-    private func removeMirrors(_ entries: [MirrorMapEntry], sourceClientId: String, sourceKey: String) async {
+    private func removeMirrors(_ entries: [MirrorMapEntry], sourceClientId: String, sourceKey: String) async -> Bool {
         let ids = entries.map(\.identifier)
         if !ids.isEmpty {
             await Task.detached(priority: .userInitiated) {
@@ -114,7 +124,7 @@ extension NotiSyncRuntime {
             UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: ids)
             UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: ids)
         }
-        markDismissed(sourceClientId: sourceClientId, sourceKey: sourceKey)
+        return markDismissed(sourceClientId: sourceClientId, sourceKey: sourceKey)
     }
 
     private func clearMirrors(_ entries: [MirrorMapEntry]) async {

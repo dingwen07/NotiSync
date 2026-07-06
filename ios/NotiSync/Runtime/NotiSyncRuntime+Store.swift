@@ -377,6 +377,7 @@ extension NotiSyncRuntime {
     /// Drain mirrors the NSE displayed over the APNs alert path (and then acked) into the SwiftData Inbox.
     /// Idempotent: `upsertInbox` dedupes on `messageId`, so a replay just refreshes the existing row.
     func drainPendingInbox() async {
+        guard modelContext != nil else { return }
         let items = await Task.detached(priority: .utility) {
             PendingInboxStore.drainAll()
         }.value
@@ -469,13 +470,16 @@ extension NotiSyncRuntime {
         return nil
     }
 
-    func markDismissed(sourceClientId: String, sourceKey: String) {
-        guard let modelContext else { return }
+    @discardableResult
+    func markDismissed(sourceClientId: String, sourceKey: String) -> Bool {
+        guard let modelContext else { return false }
         let descriptor = FetchDescriptor<InboxNotification>(
             predicate: #Predicate { $0.sourceClientId == sourceClientId && $0.sourceKey == sourceKey })
-        try? modelContext.fetch(descriptor).forEach { $0.isDismissed = true }
+        guard let rows = try? modelContext.fetch(descriptor), !rows.isEmpty else { return false }
+        rows.forEach { $0.isDismissed = true }
         saveModelContext(modelContext)
         bumpInboxRevision()
+        return true
     }
 
     /// Mark every Inbox row matching `predicate` as read (the Inbox menu's "Mark … as Read") — the FULL

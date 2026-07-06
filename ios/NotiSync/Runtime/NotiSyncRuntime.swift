@@ -350,6 +350,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func handleNotificationResponse(_ response: UNNotificationResponse) async {
         let id = response.actionIdentifier
         guard id == UNNotificationDismissActionIdentifier || id == MirrorPresentation.dismissActionId else { return }
+        await bringUpCore()
+        await drainPendingInbox()
         let info = response.notification.request.content.userInfo
         guard let scid = info["sourceClientId"] as? String, let sk = info["sourceKey"] as? String else { return }
         await locallyDismiss(sourceClientId: scid, sourceKey: sk)

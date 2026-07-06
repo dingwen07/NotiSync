@@ -222,6 +222,13 @@ nonisolated enum MirrorPresentation {
         interaction.donate(completion: nil)
         guard let updated = try? base.updating(from: intent),
               let mutable = updated.mutableCopy() as? UNMutableNotificationContent else { return nil }
+        // `updating(from:)` can rebuild the content around the intent. Keep the mirror metadata that
+        // drives notification actions and dismissal sync.
+        mutable.categoryIdentifier = base.categoryIdentifier
+        mutable.threadIdentifier = base.threadIdentifier
+        mutable.userInfo = base.userInfo
+        mutable.interruptionLevel = base.interruptionLevel
+        mutable.sound = base.sound
         mutable.attachments = base.attachments
         return mutable
     }

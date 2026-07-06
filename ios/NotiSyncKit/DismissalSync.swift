@@ -86,9 +86,9 @@ nonisolated enum DismissalTombstoneStore {
     }
 }
 
-/// A dismissal the NSE applied but couldn't reflect into SwiftData (the Inbox store lives in the app
-/// sandbox) — the app drains these on foreground/BG refresh and marks the rows dismissed. The NSE analog
-/// of `PendingInboxStore`.
+/// A dismissal applied while the matching Inbox row may not exist in SwiftData yet (for example, the NSE
+/// or a cold notification action before the app drains its pending Inbox handoff). The app drains these on
+/// foreground/BG refresh and marks the rows dismissed.
 nonisolated struct PendingDismissalItem: Codable, Sendable {
     var sourceClientId: String
     var sourceKey: String
