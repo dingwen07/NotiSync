@@ -268,6 +268,8 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">You</string>
     <string name="mirror_via">via %1$s</string>
+    <!-- Channel-group label for a bridged iPhone whose name is not yet known ("iPhone" is not localized). -->
+    <string name="mirror_ios_device_fallback">iPhone</string>
     <plurals name="mirror_group_summary_count">
         <item quantity="one">%1$d notification</item>
         <item quantity="other">%1$d notifications</item>

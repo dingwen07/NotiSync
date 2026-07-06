@@ -55,18 +55,36 @@ import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Mirrors the SOURCE app's channel structure on the receiver: one NotificationChannelGroup per source
- * app, one NotificationChannel per source channel (importance/mute mirrored at creation), nested in
- * that group. If the source app uses channel groups, the group's display name is shown in the channel
- * name (e.g. "alice@gmail.com · Mail") — when available (requires a CompanionDeviceManager
- * association; v1 falls back to the channel name / category / app label).
+ * Mirrors the SOURCE app's channel structure on the receiver. Android-origin captures keep the source's
+ * own shape: one NotificationChannelGroup per source app, one NotificationChannel per source channel
+ * (importance/mute mirrored at creation), nested in that group. If the source app uses channel groups,
+ * the group's display name is shown in the channel name (e.g. "alice@gmail.com · Mail") — when available
+ * (requires a CompanionDeviceManager association; v1 falls back to the channel name / category / app label).
  *
- * IDs are "{type}:{sourceClientId}:{package}[:{source}]" with type = group / channel / conversation;
- * the second ':'-segment is always the source client id so [gc] can prune by device. The per-app group
- * is one per (sourceClientId, package), and its display name carries the source device — e.g.
- * "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system settings.
+ * iOS/ANCS-origin captures have no source channels, so their settings mirror the iOS mental model
+ * instead: ONE group per bridged iPhone (named after the iPhone, e.g. "Dingwen's iPhone") holding ONE
+ * channel per iOS app (named after the app, e.g. "WhatsApp") — the channel is the per-app switch, the
+ * group the per-device bucket. Shade bundling is a separate mechanism and stays per app (see
+ * RemoteNotificationPoster.receiverGroupKey).
+ *
+ * IDs are "{type}:{sourceClientId}:…" with type = group / channel / conversation; the second
+ * ':'-segment is always the source client id so [gc] can prune by peer. Android-origin ids are
+ * "{type}:{client}:{package}[:{source}]", and the per-app group's display name carries the source
+ * device — e.g. "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system
+ * settings. iOS-origin ids are "group:{client}:{originId}:_device" and
+ * "channel:{client}:{originId}:{package}:_ios". Legacy per-app iOS groups/channels (Android-shaped,
+ * ending ":{package}" / ":_default") are neither migrated nor pruned — they linger, no longer posted
+ * to, until the user runs the reset-channels diagnostic ([deleteAll], which matches them by prefix).
  */
 object MirrorChannels {
+    // Sentinel id segments for the iOS/ANCS scheme, in the "_default" convention: a real package /
+    // bundle id is always dotted and an ANCS capture has no source-channel id, so an underscore-only
+    // segment can never collide with a real value in that slot.
+    private const val IOS_DEVICE_GROUP = "_device"
+    private const val IOS_APP_CHANNEL = "_ios"
+
+    /** Matches AncsBleManager.iphoneId()'s own fallback, for a bridged capture missing its origin id. */
+    private const val IOS_FALLBACK_ORIGIN = "iphone"
     // The [originId] segment (a stable origin-device id, e.g. a hashed iPhone id) separates notifications a
     // bridging client relays for *different* origin devices (its own Android vs a paired iPhone) — otherwise
     // a same-app notification from each collides into one group and its name flip-flops. Empty for a local
@@ -80,31 +98,61 @@ object MirrorChannels {
     private fun convChannelId(client: ClientId, originId: String, pkg: String, conv: String) =
         if (originId.isEmpty()) "conversation:${client.value}:$pkg:$conv" else "conversation:${client.value}:$originId:$pkg:$conv"
 
+    /** One settings group per bridged iPhone. The trailing sentinel keeps the shape mechanically distinct
+     *  from the legacy per-app "group:{client}:{originId}:{package}" it replaces. */
+    private fun iosDeviceGroupId(client: ClientId, originId: String) =
+        "group:${client.value}:$originId:$IOS_DEVICE_GROUP"
+
+    /** One channel per iOS app, under the device group. Deliberately a FRESH id (legacy ANCS channels end
+     *  in ":_default"): the OS never re-groups an existing channel and resurrects a deleted id with its old
+     *  settings (including the dead per-app group), so only a new id moves upgraded installs to the
+     *  device-group layout — no migration pass needed. */
+    private fun iosAppChannelId(client: ClientId, originId: String, pkg: String) =
+        "channel:${client.value}:$originId:$pkg:$IOS_APP_CHANNEL"
+
     /** Stable origin-device discriminator for ids; empty for a local capture (keeps the legacy id format). */
     private fun originId(notif: CapturedNotification): String =
         notif.originDeviceId?.takeIf { it.isNotBlank() }.orEmpty()
+
+    private fun isIosOrigin(notif: CapturedNotification) =
+        notif.originPlatform == OriginPlatform.IOS_ANCS
+
+    /** ANCS origin id for id-building; never empty (the mapper always sets one, but a foreign producer
+     *  might not). */
+    private fun ancsOriginId(notif: CapturedNotification) =
+        originId(notif).ifEmpty { IOS_FALLBACK_ORIGIN }
+
+    /** The settings group this capture files under — shared by [ensure] and [ensureConversation]. */
+    private fun groupIdFor(notif: CapturedNotification): String =
+        if (isIosOrigin(notif)) iosDeviceGroupId(notif.sourceClientId, ancsOriginId(notif))
+        else groupId(notif.sourceClientId, originId(notif), notif.packageName)
 
     /** Group label carries the source device so two devices running the same app stay distinct. */
     fun groupName(appLabel: String, deviceName: String?): String =
         deviceName?.takeIf { it.isNotBlank() }?.let { "$appLabel ($it)" } ?: appLabel
 
-    /** Create the per-app group + per-source-channel channel; return the channel id to post on. */
+    /** Create the group + channel this capture posts on; return the channel id.
+     *  Android-origin: per-app group + per-source-channel channel. iOS/ANCS: per-iPhone group + per-app channel. */
     fun ensure(context: Context, notif: CapturedNotification, deviceName: String?): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
-        val oid = originId(notif)
-        val gid = groupId(notif.sourceClientId, oid, notif.packageName)
+        val ios = isIosOrigin(notif)
+        val gid = groupIdFor(notif)
+        // An iOS group is labelled with the iPhone itself — originDeviceName only, NOT [deviceName], whose
+        // fallback is the bridging client's profile name and would title the iPhone's bucket after the
+        // Android phone that relayed it. Placeholder until the name is learned; the re-apply below heals it.
+        val groupLabel =
+            if (ios) notif.originDeviceName?.takeIf { it.isNotBlank() }
+                ?: context.getString(R.string.mirror_ios_device_fallback)
+            else groupName(notif.appLabel, deviceName)
         // Group must exist before a channel references it; createNotificationChannel also updates
         // name/description and lowers importance on an existing channel (never raises — OS contract).
         // createNotificationChannelGroup re-applies the name every call, so a source-device rename
         // surfaces on its next mirrored notification — the only point where both the app label (from
         // the capture) and the current device name (from the trust store) are known together.
-        mgr.createNotificationChannelGroup(
-            NotificationChannelGroup(
-                gid,
-                groupName(notif.appLabel, deviceName)
-            )
-        )
-        val cid = channelId(notif.sourceClientId, oid, notif.packageName, notif.channelId)
+        mgr.createNotificationChannelGroup(NotificationChannelGroup(gid, groupLabel))
+        val cid =
+            if (ios) iosAppChannelId(notif.sourceClientId, ancsOriginId(notif), notif.packageName)
+            else channelId(notif.sourceClientId, originId(notif), notif.packageName, notif.channelId)
         // The first notification's importance fixes the channel: createNotificationChannel can only LOWER an
         // existing channel's importance, never raise it (OS contract), and a delete+recreate to force a raise
         // doesn't work either — the OS resurrects a same-id channel with its old importance (and the delete
@@ -132,11 +180,11 @@ object MirrorChannels {
     ): String {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val conv = notif.shortcutId ?: notif.sourceKey
-        val oid = originId(notif)
-        val cid = convChannelId(notif.sourceClientId, oid, notif.packageName, conv)
+        val cid = convChannelId(notif.sourceClientId, originId(notif), notif.packageName, conv)
         mgr.createNotificationChannel(
             NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply {
-                group = groupId(notif.sourceClientId, oid, notif.packageName)
+                // ANCS captures are never conversations today; groupIdFor keeps the group right if that changes.
+                group = groupIdFor(notif)
                 setConversationId(parentChannelId, shortcutId)
                 enableVibration(notif.shouldVibrate)
             }
@@ -186,6 +234,10 @@ object MirrorChannels {
     private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
 
     private fun channelName(context: Context, notif: CapturedNotification): String {
+        // iOS/ANCS: the channel IS the app's switch, so it carries the app's name. The generic fallback
+        // below would name it after the LATEST post's category ("Messages", then "Calls" after a missed
+        // call) — generic and unstable, since createNotificationChannel re-applies the name on every call.
+        if (isIosOrigin(notif)) return notif.appLabel
         val base =
             notif.channelName?.takeIf { it.isNotBlank() } ?: categoryLabel(context, notif.category)
             ?: notif.appLabel

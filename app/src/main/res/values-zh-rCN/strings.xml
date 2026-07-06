@@ -259,6 +259,7 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">你</string>
     <string name="mirror_via">通过 %1$s</string>
+    <string name="mirror_ios_device_fallback">iPhone</string>
     <plurals name="mirror_group_summary_count">
         <item quantity="other">%1$d 条通知</item>
     </plurals>
