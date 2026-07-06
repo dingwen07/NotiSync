@@ -214,9 +214,15 @@ extension NotiSyncRuntime {
 
     /// A non-messaging mirror: one notification keyed by the (sourceClientId, sourceKey) identifier.
     private func postSingleMirror(_ n: CapturedNotification, messageId: String, identifier: String, mode: DeliveryMode) async {
-        let senderImage = await senderImageData(for: n)
-        let content = MirrorPresentation.content(for: n, messageId: messageId,
-                                                 attachments: await fetchAttachments(for: n), senderImage: senderImage)
+        let commAppIcons = await Task.detached(priority: .userInitiated) {
+            MirrorDisplayStore.preferences().communicationAppIcons
+        }.value
+        let attachments = await fetchAttachments(for: n)
+        // The icon is needed as the sender avatar (communication styling) or, by default, as the
+        // large-icon attachment — which only shows when the mirror has no graphic of its own.
+        let appIcon = (commAppIcons || attachments.isEmpty) ? await appIconData(for: n) : nil
+        let content = await MirrorPresentation.content(for: n, messageId: messageId, attachments: attachments,
+                                                       appIcon: appIcon, communicationStyle: commAppIcons)
         try? await UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
         let entry = MirrorMapEntry(identifier: identifier, sourceClientId: n.sourceClientId,
@@ -258,13 +264,14 @@ extension NotiSyncRuntime {
     /// Per-message avatar: the message sender's contact photo if carried, else the source app's icon.
     private func messageAvatar(_ message: ConversationMessage, fallback n: CapturedNotification) async -> Data? {
         if let ref = message.avatar, let data = await loadAsset(ref) { return data }
-        return await senderImageData(for: n)
+        return await appIconData(for: n)
     }
 
-    /// Avatar for a Communication Notification. Mirrors Android's icon order: public App Store icon by iOS
-    /// bundle id first (crisp/canonical, and the only option for an iOS-origin mirror), else the decrypted
-    /// private app/large icon (the captured launcher icon — the only source for an Android-origin app).
-    private func senderImageData(for n: CapturedNotification) async -> Data? {
+    /// Origin app icon (messaging avatar fallback + non-messaging large icon / avatar). Mirrors Android's
+    /// icon order: public App Store icon by iOS bundle id first (crisp/canonical, and the only option for
+    /// an iOS-origin mirror), else the decrypted private app/large icon (the captured launcher icon — the
+    /// only source for an Android-origin app).
+    private func appIconData(for n: CapturedNotification) async -> Data? {
         if let itunes = await AppIconFetcher.iconData(iosBundleId: n.iosBundleId) { return itunes }
         if let ref = n.appIcon ?? n.largeIcon { return await loadAsset(ref) }
         return nil

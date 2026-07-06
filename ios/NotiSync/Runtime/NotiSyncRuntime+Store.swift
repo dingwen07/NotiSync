@@ -59,6 +59,16 @@ extension NotiSyncRuntime {
 
     func ensureSettings() { _ = settings(); saveModelContext() }
 
+    /// Mirror display preference (App Group — the NSE reads it too): communication styling for
+    /// non-messaging mirrors. Read is stat-cached; the write goes off-main like other store I/O.
+    func communicationAppIconsEnabled() -> Bool {
+        MirrorDisplayStore.preferences().communicationAppIcons
+    }
+
+    func setCommunicationAppIconsEnabled(_ enabled: Bool) {
+        Task.detached(priority: .utility) { MirrorDisplayStore.setCommunicationAppIcons(enabled) }
+    }
+
     func androidLocalNotificationsEnabled(for clientId: String) -> Bool {
         _ = notificationFilterRevision
         return NotificationFilterStore.androidLocalNotificationsEnabled(for: clientId)

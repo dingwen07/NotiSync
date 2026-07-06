@@ -1079,6 +1079,7 @@ struct SettingsView: View {
     @State private var brokerURL = ""
     @State private var deviceName = ""
     @State private var environment: RouteEnvironment = NotiSyncConfig.defaultAPNSEnvironment
+    @State private var communicationAppIcons = false
     @State private var releaseHiddenSettingsUnlocked = SettingsHiddenControlsUnlock.isUnlocked
 
     var body: some View {
@@ -1088,15 +1089,30 @@ struct SettingsView: View {
                     Button {
                         runtime.requestNotificationPermissionAndRegister()
                     } label: {
-                        InlineIconLabel("Notifications", systemImage: "bell.badge")
+                        Label("Notifications", systemImage: "bell.badge")
                     }
                     Button {
                         runtime.postLocalTestNotification()
                     } label: {
-                        InlineIconLabel("Test Local Notification", systemImage: "bell.and.waves.left.and.right")
+                        Label("Test Local Notification", systemImage: "bell.and.waves.left.and.right")
                     }
                     LabeledContent("Permission", value: LocalizedText.notificationPermission(settingsRows.first?.notificationPermissionValue ?? .unknown))
                     LabeledContent("Pairing", value: LocalizedText.pairingStatus(settingsRows.first?.pairingStatusValue ?? .unpaired))
+                }
+                Section {
+                    Toggle(isOn: Binding(
+                        get: { communicationAppIcons },
+                        set: { enabled in
+                            communicationAppIcons = enabled
+                            runtime.setCommunicationAppIconsEnabled(enabled)
+                        }
+                    )) {
+                        Label("Improve Watch Compatibility", systemImage: "applewatch")
+                    }
+                } header: {
+                    Text("Notifications")
+                } footer: {
+                    Text("Show app icons in a different way that displays better on Apple Watch. When off, app icons appear as image thumbnails.")
                 }
                 Section("Broker") {
                     if showsHiddenSettings {
@@ -1125,7 +1141,7 @@ struct SettingsView: View {
                     Button {
                         runtime.saveSettings(brokerURL: brokerURL, deviceName: deviceName, environment: environment)
                     } label: {
-                        InlineIconLabel("Save", systemImage: "checkmark")
+                        Label("Save", systemImage: "checkmark")
                     }
                     .disabled(!hasSettingsChanges)
                 }
@@ -1144,12 +1160,12 @@ struct SettingsView: View {
                             Button {
                                 runtime.simulateLocalStateLossRecovery()
                             } label: {
-                                InlineIconLabel("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
+                                Label("Simulate Reinstall Recovery", systemImage: "arrow.counterclockwise.circle")
                             }
                             Button {
                                 runtime.clearBrokerToken()
                             } label: {
-                                InlineIconLabel("Remove Client Integrity Token", systemImage: "key.slash")
+                                Label("Remove Client Integrity Token", systemImage: "key.slash")
                             }
                         }
                     }
@@ -1168,7 +1184,7 @@ struct SettingsView: View {
                     Button {
                         runtime.rotateNow()
                     } label: {
-                        InlineIconLabel("Rotate Now", systemImage: "arrow.triangle.2.circlepath")
+                        Label("Rotate Now", systemImage: "arrow.triangle.2.circlepath")
                     }
                 } header: {
                     Text("Key Rotation")
@@ -1212,6 +1228,7 @@ struct SettingsView: View {
     }
 
     private func loadSettings() {
+        communicationAppIcons = runtime.communicationAppIconsEnabled()
         guard let settings = settingsRows.first else { return }
         brokerURL = settings.brokerURL
         deviceName = settings.deviceName

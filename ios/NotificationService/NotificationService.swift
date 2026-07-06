@@ -1,10 +1,11 @@
 import UserNotifications
 
 /// Notification Service Extension. For a NOTIFICATION alert push it decrypts on-device (HPKE + AES-GCM
-/// via the shared NotiSyncKit) and replaces the placeholder with a Communication Notification before
-/// display. The broker only ever holds ciphertext. Handles both inline ciphertext (`ct`) and oversized
-/// notifications (the broker sent only a relay pointer `mid` → the NSE pulls it with the operational
-/// request key). After displaying, it acks the message so the app doesn't re-deliver it on WS connect.
+/// via the shared NotiSyncKit) and replaces the placeholder with the rendered mirror before display
+/// (see `MirrorPresentation` for the styling rules). The broker only ever holds ciphertext. Handles both
+/// inline ciphertext (`ct`) and oversized notifications (the broker sent only a relay pointer `mid` → the
+/// NSE pulls it with the operational request key). After displaying, it acks the message so the app
+/// doesn't re-deliver it on WS connect.
 final class NotificationService: UNNotificationServiceExtension {
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNNotificationContent?
@@ -90,8 +91,9 @@ final class NotificationService: UNNotificationServiceExtension {
                 }
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
+                let commAppIcons = MirrorDisplayStore.preferences().communicationAppIcons
                 let prepared: UNNotificationContent
-                let fetch: SenderImageFetch?
+                let fetch: ImageFetch?
                 if n.style == .MESSAGING, let last = n.messages.last {
                     let attachments = await fetchAttachments(for: last, engine: engine)
                     let senderImage = senderImage(for: n, message: last)
@@ -109,10 +111,14 @@ final class NotificationService: UNNotificationServiceExtension {
                     }
                 } else {
                     let attachments = await fetchAttachments(for: n, engine: engine)
-                    let senderImage = senderImage(for: n)
-                    prepared = MirrorPresentation.content(for: n, messageId: messageId,
-                                                          attachments: attachments, senderImage: senderImage.data)
-                    fetch = senderImage.data == nil ? senderImage.fetch : nil
+                    // The icon is needed as the sender avatar (communication styling) or, by default, as
+                    // the large-icon attachment — which only shows when the mirror has no graphic of its own.
+                    let icon: (data: Data?, fetch: ImageFetch?) =
+                        (commAppIcons || attachments.isEmpty) ? appIcon(for: n) : (nil, nil)
+                    prepared = await MirrorPresentation.content(for: n, messageId: messageId,
+                                                                attachments: attachments, appIcon: icon.data,
+                                                                communicationStyle: commAppIcons)
+                    fetch = icon.data == nil ? icon.fetch : nil
                 }
                 bestAttempt = filterAlert ? MirrorPresentation.passiveContent(prepared, removeActions: true) : prepared
 
@@ -133,7 +139,7 @@ final class NotificationService: UNNotificationServiceExtension {
                 MessageDedupStore.record(messageId)
                 clearClaim(dedupId)
                 let content: UNNotificationContent
-                if let data = await fetchSenderImage(fetch, engine: engine) {
+                if let data = await fetchImage(fetch, engine: engine) {
                     if n.style == .MESSAGING, let last = n.messages.last {
                         let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
@@ -141,8 +147,9 @@ final class NotificationService: UNNotificationServiceExtension {
                                                                     alerting: true)
                     } else {
                         let attachments = await fetchAttachments(for: n, engine: engine)
-                        content = MirrorPresentation.content(for: n, messageId: messageId,
-                                                             attachments: attachments, senderImage: data)
+                        content = await MirrorPresentation.content(for: n, messageId: messageId,
+                                                                   attachments: attachments, appIcon: data,
+                                                                   communicationStyle: commAppIcons)
                     }
                 } else {
                     content = prepared
@@ -161,23 +168,24 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
-    private enum SenderImageFetch {
+    private enum ImageFetch {
         case appStoreIcon(String)
         case privateAsset(PrivateAssetRef)
     }
 
     /// Image for a messaging notification: if a sender avatar is present, use only that avatar source.
     /// A sender-avatar cache miss deliberately does not fall back to the app icon.
-    private func senderImage(for n: CapturedNotification, message: ConversationMessage) -> (data: Data?, fetch: SenderImageFetch?) {
+    private func senderImage(for n: CapturedNotification, message: ConversationMessage) -> (data: Data?, fetch: ImageFetch?) {
         if let ref = message.avatar {
             return (cachedAssetRead(key: ref.assetHash, read: { AssetCache.read(ref.assetHash) }), .privateAsset(ref))
         }
-        return senderImage(for: n)
+        return appIcon(for: n)
     }
 
-    /// Source app icon for communication styling: App Store artwork for iOS-origin apps, otherwise the
-    /// captured private launcher icon. Cache hits are used immediately; misses are fetched after prepare.
-    private func senderImage(for n: CapturedNotification) -> (data: Data?, fetch: SenderImageFetch?) {
+    /// Origin app icon: App Store artwork for iOS-origin apps, otherwise the captured private launcher
+    /// icon. Used as the messaging sender-avatar fallback and the non-messaging large icon / avatar.
+    /// Cache hits are used immediately; misses are fetched after prepare.
+    private func appIcon(for n: CapturedNotification) -> (data: Data?, fetch: ImageFetch?) {
         if let bundleId = n.iosBundleId, !bundleId.isEmpty {
             let data = cachedAssetRead(key: "icon:\(bundleId)", read: { AppIconFetcher.cachedIconData(iosBundleId: bundleId) })
             return (data, .appStoreIcon(bundleId))
@@ -188,7 +196,7 @@ final class NotificationService: UNNotificationServiceExtension {
         return (nil, nil)
     }
 
-    private func fetchSenderImage(_ fetch: SenderImageFetch?, engine: NotiSyncEngine) async -> Data? {
+    private func fetchImage(_ fetch: ImageFetch?, engine: NotiSyncEngine) async -> Data? {
         switch fetch {
         case .appStoreIcon(let bundleId):
             // Reached only after the synchronous cache check missed, so this is a real iTunes network fetch.

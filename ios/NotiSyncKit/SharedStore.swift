@@ -135,6 +135,35 @@ nonisolated enum AppGroupStore {
         static let notificationFilters = "notification-filters.json"
         static let filterAnnounce = "notification-filter-announce.json"
         static let perfEvents = "perf-events.json"
+        static let mirrorDisplay = "mirror-display.json"
+    }
+}
+
+/// Mirror presentation preferences shared by the app and the NSE (App Group JSON — the NSE renders the
+/// alert fast-path and cannot read SwiftData).
+nonisolated struct MirrorDisplayPreferences: Codable, Sendable {
+    /// Render non-messaging mirrors as Communication Notifications, replacing NotiSync's own app icon with
+    /// the origin app's. Off by default: the origin app icon renders as the attachment thumbnail instead
+    /// (Android's large-icon fallback), and communication styling — with its Siri conversation donation —
+    /// stays reserved for real conversations (MESSAGING mirrors always use it). Surfaced in Settings as
+    /// "Improve Watch Compatibility": communication styling is what carries the origin app icon to Apple
+    /// Watch, which doesn't show attachment thumbnails.
+    var communicationAppIcons: Bool = false
+}
+
+nonisolated enum MirrorDisplayStore {
+    private static let fileName = AppGroupStore.Files.mirrorDisplay
+
+    static func preferences() -> MirrorDisplayPreferences {
+        AppGroupStore.read(MirrorDisplayPreferences.self, fileName) ?? MirrorDisplayPreferences()
+    }
+
+    static func setCommunicationAppIcons(_ enabled: Bool) {
+        AppGroupStore.withLock(fileName) {
+            var prefs = AppGroupStore.read(MirrorDisplayPreferences.self, fileName) ?? MirrorDisplayPreferences()
+            prefs.communicationAppIcons = enabled
+            AppGroupStore.write(prefs, fileName)
+        }
     }
 }
 

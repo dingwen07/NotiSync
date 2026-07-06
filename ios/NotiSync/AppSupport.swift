@@ -29,6 +29,10 @@ nonisolated enum GestureSymbolPrewarm {
     }
 }
 
+/// Icon + text for inline flow: caption metadata, status chips, compact bordered buttons.
+/// Not for Form/List rows — SF Symbol bounding boxes vary in width (~16–33pt at body size),
+/// so stacked rows drift out of column alignment; the system `Label` reserves a uniform icon
+/// column in list contexts and is the right component there.
 struct InlineIconLabel: View {
     private let title: Text
     private let systemImage: String

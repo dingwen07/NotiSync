@@ -6,8 +6,11 @@ import UserNotifications
 /// Builds the local notification(s) for a decoded mirror — shared by the app process (foreground / relay
 /// drain) and the Notification Service Extension (alert push). Centralizes the identifier scheme, the
 /// dismissal category, alerting (importance → interruption level + sound), grouping (Android group →
-/// iOS `threadIdentifier`, Android channel → iOS `categoryIdentifier`), and rendering as a
-/// **Communication Notification** (message style + sender avatar).
+/// iOS `threadIdentifier`, Android channel → iOS `categoryIdentifier`), and origin-app branding: a
+/// messaging mirror renders as a **Communication Notification** (message style + sender avatar); any other
+/// mirror attaches the origin app icon as its thumbnail — Android's large-icon fallback — unless the
+/// communication-app-icons preference (`MirrorDisplayStore`, "Improve Watch Compatibility") opts it into
+/// communication styling too.
 nonisolated enum MirrorPresentation {
     private struct AttachmentFile: Sendable {
         var identifier: String
@@ -61,14 +64,24 @@ nonisolated enum MirrorPresentation {
 
     // MARK: Single (non-messaging) content
 
-    /// The notification content to deliver for a non-messaging mirror. Tries a Communication Notification
-    /// (so the source app icon / contact avatar shows instead of NotiSync's icon); falls back to the plain
-    /// content if the Communication Notifications entitlement isn't provisioned.
+    /// The notification content to deliver for a non-messaging mirror. By default plain content with the
+    /// origin app icon attached as the thumbnail — matching the Android mirror's large-icon fallback — when
+    /// the mirror carries no graphic of its own. With `communicationStyle` (the communication-app-icons
+    /// preference) it instead renders as a Communication Notification (app icon as the sender avatar),
+    /// falling back to the plain content if the Communication Notifications entitlement isn't provisioned.
     static func content(for n: CapturedNotification, messageId: String,
-                        attachments: [UNNotificationAttachment] = [], senderImage: Data? = nil) -> UNNotificationContent {
-        let base = baseContent(for: n, messageId: messageId, attachments: attachments)
-        let senderName = n.title?.nonBlank ?? n.appLabel
-        return communicationStyled(base, for: n, senderName: senderName, senderImage: senderImage) ?? base
+                        attachments: [UNNotificationAttachment] = [], appIcon: Data? = nil,
+                        communicationStyle: Bool) async -> UNNotificationContent {
+        if communicationStyle {
+            let base = baseContent(for: n, messageId: messageId, attachments: attachments)
+            let senderName = n.title?.nonBlank ?? n.appLabel
+            return communicationStyled(base, for: n, senderName: senderName, senderImage: appIcon) ?? base
+        }
+        var attachments = attachments
+        if attachments.isEmpty, let appIcon, let icon = await appIconAttachment(appIcon) {
+            attachments = [icon]
+        }
+        return baseContent(for: n, messageId: messageId, attachments: attachments)
     }
 
     private static func baseContent(for n: CapturedNotification, messageId: String,
@@ -153,7 +166,9 @@ nonisolated enum MirrorPresentation {
     // MARK: Communication styling
 
     /// Wrap as an incoming INSendMessageIntent so iOS renders a communication notification with the
-    /// sender's avatar. Returns nil if the entitlement is missing (`updating(from:)` throws) → caller uses base.
+    /// sender's avatar. Used by every MESSAGING mirror, and by non-messaging ones only when the
+    /// communication-app-icons preference opts in. Returns nil if the entitlement is missing
+    /// (`updating(from:)` throws) → caller uses base.
     private static func communicationStyled(_ base: UNMutableNotificationContent, for n: CapturedNotification,
                                             senderName: String, senderImage: Data?) -> UNNotificationContent? {
         let handle = INPersonHandle(value: n.sourceClientId, type: .unknown)
@@ -186,6 +201,24 @@ nonisolated enum MirrorPresentation {
     static func normalizedImageData(_ data: Data) -> Data {
         if data.starts(with: [0x89, 0x50, 0x4E, 0x47]) || data.starts(with: [0xFF, 0xD8, 0xFF]) { return data }
         return UIImage(data: data)?.pngData() ?? data
+    }
+
+    /// The origin app icon as an attachment — iOS's closest analog to Android's mirror large icon. Only
+    /// used when the mirror carries no graphic of its own: iOS renders just the first attachment, so a
+    /// mirrored large icon / big picture beats the app icon.
+    private static func appIconAttachment(_ data: Data) async -> UNNotificationAttachment? {
+        let file = await Task.detached(priority: .utility) { () -> AttachmentFile? in
+            let normalized = normalizedImageData(data)
+            let ext = normalized.starts(with: [0xFF, 0xD8, 0xFF]) ? "jpg" : "png"
+            // Unique path per post: attachment creation MOVES the file, so a shared name could race a
+            // concurrent post of another mirror from the same app.
+            let url = FileManager.default.temporaryDirectory
+                .appendingPathComponent("appicon-\(UUID().uuidString).\(ext)")
+            guard (try? normalized.write(to: url)) != nil else { return nil }
+            return AttachmentFile(identifier: "notisync.appicon", url: url)
+        }.value
+        guard let file else { return nil }
+        return try? UNNotificationAttachment(identifier: file.identifier, url: file.url, options: nil)
     }
 
     static func attachment(_ data: Data, ref: PrivateAssetRef) async -> UNNotificationAttachment? {

@@ -39,7 +39,7 @@ struct PairingView: View {
                         scanError = nil
                         activeSheet = .scanner
                     } label: {
-                        InlineIconLabel("Scan a device's code", systemImage: "qrcode.viewfinder")
+                        Label("Scan a device's code", systemImage: "qrcode.viewfinder")
                     }
                     Button {
                         scanError = nil
@@ -49,7 +49,7 @@ struct PairingView: View {
                             scanError = String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
                         }
                     } label: {
-                        InlineIconLabel("Paste pairing code", systemImage: "doc.on.clipboard")
+                        Label("Paste pairing code", systemImage: "doc.on.clipboard")
                     }
                     Button {
                         startExperienceMode()
@@ -60,7 +60,7 @@ struct PairingView: View {
                                 Text("Starting Experience Mode")
                             }
                         } else {
-                            InlineIconLabel("Experience Mode", systemImage: "sparkles")
+                            Label("Experience Mode", systemImage: "sparkles")
                         }
                     }
                     .disabled(experienceInProgress)
@@ -219,18 +219,18 @@ struct PairingConfirmView: View {
                     case .absent:
                         Text("Keys will sync after pairing.").font(.caption).foregroundStyle(.secondary)
                     case .invalid:
-                        InlineIconLabel("Key signature did not verify — do not trust.", systemImage: "exclamationmark.triangle")
+                        Label("Key signature did not verify — do not trust.", systemImage: "exclamationmark.triangle")
                             .foregroundStyle(.red)
                     }
                 }
                 Section {
                     Button {
                         onDecision(true, true); dismiss()
-                    } label: { InlineIconLabel("Trust as my device", systemImage: "checkmark.seal") }
+                    } label: { Label("Trust as my device", systemImage: "checkmark.seal") }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button {
                         onDecision(true, false); dismiss()
-                    } label: { InlineIconLabel("Trust as someone else's", systemImage: "person.crop.circle.badge.checkmark") }
+                    } label: { Label("Trust as someone else's", systemImage: "person.crop.circle.badge.checkmark") }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button(role: .cancel) { onDecision(false, false); dismiss() } label: { Text("Cancel") }
                 } footer: {

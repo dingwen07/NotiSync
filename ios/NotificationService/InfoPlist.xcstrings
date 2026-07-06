@@ -13,7 +13,7 @@
         },
         "zh-Hans" : {
           "stringUnit" : {
-            "state" : "needs_review",
+            "state" : "translated",
             "value" : "NotiSync 通知"
           }
         }
@@ -29,7 +29,8 @@
             "value" : "NotificationService"
           }
         }
-      }
+      },
+      "shouldTranslate" : false
     }
   },
   "version" : "1.0"
