@@ -28,8 +28,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 29
-        versionName = "1.5.6-rc.1"
+        versionCode = 30
+        versionName = "1.5.7-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -91,9 +91,6 @@ dependencies {
     implementation(libs.androidx.compose.material3.adaptive.navigation)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.navigation.compose)
-    // NOTE: coil3 3.5.0 is omitted in v1 — it drags in kotlin-stdlib 2.4.0 (unreadable by AGP
-    // 9.2.1's bundled Kotlin 2.2.10 compiler). v1 is text-first and loads app icons directly from
-    // PackageManager; revisit async image loading once the toolchain catches up to Kotlin 2.4.
 
     // Core / lifecycle
     implementation(libs.androidx.core.ktx)

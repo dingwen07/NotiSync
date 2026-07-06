@@ -31,6 +31,8 @@
         android:pathData="M237.33,122.07L234.5,153.18L206.22,124.9Z"
         android:fillColor="#C9DDFF" />
 
+    <!-- device pair translated up 3 (translateY) -->
+    <group android:translateY="-3">
     <!-- tablet (back device, upper-left) -->
     <path
         android:pathData="M103,96L153,96A14,14 0 0 1 167,110L167,190A14,14 0 0 1 153,204L103,204A14,14 0 0 1 89,190L89,110A14,14 0 0 1 103,96Z"
@@ -81,4 +83,5 @@
         android:fillColor="#FF5A5F"
         android:strokeColor="#16265A"
         android:strokeWidth="2" />
+    </group>
 </vector>
