@@ -128,6 +128,8 @@ nonisolated enum AppGroupStore {
         static let mirrorMap = "mirror-map.json"
         static let shownSet = "shown.json"
         static let pendingInbox = "pending-inbox.json"
+        static let pendingDismissals = "pending-dismissals.json"
+        static let dismissTombstones = "dismiss-tombstones.json"
         static let dedup = "dedup.json"
         static let rotation = "rotation.json"
         static let periodicAnnounce = "periodic-announce.json"

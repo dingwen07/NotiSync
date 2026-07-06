@@ -51,6 +51,9 @@ object Relay : Table("relay") {
     val messageId = varchar("message_id", 64)
     val envelopeB64 = text("envelope_b64")
     val urgency = varchar("urgency", 8)
+    // The envelope's broker-visible MessageType name — lets the NSE's piggyback drain list/count queued
+    // DISMISSALs without touching DATA_SYNC or the notification backlog. '' on pre-migration rows.
+    val typ = varchar("typ", 12).default("")
     val createdAt = long("created_at")
     val expiresAt = long("expires_at")
     override val primaryKey = PrimaryKey(id)
@@ -87,6 +90,12 @@ class NotiSyncDb(private val database: Database) {
             val database = Database.connect(ds)
             transaction(database) {
                 SchemaUtils.create(Routes, Relay, PrivateAssets, Epochs)
+            }
+            // A pre-typ deployment's relay table lacks the column and SchemaUtils.create won't retrofit
+            // it — add it in place. Idempotent: on an already-migrated db the duplicate-column error is
+            // swallowed. Old rows keep '' and simply never match a typ filter until the TTL purges them.
+            runCatching {
+                transaction(database) { exec("ALTER TABLE ${Relay.tableName} ADD COLUMN typ VARCHAR(12) DEFAULT ''") }
             }
             return NotiSyncDb(database)
         }

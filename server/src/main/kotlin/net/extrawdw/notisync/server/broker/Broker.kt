@@ -164,7 +164,16 @@ class Broker(
             val recipientBytes = envelopeFor(recipient, envelope, envelopeBytes)
 
             // Persist for store-and-forward (removed on explicit ack), regardless of live state.
-            relay.add(recipient, envelope.messageId, recipientBytes, urgency.name, expiresAt)
+            relay.add(recipient, envelope.messageId, recipientBytes, urgency.name, envelope.typ.name, expiresAt)
+
+            // Pending-dismissal hint for the iOS NSE's piggyback drain. A dismissal must never ride its
+            // own alert push — an NSE miss (BFU after reboot, memory kill, timeout) falls back to
+            // displaying the payload, and a dismissal has no legitimate visible form — so it stays a quiet
+            // envelope, and the NOTIFICATION alert advertises how many DISMISSALs are queued; the NSE
+            // pulls exactly those (DATA_SYNC isn't worth NSE budget and stays for the app's drain paths).
+            val pendingDismissals =
+                if (envelope.typ == MessageType.NOTIFICATION) relay.countPending(recipient, MessageType.DISMISSAL.name)
+                else 0L
 
             if (hub.isOnline(recipient)) {
                 val frame = ProtocolCodec.encodeToJson(
@@ -188,7 +197,7 @@ class Broker(
             var pushed = false
             for (route in candidates) {
                 val budget = inlineBudgetFor(route)
-                val payload = buildPushData(envelope.messageId, envelope.typ, recipientBytes, budget)
+                val payload = buildPushData(envelope.messageId, envelope.typ, recipientBytes, budget, pendingDismissals)
                 val outcome = push.wake(route, payload.data, urgency)
                 log.info(
                     "push wake transport={} recipient={} mid={} inline={} ctChars={} budget={} urgency={} outcome={}",
@@ -253,12 +262,22 @@ class Broker(
     /** A built push payload plus the inline decision and ct size, surfaced so [send] can log them. */
     private data class PushPayload(val data: Map<String, String>, val inline: Boolean, val ctChars: Int)
 
-    private fun buildPushData(messageId: String, messageType: MessageType, envelopeBytes: ByteArray, inlineBudget: Int): PushPayload {
+    private fun buildPushData(
+        messageId: String,
+        messageType: MessageType,
+        envelopeBytes: ByteArray,
+        inlineBudget: Int,
+        pendingDismissals: Long = 0,
+    ): PushPayload {
         val b64env = b64.encodeToString(envelopeBytes)
         // "mtyp" carries the E2E message type (broker-visible on the envelope) so APNs can branch
         // alert+mutable-content (NOTIFICATION → NSE decrypts) vs silent background (DISMISSAL/DATA_SYNC).
-        // FCM/Android ignores it.
-        val base = mapOf("mtyp" to messageType.name)
+        // FCM/Android ignores it. "pnc" (NOTIFICATION only, when > 0) is the pending-DISMISSAL count
+        // computed in [send]; capped so the value can't grow the payload past its accounted overhead.
+        val base = buildMap {
+            put("mtyp", messageType.name)
+            if (pendingDismissals > 0) put("pnc", pendingDismissals.coerceAtMost(999).toString())
+        }
         // ctChars is the base64 envelope length on BOTH branches (the size the budget gates), so the log
         // shows how big the payload was even when it was too big to inline and fell back to a wake pointer.
         return if (b64env.length <= inlineBudget) {
@@ -334,8 +353,10 @@ class Broker(
     /** The single queued envelope addressed to [clientId] with [messageId], or null. */
     suspend fun relayMessage(clientId: ClientId, messageId: String): ByteArray? = relay.getByMessage(clientId, messageId)
 
-    /** Message ids currently queued for [clientId] — the background-drain backstop lists then pulls each. */
-    suspend fun pendingMessageIds(clientId: ClientId): List<String> = relay.pendingMessageIds(clientId)
+    /** Message ids currently queued for [clientId] — the background-drain backstop lists then pulls each.
+     *  [typ] narrows to one message type (the NSE's piggyback drain lists queued DISMISSALs exactly). */
+    suspend fun pendingMessageIds(clientId: ClientId, typ: MessageType? = null): List<String> =
+        relay.pendingMessageIds(clientId, typ?.name)
 
     suspend fun ack(clientId: ClientId, messageId: String) = relay.ackByMessage(clientId, messageId)
 
@@ -360,7 +381,7 @@ class Broker(
         // Per-transport hard ceiling for the inline ct, in base64 chars (see [hardInlineCtBudget]).
         const val PUSH_INLINE_HARD_LIMIT = 4096 // FCM data-message limit & APNs alert-payload limit (4 KB)
         const val PUSH_INLINE_MARGIN = 160      // slack for push-service framing / future envelope fields
-        const val FCM_INLINE_OVERHEAD = 72      // mtyp/typ/mid keys+values + the "ct" key (~65 B, rounded up)
-        const val APNS_INLINE_OVERHEAD = 208    // aps alert dict + the JSON data keys (~191 B, rounded up)
+        const val FCM_INLINE_OVERHEAD = 88      // mtyp/typ/mid/pnc keys+values + the "ct" key (~77 B, rounded up)
+        const val APNS_INLINE_OVERHEAD = 224    // aps alert dict + the JSON data keys incl. pnc (~203 B, rounded up)
     }
 }

@@ -176,6 +176,19 @@ extension NotiSyncRuntime {
         span.attribute("delivery_mode", displayMode)
         upsertInbox(n, messageId: messageId, identifier: identifier, deliveryMode: displayMode)
         addActivity(.received, .appLabel, titleArg: n.appLabel, detail: .deliveryMode, detailArg: displayMode)
+        // Dismissed at the source before this copy arrived (out-of-order or replayed delivery): keep the
+        // Inbox row — marked dismissed — but never resurrect the banner. A copy NEWER than its tombstone
+        // clears it inside `shouldSuppress` (the source re-posted the key) and renders normally.
+        let tombstoned = await Task.detached(priority: .userInitiated) {
+            DismissalTombstoneStore.shouldSuppress(
+                DismissedSourcePair(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey),
+                postTime: n.postTime)
+        }.value
+        if tombstoned {
+            markDismissed(sourceClientId: n.sourceClientId, sourceKey: n.sourceKey)
+            span.attribute("result", "tombstoned")
+            return
+        }
         guard prior == nil else { span.attribute("result", "duplicate"); return }
         // Filter check + category registration touch App Group files (the iOS-origin path even writes the
         // bridged-device record) — off the main actor.

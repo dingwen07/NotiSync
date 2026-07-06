@@ -210,12 +210,13 @@ class RouteStore(private val db: NotiSyncDb) {
 data class RelayItem(val id: Long, val messageId: String, val envelope: ByteArray, val urgency: String)
 
 class RelayStore(private val db: NotiSyncDb) {
-    suspend fun add(recipientId: ClientId, messageId: String, envelope: ByteArray, urgency: String, expiresAt: Long) = db.tx {
+    suspend fun add(recipientId: ClientId, messageId: String, envelope: ByteArray, urgency: String, typ: String, expiresAt: Long) = db.tx {
         Relay.insert {
             it[Relay.recipientId] = recipientId.value
             it[Relay.messageId] = messageId
             it[envelopeB64] = b64e.encodeToString(envelope)
             it[Relay.urgency] = urgency
+            it[Relay.typ] = typ
             it[createdAt] = System.currentTimeMillis()
             it[Relay.expiresAt] = expiresAt
         }
@@ -234,9 +235,23 @@ class RelayStore(private val db: NotiSyncDb) {
             .firstOrNull()?.let { b64d.decode(it[Relay.envelopeB64]) }
     }
 
-    /** Just the message ids queued for [recipientId] — the background-drain backstop lists then pulls each. */
-    suspend fun pendingMessageIds(recipientId: ClientId): List<String> = db.tx {
-        Relay.selectAll().where { Relay.recipientId eq recipientId.value }.map { it[Relay.messageId] }
+    /** Just the message ids queued for [recipientId] — the background-drain backstop lists then pulls each.
+     *  With [typ] set, only that message type: the iOS NSE's piggyback drain lists queued DISMISSALs
+     *  exactly, so neither the notification backlog nor DATA_SYNC chatter burns its fetch budget. */
+    suspend fun pendingMessageIds(recipientId: ClientId, typ: String? = null): List<String> = db.tx {
+        Relay.selectAll()
+            .where {
+                val base = Relay.recipientId eq recipientId.value
+                if (typ != null) base and (Relay.typ eq typ) else base
+            }
+            .map { it[Relay.messageId] }
+    }
+
+    /** How many of [recipientId]'s queued envelopes carry [typ] — the alert push's `pnc` hint. */
+    suspend fun countPending(recipientId: ClientId, typ: String): Long = db.tx {
+        Relay.selectAll()
+            .where { (Relay.recipientId eq recipientId.value) and (Relay.typ eq typ) }
+            .count()
     }
 
     suspend fun ack(id: Long) = db.tx {

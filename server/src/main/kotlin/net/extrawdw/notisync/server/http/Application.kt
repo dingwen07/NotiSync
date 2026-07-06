@@ -42,6 +42,7 @@ import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
+import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.WsAuth
@@ -368,10 +369,13 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
 
         // List the caller's queued message ids (signature-only, no JWT). Background drain backstops pull this,
         // then fetch each item below. A cheap, low-frequency catch-all for wakes that FCM/APNs deferred or whose
-        // foreground WebSocket delivery failed.
+        // foreground WebSocket delivery failed. `?typ=DISMISSAL` narrows to queued dismissals — the iOS NSE's
+        // piggyback drain pulls exactly those; DATA_SYNC and the notification backlog stay for the app's paths.
         get("/relay") {
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
-            call.respond(RelayPending(broker.pendingMessageIds(principal.clientId)))
+            val typ = call.request.queryParameters["typ"]
+                ?.let { value -> MessageType.entries.firstOrNull { it.name == value } }
+            call.respond(RelayPending(broker.pendingMessageIds(principal.clientId, typ)))
         }
 
         // Single-message relay pull for background-wake paths. When a message is too large to inline, the

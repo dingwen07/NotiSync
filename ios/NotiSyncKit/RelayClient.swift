@@ -27,6 +27,24 @@ nonisolated enum RelayClient {
         return data
     }
 
+    /// List the queued message ids, optionally filtered to one message type (e.g. "DISMISSAL"). The NSE's
+    /// piggyback drain uses the filter so neither the notification backlog nor DATA_SYNC chatter burns its
+    /// capped fetch budget; a broker that predates the filter ignores the query parameter and returns
+    /// everything, which the caller's per-envelope type check tolerates.
+    static func pendingIds(typ: String? = nil,
+                           identitySigner: IdentitySigner,
+                           operationalSigner: OperationalSigner,
+                           keyEpochProvider: @Sendable () throws -> SignedBlob) async -> [String] {
+        var path = base() + "/v2/relay"
+        if let typ { path += "?typ=\(typ)" }
+        guard let url = URL(string: path) else { return [] }
+        guard let (data, resp) = await send(url: url, method: "GET", body: Data(), contentType: nil,
+                                            identitySigner: identitySigner, operationalSigner: operationalSigner,
+                                            keyEpochProvider: keyEpochProvider),
+              (resp as? HTTPURLResponse).map({ (200..<300).contains($0.statusCode) }) == true else { return [] }
+        return (try? ProtocolCodec.decodeRelayPending(data))?.messageIds ?? []
+    }
+
     /// Batch-ack handled messages so the broker drops them (prevents the app re-delivering on WS connect).
     static func ack(_ messageIds: [String],
                     identitySigner: IdentitySigner,

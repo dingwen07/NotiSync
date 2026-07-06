@@ -1683,6 +1683,24 @@
         }
       }
     },
+    "notification.dismissSync.title" : {
+      "comment" : "Quiet placeholder if a dismissal arrives as an alert push; removed on the next sync.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Notifications updated"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通知已更新"
+          }
+        }
+      }
+    },
     "notification.localTest.body" : {
       "comment" : "Body for a local test notification.",
       "extractionState" : "extracted_with_value",

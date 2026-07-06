@@ -61,9 +61,10 @@ struct PairingView: View {
                             }
                         } else {
                             Label("Experience Mode", systemImage: "sparkles")
+                                .dimmedWhenDisabled()
                         }
                     }
-                    .disabled(experienceInProgress)
+                    .disabled(experienceInProgress || runtime.pairingPayload == nil)
                     if let experienceMessage {
                         Text(verbatim: experienceMessage).font(.footnote).foregroundStyle(.secondary)
                     }

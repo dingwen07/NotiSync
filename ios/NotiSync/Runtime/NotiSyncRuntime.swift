@@ -239,6 +239,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         await refreshNotificationPermissionStatusAsync()
         guard shouldContinueForegroundSync(generation) else { return }
         await drainPendingInbox() // pull mirrors the NSE displayed-and-acked into the SwiftData Inbox
+        await drainPendingDismissals() // ...then the dismissals its piggyback drain applied (rows exist first)
+        await sweepTombstonedMirrors() // and remove any mirror that raced in after its dismissal
         drainDeferredPerfTraces() // replay NSE-measured perf traces (the NSE has no Firebase) into Performance
         guard shouldContinueForegroundSync(generation) else { return }
         await refreshBrokerStatus()
@@ -521,6 +523,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         work = Task { @MainActor in
             await bringUpCore()
             await drainPendingInbox()    // NSE-delivered (APNs alert) mirrors land here, not in the relay
+            await drainPendingDismissals()   // dismissals the NSE's piggyback drain applied
+            await sweepTombstonedMirrors()   // mirrors that raced in after their dismissal
             drainDeferredPerfTraces()    // replay NSE-measured perf traces into Performance
             guard !Task.isCancelled else { return false }
             await drainRelay(deliveryMode: .backgroundRefresh)

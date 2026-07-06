@@ -198,8 +198,9 @@ extension NotiSyncRuntime {
         }
         do {
             let demoPairingUrl = try await broker.startDemoExperience(pairingUrl: pairingUrl)
-            _ = try await acceptPairingAndSync(demoPairingUrl, ownDevice: true)
+            _ = try await acceptPairingLocally(demoPairingUrl, ownDevice: true)
             startForegroundWebSocket()
+            Task { await publishCurrentRoute() }
             return true
         } catch {
             record(error: error, domain: .pairing)
@@ -222,7 +223,7 @@ extension NotiSyncRuntime {
     }
 
     @discardableResult
-    private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
+    private func acceptPairingLocally(_ scanned: String, ownDevice: Bool) async throws -> String {
         guard let engine else { throw ExperienceModeError.runtimeNotReady }
         let name = try await Task.detached(priority: .userInitiated) {
             try engine.acceptPairing(scanned, ownDevice: ownDevice)
@@ -231,6 +232,12 @@ extension NotiSyncRuntime {
         await refreshPeerRowsAsync()
         settings().pairingStatusValue = .paired
         saveModelContext()
+        return name
+    }
+
+    @discardableResult
+    private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
+        let name = try await acceptPairingLocally(scanned, ownDevice: ownDevice)
         await publishCurrentRoute()
         // Enforcement that Experience Mode never broadcasts the trust roster lives in the seal (`sealTrustTable`
         // / `sealTrustCards` exclude demo peers from both the table and its recipients), so it holds for every

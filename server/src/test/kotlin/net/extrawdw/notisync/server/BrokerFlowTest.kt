@@ -21,8 +21,10 @@ import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.CipherSuite
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
+import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.Purpose
@@ -65,7 +67,10 @@ import net.extrawdw.notisync.server.data.RouteStore
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.NotiSyncDb
 import net.extrawdw.notisync.server.data.StoredEpoch
+import net.extrawdw.notisync.server.data.StoredRoute
 import net.extrawdw.notisync.server.delivery.DisabledPushTransport
+import net.extrawdw.notisync.server.delivery.PushOutcome
+import net.extrawdw.notisync.server.delivery.PushTransport
 import net.extrawdw.notisync.server.delivery.WebSocketHub
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -847,6 +852,149 @@ class BrokerFlowTest {
             client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertEquals(listOf(envelope.messageId), pending.messageIds)
+    }
+
+    @Test
+    fun relayList_typFilterListsOnlyDismissals() = testApplication {
+        val tmp = File.createTempFile("notisync-relaytyp", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+        client.post("/v2/routes") { setBody(ProtocolCodec.encodeToCbor(listOf(routeBlob(recipient, "fake-token")))) }
+
+        val recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset))
+        val notifBody = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val notification = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.NOTIFICATION, bodyPlaintext = notifBody, recipients = recipients,
+            messageId = "01J0TYP0N01", seq = 1L, createdAt = 1_750_000_000_000L,
+        )
+        val dismissBody = ProtocolCodec.encodeToCbor(
+            DismissEvent(sourceClientId = sender.clientId, sourceKey = "0|com.example.chat|7|null", dismissedAt = 1_750_000_000_500L)
+        )
+        val dismissal = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.DISMISSAL, bodyPlaintext = dismissBody, recipients = recipients,
+            messageId = "01J0TYP0D01", seq = 2L, createdAt = 1_750_000_000_500L,
+        )
+        // DATA_SYNC shares the quiet delivery class but must NOT surface in the dismissal drain's listing.
+        val dataSync = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.DATA_SYNC, bodyPlaintext = "opaque".toByteArray(), recipients = recipients,
+            messageId = "01J0TYP0S01", seq = 3L, createdAt = 1_750_000_000_700L,
+        )
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(notification)) }
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(dismissal)) }
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(dataSync)) }
+
+        // Unfiltered: all three queued. The signed path includes the query, so the filter can't be tampered with.
+        val all = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
+        )
+        assertEquals(setOf("01J0TYP0N01", "01J0TYP0D01", "01J0TYP0S01"), all.messageIds.toSet())
+
+        // typ=DISMISSAL lists exactly the dismissal — not the notification backlog, not DATA_SYNC.
+        val dismissals = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay?typ=DISMISSAL") {
+                signedHeaders(recipient, "GET", "/v2/relay?typ=DISMISSAL", ByteArray(0))
+            }.bodyAsText()
+        )
+        assertEquals(listOf("01J0TYP0D01"), dismissals.messageIds)
+
+        // An unknown typ value is ignored (full list) rather than erroring.
+        val ignored = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay?typ=nope") {
+                signedHeaders(recipient, "GET", "/v2/relay?typ=nope", ByteArray(0))
+            }.bodyAsText()
+        )
+        assertEquals(3, ignored.messageIds.size)
+    }
+
+    @Test
+    fun notificationPushCarriesPendingQuietHintForQueuedDismissals() = runBlocking {
+        val tmp = File.createTempFile("notisync-pnc", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        val config = ServerConfig.fromEnv()
+        val db = NotiSyncDb.connect(config)
+        val captured = mutableListOf<Map<String, String>>()
+        val capturingPush = object : PushTransport {
+            override suspend fun wake(route: StoredRoute, data: Map<String, String>, urgency: Urgency): PushOutcome {
+                captured += data
+                return PushOutcome.DELIVERED
+            }
+        }
+        val routes = RouteStore(db)
+        val broker = Broker(routes, RelayStore(db), PrivateAssetStore(db), EpochStore(db), WebSocketHub(), capturingPush, config)
+
+        val sender = SoftwareIdentitySigner.generate()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        val recipientOp = SoftwareOperationalSigner.generate(recipient.clientId, signerEpoch = 1)
+        assertTrue(broker.uploadKeyEpoch(keyEpochBlob(recipient, recipientOp, recipientHpke, epoch = 1)))
+        assertEquals(1, broker.uploadRoutes(listOf(routeBlob(recipient, "fake-token"))))
+
+        val recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset))
+        fun sealed(typ: MessageType, messageId: String, seq: Long, body: ByteArray): Envelope = EnvelopeCrypto.seal(
+            signer = sender, typ = typ, bodyPlaintext = body, recipients = recipients,
+            messageId = messageId, seq = seq, createdAt = 1_750_000_000_000L,
+        )
+        val notifBody = ProtocolCodec.encodeToCbor(
+            CapturedNotification(
+                sourceClientId = sender.clientId,
+                sourceKey = "0|com.example.chat|7|null",
+                packageName = "com.example.chat",
+                appLabel = "Chat",
+                title = "Alice",
+                text = "Dinner at 7?",
+                importance = MirrorImportance.HIGH,
+                postTime = 1_750_000_000_000L,
+            )
+        )
+        val dismissBody = ProtocolCodec.encodeToCbor(
+            DismissEvent(sourceClientId = sender.clientId, sourceKey = "0|com.example.chat|7|null", dismissedAt = 1_750_000_000_500L)
+        )
+
+        // A dismissal is a quiet push and never advertises a hint of its own.
+        val dismissal = sealed(MessageType.DISMISSAL, "01J0PNCD001", 1L, dismissBody)
+        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal)
+        assertEquals(MessageType.DISMISSAL.name, captured.last()["mtyp"])
+        assertNull(captured.last()["pnc"])
+
+        // Queued DATA_SYNC must not inflate the hint — the NSE only ever pulls dismissals.
+        val dataSync = sealed(MessageType.DATA_SYNC, "01J0PNCS001", 2L, "opaque".toByteArray())
+        broker.send(ProtocolCodec.encodeToCbor(dataSync), dataSync)
+
+        // A notification sent while that dismissal is still queued (push-delivered but unacked) advertises
+        // exactly it: pnc=1, not 2, despite the DATA_SYNC sharing the queue.
+        val first = sealed(MessageType.NOTIFICATION, "01J0PNCN001", 3L, notifBody)
+        broker.send(ProtocolCodec.encodeToCbor(first), first)
+        assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
+        assertEquals("1", captured.last()["pnc"])
+
+        // Once the dismissal is drained (acked), the hint disappears — the DATA_SYNC alone never re-arms it.
+        assertEquals(1, broker.ackMany(recipient.clientId, listOf("01J0PNCD001")))
+        broker.ackMany(recipient.clientId, listOf("01J0PNCN001"))
+        val second = sealed(MessageType.NOTIFICATION, "01J0PNCN002", 4L, notifBody)
+        broker.send(ProtocolCodec.encodeToCbor(second), second)
+        assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
+        assertNull(captured.last()["pnc"])
     }
 
     @Test

@@ -22,6 +22,13 @@ extension NotiSyncRuntime {
                 await queueAndFlushAck(messageId: entry.messageId)
             }
             await clearMirrors(entries)
+            // Tombstone the pair so a still-queued/replayed copy of this mirror renders suppressed instead
+            // of resurrecting what the user just swiped (same guard a remote dismissal gets).
+            await Task.detached(priority: .userInitiated) {
+                DismissalTombstoneStore.record(
+                    DismissedSourcePair(sourceClientId: sourceClientId, sourceKey: sourceKey),
+                    dismissedAt: NotiSyncEngine.nowMillis())
+            }.value
             guard clearable else {
                 addActivity(.dismissed, .dismissedLocally, detail: .ongoingNotSynced)
                 return
@@ -56,12 +63,44 @@ extension NotiSyncRuntime {
     }
 
     func removeRemoteDismissal(_ d: DismissEvent) async {
-        let entries = await Task.detached(priority: .userInitiated) {
-            MirrorMapStore.entries(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
+        // The shared helper (also the NSE drain's path) removes + echo-marks the mirrors, clears the map,
+        // and tombstones the pair so a late-arriving copy of the dismissed notification renders suppressed.
+        _ = await Task.detached(priority: .userInitiated) {
+            MirrorRemoval.applyRemoteDismissal(
+                DismissedSourcePair(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey),
+                dismissedAt: d.dismissedAt, queueForApp: false)
         }.value
-        await removeMirrors(entries, sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
-        await clearMirrors(entries)
+        markDismissed(sourceClientId: d.sourceClientId, sourceKey: d.sourceKey)
         addActivity(.dismissed, .remoteDismissal, detail: .text, detailArg: d.sourceClientId)
+    }
+
+    // MARK: NSE hand-off (the NSE applies drained dismissals; SwiftData catches up here)
+
+    /// Reflect dismissals the NSE applied (its piggyback relay drain) into SwiftData: mark the Inbox rows
+    /// dismissed and log the activity. The dismissal analog of `drainPendingInbox` — run right after it so
+    /// a suppressed mirror's freshly-drained Inbox row lands already-dismissed.
+    func drainPendingDismissals() async {
+        let items = await Task.detached(priority: .utility) { PendingDismissalStore.drainAll() }.value
+        guard !items.isEmpty else { return }
+        await withCoalescedSaves {
+            for item in items {
+                markDismissed(sourceClientId: item.sourceClientId, sourceKey: item.sourceKey)
+                addActivity(.dismissed, .remoteDismissal, detail: .text, detailArg: item.sourceClientId)
+            }
+        }
+    }
+
+    /// Remove any mirror that slipped in after its dismissal — a tombstoned copy the NSE had to deliver
+    /// passively (an alert push cannot be suppressed without the filtering entitlement). Echo-marked
+    /// inside the helper, so the reconciler doesn't read the removal back as a user dismissal.
+    func sweepTombstonedMirrors() async {
+        let swept = await Task.detached(priority: .utility) { MirrorRemoval.sweepTombstoned(queueForApp: false) }.value
+        guard !swept.isEmpty else { return }
+        await withCoalescedSaves {
+            for pair in swept {
+                markDismissed(sourceClientId: pair.sourceClientId, sourceKey: pair.sourceKey)
+            }
+        }
     }
 
     /// Remove every delivered/pending mirror for a source (NSE- and app-posted), echo-marking each so the
