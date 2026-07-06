@@ -24,9 +24,9 @@ struct PairingView: View {
                         Image(uiImage: image)
                             .interpolation(.none)
                             .resizable()
-                            .scaledToFit()
-                            .frame(maxWidth: .infinity)
-                            .frame(height: 240)
+                            .aspectRatio(1, contentMode: .fit)
+                            .frame(maxWidth: 400)
+                            .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 8)
                         Text("Scan this on your other device to pair.")
                             .font(.caption).foregroundStyle(.secondary)
@@ -226,11 +226,11 @@ struct PairingConfirmView: View {
                 Section {
                     Button {
                         onDecision(true, true); dismiss()
-                    } label: { Label("Trust as my device", systemImage: "checkmark.seal") }
+                    } label: { Label("Trust as my device", systemImage: "checkmark.seal").dimmedWhenDisabled() }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button {
                         onDecision(true, false); dismiss()
-                    } label: { Label("Trust as someone else's", systemImage: "person.crop.circle.badge.checkmark") }
+                    } label: { Label("Trust as someone else's", systemImage: "person.crop.circle.badge.checkmark").dimmedWhenDisabled() }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button(role: .cancel) { onDecision(false, false); dismiss() } label: { Text("Cancel") }
                 } footer: {

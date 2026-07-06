@@ -537,7 +537,9 @@ struct DevicesView: View {
                 }
             }
             .sheet(isPresented: $showingPairing) {
-                PairingView().environmentObject(runtime)
+                PairingView()
+                    .environmentObject(runtime)
+                    .presentationSizing(.page)
             }
             .sheet(item: $selectedFilterDevice) { selection in
                 AppFilterSheet(
@@ -1142,6 +1144,7 @@ struct SettingsView: View {
                         runtime.saveSettings(brokerURL: brokerURL, deviceName: deviceName, environment: environment)
                     } label: {
                         Label("Save", systemImage: "checkmark")
+                            .dimmedWhenDisabled()
                     }
                     .disabled(!hasSettingsChanges)
                 }

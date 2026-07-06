@@ -56,6 +56,30 @@ struct InlineIconLabel: View {
     }
 }
 
+/// Form/List buttons whose label is a `Label` get no disabled treatment from the list style
+/// (iOS 26: the icon keeps its tint and the title renders primary, so a disabled row still
+/// looks tappable; plain-text button labels gray correctly). `.tint`/`.listItemTint` can't
+/// reach both parts — an explicit secondary foreground on the whole label can.
+private struct DimWhenDisabled: ViewModifier {
+    @Environment(\.isEnabled) private var isEnabled
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content
+        } else {
+            content.foregroundStyle(.secondary)
+        }
+    }
+}
+
+extension View {
+    /// Apply inside the label of a Form/List `Button` that can be `.disabled(...)`.
+    func dimmedWhenDisabled() -> some View {
+        modifier(DimWhenDisabled())
+    }
+}
+
 struct VerificationValueRow: View {
     let title: LocalizedStringKey
     let value: String
