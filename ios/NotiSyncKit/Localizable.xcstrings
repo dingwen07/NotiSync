@@ -1719,6 +1719,37 @@
         }
       }
     },
+    "notification.message.selfSender" : {
+      "comment" : "Sender label for the user's own message in a mirrored conversation.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "You"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "你"
+          }
+        }
+      }
+    },
+    "notification.mirror.titleWithApp" : {
+      "comment" : "Title of a communication-styled mirrored notification: original title · source app name.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$@ · %2$@"
+          }
+        }
+      },
+      "shouldTranslate" : false
+    },
     "Notifications" : {
       "localizations" : {
         "zh-Hans" : {

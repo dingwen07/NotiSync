@@ -236,19 +236,27 @@ extension NotiSyncRuntime {
 
     /// A messaging mirror: one notification per conversation message, all sharing the conversation's
     /// `threadIdentifier` so iOS threads them (#13). Stable per-message identifiers make a re-delivery of
-    /// overlapping history idempotent; only the newest message alerts (earlier ones post silently).
+    /// overlapping history idempotent; only the newest message alerts (earlier ones post silently), and
+    /// the user's own messages (nil sender) never post.
     private func postMessagingMirror(_ n: CapturedNotification, messageId: String, mode: DeliveryMode) async {
         let base = MirrorPresentation.identifier(for: n)
         let existing = await Task.detached(priority: .userInitiated) { MirrorMapStore.all() }.value
-        let lastIndex = n.messages.indices.last
-        for (i, message) in n.messages.enumerated() {
+        // A nil sender is the user's own message (e.g. an inline reply sent from the source device).
+        // Android folds those into its single MessagingStyle notification as "me" bubbles; iOS posts one
+        // notification per message, where a self message would masquerade as an incoming one — skip them.
+        // And when the user's own message is the conversation's newest, post the rest silently (Android
+        // silences its whole self-reply update the same way).
+        let incoming = n.messages.filter { $0.sender != nil }
+        let newestIsSelf = n.messages.last?.sender == nil
+        let lastIndex = incoming.indices.last
+        for (i, message) in incoming.enumerated() {
             let id = MirrorPresentation.messageIdentifier(base: base, message: message)
             guard existing[id] == nil else { continue }   // this message is already shown — don't re-post/re-alert
             let avatar = await messageAvatar(message, fallback: n)
             let attachments = await fetchAttachments(for: message)
             let content = MirrorPresentation.messageContent(for: n, message: message, messageId: messageId,
                                                             attachments: attachments, senderImage: avatar,
-                                                            alerting: i == lastIndex)
+                                                            alerting: i == lastIndex && !newestIsSelf)
             try? await UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: id, content: content, trigger: nil))
             let entry = MirrorMapEntry(identifier: id, sourceClientId: n.sourceClientId,

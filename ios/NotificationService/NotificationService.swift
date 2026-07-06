@@ -97,9 +97,13 @@ final class NotificationService: UNNotificationServiceExtension {
                 if n.style == .MESSAGING, let last = n.messages.last {
                     let attachments = await fetchAttachments(for: last, engine: engine)
                     let senderImage = senderImage(for: n, message: last)
+                    // A nil sender is the user's own message (e.g. an inline reply sent from the source
+                    // device) — deliver silently, matching Android's self-reply case: they wrote it, so
+                    // alerting is noise (an alert push can't be fully suppressed without the filtering
+                    // entitlement).
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                  attachments: attachments, senderImage: senderImage.data,
-                                                                 alerting: true)
+                                                                 alerting: last.sender != nil)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
                     // path (#13) doesn't re-post it under a different id once it processes a later envelope.
@@ -144,7 +148,7 @@ final class NotificationService: UNNotificationServiceExtension {
                         let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                     attachments: attachments, senderImage: data,
-                                                                    alerting: true)
+                                                                    alerting: last.sender != nil)
                     } else {
                         let attachments = await fetchAttachments(for: n, engine: engine)
                         content = await MirrorPresentation.content(for: n, messageId: messageId,

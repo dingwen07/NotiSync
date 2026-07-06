@@ -74,8 +74,8 @@ nonisolated enum MirrorPresentation {
                         communicationStyle: Bool) async -> UNNotificationContent {
         if communicationStyle {
             let base = baseContent(for: n, messageId: messageId, attachments: attachments)
-            let senderName = n.title?.nonBlank ?? n.appLabel
-            return communicationStyled(base, for: n, senderName: senderName, senderImage: appIcon) ?? base
+            return communicationStyled(base, for: n, senderName: communicationSenderName(for: n),
+                                       senderImage: appIcon) ?? base
         }
         var attachments = attachments
         if attachments.isEmpty, let appIcon, let icon = await appIconAttachment(appIcon) {
@@ -84,12 +84,36 @@ nonisolated enum MirrorPresentation {
         return baseContent(for: n, messageId: messageId, attachments: attachments)
     }
 
+    /// The communication-styled sender string: "notification title · origin app name" (just one of them
+    /// when the other is blank or they match). A communication notification renders only "sender + body" —
+    /// no app header, and the content subtitle is dropped — so the sender string alone must carry the app
+    /// identity. The plain rendering names the app in its subtitle instead (see `baseContent`).
+    private static func communicationSenderName(for n: CapturedNotification) -> String {
+        let title = n.title?.nonBlank
+        if let title, let app = n.appLabel.nonBlank, title != app {
+            return String(localized: "notification.mirror.titleWithApp",
+                          defaultValue: "\(title) · \(app)",
+                          comment: "Title of a communication-styled mirrored notification: original title · source app name.")
+        }
+        return title ?? n.appLabel
+    }
+
     private static func baseContent(for n: CapturedNotification, messageId: String,
                                     attachments: [UNNotificationAttachment]) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
-        content.title = n.title?.nonBlank ?? n.appLabel
+        let title = n.title?.nonBlank ?? n.appLabel
+        content.title = title
         content.body = (n.bigText?.nonBlank ?? n.text?.nonBlank) ?? n.appLabel
-        if let sub = n.subText?.nonBlank ?? n.originDeviceName?.nonBlank { content.subtitle = sub }
+        // The origin app name, in the subtitle — Android's "via <app>" subText parity, without the "via"
+        // since iOS renders the subtitle on its own dedicated line. Only the plain rendering shows it:
+        // communication styling drops the subtitle and carries the app name in its sender string instead
+        // (see `communicationSenderName`). When the app name is already the title, fall back to the
+        // source's own subText / origin device name as before.
+        if let app = n.appLabel.nonBlank, title != app {
+            content.subtitle = app
+        } else if let sub = n.subText?.nonBlank ?? n.originDeviceName?.nonBlank {
+            content.subtitle = sub
+        }
         content.categoryIdentifier = categoryIdentifier(for: n)
         content.threadIdentifier = threadIdentifier(for: n)
         content.attachments = attachments
@@ -107,7 +131,15 @@ nonisolated enum MirrorPresentation {
                                messageId: String, attachments: [UNNotificationAttachment] = [],
                                senderImage: Data?, alerting: Bool) -> UNNotificationContent {
         let content = UNMutableNotificationContent()
-        let senderName = message.sender?.nonBlank ?? n.conversationTitle?.nonBlank ?? n.title?.nonBlank ?? n.appLabel
+        // A nil sender is the user's own message: label it "You" (Android's mirror_self_name parity)
+        // instead of letting it masquerade under the conversation or app name. Rendered only by the NSE's
+        // silent self-echo — the app's multi-post skips self messages entirely.
+        let senderName: String = if message.sender == nil {
+            String(localized: "notification.message.selfSender", defaultValue: "You",
+                   comment: "Sender label for the user's own message in a mirrored conversation.")
+        } else {
+            message.sender?.nonBlank ?? n.conversationTitle?.nonBlank ?? n.title?.nonBlank ?? n.appLabel
+        }
         content.title = senderName
         content.body = message.text
         if n.isGroupConversation, let convTitle = n.conversationTitle?.nonBlank { content.subtitle = convTitle }
