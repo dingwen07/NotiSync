@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.analytics.crashGuard
 
 /**
  * Foreground service (type `connectedDevice`) that hosts the ANCS bridge, so the BLE link to the iPhone
@@ -40,7 +41,8 @@ class AncsBridgeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     /** Service-lifetime scope for the status collector; cancelled in [onDestroy]. */
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val scope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AncsBridgeService"))
 
     /** Guards [observeStatus]: repeated [onStartCommand] (multiple start sources, START_STICKY redelivery)
      *  must not stack duplicate collectors that each re-post the notification on every state change. */

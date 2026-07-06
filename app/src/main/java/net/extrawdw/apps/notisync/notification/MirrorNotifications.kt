@@ -36,6 +36,7 @@ import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
 import net.extrawdw.apps.notisync.appicon.IconResolver
@@ -780,7 +781,7 @@ class DismissReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as? NotiSyncApp ?: return
         val pending = goAsync()
-        CoroutineScope(Dispatchers.Default).launch {
+        CoroutineScope(Dispatchers.Default + crashGuard("DismissReceiver")).launch {
             try {
                 val graph = app.awaitGraphReady() ?: return@launch
                 val engine = graph.mirrorEngine ?: return@launch

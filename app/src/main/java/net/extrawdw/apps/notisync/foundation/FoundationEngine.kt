@@ -266,14 +266,20 @@ class FoundationEngine(
                     )
                 }
                 // Repair any device the sender trusts but lacks a card for, that we can vouch for.
+                // This and the two launches below are best-effort sends, guarded so a broker failure
+                // (socket timeout, attestation cooldown) drops just that repair round instead of escaping
+                // the launch — anti-entropy re-runs it on the next trust exchange. Whole-batch guards: the
+                // first failure means the broker is unreachable for the rest of the batch too.
                 if (result.cardsToOffer.isNotEmpty()) {
                     scope.launch {
-                        result.cardsToOffer.forEach {
-                            sendCard(
-                                msg.senderId,
-                                it.signerId,
-                                it
-                            )
+                        runCatching {
+                            result.cardsToOffer.forEach {
+                                sendCard(
+                                    msg.senderId,
+                                    it.signerId,
+                                    it
+                                )
+                            }
                         }
                     }
                 }
@@ -282,11 +288,13 @@ class FoundationEngine(
                 // key-epoch to B when B trusts C but lacks its key). Self-authenticating, so B verifies it itself.
                 if (result.keyEpochsToOffer.isNotEmpty()) {
                     scope.launch {
-                        result.keyEpochsToOffer.forEach {
-                            offerKeyEpoch(
-                                msg.senderId,
-                                it
-                            )
+                        runCatching {
+                            result.keyEpochsToOffer.forEach {
+                                offerKeyEpoch(
+                                    msg.senderId,
+                                    it
+                                )
+                            }
                         }
                     }
                 }
@@ -300,7 +308,7 @@ class FoundationEngine(
                         ?.let { trust.applyKeyEpoch(e.clientId, it) }
                 }
                 // We just learned a keyless device — advertise it so a card holder repairs us.
-                if (result.needsBroadcast) scope.launch { broadcastTrust() }
+                if (result.needsBroadcast) scope.launch { runCatching { broadcastTrust() } }
             }
 
             DataSyncKind.CARD -> {

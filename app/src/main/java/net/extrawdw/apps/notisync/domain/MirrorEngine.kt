@@ -187,12 +187,18 @@ class MirrorEngine(
         // dismissal) carry REASON_LISTENER_CANCEL and are filtered out by the listener's reason
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
         val event = DismissEvent(sourceClientId, sourceKey, now())
-        val n = channel.send(
-            MessageType.DISMISSAL,
-            ProtocolCodec.encodeToCbor(event),
-            Recipients.OwnMesh,
-            Urgency.NORMAL
-        )
+        // Best-effort broadcast: on a broker failure (socket timeout, attestation cooldown) peers simply
+        // keep their mirror — a swipe must never throw. The local-first work around the send still runs
+        // either way: the relay ack above is already queued, and the ANCS origin-clear below is local BLE,
+        // independent of broker reachability.
+        val n = runCatching {
+            channel.send(
+                MessageType.DISMISSAL,
+                ProtocolCodec.encodeToCbor(event),
+                Recipients.OwnMesh,
+                Urgency.NORMAL
+            )
+        }.getOrDefault(0)
         if (n > 0) activityLog.add(
             ActivityEvent.Kind.DISMISSED,
             dismissedTitle(sourceClientId, sourceKey),
@@ -226,22 +232,27 @@ class MirrorEngine(
         val resolver = assetResolver
         if (resolver != null && refs.isNotEmpty()) {
             scope.launch {
-                // The asset fetch + enriched re-render is timed by the `asset_resolve` trace inside ensureLocal
-                // (split cached vs fetched metrics there); it runs OFF the inline deliver path, so it is not
-                // part of `envelope_delivery` (which ends at the immediate cached-content render). The ENRICH
-                // re-render's own latency is captured by `mirror_render{phase=enrich}`.
-                val result = resolver.ensureLocal(refs)
-                // Silent: the notification was already posted above; this only attaches the now-downloaded
-                // graphics, so it must refresh in place without a second alert.
-                if (result.newlyAvailable) renderer.render(notif, silent = true, phase = RenderPhase.ENRICH)
-                if (result.stillMissing.isNotEmpty()) {
-                    result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
-                    sendAssetSync(
-                        notif.sourceClientId,
-                        AssetSync(
-                            AssetSyncKind.ASSET_MISSING,
-                            result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
-                    )
+                // Guarded: this whole tail is best-effort broker I/O (asset fetch + ASSET_MISSING send) and
+                // the notification was already posted above — a failure only costs the enrichment/repair
+                // round, and must not escape the launch (the graphics stay repairable via a later delivery).
+                runCatching {
+                    // The asset fetch + enriched re-render is timed by the `asset_resolve` trace inside ensureLocal
+                    // (split cached vs fetched metrics there); it runs OFF the inline deliver path, so it is not
+                    // part of `envelope_delivery` (which ends at the immediate cached-content render). The ENRICH
+                    // re-render's own latency is captured by `mirror_render{phase=enrich}`.
+                    val result = resolver.ensureLocal(refs)
+                    // Silent: the notification was already posted above; this only attaches the now-downloaded
+                    // graphics, so it must refresh in place without a second alert.
+                    if (result.newlyAvailable) renderer.render(notif, silent = true, phase = RenderPhase.ENRICH)
+                    if (result.stillMissing.isNotEmpty()) {
+                        result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
+                        sendAssetSync(
+                            notif.sourceClientId,
+                            AssetSync(
+                                AssetSyncKind.ASSET_MISSING,
+                                result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
+                        )
+                    }
                 }
             }
         }
@@ -273,16 +284,21 @@ class MirrorEngine(
         if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.ASSET, msg.senderOwnDevice)) return
         val asset = sync.asset ?: return
         val resolver = assetResolver ?: return
+        // Both branches are best-effort broker I/O (re-upload + ASSET_READY reply / fetch + re-render):
+        // guarded so a network failure drops just this repair round instead of escaping the launch — the
+        // requester's pending render survives, and a later exchange retries.
         when (asset.kind) {
             AssetSyncKind.ASSET_MISSING -> scope.launch {
-                repairAndReply(
-                    msg.senderId,
-                    asset.items,
-                    resolver
-                )
+                runCatching {
+                    repairAndReply(
+                        msg.senderId,
+                        asset.items,
+                        resolver
+                    )
+                }
             }
 
-            AssetSyncKind.ASSET_READY -> scope.launch { applyRepaired(asset.items, resolver) }
+            AssetSyncKind.ASSET_READY -> scope.launch { runCatching { applyRepaired(asset.items, resolver) } }
         }
     }
 

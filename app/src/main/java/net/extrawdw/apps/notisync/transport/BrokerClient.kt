@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.transport
 
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
+import io.ktor.client.plugins.HttpTimeout
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
@@ -89,6 +90,17 @@ class BrokerClient(
             // engine's calls) plus custom URL patterns in the console — no manual HttpMetric, which would
             // double-count against the automatic instrumentation.
             config { pingInterval(WS_PING_SECONDS, TimeUnit.SECONDS) }
+        }
+        // Explicit, deterministic HTTP timeouts (without this plugin the engine defaults applied invisibly —
+        // Crashlytics reported "socket_timeout=unknown"). Verified safe for the live socket on this stack
+        // (Ktor 3.5 / OkHttp 5.3): Ktor never applies the request timeout to WebSocket upgrades, and OkHttp's
+        // WebSocketReader clears the read timeout while idling between frames — so for the WS these values
+        // only bound the connect and a mid-frame stall (both desirable), while half-open detection stays
+        // with the ping/pong keepalive above.
+        install(HttpTimeout) {
+            connectTimeoutMillis = HTTP_CONNECT_TIMEOUT_MS
+            socketTimeoutMillis = HTTP_SOCKET_TIMEOUT_MS
+            requestTimeoutMillis = HTTP_REQUEST_TIMEOUT_MS
         }
         install(WebSockets)
     }
@@ -650,6 +662,15 @@ class BrokerClient(
         const val AUTH_COOLDOWN_MAX_MS = 5L * 60 * 1000
         const val WS_REAUTH_AFTER_FAILURES = 3
         const val WS_PING_SECONDS = 30L
+
+        // HTTP timeouts. Connect makes the platform default explicit; socket (per-read/write inactivity,
+        // which is also the HTTP/2 per-stream response-header wait) gets headroom over the old implicit 10s
+        // so a slow mobile hop fails less eagerly; request bounds the whole call including the body, sized
+        // for private-asset up/downloads on a weak uplink. Every call site treats a failure as best-effort,
+        // so a timeout costs one attempt — retried by the relay/anti-entropy backstops, never fatal.
+        const val HTTP_CONNECT_TIMEOUT_MS = 10_000L
+        const val HTTP_SOCKET_TIMEOUT_MS = 15_000L
+        const val HTTP_REQUEST_TIMEOUT_MS = 30_000L
     }
 
     private data class AuthFailure(

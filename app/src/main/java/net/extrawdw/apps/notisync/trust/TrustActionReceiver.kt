@@ -8,6 +8,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.notisync.protocol.ClientId
 
 /**
@@ -21,7 +22,7 @@ class TrustActionReceiver : BroadcastReceiver() {
         val clientId = ClientId(intent.getStringExtra(EXTRA_CLIENT_ID) ?: return)
         val notifId = intent.getIntExtra(EXTRA_NOTIF_ID, 0)
         val pending = goAsync()
-        CoroutineScope(Dispatchers.Default).launch {
+        CoroutineScope(Dispatchers.Default + crashGuard("TrustActionReceiver")).launch {
             try {
                 val graph = app.awaitGraphReady() ?: return@launch
                 val trust = graph.trust

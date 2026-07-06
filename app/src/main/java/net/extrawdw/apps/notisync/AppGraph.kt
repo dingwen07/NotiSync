@@ -40,6 +40,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
 import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.analytics.perfTrace
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
@@ -127,7 +128,7 @@ data class RotationKeyInfo(
 )
 
 class AppGraph(private val app: Application) {
-    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
     val activityLog = ActivityLog()
     val activityText: ActivityText = AndroidActivityText(app)
 
@@ -1038,7 +1039,8 @@ class NotiSyncApp : Application() {
     lateinit var graph: AppGraph
         private set
 
-    private val initScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val initScope =
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("NotiSyncApp.initScope"))
     private val graphDeferred = CompletableDeferred<AppGraph>()
     private val _graphReady = MutableStateFlow(false)
     val graphReady: StateFlow<Boolean> = _graphReady
