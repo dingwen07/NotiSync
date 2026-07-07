@@ -283,6 +283,21 @@ nonisolated final class NotiSyncEngine: Sendable {
                                        recipients: recipients, messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
+    /// Batch form of `sealDismissal` (the Inbox's Read All): one trust-roster load + signature verify for
+    /// the whole set instead of one per event. Returns [] if no sealable own-mesh peers exist.
+    func sealDismissals(_ pairs: [DismissedSourcePair]) throws -> [Envelope] {
+        guard !pairs.isEmpty else { return [] }
+        let recipients = trust().ownMeshRecipients(excluding: selfClientId)
+        guard !recipients.isEmpty else { return [] }
+        return try pairs.map { pair in
+            let body = ProtocolCodec.encode(DismissEvent(
+                sourceClientId: pair.sourceClientId, sourceKey: pair.sourceKey, dismissedAt: Self.nowMillis()))
+            return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DISMISSAL, bodyPlaintext: body,
+                                           recipients: recipients, messageId: Self.newMessageId(),
+                                           seq: Self.nextSeq(), createdAt: Self.nowMillis())
+        }
+    }
+
     /// Seal a DATA_SYNC asset-repair request (consumer → provider) for assets that failed to fetch/decrypt.
     func sealAssetRepairRequest(to provider: String, items: [AssetSyncItem]) throws -> Envelope? {
         guard let peer = trust().peers[provider], peer.isTrusted, let e = peer.sealable(now: Self.nowMillis()) else { return nil }

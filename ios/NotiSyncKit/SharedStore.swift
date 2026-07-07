@@ -890,6 +890,16 @@ nonisolated enum MirrorMapStore {
         }
     }
 
+    /// Batch form of `remove` — one load/write for the whole set (the Inbox's Read All).
+    static func removeAll(identifiers: [String]) {
+        guard !identifiers.isEmpty else { return }
+        AppGroupStore.withLock(name) {
+            var map = load()
+            for identifier in identifiers { map.removeValue(forKey: identifier) }
+            AppGroupStore.write(map, name)
+        }
+    }
+
     /// All mirror entries for a given source — used to remove every delivered copy (NSE-posted entries
     /// carry the APNs-assigned identifier; app-posted ones carry the derived identifier).
     static func entries(sourceClientId: String, sourceKey: String) -> [MirrorMapEntry] {
@@ -948,6 +958,18 @@ nonisolated enum ShownStore {
             $0.echo.insert(id)
             $0.showing.remove(id)
             $0.suspected.remove(id)
+        }
+    }
+
+    /// Batch form of `markEchoRemoved` — one load/write for the whole set (the Inbox's Read All).
+    static func markEchoRemoved(_ ids: [String]) {
+        guard !ids.isEmpty else { return }
+        update { state in
+            for id in ids {
+                state.echo.insert(id)
+                state.showing.remove(id)
+                state.suspected.remove(id)
+            }
         }
     }
 

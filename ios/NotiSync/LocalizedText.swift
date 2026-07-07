@@ -235,6 +235,10 @@ enum LocalizedText {
             return String(localized: "activity.title.remoteDismissal",
                           defaultValue: "Remote dismissal",
                           comment: "Activity title for a dismissal received from another device.")
+        case .readAll:
+            return String(localized: "activity.title.readAll",
+                          defaultValue: "Marked all as read",
+                          comment: "Activity title for the Inbox Read All action.")
         case .relayDrained:
             return String(localized: "activity.title.relayDrained",
                           defaultValue: "Relay drained",
@@ -338,6 +342,13 @@ enum LocalizedText {
             return String(format: format, locale: .current, Int64(record.detailNum))
         case .messageCount:
             return messageCount(record.detailNum)
+        case .readAllCounts:
+            // detailNum = rows marked read; detailArg = DismissEvents synced to the mesh (Read All caps
+            // the sync to recent sources, so the two counts legitimately differ).
+            let format = String(localized: "activity.detail.readAllCounts",
+                                defaultValue: "%1$lld notifications · %2$lld synced",
+                                comment: "Activity detail for Read All: notifications marked read, and dismissals synced to other devices.")
+            return String(format: format, locale: .current, Int64(record.detailNum), Int64(record.detailArg) ?? 0)
         case .routeEnvironment:
             return routeEnvironment(rawValue: record.detailArg)
         case .deliveryMode:

@@ -183,6 +183,38 @@ extension NotiSyncRuntime {
         }
     }
 
+    /// Whether `filterNotificationsLike`'s device-level switch is currently silencing this notification's
+    /// origin (the Android peer's master toggle / the bridged iOS device's toggle in the Devices tab).
+    func notificationsLikeAreFiltered(_ notification: InboxNotification) -> Bool {
+        _ = notificationFilterRevision
+        switch originPlatform(for: notification) {
+        case .ANDROID_LOCAL:
+            return !androidLocalNotificationsEnabled(for: notification.sourceClientId)
+        case .IOS_ANCS:
+            guard let deviceKey = filterDeviceKey(for: notification) else { return false }
+            return !iosNotificationsEnabled(deviceKey: deviceKey)
+        }
+    }
+
+    /// Undo of `filterNotificationsLike` (the Inbox context menu's "Clear Device Filter"): flip the same
+    /// device-level switch back on, exactly like re-enabling the device's toggle in the Devices tab.
+    func unfilterNotificationsLike(_ notification: InboxNotification) {
+        switch originPlatform(for: notification) {
+        case .ANDROID_LOCAL:
+            setAndroidLocalNotificationsEnabled(true, for: notification.sourceClientId)
+        case .IOS_ANCS:
+            guard let deviceKey = filterDeviceKey(for: notification) else { return }
+            let name = NotificationFilterStore.filteredIosDeviceName(from: notification.originDeviceName) ?? "iOS Device"
+            NotificationFilterStore.setIosNotificationsEnabled(
+                true,
+                deviceKey: deviceKey,
+                peerClientId: notification.sourceClientId,
+                originDeviceId: notification.originDeviceId,
+                deviceName: name)
+            notificationFiltersDidChange()
+        }
+    }
+
     func originPlatform(for notification: InboxNotification) -> OriginPlatform {
         if let platform = notification.originPlatform.flatMap(OriginPlatform.init(rawValue:)) {
             return platform
@@ -480,27 +512,6 @@ extension NotiSyncRuntime {
         saveModelContext(modelContext)
         bumpInboxRevision()
         return true
-    }
-
-    /// Mark every Inbox row matching `predicate` as read (the Inbox menu's "Mark … as Read") — the FULL
-    /// dismissal flow, batched: each distinct (source, key) clears its local mirrors, acks, and seals a
-    /// DismissEvent to the mesh (so the source device dismisses too), exactly as if the user tapped
-    /// every row. Rows dim progressively as the pass advances; non-clearable (ongoing) sources keep
-    /// their existing skip-the-outbound-send handling inside `locallyDismiss`.
-    func markAllAsRead(matching predicate: Predicate<InboxNotification>?) async {
-        guard let modelContext else { return }
-        let rows = (try? modelContext.fetch(FetchDescriptor<InboxNotification>(predicate: predicate))) ?? []
-        var seen = Set<String>()
-        var sources: [(clientId: String, key: String)] = []
-        for row in rows where seen.insert("\(row.sourceClientId)\u{1f}\(row.sourceKey)").inserted {
-            sources.append((row.sourceClientId, row.sourceKey))
-        }
-        guard !sources.isEmpty else { return }
-        await withCoalescedSaves {
-            for source in sources {
-                await locallyDismiss(sourceClientId: source.clientId, sourceKey: source.key)
-            }
-        }
     }
 
     /// Delete every Inbox notification from local storage (the Inbox "Delete All" action). Storage-only — it

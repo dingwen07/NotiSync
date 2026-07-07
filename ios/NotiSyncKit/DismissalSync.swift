@@ -19,7 +19,8 @@ nonisolated struct DismissedSourcePair: Sendable, Hashable {
 nonisolated enum DismissalTombstoneStore {
     private static let name = AppGroupStore.Files.dismissTombstones
     /// Matches the broker's default relay TTL — nothing older than this can still be replayed at us.
-    private static let ttlMillis: Int64 = 7 * 24 * 60 * 60 * 1000
+    /// Internal so batch dismissers (the Inbox's Read All) can skip tombstoning pairs past any replay.
+    static let ttlMillis: Int64 = 7 * 24 * 60 * 60 * 1000
     private static let cap = 512
 
     static func pairKey(_ pair: DismissedSourcePair) -> String {
@@ -39,9 +40,17 @@ nonisolated enum DismissalTombstoneStore {
     /// Record a dismissal of [pair] at [dismissedAt] (keeps the newest time on repeats — DismissEvents are
     /// idempotent and may be replayed).
     static func record(_ pair: DismissedSourcePair, dismissedAt: Int64) {
+        recordAll([pair], dismissedAt: dismissedAt)
+    }
+
+    /// Batch form of `record` — one load/prune/write for the whole set (the Inbox's Read All).
+    static func recordAll(_ pairs: [DismissedSourcePair], dismissedAt: Int64) {
+        guard !pairs.isEmpty else { return }
         AppGroupStore.withLock(name) {
             var map = load()
-            map[pairKey(pair)] = max(dismissedAt, map[pairKey(pair)] ?? 0)
+            for pair in pairs {
+                map[pairKey(pair)] = max(dismissedAt, map[pairKey(pair)] ?? 0)
+            }
             prune(&map)
             AppGroupStore.write(map, name)
         }

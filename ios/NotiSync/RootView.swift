@@ -70,30 +70,45 @@ struct InboxView: View {
                             }
                         }
                         .contextMenu {
+                            // Each scope flips to its undo (the Devices tab's "Clear Filter") when it is
+                            // already silenced, so the same long-press reverses a mis-tap.
                             if let channelFilter = androidChannelFilter(for: notification) {
-                                Button {
+                                SilenceMenuButton(
+                                    isSilenced: !runtime.channelNotificationsEnabled(
+                                        deviceKey: channelFilter.deviceKey,
+                                        appId: channelFilter.appId,
+                                        channelId: channelFilter.channelId),
+                                    silence: "Silence this Channel",
+                                    clear: "Clear Channel Filter"
+                                ) { enabled in
                                     runtime.setChannelNotificationsEnabled(
-                                        false,
+                                        enabled,
                                         deviceKey: channelFilter.deviceKey,
                                         appId: channelFilter.appId,
                                         channelId: channelFilter.channelId)
-                                } label: {
-                                    Label("Silence this Channel", systemImage: "bell.slash")
                                 }
                             }
                             if let deviceKey = runtime.filterDeviceKey(for: notification),
                                let appId = runtime.filterAppIdentifier(for: notification) {
-                                Button {
-                                    runtime.setAppNotificationsEnabled(false, deviceKey: deviceKey, appId: appId)
-                                } label: {
-                                    Label("Silence this App", systemImage: "bell.slash")
+                                SilenceMenuButton(
+                                    isSilenced: !runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: appId),
+                                    silence: "Silence this App",
+                                    clear: "Clear App Filter"
+                                ) { enabled in
+                                    runtime.setAppNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId)
                                 }
                             }
                             if runtime.canFilterNotificationsLike(notification) {
-                                Button {
-                                    runtime.filterNotificationsLike(notification)
-                                } label: {
-                                    Label("Silence this Device", systemImage: "bell.slash")
+                                SilenceMenuButton(
+                                    isSilenced: runtime.notificationsLikeAreFiltered(notification),
+                                    silence: "Silence this Device",
+                                    clear: "Clear Device Filter"
+                                ) { enabled in
+                                    if enabled {
+                                        runtime.unfilterNotificationsLike(notification)
+                                    } else {
+                                        runtime.filterNotificationsLike(notification)
+                                    }
                                 }
                             }
                         }
@@ -339,6 +354,29 @@ struct InboxView: View {
     private func nonBlank(_ value: String?) -> String? {
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed?.isEmpty == false ? trimmed : nil
+    }
+}
+
+/// One Inbox context-menu silencing item. While the scope (channel/app/device) is posting it offers
+/// "Silence …"; once silenced it becomes the undo, using the Devices tab's "Clear Filter" verb and its
+/// bell glyph (the un-silenced state there). `setEnabled` receives the new enabled state, matching the
+/// runtime's `set…NotificationsEnabled` setters.
+private struct SilenceMenuButton: View {
+    let isSilenced: Bool
+    let silence: LocalizedStringKey
+    let clear: LocalizedStringKey
+    let setEnabled: (Bool) -> Void
+
+    var body: some View {
+        Button {
+            setEnabled(isSilenced)
+        } label: {
+            if isSilenced {
+                Label(clear, systemImage: "bell")
+            } else {
+                Label(silence, systemImage: "bell.slash")
+            }
+        }
     }
 }
 

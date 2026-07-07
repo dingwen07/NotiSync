@@ -65,6 +65,7 @@ enum ActivityTitleToken: String, Codable {
     case dismissedLocally
     case dismissed
     case remoteDismissal
+    case readAll
     case relayDrained
     case assetSync
     case renamed
@@ -87,7 +88,8 @@ enum ActivityTitleToken: String, Codable {
 }
 
 /// How an activity-log row's detail is rendered. Dynamic values live in `ActivityRecord.detailArg`
-/// (free text / enum raw) and `ActivityRecord.detailNum` (epoch / count).
+/// (free text / enum raw; the synced count for `.readAllCounts`) and `ActivityRecord.detailNum`
+/// (epoch / count).
 enum ActivityDetailStyle: String, Codable {
     case none
     case text
@@ -98,6 +100,7 @@ enum ActivityDetailStyle: String, Codable {
     case nowEpoch
     case epoch
     case messageCount
+    case readAllCounts
     case routeEnvironment
     case deliveryMode
 }
@@ -259,7 +262,8 @@ final class ActivityRecord {
     var titleArg: String
     /// `ActivityDetailStyle` raw value — selects how `detailArg` / `detailNum` are rendered.
     var detailStyleRaw: String
-    /// Dynamic detail text: free text, or an enum raw value (`RouteEnvironment` / `DeliveryMode`).
+    /// Dynamic detail text: free text, an enum raw value (`RouteEnvironment` / `DeliveryMode`), or the
+    /// synced count for `.readAllCounts`.
     var detailArg: String
     /// Dynamic numeric detail: a key epoch or a message count.
     var detailNum: Int

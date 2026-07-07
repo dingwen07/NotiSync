@@ -1,10 +1,12 @@
 import Foundation
+import SwiftData
 import UserNotifications
 
 /// Dismissal sync: a local swipe (or Dismiss action) clears the mirror, acks the message, and — for a
-/// clearable source — seals a DismissEvent to the mesh; a remote DismissEvent clears the local mirror. With
-/// no swipe callback from iOS, `reconcileDismissals` diffs delivered notifications across two polls to infer
-/// user dismissals.
+/// clearable source — seals a DismissEvent to the mesh; a remote DismissEvent clears the local mirror. The
+/// Inbox's "Read All" runs the same flow batched (`markAllAsRead`), with the mesh sends capped to recent
+/// sources. With no swipe callback from iOS, `reconcileDismissals` diffs delivered notifications across
+/// two polls to infer user dismissals.
 extension NotiSyncRuntime {
 
     // MARK: Dismissal
@@ -64,6 +66,138 @@ extension NotiSyncRuntime {
         guard let engine else { return }
         let ids = await Task.detached(priority: .userInitiated) { engine.peersNeedingKeyEpoch() }.value
         for id in ids { await refetchKeyEpoch(id) }
+    }
+
+    // MARK: Read All (batched local dismissal + capped mesh sync)
+
+    /// Cross-device policy for "Read All": a DismissEvent goes to the mesh only for the newest
+    /// `readAllSyncMaxDismissals` unread sources received within `readAllSyncWindow`. Dismissing a stale
+    /// backlog shouldn't flood the relay (and every peer) with envelopes for notifications the source
+    /// devices almost certainly cleared long ago — older rows are still marked read + cleared locally.
+    static let readAllSyncMaxDismissals = 50
+    static let readAllSyncWindow: TimeInterval = 48 * 60 * 60
+    /// How many DISMISSAL sends run concurrently (one envelope per broker request).
+    private static let readAllSendWidth = 4
+
+    /// Mark every Inbox row matching `predicate` as read (the Inbox menu's "Mark … as Read") as ONE
+    /// batched dismissal instead of a `locallyDismiss` round-trip per source: a single local pass (one
+    /// mirror-map read, one notification-center removal, one echo/tombstone write, one SwiftData commit,
+    /// one relay-ack flush) dims the list immediately, then the capped sync set's DismissEvents are
+    /// sealed in one trust-roster load and sent concurrently. Non-clearable (ongoing) sources keep their
+    /// local-only handling (#14).
+    func markAllAsRead(matching predicate: Predicate<InboxNotification>?) async {
+        guard let modelContext else { return }
+        let started = Date()
+        let fetched = (try? modelContext.fetch(FetchDescriptor<InboxNotification>(
+            predicate: predicate,
+            sortBy: [SortDescriptor(\.receivedAt, order: .reverse)]))) ?? []
+        let rows = fetched.filter { !$0.isDismissed }
+        guard !rows.isEmpty else { return }
+        // Distinct sources, newest first (the fetch is sorted) — a pair's first row is its latest arrival.
+        var seen = Set<DismissedSourcePair>()
+        var sources: [(pair: DismissedSourcePair, receivedAt: Date)] = []
+        for row in rows {
+            let pair = DismissedSourcePair(sourceClientId: row.sourceClientId, sourceKey: row.sourceKey)
+            if seen.insert(pair).inserted { sources.append((pair, row.receivedAt)) }
+        }
+
+        let dismissedAt = NotiSyncEngine.nowMillis()
+        // One mirror-map read for the whole pass; the per-pair entries decide clearability and which
+        // delivered mirrors to remove.
+        let entriesByPair = await Task.detached(priority: .userInitiated) { [seen] in
+            Dictionary(grouping: MirrorMapStore.all().values) {
+                DismissedSourcePair(sourceClientId: $0.sourceClientId, sourceKey: $0.sourceKey)
+            }.filter { seen.contains($0.key) }
+        }.value
+        let entries = sources.flatMap { entriesByPair[$0.pair] ?? [] }
+        let identifiers = entries.map(\.identifier)
+        // Tombstones only guard against a still-replayable copy resurrecting the pair — recording pairs
+        // older than the relay TTL (with nothing on screen) would just churn the capped store.
+        let replayFloor = Date(timeIntervalSinceNow: -TimeInterval(DismissalTombstoneStore.ttlMillis) / 1000)
+        let tombstonePairs = sources
+            .filter { $0.receivedAt >= replayFloor || entriesByPair[$0.pair] != nil }
+            .map(\.pair)
+        await Task.detached(priority: .userInitiated) {
+            ShownStore.markEchoRemoved(identifiers)
+            MirrorMapStore.removeAll(identifiers: identifiers)
+            DismissalTombstoneStore.recordAll(tombstonePairs, dismissedAt: dismissedAt)
+        }.value
+        if !identifiers.isEmpty {
+            UNUserNotificationCenter.current().removeDeliveredNotifications(withIdentifiers: identifiers)
+            UNUserNotificationCenter.current().removePendingNotificationRequests(withIdentifiers: identifiers)
+        }
+
+        // Mark read + queue the batch's relay acks, then commit ONCE — the list refreshes a single time,
+        // before any network round-trip.
+        for row in rows { row.isDismissed = true }
+        queueAcks(messageIds: entries.map(\.messageId))
+        saveModelContext()
+        bumpInboxRevision()
+        await flushPendingAcks()
+
+        let synced = await syncReadAllDismissals(sources: sources, entriesByPair: entriesByPair)
+        addActivity(.dismissed, .readAll, detail: .readAllCounts,
+                    detailArg: String(synced), detailNum: rows.count)
+        PerfMonitor.recordValueTrace(
+            "inbox_read_all",
+            metrics: ["rows": Int64(rows.count), "sources": Int64(sources.count), "synced": Int64(synced),
+                      "duration_ms": Int64(Date().timeIntervalSince(started) * 1000)])
+    }
+
+    /// Seal + send the capped Read All sync set (newest-first, within the window, clearable only).
+    /// Returns how many DismissEvents the broker accepted.
+    private func syncReadAllDismissals(
+        sources: [(pair: DismissedSourcePair, receivedAt: Date)],
+        entriesByPair: [DismissedSourcePair: [MirrorMapEntry]]
+    ) async -> Int {
+        guard let engine, let broker else { return 0 }
+        let cutoff = Date(timeIntervalSinceNow: -Self.readAllSyncWindow)
+        let pairs = Array(
+            sources.lazy
+                .filter { $0.receivedAt >= cutoff }
+                // #14 — an ongoing source notification must not be cleared on the source device.
+                .filter { source in (entriesByPair[source.pair] ?? []).allSatisfy { $0.isClearable ?? true } }
+                .prefix(Self.readAllSyncMaxDismissals)
+                .map(\.pair))
+        guard !pairs.isEmpty else { return 0 }
+        // #4 — the same send-initiated key-epoch repair as a single dismissal, once for the whole batch.
+        await repairUnsealablePeers()
+        let envelopes: [Envelope]
+        do {
+            envelopes = try await Task.detached(priority: .userInitiated) {
+                try engine.sealDismissals(pairs)
+            }.value
+        } catch {
+            record(error: error, domain: .dismissSync)
+            return 0
+        }
+        guard !envelopes.isEmpty else { return 0 }   // no sealable peers
+        var sent = 0
+        var firstError: Error?
+        // Sliding window of concurrent sends: overlaps the broker round-trips without stampeding it.
+        await withTaskGroup(of: Result<Bool, Error>.self) { group in
+            var pending = envelopes.makeIterator()
+            var inFlight = 0
+            func startNext() {
+                guard let envelope = pending.next() else { return }
+                inFlight += 1
+                group.addTask {
+                    do { return .success(try await broker.send(envelope)) } catch { return .failure(error) }
+                }
+            }
+            for _ in 0..<Self.readAllSendWidth { startNext() }
+            while inFlight > 0, let result = await group.next() {
+                inFlight -= 1
+                switch result {
+                case .success(let accepted): if accepted { sent += 1 }
+                case .failure(let error): if firstError == nil { firstError = error }
+                }
+                startNext()
+            }
+        }
+        // One error row for the batch (not one per failed send); the local read-marking already stuck.
+        if let firstError { record(error: firstError, domain: .dismissSync) }
+        return sent
     }
 
     func removeRemoteDismissal(_ d: DismissEvent) async {

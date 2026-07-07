@@ -134,6 +134,24 @@
         }
       }
     },
+    "activity.detail.readAllCounts" : {
+      "comment" : "Activity detail for Read All: notifications marked read, and dismissals synced to other devices.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "%1$lld notifications · %2$lld synced"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "%1$lld 条通知 · 已同步 %2$lld 条"
+          }
+        }
+      }
+    },
     "activity.detail.syncedToMesh" : {
       "comment" : "Activity detail for an action synced to peer devices.",
       "extractionState" : "extracted_with_value",
@@ -292,6 +310,24 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "已配对"
+          }
+        }
+      }
+    },
+    "activity.title.readAll" : {
+      "comment" : "Activity title for the Inbox Read All action.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Marked all as read"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已全部标为已读"
           }
         }
       }
@@ -581,6 +617,28 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "清除应用过滤"
+          }
+        }
+      }
+    },
+    "Clear Channel Filter" : {
+      "comment" : "A context menu item that stops silencing a notification channel.",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除通知渠道过滤"
+          }
+        }
+      }
+    },
+    "Clear Device Filter" : {
+      "comment" : "A context menu item that stops silencing a device.",
+      "localizations" : {
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "清除设备过滤"
           }
         }
       }

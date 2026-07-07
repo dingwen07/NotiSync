@@ -516,6 +516,18 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         await flushPendingAcks()
     }
 
+    /// Queue acks for a whole batch without flushing (the Inbox's Read All) — one dedupe fetch instead of
+    /// one per message. The caller commits and then flushes the batch in a single broker call.
+    func queueAcks(messageIds: [String]) {
+        guard let modelContext, !messageIds.isEmpty else { return }
+        let ids = Array(Set(messageIds))
+        let queued = Set(((try? modelContext.fetch(FetchDescriptor<PendingRelayAck>(
+            predicate: #Predicate { ids.contains($0.messageId) }))) ?? []).map(\.messageId))
+        for id in ids where !queued.contains(id) {
+            modelContext.insert(PendingRelayAck(messageId: id))
+        }
+    }
+
     // MARK: Background task
 
     private func handleRelayRefreshTask(_ task: BGTask) async {
