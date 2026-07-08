@@ -306,4 +306,26 @@
     <!-- ANCS foreground service -->
     <string name="ancs_service_channel">iPhone 桥接</string>
     <string name="ancs_service_title">正在桥接 iPhone 通知</string>
+
+    <!-- Onboarding (first launch) -->
+    <string name="onboarding_continue">继续</string>
+    <string name="onboarding_skip">跳过</string>
+    <string name="onboarding_finish">完成</string>
+    <string name="onboarding_welcome_title">欢迎使用 NotiSync</string>
+    <string name="onboarding_welcome_body">在所有设备上查看您的通知 — 私密且端到端加密。</string>
+    <string name="onboarding_welcome_start">开始使用</string>
+    <string name="onboarding_notifications_title">在此设备上显示通知</string>
+    <string name="onboarding_notifications_body">NotiSync 需要通知权限，才能在这台设备上显示来自您其他设备的通知。</string>
+    <string name="onboarding_notifications_grant">允许</string>
+    <string name="onboarding_notifications_granted">通知已开启。</string>
+    <string name="onboarding_listener_title">镜像此设备的通知</string>
+    <string name="onboarding_listener_body">要将此设备的通知发送到您的其他设备，NotiSync 需要「读取、回复和控制通知」权限（部分设备上称为通知使用权）。</string>
+    <string name="onboarding_listener_granted">通知使用权已开启。</string>
+    <string name="onboarding_apps_title">选择要镜像的应用</string>
+    <string name="onboarding_apps_body">在您开启之前不会镜像任何应用。完成设置后，请打开「应用」标签页，开启您想镜像的应用。</string>
+    <string name="onboarding_iphone_title">添加您的 iPhone</string>
+    <string name="onboarding_iphone_body">通过蓝牙配对 iPhone 后，这台手机即可捕获其通知并镜像到您的其他设备。您也可以稍后在「iPhone」标签页中设置。</string>
+    <string name="onboarding_iphone_pair">配对 iPhone</string>
+    <string name="onboarding_pair_title">连接您的其他设备</string>
+    <string name="onboarding_pair_body">在您的其他设备上安装 NotiSync，然后在「设备」标签页中配对。</string>
 </resources>

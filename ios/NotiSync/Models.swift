@@ -321,6 +321,9 @@ final class AppSettings {
     var lastRoutePublishAt: Date?
     var lastRelayDrainAt: Date?
     var lastError: String?
+    /// First-launch onboarding finished (every step completed or skipped). Inline default so rows
+    /// persisted before this field existed migrate to `false` and see the flow once.
+    var hasCompletedOnboarding: Bool = false
 
     init(
         id: String = AppSettings.singletonId,

@@ -38,6 +38,7 @@ class SettingsRepository(
     private val ancsBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
     private val ancsLocalKey = booleanPreferencesKey("ancs_local_display")
     private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
+    private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -84,6 +85,12 @@ class SettingsRepository(
     suspend fun setAncsBridgeEnabled(on: Boolean) = store.edit { it[ancsBridgeKey] = on }
     suspend fun setAncsLocalDisplay(on: Boolean) = store.edit { it[ancsLocalKey] = on }
     suspend fun setAncsMeshMirror(on: Boolean) = store.edit { it[ancsMeshKey] = on }
+
+    /** Whether first-launch onboarding was finished (every step completed or skipped). Direct read only —
+     *  it gates what the launch frame shows, so an eager StateFlow's still-default value would flash
+     *  onboarding at already-onboarded users while DataStore loads. */
+    suspend fun onboardingCompletedNow(): Boolean = store.data.first()[onboardingDoneKey] ?: false
+    suspend fun setOnboardingCompleted() = store.edit { it[onboardingDoneKey] = true }
 
     suspend fun setBrokerUrl(url: String) = store.edit { it[brokerUrlKey] = url }
     suspend fun setDeviceName(name: String) = store.edit {

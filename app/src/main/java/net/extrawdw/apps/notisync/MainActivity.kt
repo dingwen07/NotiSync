@@ -60,11 +60,13 @@ import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import kotlinx.serialization.Serializable
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
 import net.extrawdw.apps.notisync.ui.IosScreen
+import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
@@ -87,16 +89,34 @@ class MainActivity : ComponentActivity() {
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             NotiSyncTheme {
                 if (graphReady) {
-                    NotiSyncRoot(
-                        pendingPairingPayload = pairingPayload,
-                        onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
-                        openDevices = openDevices,
-                        onOpenDevicesConsumed = { pendingOpenDevices.value = false },
-                    )
-                } else {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        CircularProgressIndicator()
+                    val graph = remember { app.graph }
+                    // null = still reading DataStore. Gate on the PERSISTED flag (an eager StateFlow would
+                    // still report its false default here and flash onboarding at already-onboarded users).
+                    var showOnboarding by remember { mutableStateOf<Boolean?>(null) }
+                    LaunchedEffect(Unit) {
+                        showOnboarding = !graph.settings.onboardingCompletedNow()
                     }
+                    when (showOnboarding) {
+                        // Persist on the graph scope: the composable (and any rememberCoroutineScope) is
+                        // disposed the moment this flips, which would cancel the write mid-flight.
+                        true -> OnboardingScreen(
+                            onFinish = {
+                                graph.scope.launch { graph.settings.setOnboardingCompleted() }
+                                showOnboarding = false
+                            },
+                        )
+                        // Finishing onboarding lands here with Devices as the NavHost start destination;
+                        // a pairing deep link received during onboarding is still pending and opens now.
+                        false -> NotiSyncRoot(
+                            pendingPairingPayload = pairingPayload,
+                            onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                            openDevices = openDevices,
+                            onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                        )
+                        null -> LoadingBox()
+                    }
+                } else {
+                    LoadingBox()
                 }
             }
         }
@@ -277,6 +297,14 @@ private fun TopLevelNavIcon(dest: TopLevelDestination) {
 @Composable
 private fun TopLevelNavLabel(dest: TopLevelDestination) {
     Text(stringResource(dest.label), maxLines = 1)
+}
+
+/** Launch placeholder shown while the DI graph builds and while the onboarding flag loads. */
+@Composable
+private fun LoadingBox() {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        CircularProgressIndicator()
+    }
 }
 
 /**

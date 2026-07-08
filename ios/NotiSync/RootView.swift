@@ -2,20 +2,46 @@ import SwiftData
 import SwiftUI
 import UIKit
 
+/// Top-level tabs, tagged so flows (onboarding's "Go to Devices") can select one programmatically.
+enum RootTab: Hashable {
+    case inbox, devices, activity, settings
+}
+
 struct RootView: View {
     @Environment(\.modelContext) private var modelContext
     @EnvironmentObject private var runtime: NotiSyncRuntime
+    @Query private var settingsRows: [AppSettings]
+    @State private var selection: RootTab = .inbox
+
+    /// False until `configure` creates the settings row, so a fresh install starts in onboarding.
+    private var hasCompletedOnboarding: Bool {
+        settingsRows.first?.hasCompletedOnboarding ?? false
+    }
 
     var body: some View {
-        TabView {
-            InboxView()
-                .tabItem { Label("Inbox", systemImage: "tray.full") }
-            DevicesView()
-                .tabItem { Label("Devices", systemImage: "iphone.gen3.radiowaves.left.and.right") }
-            ActivityLogView()
-                .tabItem { Label("Activity", systemImage: "waveform.path.ecg") }
-            SettingsView()
-                .tabItem { Label("Settings", systemImage: "gearshape") }
+        Group {
+            if hasCompletedOnboarding {
+                TabView(selection: $selection) {
+                    InboxView()
+                        .tabItem { Label("Inbox", systemImage: "tray.full") }
+                        .tag(RootTab.inbox)
+                    DevicesView()
+                        .tabItem { Label("Devices", systemImage: "iphone.gen3.radiowaves.left.and.right") }
+                        .tag(RootTab.devices)
+                    ActivityLogView()
+                        .tabItem { Label("Activity", systemImage: "waveform.path.ecg") }
+                        .tag(RootTab.activity)
+                    SettingsView()
+                        .tabItem { Label("Settings", systemImage: "gearshape") }
+                        .tag(RootTab.settings)
+                }
+            } else {
+                OnboardingView {
+                    // Land on Devices — the pairing entry point — when the flow completes.
+                    selection = .devices
+                    runtime.completeOnboarding()
+                }
+            }
         }
         .onAppear {
             runtime.configure(modelContext: modelContext)

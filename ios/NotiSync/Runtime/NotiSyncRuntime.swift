@@ -298,19 +298,33 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     // MARK: Notifications / push registration
 
     func requestNotificationPermissionAndRegister() {
-        Task {
-            do {
-                let granted = try await UNUserNotificationCenter.current().requestAuthorization(
-                    options: [.alert, .badge, .sound])
-                settings().notificationPermissionValue = granted ? .granted : .denied
-                if granted {
-                    UIApplication.shared.registerForRemoteNotifications()
-                }
-                saveModelContext()
-            } catch {
-                record(error: error, domain: .notificationPermission)
+        Task { await requestNotificationPermissionAndRegisterAsync() }
+    }
+
+    /// Awaitable variant (mirrors the `refreshNotificationPermissionStatus`/`Async` pair) so onboarding
+    /// can advance on the user's answer. Returns whether the permission ended up granted.
+    @discardableResult
+    func requestNotificationPermissionAndRegisterAsync() async -> Bool {
+        do {
+            let granted = try await UNUserNotificationCenter.current().requestAuthorization(
+                options: [.alert, .badge, .sound])
+            settings().notificationPermissionValue = granted ? .granted : .denied
+            if granted {
+                UIApplication.shared.registerForRemoteNotifications()
             }
+            saveModelContext()
+            return granted
+        } catch {
+            record(error: error, domain: .notificationPermission)
+            return false
         }
+    }
+
+    /// First-launch onboarding finished (or was skipped through) — persist so RootView stops showing it.
+    func completeOnboarding() {
+        let s = settings()
+        if !s.hasCompletedOnboarding { s.hasCompletedOnboarding = true }
+        saveModelContext()
     }
 
     func didRegisterForRemoteNotifications(deviceToken: Data) {

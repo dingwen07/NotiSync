@@ -317,4 +317,26 @@
     <!-- ANCS foreground service -->
     <string name="ancs_service_channel">iPhone bridge</string>
     <string name="ancs_service_title">Bridging iPhone notifications</string>
+
+    <!-- Onboarding (first launch) -->
+    <string name="onboarding_continue">Continue</string>
+    <string name="onboarding_skip">Skip</string>
+    <string name="onboarding_finish">Done</string>
+    <string name="onboarding_welcome_title">Welcome to NotiSync</string>
+    <string name="onboarding_welcome_body">See your notifications on all your devices — private and end-to-end encrypted.</string>
+    <string name="onboarding_welcome_start">Get started</string>
+    <string name="onboarding_notifications_title">Show notifications here</string>
+    <string name="onboarding_notifications_body">NotiSync needs permission to show notifications from your other devices on this phone.</string>
+    <string name="onboarding_notifications_grant">Allow</string>
+    <string name="onboarding_notifications_granted">Notifications are on.</string>
+    <string name="onboarding_listener_title">Mirror this device\'s notifications</string>
+    <string name="onboarding_listener_body">To send this device\'s notifications to your other devices, NotiSync needs \"Notification read, reply &amp; control\" (called notification access on some devices).</string>
+    <string name="onboarding_listener_granted">Notification access is on.</string>
+    <string name="onboarding_apps_title">Choose apps to mirror</string>
+    <string name="onboarding_apps_body">Nothing is mirrored until you turn apps on. Once you finish setup, open the Apps tab and turn on the apps you want to mirror.</string>
+    <string name="onboarding_iphone_title">Add your iPhone</string>
+    <string name="onboarding_iphone_body">Pair an iPhone over Bluetooth and this phone can capture its notifications and mirror them to your other devices. You can also set this up later from the iPhone tab.</string>
+    <string name="onboarding_iphone_pair">Pair iPhone</string>
+    <string name="onboarding_pair_title">Connect your other devices</string>
+    <string name="onboarding_pair_body">Install NotiSync on your other devices, then pair them from the Devices tab.</string>
 </resources>
