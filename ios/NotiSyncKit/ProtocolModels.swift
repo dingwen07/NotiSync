@@ -245,7 +245,7 @@ nonisolated struct CapturedNotification: Sendable {
     var originDeviceId: String?
     /// The source's per-post `FLAG_ONLY_ALERT_ONCE` intent: an update to this key should not re-alert while
     /// it is still showing (e.g. a messaging app attaching an inline image to a message it already alerted).
-    /// Carried for parity with the protocol; the iOS mirror does not act on it yet.
+    /// iOS uses it to keep MessagingStyle updates passive once a mirror for the source key is already showing.
     var onlyAlertOnce: Bool = false
     /// Mirrorable action buttons, in origin display order (empty from an older producer).
     var actions: [NotificationAction] = []

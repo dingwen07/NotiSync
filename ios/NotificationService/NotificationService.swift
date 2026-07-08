@@ -120,13 +120,12 @@ final class NotificationService: UNNotificationServiceExtension {
                 // tombstone sweep removes it on the next wake / app pass. A copy NEWER than its tombstone
                 // clears it (the source re-posted the key) and renders normally.
                 var suppressed = DismissalTombstoneStore.shouldSuppress(pair, postTime: n.postTime)
-                // Register the category (channel mapping or mirrored action row + Dismiss) for this push.
-                if !filterAlert, !suppressed {
-                    MirrorCategoryRegistry.ensureRegistered(for: n)
-                }
+                let sourceAlreadyShowing = !MirrorMapStore.entries(sourceClientId: n.sourceClientId,
+                                                                   sourceKey: n.sourceKey).isEmpty
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
                 let commAppIcons = MirrorDisplayStore.preferences().communicationAppIcons
+                var categoryIdentifier: String?
                 var prepared: UNNotificationContent
                 var fetch: ImageFetch?
                 if suppressed {
@@ -134,19 +133,21 @@ final class NotificationService: UNNotificationServiceExtension {
                     // no attachments/icons — a dismissed mirror doesn't get asset budget.
                     prepared = MirrorPresentation.passiveContent(
                         await MirrorPresentation.content(for: n, messageId: messageId, attachments: [],
-                                                         appIcon: nil, communicationStyle: false),
+                                                         appIcon: nil, communicationStyle: false,
+                                                         categoryIdentifier: categoryIdentifier),
                         removeActions: true)
                     fetch = nil
                 } else if n.style == .MESSAGING, let last = n.messages.last {
+                    // Register the category (channel mapping or mirrored action row + Dismiss) for this push.
+                    categoryIdentifier = !filterAlert ? MirrorCategoryRegistry.ensureRegistered(for: n) : nil
                     let attachments = await fetchAttachments(for: last, engine: engine)
                     let senderImage = senderImage(for: n, message: last)
-                    // A nil sender is the user's own message (e.g. an inline reply sent from the source
-                    // device) — deliver silently, matching Android's self-reply case: they wrote it, so
-                    // alerting is noise (an alert push can't be fully suppressed without the filtering
-                    // entitlement).
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                  attachments: attachments, senderImage: senderImage.data,
-                                                                 alerting: last.sender != nil)
+                                                                 alerting: MirrorPresentation.messageShouldAlert(
+                                                                    n, message: last,
+                                                                    sourceAlreadyShowing: sourceAlreadyShowing),
+                                                                 categoryIdentifier: categoryIdentifier)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
                     // path (#13) doesn't re-post it under a different id once it processes a later envelope.
@@ -162,9 +163,17 @@ final class NotificationService: UNNotificationServiceExtension {
                     // the large-icon attachment — which only shows when the mirror has no graphic of its own.
                     let icon: (data: Data?, fetch: ImageFetch?) =
                         (commAppIcons || attachments.isEmpty) ? appIcon(for: n) : (nil, nil)
+                    let usesAppIconAttachment = !commAppIcons && attachments.isEmpty
+                        && (icon.data != nil || icon.fetch != nil)
+                    // App-icon-only mirrors use the content extension so long-press can render the icon
+                    // compactly. Real large-icon / big-picture attachments keep iOS's default media layout.
+                    categoryIdentifier = !filterAlert
+                        ? MirrorCategoryRegistry.ensureRegistered(for: n, contentExtension: usesAppIconAttachment)
+                        : nil
                     prepared = await MirrorPresentation.content(for: n, messageId: messageId,
                                                                 attachments: attachments, appIcon: icon.data,
-                                                                communicationStyle: commAppIcons)
+                                                                communicationStyle: commAppIcons,
+                                                                categoryIdentifier: categoryIdentifier)
                     fetch = icon.data == nil ? icon.fetch : nil
                 }
                 bestAttempt = filterAlert ? MirrorPresentation.passiveContent(prepared, removeActions: true) : prepared
@@ -217,12 +226,16 @@ final class NotificationService: UNNotificationServiceExtension {
                         let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                     attachments: attachments, senderImage: data,
-                                                                    alerting: last.sender != nil)
+                                                                    alerting: MirrorPresentation.messageShouldAlert(
+                                                                        n, message: last,
+                                                                        sourceAlreadyShowing: sourceAlreadyShowing),
+                                                                    categoryIdentifier: categoryIdentifier)
                     } else {
                         let attachments = await fetchAttachments(for: n, engine: engine)
                         content = await MirrorPresentation.content(for: n, messageId: messageId,
                                                                    attachments: attachments, appIcon: data,
-                                                                   communicationStyle: commAppIcons)
+                                                                   communicationStyle: commAppIcons,
+                                                                   categoryIdentifier: categoryIdentifier)
                     }
                 } else {
                     content = prepared

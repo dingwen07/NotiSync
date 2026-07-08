@@ -22,6 +22,12 @@ nonisolated enum MirrorPresentation {
     /// Prefix of a mirrored-action identifier; the suffix is the origin-scoped `NotificationAction.index`
     /// ("notisync.act.2"), parsed back out in `handleNotificationResponse` to build the `ActionEvent`.
     static let performActionPrefix = "notisync.act."
+    /// Static category family listed in the content extension's Info.plist. The base value is also the APNs
+    /// placeholder category because the broker cannot know plaintext action rows before the NSE decrypts.
+    static let contentExtensionCategoryId = "notisync.mirror"
+    private static let contentExtensionCategoryPoolSize = 32
+    static let contentExtensionCategoryIds: [String] =
+        (0..<contentExtensionCategoryPoolSize).map { "\(contentExtensionCategoryId).\($0)" }
 
     /// Stable, reversible identifier per (sourceClientId, sourceKey) — plan §D.3. This is the unique mirror
     /// request id used for dismissal reconciliation; it is independent of the grouping `threadIdentifier`.
@@ -75,6 +81,8 @@ nonisolated enum MirrorPresentation {
     /// uses `.foreground` — the press is performed on the ORIGIN device, so waking this app's UI would be
     /// noise. Android's `SEMANTIC_ACTION_DELETE` maps to `.destructive` as the rendering hint.
     static func category(id: String = baseCategoryId, actions: [NotificationAction] = []) -> UNNotificationCategory {
+        let sendTitle = String(localized: "notification.action.send", defaultValue: "Send",
+                               comment: "Button that sends the typed reply to the origin device.")
         var unActions: [UNNotificationAction] = actions.map { action in
             let identifier = "\(performActionPrefix)\(action.index)"
             var options: UNNotificationActionOptions = []
@@ -82,7 +90,7 @@ nonisolated enum MirrorPresentation {
             if action.remoteInput {
                 return UNTextInputNotificationAction(
                     identifier: identifier, title: action.title, options: options,
-                    textInputButtonTitle: action.title,
+                    textInputButtonTitle: sendTitle,
                     textInputPlaceholder: action.remoteInputLabel ?? ""
                 )
             }
@@ -106,9 +114,11 @@ nonisolated enum MirrorPresentation {
     /// falling back to the plain content if the Communication Notifications entitlement isn't provisioned.
     static func content(for n: CapturedNotification, messageId: String,
                         attachments: [UNNotificationAttachment] = [], appIcon: Data? = nil,
-                        communicationStyle: Bool) async -> UNNotificationContent {
+                        communicationStyle: Bool, categoryIdentifier: String? = nil) async -> UNNotificationContent {
+        let categoryId = categoryIdentifier ?? Self.categoryIdentifier(for: n)
         if communicationStyle {
-            let base = baseContent(for: n, messageId: messageId, attachments: attachments)
+            let base = baseContent(for: n, messageId: messageId, attachments: attachments,
+                                   categoryIdentifier: categoryId)
             return communicationStyled(base, for: n, senderName: communicationSenderName(for: n),
                                        senderImage: appIcon) ?? base
         }
@@ -116,7 +126,8 @@ nonisolated enum MirrorPresentation {
         if attachments.isEmpty, let appIcon, let icon = await appIconAttachment(appIcon) {
             attachments = [icon]
         }
-        return baseContent(for: n, messageId: messageId, attachments: attachments)
+        return baseContent(for: n, messageId: messageId, attachments: attachments,
+                           categoryIdentifier: categoryId)
     }
 
     /// The communication-styled sender string: "notification title · origin app name" (just one of them
@@ -134,7 +145,8 @@ nonisolated enum MirrorPresentation {
     }
 
     private static func baseContent(for n: CapturedNotification, messageId: String,
-                                    attachments: [UNNotificationAttachment]) -> UNMutableNotificationContent {
+                                    attachments: [UNNotificationAttachment],
+                                    categoryIdentifier: String) -> UNMutableNotificationContent {
         let content = UNMutableNotificationContent()
         let title = n.title?.nonBlank ?? n.appLabel
         content.title = title
@@ -149,7 +161,7 @@ nonisolated enum MirrorPresentation {
         } else if let sub = n.subText?.nonBlank ?? n.originDeviceName?.nonBlank {
             content.subtitle = sub
         }
-        content.categoryIdentifier = categoryIdentifier(for: n)
+        content.categoryIdentifier = categoryIdentifier
         content.threadIdentifier = threadIdentifier(for: n)
         content.attachments = attachments
         content.userInfo = userInfo(for: n, messageId: messageId)
@@ -164,7 +176,9 @@ nonisolated enum MirrorPresentation {
     /// so backfilled history posts silently while the newest message alerts.
     static func messageContent(for n: CapturedNotification, message: ConversationMessage,
                                messageId: String, attachments: [UNNotificationAttachment] = [],
-                               senderImage: Data?, alerting: Bool) -> UNNotificationContent {
+                               senderImage: Data?, alerting: Bool,
+                               categoryIdentifier: String? = nil) -> UNNotificationContent {
+        let categoryId = categoryIdentifier ?? Self.categoryIdentifier(for: n)
         let content = UNMutableNotificationContent()
         // A nil sender is the user's own message: label it "You" (Android's mirror_self_name parity)
         // instead of letting it masquerade under the conversation or app name. Rendered only by the NSE's
@@ -178,12 +192,20 @@ nonisolated enum MirrorPresentation {
         content.title = senderName
         content.body = message.text
         if n.isGroupConversation, let convTitle = n.conversationTitle?.nonBlank { content.subtitle = convTitle }
-        content.categoryIdentifier = categoryIdentifier(for: n)
+        content.categoryIdentifier = categoryId
         content.threadIdentifier = threadIdentifier(for: n)
         content.attachments = attachments
         content.userInfo = userInfo(for: n, messageId: messageId)
         applyAlerting(content, importance: alerting ? n.effectiveImportance : .MIN)
         return communicationStyled(content, for: n, senderName: senderName, senderImage: senderImage) ?? content
+    }
+
+    /// Whether a messaging mirror should make noise. `sender == nil` is Android's explicit self-message
+    /// marker. `onlyAlertOnce` is the source app's update cadence; when this source key is already showing,
+    /// it covers apps that repost the user's inline reply as a named/avatar Person instead of a null sender.
+    static func messageShouldAlert(_ n: CapturedNotification, message: ConversationMessage,
+                                   sourceAlreadyShowing: Bool) -> Bool {
+        message.sender != nil && !(n.onlyAlertOnce && sourceAlreadyShowing)
     }
 
     // MARK: Alerting (#11)
@@ -214,7 +236,7 @@ nonisolated enum MirrorPresentation {
     // MARK: userInfo
 
     private static func userInfo(for n: CapturedNotification, messageId: String) -> [String: Any] {
-        [
+        let info: [String: Any] = [
             "sourceClientId": n.sourceClientId,
             "sourceKey": n.sourceKey,
             "messageId": messageId,
@@ -228,10 +250,15 @@ nonisolated enum MirrorPresentation {
             "appLabel": n.appLabel,
             "isClearable": n.isClearable,   // #14 — a swipe of a non-clearable mirror must not sync-dismiss
             // Action round-trip: whether a tap should be replayed on the origin, and each mirrored
-            // action's title keyed by index (the echo the origin verifies before firing).
+            // action keyed by index (title = the echo the origin verifies before firing; label + semantic
+            // rebuild the native iOS category row and replay text-input responses).
             "hasContentIntent": n.hasContentIntent,
-            "actions": n.actions.map { ["index": $0.index, "title": $0.title, "remoteInput": $0.remoteInput] },
+            "actions": n.actions.map {
+                ["index": $0.index, "title": $0.title, "remoteInput": $0.remoteInput,
+                 "remoteInputLabel": $0.remoteInputLabel ?? "", "semanticAction": $0.semanticAction]
+            },
         ]
+        return info
     }
 
     // MARK: Communication styling
@@ -370,13 +397,29 @@ nonisolated enum MirrorCategoryRegistry {
         }
     }
 
-    /// Ensure the category this mirror posts under is registered (idempotent), including its action row.
-    static func ensureRegistered(for n: CapturedNotification) {
+    /// Ensure the category this mirror posts under is registered (idempotent), including its action row,
+    /// and return the id the notification content must use. Text-input rows, plus app-icon-only notifications
+    /// that opt into the content extension, use a fixed pool declared in the content extension's Info.plist;
+    /// each occupied pool category still carries its exact native action row.
+    @discardableResult
+    static func ensureRegistered(for n: CapturedNotification, contentExtension: Bool = false) -> String {
+        if contentExtension {
+            if n.actions.isEmpty {
+                registerAll()
+                return MirrorPresentation.baseCategoryId
+            }
+            return ensureContentExtensionActionCategory(actions: n.actions)
+        }
         let id = MirrorPresentation.categoryIdentifier(for: n)
         if n.actions.isEmpty {
             ensureRegistered(id)
+            return id
+        }
+        if n.actions.contains(where: { $0.remoteInput }) {
+            return ensureContentExtensionActionCategory(actions: n.actions)
         } else {
             ensureActionCategory(id: id, actions: n.actions)
+            return id
         }
     }
 
@@ -413,6 +456,41 @@ nonisolated enum MirrorCategoryRegistry {
         if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
     }
 
+    private static func ensureContentExtensionActionCategory(actions: [NotificationAction]) -> String {
+        let signature = MirrorPresentation.actionSignature(actions)
+        let storedActions = actions.map {
+            StoredActionCategory.StoredAction(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
+                                              remoteInputLabel: $0.remoteInputLabel,
+                                              semanticAction: $0.semanticAction)
+        }
+        let snapshot = AppGroupStore.withLock(key) { () -> (String, Set<String>, [StoredActionCategory], Bool) in
+            var stack = loadActionCategories()
+            if let existing = stack.first(where: {
+                isContentExtensionPoolCategory($0.id)
+                    && MirrorPresentation.actionSignature($0.notificationActions) == signature
+            }) {
+                return (existing.id, Set(defaults?.stringArray(forKey: key) ?? []), stack, true)
+            }
+
+            let used = Set(stack.filter { isContentExtensionPoolCategory($0.id) }.map(\.id))
+            let id: String
+            if let free = MirrorPresentation.contentExtensionCategoryIds.first(where: { !used.contains($0) }) {
+                id = free
+            } else if let evict = stack.firstIndex(where: { isContentExtensionPoolCategory($0.id) }) {
+                id = stack[evict].id
+                stack.remove(at: evict)
+            } else {
+                id = MirrorPresentation.contentExtensionCategoryIds[0]
+            }
+            stack.append(StoredActionCategory(id: id, actions: storedActions))
+            if stack.count > maxActionCategories { stack.removeFirst(stack.count - maxActionCategories) }
+            saveActionCategories(stack)
+            return (id, Set(defaults?.stringArray(forKey: key) ?? []), stack, true)
+        }
+        if snapshot.3 { register(channelIds: snapshot.1, actionCategories: snapshot.2) }
+        return snapshot.0
+    }
+
     /// Re-register the base category plus all known channel + action categories (call on app launch).
     static func registerAll() {
         register(channelIds: Set(defaults?.stringArray(forKey: key) ?? []),
@@ -425,9 +503,14 @@ nonisolated enum MirrorCategoryRegistry {
         ]
         for id in channelIds { categories[id] = MirrorPresentation.category(id: id) }
         for stored in actionCategories {
-            categories[stored.id] = MirrorPresentation.category(id: stored.id, actions: stored.notificationActions)
+            categories[stored.id] = MirrorPresentation.category(id: stored.id,
+                                                                actions: stored.notificationActions)
         }
         UNUserNotificationCenter.current().setNotificationCategories(Set(categories.values))
+    }
+
+    private static func isContentExtensionPoolCategory(_ id: String) -> Bool {
+        MirrorPresentation.contentExtensionCategoryIds.contains(id)
     }
 
     private static func loadActionCategories() -> [StoredActionCategory] {

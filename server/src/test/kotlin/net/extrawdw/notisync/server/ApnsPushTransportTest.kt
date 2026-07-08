@@ -12,8 +12,14 @@ import net.extrawdw.notisync.server.delivery.push.ApnsResponse
 import net.extrawdw.notisync.server.delivery.push.ApnsTokenProvider
 import net.extrawdw.notisync.server.data.StoredRoute
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import java.net.http.HttpRequest
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.Flow
+import java.util.concurrent.TimeUnit
 
 class ApnsPushTransportTest {
     @Test
@@ -122,6 +128,9 @@ class ApnsPushTransportTest {
         // A NOTIFICATION must be an alert push at priority 10 so the NSE wakes to decrypt + display.
         assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
         assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
+        val body = requestBody(request)
+        assertTrue(body.contains(""""mutable-content":1"""))
+        assertTrue(body.contains(""""category":"notisync.mirror""""))
     }
 
     private fun apnsTransport(
@@ -156,6 +165,34 @@ class ApnsPushTransportTest {
     private fun pushData() = mapOf("typ" to "wake", "mid" to "01J0APNS001")
 
     private fun notificationData() = mapOf("mtyp" to "NOTIFICATION", "typ" to "notif", "mid" to "01J0APNS002", "ct" to "AAEC")
+
+    private fun requestBody(request: HttpRequest): String {
+        val publisher = request.bodyPublisher().orElseThrow()
+        val bytes = ByteArrayOutputStream()
+        val done = CompletableFuture<Unit>()
+        publisher.subscribe(object : Flow.Subscriber<ByteBuffer> {
+            override fun onSubscribe(subscription: Flow.Subscription) {
+                subscription.request(Long.MAX_VALUE)
+            }
+
+            override fun onNext(item: ByteBuffer) {
+                val copy = item.slice()
+                val chunk = ByteArray(copy.remaining())
+                copy.get(chunk)
+                bytes.write(chunk)
+            }
+
+            override fun onError(throwable: Throwable) {
+                done.completeExceptionally(throwable)
+            }
+
+            override fun onComplete() {
+                done.complete(Unit)
+            }
+        })
+        done.get(5, TimeUnit.SECONDS)
+        return bytes.toString(Charsets.UTF_8.name())
+    }
 
     private companion object {
         const val APNS_TOPIC = "net.extrawdw.apps.NotiSync"

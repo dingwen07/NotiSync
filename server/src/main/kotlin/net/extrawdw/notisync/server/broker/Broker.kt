@@ -386,6 +386,6 @@ class Broker(
         const val PUSH_INLINE_HARD_LIMIT = 4096 // FCM data-message limit & APNs alert-payload limit (4 KB)
         const val PUSH_INLINE_MARGIN = 160      // slack for push-service framing / future envelope fields
         const val FCM_INLINE_OVERHEAD = 88      // mtyp/typ/mid/pnc keys+values + the "ct" key (~77 B, rounded up)
-        const val APNS_INLINE_OVERHEAD = 224    // aps alert dict + the JSON data keys incl. pnc (~203 B, rounded up)
+        const val APNS_INLINE_OVERHEAD = 256    // aps alert/category dict + JSON data keys incl. pnc (~238 B, rounded up)
     }
 }

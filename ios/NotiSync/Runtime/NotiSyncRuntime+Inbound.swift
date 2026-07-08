@@ -201,12 +201,12 @@ extension NotiSyncRuntime {
             NotificationFilterStore.shouldFilterNotification(n)
         }.value
         guard !filtered else { span.attribute("result", "filtered"); return }
-        // Register the category (channel mapping or mirrored action row) before posting under it (#15).
-        await Task.detached(priority: .userInitiated) {
-            MirrorCategoryRegistry.ensureRegistered(for: n)
-        }.value
         if n.style == .MESSAGING, !n.messages.isEmpty {
-            await postMessagingMirror(n, messageId: messageId, mode: mode)
+            // Register the category (channel mapping or mirrored action row) before posting under it (#15).
+            let categoryIdentifier = await Task.detached(priority: .userInitiated) {
+                MirrorCategoryRegistry.ensureRegistered(for: n)
+            }.value
+            await postMessagingMirror(n, messageId: messageId, mode: mode, categoryIdentifier: categoryIdentifier)
         } else {
             await postSingleMirror(n, messageId: messageId, identifier: identifier, mode: mode)
         }
@@ -231,7 +231,8 @@ extension NotiSyncRuntime {
     }
 
     /// A non-messaging mirror: one notification keyed by the (sourceClientId, sourceKey) identifier.
-    private func postSingleMirror(_ n: CapturedNotification, messageId: String, identifier: String, mode: DeliveryMode) async {
+    private func postSingleMirror(_ n: CapturedNotification, messageId: String, identifier: String,
+                                  mode: DeliveryMode) async {
         let commAppIcons = await Task.detached(priority: .userInitiated) {
             MirrorDisplayStore.preferences().communicationAppIcons
         }.value
@@ -239,8 +240,15 @@ extension NotiSyncRuntime {
         // The icon is needed as the sender avatar (communication styling) or, by default, as the
         // large-icon attachment — which only shows when the mirror has no graphic of its own.
         let appIcon = (commAppIcons || attachments.isEmpty) ? await appIconData(for: n) : nil
+        let usesAppIconAttachment = !commAppIcons && attachments.isEmpty && appIcon != nil
+        // App-icon-only mirrors use the content extension so long-press can render the icon compactly. Real
+        // large-icon / big-picture attachments keep their original categories and iOS's default media layout.
+        let categoryIdentifier = await Task.detached(priority: .userInitiated) {
+            MirrorCategoryRegistry.ensureRegistered(for: n, contentExtension: usesAppIconAttachment)
+        }.value
         let content = await MirrorPresentation.content(for: n, messageId: messageId, attachments: attachments,
-                                                       appIcon: appIcon, communicationStyle: commAppIcons)
+                                                       appIcon: appIcon, communicationStyle: commAppIcons,
+                                                       categoryIdentifier: categoryIdentifier)
         try? await UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
         let entry = MirrorMapEntry(identifier: identifier, sourceClientId: n.sourceClientId,
@@ -255,8 +263,10 @@ extension NotiSyncRuntime {
     /// A messaging mirror: one notification per conversation message, all sharing the conversation's
     /// `threadIdentifier` so iOS threads them (#13). Stable per-message identifiers make a re-delivery of
     /// overlapping history idempotent; only the newest message alerts (earlier ones post silently), and
-    /// the user's own messages (nil sender) never post.
-    private func postMessagingMirror(_ n: CapturedNotification, messageId: String, mode: DeliveryMode) async {
+    /// the user's own messages (nil sender) never post. Source `onlyAlertOnce` updates stay passive when
+    /// this conversation is already showing, matching Android's update cadence.
+    private func postMessagingMirror(_ n: CapturedNotification, messageId: String, mode: DeliveryMode,
+                                     categoryIdentifier: String) async {
         let base = MirrorPresentation.identifier(for: n)
         let existing = await Task.detached(priority: .userInitiated) { MirrorMapStore.all() }.value
         // A nil sender is the user's own message (e.g. an inline reply sent from the source device).
@@ -267,14 +277,21 @@ extension NotiSyncRuntime {
         let incoming = n.messages.filter { $0.sender != nil }
         let newestIsSelf = n.messages.last?.sender == nil
         let lastIndex = incoming.indices.last
+        let sourceAlreadyShowing = existing.values.contains {
+            $0.sourceClientId == n.sourceClientId && $0.sourceKey == n.sourceKey
+        }
         for (i, message) in incoming.enumerated() {
             let id = MirrorPresentation.messageIdentifier(base: base, message: message)
             guard existing[id] == nil else { continue }   // this message is already shown — don't re-post/re-alert
             let avatar = await messageAvatar(message, fallback: n)
             let attachments = await fetchAttachments(for: message)
+            let shouldAlert = i == lastIndex && !newestIsSelf
+                && MirrorPresentation.messageShouldAlert(
+                    n, message: message, sourceAlreadyShowing: sourceAlreadyShowing)
             let content = MirrorPresentation.messageContent(for: n, message: message, messageId: messageId,
                                                             attachments: attachments, senderImage: avatar,
-                                                            alerting: i == lastIndex && !newestIsSelf)
+                                                            alerting: shouldAlert,
+                                                            categoryIdentifier: categoryIdentifier)
             try? await UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: id, content: content, trigger: nil))
             let entry = MirrorMapEntry(identifier: id, sourceClientId: n.sourceClientId,

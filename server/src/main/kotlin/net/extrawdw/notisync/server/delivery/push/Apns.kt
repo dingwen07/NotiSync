@@ -99,8 +99,10 @@ class ApnsPushTransport internal constructor(
         val entries = data.entries.joinToString(",") { (k, v) -> "\"${jsonEscape(k)}\":\"${jsonEscape(v)}\"" }
         val aps = if (alert) {
             // mutable-content lets the NSE intercept + decrypt; the alert is a generic placeholder the NSE
-            // replaces (the broker never holds plaintext). priority/push-type set by the caller.
-            """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default"}"""
+            // replaces (the broker never holds plaintext). The category is static because the broker cannot
+            // inspect encrypted actions, but it lets iOS select the generic content extension before the NSE
+            // rewrites the final dynamic action category.
+            """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default","category":"notisync.mirror"}"""
         } else {
             """"aps":{"content-available":1}"""
         }

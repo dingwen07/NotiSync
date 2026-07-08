@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDisplayName</key>
+	<string>NotiSync Content</string>
+	<key>CFBundleExecutable</key>
+	<string>$(EXECUTABLE_NAME)</string>
+	<key>CFBundleIdentifier</key>
+	<string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleName</key>
+	<string>$(PRODUCT_NAME)</string>
+	<key>CFBundlePackageType</key>
+	<string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$(MARKETING_VERSION)</string>
+	<key>CFBundleVersion</key>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>NSExtension</key>
+	<dict>
+		<key>NSExtensionAttributes</key>
+		<dict>
+			<key>UNNotificationExtensionCategory</key>
+			<array>
+				<string>notisync.mirror</string>
+				<string>notisync.mirror.0</string>
+				<string>notisync.mirror.1</string>
+				<string>notisync.mirror.2</string>
+				<string>notisync.mirror.3</string>
+				<string>notisync.mirror.4</string>
+				<string>notisync.mirror.5</string>
+				<string>notisync.mirror.6</string>
+				<string>notisync.mirror.7</string>
+				<string>notisync.mirror.8</string>
+				<string>notisync.mirror.9</string>
+				<string>notisync.mirror.10</string>
+				<string>notisync.mirror.11</string>
+				<string>notisync.mirror.12</string>
+				<string>notisync.mirror.13</string>
+				<string>notisync.mirror.14</string>
+				<string>notisync.mirror.15</string>
+				<string>notisync.mirror.16</string>
+				<string>notisync.mirror.17</string>
+				<string>notisync.mirror.18</string>
+				<string>notisync.mirror.19</string>
+				<string>notisync.mirror.20</string>
+				<string>notisync.mirror.21</string>
+				<string>notisync.mirror.22</string>
+				<string>notisync.mirror.23</string>
+				<string>notisync.mirror.24</string>
+				<string>notisync.mirror.25</string>
+				<string>notisync.mirror.26</string>
+				<string>notisync.mirror.27</string>
+				<string>notisync.mirror.28</string>
+				<string>notisync.mirror.29</string>
+				<string>notisync.mirror.30</string>
+				<string>notisync.mirror.31</string>
+			</array>
+			<key>UNNotificationExtensionInitialContentSizeRatio</key>
+			<real>0</real>
+			<key>UNNotificationExtensionDefaultContentHidden</key>
+			<false/>
+			<key>UNNotificationExtensionUserInteractionEnabled</key>
+			<true/>
+		</dict>
+		<key>NSExtensionPointIdentifier</key>
+		<string>com.apple.usernotifications.content-extension</string>
+		<key>NSExtensionMainStoryboard</key>
+		<string>MainInterface</string>
+	</dict>
+</dict>
+</plist>

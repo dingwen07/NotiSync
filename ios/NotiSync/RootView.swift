@@ -64,6 +64,10 @@ struct RootView: View {
 struct InboxView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.modelContext) private var modelContext
+    /// The notification opened in the "Show Full Text" sheet — the escape hatch for content taller
+    /// than the context-menu preview, plus in-place link taps and text selection (a menu preview is
+    /// a non-interactive snapshot, so neither works there).
+    @State private var fullTextNotification: InboxNotification?
     /// Paged window over the (unbounded) Inbox — a live `@Query` would materialize every row. Re-fetched
     /// on `runtime.inboxRevision` bumps; extended by the sentinel row as the user scrolls.
     @StateObject private var list = InboxListModel()
@@ -96,47 +100,14 @@ struct InboxView: View {
                             }
                         }
                         .contextMenu {
-                            // Each scope flips to its undo (the Devices tab's "Clear Filter") when it is
-                            // already silenced, so the same long-press reverses a mis-tap.
-                            if let channelFilter = androidChannelFilter(for: notification) {
-                                SilenceMenuButton(
-                                    isSilenced: !runtime.channelNotificationsEnabled(
-                                        deviceKey: channelFilter.deviceKey,
-                                        appId: channelFilter.appId,
-                                        channelId: channelFilter.channelId),
-                                    silence: "Silence this Channel",
-                                    clear: "Clear Channel Filter"
-                                ) { enabled in
-                                    runtime.setChannelNotificationsEnabled(
-                                        enabled,
-                                        deviceKey: channelFilter.deviceKey,
-                                        appId: channelFilter.appId,
-                                        channelId: channelFilter.channelId)
-                                }
-                            }
-                            if let deviceKey = runtime.filterDeviceKey(for: notification),
-                               let appId = runtime.filterAppIdentifier(for: notification) {
-                                SilenceMenuButton(
-                                    isSilenced: !runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: appId),
-                                    silence: "Silence this App",
-                                    clear: "Clear App Filter"
-                                ) { enabled in
-                                    runtime.setAppNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId)
-                                }
-                            }
-                            if runtime.canFilterNotificationsLike(notification) {
-                                SilenceMenuButton(
-                                    isSilenced: runtime.notificationsLikeAreFiltered(notification),
-                                    silence: "Silence this Device",
-                                    clear: "Clear Device Filter"
-                                ) { enabled in
-                                    if enabled {
-                                        runtime.unfilterNotificationsLike(notification)
-                                    } else {
-                                        runtime.filterNotificationsLike(notification)
-                                    }
-                                }
-                            }
+                            contextMenuItems(for: notification)
+                        } preview: {
+                            // The row clamps title/body to 1/2 lines; the preview re-renders them in
+                            // full. Explicit environment hand-off: the preview is hosted out-of-
+                            // hierarchy, and InboxIconView dereferences the runtime.
+                            NotificationPreviewCard(notification: notification,
+                                                    sourceDevice: device(for: notification))
+                                .environmentObject(runtime)
                         }
                 }
                 if list.hasMore {
@@ -193,6 +164,10 @@ struct InboxView: View {
                     }
                 }
             }
+            .sheet(item: $fullTextNotification) { notification in
+                NotificationFullTextView(notification: notification, sourceDevice: device(for: notification))
+                    .environmentObject(runtime)
+            }
             .onAppear { list.configure(context: modelContext, index: runtime.searchIndex) }
             // One task per (searchText, appFilter, unreadOnly) state — a keystroke cancels the previous
             // one, giving the debounce; filter/unread toggles and cleared text apply immediately.
@@ -203,7 +178,14 @@ struct InboxView: View {
                 }
                 await list.apply(search: searchText, filter: appFilter, unreadOnly: unreadOnly)
             }
-            .onChange(of: runtime.inboxRevision) { _, _ in list.refreshAfterChange() }
+            .onChange(of: runtime.inboxRevision) { _, _ in
+                list.refreshAfterChange()
+                // A bulk delete (Delete All resolves against live models) can free the row the
+                // full-text sheet is holding; touching a deleted model's properties crashes.
+                if fullTextNotification?.isDeleted == true {
+                    fullTextNotification = nil
+                }
+            }
         }
     }
 
@@ -369,6 +351,69 @@ struct InboxView: View {
         devices.first { $0.clientId == notification.sourceClientId }
     }
 
+    /// Content actions first (the full-text sheet — where links are live — and copy), then the
+    /// silencing scopes.
+    @ViewBuilder
+    private func contextMenuItems(for notification: InboxNotification) -> some View {
+        Section {
+            if notification.hasTextContent {
+                Button {
+                    fullTextNotification = notification
+                } label: {
+                    Label("Show Full Text", systemImage: "doc.text.magnifyingglass")
+                }
+                Button {
+                    UIPasteboard.general.string = notification.copyableText
+                } label: {
+                    Label("Copy Text", systemImage: "doc.on.doc")
+                }
+            }
+        }
+        Section {
+            // Each scope flips to its undo (the Devices tab's "Clear Filter") when it is
+            // already silenced, so the same long-press reverses a mis-tap.
+            if let channelFilter = androidChannelFilter(for: notification) {
+                SilenceMenuButton(
+                    isSilenced: !runtime.channelNotificationsEnabled(
+                        deviceKey: channelFilter.deviceKey,
+                        appId: channelFilter.appId,
+                        channelId: channelFilter.channelId),
+                    silence: "Silence this Channel",
+                    clear: "Clear Channel Filter"
+                ) { enabled in
+                    runtime.setChannelNotificationsEnabled(
+                        enabled,
+                        deviceKey: channelFilter.deviceKey,
+                        appId: channelFilter.appId,
+                        channelId: channelFilter.channelId)
+                }
+            }
+            if let deviceKey = runtime.filterDeviceKey(for: notification),
+               let appId = runtime.filterAppIdentifier(for: notification) {
+                SilenceMenuButton(
+                    isSilenced: !runtime.appNotificationsEnabled(deviceKey: deviceKey, appId: appId),
+                    silence: "Silence this App",
+                    clear: "Clear App Filter"
+                ) { enabled in
+                    runtime.setAppNotificationsEnabled(enabled, deviceKey: deviceKey, appId: appId)
+                }
+            }
+            if runtime.canFilterNotificationsLike(notification) {
+                SilenceMenuButton(
+                    isSilenced: runtime.notificationsLikeAreFiltered(notification),
+                    silence: "Silence this Device",
+                    clear: "Clear Device Filter"
+                ) { enabled in
+                    if enabled {
+                        runtime.unfilterNotificationsLike(notification)
+                    } else {
+                        runtime.filterNotificationsLike(notification)
+                    }
+                }
+            }
+        }
+    }
+
     private func androidChannelFilter(for notification: InboxNotification) -> (deviceKey: String, appId: String, channelId: String)? {
         guard runtime.originPlatform(for: notification) == .ANDROID_LOCAL,
               let deviceKey = runtime.filterDeviceKey(for: notification),
@@ -452,8 +497,8 @@ struct InboxRow: View {
                         .lineLimit(2)
                 }
                 HStack(spacing: 8) {
-                    if let originLabel {
-                        InlineIconLabel(verbatim: originLabel, systemImage: originSystemImage)
+                    if let originLabel = notification.originDisplayLabel(sourceDevice: sourceDevice) {
+                        InlineIconLabel(verbatim: originLabel, systemImage: notification.originSystemImage)
                     }
                     InlineIconLabel(verbatim: LocalizedText.deliveryMode(notification.deliveryMode), systemImage: "arrow.down.circle")
                 }
@@ -463,27 +508,6 @@ struct InboxRow: View {
         }
         .opacity(notification.isDismissed ? 0.55 : 1)
         .padding(.vertical, 4)
-    }
-
-    private var originLabel: String? {
-        if notification.isIPhoneOrigin {
-            return nonBlank(notification.originDeviceName) ?? "iPhone"
-        }
-        return nonBlank(sourceDevice?.displayName)
-            ?? nonBlank(notification.originDeviceName)
-            ?? nonBlank(notification.sourceClientId)
-    }
-
-    private var originSystemImage: String {
-        // using "iphone" icon specifically for ANDROID_LOCAL origin notification
-        notification.isIPhoneOrigin ? "apple.logo" : "iphone"
-    }
-
-    private func nonBlank(_ value: String?) -> String? {
-        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else {
-            return nil
-        }
-        return trimmed
     }
 }
 
