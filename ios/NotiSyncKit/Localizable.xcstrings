@@ -1843,6 +1843,24 @@
         }
       }
     },
+    "notification.action.openOnDevice" : {
+      "comment" : "Action title that opens the original notification on its source device.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Open on %@"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "在 %@ 上打开"
+          }
+        }
+      }
+    },
     "notification.action.send" : {
       "comment" : "Button that sends the typed reply to the origin device.",
       "extractionState" : "extracted_with_value",

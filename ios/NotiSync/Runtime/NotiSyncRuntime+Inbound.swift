@@ -262,9 +262,9 @@ extension NotiSyncRuntime {
 
     /// A messaging mirror: one notification per conversation message, all sharing the conversation's
     /// `threadIdentifier` so iOS threads them (#13). Stable per-message identifiers make a re-delivery of
-    /// overlapping history idempotent; only the newest message alerts (earlier ones post silently), and
-    /// the user's own messages (nil sender) never post. Source `onlyAlertOnce` updates stay passive when
-    /// this conversation is already showing, matching Android's update cadence.
+    /// overlapping history idempotent; only the newest non-self message alerts (earlier ones post silently), and
+    /// the user's own messages (nil sender) never post. Named self echoes such as "You" / "你" still post but
+    /// stay passive via `MirrorPresentation.messageShouldAlert`.
     private func postMessagingMirror(_ n: CapturedNotification, messageId: String, mode: DeliveryMode,
                                      categoryIdentifier: String) async {
         let base = MirrorPresentation.identifier(for: n)
@@ -277,17 +277,13 @@ extension NotiSyncRuntime {
         let incoming = n.messages.filter { $0.sender != nil }
         let newestIsSelf = n.messages.last?.sender == nil
         let lastIndex = incoming.indices.last
-        let sourceAlreadyShowing = existing.values.contains {
-            $0.sourceClientId == n.sourceClientId && $0.sourceKey == n.sourceKey
-        }
         for (i, message) in incoming.enumerated() {
             let id = MirrorPresentation.messageIdentifier(base: base, message: message)
             guard existing[id] == nil else { continue }   // this message is already shown — don't re-post/re-alert
             let avatar = await messageAvatar(message, fallback: n)
             let attachments = await fetchAttachments(for: message)
             let shouldAlert = i == lastIndex && !newestIsSelf
-                && MirrorPresentation.messageShouldAlert(
-                    n, message: message, sourceAlreadyShowing: sourceAlreadyShowing)
+                && MirrorPresentation.messageShouldAlert(message)
             let content = MirrorPresentation.messageContent(for: n, message: message, messageId: messageId,
                                                             attachments: attachments, senderImage: avatar,
                                                             alerting: shouldAlert,

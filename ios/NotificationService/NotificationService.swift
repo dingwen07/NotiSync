@@ -120,8 +120,6 @@ final class NotificationService: UNNotificationServiceExtension {
                 // tombstone sweep removes it on the next wake / app pass. A copy NEWER than its tombstone
                 // clears it (the source re-posted the key) and renders normally.
                 var suppressed = DismissalTombstoneStore.shouldSuppress(pair, postTime: n.postTime)
-                let sourceAlreadyShowing = !MirrorMapStore.entries(sourceClientId: n.sourceClientId,
-                                                                   sourceKey: n.sourceKey).isEmpty
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).
                 let commAppIcons = MirrorDisplayStore.preferences().communicationAppIcons
@@ -144,9 +142,7 @@ final class NotificationService: UNNotificationServiceExtension {
                     let senderImage = senderImage(for: n, message: last)
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                  attachments: attachments, senderImage: senderImage.data,
-                                                                 alerting: MirrorPresentation.messageShouldAlert(
-                                                                    n, message: last,
-                                                                    sourceAlreadyShowing: sourceAlreadyShowing),
+                                                                 alerting: MirrorPresentation.messageShouldAlert(last),
                                                                  categoryIdentifier: categoryIdentifier)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
@@ -226,9 +222,7 @@ final class NotificationService: UNNotificationServiceExtension {
                         let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                     attachments: attachments, senderImage: data,
-                                                                    alerting: MirrorPresentation.messageShouldAlert(
-                                                                        n, message: last,
-                                                                        sourceAlreadyShowing: sourceAlreadyShowing),
+                                                                    alerting: MirrorPresentation.messageShouldAlert(last),
                                                                     categoryIdentifier: categoryIdentifier)
                     } else {
                         let attachments = await fetchAttachments(for: n, engine: engine)

@@ -371,10 +371,12 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             await locallyDismiss(sourceClientId: scid, sourceKey: sk)
             return
         }
-        // Tap (default action): ask the origin to open the real notification — only when the producer
-        // declared a content intent (old producers and ANCS bridges can't honor a TAP). The app opening
-        // here is unavoidable on iOS; the origin opening too is the mirror parity.
-        if id == UNNotificationDefaultActionIdentifier {
+        // Default tap opens NotiSync only; opening the origin is now an explicit action button so an
+        // accidental banner tap does not fire UI on the source device.
+        if id == UNNotificationDefaultActionIdentifier { return }
+        // "Open on <device>": ask the origin to open the real notification only when the producer
+        // declared a content intent (old producers and ANCS bridges can't honor a TAP).
+        if id == MirrorPresentation.openActionId {
             guard (info["hasContentIntent"] as? Bool) == true else { return }
             await bringUpCore()
             await sendMirrorAction(

@@ -19,6 +19,9 @@ nonisolated enum MirrorPresentation {
 
     static let baseCategoryId = "notisync.mirror"
     static let dismissActionId = "notisync.dismiss"
+    static let openActionId = "notisync.open"
+    private static let dismissActionIcon = UNNotificationActionIcon(systemImageName: "xmark.circle")
+    private static let openActionIcon = UNNotificationActionIcon(systemImageName: "arrow.up.forward.square")
     /// Prefix of a mirrored-action identifier; the suffix is the origin-scoped `NotificationAction.index`
     /// ("notisync.act.2"), parsed back out in `handleNotificationResponse` to build the `ActionEvent`.
     static let performActionPrefix = "notisync.act."
@@ -59,20 +62,40 @@ nonisolated enum MirrorPresentation {
     /// back to the base category when the source carried no channel. A mirror carrying ACTIONS instead gets a
     /// category per distinct action-row signature — iOS actions live on the category, so two mirrors share one
     /// exactly when their buttons are identical; the channel plays no role there (it carries no behaviour).
+    /// The explicit "Open on <device>" TAP action also participates in the category identity because iOS
+    /// stores action titles on the category, not on each delivered notification.
     static func categoryIdentifier(for n: CapturedNotification) -> String {
+        let openTitle = openActionTitle(for: n)
         if !n.actions.isEmpty {
-            return "\(baseCategoryId).ax.\(stableToken(actionSignature(n.actions)))"
+            return "\(baseCategoryId).ax.\(stableToken(actionSignature(n.actions, openActionTitle: openTitle)))"
+        }
+        if let openTitle {
+            let channel = n.channelId?.nonBlank ?? "_default"
+            return "\(baseCategoryId).op.\(stableToken("\(n.packageName)\u{1f}\(channel)\u{1f}\(openTitle)"))"
         }
         guard let channel = n.channelId?.nonBlank else { return baseCategoryId }
         return "\(baseCategoryId).ch.\(stableToken("\(n.packageName)\u{1f}\(channel)"))"
     }
 
     /// Everything that shapes the rendered action row — index (round-trip target), title, text-input
-    /// flag + placeholder, semantic hint. Same signature ⇒ same category.
-    static func actionSignature(_ actions: [NotificationAction]) -> String {
-        actions.map {
+    /// flag + placeholder, semantic hint, and the optional explicit TAP action. Same signature ⇒ same category.
+    static func actionSignature(_ actions: [NotificationAction], openActionTitle: String? = nil) -> String {
+        var parts = actions.map {
             "\($0.index)\u{1f}\($0.title)\u{1f}\($0.remoteInput ? 1 : 0)\u{1f}\($0.remoteInputLabel ?? "")\u{1f}\($0.semanticAction)"
-        }.joined(separator: "\u{1e}")
+        }
+        if let openActionTitle { parts.append("open\u{1f}\(openActionTitle)") }
+        return parts.joined(separator: "\u{1e}")
+    }
+
+    static func openActionTitle(for n: CapturedNotification) -> String? {
+        guard n.hasContentIntent else { return nil }
+        return openActionTitle(deviceName: originDeviceName(for: n))
+    }
+
+    private static func openActionTitle(deviceName: String) -> String {
+        String(localized: "notification.action.openOnDevice",
+               defaultValue: "Open on \(deviceName)",
+               comment: "Action title that opens the original notification on its source device.")
     }
 
     /// A notification category carrying the mirrored action row (if any) plus the Dismiss action. Every
@@ -80,7 +103,8 @@ nonisolated enum MirrorPresentation {
     /// A remote-input action renders as a `UNTextInputNotificationAction` (iOS's inline reply); no action
     /// uses `.foreground` — the press is performed on the ORIGIN device, so waking this app's UI would be
     /// noise. Android's `SEMANTIC_ACTION_DELETE` maps to `.destructive` as the rendering hint.
-    static func category(id: String = baseCategoryId, actions: [NotificationAction] = []) -> UNNotificationCategory {
+    static func category(id: String = baseCategoryId, actions: [NotificationAction] = [],
+                         openActionTitle: String? = nil) -> UNNotificationCategory {
         let sendTitle = String(localized: "notification.action.send", defaultValue: "Send",
                                comment: "Button that sends the typed reply to the origin device.")
         var unActions: [UNNotificationAction] = actions.map { action in
@@ -96,14 +120,38 @@ nonisolated enum MirrorPresentation {
             }
             return UNNotificationAction(identifier: identifier, title: action.title, options: options)
         }
+        if let openActionTitle {
+            unActions.append(UNNotificationAction(identifier: openActionId, title: openActionTitle,
+                                                  options: [], icon: openActionIcon))
+        }
         let title = String(localized: "notification.action.dismiss", defaultValue: "Dismiss", comment: "Action title that dismisses a mirrored notification.")
-        unActions.append(UNNotificationAction(identifier: dismissActionId, title: title, options: []))
+        unActions.append(UNNotificationAction(identifier: dismissActionId, title: title,
+                                              options: [], icon: dismissActionIcon))
         return UNNotificationCategory(identifier: id, actions: unActions, intentIdentifiers: [],
                                       options: [.customDismissAction])
     }
 
     /// Android `Notification.Action.SEMANTIC_ACTION_DELETE`.
     private static let semanticActionDelete = 4
+
+    private static func originDeviceName(for n: CapturedNotification) -> String {
+        n.originDeviceName?.nonBlank
+            ?? trustedPeerName(clientId: n.sourceClientId)
+            ?? shortDeviceName(clientId: n.sourceClientId)
+    }
+
+    private static func trustedPeerName(clientId: String) -> String? {
+        guard let selfRecord = SelfRecord.load() else { return nil }
+        let store = TrustStore.load(selfClientId: selfRecord.clientId,
+                                    selfIdentitySpki: selfRecord.identitySpki)
+        return store.peers[clientId]?.displayName.nonBlank
+    }
+
+    private static func shortDeviceName(clientId: String) -> String {
+        let trimmed = clientId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "device" }
+        return String(trimmed.prefix(8))
+    }
 
     // MARK: Single (non-messaging) content
 
@@ -201,11 +249,19 @@ nonisolated enum MirrorPresentation {
     }
 
     /// Whether a messaging mirror should make noise. `sender == nil` is Android's explicit self-message
-    /// marker. `onlyAlertOnce` is the source app's update cadence; when this source key is already showing,
-    /// it covers apps that repost the user's inline reply as a named/avatar Person instead of a null sender.
-    static func messageShouldAlert(_ n: CapturedNotification, message: ConversationMessage,
-                                   sourceAlreadyShowing: Bool) -> Bool {
-        message.sender != nil && !(n.onlyAlertOnce && sourceAlreadyShowing)
+    /// marker. Some apps repost self messages as a named Person instead, so treat localized "You" labels as
+    /// self echoes too. Do not use `onlyAlertOnce` here: on Android it is only the source key's update flag,
+    /// not proof that this iOS per-message alert is a self echo.
+    static func messageShouldAlert(_ message: ConversationMessage) -> Bool {
+        !senderLooksSelf(message.sender)
+    }
+
+    private static func senderLooksSelf(_ sender: String?) -> Bool {
+        guard let trimmed = sender?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return sender == nil
+        }
+        return trimmed == "你" || trimmed.caseInsensitiveCompare("You") == .orderedSame
     }
 
     // MARK: Alerting (#11)
@@ -388,12 +444,17 @@ nonisolated enum MirrorCategoryRegistry {
 
         var id: String
         var actions: [StoredAction]
+        var openActionTitle: String?
 
         var notificationActions: [NotificationAction] {
             actions.map {
                 NotificationAction(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
                                    remoteInputLabel: $0.remoteInputLabel, semanticAction: $0.semanticAction)
             }
+        }
+
+        var behaviorSignature: String {
+            MirrorPresentation.actionSignature(notificationActions, openActionTitle: openActionTitle)
         }
     }
 
@@ -403,22 +464,23 @@ nonisolated enum MirrorCategoryRegistry {
     /// each occupied pool category still carries its exact native action row.
     @discardableResult
     static func ensureRegistered(for n: CapturedNotification, contentExtension: Bool = false) -> String {
+        let openTitle = MirrorPresentation.openActionTitle(for: n)
         if contentExtension {
-            if n.actions.isEmpty {
+            if n.actions.isEmpty, openTitle == nil {
                 registerAll()
                 return MirrorPresentation.baseCategoryId
             }
-            return ensureContentExtensionActionCategory(actions: n.actions)
+            return ensureContentExtensionActionCategory(actions: n.actions, openActionTitle: openTitle)
         }
         let id = MirrorPresentation.categoryIdentifier(for: n)
-        if n.actions.isEmpty {
+        if n.actions.isEmpty, openTitle == nil {
             ensureRegistered(id)
             return id
         }
         if n.actions.contains(where: { $0.remoteInput }) {
-            return ensureContentExtensionActionCategory(actions: n.actions)
+            return ensureContentExtensionActionCategory(actions: n.actions, openActionTitle: openTitle)
         } else {
-            ensureActionCategory(id: id, actions: n.actions)
+            ensureActionCategory(id: id, actions: n.actions, openActionTitle: openTitle)
             return id
         }
     }
@@ -436,13 +498,15 @@ nonisolated enum MirrorCategoryRegistry {
         if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
     }
 
-    private static func ensureActionCategory(id: String, actions: [NotificationAction]) {
+    private static func ensureActionCategory(id: String, actions: [NotificationAction],
+                                             openActionTitle: String?) {
         let stored = StoredActionCategory(
             id: id,
             actions: actions.map {
                 .init(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
                       remoteInputLabel: $0.remoteInputLabel, semanticAction: $0.semanticAction)
-            }
+            },
+            openActionTitle: openActionTitle
         )
         // Same lock as the channel-id family: both mutations replace the one registered category set.
         let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory])? in
@@ -456,8 +520,9 @@ nonisolated enum MirrorCategoryRegistry {
         if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
     }
 
-    private static func ensureContentExtensionActionCategory(actions: [NotificationAction]) -> String {
-        let signature = MirrorPresentation.actionSignature(actions)
+    private static func ensureContentExtensionActionCategory(actions: [NotificationAction],
+                                                             openActionTitle: String?) -> String {
+        let signature = MirrorPresentation.actionSignature(actions, openActionTitle: openActionTitle)
         let storedActions = actions.map {
             StoredActionCategory.StoredAction(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
                                               remoteInputLabel: $0.remoteInputLabel,
@@ -467,7 +532,7 @@ nonisolated enum MirrorCategoryRegistry {
             var stack = loadActionCategories()
             if let existing = stack.first(where: {
                 isContentExtensionPoolCategory($0.id)
-                    && MirrorPresentation.actionSignature($0.notificationActions) == signature
+                    && $0.behaviorSignature == signature
             }) {
                 return (existing.id, Set(defaults?.stringArray(forKey: key) ?? []), stack, true)
             }
@@ -482,7 +547,8 @@ nonisolated enum MirrorCategoryRegistry {
             } else {
                 id = MirrorPresentation.contentExtensionCategoryIds[0]
             }
-            stack.append(StoredActionCategory(id: id, actions: storedActions))
+            stack.append(StoredActionCategory(id: id, actions: storedActions,
+                                              openActionTitle: openActionTitle))
             if stack.count > maxActionCategories { stack.removeFirst(stack.count - maxActionCategories) }
             saveActionCategories(stack)
             return (id, Set(defaults?.stringArray(forKey: key) ?? []), stack, true)
@@ -504,7 +570,8 @@ nonisolated enum MirrorCategoryRegistry {
         for id in channelIds { categories[id] = MirrorPresentation.category(id: id) }
         for stored in actionCategories {
             categories[stored.id] = MirrorPresentation.category(id: stored.id,
-                                                                actions: stored.notificationActions)
+                                                                actions: stored.notificationActions,
+                                                                openActionTitle: stored.openActionTitle)
         }
         UNUserNotificationCenter.current().setNotificationCategories(Set(categories.values))
     }
