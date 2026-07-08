@@ -597,6 +597,36 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun performRemote_forOurOwnCapture_performsLocally_withoutBrokerSend() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+        val performed = mutableListOf<ActionEvent>()
+        val iosPerformed = mutableListOf<ActionEvent>()
+        mirror.originalActionPerformer = OriginalActionPerformer { performed.add(it) }
+        mirror.iosOriginActionPerformer = OriginalActionPerformer { iosPerformed.add(it) }
+
+        // Pressing an action on a bridged iPhone notification rendered locally HERE (sourceClientId is our
+        // own id): a self-addressed broker unicast reaches no one, so it must be performed on this device.
+        val sent = mirror.performRemote(me.clientId, "ancs|ip|com.x|7", 0, "Answer")
+
+        assertTrue(sent)
+        assertTrue("must not unicast an action to ourselves", transport.sent.isEmpty())
+        // Both performer hooks fire, exactly as onAction does on a remote origin (each ignores foreign keys).
+        assertEquals(1, iosPerformed.size)
+        assertEquals(ActionKind.PERFORM, iosPerformed[0].kind)
+        assertEquals(0, iosPerformed[0].actionIndex)
+        assertEquals("Answer", iosPerformed[0].actionTitle)
+        assertEquals(1, performed.size)
+    }
+
+    @Test
     fun tapRemote_unicastsToOrigin_andLogsActivity() = runBlocking {
         val me = newSigner();
         val myHpke = newHpke()

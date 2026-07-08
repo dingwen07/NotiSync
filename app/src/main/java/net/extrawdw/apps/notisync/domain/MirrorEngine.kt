@@ -244,8 +244,11 @@ class MirrorEngine(
     /**
      * The user pressed a mirrored action button — unicast a PERFORM [ActionEvent] to the origin
      * client (the only peer that can fire the real PendingIntent), at HIGH urgency because the user
-     * is standing at this device waiting for the origin to act. Best-effort like [dismissLocal]:
-     * a button press must never throw. Returns true when it reached the broker for the origin.
+     * is standing at this device waiting for the origin to act. When the origin IS this device — a
+     * bridged iPhone notification the ANCS bridge rendered locally — the action is performed here
+     * directly instead (see [sendAction]), since a self-addressed broker unicast reaches no one.
+     * Best-effort like [dismissLocal]: a button press must never throw. Returns true when it reached
+     * the broker for the origin (or was performed locally).
      */
     suspend fun performRemote(
         sourceClientId: ClientId,
@@ -271,6 +274,15 @@ class MirrorEngine(
     )
 
     private suspend fun sendAction(event: ActionEvent): Boolean {
+        // Our own capture rendered locally here (a bridged iPhone notification): Recipients.Only(self) is an
+        // empty audience — the peer directory never lists this device — so unicasting would reach no one and
+        // onAction would never fire. Perform on the same performers onAction uses, as dismissLocal does for a
+        // local swipe.
+        if (event.sourceClientId == channel.clientId) {
+            originalActionPerformer?.perform(event)
+            iosOriginActionPerformer?.perform(event)
+            return true
+        }
         val n = runCatching {
             channel.send(
                 MessageType.ACTION,
