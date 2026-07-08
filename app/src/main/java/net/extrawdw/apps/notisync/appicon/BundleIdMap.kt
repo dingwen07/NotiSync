@@ -72,6 +72,7 @@ object BundleIdMap {
         put("com.reddit.Reddit", Entry("com.reddit.frontpage", "Reddit"))
         put("com.linkedin.LinkedIn", Entry("com.linkedin.android", "LinkedIn"))
         put("com.tencent.xin", Entry("com.tencent.mm", "WeChat"))
+        put("com.tencent.mqq", Entry("com.tencent.mobileqq", "QQ"))
         put("jp.naver.line", Entry("jp.naver.line.android", "LINE"))
         put("com.viber", Entry("com.viber.voip", "Viber"))
         put("com.kakao.talk", Entry("com.kakao.talk", "KakaoTalk"))

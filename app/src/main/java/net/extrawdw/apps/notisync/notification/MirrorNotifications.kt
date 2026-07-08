@@ -407,7 +407,7 @@ class RemoteNotificationPoster(
         val originLabel = groupDeviceName ?: notif.sourceClientId.shortForm()
 
         val builder = NotificationCompat.Builder(context, postChannelId)
-            .setSmallIcon(smallIconForPackage(notif.packageName))
+            .setSmallIcon(smallIconFor(notif.packageName, notif.channelId))
             .setSubText(
                 context.getString(
                     R.string.mirror_via,
@@ -629,7 +629,7 @@ class RemoteNotificationPoster(
         )
         val largeIcon = iconResolver.colorIcon(packageName, iosBundleId, appIconHash)
         val summary = NotificationCompat.Builder(context, channelId)
-            .setSmallIcon(smallIconForPackage(packageName))
+            .setSmallIcon(smallIconFor(packageName, sourceSummary?.channelId))
             .setContentTitle(title)
             .setContentText(text)
             .setSubText(context.getString(R.string.mirror_via, fallbackTitle))
@@ -733,11 +733,18 @@ class RemoteNotificationPoster(
         }
     }
 
-    private fun smallIconForPackage(packageName: String): Int = when (packageName) {
-        "com.google.android.apps.messaging" -> R.drawable.ic_google_messages_notification
-        "com.whatsapp" -> R.drawable.ic_whatsapp_notification
-        "com.tencent.mm" -> R.drawable.ic_wechat_notification
-        else -> R.drawable.ic_notisync_mirror
+    /**
+     * Small icon for a mirrored notification, resolved most-specific first: a source (package, channelId)
+     * pair for apps that vary their glyph by purpose (e.g. Phone by Google's missed-call vs voicemail vs
+     * in-call channels), then the app's default brand icon, then the generic NotiSync mirror glyph.
+     *
+     * [channelId] is the *source* app's channel id (e.g. "phone_missed_call"), not the receiver's mirror
+     * channel. It is best-effort — null for iOS/ANCS captures and whenever the source Ranking was
+     * unavailable at capture — so every channel-keyed app must also define a package default below.
+     */
+    private fun smallIconFor(packageName: String, channelId: String?): Int {
+        channelId?.let { CHANNEL_SMALL_ICONS[packageName]?.get(it) }?.let { return it }
+        return PACKAGE_SMALL_ICONS[packageName] ?: R.drawable.ic_notisync_mirror
     }
 
     private fun cachedBitmap(assetHash: String): Bitmap? =
@@ -946,6 +953,29 @@ class RemoteNotificationPoster(
 
     companion object {
         private const val ORPHAN_SOURCE_SUMMARY_CLEANUP_MS = 5_000L
+
+        /** Per-app default mirror small icon, keyed by the (resolved) Android package. */
+        private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(
+            "com.google.android.apps.messaging" to R.drawable.ic_google_messages_notification,
+            "com.whatsapp" to R.drawable.ic_whatsapp_notification,
+            "com.tencent.mobileqq" to R.drawable.ic_qq_notification,
+            "com.tencent.mm" to R.drawable.ic_wechat_notification,
+            "com.google.android.dialer" to R.drawable.ic_phone_notification,
+        )
+
+        /**
+         * Per-channel small-icon overrides for apps whose notification glyph depends on the source
+         * channel. Outer key = package, inner key = source channel id; misses fall through to
+         * [PACKAGE_SMALL_ICONS]. Channel ids verified against Phone by Google (com.google.android.dialer)
+         * — its other channels (phone_incoming_call, phone_default, …) intentionally use the package default.
+         */
+        private val CHANNEL_SMALL_ICONS: Map<String, Map<String, Int>> = mapOf(
+            "com.google.android.dialer" to mapOf(
+                "phone_missed_call" to R.drawable.ic_phone_missed_notification,
+                "phone_voicemail" to R.drawable.ic_voicemail_notification,
+                "phone_ongoing_call" to R.drawable.ic_phone_in_talk_notification,
+            ),
+        )
 
         fun tagOf(sourceClientId: ClientId, sourceKey: String) =
             "${sourceClientId.value}|$sourceKey"

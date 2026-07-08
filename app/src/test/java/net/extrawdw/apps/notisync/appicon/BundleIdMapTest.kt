@@ -13,6 +13,8 @@ class BundleIdMapTest {
         assertEquals("org.telegram.messenger", BundleIdMap.androidPackage("ph.telegra.Telegraph"))
         assertEquals("com.google.android.gm", BundleIdMap.androidPackage("com.google.Gmail"))
         assertEquals("com.instagram.android", BundleIdMap.androidPackage("com.burbn.instagram"))
+        assertEquals("com.tencent.mobileqq", BundleIdMap.androidPackage("com.tencent.mqq"))
+        assertEquals("QQ", BundleIdMap.displayName("com.tencent.mqq"))
     }
 
     @Test
