@@ -49,6 +49,7 @@ import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.GroupAlertBehavior
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
@@ -289,6 +290,7 @@ private object MirrorNotificationExtras {
     const val PACKAGE = "net.extrawdw.apps.notisync.mirror.PACKAGE"
     const val IOS_BUNDLE_ID = "net.extrawdw.apps.notisync.mirror.IOS_BUNDLE_ID"
     const val APP_ICON_HASH = "net.extrawdw.apps.notisync.mirror.APP_ICON_HASH"
+    const val IS_SOURCE_SUMMARY = "net.extrawdw.apps.notisync.mirror.IS_SOURCE_SUMMARY"
 }
 
 /**
@@ -315,9 +317,8 @@ class RemoteNotificationPoster(
     /** [silent] posts just this one notification without sound/heads-up — the connect-time ANCS backlog replay,
      *  or a re-render that only attaches a now-downloaded graphic to an already-posted notification — while
      *  leaving the channel's importance untouched, so the next live notification on the same (HIGH) channel
-     *  still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). The
-     *  cross-update alerting cadence (e.g. a messaging app enriching a message it already alerted) is carried by
-     *  the source's own [CapturedNotification.onlyAlertOnce], applied on the builder below. */
+     *  still alerts. Never lower a channel's importance to mute one post (see MirrorChannels.ensure). Source
+     *  update alerting is carried by raw [CapturedNotification.onlyAlertOnce] plus group-summary alert behavior. */
     override fun render(notif: CapturedNotification, silent: Boolean, phase: RenderPhase) {
         // No POST_NOTIFICATIONS → notify() is a silent no-op (and throws SecurityException on some
         // OEMs); skip the channel/shortcut/asset work entirely rather than build a notification we
@@ -356,6 +357,8 @@ class RemoteNotificationPoster(
                 notif.packageName,
                 notif.iosBundleId,
                 notif.appIcon?.assetHash,
+                sourceSummary = notif,
+                silent = silent,
             )
             span.metric("group_summary_ms", (System.nanoTime() - summaryStartNanos) / 1_000_000)
             return
@@ -413,10 +416,9 @@ class RemoteNotificationPoster(
             // reports its own dismissal instead — the tap's effect happens over there. Without a
             // content intent a tap is inert, so auto-cancel keeps its historical value.
             .setAutoCancel(!notif.hasContentIntent)
-            // Mirror the source's own per-post intent: when the app marked this post "only alert once" (an
-            // enrichment update — e.g. attaching an inline image to a message it already alerted), the OS
-            // refreshes the already-showing mirror without re-alerting. A new message is a separate post the
-            // app leaves alerting, so it still heads-up.
+            // Keep the source child row's raw ONLY_ALERT_ONCE flag. Apps that alert through their group
+            // summary (for example WhatsApp) are mirrored by silencing this durable child row and letting the
+            // forwarded source summary carry the alert, not by rewriting this flag.
             .setOnlyAlertOnce(notif.onlyAlertOnce)
             .setWhen(notif.postTime)
             .setShowWhen(true)
@@ -434,6 +436,9 @@ class RemoteNotificationPoster(
         // — the channel stays HIGH so the next live notification still heads-up. MessagingStyle below may also
         // silence its own self-reply case.
         if (silent) builder.setSilent(true)
+        else if (notif.groupAlertBehavior == GroupAlertBehavior.SUMMARY && notif.groupKey != null) {
+            builder.setSilent(true)
+        }
 
         when (notif.style) {
             NotifStyle.MESSAGING -> {
@@ -520,6 +525,7 @@ class RemoteNotificationPoster(
             notif.packageName,
             notif.iosBundleId,
             notif.appIcon?.assetHash,
+            silent = true,
         )
         span.metric("group_summary_ms", (System.nanoTime() - summaryStartNanos) / 1_000_000)
 
@@ -567,24 +573,34 @@ class RemoteNotificationPoster(
         fallbackPackage: String,
         fallbackIosBundleId: String? = null,
         fallbackAppIconHash: String? = null,
+        sourceSummary: CapturedNotification? = null,
+        silent: Boolean = true,
     ) {
         val compat = NotificationManagerCompat.from(context)
         val summaryTag = summaryTagOf(groupKey)
         val children = activeGroupChildren(groupKey)
-        if (children.size < 2) {
-            compat.cancel(summaryTag, summaryTag.hashCode())
-            return
+        if (sourceSummary == null) {
+            // A forwarded source summary is the alerting post for apps like WhatsApp. Do not let the quiet
+            // synthetic-summary maintenance pass overwrite or cancel it while its child row still exists.
+            if (hasActiveSourceSummary(groupKey)) {
+                if (children.isEmpty()) compat.cancel(summaryTag, summaryTag.hashCode())
+                return
+            }
+            if (children.size < 2) {
+                compat.cancel(summaryTag, summaryTag.hashCode())
+                return
+            }
         }
         val latest = children.maxByOrNull { it.postTime }
         val extras = latest?.notification?.extras
-        val title = extras?.getString(MirrorNotificationExtras.GROUP_TITLE) ?: fallbackTitle
-        val packageName = extras?.getString(MirrorNotificationExtras.PACKAGE) ?: fallbackPackage
+        val title = sourceSummary?.title ?: extras?.getString(MirrorNotificationExtras.GROUP_TITLE) ?: fallbackTitle
+        val packageName = sourceSummary?.packageName ?: extras?.getString(MirrorNotificationExtras.PACKAGE) ?: fallbackPackage
         val iosBundleId =
-            extras?.getString(MirrorNotificationExtras.IOS_BUNDLE_ID) ?: fallbackIosBundleId
+            sourceSummary?.iosBundleId ?: extras?.getString(MirrorNotificationExtras.IOS_BUNDLE_ID) ?: fallbackIosBundleId
         val appIconHash =
-            extras?.getString(MirrorNotificationExtras.APP_ICON_HASH) ?: fallbackAppIconHash
-        val channelId = latest?.notification?.channelId ?: fallbackChannelId
-        val text = context.resources.getQuantityString(
+            sourceSummary?.appIcon?.assetHash ?: extras?.getString(MirrorNotificationExtras.APP_ICON_HASH) ?: fallbackAppIconHash
+        val channelId = if (sourceSummary != null) fallbackChannelId else latest?.notification?.channelId ?: fallbackChannelId
+        val text = sourceSummary?.text ?: context.resources.getQuantityString(
             R.plurals.mirror_group_summary_count,
             children.size,
             children.size
@@ -594,20 +610,38 @@ class RemoteNotificationPoster(
             .setSmallIcon(smallIconForPackage(packageName))
             .setContentTitle(title)
             .setContentText(text)
-            .setSubText(context.getString(R.string.mirror_via, title))
-            .setWhen(latest?.postTime ?: System.currentTimeMillis())
+            .setSubText(context.getString(R.string.mirror_via, fallbackTitle))
+            .setWhen(sourceSummary?.postTime ?: latest?.postTime ?: System.currentTimeMillis())
             .setShowWhen(true)
             .setPriority(NotificationCompat.PRIORITY_DEFAULT)
             .setGroup(groupKey)
             .setGroupSummary(true)
-            .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
-            .setOnlyAlertOnce(true)
-            .setSilent(true)
+            .setGroupAlertBehavior(toGroupAlertBehavior(sourceSummary?.groupAlertBehavior ?: GroupAlertBehavior.CHILDREN))
+            .setOnlyAlertOnce(sourceSummary?.onlyAlertOnce ?: true)
+            .apply { if (silent) setSilent(true) }
             .setDeleteIntent(groupDeleteIntent(groupKey, summaryTag.hashCode()))
+            .addExtras(summaryExtras(sourceSummary))
             .apply { largeIcon?.let { setLargeIcon(it) } }
             .build()
         runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
     }
+
+    private fun hasActiveSourceSummary(groupKey: String): Boolean {
+        val summaryTag = summaryTagOf(groupKey)
+        return activeNotification(summaryTag, summaryTag.hashCode())
+            ?.notification
+            ?.extras
+            ?.getBoolean(MirrorNotificationExtras.IS_SOURCE_SUMMARY, false) == true
+    }
+
+    private fun summaryExtras(sourceSummary: CapturedNotification?): Bundle =
+        Bundle().apply {
+            if (sourceSummary != null) {
+                putBoolean(MirrorNotificationExtras.IS_SOURCE_SUMMARY, true)
+                putString(MirrorNotificationExtras.SOURCE_CLIENT, sourceSummary.sourceClientId.value)
+                putString(MirrorNotificationExtras.SOURCE_KEY, sourceSummary.sourceKey)
+            }
+        }
 
     private fun activeGroupChildren(groupKey: String): List<StatusBarNotification> {
         val mgr = context.getSystemService(NotificationManager::class.java)
@@ -858,6 +892,12 @@ class RemoteNotificationPoster(
         MirrorImportance.DEFAULT -> NotificationCompat.PRIORITY_DEFAULT
         MirrorImportance.LOW -> NotificationCompat.PRIORITY_LOW
         MirrorImportance.MIN, MirrorImportance.NONE -> NotificationCompat.PRIORITY_MIN
+    }
+
+    private fun toGroupAlertBehavior(behavior: GroupAlertBehavior) = when (behavior) {
+        GroupAlertBehavior.ALL -> NotificationCompat.GROUP_ALERT_ALL
+        GroupAlertBehavior.SUMMARY -> NotificationCompat.GROUP_ALERT_SUMMARY
+        GroupAlertBehavior.CHILDREN -> NotificationCompat.GROUP_ALERT_CHILDREN
     }
 
     companion object {

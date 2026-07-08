@@ -29,6 +29,13 @@ sealed interface Recipients {
      *  receive a given capture. Used by notification forwarding to honor a peer's suppression request. */
     data class OwnMeshExcluding(val excluded: Set<ClientId>) : Recipients
 
+    /** This user's own devices except specific peers and platform families. Used for platform-private render
+     *  control payloads such as Android group summaries, which iOS cannot consume correctly. */
+    data class OwnMeshFiltered(
+        val excluded: Set<ClientId> = emptySet(),
+        val excludedPlatforms: Set<String> = emptySet(),
+    ) : Recipients
+
     /** A single device by id (unicast: card / asset repair). */
     data class Only(val id: ClientId) : Recipients
 }

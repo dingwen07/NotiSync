@@ -18,6 +18,12 @@ enum class MirrorCategory {
 @Serializable
 enum class NotifStyle { DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
 
+/** Android notification group alert behavior. Defaulting to CHILDREN preserves pre-field mirror behavior for
+ *  older producers and non-Android captures: receiver-created summaries stay quiet, while child rows decide
+ *  alerts. Current Android producers set the source value explicitly. Append-only if expanded. */
+@Serializable
+enum class GroupAlertBehavior { ALL, SUMMARY, CHILDREN }
+
 /** The graphic's logical slot. Drives placement on the consumer and is bound into the asset AAD.
  *  Append-only — the ordinal is bound into the asset AAD, so existing values must never shift.
  *  APP_ICON delivers the *source app's launcher icon* so a consumer without that app installed can
@@ -140,6 +146,11 @@ data class CapturedNotification(
     val groupKey: String? = null,
     /** True when the source notification is the summary row for [groupKey]. */
     val isGroupSummary: Boolean = false,
+    /** Source Android `Notification.getGroupAlertBehavior()`. Some apps, notably WhatsApp, keep the child
+     *  conversation row `FLAG_ONLY_ALERT_ONCE` but put the audible alert on the group summary
+     *  (`SUMMARY`). Consumers need both fields: [onlyAlertOnce] remains the raw source flag, while this
+     *  decides whether a receiver-created summary should be the alerting post. */
+    val groupAlertBehavior: GroupAlertBehavior = GroupAlertBehavior.CHILDREN,
     val isOngoing: Boolean = false,
     val isClearable: Boolean = true,
     /** True if the platform redacted sensitive content (Android 15+); consumer should signal it. */
@@ -188,13 +199,11 @@ data class CapturedNotification(
      *  consumer group/channel notifications per origin: once one client bridges another device, [sourceClientId]
      *  alone no longer identifies the source (its own Android vs the paired iPhone). Null for a local capture. */
     val originDeviceId: String? = null,
-    /** The source's per-post `FLAG_ONLY_ALERT_ONCE` (Android: `Notification.flags`): the app's own intent
-     *  that an update to this key must NOT re-alert (sound / heads-up) while the notification is still
-     *  showing — set on enrichment updates like a messaging app attaching an inline image to a message it
-     *  already alerted, or a download refreshing its progress. The consumer mirrors it verbatim into
-     *  `setOnlyAlertOnce`, so the mirror reproduces the source's exact alerting cadence rather than
-     *  re-buzzing on every update; a genuinely new message is a separate post the app leaves alerting, so it
-     *  still heads-up. Appended with a default so an older producer (no field) decodes unchanged. */
+    /** The source's raw per-post `FLAG_ONLY_ALERT_ONCE` (Android: `Notification.flags`): an update to this
+     *  particular notification key should usually not re-alert while it is still showing. It is not the whole
+     *  alert contract by itself: apps may keep a child conversation row `ONLY_ALERT_ONCE` and route the audible
+     *  alert through an unsilenced group summary, represented by [groupAlertBehavior] plus [isGroupSummary].
+     *  Appended with a default so an older producer (no field) decodes unchanged. */
     val onlyAlertOnce: Boolean = false,
 
     // --- Action mirroring (appended; empty/false from an older producer decodes unchanged) ---

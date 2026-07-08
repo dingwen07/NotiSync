@@ -103,6 +103,7 @@ class CborWireCompatTest {
         assertFalse(bytes.containsKey("isGroupConversation"))
         assertFalse(bytes.containsKey("sensitiveRedacted"))
         assertFalse(bytes.containsKey("isClearable"))
+        assertFalse(bytes.containsKey("groupAlertBehavior"))
         assertFalse(bytes.containsKey("onlyAlertOnce"))
         assertFalse(bytes.containsKey("actions"))
         assertFalse(bytes.containsKey("hasContentIntent"))

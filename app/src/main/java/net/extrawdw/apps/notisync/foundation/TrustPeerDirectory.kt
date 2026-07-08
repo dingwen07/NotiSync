@@ -38,6 +38,14 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             Recipients.AllTrusted -> peers
             // Own mesh minus the devices that asked (over a FILTER) not to receive this capture.
             is Recipients.OwnMeshExcluding -> peers.filter { it.ownDevice && it.clientId !in scope.excluded }
+            is Recipients.OwnMeshFiltered -> {
+                val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
+                peers.filter {
+                    it.ownDevice &&
+                        it.clientId !in scope.excluded &&
+                        it.platform.lowercase() !in excludedPlatforms
+                }
+            }
             // Unicast is own-mesh only, matching the original sendCard/sendAssetSync `&& it.ownDevice`
             // guard: a body-controlled id (e.g. a notification's sourceClientId) must never cause a send
             // to a trusted "other" (non-own) contact device.
@@ -63,7 +71,19 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             Recipients.OwnMesh, Recipients.AllTrusted -> needing.toSet()
             // Don't drive key-epoch repair for a peer we're intentionally NOT sending this capture to.
             is Recipients.OwnMeshExcluding -> needing.toSet() - scope.excluded
+            is Recipients.OwnMeshFiltered -> needing.toSet() - scope.excluded - platformExcludedIds(scope)
             is Recipients.Only -> if (scope.id in needing) setOf(scope.id) else emptySet()
         }
     }
+
+    private fun platformExcludedIds(scope: Recipients.OwnMeshFiltered): Set<ClientId> {
+        val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
+        return trust.activePeers.value
+            .filter { it.ownDevice && it.platform.lowercase() in excludedPlatforms }
+            .map { it.clientId }
+            .toSet()
+    }
+
+    private fun Set<String>.normalizedPlatforms(): Set<String> =
+        mapTo(mutableSetOf()) { it.lowercase() }
 }

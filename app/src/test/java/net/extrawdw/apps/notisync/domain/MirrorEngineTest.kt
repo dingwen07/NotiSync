@@ -22,6 +22,7 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.DismissEvent
+import net.extrawdw.notisync.protocol.GroupAlertBehavior
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -213,6 +214,41 @@ class MirrorEngineTest {
         val row = activityLog.events.value.single()
         assertEquals("from Desk", row.detail)
         assertEquals(DeliveryMode.FCM_RELAY_FETCH, row.deliveryMode)
+    }
+
+    @Test
+    fun receivedGroupSummary_rendersButDoesNotLogActivityRow() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val renderer = RecordingRenderer()
+        val activityLog = ActivityLog()
+        val (channel, _) = engine(me, myHpke.privateKeyset, trust, renderer, activityLog = activityLog)
+
+        channel.deliver(
+            seal(
+                own,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(
+                    sampleNotif(own.clientId).copy(
+                        sourceKey = "0|com.x|1|null|10316",
+                        isGroupSummary = true,
+                        groupKey = "messages",
+                        groupAlertBehavior = GroupAlertBehavior.SUMMARY,
+                    )
+                ),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n1"
+            )
+        )
+
+        assertEquals(1, renderer.renders)
+        assertTrue(activityLog.events.value.isEmpty())
     }
 
     @Test
@@ -613,6 +649,58 @@ class MirrorEngineTest {
         // Sealed to own devices only (never to an "other" contact device).
         assertEquals(setOf(own.clientId), transport.envelopes.single().recipientIds().toSet())
         assertEquals(MessageType.NOTIFICATION, transport.envelopes.single().typ)
+    }
+
+    @Test
+    fun captureLocal_groupSummarySkipsIosOwnPeers() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val android = newSigner();
+        val androidHpke = newHpke()
+        val ios = newSigner();
+        val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val activityLog = ActivityLog()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport, activityLog)
+
+        mirror.captureLocal(
+            sampleNotif(me.clientId).copy(
+                isGroupSummary = true,
+                groupKey = "messages",
+                groupAlertBehavior = GroupAlertBehavior.SUMMARY,
+            )
+        )
+
+        assertEquals(setOf(android.clientId), transport.envelopes.single().recipientIds().toSet())
+        assertTrue(activityLog.events.value.isEmpty())
+    }
+
+    @Test
+    fun captureLocal_childNotificationStillGoesToIosOwnPeers() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val android = newSigner();
+        val androidHpke = newHpke()
+        val ios = newSigner();
+        val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.captureLocal(sampleNotif(me.clientId).copy(groupKey = "messages"))
+
+        assertEquals(setOf(android.clientId, ios.clientId), transport.envelopes.single().recipientIds().toSet())
     }
 
     @Test

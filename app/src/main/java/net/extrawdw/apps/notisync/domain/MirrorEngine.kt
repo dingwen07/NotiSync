@@ -182,7 +182,7 @@ class MirrorEngine(
      *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set. */
     suspend fun captureLocal(notif: CapturedNotification, span: PerfSpan? = null): Int {
         val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
-        val scope = if (excluded.isEmpty()) Recipients.OwnMesh else Recipients.OwnMeshExcluding(excluded)
+        val scope = notificationRecipients(notif, excluded)
         val payload = ProtocolCodec.encodeToCbor(notif)
         span?.metric("payload_bytes", payload.size.toLong())
         span?.metric("asset_count", notif.privateRefs().size.toLong())
@@ -191,7 +191,7 @@ class MirrorEngine(
         span?.metric("send_ms", (System.nanoTime() - sendStartNanos) / 1_000_000)
         span?.metric("recipient_count", n.toLong())
         rememberTitle(notif)
-        if (n > 0) activityLog.add(
+        if (n > 0 && !notif.isGroupSummary) activityLog.add(
             ActivityEvent.Kind.SENT,
             originTitle(notif),
             activityText.mirroredToDevices(n),
@@ -199,6 +199,18 @@ class MirrorEngine(
         )
         return n
     }
+
+    private fun notificationRecipients(notif: CapturedNotification, excluded: Set<ClientId>): Recipients =
+        if (notif.isGroupSummary) {
+            // Android group-summary captures are render-control/alert carriers for Android receivers. iOS cannot
+            // consume them correctly without com.apple.developer.usernotifications.filtering, so send the real
+            // child notification to iOS but keep this summary out of that platform's inbox/shade path.
+            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = setOf("ios"))
+        } else if (excluded.isEmpty()) {
+            Recipients.OwnMesh
+        } else {
+            Recipients.OwnMeshExcluding(excluded)
+        }
 
     suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String) {
         // Drop the still-queued relay copy of the notification we're dismissing (no-op for our own
@@ -305,13 +317,15 @@ class MirrorEngine(
         ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
         renderer.render(notif) // text + any already-cached graphics, posted immediately
         rememberTitle(notif)
-        activityLog.add(
-            ActivityEvent.Kind.RECEIVED,
-            originTitle(notif),
-            activityText.fromDevice(peerNameResolver(msg.senderId)),
-            now(),
-            deliveryMode = msg.deliveryMode.ifKnown(),
-        )
+        if (!notif.isGroupSummary) {
+            activityLog.add(
+                ActivityEvent.Kind.RECEIVED,
+                originTitle(notif),
+                activityText.fromDevice(peerNameResolver(msg.senderId)),
+                now(),
+                deliveryMode = msg.deliveryMode.ifKnown(),
+            )
+        }
         // Fetch any missing private graphics in the background, then re-post (same tag/id) with them
         // attached. The notification is never blocked on asset transfer. Anything still missing is
         // remembered and repaired over an encrypted DATA_SYNC request to the sender.
