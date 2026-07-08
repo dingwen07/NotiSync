@@ -15,12 +15,15 @@ import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
 import net.extrawdw.apps.notisync.testsupport.TestActivityText
+import net.extrawdw.notisync.protocol.ActionEvent
+import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
@@ -430,6 +433,162 @@ class MirrorEngineTest {
         assertEquals("WhatsApp (Dingwen's iPhone)", rows[0].title)
         assertEquals(ActivityEvent.Kind.SENT, rows[1].kind)
         assertEquals("WhatsApp (Dingwen's iPhone)", rows[1].title)
+    }
+
+    @Test
+    fun actionFromOwnDevice_forOurCapture_reachesBothPerformers() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer())
+        val performed = mutableListOf<ActionEvent>()
+        val iosPerformed = mutableListOf<ActionEvent>()
+        mirror.originalActionPerformer = OriginalActionPerformer { performed.add(it) }
+        mirror.iosOriginActionPerformer = OriginalActionPerformer { iosPerformed.add(it) }
+
+        val event = ActionEvent(
+            sourceClientId = me.clientId, sourceKey = "0|com.x|1|t", kind = ActionKind.PERFORM,
+            actionIndex = 2, actionTitle = "Reply", remoteInputText = "on my way", actedAt = 5L,
+        )
+        channel.deliver(
+            seal(
+                own,
+                MessageType.ACTION,
+                ProtocolCodec.encodeToCbor(event),
+                me.clientId,
+                myHpke.publicKeyset,
+                "a1"
+            )
+        )
+
+        // Both performer hooks see the event (each ignores keys that aren't theirs), fully decoded.
+        assertEquals(1, performed.size)
+        assertEquals(ActionKind.PERFORM, performed[0].kind)
+        assertEquals(2, performed[0].actionIndex)
+        assertEquals("Reply", performed[0].actionTitle)
+        assertEquals("on my way", performed[0].remoteInputText)
+        assertEquals(1, iosPerformed.size)
+    }
+
+    @Test
+    fun actionAddressedToAnotherOrigin_isDropped() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val own = newSigner();
+        val ownHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
+        }
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer())
+        val performed = mutableListOf<ActionEvent>()
+        mirror.originalActionPerformer = OriginalActionPerformer { performed.add(it) }
+
+        // The body names ANOTHER client's capture — only the origin may perform, so this is a
+        // misrouted (or forged-body) event and must be ignored.
+        val event = ActionEvent(own.clientId, "0|com.x|1|t", ActionKind.TAP, actedAt = 5L)
+        channel.deliver(
+            seal(
+                own,
+                MessageType.ACTION,
+                ProtocolCodec.encodeToCbor(event),
+                me.clientId,
+                myHpke.publicKeyset,
+                "a1"
+            )
+        )
+
+        assertTrue(performed.isEmpty())
+    }
+
+    @Test
+    fun actionFromNotOwnDevice_isDropped() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val other = newSigner();
+        val otherHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(other, otherHpke.publicKeyset, ownDevice = false))
+        }
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer())
+        val performed = mutableListOf<ActionEvent>()
+        mirror.originalActionPerformer = OriginalActionPerformer { performed.add(it) }
+
+        val event = ActionEvent(me.clientId, "0|com.x|1|t", ActionKind.PERFORM, 0, "Open", null, 5L)
+        channel.deliver(
+            seal(
+                other,
+                MessageType.ACTION,
+                ProtocolCodec.encodeToCbor(event),
+                me.clientId,
+                myHpke.publicKeyset,
+                "a1"
+            )
+        )
+
+        assertTrue("an action from a not-own device must be dropped", performed.isEmpty())
+    }
+
+    @Test
+    fun performRemote_unicastsToOriginAtHighUrgency() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val origin = newSigner();
+        val originHpke = newHpke()
+        val bystander = newSigner();
+        val bystanderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(origin, originHpke.publicKeyset, ownDevice = true),
+                peerOf(bystander, bystanderHpke.publicKeyset, ownDevice = true),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        val sent = mirror.performRemote(origin.clientId, "0|com.x|1|t", 1, "Mark as read")
+
+        // Sealed ONLY to the origin (never fanned out to the rest of the mesh), at HIGH urgency —
+        // the user is standing at this device waiting for the origin to act.
+        assertTrue(sent)
+        val (envelope, urgency) = transport.sent.single()
+        assertEquals(MessageType.ACTION, envelope.typ)
+        assertEquals(setOf(origin.clientId), envelope.recipientIds().toSet())
+        assertEquals(Urgency.HIGH, urgency)
+    }
+
+    @Test
+    fun tapRemote_unicastsToOrigin_andLogsActivity() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val origin = newSigner();
+        val originHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(origin, originHpke.publicKeyset, ownDevice = true, name = "Pixel 9"))
+        }
+        val transport = CapturingTransport()
+        val activityLog = ActivityLog()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
+        val mirror = MirrorEngine(
+            channel = channel,
+            renderer = RecordingRenderer(),
+            activityLog = activityLog,
+            scope = CoroutineScope(Dispatchers.Unconfined),
+            activityText = TestActivityText,
+            peerNameResolver = { trust.displayName(it) ?: it.shortForm() },
+        )
+        mirror.register()
+
+        assertTrue(mirror.tapRemote(origin.clientId, "0|com.x|1|t"))
+
+        val (envelope, urgency) = transport.sent.single()
+        assertEquals(MessageType.ACTION, envelope.typ)
+        assertEquals(setOf(origin.clientId), envelope.recipientIds().toSet())
+        assertEquals(Urgency.HIGH, urgency)
+        assertEquals("opening on Pixel 9", activityLog.events.value.single().detail)
     }
 
     @Test

@@ -179,14 +179,19 @@ class AncsGattClient(
         )
     }
 
-    suspend fun fetchNotificationAttributes(uid: Int): Ancs.NotificationAttributes? =
-        request(
+    suspend fun fetchNotificationAttributes(
+        uid: Int,
+        includeActionLabels: Boolean = false,
+    ): Ancs.NotificationAttributes? {
+        val attrCount = Ancs.notificationAttrCount(includeActionLabels)
+        return request(
             Ancs.CMD_GET_NOTIFICATION_ATTRIBUTES,
-            Ancs.NOTIFICATION_ATTRS.size,
-            Ancs.buildGetNotificationAttributes(uid),
+            attrCount,
+            Ancs.buildGetNotificationAttributes(uid, includeActionLabels = includeActionLabels),
             correlationId = uid
         )
-            ?.let { Ancs.parseNotificationAttributes(it, Ancs.NOTIFICATION_ATTRS.size) }
+            ?.let { Ancs.parseNotificationAttributes(it, attrCount) }
+    }
 
     suspend fun fetchAppDisplayName(appId: String): String? =
         request(Ancs.CMD_GET_APP_ATTRIBUTES, 1, Ancs.buildGetAppAttributes(appId))

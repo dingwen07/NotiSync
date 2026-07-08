@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.notification
 
 import android.Manifest
+import android.app.Activity
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
@@ -20,9 +21,11 @@ import android.graphics.Shader
 import android.net.Uri
 import android.os.Bundle
 import android.service.notification.StatusBarNotification
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.Person
+import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.core.content.LocusIdCompat
@@ -49,6 +52,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationAction
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import java.security.MessageDigest
@@ -392,6 +396,8 @@ class RemoteNotificationPoster(
 
         val tag = tagOf(notif.sourceClientId, notif.sourceKey)
         val id = tag.hashCode()
+        // Toast/feedback label for tap + UI-opening actions: where the user should look next.
+        val originLabel = groupDeviceName ?: notif.sourceClientId.shortForm()
 
         val builder = NotificationCompat.Builder(context, postChannelId)
             .setSmallIcon(smallIconForPackage(notif.packageName))
@@ -401,7 +407,12 @@ class RemoteNotificationPoster(
                     notif.appLabel
                 )
             ) // marks the notification as mirrored
-            .setAutoCancel(true)
+            // With a tap-to-open-on-origin intent attached, auto-cancel must stay OFF: an auto-cancel
+            // tap would fire the deleteIntent (a mesh-wide dismissal racing the TAP event to the
+            // origin, killing the content intent before it opens). The mirror clears when the origin
+            // reports its own dismissal instead — the tap's effect happens over there. Without a
+            // content intent a tap is inert, so auto-cancel keeps its historical value.
+            .setAutoCancel(!notif.hasContentIntent)
             // Mirror the source's own per-post intent: when the app marked this post "only alert once" (an
             // enrichment update — e.g. attaching an inline image to a message it already alerted), the OS
             // refreshes the already-showing mirror without re-alerting. A new message is a separate post the
@@ -414,6 +425,10 @@ class RemoteNotificationPoster(
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
+        if (notif.hasContentIntent) {
+            builder.setContentIntent(tapIntent(notif, id, originLabel))
+        }
+        applyActions(builder, notif, tag, originLabel)
         if (shortcutId != null) builder.setShortcutId(shortcutId)
         // Quiet this one post (ANCS backlog replay, or an asset-arrival re-render) without lowering the channel
         // — the channel stays HIGH so the next live notification still heads-up. MessagingStyle below may also
@@ -733,6 +748,83 @@ class RemoteNotificationPoster(
         return ShortcutManagerCompat.pushDynamicShortcut(context, shortcut)
     }
 
+    /**
+     * Rebuild the source's action row on the mirror. A press broadcasts to [MirrorActionReceiver],
+     * which unicasts a PERFORM [net.extrawdw.notisync.protocol.ActionEvent] to the origin; a
+     * remote-input action carries a reply field whose text rides along. Mirrored actions never open
+     * UI on THIS device (`setShowsUserInterface(false)`) — a UI-opening origin action instead
+     * toasts "[originLabel]" feedback from the receiver.
+     */
+    private fun applyActions(
+        builder: NotificationCompat.Builder,
+        notif: CapturedNotification,
+        tag: String,
+        originLabel: String,
+    ) {
+        for (action in notif.actions) {
+            val pi = actionIntent(notif, action, tag, originLabel)
+            val ab = NotificationCompat.Action.Builder(0, action.title, pi)
+                .setSemanticAction(action.semanticAction) // same constants as the framework's
+                .setShowsUserInterface(false)
+                .setAllowGeneratedReplies(false)
+            if (action.remoteInput) {
+                ab.addRemoteInput(
+                    RemoteInput.Builder(MirrorActionReceiver.KEY_REMOTE_REPLY)
+                        .setLabel(
+                            action.remoteInputLabel?.takeIf { it.isNotBlank() }
+                                ?: context.getString(R.string.mirror_reply_hint)
+                        )
+                        .build()
+                )
+            }
+            builder.addAction(ab.build())
+        }
+    }
+
+    /** Tap-to-open-on-origin: a no-UI trampoline activity (an activity is what collapses the shade)
+     *  that toasts "Check on <origin>" and unicasts a TAP event. The mirror itself stays posted —
+     *  see the setAutoCancel note in [renderGranted]. */
+    private fun tapIntent(notif: CapturedNotification, id: Int, originLabel: String): PendingIntent {
+        val intent = Intent(context, MirrorTapActivity::class.java).apply {
+            action = MirrorTapActivity.ACTION_TAP
+            // Distinct data per mirror: extras don't participate in PendingIntent identity.
+            data = Uri.parse("notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}")
+            putExtra(MirrorTapActivity.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
+            putExtra(MirrorTapActivity.EXTRA_SOURCE_KEY, notif.sourceKey)
+            putExtra(MirrorTapActivity.EXTRA_DEVICE_NAME, originLabel)
+        }
+        return PendingIntent.getActivity(
+            context, id, intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
+    private fun actionIntent(
+        notif: CapturedNotification,
+        action: NotificationAction,
+        tag: String,
+        originLabel: String,
+    ): PendingIntent {
+        val intent = Intent(context, MirrorActionReceiver::class.java).apply {
+            this.action = MirrorActionReceiver.ACTION_PERFORM
+            data = Uri.parse("notisync://action/${action.index}/${Uri.encode(tag)}")
+            putExtra(MirrorActionReceiver.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
+            putExtra(MirrorActionReceiver.EXTRA_SOURCE_KEY, notif.sourceKey)
+            putExtra(MirrorActionReceiver.EXTRA_ACTION_INDEX, action.index)
+            putExtra(MirrorActionReceiver.EXTRA_ACTION_TITLE, action.title)
+            putExtra(MirrorActionReceiver.EXTRA_REMOTE_INPUT, action.remoteInput)
+            putExtra(MirrorActionReceiver.EXTRA_SHOWS_UI, action.showsUserInterface)
+            putExtra(MirrorActionReceiver.EXTRA_DEVICE_NAME, originLabel)
+        }
+        // A remote-input action's PendingIntent must be MUTABLE so the OS can attach the typed text.
+        val mutability =
+            if (action.remoteInput) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(
+            context, tag.hashCode() * 31 + action.index, intent,
+            mutability or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+    }
+
     private fun deleteIntent(sourceClientId: ClientId, sourceKey: String, id: Int): PendingIntent {
         val intent = Intent(context, DismissReceiver::class.java).apply {
             action = "net.extrawdw.apps.notisync.DISMISS"
@@ -829,5 +921,124 @@ class DismissReceiver : BroadcastReceiver() {
         const val EXTRA_SOURCE_CLIENT = "source_client"
         const val EXTRA_SOURCE_KEY = "source_key"
         const val EXTRA_GROUP_KEY = "group_key"
+    }
+}
+
+/**
+ * Fires when the user presses a mirrored action button → unicast a PERFORM
+ * [net.extrawdw.notisync.protocol.ActionEvent] to the origin client. For a remote-input (reply)
+ * action the typed text rides along, and the mirror is re-posted with the reply as remote-input
+ * history — otherwise the shade's inline-reply spinner never resolves; the origin app's own update
+ * then replaces it with the canonical state. A UI-opening action toasts "Check on <origin>", since
+ * its visible effect happens on the origin device.
+ */
+class MirrorActionReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val app = context.applicationContext as? NotiSyncApp ?: return
+        val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return
+        val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return
+        val actionTitle = intent.getStringExtra(EXTRA_ACTION_TITLE) ?: return
+        val actionIndex = intent.getIntExtra(EXTRA_ACTION_INDEX, -1)
+        if (actionIndex < 0) return
+        val isRemoteInput = intent.getBooleanExtra(EXTRA_REMOTE_INPUT, false)
+        val replyText =
+            if (isRemoteInput) {
+                RemoteInput.getResultsFromIntent(intent)
+                    ?.getCharSequence(KEY_REMOTE_REPLY)?.toString()?.takeIf { it.isNotBlank() }
+                    ?: return // a reply action without text has nothing to perform
+            } else null
+        // Feedback first (onReceive runs on main): a UI-opening action behaves like a tap — the
+        // result appears on the origin device, so say where to look.
+        val deviceName = intent.getStringExtra(EXTRA_DEVICE_NAME)
+        if (intent.getBooleanExtra(EXTRA_SHOWS_UI, false) && !deviceName.isNullOrBlank()) {
+            Toast.makeText(
+                context,
+                context.getString(R.string.mirror_check_on_device, deviceName),
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+        val pending = goAsync()
+        CoroutineScope(Dispatchers.Default + crashGuard("MirrorActionReceiver")).launch {
+            try {
+                val engine = app.awaitGraphReady()?.mirrorEngine ?: return@launch
+                engine.performRemote(ClientId(sourceClient), sourceKey, actionIndex, actionTitle, replyText)
+                if (replyText != null) confirmReply(context, ClientId(sourceClient), sourceKey, replyText)
+            } finally {
+                pending.finish()
+            }
+        }
+    }
+
+    /**
+     * Re-post the replied mirror with the typed text as remote-input history — the platform's own
+     * "reply in flight" presentation — so the inline-reply progress spinner resolves immediately.
+     * recoverBuilder keeps everything else (style, extras, intents, actions) intact; the origin
+     * app's next update re-renders the mirror wholesale and drops the interim history line.
+     */
+    private fun confirmReply(context: Context, clientId: ClientId, sourceKey: String, replyText: String) {
+        val tag = RemoteNotificationPoster.tagOf(clientId, sourceKey)
+        val mgr = context.getSystemService(NotificationManager::class.java)
+        val active = runCatching {
+            mgr.activeNotifications.firstOrNull { it.tag == tag && it.id == tag.hashCode() }
+        }.getOrNull() ?: return
+        runCatching {
+            val rebuilt = Notification.Builder.recoverBuilder(context, active.notification)
+                .setRemoteInputHistory(arrayOf(replyText))
+                .setOnlyAlertOnce(true)
+                .build()
+            NotificationManagerCompat.from(context).notify(tag, tag.hashCode(), rebuilt)
+        }
+    }
+
+    companion object {
+        const val ACTION_PERFORM = "net.extrawdw.apps.notisync.MIRROR_ACTION"
+        const val KEY_REMOTE_REPLY = "notisync_remote_reply"
+        const val EXTRA_SOURCE_CLIENT = "source_client"
+        const val EXTRA_SOURCE_KEY = "source_key"
+        const val EXTRA_ACTION_INDEX = "action_index"
+        const val EXTRA_ACTION_TITLE = "action_title"
+        const val EXTRA_REMOTE_INPUT = "remote_input"
+        const val EXTRA_SHOWS_UI = "shows_ui"
+        const val EXTRA_DEVICE_NAME = "device_name"
+    }
+}
+
+/**
+ * Tap-to-open-on-origin trampoline. A mirrored notification's content intent must be an activity —
+ * that's what collapses the shade on tap — but a mirror has nothing to show locally: the tap's
+ * effect is the ORIGIN device firing its content intent. So this no-UI activity (Theme.NoDisplay)
+ * toasts "Check on <origin device>", unicasts the TAP event, and finishes inside onCreate.
+ */
+class MirrorTapActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        try {
+            val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT)
+            val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY)
+            if (sourceClient != null && sourceKey != null) {
+                val label = intent.getStringExtra(EXTRA_DEVICE_NAME)
+                if (!label.isNullOrBlank()) {
+                    Toast.makeText(
+                        applicationContext,
+                        getString(R.string.mirror_check_on_device, label),
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+                (applicationContext as? NotiSyncApp)?.runWhenGraphReady { graph ->
+                    graph.scope.launch(crashGuard("MirrorTap")) {
+                        runCatching { graph.mirrorEngine?.tapRemote(ClientId(sourceClient), sourceKey) }
+                    }
+                }
+            }
+        } finally {
+            finish() // Theme.NoDisplay requires finishing before resume
+        }
+    }
+
+    companion object {
+        const val ACTION_TAP = "net.extrawdw.apps.notisync.MIRROR_TAP"
+        const val EXTRA_SOURCE_CLIENT = "source_client"
+        const val EXTRA_SOURCE_KEY = "source_key"
+        const val EXTRA_DEVICE_NAME = "device_name"
     }
 }

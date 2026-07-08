@@ -5,8 +5,10 @@ import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 
+/** Append-only — keep CBOR ordinals stable. [ACTION] is always unicast to the notification's
+ *  origin client (the only peer that can perform it); it never fans out. */
 @Serializable
-enum class MessageType { NOTIFICATION, DISMISSAL, DATA_SYNC }
+enum class MessageType { NOTIFICATION, DISMISSAL, DATA_SYNC, ACTION }
 
 /** The data-encryption key for one envelope, HPKE-sealed to a single recipient's public keyset. */
 @Serializable

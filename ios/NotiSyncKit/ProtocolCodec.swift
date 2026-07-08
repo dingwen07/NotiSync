@@ -46,6 +46,10 @@ nonisolated enum ProtocolCodec {
         KMPProtocolBridge.data(kmp.encodeDismissEvent(value: KMPProtocolBridge.toKmp(d)))
     }
 
+    static func encode(_ a: ActionEvent) -> Data {
+        KMPProtocolBridge.data(kmp.encodeActionEvent(value: KMPProtocolBridge.toKmp(a)))
+    }
+
     static func encode(_ c: ClientCard) -> Data {
         KMPProtocolBridge.data(kmp.encodeClientCard(value: KMPProtocolBridge.toKmp(c)))
     }
@@ -294,6 +298,18 @@ nonisolated enum KMPProtocolBridge {
         )
     }
 
+    static func toKmp(_ value: ActionEvent) -> NotiSyncProtocol.ActionEvent {
+        NotiSyncProtocol.ActionEvent(
+            sourceClientId: clientId(value.sourceClientId),
+            sourceKey: value.sourceKey,
+            kind: kmp(value.kind),
+            actionIndex: Int32(value.actionIndex),
+            actionTitle: value.actionTitle,
+            remoteInputText: value.remoteInputText,
+            actedAt: value.actedAt
+        )
+    }
+
     static func toKmp(_ value: PrivateAssetRef) -> NotiSyncProtocol.PrivateAssetRef {
         NotiSyncProtocol.PrivateAssetRef(
             role: kmp(value.role),
@@ -532,6 +548,17 @@ nonisolated enum KMPProtocolBridge {
         )
     }
 
+    static func fromKmp(_ value: NotiSyncProtocol.NotificationAction) -> NotificationAction {
+        NotificationAction(
+            index: Int(value.index),
+            title: value.title,
+            remoteInput: value.remoteInput,
+            remoteInputLabel: value.remoteInputLabel,
+            semanticAction: Int(value.semanticAction),
+            showsUserInterface: value.showsUserInterface
+        )
+    }
+
     static func fromKmp(_ value: NotiSyncProtocol.CapturedNotification) throws -> CapturedNotification {
         CapturedNotification(
             sourceClientId: string(value.sourceClientId),
@@ -571,7 +598,9 @@ nonisolated enum KMPProtocolBridge {
             originDeviceName: value.originDeviceName,
             iosBundleId: value.iosBundleId,
             originDeviceId: value.originDeviceId,
-            onlyAlertOnce: value.onlyAlertOnce
+            onlyAlertOnce: value.onlyAlertOnce,
+            actions: value.actions.map(fromKmp),
+            hasContentIntent: value.hasContentIntent
         )
     }
 
@@ -670,6 +699,10 @@ nonisolated enum KMPProtocolBridge {
 
     static func kmp(_ value: MessageType) -> NotiSyncProtocol.MessageType {
         NotiSyncProtocol.MessageType.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.MessageType.notification
+    }
+
+    static func kmp(_ value: ActionKind) -> NotiSyncProtocol.ActionKind {
+        NotiSyncProtocol.ActionKind.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.ActionKind.perform
     }
 
     static func kmp(_ value: Purpose) -> NotiSyncProtocol.Purpose {

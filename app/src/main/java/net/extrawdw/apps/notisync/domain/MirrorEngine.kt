@@ -12,6 +12,8 @@ import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.foundation.SendPolicy
 import net.extrawdw.apps.notisync.transport.ifKnown
+import net.extrawdw.notisync.protocol.ActionEvent
+import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetSync
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
@@ -50,6 +52,15 @@ interface MirrorRenderer {
 /** Cancels a local original notification (provider side) when a remote dismissal arrives. */
 fun interface OriginalCanceler {
     fun cancel(sourceKey: String)
+}
+
+/**
+ * Performs a peer's [ActionEvent] on the origin notification (provider side): fire the matching
+ * action's PendingIntent / the content intent (Android listener), or the ANCS action (iPhone
+ * bridge). Implementations ignore keys that aren't theirs, like [OriginalCanceler].
+ */
+fun interface OriginalActionPerformer {
+    fun perform(event: ActionEvent)
 }
 
 /**
@@ -127,6 +138,16 @@ class MirrorEngine(
     @Volatile
     var iosOriginCanceler: OriginalCanceler? = null
 
+    /** Executes an inbound [ActionEvent] on a local Android original (the notification listener). */
+    @Volatile
+    var originalActionPerformer: OriginalActionPerformer? = null
+
+    /** Executes an inbound [ActionEvent] on a bridged iPhone original over ANCS (PERFORM only —
+     *  ANCS has no "open" command, and [CapturedNotification.hasContentIntent] stays false for
+     *  bridged captures so peers never send a TAP here). Null on devices that run no iOS bridge. */
+    @Volatile
+    var iosOriginActionPerformer: OriginalActionPerformer? = null
+
     /** Notifications awaiting a repaired asset, keyed by the missing assetHash (bounded LRU). */
     private val pendingAssetRenders: MutableMap<String, CapturedNotification> =
         java.util.Collections.synchronizedMap(
@@ -154,6 +175,7 @@ class MirrorEngine(
     fun register() {
         channel.onMessage(MessageType.NOTIFICATION, ::onNotification)
         channel.onMessage(MessageType.DISMISSAL, ::onDismissal)
+        channel.onMessage(MessageType.ACTION, ::onAction)
     }
 
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. A peer that asked
@@ -208,6 +230,71 @@ class MirrorEngine(
         // A bridged iOS notification isn't removed from the iPhone when its mirror is swiped here — propagate
         // the dismissal back over ANCS so it clears on the source device too (no-op for non-ANCS keys).
         iosOriginCanceler?.cancel(sourceKey)
+    }
+
+    /**
+     * The user pressed a mirrored action button — unicast a PERFORM [ActionEvent] to the origin
+     * client (the only peer that can fire the real PendingIntent), at HIGH urgency because the user
+     * is standing at this device waiting for the origin to act. Best-effort like [dismissLocal]:
+     * a button press must never throw. Returns true when it reached the broker for the origin.
+     */
+    suspend fun performRemote(
+        sourceClientId: ClientId,
+        sourceKey: String,
+        actionIndex: Int,
+        actionTitle: String,
+        remoteInputText: String? = null,
+    ): Boolean = sendAction(
+        ActionEvent(
+            sourceClientId = sourceClientId,
+            sourceKey = sourceKey,
+            kind = ActionKind.PERFORM,
+            actionIndex = actionIndex,
+            actionTitle = actionTitle,
+            remoteInputText = remoteInputText,
+            actedAt = now(),
+        )
+    )
+
+    /** The user tapped a mirrored notification — ask the origin to open it (fire its content intent). */
+    suspend fun tapRemote(sourceClientId: ClientId, sourceKey: String): Boolean = sendAction(
+        ActionEvent(sourceClientId = sourceClientId, sourceKey = sourceKey, kind = ActionKind.TAP, actedAt = now())
+    )
+
+    private suspend fun sendAction(event: ActionEvent): Boolean {
+        val n = runCatching {
+            channel.send(
+                MessageType.ACTION,
+                ProtocolCodec.encodeToCbor(event),
+                Recipients.Only(event.sourceClientId),
+                Urgency.HIGH,
+            )
+        }.getOrDefault(0)
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.SENT,
+            dismissedTitle(event.sourceClientId, event.sourceKey),
+            activityText.actionToDevice(event.actionTitle, peerNameResolver(event.sourceClientId)),
+            now(),
+        )
+        return n > 0
+    }
+
+    private fun onAction(msg: InboundMessage) {
+        if (!SendPolicy.mayAccept(msg.typ, null, msg.senderOwnDevice)) return
+        val event = ProtocolCodec.decodeFromCbor<ActionEvent>(msg.body)
+        // Only the origin performs: an event addressed to another client's capture is a routing bug
+        // (ACTION is unicast to sourceClientId), and firing PendingIntents by key must never be
+        // steerable by anything but our own captures.
+        if (event.sourceClientId != channel.clientId) return
+        originalActionPerformer?.perform(event)
+        iosOriginActionPerformer?.perform(event)
+        activityLog.add(
+            ActivityEvent.Kind.RECEIVED,
+            dismissedTitle(event.sourceClientId, event.sourceKey),
+            activityText.actionByDevice(event.actionTitle, peerNameResolver(msg.senderId)),
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     private fun onNotification(msg: InboundMessage) {

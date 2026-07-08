@@ -104,6 +104,8 @@ class CborWireCompatTest {
         assertFalse(bytes.containsKey("sensitiveRedacted"))
         assertFalse(bytes.containsKey("isClearable"))
         assertFalse(bytes.containsKey("onlyAlertOnce"))
+        assertFalse(bytes.containsKey("actions"))
+        assertFalse(bytes.containsKey("hasContentIntent"))
         // Self-calibrating regression guard: flipping encodeDefaults back to true roughly triples the size.
         val lean = bytes.size
         val fat = legacyFat.encodeToByteArray(notif).size
@@ -117,6 +119,19 @@ class CborWireCompatTest {
         assertEquals(notif, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(notif)))
         // new peer → old reader
         assertEquals(notif, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(notif)))
+    }
+
+    @Test
+    fun mixedFleet_actionsSurviveBothConfigs() {
+        val withActions = simpleNotif().copy(
+            actions = listOf(
+                NotificationAction(index = 0, title = "Mark as read", semanticAction = 2),
+                NotificationAction(index = 1, title = "Reply", remoteInput = true, remoteInputLabel = "Message"),
+            ),
+            hasContentIntent = true,
+        )
+        assertEquals(withActions, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(withActions)))
+        assertEquals(withActions, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(withActions)))
     }
 
     @Test

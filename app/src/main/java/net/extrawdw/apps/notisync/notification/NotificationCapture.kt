@@ -1,8 +1,13 @@
 package net.extrawdw.apps.notisync.notification
 
+import android.app.ActivityOptions
 import android.app.Notification
 import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.RemoteInput
+import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -13,13 +18,17 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.analytics.perfSpan
+import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
+import net.extrawdw.notisync.protocol.ActionEvent
+import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationAction
 import java.util.concurrent.ConcurrentHashMap
 
 /** Turns a platform [StatusBarNotification] into the normalized, transport-neutral form. */
@@ -99,7 +108,54 @@ class NotificationNormalizer(private val pm: PackageManager) {
             shortcutId = shortcutId,
             conversationId = runCatching { channel?.conversationId }.getOrNull(),
             parentChannelId = runCatching { channel?.parentChannelId }.getOrNull(),
+            actions = mirrorableActions(n),
+            hasContentIntent = n.contentIntent != null,
         )
+    }
+
+    /**
+     * The source's action row as mirrors may show it: the visible buttons the origin can re-fire on a
+     * peer's [ActionEvent]. Skipped: contextual suggestions (ephemeral, regenerated per content),
+     * auth-gated actions (firing one remotely would bypass this device's lock), intent-less
+     * placeholders, and choice-only remote inputs (firing without a free-form result would no-op).
+     * [NotificationAction.index] is the position in the RAW array — the perform side indexes back
+     * into `notification.actions` directly — so the exported list can be sparse. Capped at the
+     * platform shade's own button limit.
+     */
+    private fun mirrorableActions(n: Notification): List<NotificationAction> {
+        val actions = n.actions ?: return emptyList()
+        val out = ArrayList<NotificationAction>(minOf(actions.size, MAX_MIRRORED_ACTIONS))
+        for ((index, action) in actions.withIndex()) {
+            if (out.size == MAX_MIRRORED_ACTIONS) break
+            if (action?.actionIntent == null) continue
+            val title = action.title?.toString()?.takeIf { it.isNotBlank() } ?: continue
+            if (runCatching { action.isContextual }.getOrDefault(false)) continue
+            if (runCatching { action.isAuthenticationRequired }.getOrDefault(false)) continue
+            val remoteInputs = action.remoteInputs.orEmpty()
+            val freeForm = remoteInputs.firstOrNull { it.allowFreeFormInput }
+            if (remoteInputs.isNotEmpty() && freeForm == null) continue
+            out.add(
+                NotificationAction(
+                    index = index,
+                    title = title,
+                    remoteInput = freeForm != null,
+                    remoteInputLabel = freeForm?.label?.toString(),
+                    semanticAction = action.semanticAction,
+                    // Compat-only metadata (no framework getter): absent = no claim, so a mirror only
+                    // shows "check on device" feedback when the source app explicitly declared UI.
+                    showsUserInterface = action.extras.getBoolean(EXTRA_SHOWS_USER_INTERFACE, false),
+                )
+            )
+        }
+        return out
+    }
+
+    private companion object {
+        /** Mirrors the platform shade's visible-action cap; also bounds the E2E payload. */
+        const val MAX_MIRRORED_ACTIONS = 3
+
+        /** NotificationCompat's `showsUserInterface` marker (androidx writes it into action extras). */
+        const val EXTRA_SHOWS_USER_INTERFACE = "android.support.action.showsUserInterface"
     }
 
     private fun mapImportance(importance: Int): MirrorImportance? = when (importance) {
@@ -141,7 +197,7 @@ class NotificationNormalizer(private val pm: PackageManager) {
  * platform binds it automatically) — never a foreground service. Offloads all work to the app scope
  * and backfills active notifications when (re)connected so missed posts are recovered.
  */
-class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler {
+class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler, OriginalActionPerformer {
 
     private val app get() = applicationContext as NotiSyncApp
     private val normalizer by lazy { NotificationNormalizer(packageManager) }
@@ -190,6 +246,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
     override fun onListenerConnected() {
         app.runWhenGraphReady { graph ->
             graph.mirrorEngine?.originalCanceler = this
+            graph.mirrorEngine?.originalActionPerformer = this
             // Backfill on (re)connect, but don't RE-send notifications we already mirrored before a restart
             // (e.g. after a NotiSync update). They're still registered so their dismissals sync — only the
             // SEND is gated by the persisted high-water mark of mirrored post times.
@@ -246,6 +303,89 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler 
 
     override fun cancel(sourceKey: String) {
         runCatching { cancelNotification(sourceKey) }
+    }
+
+    /**
+     * A peer acted on a mirror of one of our originals: replay it on the real notification. Runs on
+     * the channel's delivery thread (binder + PendingIntent.send are safe off-main). Best-effort —
+     * if the original is gone, its action row shifted, or the OS refuses the send, the event is
+     * simply dropped (the peer's mirror stays in whatever state the origin app leaves it).
+     */
+    override fun perform(event: ActionEvent) {
+        runCatching {
+            val sbn = getActiveNotifications(arrayOf(event.sourceKey))?.firstOrNull() ?: run {
+                Log.d(TAG, "skip action: original gone kind=${event.kind}")
+                return
+            }
+            when (event.kind) {
+                ActionKind.TAP -> openOriginal(sbn)
+                ActionKind.PERFORM -> performOriginalAction(sbn, event)
+            }
+        }.onFailure { Log.w(TAG, "perform action failed", it) }
+    }
+
+    /**
+     * Replays a shade tap: fire the content intent, then — exactly like SystemUI's click handling —
+     * dismiss an auto-cancel notification, propagating the dismissal to peers (our own listener
+     * cancel echoes as REASON_LISTENER_CANCEL, which the reason allowlist ignores, so dismissLocal
+     * carries the sync instead).
+     */
+    private fun openOriginal(sbn: StatusBarNotification) {
+        val n = sbn.notification
+        val pi = n.contentIntent ?: return
+        sendAllowingBackgroundStart(pi, fillIn = null)
+        if (n.flags and Notification.FLAG_AUTO_CANCEL == 0) return
+        val graph = app.graphIfReady ?: return
+        val eng = graph.mirrorEngine ?: return
+        val clientId = graph.clientId ?: return
+        graph.scope.launch { runCatching { eng.dismissLocal(clientId, sbn.key) } }
+        runCatching { cancelNotification(sbn.key) }
+    }
+
+    private fun performOriginalAction(sbn: StatusBarNotification, event: ActionEvent) {
+        val action = sbn.notification.actions?.getOrNull(event.actionIndex) ?: return
+        // The action row may have been rebuilt while the event was in flight (the app updated the
+        // notification): the echoed title must still match, else drop rather than fire a different button.
+        if (event.actionTitle != null && action.title?.toString() != event.actionTitle) {
+            Log.d(TAG, "skip stale action idx=${event.actionIndex}")
+            return
+        }
+        val pi = action.actionIntent ?: return
+        val reply = event.remoteInputText
+        if (reply.isNullOrEmpty()) {
+            sendAllowingBackgroundStart(pi, fillIn = null)
+            return
+        }
+        // Feed the reply into every free-form RemoteInput the action declares — the result key never
+        // travels the mesh; it's re-derived from the live action, so it stays correct across updates.
+        val remoteInputs = action.remoteInputs?.takeIf { it.isNotEmpty() } ?: return
+        val results = Bundle()
+        for (ri in remoteInputs) if (ri.allowFreeFormInput) results.putCharSequence(ri.resultKey, reply)
+        val fillIn = Intent()
+        RemoteInput.addResultsToIntent(remoteInputs, fillIn, results)
+        RemoteInput.setResultsSource(fillIn, RemoteInput.SOURCE_FREE_FORM_INPUT)
+        sendAllowingBackgroundStart(pi, fillIn)
+    }
+
+    /**
+     * PendingIntent.send with the SENDER-side background-activity-start opt-in when the target is an
+     * activity, so a content intent / UI action uses whatever BAL privilege we hold (e.g. a granted
+     * "Display over other apps"). The creator-mode option must NOT be set here — it is reserved for
+     * the app that CREATES a PendingIntent, and Android 16 hard-throws when a sender supplies it
+     * (15 silently reset it). The OS may still suppress the launch when neither app holds a BAL
+     * exemption — accepted: the send itself always goes through. Broadcast/service actions (the
+     * common Reply / Mark as read) get no options — ActivityOptions on a non-activity send is
+     * rejected on Android 14+.
+     */
+    private fun sendAllowingBackgroundStart(pi: PendingIntent, fillIn: Intent?) {
+        val options = if (pi.isActivity) {
+            ActivityOptions.makeBasic()
+                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .toBundle()
+        } else {
+            null
+        }
+        pi.send(this, 0, fillIn, null, null, null, options)
     }
 
     private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?, graph: AppGraph) {

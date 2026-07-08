@@ -81,6 +81,10 @@
         <item quantity="other">updated notification filters (%1$d rules)</item>
     </plurals>
     <string name="activity_detail_filters_cleared">cleared notification filters</string>
+    <string name="activity_detail_action_to">"“%1$s” sent to %2$s"</string>
+    <string name="activity_detail_tap_to">opening on %1$s</string>
+    <string name="activity_detail_action_by">"“%1$s” by %2$s"</string>
+    <string name="activity_detail_tap_by">opened by %1$s</string>
     <string name="activity_trust_prompt_new_trust">new device</string>
     <string name="activity_trust_prompt_re_trust">rejoining device</string>
     <string name="activity_trust_prompt_new_revoke">device removal</string>
@@ -268,6 +272,10 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">You</string>
     <string name="mirror_via">via %1$s</string>
+    <!-- Toast after tapping a mirror / pressing a UI-opening mirrored action: the real content opened on the origin device. -->
+    <string name="mirror_check_on_device">Check on %1$s</string>
+    <!-- Fallback reply-field hint for a mirrored remote-input action whose producer sent no label. -->
+    <string name="mirror_reply_hint">Reply</string>
     <!-- Channel-group label for a bridged iPhone whose name is not yet known ("iPhone" is not localized). -->
     <string name="mirror_ios_device_fallback">iPhone</string>
     <plurals name="mirror_group_summary_count">

@@ -120,9 +120,9 @@ final class NotificationService: UNNotificationServiceExtension {
                 // tombstone sweep removes it on the next wake / app pass. A copy NEWER than its tombstone
                 // clears it (the source re-posted the key) and renders normally.
                 var suppressed = DismissalTombstoneStore.shouldSuppress(pair, postTime: n.postTime)
-                // Register the per-channel category (with the Dismiss action) for this push (#15).
+                // Register the category (channel mapping or mirrored action row + Dismiss) for this push.
                 if !filterAlert, !suppressed {
-                    MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+                    MirrorCategoryRegistry.ensureRegistered(for: n)
                 }
                 // A messaging push renders its newest message as a communication notification (the alert
                 // fast-path shows one message; the app posts the full thread on its next foreground, #13).

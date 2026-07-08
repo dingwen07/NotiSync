@@ -299,6 +299,76 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun capturedNotification_actionsRoundTrip() {
+        val notif = CapturedNotification(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "0|com.example|1|tag",
+            packageName = "com.example.chat",
+            appLabel = "Chat",
+            title = "Alice",
+            text = "See you soon",
+            postTime = 1_750_000_000_000L,
+            actions = listOf(
+                NotificationAction(index = 0, title = "Mark as read", semanticAction = 2),
+                NotificationAction(
+                    index = 2, title = "Reply", remoteInput = true,
+                    remoteInputLabel = "Message", semanticAction = 1,
+                ),
+                NotificationAction(index = 3, title = "View", showsUserInterface = true),
+            ),
+            hasContentIntent = true,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
+        assertEquals(notif, decoded)
+        // The sparse index survives verbatim — it points into the ORIGIN's raw action array.
+        assertEquals(listOf(0, 2, 3), decoded.actions.map { it.index })
+        assertTrue(decoded.actions[1].remoteInput)
+        assertEquals("Message", decoded.actions[1].remoteInputLabel)
+        assertTrue(decoded.actions[2].showsUserInterface)
+        assertTrue(decoded.hasContentIntent)
+    }
+
+    @Test
+    fun capturedNotification_actionFieldsDefaultEmpty_forBackCompat() {
+        // An older producer (no actions/hasContentIntent columns) must decode to "no actions, no
+        // tap-open" — the consumer-side gate against sending ACTION events to a peer that cannot
+        // handle MessageType.ACTION.
+        val legacy = CapturedNotification(
+            sourceClientId = ClientId("phone"), sourceKey = "k", packageName = "p",
+            appLabel = "App", postTime = 1L,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(legacy))
+        assertTrue(decoded.actions.isEmpty())
+        assertFalse(decoded.hasContentIntent)
+    }
+
+    @Test
+    fun actionEvent_performAndTapRoundTrip() {
+        val perform = ActionEvent(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "0|com.example|1|tag",
+            kind = ActionKind.PERFORM,
+            actionIndex = 2,
+            actionTitle = "Reply",
+            remoteInputText = "On my way!",
+            actedAt = 1_750_000_000_000L,
+        )
+        assertEquals(perform, ProtocolCodec.decodeFromCbor<ActionEvent>(ProtocolCodec.encodeToCbor(perform)))
+
+        val tap = ActionEvent(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "ancs|iphone-1|net.whatsapp.WhatsApp|42",
+            kind = ActionKind.TAP,
+            actedAt = 1L,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<ActionEvent>(ProtocolCodec.encodeToCbor(tap))
+        assertEquals(ActionKind.TAP, decoded.kind)
+        assertEquals(0, decoded.actionIndex)
+        assertNull(decoded.actionTitle)
+        assertNull(decoded.remoteInputText)
+    }
+
+    @Test
     fun assetSync_cborRoundTrips() {
         val sync = AssetSync(
             kind = AssetSyncKind.ASSET_READY,

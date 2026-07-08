@@ -60,6 +60,30 @@ extension NotiSyncRuntime {
         }
     }
 
+    // MARK: Mirrored actions
+
+    /// The user acted on a mirrored notification (action button / tap): unicast the ActionEvent to the
+    /// ORIGIN client, which replays it on the real notification. HIGH-urgency on the broker (it wakes
+    /// the origin like a fresh notification), best-effort here — a press must never surface an error UI.
+    func sendMirrorAction(_ event: ActionEvent) async {
+        guard let engine, let broker else { return }
+        // Same send-initiated repair as a dismissal: if the origin just rotated, pull its current
+        // key-epoch first so the event doesn't black-hole.
+        await repairUnsealablePeers()
+        do {
+            if let env = try await Task.detached(priority: .userInitiated, operation: {
+                try engine.sealAction(event)
+            }).value {
+                try await broker.send(env)
+                addActivity(.sent, .actionSent, detail: .text, detailArg: event.actionTitle ?? "")
+            } else {
+                addActivity(.sent, .actionSent, detail: .noPeers)
+            }
+        } catch {
+            record(error: error, domain: .envelopeDelivery)
+        }
+    }
+
     /// #4 — refetch the current key-epoch for every trusted peer we hold no usable epoch for, so an
     /// attempted send (e.g. a dismissal) can reach a peer that has rotated since we last converged.
     private func repairUnsealablePeers() async {

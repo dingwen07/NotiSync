@@ -235,6 +235,10 @@ enum LocalizedText {
             return String(localized: "activity.title.remoteDismissal",
                           defaultValue: "Remote dismissal",
                           comment: "Activity title for a dismissal received from another device.")
+        case .actionSent:
+            return String(localized: "activity.title.actionSent",
+                          defaultValue: "Action sent",
+                          comment: "Activity title for a mirrored-notification action (button press or tap) sent to the origin device.")
         case .readAll:
             return String(localized: "activity.title.readAll",
                           defaultValue: "Marked all as read",

@@ -170,6 +170,21 @@
             android:name=".notification.DismissReceiver"
             android:exported="false" />
 
+        <!-- Fires when the user presses a mirrored action button (incl. inline reply), to perform it on the origin. -->
+        <receiver
+            android:name=".notification.MirrorActionReceiver"
+            android:exported="false" />
+
+        <!-- No-UI trampoline for tapping a mirrored notification: collapses the shade, toasts
+             "Check on <device>", and asks the origin to open the real notification. -->
+        <activity
+            android:name=".notification.MirrorTapActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:noHistory="true"
+            android:taskAffinity=""
+            android:theme="@android:style/Theme.NoDisplay" />
+
         <!-- Shares decrypted private-asset blobs with System UI for MessagingStyle inline media. -->
         <provider
             android:name="androidx.core.content.FileProvider"

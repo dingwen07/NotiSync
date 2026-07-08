@@ -24,4 +24,9 @@ object TestActivityText : ActivityText {
     override fun pairedTitle() = "Paired"
     override fun filtersUpdated(count: Int) = "updated filters ($count)"
     override fun filtersCleared() = "cleared filters"
+    override fun actionToDevice(action: String?, name: String) =
+        if (action != null) "\"$action\" sent to $name" else "opening on $name"
+
+    override fun actionByDevice(action: String?, name: String) =
+        if (action != null) "\"$action\" by $name" else "opened by $name"
 }

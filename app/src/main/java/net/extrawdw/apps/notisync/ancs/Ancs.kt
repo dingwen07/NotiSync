@@ -90,6 +90,8 @@ object Ancs {
         val isSilent get() = eventFlags and FLAG_SILENT != 0
         val isImportant get() = eventFlags and FLAG_IMPORTANT != 0
         val isPreExisting get() = eventFlags and FLAG_PRE_EXISTING != 0
+        val hasPositiveAction get() = eventFlags and FLAG_POSITIVE_ACTION != 0
+        val hasNegativeAction get() = eventFlags and FLAG_NEGATIVE_ACTION != 0
         val isAdded get() = eventId == EVENT_ADDED
         val isModified get() = eventId == EVENT_MODIFIED
         val isRemoved get() = eventId == EVENT_REMOVED
@@ -110,11 +112,18 @@ object Ancs {
     // ---- Control Point requests ----
 
     /**
-     * GetNotificationAttributes request: AppIdentifier, Title, Subtitle, Message, Date. Per the spec only
-     * the Title/Subtitle/Message attributes take a 2-byte max-length parameter ([maxTextLen]); AppIdentifier
-     * and Date do not. Must be kept in sync with [NOTIFICATION_ATTRS] (parse order).
+     * GetNotificationAttributes request: AppIdentifier, Title, Subtitle, Message, Date — plus, when
+     * [includeActionLabels], the Positive/Negative Action Labels (requested only for a notification whose
+     * EventFlags advertise an action; iOS answers an inapplicable label as zero-length). Per the spec only
+     * the Title/Subtitle/Message attributes take a 2-byte max-length parameter ([maxTextLen]); AppIdentifier,
+     * Date, and the action labels do not. Must be kept in sync with [NOTIFICATION_ATTRS] (parse order);
+     * [notificationAttrCount] is the matching response-attribute count.
      */
-    fun buildGetNotificationAttributes(uid: Int, maxTextLen: Int = 2048): ByteArray {
+    fun buildGetNotificationAttributes(
+        uid: Int,
+        maxTextLen: Int = 2048,
+        includeActionLabels: Boolean = false,
+    ): ByteArray {
         val out = ByteArrayOutputStream()
         out.write(CMD_GET_NOTIFICATION_ATTRIBUTES)
         writeLe32(out, uid)
@@ -123,8 +132,16 @@ object Ancs {
         out.write(ATTR_SUBTITLE); writeLe16(out, maxTextLen)
         out.write(ATTR_MESSAGE); writeLe16(out, maxTextLen)
         out.write(ATTR_DATE)
+        if (includeActionLabels) {
+            out.write(ATTR_POSITIVE_ACTION_LABEL)
+            out.write(ATTR_NEGATIVE_ACTION_LABEL)
+        }
         return out.toByteArray()
     }
+
+    /** Response-attribute count for a [buildGetNotificationAttributes] request with the same flag. */
+    fun notificationAttrCount(includeActionLabels: Boolean): Int =
+        NOTIFICATION_ATTRS.size + if (includeActionLabels) 2 else 0
 
     /** GetAppAttributes request: the NUL-terminated app identifier followed by the DisplayName attribute id. */
     fun buildGetAppAttributes(appId: String): ByteArray {
@@ -153,6 +170,8 @@ object Ancs {
         val subtitle get() = values[ATTR_SUBTITLE]?.takeIf { it.isNotEmpty() }
         val message get() = values[ATTR_MESSAGE]?.takeIf { it.isNotEmpty() }
         val date get() = values[ATTR_DATE]?.takeIf { it.isNotEmpty() }
+        val positiveActionLabel get() = values[ATTR_POSITIVE_ACTION_LABEL]?.takeIf { it.isNotEmpty() }
+        val negativeActionLabel get() = values[ATTR_NEGATIVE_ACTION_LABEL]?.takeIf { it.isNotEmpty() }
     }
 
     /**

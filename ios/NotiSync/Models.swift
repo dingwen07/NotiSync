@@ -65,6 +65,7 @@ enum ActivityTitleToken: String, Codable {
     case dismissedLocally
     case dismissed
     case remoteDismissal
+    case actionSent
     case readAll
     case relayDrained
     case assetSync

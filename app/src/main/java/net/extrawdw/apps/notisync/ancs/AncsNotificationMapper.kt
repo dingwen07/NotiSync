@@ -5,6 +5,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationAction
 import net.extrawdw.notisync.protocol.OriginPlatform
 
 /** A fully-assembled ANCS notification: the source packet + fetched attributes + resolved app name. */
@@ -16,6 +17,9 @@ data class AncsRecord(
     val subtitle: String?,
     val message: String?,
     val date: String?,
+    /** ANCS Positive/Negative Action Labels — fetched only when the EventFlags advertise an action. */
+    val positiveActionLabel: String? = null,
+    val negativeActionLabel: String? = null,
 )
 
 /**
@@ -65,7 +69,26 @@ object AncsNotificationMapper {
             originDeviceName = iphoneName,
             iosBundleId = record.bundleId,
             originDeviceId = iphoneId,
+            actions = mapActions(record),
+            // hasContentIntent stays false: ANCS has no "open on iPhone" command, so peers must not
+            // offer tap-to-open for a bridged capture.
         )
+    }
+
+    /**
+     * Best-effort ANCS action mirroring, indexed by ANCS ActionID (0 = positive, 1 = negative) so a
+     * peer's [net.extrawdw.notisync.protocol.ActionEvent] maps straight onto PerformNotificationAction.
+     * A lone negative action is deliberately NOT mirrored: for most iOS notifications it's just
+     * "Clear", which dismissal sync already performs on a swipe — a redundant button on every mirror.
+     * Paired with a positive action it's a real choice (incoming call: Answer/Decline), so both ship.
+     */
+    private fun mapActions(record: AncsRecord): List<NotificationAction> {
+        val positive = record.positiveActionLabel?.takeIf { it.isNotBlank() } ?: return emptyList()
+        val negative = record.negativeActionLabel?.takeIf { it.isNotBlank() }
+        return buildList {
+            add(NotificationAction(index = Ancs.ACTION_POSITIVE, title = positive))
+            if (negative != null) add(NotificationAction(index = Ancs.ACTION_NEGATIVE, title = negative))
+        }
     }
 
     private fun mapCategory(categoryId: Int): MirrorCategory = when (categoryId) {

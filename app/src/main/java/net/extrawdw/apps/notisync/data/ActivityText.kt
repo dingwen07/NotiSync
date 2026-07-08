@@ -23,6 +23,12 @@ interface ActivityText {
     fun pairedTitle(): String
     fun filtersUpdated(count: Int): String
     fun filtersCleared(): String
+
+    /** Outbound mirrored-action row: `"Reply" sent to Pixel 9`, or `Opening on Pixel 9` for a tap (null action). */
+    fun actionToDevice(action: String?, name: String): String
+
+    /** Origin-side performed-action row: `"Reply" by Pixel Tablet`, or `Opened by Pixel Tablet` for a tap. */
+    fun actionByDevice(action: String?, name: String): String
 }
 
 class AndroidActivityText(private val context: Context) : ActivityText {
@@ -85,6 +91,14 @@ class AndroidActivityText(private val context: Context) : ActivityText {
 
     override fun filtersCleared(): String =
         context.getString(R.string.activity_detail_filters_cleared)
+
+    override fun actionToDevice(action: String?, name: String): String =
+        if (action != null) context.getString(R.string.activity_detail_action_to, action, name)
+        else context.getString(R.string.activity_detail_tap_to, name)
+
+    override fun actionByDevice(action: String?, name: String): String =
+        if (action != null) context.getString(R.string.activity_detail_action_by, action, name)
+        else context.getString(R.string.activity_detail_tap_by, name)
 
     private fun trustPromptLabel(prompt: TrustPrompt): String = when (prompt) {
         TrustPrompt.NEW_TRUST -> context.getString(R.string.activity_trust_prompt_new_trust)

@@ -19,6 +19,7 @@ object SwiftProtocolCodec {
     fun encodeClientKeyEpoch(value: ClientKeyEpoch): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeRouteClaim(value: RouteClaim): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeDismissEvent(value: DismissEvent): ByteArray = ProtocolCodec.encodeToCbor(value)
+    fun encodeActionEvent(value: ActionEvent): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeClientCard(value: ClientCard): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeCardDelivery(value: CardDelivery): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeDataSync(value: DataSync): ByteArray = ProtocolCodec.encodeToCbor(value)
@@ -54,6 +55,9 @@ object SwiftProtocolCodec {
 
     @Throws(Exception::class)
     fun decodeDismissEvent(bytes: ByteArray): DismissEvent = ProtocolCodec.decodeFromCbor(bytes)
+
+    @Throws(Exception::class)
+    fun decodeActionEvent(bytes: ByteArray): ActionEvent = ProtocolCodec.decodeFromCbor(bytes)
 
     @Throws(Exception::class)
     fun decodeCapturedNotification(bytes: ByteArray): CapturedNotification = ProtocolCodec.decodeFromCbor(bytes)

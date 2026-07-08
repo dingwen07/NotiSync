@@ -152,7 +152,11 @@ class Broker(
     }
 
     suspend fun send(envelopeBytes: ByteArray, envelope: Envelope): SendResult {
-        val urgency = if (envelope.typ == MessageType.NOTIFICATION) Urgency.HIGH else Urgency.NORMAL
+        // ACTION is a user standing at another device waiting for the origin to act (reply text,
+        // open-on-tap), so it wakes like a fresh notification; only DISMISSAL/DATA_SYNC coast.
+        val urgency =
+            if (envelope.typ == MessageType.NOTIFICATION || envelope.typ == MessageType.ACTION) Urgency.HIGH
+            else Urgency.NORMAL
         val delivered = mutableListOf<ClientId>()
         val missing = mutableListOf<ClientId>()
         val invalid = mutableListOf<ClientId>()

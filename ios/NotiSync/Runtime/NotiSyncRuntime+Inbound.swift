@@ -105,6 +105,11 @@ extension NotiSyncRuntime {
                 case let .dataSync(ds):
                     span.attribute("inbound_kind", "data_sync")
                     await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
+                case let .unsupported(typ):
+                    // ACTION (or a future type) addressed to us by mistake — iOS never performs
+                    // actions (it never captures). Ack-and-drop; leaving it unacked would redeliver.
+                    span.attribute("inbound_kind", "unsupported")
+                    log.info("dropping unsupported inbound typ=\(typ.rawValue, privacy: .public)")
                 }
                 let s = settings()
                 if s.lastDeliveryMode != mode.rawValue { s.lastDeliveryMode = mode.rawValue }
@@ -196,9 +201,9 @@ extension NotiSyncRuntime {
             NotificationFilterStore.shouldFilterNotification(n)
         }.value
         guard !filtered else { span.attribute("result", "filtered"); return }
-        // Register the per-channel category (carrying the Dismiss action) before posting under it (#15).
+        // Register the category (channel mapping or mirrored action row) before posting under it (#15).
         await Task.detached(priority: .userInitiated) {
-            MirrorCategoryRegistry.ensureRegistered(MirrorPresentation.categoryIdentifier(for: n))
+            MirrorCategoryRegistry.ensureRegistered(for: n)
         }.value
         if n.style == .MESSAGING, !n.messages.isEmpty {
             await postMessagingMirror(n, messageId: messageId, mode: mode)

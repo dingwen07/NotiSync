@@ -15,6 +15,8 @@ import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
+import net.extrawdw.notisync.protocol.ActionEvent
+import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AttestationType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.Base32
@@ -995,6 +997,61 @@ class BrokerFlowTest {
         broker.send(ProtocolCodec.encodeToCbor(second), second)
         assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
         assertNull(captured.last()["pnc"])
+    }
+
+    @Test
+    fun actionPushWakesLikeANotification_highUrgencyQuietPayload() = runBlocking {
+        val tmp = File.createTempFile("notisync-action", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        val config = ServerConfig.fromEnv()
+        val db = NotiSyncDb.connect(config)
+        data class Wake(val data: Map<String, String>, val urgency: Urgency)
+        val captured = mutableListOf<Wake>()
+        val capturingPush = object : PushTransport {
+            override suspend fun wake(route: StoredRoute, data: Map<String, String>, urgency: Urgency): PushOutcome {
+                captured += Wake(data, urgency)
+                return PushOutcome.DELIVERED
+            }
+        }
+        val broker = Broker(RouteStore(db), RelayStore(db), PrivateAssetStore(db), EpochStore(db), WebSocketHub(), capturingPush, config)
+
+        val sender = SoftwareIdentitySigner.generate()
+        val origin = SoftwareIdentitySigner.generate()
+        val originHpke = Hpke.generateKeyPair()
+        val originOp = SoftwareOperationalSigner.generate(origin.clientId, signerEpoch = 1)
+        assertTrue(broker.uploadKeyEpoch(keyEpochBlob(origin, originOp, originHpke, epoch = 1)))
+        assertEquals(1, broker.uploadRoutes(listOf(routeBlob(origin, "fake-token"))))
+
+        // An ACTION is unicast to the origin client and must wake it at HIGH urgency (a user is
+        // waiting at the mirror), while staying a quiet mtyp=ACTION payload with no pnc hint.
+        val body = ProtocolCodec.encodeToCbor(
+            ActionEvent(
+                sourceClientId = origin.clientId, sourceKey = "0|com.example.chat|7|null",
+                kind = ActionKind.PERFORM, actionIndex = 1, actionTitle = "Reply",
+                remoteInputText = "On my way!", actedAt = 1_750_000_000_000L,
+            )
+        )
+        val action = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.ACTION, bodyPlaintext = body,
+            recipients = listOf(RecipientKey(origin.clientId, originHpke.publicKeyset)),
+            messageId = "01J0ACT0001", seq = 1L, createdAt = 1_750_000_000_000L,
+        )
+        val result = broker.send(ProtocolCodec.encodeToCbor(action), action)
+        assertEquals(listOf(origin.clientId), result.delivered)
+        assertEquals(Urgency.HIGH, captured.last().urgency)
+        assertEquals(MessageType.ACTION.name, captured.last().data["mtyp"])
+        assertNull(captured.last().data["pnc"])
+
+        // Contrast pin: a DISMISSAL still coasts at NORMAL urgency.
+        val dismissal = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.DISMISSAL,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DismissEvent(sender.clientId, "k", 1L)),
+            recipients = listOf(RecipientKey(origin.clientId, originHpke.publicKeyset)),
+            messageId = "01J0ACT0D01", seq = 2L, createdAt = 1_750_000_000_100L,
+        )
+        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal)
+        assertEquals(Urgency.NORMAL, captured.last().urgency)
     }
 
     @Test

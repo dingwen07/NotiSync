@@ -363,12 +363,42 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func handleNotificationResponse(_ response: UNNotificationResponse) async {
         let id = response.actionIdentifier
-        guard id == UNNotificationDismissActionIdentifier || id == MirrorPresentation.dismissActionId else { return }
-        await bringUpCore()
-        await drainPendingInbox()
         let info = response.notification.request.content.userInfo
         guard let scid = info["sourceClientId"] as? String, let sk = info["sourceKey"] as? String else { return }
-        await locallyDismiss(sourceClientId: scid, sourceKey: sk)
+        if id == UNNotificationDismissActionIdentifier || id == MirrorPresentation.dismissActionId {
+            await bringUpCore()
+            await drainPendingInbox()
+            await locallyDismiss(sourceClientId: scid, sourceKey: sk)
+            return
+        }
+        // Tap (default action): ask the origin to open the real notification — only when the producer
+        // declared a content intent (old producers and ANCS bridges can't honor a TAP). The app opening
+        // here is unavoidable on iOS; the origin opening too is the mirror parity.
+        if id == UNNotificationDefaultActionIdentifier {
+            guard (info["hasContentIntent"] as? Bool) == true else { return }
+            await bringUpCore()
+            await sendMirrorAction(
+                ActionEvent(sourceClientId: scid, sourceKey: sk, kind: .TAP, actedAt: NotiSyncEngine.nowMillis()))
+            return
+        }
+        // A mirrored action button ("notisync.act.<index>"): unicast a PERFORM to the origin, echoing the
+        // title recorded in userInfo so the origin can verify the action row hasn't shifted. Reply text
+        // rides along from the text-input action; an empty reply has nothing to perform.
+        if id.hasPrefix(MirrorPresentation.performActionPrefix),
+           let index = Int(id.dropFirst(MirrorPresentation.performActionPrefix.count)) {
+            let actions = info["actions"] as? [[String: Any]]
+            let action = actions?.first { ($0["index"] as? Int) == index }
+            let title = action?["title"] as? String
+            let isRemoteInput = (action?["remoteInput"] as? Bool) == true
+            let text = (response as? UNTextInputNotificationResponse)?.userText
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if isRemoteInput, text?.isEmpty != false { return }
+            await bringUpCore()
+            await sendMirrorAction(
+                ActionEvent(sourceClientId: scid, sourceKey: sk, kind: .PERFORM, actionIndex: index,
+                            actionTitle: title, remoteInputText: isRemoteInput ? text : nil,
+                            actedAt: NotiSyncEngine.nowMillis()))
+        }
     }
 
     func dismissNotification(sourceClientId: String, sourceKey: String) async {

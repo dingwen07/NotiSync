@@ -54,6 +54,55 @@ class AncsPacketParseTest {
     }
 
     @Test
+    fun parseSource_exposesActionFlags() {
+        val both = Ancs.parseSource(
+            byteArrayOf(0, (Ancs.FLAG_POSITIVE_ACTION or Ancs.FLAG_NEGATIVE_ACTION).toByte(), 1, 1, 7, 0, 0, 0)
+        )!!
+        assertTrue(both.hasPositiveAction)
+        assertTrue(both.hasNegativeAction)
+        val neither = Ancs.parseSource(byteArrayOf(0, 0, 1, 1, 7, 0, 0, 0))!!
+        assertEquals(false, neither.hasPositiveAction)
+        assertEquals(false, neither.hasNegativeAction)
+    }
+
+    @Test
+    fun buildGetNotificationAttributes_actionLabelsAppendWithoutLength() {
+        // Per the spec the action-label attributes take no max-length parameter — they append as bare ids.
+        val base = Ancs.buildGetNotificationAttributes(uid = 7, maxTextLen = 512)
+        val withLabels =
+            Ancs.buildGetNotificationAttributes(uid = 7, maxTextLen = 512, includeActionLabels = true)
+        assertArrayEquals(
+            base + byteArrayOf(
+                Ancs.ATTR_POSITIVE_ACTION_LABEL.toByte(),
+                Ancs.ATTR_NEGATIVE_ACTION_LABEL.toByte()
+            ),
+            withLabels,
+        )
+        assertEquals(Ancs.NOTIFICATION_ATTRS.size, Ancs.notificationAttrCount(false))
+        assertEquals(Ancs.NOTIFICATION_ATTRS.size + 2, Ancs.notificationAttrCount(true))
+    }
+
+    @Test
+    fun parseNotificationAttributes_readsActionLabels_emptyNormalizesToNull() {
+        val full = ByteArrayOutputStream().apply {
+            write(0)
+            write(byteArrayOf(0x2A, 0x00, 0x00, 0x00)) // uid = 42
+            tuple(Ancs.ATTR_APP_IDENTIFIER, "com.apple.mobilephone")
+            tuple(Ancs.ATTR_TITLE, "Alice")
+            tuple(Ancs.ATTR_SUBTITLE, "")
+            tuple(Ancs.ATTR_MESSAGE, "Incoming call")
+            tuple(Ancs.ATTR_DATE, "20240912T194126")
+            tuple(Ancs.ATTR_POSITIVE_ACTION_LABEL, "Answer")
+            tuple(Ancs.ATTR_NEGATIVE_ACTION_LABEL, "") // iOS answers an inapplicable label as zero-length
+        }.toByteArray()
+        val attrCount = Ancs.notificationAttrCount(includeActionLabels = true)
+        assertNull(Ancs.parseNotificationAttributes(full.copyOf(full.size - 1), attrCount))
+        val parsed = Ancs.parseNotificationAttributes(full, attrCount)!!
+        assertEquals("Answer", parsed.positiveActionLabel)
+        assertNull(parsed.negativeActionLabel)
+    }
+
+    @Test
     fun parseNotificationAttributes_reassemblesAcrossFragmentsAndDecodesUtf8() {
         // Build a full response: cmd 0, uid, then appId/title/subtitle/message/date tuples.
         val emoji = "Hi 👋" // multi-byte UTF-8 to prove length is byte-based, not char-based

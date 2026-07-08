@@ -71,6 +71,33 @@ data class AssetAad(
     val role: AssetRole,
 )
 
+/**
+ * One mirrorable action button of a [CapturedNotification]. Carries only what a consumer needs to
+ * *render* the button and what the origin needs to *locate* the real action again — never the
+ * PendingIntent, icon, or anything executable. The producer filters what it exports (Android skips
+ * contextual, auth-gated, and intent-less actions); a consumer renders the list as-is and reports a
+ * press back to the origin as an [ActionEvent].
+ */
+@Serializable
+data class NotificationAction(
+    /**
+     * Origin-scoped id, echoed back verbatim in [ActionEvent.actionIndex]: the position in the
+     * origin's raw `Notification.actions` array (ANDROID_LOCAL) or the ANCS ActionID (IOS_ANCS:
+     * 0 = positive, 1 = negative). Only the origin interprets it.
+     */
+    val index: Int,
+    val title: String,
+    /** True when the action accepts free-form text (Android RemoteInput) — mirror it as a reply field. */
+    val remoteInput: Boolean = false,
+    /** Placeholder for the reply field (RemoteInput.getLabel()) when the producer has one. */
+    val remoteInputLabel: String? = null,
+    /** Android `Notification.Action.SEMANTIC_ACTION_*` constant (0 = none). Rendering hint only. */
+    val semanticAction: Int = 0,
+    /** Origin hint that performing this opens UI *there* (Android `showsUserInterface`) — the
+     *  consumer should surface "check on <origin device>" feedback after sending the event. */
+    val showsUserInterface: Boolean = false,
+)
+
 /** One message in a MessagingStyle conversation. A null [sender] denotes the local user ("you"). */
 @Serializable
 data class ConversationMessage(
@@ -169,6 +196,16 @@ data class CapturedNotification(
      *  re-buzzing on every update; a genuinely new message is a separate post the app leaves alerting, so it
      *  still heads-up. Appended with a default so an older producer (no field) decodes unchanged. */
     val onlyAlertOnce: Boolean = false,
+
+    // --- Action mirroring (appended; empty/false from an older producer decodes unchanged) ---
+    /** Mirrorable action buttons, in origin display order. Empty = the source has none the producer
+     *  is willing to export (or an old producer). A non-empty list implies the producer handles
+     *  [MessageType.ACTION] events for this notification. */
+    val actions: List<NotificationAction> = emptyList(),
+    /** True when the origin can open this notification's UI on request — it has a content intent
+     *  and the producer handles [MessageType.ACTION] — so a consumer may offer tap-to-open-on-origin
+     *  (an [ActionKind.TAP] event). False for ANCS bridges (no such ANCS command) and old producers. */
+    val hasContentIntent: Boolean = false,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */
@@ -177,6 +214,41 @@ data class DismissEvent(
     val sourceClientId: ClientId,
     val sourceKey: String,
     val dismissedAt: Long,
+)
+
+/** What the user did on a mirrored notification. Append-only — keep CBOR ordinals stable. */
+@Serializable
+enum class ActionKind {
+    /** Pressed one of the mirrored action buttons ([CapturedNotification.actions]). */
+    PERFORM,
+
+    /** Tapped the notification body — the origin fires its content intent ("open it over there"). */
+    TAP,
+}
+
+/**
+ * The body of a [MessageType.ACTION] envelope: a user acted on a *mirrored* notification and the
+ * origin should replay it on the real one — fire an action's PendingIntent (with reply text fed
+ * into its RemoteInput), perform the ANCS action, or open the content intent on a TAP.
+ *
+ * Always unicast to [sourceClientId] (the only peer that can perform it); best-effort and NOT
+ * idempotent — the origin performs it at most once and simply drops it when the notification is
+ * already gone, its action row no longer matches, or the bridged iPhone is unreachable.
+ */
+@Serializable
+data class ActionEvent(
+    val sourceClientId: ClientId,
+    val sourceKey: String,
+    val kind: ActionKind,
+    /** The pressed action's [NotificationAction.index] — [ActionKind.PERFORM] only. */
+    val actionIndex: Int = 0,
+    /** The pressed action's mirrored title, echoed back so the origin can verify the action row
+     *  hasn't shifted since capture (a stale press must not fire a different button). */
+    val actionTitle: String? = null,
+    /** Free-form reply text for a [NotificationAction.remoteInput] action. */
+    val remoteInputText: String? = null,
+    /** Source-clock time of the user's press. */
+    val actedAt: Long,
 )
 
 /** Direction of an [AssetSync] item in the private-asset repair flow. */

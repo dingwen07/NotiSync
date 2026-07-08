@@ -10,6 +10,9 @@ nonisolated enum DecodedInbound: Sendable {
     case notification(CapturedNotification)
     case dismissal(DismissEvent)
     case dataSync(DataSync)
+    /// A type this platform doesn't consume (ACTION — iOS never captures, so it is never an origin
+    /// that could perform one). Verified + decrypted fine; the caller acks and drops it.
+    case unsupported(MessageType)
 }
 
 nonisolated enum EngineError: Error, LocalizedError {
@@ -266,6 +269,10 @@ nonisolated final class NotiSyncEngine: Sendable {
         case .NOTIFICATION: inbound = .notification(try ProtocolCodec.decodeCapturedNotification(body))
         case .DISMISSAL: inbound = .dismissal(try ProtocolCodec.decodeDismissEvent(body))
         case .DATA_SYNC: inbound = .dataSync(try ProtocolCodec.decodeDataSync(body))
+        // ACTION is Android-origin-only (the broker unicasts it to the capturing client); an iOS client
+        // can only see one through a routing bug. Don't throw — the item must still ack, or the relay
+        // redelivers it forever.
+        case .ACTION: inbound = .unsupported(.ACTION)
         }
         return (env, inbound)
     }
@@ -296,6 +303,18 @@ nonisolated final class NotiSyncEngine: Sendable {
                                            recipients: recipients, messageId: Self.newMessageId(),
                                            seq: Self.nextSeq(), createdAt: Self.nowMillis())
         }
+    }
+
+    /// Seal an ACTION event — the user acted on a mirrored notification — unicast to the ORIGIN client
+    /// only (the one peer that can replay it on the real notification). Operational-signed, like a
+    /// dismissal. Nil if the origin isn't a trusted, currently-sealable own-mesh peer.
+    func sealAction(_ event: ActionEvent) throws -> Envelope? {
+        guard let peer = trust().peers[event.sourceClientId], peer.isTrusted, peer.ownDevice,
+              let e = peer.sealable(now: Self.nowMillis()) else { return nil }
+        let body = ProtocolCodec.encode(event)
+        let recipient = EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
+        return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .ACTION, bodyPlaintext: body,
+                                       recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
     /// Seal a DATA_SYNC asset-repair request (consumer → provider) for assets that failed to fetch/decrypt.

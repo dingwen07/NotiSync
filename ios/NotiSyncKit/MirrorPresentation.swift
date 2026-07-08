@@ -19,6 +19,9 @@ nonisolated enum MirrorPresentation {
 
     static let baseCategoryId = "notisync.mirror"
     static let dismissActionId = "notisync.dismiss"
+    /// Prefix of a mirrored-action identifier; the suffix is the origin-scoped `NotificationAction.index`
+    /// ("notisync.act.2"), parsed back out in `handleNotificationResponse` to build the `ActionEvent`.
+    static let performActionPrefix = "notisync.act."
 
     /// Stable, reversible identifier per (sourceClientId, sourceKey) — plan §D.3. This is the unique mirror
     /// request id used for dismissal reconciliation; it is independent of the grouping `threadIdentifier`.
@@ -47,20 +50,52 @@ nonisolated enum MirrorPresentation {
 
     /// #15 — the Android notification channel maps to the iOS `categoryIdentifier`. Namespaced under our base
     /// category id (so we own it) and registered with the Dismiss action via `MirrorCategoryRegistry`. Falls
-    /// back to the base category when the source carried no channel.
+    /// back to the base category when the source carried no channel. A mirror carrying ACTIONS instead gets a
+    /// category per distinct action-row signature — iOS actions live on the category, so two mirrors share one
+    /// exactly when their buttons are identical; the channel plays no role there (it carries no behaviour).
     static func categoryIdentifier(for n: CapturedNotification) -> String {
+        if !n.actions.isEmpty {
+            return "\(baseCategoryId).ax.\(stableToken(actionSignature(n.actions)))"
+        }
         guard let channel = n.channelId?.nonBlank else { return baseCategoryId }
         return "\(baseCategoryId).ch.\(stableToken("\(n.packageName)\u{1f}\(channel)"))"
     }
 
-    /// A notification category (base or per-channel) carrying the Dismiss action. Every mirror category
-    /// includes `.customDismissAction` so a swipe is reported for dismissal sync.
-    static func category(id: String = baseCategoryId) -> UNNotificationCategory {
+    /// Everything that shapes the rendered action row — index (round-trip target), title, text-input
+    /// flag + placeholder, semantic hint. Same signature ⇒ same category.
+    static func actionSignature(_ actions: [NotificationAction]) -> String {
+        actions.map {
+            "\($0.index)\u{1f}\($0.title)\u{1f}\($0.remoteInput ? 1 : 0)\u{1f}\($0.remoteInputLabel ?? "")\u{1f}\($0.semanticAction)"
+        }.joined(separator: "\u{1e}")
+    }
+
+    /// A notification category carrying the mirrored action row (if any) plus the Dismiss action. Every
+    /// mirror category includes `.customDismissAction` so a swipe is reported for dismissal sync.
+    /// A remote-input action renders as a `UNTextInputNotificationAction` (iOS's inline reply); no action
+    /// uses `.foreground` — the press is performed on the ORIGIN device, so waking this app's UI would be
+    /// noise. Android's `SEMANTIC_ACTION_DELETE` maps to `.destructive` as the rendering hint.
+    static func category(id: String = baseCategoryId, actions: [NotificationAction] = []) -> UNNotificationCategory {
+        var unActions: [UNNotificationAction] = actions.map { action in
+            let identifier = "\(performActionPrefix)\(action.index)"
+            var options: UNNotificationActionOptions = []
+            if action.semanticAction == semanticActionDelete { options.insert(.destructive) }
+            if action.remoteInput {
+                return UNTextInputNotificationAction(
+                    identifier: identifier, title: action.title, options: options,
+                    textInputButtonTitle: action.title,
+                    textInputPlaceholder: action.remoteInputLabel ?? ""
+                )
+            }
+            return UNNotificationAction(identifier: identifier, title: action.title, options: options)
+        }
         let title = String(localized: "notification.action.dismiss", defaultValue: "Dismiss", comment: "Action title that dismisses a mirrored notification.")
-        let dismiss = UNNotificationAction(identifier: dismissActionId, title: title, options: [])
-        return UNNotificationCategory(identifier: id, actions: [dismiss], intentIdentifiers: [],
+        unActions.append(UNNotificationAction(identifier: dismissActionId, title: title, options: []))
+        return UNNotificationCategory(identifier: id, actions: unActions, intentIdentifiers: [],
                                       options: [.customDismissAction])
     }
+
+    /// Android `Notification.Action.SEMANTIC_ACTION_DELETE`.
+    private static let semanticActionDelete = 4
 
     // MARK: Single (non-messaging) content
 
@@ -192,6 +227,10 @@ nonisolated enum MirrorPresentation {
             "channelName": n.channelName ?? "",
             "appLabel": n.appLabel,
             "isClearable": n.isClearable,   // #14 — a swipe of a non-clearable mirror must not sync-dismiss
+            // Action round-trip: whether a tap should be replayed on the origin, and each mirrored
+            // action's title keyed by index (the echo the origin verifies before firing).
+            "hasContentIntent": n.hasContentIntent,
+            "actions": n.actions.map { ["index": $0.index, "title": $0.title, "remoteInput": $0.remoteInput] },
         ]
     }
 
@@ -296,38 +335,114 @@ nonisolated enum MirrorPresentation {
     }
 }
 
-/// Persisted set of per-channel notification category ids (App Group), so both the app and the NSE can
+/// Persisted set of mirror notification categories (App Group), so both the app and the NSE can
 /// (re)register the full set with `setNotificationCategories` — which replaces the whole category set on
-/// each call. Every registered category carries the Dismiss action, so a swipe is still reported regardless
-/// of which channel a notification used. Eventually consistent across the two processes.
+/// each call. Two families: per-channel ids (Dismiss action only — just the id needs persisting) and
+/// action categories (the id alone can't rebuild the buttons, so the action definitions persist as JSON).
+/// Every registered category carries the Dismiss action, so a swipe is still reported regardless of which
+/// category a notification used. Eventually consistent across the two processes.
 nonisolated enum MirrorCategoryRegistry {
     private static let key = "notisync.mirrorCategoryIds"
+    private static let actionKey = "notisync.mirrorActionCategories"
+    /// Distinct action-row signatures are few (apps reuse Reply / Mark as read); the cap only guards
+    /// against pathological growth. Eviction is oldest-first (insertion order).
+    private static let maxActionCategories = 128
     private static var defaults: UserDefaults? { UserDefaults(suiteName: NotiSyncConfig.appGroup) }
 
-    /// Ensure `id`'s category is registered (idempotent). No-op for the base category (always registered).
+    /// A persisted action category — enough to rebuild its `UNNotificationCategory` after a relaunch.
+    private struct StoredActionCategory: Codable {
+        struct StoredAction: Codable {
+            var index: Int
+            var title: String
+            var remoteInput: Bool
+            var remoteInputLabel: String?
+            var semanticAction: Int
+        }
+
+        var id: String
+        var actions: [StoredAction]
+
+        var notificationActions: [NotificationAction] {
+            actions.map {
+                NotificationAction(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
+                                   remoteInputLabel: $0.remoteInputLabel, semanticAction: $0.semanticAction)
+            }
+        }
+    }
+
+    /// Ensure the category this mirror posts under is registered (idempotent), including its action row.
+    static func ensureRegistered(for n: CapturedNotification) {
+        let id = MirrorPresentation.categoryIdentifier(for: n)
+        if n.actions.isEmpty {
+            ensureRegistered(id)
+        } else {
+            ensureActionCategory(id: id, actions: n.actions)
+        }
+    }
+
+    /// Ensure `id`'s (actionless, per-channel) category is registered. No-op for the base category.
     static func ensureRegistered(_ id: String) {
         guard id != MirrorPresentation.baseCategoryId else { registerAll(); return }
-        let channelIds = AppGroupStore.withLock(key) { () -> Set<String>? in
+        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory])? in
             var ids = Set(defaults?.stringArray(forKey: key) ?? [])
             guard !ids.contains(id) else { return nil }
             ids.insert(id)
             defaults?.set(Array(ids), forKey: key)
-            return ids
+            return (ids, loadActionCategories())
         }
-        if let channelIds { register(channelIds: channelIds) }
+        if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
     }
 
-    /// Re-register the base category plus all known channel categories (call on app launch).
+    private static func ensureActionCategory(id: String, actions: [NotificationAction]) {
+        let stored = StoredActionCategory(
+            id: id,
+            actions: actions.map {
+                .init(index: $0.index, title: $0.title, remoteInput: $0.remoteInput,
+                      remoteInputLabel: $0.remoteInputLabel, semanticAction: $0.semanticAction)
+            }
+        )
+        // Same lock as the channel-id family: both mutations replace the one registered category set.
+        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory])? in
+            var stack = loadActionCategories()
+            guard !stack.contains(where: { $0.id == id }) else { return nil }
+            stack.append(stored)
+            if stack.count > maxActionCategories { stack.removeFirst(stack.count - maxActionCategories) }
+            saveActionCategories(stack)
+            return (Set(defaults?.stringArray(forKey: key) ?? []), stack)
+        }
+        if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
+    }
+
+    /// Re-register the base category plus all known channel + action categories (call on app launch).
     static func registerAll() {
-        register(channelIds: Set(defaults?.stringArray(forKey: key) ?? []))
+        register(channelIds: Set(defaults?.stringArray(forKey: key) ?? []),
+                 actionCategories: loadActionCategories())
     }
 
-    private static func register(channelIds: Set<String>) {
+    private static func register(channelIds: Set<String>, actionCategories: [StoredActionCategory]) {
         var categories: [String: UNNotificationCategory] = [
             MirrorPresentation.baseCategoryId: MirrorPresentation.category(),
         ]
         for id in channelIds { categories[id] = MirrorPresentation.category(id: id) }
+        for stored in actionCategories {
+            categories[stored.id] = MirrorPresentation.category(id: stored.id, actions: stored.notificationActions)
+        }
         UNUserNotificationCenter.current().setNotificationCategories(Set(categories.values))
+    }
+
+    private static func loadActionCategories() -> [StoredActionCategory] {
+        (defaults?.stringArray(forKey: actionKey) ?? []).compactMap {
+            guard let data = $0.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(StoredActionCategory.self, from: data)
+        }
+    }
+
+    private static func saveActionCategories(_ stack: [StoredActionCategory]) {
+        let entries = stack.compactMap { item -> String? in
+            guard let data = try? JSONEncoder().encode(item) else { return nil }
+            return String(data: data, encoding: .utf8)
+        }
+        defaults?.set(entries, forKey: actionKey)
     }
 }
 

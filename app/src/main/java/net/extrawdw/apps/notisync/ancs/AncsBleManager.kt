@@ -27,6 +27,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.appicon.BundleIdMap
 import net.extrawdw.apps.notisync.appicon.IconResolver
+import net.extrawdw.notisync.protocol.ActionEvent
+import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -466,7 +468,13 @@ class AncsBleManager(
                 onRemoved(packet); return@launch
             }
             // The Notification Source packet has no app id — we must fetch attributes first, then filter.
-            val attrs = c.fetchNotificationAttributes(packet.notificationUid) ?: return@launch
+            // Action labels ride along only when a positive action is advertised: a lone negative action
+            // ("Clear") isn't mirrored anyway (see AncsNotificationMapper.mapActions), so the common
+            // notification skips the two extra attribute reads.
+            val attrs = c.fetchNotificationAttributes(
+                packet.notificationUid,
+                includeActionLabels = packet.hasPositiveAction,
+            ) ?: return@launch
             val bundleId = attrs.appId ?: return@launch
             val displayName = appNameCache.getOrPut(bundleId) {
                 BundleIdMap.displayName(bundleId) ?: c.fetchAppDisplayName(bundleId) ?: prettyName(
@@ -487,7 +495,9 @@ class AncsBleManager(
                 attrs.title,
                 attrs.subtitle,
                 attrs.message,
-                attrs.date
+                attrs.date,
+                positiveActionLabel = attrs.positiveActionLabel,
+                negativeActionLabel = attrs.negativeActionLabel,
             )
             val androidPkg = iconResolver.androidPackageForIos(bundleId, displayName)
             // A connect-time backlog (PreExisting) shouldn't blast every mesh device with old alerts: show it
@@ -570,6 +580,27 @@ class AncsBleManager(
         // Otherwise defer: clear it when it next replays. Keyed by content (not the rotating UID) so it matches
         // across the reconnect. Unknown only if this process never captured it — then it's a best-effort no-op.
         keyToContent[sourceKey]?.let { pendingClear.add(it) }
+    }
+
+    /**
+     * Perform a mesh peer's [ActionEvent] on the bridged iPhone — the ANCS positive/negative action a
+     * mirrored button represents ([net.extrawdw.notisync.protocol.NotificationAction.index] IS the ANCS
+     * ActionID). PERFORM only: ANCS has no "open" command, and peers never send TAP for a bridged capture
+     * (its `hasContentIntent` stays false). Unlike [dismissOnIphone] nothing is parked for a replay: firing
+     * "Answer" minutes later against a re-advertised notification would be wrong, not helpful — a stale
+     * event (link down, UID rotated) is simply dropped. A performed NEGATIVE action removes the
+     * notification on the iPhone; that EVENT_REMOVED is a genuine state change the mesh should learn about,
+     * so it is deliberately NOT self-clear-suppressed (unlike a dismissal echo, which already propagated).
+     */
+    fun performOnIphone(event: ActionEvent) {
+        if (event.kind != ActionKind.PERFORM) return
+        if (event.actionIndex != Ancs.ACTION_POSITIVE && event.actionIndex != Ancs.ACTION_NEGATIVE) return
+        val parts = event.sourceKey.split('|')
+        if (parts.size < 4 || parts[0] != "ancs") return // not an ANCS source key
+        val uid = parts[3].toIntOrNull() ?: return
+        val c = client ?: return
+        if (parts[1] != iphoneId() || uidToKey[uid] != event.sourceKey) return // stale UID / other iPhone
+        scope.launch { runCatching { c.performAction(uid, event.actionIndex) } }
     }
 
     // ---- Helpers ----

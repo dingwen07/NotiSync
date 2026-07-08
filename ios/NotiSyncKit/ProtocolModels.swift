@@ -10,7 +10,7 @@ nonisolated enum CipherSuite {
 
 // MARK: - Enums (serialize to CBOR as their Kotlin name)
 
-nonisolated enum MessageType: String, Sendable { case NOTIFICATION, DISMISSAL, DATA_SYNC }
+nonisolated enum MessageType: String, Sendable { case NOTIFICATION, DISMISSAL, DATA_SYNC, ACTION }
 nonisolated enum Purpose: String, CaseIterable, Sendable { case ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL
     static let allRawValues: [String] = allCases.map(\.rawValue)
 }
@@ -141,6 +141,45 @@ nonisolated struct DismissEvent: Sendable {
     var dismissedAt: Int64
 }
 
+/// One mirrorable action button of a `CapturedNotification`. `index` is origin-scoped (the position in
+/// the origin's raw action array / the ANCS ActionID) and is echoed back verbatim in `ActionEvent`.
+nonisolated struct NotificationAction: Sendable {
+    var index: Int
+    var title: String
+    /// True when the action accepts free-form text — rendered as a `UNTextInputNotificationAction`.
+    var remoteInput: Bool = false
+    /// Placeholder for the text field (Android RemoteInput label), when the producer sent one.
+    var remoteInputLabel: String?
+    /// Android `Notification.Action.SEMANTIC_ACTION_*` constant (0 = none). Rendering hint only.
+    var semanticAction: Int = 0
+    /// Origin hint that performing this opens UI *there* (not on this device).
+    var showsUserInterface: Bool = false
+}
+
+nonisolated enum ActionKind: String, Sendable {
+    /// Pressed one of the mirrored action buttons.
+    case PERFORM
+    /// Tapped the notification body — the origin fires its content intent.
+    case TAP
+}
+
+/// The body of a `MessageType.ACTION` envelope: the user acted on a mirrored notification and the
+/// origin should replay it on the real one. Always unicast to `sourceClientId` — the only peer that
+/// can perform it. iOS only ever SENDS these (it never captures, so it is never the origin).
+nonisolated struct ActionEvent: Sendable {
+    var sourceClientId: String
+    var sourceKey: String
+    var kind: ActionKind
+    /// The pressed action's `NotificationAction.index` — PERFORM only.
+    var actionIndex: Int = 0
+    /// The pressed action's mirrored title, echoed back so the origin can verify the action row
+    /// hasn't shifted since capture.
+    var actionTitle: String?
+    /// Free-form reply text for a remote-input action.
+    var remoteInputText: String?
+    var actedAt: Int64
+}
+
 nonisolated struct ConversationMessage: Sendable {
     var sender: String?
     var text: String
@@ -208,6 +247,11 @@ nonisolated struct CapturedNotification: Sendable {
     /// it is still showing (e.g. a messaging app attaching an inline image to a message it already alerted).
     /// Carried for parity with the protocol; the iOS mirror does not act on it yet.
     var onlyAlertOnce: Bool = false
+    /// Mirrorable action buttons, in origin display order (empty from an older producer).
+    var actions: [NotificationAction] = []
+    /// True when the origin can open this notification's UI on request (tap-to-open-on-origin: an
+    /// `ActionKind.TAP` event). False for ANCS bridges and old producers.
+    var hasContentIntent: Bool = false
 
     /// The importance that drives alerting: the source channel's importance if present, else the
     /// per-notification importance (mirrors Android `importanceOf`).
