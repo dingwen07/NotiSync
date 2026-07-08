@@ -36,14 +36,14 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
         val selected = when (scope) {
             Recipients.OwnMesh -> peers.filter { it.ownDevice }
             Recipients.AllTrusted -> peers
-            // Own mesh minus the devices that asked (over a FILTER) not to receive this capture.
-            is Recipients.OwnMeshExcluding -> peers.filter { it.ownDevice && it.clientId !in scope.excluded }
+            // Own mesh minus the devices that asked (over a FILTER) not to receive this capture, and minus any
+            // platform family that can't consume it (e.g. iOS for Android group summaries).
             is Recipients.OwnMeshFiltered -> {
                 val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
                 peers.filter {
                     it.ownDevice &&
                         it.clientId !in scope.excluded &&
-                        it.platform.lowercase() !in excludedPlatforms
+                        it.platform.normalizedPlatform() !in excludedPlatforms
                 }
             }
             // Unicast is own-mesh only, matching the original sendCard/sendAssetSync `&& it.ownDevice`
@@ -70,20 +70,25 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
         return when (scope) {
             Recipients.OwnMesh, Recipients.AllTrusted -> needing.toSet()
             // Don't drive key-epoch repair for a peer we're intentionally NOT sending this capture to.
-            is Recipients.OwnMeshExcluding -> needing.toSet() - scope.excluded
-            is Recipients.OwnMeshFiltered -> needing.toSet() - scope.excluded - platformExcludedIds(scope)
+            is Recipients.OwnMeshFiltered -> {
+                val remaining = needing.toSet() - scope.excluded
+                // Skip the roster re-scan when there's nothing left to repair (the steady-state case).
+                if (remaining.isEmpty()) remaining else remaining - platformExcludedIds(remaining, scope)
+            }
             is Recipients.Only -> if (scope.id in needing) setOf(scope.id) else emptySet()
         }
     }
 
-    private fun platformExcludedIds(scope: Recipients.OwnMeshFiltered): Set<ClientId> {
+    private fun platformExcludedIds(ids: Set<ClientId>, scope: Recipients.OwnMeshFiltered): Set<ClientId> {
         val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
-        return trust.activePeers.value
-            .filter { it.ownDevice && it.platform.lowercase() in excludedPlatforms }
-            .map { it.clientId }
+        if (excludedPlatforms.isEmpty()) return emptySet()
+        return ids
+            .filter { id -> trust.peerPlatform(id)?.normalizedPlatform()?.let { it in excludedPlatforms } == true }
             .toSet()
     }
 
     private fun Set<String>.normalizedPlatforms(): Set<String> =
-        mapTo(mutableSetOf()) { it.lowercase() }
+        mapNotNullTo(mutableSetOf()) { it.normalizedPlatform().takeIf { normalized -> normalized.isNotEmpty() } }
+
+    private fun String.normalizedPlatform(): String = trim().lowercase()
 }

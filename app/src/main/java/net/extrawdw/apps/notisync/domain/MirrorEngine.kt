@@ -200,17 +200,14 @@ class MirrorEngine(
         return n
     }
 
-    private fun notificationRecipients(notif: CapturedNotification, excluded: Set<ClientId>): Recipients =
-        if (notif.isGroupSummary) {
-            // Android group-summary captures are render-control/alert carriers for Android receivers. iOS cannot
-            // consume them correctly without com.apple.developer.usernotifications.filtering, so send the real
-            // child notification to iOS but keep this summary out of that platform's inbox/shade path.
-            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = setOf("ios"))
-        } else if (excluded.isEmpty()) {
-            Recipients.OwnMesh
-        } else {
-            Recipients.OwnMeshExcluding(excluded)
-        }
+    private fun notificationRecipients(notif: CapturedNotification, excluded: Set<ClientId>): Recipients = when {
+        // Android group-summary captures are render-control/alert carriers for Android receivers. iOS cannot
+        // consume them correctly without com.apple.developer.usernotifications.filtering, so send the real
+        // child notification to iOS but keep this summary out of that platform's inbox/shade path.
+        notif.isGroupSummary -> Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS)
+        excluded.isEmpty() -> Recipients.OwnMesh
+        else -> Recipients.OwnMeshFiltered(excluded)
+    }
 
     suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String) {
         // Drop the still-queued relay copy of the notification we're dismissing (no-op for our own
@@ -508,6 +505,12 @@ class MirrorEngine(
 
     private fun titleKey(sourceClientId: ClientId, sourceKey: String): String =
         "${sourceClientId.value}|$sourceKey"
+
+    private companion object {
+        /** Peer platforms that cannot consume Android group-summary render-control payloads. Lowercase, to
+         *  match [Recipients.OwnMeshFiltered]'s case-insensitive platform compare. */
+        val IOS_PLATFORMS = setOf("ios")
+    }
 }
 
 /** Every private asset referenced by a notification body (icons, pictures, avatars, inline media). */

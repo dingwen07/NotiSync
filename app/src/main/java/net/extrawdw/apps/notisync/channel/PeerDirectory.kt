@@ -25,12 +25,11 @@ sealed interface Recipients {
     /** Every trusted device — own AND "other" (used only by profile updates). */
     data object AllTrusted : Recipients
 
-    /** This user's own devices except [excluded] — the devices that asked, over a DATA_SYNC FILTER, not to
-     *  receive a given capture. Used by notification forwarding to honor a peer's suppression request. */
-    data class OwnMeshExcluding(val excluded: Set<ClientId>) : Recipients
-
-    /** This user's own devices except specific peers and platform families. Used for platform-private render
-     *  control payloads such as Android group summaries, which iOS cannot consume correctly. */
+    /** This user's own devices except specific peers and (optionally) platform families. Every own device NOT
+     *  in [excluded] (the devices that asked, over a DATA_SYNC FILTER, not to receive a capture) and whose
+     *  platform is not in [excludedPlatforms] should receive it. The platform filter keeps platform-private
+     *  render-control payloads (e.g. Android group summaries, which iOS cannot consume correctly) off those
+     *  peers; with an empty [excludedPlatforms] this is a plain own-mesh-minus-[excluded] send. */
     data class OwnMeshFiltered(
         val excluded: Set<ClientId> = emptySet(),
         val excludedPlatforms: Set<String> = emptySet(),

@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.RemoteInput
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
@@ -15,6 +16,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import androidx.core.app.NotificationCompat
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.AppGraph
@@ -239,10 +241,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
 
     /**
      * Source group child captures whose graphics/send work is still in flight. Alert-capable source summaries
-     * (WhatsApp) must not overtake their child row, or the receiver heads-up can render the previous child
-     * contents and then update to the new message a moment later.
+     * must not overtake their child row, or the receiver heads-up can render the previous child contents and
+     * then update a moment later. Scoped by package because Android group strings are app-owned, not global.
      */
-    private val pendingGroupChildSends = ConcurrentHashMap<String, Job>()
+    private val pendingGroupChildSends = ConcurrentHashMap<PendingGroupKey, Job>()
 
     /**
      * Reasons under which the source notification is genuinely gone / handled and the mirror should
@@ -408,7 +410,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
     private fun sendAllowingBackgroundStart(pi: PendingIntent, fillIn: Intent?) {
         val options = if (pi.isActivity) {
             ActivityOptions.makeBasic()
-                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+                .setPendingIntentBackgroundActivityStartMode(backgroundActivityStartMode())
                 .toBundle()
         } else {
             null
@@ -416,14 +418,22 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         pi.send(this, 0, fillIn, null, null, null, options)
     }
 
+    @Suppress("DEPRECATION")
+    private fun backgroundActivityStartMode(): Int =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
+        } else {
+            ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+        }
+
     private fun handlePosted(sbn: StatusBarNotification, backfillCutoff: Long?, graph: AppGraph) {
         if (sbn.packageName == packageName) return                              // never mirror ourselves
         val n = sbn.notification
         val isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0
         // Most source summaries are duplicate rows; the receiver builds its own local summary from mirrored
-        // children. Keep only explicit summary-alert carriers. WhatsApp does this: its child MessagingStyle row
-        // stays ONLY_ALERT_ONCE while the GROUP_ALERT_SUMMARY row re-alerts. GROUP_ALERT_ALL is Android's
-        // default, so forwarding it would broaden mirroring to nearly every grouping app and can double-alert.
+        // children. Keep only explicit summary-alert carriers: some apps silence child rows and route the
+        // audible alert through GROUP_ALERT_SUMMARY. GROUP_ALERT_ALL is Android's default, so forwarding it
+        // would broaden mirroring to nearly every grouping app and can double-alert.
         if (isGroupSummary && n.groupAlertBehavior != Notification.GROUP_ALERT_SUMMARY) return
         // Learn which apps post notifications (for the picker + recency sort), even if not enabled.
         graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)
@@ -442,7 +452,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         val normalizeNanos = System.nanoTime() - normalizeStartNanos
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 
-        val signature = captured.copy(postTime = 0L).hashCode()
+        val signature = captureSignature(captured)
         // Register only once content is non-blank (a blank capture is never mirrored, so it must not be
         // registered — otherwise its later removal would propagate a dismissal for something peers never
         // saw). Always register even when we won't re-send, so dismissals still sync and live dedup works.
@@ -459,9 +469,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         val pipeline = graph.graphicsPipeline
         val captureSpan = perfSpan("mirror_capture")
         captureSpan.metric("normalize_ms", normalizeNanos / 1_000_000)
-        val groupKey = captured.groupKey
-        var sendJob: Job? = null
-        sendJob = graph.scope.launch(start = CoroutineStart.LAZY) {
+        // The group this send registers under as a pending child (non-summary captures only), so an
+        // alert-carrier summary for the same group can wait for it. Null for summaries and ungrouped posts.
+        val pendingChildKey = if (captured.isGroupSummary) null else sourceGroupKey(captured)
+        val sendJob = graph.scope.launch(start = CoroutineStart.LAZY) {
             // Guard the whole send: a re-attestation in cooldown throws (see BrokerClient.bearerToken),
             // and this bare launch would otherwise surface it as an uncaught exception that crashes the
             // scope. attach() can throw too (it uploads private graphics via the same authed path). A
@@ -475,24 +486,35 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
                     eng.captureLocal(withGraphics, captureSpan)
                 }
             } finally {
-                if (!captured.isGroupSummary && groupKey != null) {
-                    sendJob?.let { pendingGroupChildSends.remove(groupKey, it) }
-                }
+                pendingChildKey?.let { pendingGroupChildSends.remove(it, coroutineContext.job) }
                 captureSpan.stop()
             }
         }
-        if (!captured.isGroupSummary && groupKey != null) {
-            pendingGroupChildSends[groupKey] = sendJob
-        }
+        pendingChildKey?.let { pendingGroupChildSends[it] = sendJob }
         sendJob.start()
     }
 
     private suspend fun waitForGroupChildIfSummary(captured: CapturedNotification, span: PerfSpan) {
         if (!captured.isGroupSummary || captured.groupAlertBehavior != GroupAlertBehavior.SUMMARY) return
-        val groupKey = captured.groupKey ?: return
+        val groupKey = sourceGroupKey(captured) ?: return
         val childJob = pendingGroupChildSends[groupKey] ?: return
         val waitStartNanos = System.nanoTime()
         withTimeoutOrNull(GROUP_SUMMARY_CHILD_WAIT_MS) { childJob.join() }
         span.metric("group_child_wait_ms", (System.nanoTime() - waitStartNanos) / 1_000_000)
     }
+
+    private fun captureSignature(captured: CapturedNotification): Int =
+        if (captured.isGroupSummary && captured.groupAlertBehavior == GroupAlertBehavior.SUMMARY) {
+            // SUMMARY-behavior apps may re-alert with byte-identical summary text/counts while the child row is
+            // force-silent on receivers. Keep postTime in the summary signature so each source alert carrier is
+            // forwarded even when its visible text did not change.
+            captured.hashCode()
+        } else {
+            captured.copy(postTime = 0L).hashCode()
+        }
+
+    private fun sourceGroupKey(captured: CapturedNotification): PendingGroupKey? =
+        captured.groupKey?.let { PendingGroupKey(captured.packageName, it) }
+
+    private data class PendingGroupKey(val packageName: String, val groupKey: String)
 }

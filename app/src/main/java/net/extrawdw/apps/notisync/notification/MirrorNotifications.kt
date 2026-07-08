@@ -34,6 +34,9 @@ import androidx.core.graphics.drawable.IconCompat
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.job
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -313,6 +316,7 @@ class RemoteNotificationPoster(
 
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
     private val iconUpgradesInFlight = ConcurrentHashMap.newKeySet<String>()
+    private val orphanSourceSummaryCleanupJobs = ConcurrentHashMap<String, Job>()
 
     /** [silent] posts just this one notification without sound/heads-up — the connect-time ANCS backlog replay,
      *  or a re-render that only attaches a now-downloaded graphic to an already-posted notification — while
@@ -575,21 +579,39 @@ class RemoteNotificationPoster(
         fallbackAppIconHash: String? = null,
         sourceSummary: CapturedNotification? = null,
         silent: Boolean = true,
+        // A child tag the caller has just cancelled (see [clear]). getActiveNotifications() reflects a cancel
+        // asynchronously, so the caller names the row to treat as already gone — letting the last-child cleanup
+        // below fire on this same pass instead of stranding the summary until a re-post that may never come.
+        excludeChildTag: String? = null,
     ) {
         val compat = NotificationManagerCompat.from(context)
         val summaryTag = summaryTagOf(groupKey)
-        val children = activeGroupChildren(groupKey)
+        // One getActiveNotifications() snapshot drives both the child set and the source-summary check below.
+        val active = activeNotifications()
+        val children = groupChildren(active, groupKey, excludeChildTag)
         if (sourceSummary == null) {
-            // A forwarded source summary is the alerting post for apps like WhatsApp. Do not let the quiet
-            // synthetic-summary maintenance pass overwrite or cancel it while its child row still exists.
-            if (hasActiveSourceSummary(groupKey)) {
-                if (children.isEmpty()) compat.cancel(summaryTag, summaryTag.hashCode())
+            cancelOrphanSourceSummaryCleanup(groupKey)
+            // A forwarded source summary is the alerting post for SUMMARY-behavior groups. Do not let the quiet
+            // synthetic-summary maintenance pass overwrite or cancel it while its child rows still exist.
+            val hasSourceSummary = hasSourceSummary(active, summaryTag)
+            if (hasSourceSummary) {
+                if (children.isEmpty()) {
+                    if (excludeChildTag != null) {
+                        compat.cancel(summaryTag, summaryTag.hashCode())
+                    } else {
+                        scheduleOrphanSourceSummaryCleanup(groupKey)
+                    }
+                }
                 return
             }
             if (children.size < 2) {
                 compat.cancel(summaryTag, summaryTag.hashCode())
                 return
             }
+        } else if (children.isEmpty()) {
+            scheduleOrphanSourceSummaryCleanup(groupKey)
+        } else {
+            cancelOrphanSourceSummaryCleanup(groupKey)
         }
         val latest = children.maxByOrNull { it.postTime }
         val extras = latest?.notification?.extras
@@ -626,12 +648,41 @@ class RemoteNotificationPoster(
         runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
     }
 
-    private fun hasActiveSourceSummary(groupKey: String): Boolean {
+    private fun groupChildren(
+        active: List<StatusBarNotification>,
+        groupKey: String,
+        excludeChildTag: String? = null,
+    ): List<StatusBarNotification> =
+        active.filter { sbn ->
+            sbn.packageName == context.packageName &&
+                sbn.notification.group == groupKey &&
+                (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0 &&
+                sbn.tag != excludeChildTag
+        }
+
+    private fun hasSourceSummary(active: List<StatusBarNotification>, summaryTag: String): Boolean =
+        active.firstOrNull { it.tag == summaryTag && it.id == summaryTag.hashCode() }
+            ?.notification?.extras?.getBoolean(MirrorNotificationExtras.IS_SOURCE_SUMMARY, false) == true
+
+    private fun scheduleOrphanSourceSummaryCleanup(groupKey: String) {
+        val cleanupScope = scope ?: return
         val summaryTag = summaryTagOf(groupKey)
-        return activeNotification(summaryTag, summaryTag.hashCode())
-            ?.notification
-            ?.extras
-            ?.getBoolean(MirrorNotificationExtras.IS_SOURCE_SUMMARY, false) == true
+        val job = cleanupScope.launch {
+            try {
+                delay(ORPHAN_SOURCE_SUMMARY_CLEANUP_MS)
+                val active = activeNotifications()
+                if (groupChildren(active, groupKey).isEmpty() && hasSourceSummary(active, summaryTag)) {
+                    NotificationManagerCompat.from(context).cancel(summaryTag, summaryTag.hashCode())
+                }
+            } finally {
+                orphanSourceSummaryCleanupJobs.remove(groupKey, coroutineContext.job)
+            }
+        }
+        orphanSourceSummaryCleanupJobs.put(groupKey, job)?.cancel()
+    }
+
+    private fun cancelOrphanSourceSummaryCleanup(groupKey: String) {
+        orphanSourceSummaryCleanupJobs.remove(groupKey)?.cancel()
     }
 
     private fun summaryExtras(sourceSummary: CapturedNotification?): Bundle =
@@ -642,17 +693,6 @@ class RemoteNotificationPoster(
                 putString(MirrorNotificationExtras.SOURCE_KEY, sourceSummary.sourceKey)
             }
         }
-
-    private fun activeGroupChildren(groupKey: String): List<StatusBarNotification> {
-        val mgr = context.getSystemService(NotificationManager::class.java)
-        return runCatching {
-            mgr.activeNotifications.filter { sbn ->
-                sbn.packageName == context.packageName &&
-                        sbn.notification.group == groupKey &&
-                        (sbn.notification.flags and Notification.FLAG_GROUP_SUMMARY) == 0
-            }
-        }.getOrDefault(emptyList())
-    }
 
     /**
      * Large icon: the mirrored original (a contact-photo private asset) once it's in the local cache; until
@@ -752,6 +792,7 @@ class RemoteNotificationPoster(
                 fallbackPackage ?: context.packageName,
                 fallbackIosBundleId,
                 fallbackAppIconHash,
+                excludeChildTag = tag,
             )
         }
     }
@@ -882,9 +923,12 @@ class RemoteNotificationPoster(
         )
     }
 
-    private fun activeNotification(tag: String, id: Int): StatusBarNotification? {
+    private fun activeNotification(tag: String, id: Int): StatusBarNotification? =
+        activeNotifications().firstOrNull { it.tag == tag && it.id == id }
+
+    private fun activeNotifications(): List<StatusBarNotification> {
         val mgr = context.getSystemService(NotificationManager::class.java)
-        return runCatching { mgr.activeNotifications.firstOrNull { it.tag == tag && it.id == id } }.getOrNull()
+        return runCatching { mgr.activeNotifications.toList() }.getOrDefault(emptyList())
     }
 
     private fun toPriority(importance: MirrorImportance) = when (importance) {
@@ -901,6 +945,8 @@ class RemoteNotificationPoster(
     }
 
     companion object {
+        private const val ORPHAN_SOURCE_SUMMARY_CLEANUP_MS = 5_000L
+
         fun tagOf(sourceClientId: ClientId, sourceKey: String) =
             "${sourceClientId.value}|$sourceKey"
 

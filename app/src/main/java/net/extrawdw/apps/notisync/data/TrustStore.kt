@@ -176,6 +176,7 @@ class TrustStore(
 
     fun cardFor(clientId: ClientId): SignedBlob? = _state.value.cards[clientId]
     override fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
+    override fun peerPlatform(clientId: ClientId): String? = platformFor(clientId, _state.value)
     fun statusOf(clientId: ClientId): TrustStatus? = _state.value.entries[clientId]?.status
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----
@@ -588,6 +589,10 @@ class TrustStore(
         st.overlays[id]?.displayName
             ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.displayName
 
+    private fun platformFor(id: ClientId, st: State): String? =
+        st.overlays[id]?.platform
+            ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.platform
+
     // A peer is *sealable* (active) once we hold a usable key-epoch for it — that is what carries the
     // current operational + HPKE keys an NS2 envelope needs. The card (if held) only supplies the display
     // profile; identity comes from the key-epoch's carried identity key (== the card's, by fingerprint).
@@ -603,7 +608,7 @@ class TrustStore(
         return Peer(
             clientId = entry.clientId,
             displayName = overlay?.displayName ?: card?.displayName ?: entry.clientId.shortForm(),
-            platform = overlay?.platform ?: card?.platform ?: "",
+            platform = platformFor(entry.clientId, st) ?: "",
             identityPublicKeyB64 = b64e.encodeToString(identity),
             hpkePublicKeyB64 = b64e.encodeToString(current.hpkePublicKey),
             addedAt = entry.updatedAt,

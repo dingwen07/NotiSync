@@ -440,4 +440,47 @@ class SecureChannelTest {
         assertEquals(0, n) // nobody sealable yet
         assertEquals(listOf(keyless.clientId), repairRequests)
     }
+
+    @Test
+    fun send_filteredScope_excludesPlatformsFromRecipientsAndKeyEpochRepair() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val android = newSigner();
+        val androidHpke = newHpke()
+        val ios = newSigner();
+        val iosHpke = newHpke()
+        val androidKeyless = newSigner()
+        val iosKeyless = newSigner()
+        val repairRequests = mutableListOf<ClientId>()
+        val transport = CapturingTransport()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "Android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = " iOS "),
+            )
+            peersNeeding = listOf(androidKeyless.clientId, iosKeyless.clientId)
+            peerPlatforms = mapOf(
+                androidKeyless.clientId to "android",
+                iosKeyless.clientId to " IOS ",
+            )
+        }
+        val channel = testChannel(
+            me,
+            myHpke.privateKeyset,
+            trust,
+            transport,
+            onUnresolvedSender = { repairRequests.add(it) },
+        )
+
+        val n = channel.send(
+            MessageType.NOTIFICATION,
+            byteArrayOf(9),
+            Recipients.OwnMeshFiltered(excludedPlatforms = setOf(" ios ")),
+            Urgency.HIGH,
+        )
+
+        assertEquals(1, n)
+        assertEquals(setOf(android.clientId), transport.envelopes.single().recipientIds().toSet())
+        assertEquals(listOf(androidKeyless.clientId), repairRequests)
+    }
 }

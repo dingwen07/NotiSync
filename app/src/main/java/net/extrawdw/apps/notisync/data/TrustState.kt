@@ -19,6 +19,9 @@ interface TrustState {
     /** Best-known display name for a device, or null when we hold no card for it. */
     fun displayName(clientId: ClientId): String?
 
+    /** Best-known platform for a device, or null when we have no profile/card metadata for it. */
+    fun peerPlatform(clientId: ClientId): String? = null
+
     /** This device's broadcast roster (its TRUSTED + REVOKED decisions), for anti-entropy. */
     fun buildTrustTable(): TrustTable
 

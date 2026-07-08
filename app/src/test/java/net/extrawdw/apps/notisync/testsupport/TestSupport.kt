@@ -98,6 +98,9 @@ class FakeTrustState : TrustState {
     /** Peers returned by [peersNeedingKeyEpoch] (missing-or-expired key — drives convergence + refetch). */
     var peersNeeding: List<ClientId> = emptyList()
 
+    /** Best-known platforms for keyless peers not present in [peers]. */
+    var peerPlatforms: Map<ClientId, String> = emptyMap()
+
     /** clientId → current key-epoch blob, for [currentKeyEpochBlob] (the repair-relay source). */
     var currentKeyEpochBlobs: Map<ClientId, SignedBlob> = emptyMap()
 
@@ -108,6 +111,9 @@ class FakeTrustState : TrustState {
 
     override fun displayName(clientId: ClientId): String? =
         peers.value.firstOrNull { it.clientId == clientId }?.displayName
+
+    override fun peerPlatform(clientId: ClientId): String? =
+        peers.value.firstOrNull { it.clientId == clientId }?.platform ?: peerPlatforms[clientId]
 
     override fun buildTrustTable(): TrustTable = table
     override fun trustedCards(): List<SignedBlob> = cards

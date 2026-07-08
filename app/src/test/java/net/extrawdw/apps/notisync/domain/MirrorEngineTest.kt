@@ -662,7 +662,7 @@ class MirrorEngineTest {
         val trust = FakeTrustState().apply {
             peers.value = listOf(
                 peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
-                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = " iOS "),
             )
         }
         val transport = CapturingTransport()
