@@ -747,7 +747,16 @@ class AncsBleManager(
             MediaCommand.CUSTOM ->
                 event.mediaCustomAction?.let(AmsNotificationMapper::commandOfCustomAction) ?: return
 
-            MediaCommand.SEEK, null -> return
+            // AMS volume is relative-only, so a ±1 adjust maps to VolumeUp/Down; an absolute SET can't be
+            // expressed. Dead in practice today — AMS cards advertise no volume (mediaVolumeControl null →
+            // receivers render fixed and never send these) — but mapping beats dropping if that ever flips.
+            MediaCommand.ADJUST_VOLUME -> when {
+                (event.mediaVolume ?: 0) > 0 -> Ams.CMD_VOLUME_UP
+                (event.mediaVolume ?: 0) < 0 -> Ams.CMD_VOLUME_DOWN
+                else -> return
+            }
+
+            MediaCommand.SET_VOLUME, MediaCommand.SEEK, null -> return
         }
         scope.launch { runCatching { c.sendMediaCommand(command) } }
     }

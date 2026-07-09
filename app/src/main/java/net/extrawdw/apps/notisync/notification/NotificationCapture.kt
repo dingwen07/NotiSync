@@ -16,6 +16,8 @@ import android.media.session.MediaSessionManager
 import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -62,6 +64,11 @@ data class MediaPlaybackInfo(
     val durationMs: Long?,
     val actions: Long?,
     val customActions: List<MediaCustomAction>,
+    /** `PlaybackInfo` volume snapshot — stream volume for local playback, the app's VolumeProvider when the
+     *  source itself casts. Control is a raw `VolumeProvider.VOLUME_CONTROL_*` value. */
+    val volumeControl: Int? = null,
+    val volumeMax: Int? = null,
+    val volumeCurrent: Int? = null,
 )
 
 /**
@@ -83,12 +90,17 @@ object MediaCapture {
                 val act = ca?.action ?: return@mapNotNull null
                 MediaCustomAction(action = act, name = ca.name?.toString().orEmpty())
             }.orEmpty()
+            // Volume snapshot: PlaybackInfo abstracts local (stream) vs remote (VolumeProvider) uniformly.
+            val volume = runCatching { controller.playbackInfo }.getOrNull()
             MediaPlaybackInfo(
                 isPlaying = state?.state == PlaybackState.STATE_PLAYING,
                 positionMs = state?.position?.takeIf { it >= 0 },
                 durationMs = duration,
                 actions = state?.actions?.takeIf { it != 0L },
                 customActions = customActions,
+                volumeControl = volume?.volumeControl,
+                volumeMax = volume?.maxVolume?.takeIf { it > 0 },
+                volumeCurrent = volume?.currentVolume?.coerceAtLeast(0),
             )
         }.getOrNull()
     }
@@ -219,6 +231,9 @@ class NotificationNormalizer(private val pm: PackageManager) {
             mediaDurationMs = media?.durationMs,
             mediaActions = media?.actions,
             mediaCustomActions = media?.customActions.orEmpty(),
+            mediaVolumeCurrent = media?.volumeCurrent,
+            mediaVolumeMax = media?.volumeMax,
+            mediaVolumeControl = media?.volumeControl,
         )
     }
 
@@ -410,6 +425,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
      */
     private val pendingGroupChildSends = ConcurrentHashMap<PendingGroupKey, Job>()
 
+    /** One pending volume-echo re-capture per source key, latest wins (see [scheduleVolumeEcho]). */
+    private val volumeEchoes = ConcurrentHashMap<String, Runnable>()
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     /**
      * Reasons under which the source notification is genuinely gone / handled and the mirror should
      * clear: user swipe (CANCEL/CANCEL_ALL), each child of a dismissed group (GROUP_SUMMARY_CANCELED),
@@ -442,6 +461,15 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
     private val ongoingLastSentAt = ConcurrentHashMap<String, Long>()
     private val ongoingPending = ConcurrentHashMap<String, suspend () -> Unit>()
     private val ongoingFlushJobs = ConcurrentHashMap<String, Job>()
+
+    /**
+     * Last media playback signature per media key, to classify an ongoing-media UPDATE as a DRAMATIC change
+     * (track change / play↔pause) — delivered PROMPTLY as an alert-priority NOTIFICATION so a peer's media card
+     * flips at once — versus a minor tick (position / buffering) that coasts on the quiet DATA_SYNC channel. Set
+     * on the single-threaded listener callback; dropped when the source notification is removed, like the
+     * throttle state above.
+     */
+    private val lastMediaSignature = ConcurrentHashMap<String, MediaSignature>()
 
     override fun onListenerConnected() {
         app.runWhenGraphReady { graph ->
@@ -498,6 +526,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             ongoingLastSentAt.remove(sbn.key)
             ongoingPending.remove(sbn.key)
             ongoingFlushJobs.remove(sbn.key)?.cancel()
+            lastMediaSignature.remove(sbn.key)
             // Guard only the send, not the debounce delay above (which must stay cancellable so a
             // cancel+repost aborts cleanly): a re-attestation in cooldown throws, and this bare launch
             // would otherwise surface it as an uncaught exception that crashes the scope.
@@ -514,6 +543,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         /** Leading-edge throttle for a media notification's playback updates: a play/pause/track change fires
          *  at once when idle, while rapid re-posts (some apps re-post the position) collapse to this cadence. */
         const val MEDIA_UPDATE_THROTTLE_MS = 1_000L
+
+        /** Settle time before a relayed volume change is echoed back via re-capture (an async VolumeProvider
+         *  on a casting source needs a beat; local stream volume is immediate either way). */
+        const val VOLUME_ECHO_DELAY_MS = 600L
     }
 
     override fun cancel(sourceKey: String) {
@@ -562,7 +595,38 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             MediaCommand.STOP -> tc.stop()
             MediaCommand.SEEK -> event.mediaSeekMs?.let { tc.seekTo(it) }
             MediaCommand.CUSTOM -> event.mediaCustomAction?.let { tc.sendCustomAction(it, null) }
+            // Volume goes through the controller, which routes to the right backend by itself: AudioManager
+            // stream volume for PLAYBACK_TYPE_LOCAL sessions, the app's VolumeProvider for PLAYBACK_TYPE_REMOTE
+            // (the source is itself casting). Out-of-range values clamp downstream; flags=0 shows no volume UI
+            // here. The delayed echo re-capture then pushes the level that actually landed back to peers.
+            MediaCommand.SET_VOLUME -> event.mediaVolume?.let { v ->
+                controller.setVolumeTo(v.coerceAtLeast(0), 0)
+                scheduleVolumeEcho(sbn.key)
+            }
+            MediaCommand.ADJUST_VOLUME -> event.mediaVolume?.takeIf { it != 0 }?.let { d ->
+                controller.adjustVolume(d.coerceIn(-1, 1), 0)
+                scheduleVolumeEcho(sbn.key)
+            }
         }
+    }
+
+    /**
+     * After a relayed volume change, re-capture the notification so peers converge on the volume that
+     * actually landed (clamping, provider rounding) — apps never re-post for a volume change, so without
+     * this the only sync point would be the next track/state re-post. Delayed so an async VolumeProvider
+     * settles, coalesced per key (latest wins), and run on the main thread like every listener callback
+     * (handlePosted's ordering assumption). The normal quiet media-update machinery does the rest
+     * (signature dedup, 1s leading-edge throttle, DATA_SYNC delivery) — and drops it if nothing changed.
+     */
+    private fun scheduleVolumeEcho(key: String) {
+        val echo = Runnable {
+            volumeEchoes.remove(key)
+            val graph = app.graphIfReady ?: return@Runnable
+            runCatching { getActiveNotifications(arrayOf(key))?.firstOrNull() }.getOrNull()
+                ?.let { handlePosted(it, backfillCutoff = null, graph) }
+        }
+        volumeEchoes.put(key, echo)?.let(mainHandler::removeCallbacks)
+        mainHandler.postDelayed(echo, VOLUME_ECHO_DELAY_MS)
     }
 
     /** The source app's currently-active [MediaController], via MediaSessionManager (permitted because this is
@@ -715,6 +779,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
         graph.settings.updateLastSeenPostTime(sbn.postTime)
+        val isMediaPlayback = captured.isMediaPlaybackStyle()
 
         // Ongoing-notification UPDATE: deliver quietly (DATA_SYNC / FCM NORMAL) and throttled, so a rapidly
         // updating progress/media notification never wakes peers like an alert push. Only reached for ongoing
@@ -722,16 +787,47 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         // updateIntervalSec == 0 means "mirror only the initial post" — drop updates entirely.
         if (sbn.isOngoing && !firstSeen) {
             // Calls and media are exceptions to the user's update-interval: a call's transitions (ringing →
-            // answered → hung-up) and a media notification's playback changes (play/pause, track, seek) are
-            // discrete, meaningful updates, not progress-tick spam, so they must sync PROMPTLY rather than be
-            // dropped by "Initial only" (0) or delayed. Calls use no throttle; media uses a short leading-edge
-            // throttle — a state change fires at once when idle, and any rapid re-posts collapse. Content-dedup
-            // above already drops identical re-posts; everything here still goes out quietly (no re-alert).
-            val isMedia = captured.style == NotificationStyle.MEDIA ||
-                captured.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+            // answered → hung-up) and a media notification's playback changes are discrete, meaningful updates,
+            // not progress-tick spam, so they sync PROMPTLY rather than being dropped by "Initial only" (0) or
+            // delayed. Content-dedup above already drops identical re-posts.
+            if (isMediaPlayback) {
+                // Split a media update by how much the playback changed. A DRAMATIC change — a track change or a
+                // play↔pause — is delivered at once as a HIGH-priority NOTIFICATION (flagged silentUpdate, so the
+                // peer renders it silently in place, not as a fresh alert) so its media-controls card flips
+                // immediately instead of coasting on the NORMAL-priority quiet channel. A minor tick (position /
+                // buffering) still rides the quiet DATA_SYNC channel under a short leading-edge throttle. iOS peers
+                // get the prompt NOTIFICATION only when the app opted media playback into iOS mirroring (an iPhone
+                // lacking the notification-filtering entitlement can't render it silently and would re-alert on
+                // every change); the quiet channel already excludes iOS regardless.
+                val cur = mediaSignatureOf(captured)
+                val dramatic = lastMediaSignature.put(sbn.key, cur).let { it == null || it != cur }
+                if (dramatic) {
+                    // Send now, bypassing the throttle, and clear any pending quiet trailing-flush for this key so
+                    // a stale minor tick can't fire afterwards and clobber the card (the receiver's
+                    // last-writer-wins on postTime is the ultimate backstop). Advance the throttle clock so the
+                    // next minor tick still spaces itself from this send.
+                    ongoingPending.remove(sbn.key)
+                    ongoingFlushJobs.remove(sbn.key)?.cancel()
+                    ongoingLastSentAt[sbn.key] = System.currentTimeMillis()
+                    val allowIos = cfg.mirrorMediaPlaybackToIos
+                    graph.scope.launch {
+                        runCatching {
+                            val withGraphics = graph.graphicsPipeline?.attach(sbn, captured) ?: captured
+                            eng.sendOngoingUpdatePrompt(withGraphics, allowIos)
+                        }
+                    }
+                    return
+                }
+                throttleOngoingUpdate(sbn.key, MEDIA_UPDATE_THROTTLE_MS, graph.scope) {
+                    val withGraphics = graph.graphicsPipeline?.attach(sbn, captured) ?: captured
+                    eng.sendNotificationQuiet(withGraphics)
+                }
+                return
+            }
+            // Non-media ongoing update (progress / foreground-service / ongoing call): the quiet channel under the
+            // user's per-app interval. A call uses no throttle so its transitions land at once.
             val intervalMs: Long = when {
                 isCall -> 0L
-                isMedia -> MEDIA_UPDATE_THROTTLE_MS
                 cfg.updateIntervalSec == 0 -> return                      // initial-only: don't mirror updates
                 cfg.updateIntervalSec < 0 -> 0L                          // every update, no throttle
                 else -> cfg.updateIntervalSec * 1000L
@@ -742,6 +838,13 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             }
             return
         }
+        // A media notification's first post (or any non-ongoing capture that fell through the update branch):
+        // record its playback baseline so the FIRST ongoing update is classified against real prior state rather
+        // than defaulting to a dramatic prompt-send.
+        if (isMediaPlayback) lastMediaSignature[sbn.key] = mediaSignatureOf(captured)
+        // Media playback is kept off iOS unless its own per-app opt-in is on — Android media rows are not always
+        // platform-ongoing. Other ongoing notifications use the separate ongoing-to-iOS opt-in.
+        val excludeIos = shouldExcludeIosForCapture(captured, cfg)
         // Off the listener thread: extract/upload private graphics (best-effort), then seal + send. One
         // `mirror_capture` span covers both threads — opened here (recording the listener-thread normalize)
         // and closed after the async send — so it times the whole capture→sent path for a mirrored post.
@@ -762,7 +865,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
                     val graphicsStartNanos = System.nanoTime()
                     val withGraphics = pipeline?.attach(sbn, captured) ?: captured
                     captureSpan.metric("graphics_ms", (System.nanoTime() - graphicsStartNanos) / 1_000_000)
-                    eng.captureLocal(withGraphics, captureSpan)
+                    eng.captureLocal(withGraphics, excludeIos = excludeIos, span = captureSpan)
                 }
             } finally {
                 pendingChildKey?.let { pendingGroupChildSends.remove(it, coroutineContext.job) }
@@ -803,6 +906,19 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         }
     }
 
+    /** The playback identity of a media notification: the parts that change on a track change or a play↔pause,
+     *  but NOT on a mere position / buffering tick. [handlePosted] treats a change in either field as a DRAMATIC
+     *  update worth a prompt HIGH-priority send. [playing] is nullable to mirror [CapturedNotification.mediaIsPlaying]
+     *  (a media notification whose session couldn't be read has no play state). */
+    private data class MediaSignature(val playing: Boolean?, val track: Int)
+
+    private fun mediaSignatureOf(c: CapturedNotification): MediaSignature = MediaSignature(
+        playing = c.mediaIsPlaying,
+        // Title = track, text = artist, subText = album, plus the track duration: together these turn over on a
+        // track change while staying put as the position advances.
+        track = listOf(c.title, c.text, c.subText, c.mediaDurationMs).hashCode(),
+    )
+
     private suspend fun waitForGroupChildIfSummary(captured: CapturedNotification, span: PerfSpan) {
         if (!captured.isGroupSummary || captured.groupAlertBehavior != GroupAlertBehavior.SUMMARY) return
         val groupKey = sourceGroupKey(captured) ?: return
@@ -826,4 +942,14 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         captured.groupKey?.let { PendingGroupKey(captured.packageName, it) }
 
     private data class PendingGroupKey(val packageName: String, val groupKey: String)
+}
+
+internal fun CapturedNotification.isMediaPlaybackStyle(): Boolean =
+    style == NotificationStyle.MEDIA || style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+
+internal fun shouldExcludeIosForCapture(captured: CapturedNotification, cfg: PerAppConfig): Boolean = when {
+    // Media has its own iOS gate because real media players may post clearable/non-ongoing rows.
+    captured.isMediaPlaybackStyle() -> !cfg.mirrorMediaPlaybackToIos
+    captured.isOngoing -> !cfg.mirrorOngoingToIos
+    else -> false
 }

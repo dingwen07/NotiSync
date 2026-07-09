@@ -35,12 +35,16 @@
 
     <!-- Per-app config sheet (tap an enabled app in the Apps list) -->
     <string name="app_config_ongoing_title">Mirror ongoing notifications</string>
-    <string name="app_config_ongoing_desc">Media players, downloads, navigation, and other persistent notifications.</string>
+    <string name="app_config_ongoing_desc">Downloads, navigation, and other persistent notifications.</string>
     <string name="app_config_update_title">Update frequency</string>
     <string name="app_config_update_desc">How often updates to an ongoing notification are mirrored. Updates are delivered quietly, without alerting.</string>
     <string name="app_config_update_initial_only">Initial only</string>
     <string name="app_config_update_every">Every update</string>
     <string name="app_config_update_seconds">%1$ds</string>
+    <string name="app_config_ongoing_ios_title">Send to iPhone &amp; iPad</string>
+    <string name="app_config_ongoing_ios_desc">Also mirror this app\'s non-media ongoing notifications to your Apple devices. Note: since the iOS app doesn\'t have notification filtering entitlement, iOS will show a new notification on each update instead of refreshing.</string>
+    <string name="app_config_media_ios_title">Send media playback to iPhone &amp; iPad</string>
+    <string name="app_config_media_ios_desc">Also mirror this app\'s media playback notifications to your Apple devices. Off by default because playback updates may re-alert on iOS.</string>
     <string name="app_config_ring_calls_title">Ring for calls</string>
     <string name="app_config_ring_calls_desc">When a call from this app is mirrored to this device, ring and vibrate — following your system ringer settings.</string>
     <string name="app_config_channels_title">Notification channels</string>

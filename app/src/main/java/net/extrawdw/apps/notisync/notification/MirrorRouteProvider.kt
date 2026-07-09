@@ -28,7 +28,9 @@ import java.util.concurrent.Executor
  * supplies (2): it publishes ONE MediaRoute2 route named after the elected source device — served by the
  * in-process [MirrorRouteProviderService] — and transfers this app's own media routing onto it, creating
  * the matching routing session. The Output Switcher then shows the source (smartphone icon, its name) as
- * the active output, with a fixed volume (no misleading slider for this phone's media stream).
+ * the active output. A source reporting an absolute volume scale gets a live switcher slider (relayed to
+ * the origin via [MirrorMediaSessions]); anything else shows fixed volume instead of a misleading slider
+ * for this phone's media stream.
  *
  * Deliberate non-goals:
  *  - Hiding the phone's own routes: SystemUI always appends system routes to the switcher so the user is
@@ -46,13 +48,32 @@ import java.util.concurrent.Executor
  * filter). Everything runs on the main thread — [MirrorMediaSessions] already calls from it, and
  * MediaRoute2ProviderService delivers its callbacks there.
  */
-class MirrorRouter(context: Context) {
+class MirrorRouter(
+    context: Context,
+    /** The Output Switcher moved the elected source's volume slider — relay it (wired to
+     *  [MirrorMediaSessions.setVolumeFromSwitcher], which shares the volume-panel relay path). */
+    private val onSwitcherSetVolume: (ClientId, Int) -> Unit = { _, _ -> },
+) {
 
-    /** A mirrored media source with a live media card. */
-    data class Source(val clientId: ClientId, val name: String, val playing: Boolean)
+    /** A mirrored media source with a live media card. [volumeMax] > 0 ⇢ absolute volume the switcher may
+     *  slide; 0 ⇢ fixed there (relative/fixed sources still get volume keys via the session's provider). */
+    data class Source(
+        val clientId: ClientId,
+        val name: String,
+        val playing: Boolean,
+        val volumeMax: Int = 0,
+        val volume: Int = 0,
+    )
 
     /** The single route the provider should have published right now. */
-    data class DesiredRoute(val routeId: String, val sessionId: String, val name: String, val clientKey: String)
+    data class DesiredRoute(
+        val routeId: String,
+        val sessionId: String,
+        val name: String,
+        val clientKey: String,
+        val volumeMax: Int,
+        val volume: Int,
+    )
 
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
@@ -78,13 +99,42 @@ class MirrorRouter(context: Context) {
     }
 
     /** A media card for [tag] rendered/updated: record its source and reconcile the route + routing. */
-    fun activate(tag: String, clientId: ClientId, deviceName: String?, playing: Boolean) {
+    fun activate(
+        tag: String,
+        clientId: ClientId,
+        deviceName: String?,
+        playing: Boolean,
+        volumeMax: Int = 0,
+        volume: Int = 0,
+    ) {
         val name = deviceName?.takeIf { it.isNotBlank() } ?: return // unnamed source -> leave routing alone
         onMain {
             actives.remove(tag)
-            actives[tag] = Source(clientId, name, playing) // re-insert so map order tracks recency
+            // Re-insert so map order tracks recency.
+            actives[tag] = Source(clientId, name, playing, volumeMax.coerceAtLeast(0), volume.coerceAtLeast(0))
             reconcile()
         }
+    }
+
+    /** A local volume action on [clientId]'s mirror session: mirror the optimistic level onto the routing
+     *  session so the Output Switcher slider keeps step without waiting for the origin's echo capture. */
+    fun updateVolume(clientId: ClientId, volume: Int) {
+        onMain {
+            var changed = false
+            for (e in actives.entries) {
+                val s = e.value
+                if (s.clientId == clientId && s.volumeMax > 0 && s.volume != volume) {
+                    e.setValue(s.copy(volume = volume)) // value swap: not a structural modification
+                    changed = true
+                }
+            }
+            if (changed) reconcile()
+        }
+    }
+
+    /** [MirrorRouteProviderService] got a switcher-side volume request for the published route/session. */
+    fun onSwitcherVolume(clientKey: String, volume: Int) {
+        onMain { onSwitcherSetVolume(ClientId(clientKey), volume) }
     }
 
     /** The media card for [tag] is gone: forget it and re-target or tear down the routing. */
@@ -184,8 +234,14 @@ class MirrorRouter(context: Context) {
         transferInFlightKey = null
     }
 
-    private fun desiredRouteFor(s: Source) =
-        DesiredRoute(ROUTE_ID_PREFIX + s.clientId.value, sessionIdFor(s.clientId), s.name, s.clientId.value)
+    private fun desiredRouteFor(s: Source) = DesiredRoute(
+        routeId = ROUTE_ID_PREFIX + s.clientId.value,
+        sessionId = sessionIdFor(s.clientId),
+        name = s.name,
+        clientKey = s.clientId.value,
+        volumeMax = s.volumeMax,
+        volume = s.volume.coerceIn(0, s.volumeMax),
+    )
 
     private fun onMain(block: () -> Unit) {
         if (Looper.myLooper() == main.looper) block() else main.post(block)
@@ -235,7 +291,8 @@ class MirrorRouter(context: Context) {
  * binding is triggered by MirrorRouter's own route discovery, or an Output Switcher scan), so it finds its
  * state through the app graph once that is up. Publishes at most one route — the elected mirrored source —
  * answers this app's self-transfer with the routing session SystemUI matches the media session against,
- * and rejects everything else. Fixed volume throughout: the mirror emits no audio and relays no volume.
+ * and rejects everything else. The mirror emits no audio; volume on the route/session is the SOURCE's
+ * (absolute scale → adjustable, relayed back through [MirrorRouter.onSwitcherVolume], else fixed).
  * All callbacks arrive on the main thread.
  */
 class MirrorRouteProviderService : MediaRoute2ProviderService() {
@@ -270,9 +327,11 @@ class MirrorRouteProviderService : MediaRoute2ProviderService() {
                 // Source switched or media gone: drop the stale session. The app side re-transfers onto
                 // the replacement route once it lands (or has already stopped routing entirely).
                 notifySessionReleased(session.id)
-            } else if (session.name?.toString() != route.name) {
-                // Same source, renamed device: rename in place — no session churn, no re-transfer.
-                notifySessionUpdated(RoutingSessionInfo.Builder(session).setName(route.name).build())
+            } else if (session.name?.toString() != route.name ||
+                session.volume != route.volume || session.volumeMax != route.volumeMax
+            ) {
+                // Same source, renamed device or moved volume: update in place — no session churn.
+                notifySessionUpdated(applyVolume(RoutingSessionInfo.Builder(session).setName(route.name), route).build())
             }
         }
         notifyRoutes(listOfNotNull(route?.let(::routeInfoFor)))
@@ -294,11 +353,12 @@ class MirrorRouteProviderService : MediaRoute2ProviderService() {
         getAllSessionInfo().forEach { notifySessionReleased(it.id) }
         notifySessionCreated(
             requestId,
-            RoutingSessionInfo.Builder(route.sessionId, clientPackageName)
-                .setName(route.name)
-                .addSelectedRoute(routeId)
-                .setVolumeHandling(MediaRoute2Info.PLAYBACK_VOLUME_FIXED)
-                .build(),
+            applyVolume(
+                RoutingSessionInfo.Builder(route.sessionId, clientPackageName)
+                    .setName(route.name)
+                    .addSelectedRoute(routeId),
+                route,
+            ).build(),
         )
     }
 
@@ -316,19 +376,44 @@ class MirrorRouteProviderService : MediaRoute2ProviderService() {
     override fun onTransferToRoute(requestId: Long, sessionId: String, routeId: String) =
         notifyRequestFailed(requestId, REASON_REJECTED)
 
-    // Fixed volume: the mirror plays nothing and doesn't relay volume (yet).
-    override fun onSetRouteVolume(requestId: Long, routeId: String, volume: Int) = Unit
+    // The Output Switcher adjusts the active device via the SESSION (some surfaces via the route); either
+    // way the user means "make the SOURCE louder/quieter" — relay it through the shared volume path. The
+    // optimistic slider echo comes back via MirrorRouter.updateVolume → publish → notifySessionUpdated.
+    override fun onSetRouteVolume(requestId: Long, routeId: String, volume: Int) {
+        val route = current ?: return
+        if (routeId == route.routeId) MirrorRouter.shared?.onSwitcherVolume(route.clientKey, volume)
+    }
 
-    override fun onSetSessionVolume(requestId: Long, sessionId: String, volume: Int) = Unit
+    override fun onSetSessionVolume(requestId: Long, sessionId: String, volume: Int) {
+        val route = current ?: return
+        if (sessionId == route.sessionId) MirrorRouter.shared?.onSwitcherVolume(route.clientKey, volume)
+    }
 
     private fun routeInfoFor(route: MirrorRouter.DesiredRoute): MediaRoute2Info =
         MediaRoute2Info.Builder(route.routeId, route.name)
             .addFeature(MirrorRouter.FEATURE_MIRROR_MEDIA)
             .setType(MediaRoute2Info.TYPE_REMOTE_SMARTPHONE)
-            .setVolumeHandling(MediaRoute2Info.PLAYBACK_VOLUME_FIXED)
+            .setVolumeHandling(
+                if (route.volumeMax > 0) MediaRoute2Info.PLAYBACK_VOLUME_VARIABLE
+                else MediaRoute2Info.PLAYBACK_VOLUME_FIXED
+            )
+            .setVolumeMax(route.volumeMax)
+            .setVolume(route.volume)
             // Belt and braces with the custom feature: invisible to every other app's router. SystemUI
             // reads routes as a MANAGER, which visibility does not filter.
             .setVisibilityRestricted(setOf(packageName))
             .setExtras(Bundle().apply { putString(MirrorRouter.EXTRA_CLIENT_KEY, route.clientKey) })
             .build()
+
+    /** Session volume state: an absolute source scale is adjustable from the switcher, else fixed. */
+    private fun applyVolume(
+        builder: RoutingSessionInfo.Builder,
+        route: MirrorRouter.DesiredRoute,
+    ): RoutingSessionInfo.Builder = builder
+        .setVolumeHandling(
+            if (route.volumeMax > 0) MediaRoute2Info.PLAYBACK_VOLUME_VARIABLE
+            else MediaRoute2Info.PLAYBACK_VOLUME_FIXED
+        )
+        .setVolumeMax(route.volumeMax)
+        .setVolume(route.volume)
 }

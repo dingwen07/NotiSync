@@ -284,6 +284,27 @@ data class CapturedNotification(
      *  best-effort — the press runs on the origin's session, but the consumer renders a heuristic icon
      *  (the source app's own icon can't cross devices), so uncommon ones show a generic icon. */
     val mediaCustomActions: List<MediaCustomAction> = emptyList(),
+    /** Source playback volume at capture time (`MediaController.PlaybackInfo` — the session's audio stream
+     *  for local playback, its VolumeProvider when the source is itself casting). Lets the consumer expose
+     *  a live volume surface (volume keys / system slider) relaying [MediaCommand.SET_VOLUME] /
+     *  [MediaCommand.ADJUST_VOLUME] back. Null = unknown → the consumer renders fixed volume. */
+    val mediaVolumeCurrent: Int? = null,
+    /** Max volume index of [mediaVolumeCurrent]'s scale. */
+    val mediaVolumeMax: Int? = null,
+    /** How the source volume can be driven: `VolumeProvider.VOLUME_CONTROL_*` (0 fixed / 1 relative /
+     *  2 absolute). Local playback reports absolute (stream volume); AMS now-playing stays null/fixed. */
+    val mediaVolumeControl: Int? = null,
+
+    // --- Delivery hint (appended; false from an older producer) ---
+    /** True when this [MessageType.NOTIFICATION] is not a fresh post but an in-place UPDATE of an
+     *  already-shown ongoing mirror — a media notification's DRAMATIC playback change (track change /
+     *  play↔pause). It rides the alerting transport (NOTIFICATION at [Urgency.HIGH], FCM HIGH / APNs
+     *  immediate) so a peer's media-controls card flips at once instead of coasting on the NORMAL-priority
+     *  quiet channel, but the consumer must render it SILENTLY in place (no second alert) with the SAME
+     *  last-writer-wins-on-[postTime] ordering as a [DataSyncKind.NOTIFICATION] quiet update. Minor position
+     *  ticks still ride that quiet DATA_SYNC channel; this flag is only set for the discrete, meaningful
+     *  changes. False for any first post / plain capture, which alerts normally. */
+    val silentUpdate: Boolean = false,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */
@@ -312,9 +333,10 @@ enum class ActionKind {
 }
 
 /** A media transport command relayed for [ActionKind.MEDIA]: the consumer's mirrored media session got a
- *  control press, and the origin replays it on the live source MediaSession. Append-only. */
+ *  control press, and the origin replays it on the live source MediaSession. Append-only — an old origin
+ *  drops an event carrying an unknown value (same decode guard as [ActionKind]). */
 @Serializable
-enum class MediaCommand { PLAY, PAUSE, PLAY_PAUSE, NEXT, PREVIOUS, STOP, SEEK, CUSTOM }
+enum class MediaCommand { PLAY, PAUSE, PLAY_PAUSE, NEXT, PREVIOUS, STOP, SEEK, CUSTOM, SET_VOLUME, ADJUST_VOLUME }
 
 /**
  * The body of a [MessageType.ACTION] envelope: a user acted on a *mirrored* notification and the
@@ -344,6 +366,10 @@ data class ActionEvent(
     /** The custom-action id for [MediaCommand.CUSTOM] (a [MediaCustomAction.action]) — run via
      *  `sendCustomAction` on the origin's session. */
     val mediaCustomAction: String? = null,
+    /** [MediaCommand.SET_VOLUME]: absolute target index on the source's scale ([CapturedNotification
+     *  .mediaVolumeMax]). [MediaCommand.ADJUST_VOLUME]: a ±1 step. The origin applies it through its
+     *  MediaController — stream volume for local playback, the VolumeProvider when the source casts. */
+    val mediaVolume: Int? = null,
     /** Source-clock time of the user's press. */
     val actedAt: Long,
 )

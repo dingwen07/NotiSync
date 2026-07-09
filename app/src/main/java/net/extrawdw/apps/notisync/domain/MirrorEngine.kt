@@ -194,10 +194,16 @@ class MirrorEngine(
     }
 
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. A peer that asked
-     *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set. */
-    suspend fun captureLocal(notif: CapturedNotification, span: PerfSpan? = null): Int {
+     *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set.
+     *  [excludeIos] additionally drops iOS peers — the listener sets it for media playback and non-media ongoing
+     *  notifications whose apps have not opted into those iOS surfaces (see [notificationRecipients]). */
+    suspend fun captureLocal(
+        notif: CapturedNotification,
+        excludeIos: Boolean = false,
+        span: PerfSpan? = null,
+    ): Int {
         val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
-        val scope = notificationRecipients(notif, excluded)
+        val scope = notificationRecipients(notif, excluded, excludeIos)
         val payload = ProtocolCodec.encodeToCbor(notif)
         span?.metric("payload_bytes", payload.size.toLong())
         span?.metric("asset_count", notif.privateRefs().size.toLong())
@@ -215,13 +221,20 @@ class MirrorEngine(
         return n
     }
 
-    private fun notificationRecipients(notif: CapturedNotification, excluded: Set<ClientId>): Recipients = when {
-        // Android group-summary captures are render-control/alert carriers for Android receivers. iOS cannot
-        // consume them correctly without com.apple.developer.usernotifications.filtering, so send the real
-        // child notification to iOS but keep this summary out of that platform's inbox/shade path.
-        // An iPhone's own now-playing card (bridged over AMS) is likewise Android-only: mirroring the
-        // iPhone's media back to an iOS device is circular, and its MEDIA rendering is Android-side anyway.
-        notif.isGroupSummary || isIosBridgedMedia(notif) ->
+    private fun notificationRecipients(
+        notif: CapturedNotification,
+        excluded: Set<ClientId>,
+        excludeIos: Boolean,
+    ): Recipients = when {
+        // iOS peers are dropped when the caller asks ([excludeIos]) — media playback and non-media ongoing
+        // notifications are each behind an iOS opt-in because an iPhone lacking
+        // com.apple.developer.usernotifications.filtering cannot render updates silently, so it would re-alert
+        // on every playback/progress change. They are also dropped for two payloads iOS can never consume: an
+        // Android group-summary capture (a
+        // render-control/alert carrier — the real child notification is sent to iOS separately), and an iPhone's
+        // own now-playing card bridged over AMS (mirroring the iPhone's media back to an iOS device is circular,
+        // and its MEDIA rendering is Android-side anyway).
+        excludeIos || notif.isGroupSummary || isIosBridgedMedia(notif) ->
             Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS)
 
         excluded.isEmpty() -> Recipients.OwnMesh
@@ -249,6 +262,29 @@ class MirrorEngine(
             Urgency.NORMAL,
         )
         if (n > 0) rememberTitle(notif)
+        return n
+    }
+
+    /**
+     * Seal a PROMPT in-place update of an already-shown ongoing mirror — a media notification's DRAMATIC
+     * playback change (track change / play↔pause) — over the ALERTING transport ([MessageType.NOTIFICATION] at
+     * [Urgency.HIGH], so FCM HIGH / APNs immediate) rather than the NORMAL-priority quiet channel, so a peer's
+     * media-controls card flips at once instead of coasting. The payload is flagged [CapturedNotification.silentUpdate]
+     * so the consumer renders it silently in place with last-writer-wins, exactly like [sendNotificationQuiet]
+     * (see [onNotification] → [renderQuietUpdate]) — the HIGH priority buys latency, not a second alert.
+     *
+     * iOS peers are dropped unless [allowIos] (the caller's relevant per-app iOS opt-in): without
+     * com.apple.developer.usernotifications.filtering an iPhone can't render this silently and would re-alert on
+     * every change. A peer that asked (over a FILTER) not to receive a matching notification is still dropped.
+     * Returns the recipient count.
+     */
+    suspend fun sendOngoingUpdatePrompt(notif: CapturedNotification, allowIos: Boolean): Int {
+        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val marked = notif.copy(silentUpdate = true)
+        val recipients = notificationRecipients(marked, excluded, excludeIos = !allowIos)
+        val payload = ProtocolCodec.encodeToCbor(marked)
+        val n = channel.send(MessageType.NOTIFICATION, payload, recipients, Urgency.HIGH)
+        if (n > 0) rememberTitle(marked)
         return n
     }
 
@@ -322,13 +358,14 @@ class MirrorEngine(
     )
 
     /** The user pressed a transport control on a mirrored MEDIA session — ask the origin to replay it on the
-     *  real source MediaSession (play/pause/skip/seek). Best-effort, HIGH urgency (user is waiting). */
+     *  real source MediaSession (play/pause/skip/seek/volume). Best-effort, HIGH urgency (user is waiting). */
     suspend fun mediaCommandRemote(
         sourceClientId: ClientId,
         sourceKey: String,
         command: MediaCommand,
         seekMs: Long? = null,
         customAction: String? = null,
+        volume: Int? = null,
     ): Boolean = sendAction(
         ActionEvent(
             sourceClientId = sourceClientId,
@@ -337,6 +374,7 @@ class MirrorEngine(
             mediaCommand = command,
             mediaSeekMs = seekMs,
             mediaCustomAction = customAction,
+            mediaVolume = volume,
             actedAt = now(),
         )
     )
@@ -389,6 +427,13 @@ class MirrorEngine(
     private fun onNotification(msg: InboundMessage) {
         if (!SendPolicy.mayAccept(msg.typ, null, msg.senderOwnDevice)) return
         val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
+        // A prompt in-place update of an already-shown ongoing mirror (a media track / play↔pause change) rides
+        // the alerting NOTIFICATION transport for latency but must be applied like a quiet DATA_SYNC update —
+        // silent, in place, last-writer-wins — never as a fresh alert or a second RECEIVED activity row.
+        if (notif.silentUpdate) {
+            renderQuietUpdate(notif, msg)
+            return
+        }
         // Remember which relay message delivered this mirror, so a later local dismissal can ack it
         // (drop the still-queued copy) instead of letting it be redelivered and reappear.
         ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
@@ -452,6 +497,18 @@ class MirrorEngine(
     fun onQuietNotification(msg: InboundMessage, sync: DataSync) {
         if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.NOTIFICATION, msg.senderOwnDevice)) return
         val notif = sync.notification ?: return
+        renderQuietUpdate(notif, msg)
+    }
+
+    /**
+     * Apply a SILENT, in-place update to an already-shown mirror, last-writer-wins on [CapturedNotification.postTime]
+     * per ([CapturedNotification.sourceClientId], [CapturedNotification.sourceKey]) so a stale store-and-forward
+     * backlog never overwrites a newer post. Shared by the quiet DATA_SYNC path ([onQuietNotification]) and the
+     * prompt NOTIFICATION path ([onNotification] when [CapturedNotification.silentUpdate] is set) — both consult the
+     * SAME [lastQuietPostTime] high-water map, so a prompt update and a quiet update for one key can never invert.
+     * The caller owns the own-mesh accept gate; this only renders.
+     */
+    private fun renderQuietUpdate(notif: CapturedNotification, msg: InboundMessage) {
         val key = titleKey(notif.sourceClientId, notif.sourceKey)
         val last = lastQuietPostTime[key]
         if (last != null && notif.postTime <= last) return   // stale / out-of-order backlog — drop

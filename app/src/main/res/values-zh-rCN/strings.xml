@@ -35,12 +35,16 @@
 
     <!-- 单个应用设置（在“应用”列表中点按已启用的应用） -->
     <string name="app_config_ongoing_title">镜像持续性通知</string>
-    <string name="app_config_ongoing_desc">媒体播放器、下载、导航等持续显示的通知。</string>
+    <string name="app_config_ongoing_desc">下载、导航等持续显示的通知。</string>
     <string name="app_config_update_title">更新频率</string>
     <string name="app_config_update_desc">持续性通知的更新多久镜像一次。更新会静默送达，不会提醒。</string>
     <string name="app_config_update_initial_only">仅初始</string>
     <string name="app_config_update_every">每次更新</string>
     <string name="app_config_update_seconds">%1$d秒</string>
+    <string name="app_config_ongoing_ios_title">发送到 iPhone 和 iPad</string>
+    <string name="app_config_ongoing_ios_desc">同时将该应用的非媒体持续性通知镜像到你的 Apple 设备。注：由于 NotiSync iOS 没有“通知过滤”资格，iOS 会在每次更新时显示一条新通知，而不是刷新现有通知。</string>
+    <string name="app_config_media_ios_title">发送媒体播放到 iPhone 和 iPad</string>
+    <string name="app_config_media_ios_desc">同时将该应用的媒体播放通知镜像到你的 Apple 设备。默认关闭，因为播放更新可能会在 iOS 上重新提醒。</string>
     <string name="app_config_ring_calls_title">来电响铃</string>
     <string name="app_config_ring_calls_desc">当该应用的来电镜像到本设备时，按系统响铃设置响铃并振动。</string>
     <string name="app_config_channels_title">通知渠道</string>

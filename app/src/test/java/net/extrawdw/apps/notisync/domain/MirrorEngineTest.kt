@@ -793,6 +793,126 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun sendOngoingUpdatePrompt_excludesIosByDefault_overNotificationHigh() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val android = newSigner(); val androidHpke = newHpke()
+        val ios = newSigner(); val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        val media = sampleNotif(me.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true)
+        // A dramatic media update is delivered promptly over NOTIFICATION / HIGH, but Android-only unless opted in:
+        // an iPhone lacking the notification-filtering entitlement would re-alert on it.
+        mirror.sendOngoingUpdatePrompt(media, allowIos = false)
+
+        val (envelope, urgency) = transport.sent.single()
+        assertEquals(setOf(android.clientId), envelope.recipientIds().toSet())
+        assertEquals(MessageType.NOTIFICATION, envelope.typ)
+        assertEquals(Urgency.HIGH, urgency)
+    }
+
+    @Test
+    fun sendOngoingUpdatePrompt_reachesIosWhenOptedIn() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val android = newSigner(); val androidHpke = newHpke()
+        val ios = newSigner(); val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.sendOngoingUpdatePrompt(
+            sampleNotif(me.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true),
+            allowIos = true,
+        )
+
+        assertEquals(
+            setOf(android.clientId, ios.clientId),
+            transport.envelopes.single().recipientIds().toSet(),
+        )
+    }
+
+    @Test
+    fun captureLocal_ongoingExcludesIosByFlag_butReachesItWhenNot() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val android = newSigner(); val androidHpke = newHpke()
+        val ios = newSigner(); val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+        val media = sampleNotif(me.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true)
+
+        // Not opted in (listener passes excludeIos = true): the first ongoing post skips iOS peers.
+        mirror.captureLocal(media, excludeIos = true)
+        assertEquals(setOf(android.clientId), transport.envelopes.last().recipientIds().toSet())
+
+        // Opted in (excludeIos = false): it reaches iOS too.
+        mirror.captureLocal(media, excludeIos = false)
+        assertEquals(setOf(android.clientId, ios.clientId), transport.envelopes.last().recipientIds().toSet())
+    }
+
+    @Test
+    fun onNotification_silentUpdate_rendersSilently_andSharesLwwWithQuietChannel() {
+        val me = newSigner(); val myHpke = newHpke()
+        val peer = newSigner(); val peerHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value =
+                listOf(peerOf(peer, peerHpke.publicKeyset, ownDevice = true, platform = "android"))
+        }
+        val renderer = RecordingRenderer()
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, renderer)
+
+        val base = sampleNotif(peer.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true)
+        var seq = 0
+        fun deliverPrompt(postTime: Long) = channel.deliver(
+            seal(
+                peer,
+                MessageType.NOTIFICATION,
+                ProtocolCodec.encodeToCbor(base.copy(postTime = postTime, silentUpdate = true)),
+                me.clientId,
+                myHpke.publicKeyset,
+                "n${seq++}",
+            )
+        )
+
+        // A silentUpdate NOTIFICATION rides the alerting transport but must render SILENTLY in place (like the
+        // quiet DATA_SYNC path), not as a fresh alert.
+        deliverPrompt(5L)
+        assertEquals(1, renderer.renders)
+        assertEquals(1, renderer.silentRenders)
+
+        // ...and it applies the SAME last-writer-wins ordering: an older postTime for the key is dropped.
+        deliverPrompt(3L)
+        assertEquals(1, renderer.renders)
+
+        deliverPrompt(7L)
+        assertEquals(2, renderer.renders)
+
+        // Prompt NOTIFICATION and quiet DATA_SYNC share one high-water map, so a quiet update below the prompt
+        // high-water is dropped too (they can never invert).
+        mirror.onQuietNotification(
+            InboundMessage(peer.clientId, senderOwnDevice = true, MessageType.DATA_SYNC, ByteArray(0)),
+            DataSync(DataSyncKind.NOTIFICATION, notification = base.copy(postTime = 6L)),
+        )
+        assertEquals(2, renderer.renders)
+    }
+
+    @Test
     fun assetRepairRequest_isSuppressedWhenSourceIsNonOwn() {
         val me = newSigner();
         val myHpke = newHpke()

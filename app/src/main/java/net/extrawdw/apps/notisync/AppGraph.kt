@@ -273,12 +273,16 @@ class AppGraph(private val app: Application) {
         // real source session. mirrorEngine is read at call time (it's built just below).
         // The router publishes the mirrored source as a MediaRouter2 route so the media card's output chip /
         // Output Switcher names the origin device; MirrorRouteProviderService finds it when the system binds.
-        val mirrorRoutes = MirrorRouter(app)
+        // A switcher-side volume drag loops back through mediaSessions (read at call time), which owns the
+        // shared debounced volume relay.
+        val mirrorRoutes = MirrorRouter(app) { clientId, volume ->
+            mediaSessions?.setVolumeFromSwitcher(clientId, volume)
+        }
         mirrorRouter = mirrorRoutes
-        val media = MirrorMediaSessions(app, mirrorRoutes) { clientId, sourceKey, command, seekMs, customAction ->
+        val media = MirrorMediaSessions(app, mirrorRoutes) { clientId, sourceKey, command, seekMs, customAction, volume ->
             mirrorEngine?.let { eng ->
                 scope.launch {
-                    runCatching { eng.mediaCommandRemote(clientId, sourceKey, command, seekMs, customAction) }
+                    runCatching { eng.mediaCommandRemote(clientId, sourceKey, command, seekMs, customAction, volume) }
                 }
             }
         }

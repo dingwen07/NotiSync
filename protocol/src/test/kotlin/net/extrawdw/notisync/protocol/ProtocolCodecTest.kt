@@ -371,6 +371,29 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun actionEvent_mediaVolumeRoundTrips() {
+        val set = ActionEvent(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "0|com.spotify.music|1|tag",
+            kind = ActionKind.MEDIA,
+            mediaCommand = MediaCommand.SET_VOLUME,
+            mediaVolume = 11,
+            actedAt = 2L,
+        )
+        assertEquals(set, ProtocolCodec.decodeFromCbor<ActionEvent>(ProtocolCodec.encodeToCbor(set)))
+
+        // A volume-less media event (an older peer, or plain transport) decodes with the field absent.
+        val play = ActionEvent(
+            sourceClientId = ClientId("phone"),
+            sourceKey = "k",
+            kind = ActionKind.MEDIA,
+            mediaCommand = MediaCommand.PLAY,
+            actedAt = 1L,
+        )
+        assertNull(ProtocolCodec.decodeFromCbor<ActionEvent>(ProtocolCodec.encodeToCbor(play)).mediaVolume)
+    }
+
+    @Test
     fun assetSync_cborRoundTrips() {
         val sync = AssetSync(
             kind = AssetSyncKind.ASSET_READY,

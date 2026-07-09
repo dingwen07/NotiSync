@@ -277,6 +277,14 @@ class AppConfigRepository(
     fun setUpdateIntervalSec(packageName: String, seconds: Int) =
         mutate(packageName) { it.copy(updateIntervalSec = seconds) }
 
+    /** Whether this app's non-media ongoing notifications are also mirrored to iOS devices (default off). */
+    fun setMirrorOngoingToIos(packageName: String, enabled: Boolean) =
+        mutate(packageName) { it.copy(mirrorOngoingToIos = enabled) }
+
+    /** Whether this app's media playback notifications are also mirrored to iOS devices (default off). */
+    fun setMirrorMediaPlaybackToIos(packageName: String, enabled: Boolean) =
+        mutate(packageName) { it.copy(mirrorMediaPlaybackToIos = enabled) }
+
     /** Receiver-side: whether this app's mirrored incoming calls ring + vibrate on this device. */
     fun setRingForCalls(packageName: String, enabled: Boolean) =
         mutate(packageName) { it.copy(ringForCalls = enabled) }

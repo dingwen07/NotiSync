@@ -41,9 +41,10 @@ private val UPDATE_STOPS = listOf(0, 60, 30, 10, 5, -1)
 /**
  * Per-app mirroring configuration, opened by tapping an enabled app in the Apps list. Lets the user opt into
  * mirroring the app's ongoing (media/transport/foreground-service) notifications, choose how often their
- * updates may be re-sent (delivered quietly, never as alerts), and disable specific notification channels or
- * whole channel groups. All backed by [AppConfigRepository]; channels are the ones observed from this app's
- * captures so far — "Remove" only forgets one from this list, and it reappears on the next capture in it.
+ * updates may be re-sent (delivered quietly, never as alerts), decide whether ongoing/media rows may reach iOS
+ * peers, and disable specific notification channels or whole channel groups. All backed by [AppConfigRepository];
+ * channels are the ones observed from this app's captures so far — "Remove" only forgets one from this list, and
+ * it reappears on the next capture in it.
  */
 @Suppress("DEPRECATION") // see NotificationFilterSheet: the stable M3 factory is deprecated by the Expressive artifact.
 @Composable
@@ -90,7 +91,19 @@ internal fun AppConfigSheet(
                     current = cfg.updateIntervalSec,
                     onChange = { appConfig.setUpdateIntervalSec(app.packageName, it) },
                 )
+                SettingSwitchRow(
+                    title = stringResource(R.string.app_config_ongoing_ios_title),
+                    subtitle = stringResource(R.string.app_config_ongoing_ios_desc),
+                    checked = cfg.mirrorOngoingToIos,
+                    onCheckedChange = { appConfig.setMirrorOngoingToIos(app.packageName, it) },
+                )
             }
+            SettingSwitchRow(
+                title = stringResource(R.string.app_config_media_ios_title),
+                subtitle = stringResource(R.string.app_config_media_ios_desc),
+                checked = cfg.mirrorMediaPlaybackToIos,
+                onCheckedChange = { appConfig.setMirrorMediaPlaybackToIos(app.packageName, it) },
+            )
 
             HorizontalDivider()
 
@@ -253,7 +266,11 @@ private fun SettingSwitchRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit,
 ) {
-    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(16.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
         Column(Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyLarge)
             Text(
