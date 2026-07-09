@@ -41,6 +41,8 @@
     <string name="app_config_update_initial_only">仅初始</string>
     <string name="app_config_update_every">每次更新</string>
     <string name="app_config_update_seconds">%1$d秒</string>
+    <string name="app_config_ring_calls_title">来电响铃</string>
+    <string name="app_config_ring_calls_desc">当该应用的来电镜像到本设备时，按系统响铃设置响铃并振动。</string>
     <string name="app_config_channels_title">通知渠道</string>
     <string name="app_config_channels_desc">关闭你不想镜像的渠道或渠道组。渠道会随通知到达显示在此。</string>
     <string name="app_config_channels_empty">尚未发现渠道。该应用发送通知后会显示在此。</string>
@@ -105,6 +107,7 @@
     <!-- Settings screen -->
     <string name="settings_device_name">设备名称</string>
     <string name="settings_broker_url">Broker 地址 (ws://…)</string>
+    <string name="settings_call_ringer">为镜像来电响铃</string>
     <string name="settings_batch_low_priority">合并低优先级通知</string>
     <string name="settings_advanced_diagnostics">高级诊断</string>
     <string name="settings_analytics">分享崩溃和性能报告</string>

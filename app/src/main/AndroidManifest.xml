@@ -9,6 +9,9 @@
          notification to be a foreground service OR have an FSI, else it throws at post). On Android 14+ this is
          a user-grantable special access; when ungranted the mirrored call is shown as a heads-up, not full screen. -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
+    <!-- Vibrate for a mirrored incoming call: the call channel is silent (like a real dialer's), so CallRinger
+         plays the system ringtone + this vibration itself, honoring the ringer mode / vibrate-when-ringing. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.NFC" />
 
     <!-- iOS notification bridge (ANCS over BLE): advertise as a peripheral, connect to the iPhone, and

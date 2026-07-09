@@ -40,6 +40,7 @@ class SettingsRepository(
     private val ancsLocalKey = booleanPreferencesKey("ancs_local_display")
     private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
+    private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -78,6 +79,14 @@ class SettingsRepository(
     /** Mirror captured iPhone notifications to the user's other mesh devices. Default on once bridging. */
     val ancsMeshMirror: StateFlow<Boolean> =
         store.data.map { it[ancsMeshKey] ?: true }.stateInEager(scope, true)
+
+    /** Master switch for the incoming-call ringer ([net.extrawdw.apps.notisync.notification.CallRinger]).
+     *  Default off. When off, NO mirrored call rings on this device, regardless of the per-app
+     *  [PerAppConfig.ringForCalls] toggle — calls still mirror and pop up, just silently. */
+    val callRingerEnabled: StateFlow<Boolean> =
+        store.data.map { it[callRingerKey] ?: false }.stateInEager(scope, false)
+
+    suspend fun setCallRingerEnabled(on: Boolean) = store.edit { it[callRingerKey] = on }
 
     /** The PERSISTED switch, read directly from DataStore — use this (not [ancsBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
@@ -251,6 +260,10 @@ class AppConfigRepository(
 
     fun setUpdateIntervalSec(packageName: String, seconds: Int) =
         mutate(packageName) { it.copy(updateIntervalSec = seconds) }
+
+    /** Receiver-side: whether this app's mirrored incoming calls ring + vibrate on this device. */
+    fun setRingForCalls(packageName: String, enabled: Boolean) =
+        mutate(packageName) { it.copy(ringForCalls = enabled) }
 
     fun setChannelEnabled(packageName: String, channelId: String, enabled: Boolean) =
         mutate(packageName) {

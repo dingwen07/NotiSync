@@ -142,6 +142,10 @@ class NotificationNormalizer(private val pm: PackageManager) {
             channelGroupName = null, // group display name requires a CompanionDeviceManager association (v1: omit)
             channelImportance = channelImportance,
             shouldVibrate = runCatching { channel?.shouldVibrate() == true }.getOrDefault(false),
+            // Source channel's sound state (None vs has-a-sound); mirrored so a silent-but-HIGH channel (a
+            // dialer's incoming-call channel) recreates silent instead of getting the default sound. Null = no
+            // channel / unreadable → receiver keeps its default.
+            channelSilent = channel?.let { ch -> runCatching { ch.sound == null }.getOrNull() },
             isConversation = conversation || (shortcutId != null && messages.isNotEmpty()),
             shortcutId = shortcutId,
             conversationId = runCatching { channel?.conversationId }.getOrNull(),

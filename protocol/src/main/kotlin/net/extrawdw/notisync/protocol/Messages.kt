@@ -184,6 +184,8 @@ data class CapturedNotification(
      *  enableVibration() at channel creation, so this takes effect when the mirror first creates the channel. False
      *  for sources without a channel (iOS/ANCS), which then alert per importance but don't vibrate. */
     val shouldVibrate: Boolean = false,
+    /** Whether the source NotificationChannel has None sound (NotificationChannel.getSound() == null) */
+    val channelSilent: Boolean? = null,
 
     // --- Conversation notifications ---
     val isConversation: Boolean = false,

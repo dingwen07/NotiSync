@@ -67,7 +67,18 @@ internal fun AppConfigSheet(
         ) {
             Text(app.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
 
-            // --- Ongoing notifications ---
+            // --- Incoming: how a call RECEIVED from this app is alerted on THIS device. Kept at the top and
+            // separated from the capture (outgoing) settings below, so its opposite direction isn't confused. ---
+            SettingSwitchRow(
+                title = stringResource(R.string.app_config_ring_calls_title),
+                subtitle = stringResource(R.string.app_config_ring_calls_desc),
+                checked = cfg.ringForCalls,
+                onCheckedChange = { appConfig.setRingForCalls(app.packageName, it) },
+            )
+
+            HorizontalDivider()
+
+            // --- Outgoing capture: ongoing notifications this device mirrors OUT to your other devices ---
             SettingSwitchRow(
                 title = stringResource(R.string.app_config_ongoing_title),
                 subtitle = stringResource(R.string.app_config_ongoing_desc),

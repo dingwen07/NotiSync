@@ -66,6 +66,9 @@ data class PerAppConfig(
     val disabledChannelIds: Set<String> = emptySet(),
     /** Source channel-group ids the user disabled — suppresses every channel in the group. */
     val disabledGroupIds: Set<String> = emptySet(),
+    /** RECEIVER-side: play the ringtone + vibration ([CallRinger]) for this app's mirrored incoming calls.
+     *  Default ON. When off, the call still mirrors and pops up — it just doesn't ring on this device. */
+    val ringForCalls: Boolean = true,
 )
 
 /**

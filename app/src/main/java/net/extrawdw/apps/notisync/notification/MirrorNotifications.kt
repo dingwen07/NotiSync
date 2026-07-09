@@ -125,6 +125,19 @@ object MirrorChannels {
     private fun originId(notif: CapturedNotification): String =
         notif.originDeviceId?.takeIf { it.isNotBlank() }.orEmpty()
 
+    private fun isCallCapture(notif: CapturedNotification): Boolean =
+        notif.category == MirrorCategory.CALL || notif.style == NotificationStyle.CALL || notif.callType != null
+
+    /**
+     * Whether the mirror channel is created with NO sound. Two reasons: (1) the source channel itself has no
+     * sound ([CapturedNotification.channelSilent] — a dialer's HIGH-importance-but-silent incoming-call
+     * channel, whose ringtone the app plays itself; we mirror that so the channel still pops up but stays
+     * silent rather than getting the default notification sound), and (2) any call, whose ring is owned by
+     * [CallRinger] on the receiver — so the channel must never also sound and double the ring.
+     */
+    private fun mirrorChannelSilent(notif: CapturedNotification): Boolean =
+        notif.channelSilent == true
+
     private fun isIosOrigin(notif: CapturedNotification) =
         notif.originPlatform == OriginPlatform.IOS_ANCS
 
@@ -177,6 +190,9 @@ object MirrorChannels {
                 // Vibration is a per-channel property the OS fixes at creation — importance alone never enables it.
                 // iOS/ANCS has no source channel, so shouldVibrate is false there and the mirror just heads-up + sounds.
                 enableVibration(notif.shouldVibrate)
+                // A silent-but-important source channel (a dialer's incoming-call channel), or any call (rung by
+                // CallRinger), is created with NO sound so it pops up on importance alone without a channel blip.
+                if (mirrorChannelSilent(notif)) setSound(null, null)
             }
         )
         return cid
@@ -198,6 +214,7 @@ object MirrorChannels {
                 group = groupIdFor(notif)
                 setConversationId(parentChannelId, shortcutId)
                 enableVibration(notif.shouldVibrate)
+                if (mirrorChannelSilent(notif)) setSound(null, null)
             }
         )
         return cid
@@ -314,6 +331,10 @@ class RemoteNotificationPoster(
     private val appStoreIcons: AppStoreIconProvider? = null,
     /** Scope for the off-render-path App Store fetch + re-render; null disables the upgrade. */
     private val scope: CoroutineScope? = null,
+    /** Plays the ringtone + vibration for a RINGING call mirror (whose channel is silent); null disables ringing. */
+    private val callRinger: CallRinger? = null,
+    /** Per-app "ring for calls" preference (receiver-side); false suppresses the ring but not the call mirror. */
+    private val ringForCalls: (packageName: String) -> Boolean = { true },
 ) : MirrorRenderer {
 
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
@@ -456,11 +477,21 @@ class RemoteNotificationPoster(
         else if (notif.groupAlertBehavior == GroupAlertBehavior.SUMMARY && notif.groupKey != null) {
             builder.setSilent(true)
         }
+        // NB: a ringing call is deliberately NOT setSilent here — that would suppress the heads-up popup. It
+        // stays silent via its channel (mirrorChannelSilent → no channel sound) while still popping up on its
+        // HIGH importance; CallRinger provides the ring.
         // Auto-clear a ringing incoming-call mirror after the ring window, in case the source's removal never
         // syncs (network/broker) and leaves a phantom call. The OS then fires the delete intent, which is
         // local-only for a non-clearable source — it never declines the real call. Honored because a ringing
         // call is not marked ongoing (setOngoing above). Answered/ongoing calls get no timeout.
-        if (isRingingCall(notif)) builder.setTimeoutAfter(CALL_RING_TIMEOUT_MS)
+        if (isRingingCall(notif)) {
+            builder.setTimeoutAfter(CALL_RING_TIMEOUT_MS)
+            // Posted silent (the ringtone is CallRinger's job), so attach a full-screen intent — the platform
+            // still presents it as an incoming call (a heads-up when USE_FULL_SCREEN_INTENT isn't granted)
+            // rather than a quiet shade row. A CallStyle call also sets this in the CALL branch; setting it
+            // twice is harmless, and this covers non-CallStyle calls (WhatsApp, category=call) too.
+            fullScreenIntentToApp(id)?.let { builder.setFullScreenIntent(it, true) }
+        }
 
         when (notif.style) {
             NotificationStyle.MESSAGING -> {
@@ -631,6 +662,15 @@ class RemoteNotificationPoster(
             post()
         }
         span.metric("notify_ms", (System.nanoTime() - notifyStartNanos) / 1_000_000)
+        // Incoming-call ringer: a ringing call plays the phone ringtone + vibration itself (the mirror above is
+        // posted silent). Start only on the genuine alerting post — a silent asset/backlog re-render of the same
+        // call is already ringing — and stop on any non-ringing render of the same call (answered → ongoing/FGS).
+        // Answer/Decline press, swipe, source dismissal and timeout each stop it via their own paths.
+        if (notif.style == NotificationStyle.CALL || notif.category == MirrorCategory.CALL) {
+            if (isRingingCall(notif)) {
+                if (!silent && ringForCalls(notif.packageName)) callRinger?.start(tag)
+            } else callRinger?.stop(tag)
+        }
         if (notif.style == NotificationStyle.MESSAGING) {
             span.metric("message_count", notif.messages.size.toLong())
         }
@@ -892,6 +932,7 @@ class RemoteNotificationPoster(
 
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
+        callRinger?.stop(tag)   // the call's source removal/dismissal synced here → stop any ring for it
         val active = activeNotification(tag, tag.hashCode())
         val groupKey = active?.notification?.group
         val fallbackChannel = active?.notification?.channelId
@@ -1144,6 +1185,8 @@ class DismissReceiver : BroadcastReceiver() {
                 } else {
                     val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return@launch
                     val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return@launch
+                    // Swiping the call mirror away stops its ring at once.
+                    graph.callRinger?.stop(RemoteNotificationPoster.tagOf(ClientId(sourceClient), sourceKey))
                     // A non-clearable (ongoing) source: local swipe removes the local copy only — no mesh
                     // DISMISSAL, no origin cancel (see MirrorEngine.dismissLocal). Defaults clearable so
                     // mirrors posted before this extra existed still sync.
@@ -1159,6 +1202,7 @@ class DismissReceiver : BroadcastReceiver() {
     private suspend fun dismissGroup(context: Context, engine: MirrorEngine, groupKey: String) {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val compat = NotificationManagerCompat.from(context)
+        val ringer = (context.applicationContext as? NotiSyncApp)?.graphIfReady?.callRinger
         val children = runCatching {
             mgr.activeNotifications.filter { sbn ->
                 sbn.packageName == context.packageName &&
@@ -1176,6 +1220,7 @@ class DismissReceiver : BroadcastReceiver() {
             val clientId = ClientId(sourceClient)
             engine.dismissLocal(clientId, sourceKey)
             val tag = RemoteNotificationPoster.tagOf(clientId, sourceKey)
+            ringer?.stop(tag)
             compat.cancel(tag, tag.hashCode())
         }
         val summaryTag = RemoteNotificationPoster.summaryTagOf(groupKey)
@@ -1226,7 +1271,11 @@ class MirrorActionReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.Default + crashGuard("MirrorActionReceiver")).launch {
             try {
-                val engine = app.awaitGraphReady()?.mirrorEngine ?: return@launch
+                val graph = app.awaitGraphReady() ?: return@launch
+                // Pressing Answer / Decline / Hang-up on a call mirror stops the local ring immediately, without
+                // waiting for the origin's resulting state change to round-trip back. No-op for non-call actions.
+                graph.callRinger?.stop(RemoteNotificationPoster.tagOf(ClientId(sourceClient), sourceKey))
+                val engine = graph.mirrorEngine ?: return@launch
                 engine.performRemote(ClientId(sourceClient), sourceKey, actionIndex, actionTitle, replyText)
                 if (replyText != null) confirmReply(context, ClientId(sourceClient), sourceKey, replyText)
             } finally {

@@ -21,6 +21,13 @@ class SettingsRepositoryTest {
     }
 
     @Test
+    fun callRingerEnabled_defaultsOff() = runBlocking {
+        val settings = newRepository()
+
+        assertEquals(false, settings.callRingerEnabled.value)
+    }
+
+    @Test
     fun epochForFcmRoute_reusesEpochForSameRouteAndBumpsForNewRoute() = runBlocking {
         val settings = newRepository()
 

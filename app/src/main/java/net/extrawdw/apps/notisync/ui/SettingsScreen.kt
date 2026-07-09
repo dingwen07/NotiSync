@@ -46,6 +46,7 @@ fun SettingsScreen() {
     val batchLow by graph.settings.batchLowPriority.collectAsStateWithLifecycle()
     val advanced by graph.settings.advancedDiagnostics.collectAsStateWithLifecycle()
     val analytics by graph.settings.analyticsEnabled.collectAsStateWithLifecycle()
+    val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
 
     // Diagnostics probe, hoisted to screen scope so it loads once when the Settings tab is opened (and
     // on manual refresh) — not on every list-scroll recomposition of the card item, and never on a timer.
@@ -93,6 +94,12 @@ fun SettingsScreen() {
                     ),
                     modifier = Modifier.fillMaxWidth(),
                 )
+            }
+            item {
+                ToggleRow(
+                    stringResource(R.string.settings_call_ringer),
+                    callRinger
+                ) { scope.launch { graph.settings.setCallRingerEnabled(it) } }
             }
             item {
                 ToggleRow(

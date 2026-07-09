@@ -41,6 +41,8 @@
     <string name="app_config_update_initial_only">Initial only</string>
     <string name="app_config_update_every">Every update</string>
     <string name="app_config_update_seconds">%1$ds</string>
+    <string name="app_config_ring_calls_title">Ring for calls</string>
+    <string name="app_config_ring_calls_desc">When a call from this app is mirrored to this device, ring and vibrate — following your system ringer settings.</string>
     <string name="app_config_channels_title">Notification channels</string>
     <string name="app_config_channels_desc">Turn off channels or groups you don\'t want mirrored. Channels appear here as notifications arrive.</string>
     <string name="app_config_channels_empty">No channels seen yet. They\'ll appear here as this app posts notifications.</string>
@@ -110,6 +112,7 @@
     <!-- Settings screen -->
     <string name="settings_device_name">Device name</string>
     <string name="settings_broker_url">Broker URL (ws://…)</string>
+    <string name="settings_call_ringer">Ring for mirrored calls</string>
     <string name="settings_batch_low_priority">Batch low-priority notifications</string>
     <string name="settings_advanced_diagnostics">Advanced diagnostics</string>
     <string name="settings_analytics">Share crash &amp; performance reports</string>

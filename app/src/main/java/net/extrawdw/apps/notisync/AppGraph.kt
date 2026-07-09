@@ -82,6 +82,7 @@ import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.apps.notisync.foundation.RotationManager
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
+import net.extrawdw.apps.notisync.notification.CallRinger
 import net.extrawdw.apps.notisync.notification.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.GraphicsPipeline
 import net.extrawdw.apps.notisync.notification.MirrorChannels
@@ -162,6 +163,10 @@ class AppGraph(private val app: Application) {
     lateinit var transport: BrokerClient
         private set
     lateinit var poster: RemoteNotificationPoster
+        private set
+
+    /** Plays the incoming-call ringtone + vibration for ringing call mirrors (which are posted silent). */
+    var callRinger: CallRinger? = null
         private set
 
     var appSelection: AppSelectionRepository? = null
@@ -250,11 +255,21 @@ class AppGraph(private val app: Application) {
         )
         val resolver = IconResolver(app, assetCache, ShippedIcons.fromAssets(app), appStoreIcons)
         iconResolver = resolver
+        val ringer = CallRinger(app)
+        callRinger = ringer
+        // Turning the master switch OFF silences any ring already in progress, not just future ones.
+        settings.callRingerEnabled.onEach { if (!it) ringer.stopAll() }.launchIn(scope)
         poster = RemoteNotificationPoster(
             app, assetCache, resolver,
             deviceNameOf = { id -> trust.displayName(id) },
             appStoreIcons = appStoreIcons,
             scope = scope,
+            callRinger = ringer,
+            // Receiver-side ring gate (read live, so a toggle applies to the next mirrored call): the global
+            // master switch must be on, and defaults off; per-app "ring for calls" still defaults on.
+            ringForCalls = { pkg ->
+                settings.callRingerEnabled.value && (appConfig?.configFor(pkg)?.ringForCalls ?: true)
+            },
         )
         val graphicsExtractor = GraphicsExtractor(app)
         graphicsPipeline =
