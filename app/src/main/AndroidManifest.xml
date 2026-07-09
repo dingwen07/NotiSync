@@ -182,6 +182,20 @@
             android:name=".notification.MirrorActionReceiver"
             android:exported="false" />
 
+        <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's
+             active output, so a mirrored media card's Output Switcher chip names the source device instead of
+             claiming playback on this phone. Bound by the system (exported is the platform contract for route
+             providers); the route itself is feature-gated and visibility-restricted to this package, and
+             SELF_SCAN_ONLY (honored on newer Android) spares it other apps' scans. -->
+        <service
+            android:name=".notification.MirrorRouteProviderService"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.media.MediaRoute2ProviderService" />
+                <category android:name="android.media.MediaRoute2ProviderService.SELF_SCAN_ONLY" />
+            </intent-filter>
+        </service>
+
         <!-- No-UI trampoline for tapping a mirrored notification: collapses the shade, toasts
              "Check on <device>", and asks the origin to open the real notification. -->
         <activity

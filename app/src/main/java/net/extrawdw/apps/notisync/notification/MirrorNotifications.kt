@@ -597,8 +597,11 @@ class RemoteNotificationPoster(
                 // token: on Android 13+ this is what makes the system render the media-controls card — album art,
                 // seekbar, system-drawn transport buttons — instead of a plain notification. No FGS, no sound.
                 // Album art rides the large icon (attached by applyLargeIcon below); reuse it for the session.
+                // The source device's name feeds MirrorRouter, so the card's output chip names the ORIGIN
+                // ("Dingwen's iPhone") instead of claiming playback on this phone's audio route.
                 val albumArt = notif.largeIcon?.let { cachedBitmap(it.assetHash) }
-                mediaSessions?.apply(tag, notif, albumArt)?.let { media.setMediaSession(it) }
+                val sourceDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
+                mediaSessions?.apply(tag, notif, albumArt, sourceDeviceName)?.let { media.setMediaSession(it) }
                 // The source's compact-view selection is in raw source-action index space; map each to its
                 // position in the exported action row (the order applyActions added them), dropping any not
                 // exported. The compact view shows at most three.

@@ -8,6 +8,7 @@ import android.os.Looper
 import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaSessionCompat
 import android.support.v4.media.session.PlaybackStateCompat
+import androidx.media.VolumeProviderCompat
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -32,9 +33,15 @@ import java.util.concurrent.TimeUnit
  * dismissed (otherwise the media-controls card lingers as a ghost). MediaSessionCompat callbacks need a
  * Looper, so every session object is created/mutated on the MAIN thread; [apply] briefly blocks the (off-main)
  * render caller to hand back the token the notification build needs.
+ *
+ * Each session is marked REMOTE-playback (fixed volume — the mirror emits none) with a per-source
+ * volumeControlId; together with [MirrorRouter]'s routing session that makes the card's output chip /
+ * Output Switcher name the SOURCE device instead of this phone's own audio route.
  */
 class MirrorMediaSessions(
     context: Context,
+    /** Names the source device on the card's output chip; null leaves the system's default routing UI. */
+    private val router: MirrorRouter? = null,
     private val onCommand: (ClientId, String, MediaCommand, Long?, String?) -> Unit,
 ) {
     private val appContext = context.applicationContext
@@ -43,23 +50,40 @@ class MirrorMediaSessions(
     /** tag -> session. Touched only on the main thread (via [onMain]/[main]). */
     private val sessions = HashMap<String, MediaSessionCompat>()
 
-    /** Create/update the session for [tag]; returns its token for `MediaStyle.setMediaSession`. */
-    fun apply(tag: String, notif: CapturedNotification, albumArt: Bitmap?): MediaSessionCompat.Token? =
+    /** Create/update the session for [tag]; returns its token for `MediaStyle.setMediaSession`.
+     *  [sourceDeviceName] labels the origin on the output chip via [MirrorRouter] (null = unknown yet). */
+    fun apply(
+        tag: String,
+        notif: CapturedNotification,
+        albumArt: Bitmap?,
+        sourceDeviceName: String? = null,
+    ): MediaSessionCompat.Token? =
         onMain {
             val session = sessions.getOrPut(tag) {
                 MediaSessionCompat(appContext, MEDIA_SESSION_TAG).apply {
                     setCallback(callbackFor(notif.sourceClientId, notif.sourceKey))
+                    // REMOTE playback type + this controlId let SystemUI match the session to the source's
+                    // MirrorRouter routing session and name the output chip after the origin device instead
+                    // of this phone's audio route. Fixed volume: nothing plays here, nothing to adjust.
+                    setPlaybackToRemote(
+                        object : VolumeProviderCompat(
+                            VOLUME_CONTROL_FIXED, 0, 0,
+                            MirrorRouter.volumeControlIdFor(notif.sourceClientId),
+                        ) {}
+                    )
                     isActive = true
                 }
             }
             session.setMetadata(metadataFor(notif, albumArt))
             session.setPlaybackState(playbackStateFor(notif))
+            router?.activate(tag, notif.sourceClientId, sourceDeviceName, notif.mediaIsPlaying == true)
             session.sessionToken
         }
 
     /** Deactivate + release the session for [tag] (playback stopped / mirror gone), clearing its media card. */
     fun release(tag: String) {
         main.post {
+            router?.deactivate(tag)
             sessions.remove(tag)?.let { runCatching { it.isActive = false; it.release() } }
         }
     }
