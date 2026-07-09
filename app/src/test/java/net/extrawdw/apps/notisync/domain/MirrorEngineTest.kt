@@ -556,7 +556,8 @@ class MirrorEngineTest {
         val performed = mutableListOf<ActionEvent>()
         mirror.originalActionPerformer = OriginalActionPerformer { performed.add(it) }
 
-        val event = ActionEvent(me.clientId, "0|com.x|1|t", ActionKind.PERFORM, 0, "Open", null, 5L)
+        val event =
+            ActionEvent(me.clientId, "0|com.x|1|t", ActionKind.PERFORM, 0, "Open", null, actedAt = 5L)
         channel.deliver(
             seal(
                 other,

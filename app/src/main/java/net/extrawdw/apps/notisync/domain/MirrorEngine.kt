@@ -24,6 +24,8 @@ import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.NotificationStyle
+import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
@@ -217,10 +219,17 @@ class MirrorEngine(
         // Android group-summary captures are render-control/alert carriers for Android receivers. iOS cannot
         // consume them correctly without com.apple.developer.usernotifications.filtering, so send the real
         // child notification to iOS but keep this summary out of that platform's inbox/shade path.
-        notif.isGroupSummary -> Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS)
+        // An iPhone's own now-playing card (bridged over AMS) is likewise Android-only: mirroring the
+        // iPhone's media back to an iOS device is circular, and its MEDIA rendering is Android-side anyway.
+        notif.isGroupSummary || isIosBridgedMedia(notif) ->
+            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS)
+
         excluded.isEmpty() -> Recipients.OwnMesh
         else -> Recipients.OwnMeshFiltered(excluded)
     }
+
+    private fun isIosBridgedMedia(notif: CapturedNotification): Boolean =
+        notif.originPlatform == OriginPlatform.IOS_ANCS && notif.style == NotificationStyle.MEDIA
 
     /**
      * Seal [notif] to the own mesh over the QUIET channel — DATA_SYNC ([DataSyncKind.NOTIFICATION]) at

@@ -39,6 +39,7 @@ class SettingsRepository(
     private val ancsBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
     private val ancsLocalKey = booleanPreferencesKey("ancs_local_display")
     private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
+    private val ancsMediaKey = booleanPreferencesKey("ancs_media_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
@@ -81,6 +82,11 @@ class SettingsRepository(
     val ancsMeshMirror: StateFlow<Boolean> =
         store.data.map { it[ancsMeshKey] ?: true }.stateInEager(scope, true)
 
+    /** Mirror the iPhone's now-playing media (AMS) as a media-controls card — here and, when
+     *  [ancsMeshMirror] is on, on the user's other Android devices. Default on once bridging. */
+    val ancsMediaMirror: StateFlow<Boolean> =
+        store.data.map { it[ancsMediaKey] ?: true }.stateInEager(scope, true)
+
     /** Master switch for the incoming-call ringer ([net.extrawdw.apps.notisync.notification.CallRinger]).
      *  Default off. When off, NO mirrored call rings on this device, regardless of the per-app
      *  [PerAppConfig.ringForCalls] toggle — calls still mirror and pop up, just silently. */
@@ -104,6 +110,7 @@ class SettingsRepository(
     suspend fun setAncsBridgeEnabled(on: Boolean) = store.edit { it[ancsBridgeKey] = on }
     suspend fun setAncsLocalDisplay(on: Boolean) = store.edit { it[ancsLocalKey] = on }
     suspend fun setAncsMeshMirror(on: Boolean) = store.edit { it[ancsMeshKey] = on }
+    suspend fun setAncsMediaMirror(on: Boolean) = store.edit { it[ancsMediaKey] = on }
 
     /** Whether first-launch onboarding was finished (every step completed or skipped). Direct read only —
      *  it gates what the launch frame shows, so an eager StateFlow's still-default value would flash

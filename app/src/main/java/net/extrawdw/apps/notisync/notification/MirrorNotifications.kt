@@ -262,6 +262,11 @@ object MirrorChannels {
     private fun clientOf(id: String): String = id.substringAfter(':').substringBefore(':')
 
     private fun channelName(context: Context, notif: CapturedNotification): String {
+        // iOS now-playing (AMS): ONE channel regardless of player, so its name must not flip between
+        // "Music" and "Spotify" with the latest post — the stable category label ("Media") names it.
+        if (isIosOrigin(notif) && isMediaCapture(notif)) {
+            return categoryLabel(context, MirrorCategory.TRANSPORT) ?: notif.appLabel
+        }
         // iOS/ANCS: the channel IS the app's switch, so it carries the app's name. The generic fallback
         // below would name it after the LATEST post's category ("Messages", then "Calls" after a missed
         // call) — generic and unstable, since createNotificationChannel re-applies the name on every call.
@@ -278,9 +283,20 @@ object MirrorChannels {
     // transiently-quiet notification (connect-time backlog, or an iOS "silent" flag) would otherwise strand the
     // whole channel in the shade's Silent section. Per-notification quieting is done with setSilent() at post
     // time instead (RemoteNotificationPoster.render), which never touches the channel's importance.
-    private fun importanceOf(notif: CapturedNotification): Int =
-        if (notif.originPlatform == OriginPlatform.IOS_ANCS) NotificationManager.IMPORTANCE_HIGH
-        else mapImportance(notif.channelImportance ?: notif.importance)
+    //
+    // The iOS now-playing card (AMS) is the deliberate carve-out: its importance is a CONSTANT LOW by design
+    // (every AMS capture says so — nothing runtime-flipping can strand the channel), because a media card must
+    // never alert; it lives on its own dedicated channel, so the HIGH rule for notification channels is untouched.
+    private fun importanceOf(notif: CapturedNotification): Int = when {
+        notif.originPlatform == OriginPlatform.IOS_ANCS && isMediaCapture(notif) ->
+            mapImportance(notif.channelImportance ?: notif.importance)
+
+        notif.originPlatform == OriginPlatform.IOS_ANCS -> NotificationManager.IMPORTANCE_HIGH
+        else -> mapImportance(notif.channelImportance ?: notif.importance)
+    }
+
+    private fun isMediaCapture(notif: CapturedNotification): Boolean =
+        notif.style == NotificationStyle.MEDIA || notif.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
 
     private fun mapImportance(importance: MirrorImportance): Int = when (importance) {
         MirrorImportance.NONE -> NotificationManager.IMPORTANCE_NONE
@@ -1244,6 +1260,8 @@ class RemoteNotificationPoster(
             "com.tencent.mm" to R.drawable.ic_wechat_notification,
             "com.google.android.dialer" to R.drawable.ic_phone_notification,
             "tv.danmaku.bili" to R.drawable.ic_bilibili_notification,
+            // The iPhone now-playing bridge's synthetic package (AMS exposes no bundle id to resolve).
+            "ios.media" to R.drawable.ic_music_note_notification,
         )
 
         /**

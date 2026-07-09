@@ -360,13 +360,18 @@ class AppGraph(private val app: Application) {
             deviceRepo = iosDeviceRepo,
             localDisplayEnabled = { settings.ancsLocalDisplay.value },
             meshMirrorEnabled = { settings.ancsMeshMirror.value },
+            mediaMirrorEnabled = { settings.ancsMediaMirror.value },
             captureToMesh = { notif -> mirror.captureLocal(notif) },
+            sendQuietToMesh = { notif -> mirror.sendNotificationQuiet(notif) },
             renderLocal = { notif, silent ->
                 poster.render(notif, silent, if (silent) RenderPhase.REPLAY else RenderPhase.INITIAL)
             },
             clearLocal = { cid, key -> poster.clear(cid, key) },
             dismissMesh = { cid, key -> mirror.dismissLocal(cid, key) },
         )
+        // Turning the iPhone-media switch OFF tears the now-playing card down live (local + mesh), like the
+        // ringer master switch above — not just for future sessions.
+        settings.ancsMediaMirror.onEach { if (!it) ancsManager?.onMediaMirrorDisabled() }.launchIn(scope)
         // Dismissing an iOS mirror — swiped here or relayed from another own device — clears it on the iPhone
         // too (best-effort ANCS negative action), so it doesn't linger on iOS or reappear on the next reconnect.
         mirror.iosOriginCanceler = OriginalCanceler { key -> ancsManager?.dismissOnIphone(key) }

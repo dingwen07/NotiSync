@@ -13,10 +13,15 @@ import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.ByteArrayOutputStream
+import java.util.UUID
 
 /**
  * GATT **client** to one iPhone's ANCS server. Opens the link, requests a large MTU, discovers ANCS, enables
@@ -24,8 +29,15 @@ import java.io.ByteArrayOutputStream
  * forwards Notification Source events, and answers attribute / app-name queries over Control Point —
  * reassembling fragmented Data Source responses.
  *
+ * The same link also consumes the iPhone's **AMS** (Apple Media Service, [Ams]) when present: once ANCS
+ * reaches SHARING the client subscribes Entity Update + Remote Command, registers the Player/Track
+ * attributes, and forwards media updates / supported-command changes — best-effort and non-fatal (an
+ * iPhone not exposing AMS still bridges notifications normally).
+ *
  * GATT operations are serialized by the Android stack; correspondingly we keep at most one Control Point
- * request in flight ([cpMutex]) and one CCCD-enable in flight (chained through [onDescriptorWrite]).
+ * request in flight ([cpMutex]) and one CCCD-enable in flight (chained through [onDescriptorWrite]). AMS
+ * operations share [cpMutex], each awaiting its own completion callback before releasing the lock, so they
+ * can never interleave with an ANCS request's write or each other.
  *
  * Bluetooth permissions are guaranteed by the caller ([AncsBleManager] checks before constructing this).
  */
@@ -39,6 +51,12 @@ class AncsGattClient(
     /** Invoked once this client terminally disconnects or fails to connect, so the manager can drop it and
      *  let the next inbound connection (possibly under a rotated random address) spawn a fresh client. */
     private val onClientGone: () -> Unit = {},
+    /** Host scope for the AMS setup coroutine; AMS work is cancelled with this client (see [close]). */
+    private val scope: CoroutineScope? = null,
+    /** An AMS Entity Update landed (a Player/Track attribute changed). */
+    private val onAmsEntityUpdate: (Ams.EntityUpdate) -> Unit = {},
+    /** iOS notified the currently-supported AMS remote commands (changes with the active player). */
+    private val onAmsSupportedCommands: (List<Int>) -> Unit = {},
 ) {
     private var gatt: BluetoothGatt? = null
     private var controlPoint: BluetoothGattCharacteristic? = null
@@ -46,6 +64,34 @@ class AncsGattClient(
     private var notificationSource: BluetoothGattCharacteristic? = null
 
     private val cpMutex = Mutex()
+
+    // ---- AMS state (all best-effort; null / false when the iPhone doesn't expose AMS) ----
+    private var amsRemoteCommand: BluetoothGattCharacteristic? = null
+    private var amsEntityUpdate: BluetoothGattCharacteristic? = null
+    private var amsEntityAttribute: BluetoothGattCharacteristic? = null
+
+    @Volatile
+    private var amsSetupStarted = false
+
+    /** Child job so [close] cancels any in-flight AMS setup/fetch without touching the host scope. */
+    private val amsJob = SupervisorJob()
+
+    /** The one in-flight AMS descriptor write (mutex-guarded; completed by [onDescriptorWrite]). */
+    @Volatile
+    private var amsDescriptorWrite: CompletableDeferred<Boolean>? = null
+
+    /** The one in-flight AMS characteristic write, keyed by uuid so an unrelated (ANCS) write completion
+     *  can't complete it (mutex-guarded; completed by `onCharacteristicWrite`). */
+    @Volatile
+    private var amsPendingWrite: AmsPendingWrite? = null
+
+    /** The one in-flight Entity Attribute read (mutex-guarded; completed by `onCharacteristicRead`). */
+    @Volatile
+    private var amsCharacteristicRead: CompletableDeferred<ByteArray?>? = null
+
+    private class AmsPendingWrite(val uuid: UUID) {
+        val deferred = CompletableDeferred<Boolean>()
+    }
 
     @Volatile
     private var pending: PendingRequest? = null
@@ -129,10 +175,23 @@ class AncsGattClient(
 
     fun close() {
         handler.removeCallbacksAndMessages(null)
+        amsJob.cancel()
+        amsReset()
         runCatching { gatt?.close() }
         gatt = null
         pending = null
         inFlightChar = null
+    }
+
+    /** Drop AMS characteristic refs + fail any in-flight AMS op (fresh discovery / teardown). */
+    private fun amsReset() {
+        amsRemoteCommand = null
+        amsEntityUpdate = null
+        amsEntityAttribute = null
+        amsSetupStarted = false
+        amsDescriptorWrite?.complete(false)
+        amsPendingWrite?.deferred?.complete(false)
+        amsCharacteristicRead?.complete(null)
     }
 
     /** Actively terminate the link, then release — for an intentional shutdown (the user disabled the bridge),
@@ -215,6 +274,121 @@ class AncsGattClient(
                 BluetoothStatusCodes.SUCCESS
     }
 
+    // ---- AMS (Apple Media Service) ----
+
+    /**
+     * Write one AMS RemoteCommandID to the Remote Command characteristic — a transport press (play,
+     * pause, next…) replayed on whatever the iPhone's active media app is. Returns whether iOS accepted
+     * the write; an unsupported command is rejected at ATT level (spec error 0xA1) and comes back false.
+     */
+    suspend fun sendMediaCommand(commandId: Int): Boolean {
+        val rc = amsRemoteCommand ?: return false
+        return amsWrite(rc, Ams.buildRemoteCommand(commandId))
+    }
+
+    /**
+     * Fetch the full value of a truncated Entity Update attribute: write the (entity, attribute) pair to
+     * Entity Attribute, then read the characteristic back — two ATT operations under one [cpMutex] hold so
+     * nothing interleaves between the naming write and its read. Null on any failure (absent AMS, timeout,
+     * or spec error 0xA2 for an attribute that emptied since).
+     */
+    suspend fun readEntityAttribute(entityId: Int, attributeId: Int): String? {
+        val ea = amsEntityAttribute ?: return null
+        cpMutex.withLock {
+            val g = gatt ?: return null
+            val pendingWrite = AmsPendingWrite(ea.uuid)
+            amsPendingWrite = pendingWrite
+            val issued = g.writeCharacteristic(
+                ea,
+                Ams.buildEntityAttributeRequest(entityId, attributeId),
+                BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT,
+            ) == BluetoothStatusCodes.SUCCESS
+            val named = issued &&
+                (withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { pendingWrite.deferred.await() } ?: false)
+            amsPendingWrite = null
+            if (!named) return null
+            val pendingRead = CompletableDeferred<ByteArray?>()
+            amsCharacteristicRead = pendingRead
+            if (!g.readCharacteristic(ea)) {
+                amsCharacteristicRead = null; return null
+            }
+            val bytes = withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { pendingRead.await() }
+            amsCharacteristicRead = null
+            return bytes?.let { String(it, Charsets.UTF_8) }
+        }
+    }
+
+    /**
+     * Kick the AMS setup once ANCS reaches SHARING (so its CCCD writes never interleave with the ANCS
+     * enable chain, and the link is already encrypted — AMS, like ANCS, only lives behind encryption).
+     * Ordering per the spec: subscribe Entity Update FIRST (registration writes are rejected with 0xA0
+     * before it), then Remote Command (whose subscribe makes iOS notify the supported-command list),
+     * then register the Player + Track attribute sets. Best-effort: an iPhone without AMS (or a failed
+     * step) logs and leaves the notification bridge untouched.
+     */
+    private fun startAmsSetup() {
+        val eu = amsEntityUpdate
+        if (eu == null) {
+            Log.i(TAG, "AMS not exposed by this iPhone — media mirroring unavailable this session")
+            return
+        }
+        if (amsSetupStarted) return
+        amsSetupStarted = true
+        val host = scope ?: return
+        CoroutineScope(host.coroutineContext + amsJob).launch {
+            val euOk = amsSubscribe(eu)
+            if (!euOk) {
+                Log.w(TAG, "AMS Entity Update subscribe failed — skipping media mirroring")
+                return@launch
+            }
+            val rcOk = amsRemoteCommand?.let { amsSubscribe(it) } ?: false
+            val playerOk =
+                amsWrite(eu, Ams.buildEntityUpdateRegistration(Ams.ENTITY_PLAYER, Ams.PLAYER_ATTRS))
+            val trackOk =
+                amsWrite(eu, Ams.buildEntityUpdateRegistration(Ams.ENTITY_TRACK, Ams.TRACK_ATTRS))
+            Log.i(TAG, "AMS setup: remoteCommand=$rcOk player=$playerOk track=$trackOk")
+        }
+    }
+
+    /** Enable notifications on an AMS characteristic (CCCD write), awaiting its [onDescriptorWrite]. */
+    private suspend fun amsSubscribe(ch: BluetoothGattCharacteristic): Boolean = cpMutex.withLock {
+        val g = gatt ?: return false
+        g.setCharacteristicNotification(ch, true)
+        val cccd = ch.getDescriptor(Ancs.CCCD) ?: return false
+        val d = CompletableDeferred<Boolean>()
+        amsDescriptorWrite = d
+        val issued =
+            g.writeDescriptor(cccd, BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE) ==
+                BluetoothStatusCodes.SUCCESS
+        val ok = issued && (withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { d.await() } ?: false)
+        amsDescriptorWrite = null
+        ok
+    }
+
+    /**
+     * Write [payload] to an AMS characteristic and await its write completion under [cpMutex]. One brief
+     * retry covers the ATT-busy window an ANCS fire-and-forget Control Point write can leave behind
+     * ([performAction] releases the lock before its own completion callback lands).
+     */
+    private suspend fun amsWrite(ch: BluetoothGattCharacteristic, payload: ByteArray): Boolean =
+        cpMutex.withLock {
+            val g = gatt ?: return false
+            val pending = AmsPendingWrite(ch.uuid)
+            amsPendingWrite = pending
+            var issued = g.writeCharacteristic(
+                ch, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            ) == BluetoothStatusCodes.SUCCESS
+            if (!issued) {
+                delay(AMS_WRITE_RETRY_MS)
+                issued = g.writeCharacteristic(
+                    ch, payload, BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+                ) == BluetoothStatusCodes.SUCCESS
+            }
+            val ok = issued && (withTimeoutOrNull(AMS_OP_TIMEOUT_MS) { pending.deferred.await() } ?: false)
+            amsPendingWrite = null
+            ok
+        }
+
     private suspend fun request(
         command: Int,
         attrCount: Int,
@@ -253,6 +427,8 @@ class AncsGattClient(
             handler.removeCallbacks(watchdog)
             Log.i(TAG, "ANCS subscribed — SHARING")
             onStatus(AncsStatus.SHARING)
+            // ANCS is fully enabled (its CCCD chain is done) — now bring up AMS on the same link.
+            startAmsSetup()
             return
         }
         inFlightChar = ch
@@ -296,6 +472,15 @@ class AncsGattClient(
                 TAG,
                 "services discovered status=$status: [${g.services.joinToString { it.uuid.toString() }}]"
             )
+            // Re-capture AMS from this (possibly fresh) database. Failing any in-flight AMS op first keeps a
+            // service-changed re-discovery from stranding a waiter on a stale characteristic. AMS setup itself
+            // runs once ANCS reaches SHARING (see enableNext) so it never interleaves with the enable chain.
+            amsReset()
+            g.getService(Ams.SERVICE_UUID)?.let { ams ->
+                amsRemoteCommand = ams.getCharacteristic(Ams.REMOTE_COMMAND)
+                amsEntityUpdate = ams.getCharacteristic(Ams.ENTITY_UPDATE)
+                amsEntityAttribute = ams.getCharacteristic(Ams.ENTITY_ATTRIBUTE)
+            }
             val svc = g.getService(Ancs.SERVICE_UUID)
             if (svc == null) {
                 // ANCS is hidden until the link is encrypted. If we're not bonded, bond and re-discover; only
@@ -352,6 +537,14 @@ class AncsGattClient(
             descriptor: BluetoothGattDescriptor,
             status: Int
         ) {
+            // AMS CCCD writes are awaited suspend-style (amsSubscribe), not chained like the ANCS enables —
+            // route them out before the ANCS retry logic (which would otherwise re-drive ANCS state on them).
+            val chUuid = descriptor.characteristic?.uuid
+            if (chUuid == Ams.ENTITY_UPDATE || chUuid == Ams.REMOTE_COMMAND) {
+                Log.i(TAG, "AMS CCCD write status=$status ($chUuid)")
+                amsDescriptorWrite?.complete(status == BluetoothGatt.GATT_SUCCESS)
+                return
+            }
             Log.i(TAG, "CCCD write status=$status")
             if (status == BluetoothGatt.GATT_SUCCESS) {
                 cccdAttempts = 0
@@ -393,7 +586,40 @@ class AncsGattClient(
             when (ch.uuid) {
                 Ancs.NOTIFICATION_SOURCE -> Ancs.parseSource(value)?.let(onSourceEvent)
                 Ancs.DATA_SOURCE -> appendDataSource(value)
+                Ams.ENTITY_UPDATE -> Ams.parseEntityUpdate(value)?.let(onAmsEntityUpdate)
+                Ams.REMOTE_COMMAND -> onAmsSupportedCommands(Ams.parseSupportedCommands(value))
             }
+        }
+
+        override fun onCharacteristicWrite(
+            g: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            // Only AMS writes are awaited (ANCS Control Point writes await their Data Source response
+            // instead); key by uuid so a late ANCS write completion can't complete an AMS waiter.
+            amsPendingWrite?.takeIf { it.uuid == ch.uuid }
+                ?.deferred?.complete(status == BluetoothGatt.GATT_SUCCESS)
+        }
+
+        override fun onCharacteristicRead(
+            g: BluetoothGatt,
+            ch: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            // Only the AMS Entity Attribute is ever read (the truncated-value fetch).
+            if (ch.uuid == Ams.ENTITY_ATTRIBUTE) {
+                amsCharacteristicRead?.complete(if (status == BluetoothGatt.GATT_SUCCESS) value else null)
+            }
+        }
+
+        override fun onServiceChanged(g: BluetoothGatt) {
+            // The iPhone's GATT database changed (services can come and go — AMS in particular is not
+            // guaranteed to be present at connect time). Re-discover so a late-appearing service is picked
+            // up; onServicesDiscovered re-runs the ANCS enable chain (idempotent) and re-arms AMS.
+            Log.i(TAG, "GATT services changed — re-discovering")
+            if (!g.discoverServices()) Log.w(TAG, "re-discovery after service change failed to start")
         }
     }
 
@@ -454,5 +680,9 @@ class AncsGattClient(
 
         // After a watchdog disconnect(), force teardown if STATE_DISCONNECTED never arrives (wedged stack).
         const val DISCONNECT_FALLBACK_MS = 2_500L
+
+        // AMS ops are simple single-op ATT round-trips (no fragmented responses like ANCS Data Source).
+        const val AMS_OP_TIMEOUT_MS = 3_000L
+        const val AMS_WRITE_RETRY_MS = 150L
     }
 }

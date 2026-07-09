@@ -313,6 +313,7 @@
     <string name="ios_pairing_failed">无法开始配对：%1$s</string>
     <string name="ios_show_here">镜像到此设备</string>
     <string name="ios_mirror_mesh">镜像到我的其他设备</string>
+    <string name="ios_mirror_media">镜像媒体播放</string>
     <string name="ios_apps_search_hint">搜索 iPhone 应用</string>
     <string name="ios_apps_section_mirroring">镜像中</string>
     <string name="ios_apps_section">iPhone 应用</string>

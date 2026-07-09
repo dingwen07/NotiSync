@@ -32,6 +32,7 @@ import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MediaCommand
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
@@ -41,6 +42,10 @@ import java.util.concurrent.ConcurrentHashMap
  * appears in the iPhone's Bluetooth settings), accepts the iPhone's connection via a GATT server, then runs
  * an [AncsGattClient] over that link to consume notifications. Each ANCS notification is fetched, resolved to
  * an app name + icon, filtered by the user's per-app opt-in, and dispatched to local display and/or the mesh.
+ *
+ * The same link also mirrors the iPhone's now-playing media over AMS (the media sibling of ANCS): the GATT
+ * client forwards Entity Updates into [amsBridge], which maintains one media card ([AmsNotificationMapper]),
+ * and transport presses flow back through [performOnIphone] as AMS Remote Commands.
  *
  * Dependencies are injected as plain function references (manual-DI house style) so this stays decoupled from
  * [net.extrawdw.apps.notisync.AppGraph] and unit-reasonable.
@@ -59,8 +64,12 @@ class AncsBleManager(
     private val deviceRepo: IosDeviceRepository,
     private val localDisplayEnabled: () -> Boolean,
     private val meshMirrorEnabled: () -> Boolean,
+    /** iPhone media (AMS) mirroring master toggle; gates the now-playing card, not the subscription. */
+    private val mediaMirrorEnabled: () -> Boolean = { false },
     /** Seal the capture to the own mesh ([MirrorEngine.captureLocal]). */
     private val captureToMesh: suspend (CapturedNotification) -> Int,
+    /** Quiet in-place update to the own mesh ([MirrorEngine.sendNotificationQuiet]) — media updates. */
+    private val sendQuietToMesh: suspend (CapturedNotification) -> Int = { 0 },
     /** Post the capture locally on this phone ([RemoteNotificationPoster.render]); [silent] mutes the backlog. */
     private val renderLocal: (CapturedNotification, Boolean) -> Unit,
     /** Clear a locally-posted mirror ([RemoteNotificationPoster.clear]). */
@@ -104,6 +113,24 @@ class AncsBleManager(
     // server is briefly closed, so any stray client-gone callback must NOT schedule a re-attach in the gap.
     @Volatile
     private var resettingPeripheral = false
+
+    /** The iPhone's now-playing (AMS) card: accumulates media entity updates and dispatches the mirror.
+     *  One manager-lifetime instance; its session state resets whenever the link drops ([AmsMediaBridge.onGone]). */
+    private val amsBridge = AmsMediaBridge(
+        scope = scope,
+        clientId = clientId,
+        enabled = { mediaMirrorEnabled() },
+        localDisplayEnabled = { localDisplayEnabled() },
+        meshMirrorEnabled = { meshMirrorEnabled() },
+        iphoneId = { iphoneId() },
+        iphoneName = { deviceRepo.deviceName.value },
+        readAttribute = { entity, attr -> client?.readEntityAttribute(entity, attr) },
+        renderLocal = { notif, silent -> renderLocal(notif, silent) },
+        clearLocal = { cid, key -> clearLocal(cid, key) },
+        captureToMesh = { notif -> captureToMesh(notif) },
+        sendQuietToMesh = { notif -> sendQuietToMesh(notif) },
+        dismissMesh = { cid, key -> dismissMesh(cid, key) },
+    )
 
     private val appNameCache =
         ConcurrentHashMap<String, String>() // bundleId -> resolved display name
@@ -193,6 +220,7 @@ class AncsBleManager(
             adapterReceiverRegistered = false
         }
         client?.disconnectAndClose(); client = null
+        amsBridge.onGone()
         // Actively drop the iPhone's link to our GATT server too (not just release our handle, which leaves the
         // ACL up and the iPhone showing "Connected"/Sharing), then close the server.
         runCatching { connectedDevice?.let { gattServer?.cancelConnection(it) } }
@@ -326,6 +354,9 @@ class AncsBleManager(
             onSourceEvent = ::onSourceEvent,
             onBondNeeded = { ensureBond(device) },
             onClientGone = ::onClientGone,
+            scope = scope,
+            onAmsEntityUpdate = amsBridge::onEntityUpdate,
+            onAmsSupportedCommands = amsBridge::onSupportedCommands,
         )
         client = c
         c.connect()
@@ -344,6 +375,9 @@ class AncsBleManager(
         } // remember the iPhone so we re-attach to IT, not another bonded device
         client = null
         connectedDevice = null
+        // AMS subscriptions died with the GATT client — drop the now-playing card; a successful
+        // re-attach re-subscribes and repopulates it from iOS's initial attribute burst.
+        amsBridge.onGone()
         scheduleAttach()
     }
 
@@ -407,6 +441,7 @@ class AncsBleManager(
         handler.removeCallbacks(attachRunnable)
         handler.removeCallbacks(peripheralRestartRunnable)
         client?.disconnectAndClose(); client = null
+        amsBridge.onGone()
         runCatching { connectedDevice?.let { gattServer?.cancelConnection(it) } }
         connectedDevice = null
         runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
@@ -445,6 +480,7 @@ class AncsBleManager(
         Log.i(TAG, "central disconnected — back to advertising")
         client?.close(); client = null
         connectedDevice = null
+        amsBridge.onGone() // media state is session-scoped like the UID map below
         uidToKey.clear() // UIDs are session-scoped; drop the removal map on disconnect
         selfClearedUids.clear() // ditto — pending self-clear confirmations don't carry across sessions
         deviceRepo.clearDeviceName() // no device connected — don't leave a stale name in the FGS / tab / group labels
@@ -528,6 +564,7 @@ class AncsBleManager(
         advertisingSet = null
         client?.close(); client = null
         connectedDevice = null
+        amsBridge.onGone()
         runCatching { gattServer?.close() }; gattServer = null
         deviceRepo.clearDeviceName() // link torn down — drop the stale name
         deviceRepo.setStatus(AncsStatus.ERROR)
@@ -657,17 +694,28 @@ class AncsBleManager(
     }
 
     /**
-     * Perform a mesh peer's [ActionEvent] on the bridged iPhone — the ANCS positive/negative action a
-     * mirrored button represents ([net.extrawdw.notisync.protocol.NotificationAction.index] IS the ANCS
-     * ActionID). PERFORM only: ANCS has no "open" command, and peers never send TAP for a bridged capture
-     * (its `hasContentIntent` stays false). Unlike [dismissOnIphone] nothing is parked for a replay: firing
-     * "Answer" minutes later against a re-advertised notification would be wrong, not helpful — a stale
-     * event (link down, UID rotated) is simply dropped. A performed NEGATIVE action removes the
-     * notification on the iPhone; that EVENT_REMOVED is a genuine state change the mesh should learn about,
-     * so it is deliberately NOT self-clear-suppressed (unlike a dismissal echo, which already propagated).
+     * Perform a mesh peer's (or the local card's) [ActionEvent] on the bridged iPhone. PERFORM is the ANCS
+     * positive/negative action a mirrored button represents
+     * ([net.extrawdw.notisync.protocol.NotificationAction.index] IS the ANCS ActionID); MEDIA is a transport
+     * press on the mirrored now-playing card, replayed over AMS Remote Command. TAP never arrives: neither
+     * service has an "open" command, and bridged captures keep `hasContentIntent` false.
      */
     fun performOnIphone(event: ActionEvent) {
-        if (event.kind != ActionKind.PERFORM) return
+        when (event.kind) {
+            ActionKind.PERFORM -> performAncsAction(event)
+            ActionKind.MEDIA -> performAmsCommand(event)
+            else -> return
+        }
+    }
+
+    /**
+     * The ANCS action path. Unlike [dismissOnIphone] nothing is parked for a replay: firing "Answer"
+     * minutes later against a re-advertised notification would be wrong, not helpful — a stale event
+     * (link down, UID rotated) is simply dropped. A performed NEGATIVE action removes the notification
+     * on the iPhone; that EVENT_REMOVED is a genuine state change the mesh should learn about, so it is
+     * deliberately NOT self-clear-suppressed (unlike a dismissal echo, which already propagated).
+     */
+    private fun performAncsAction(event: ActionEvent) {
         if (event.actionIndex != Ancs.ACTION_POSITIVE && event.actionIndex != Ancs.ACTION_NEGATIVE) return
         val parts = event.sourceKey.split('|')
         if (parts.size < 4 || parts[0] != "ancs") return // not an ANCS source key
@@ -675,6 +723,38 @@ class AncsBleManager(
         val c = client ?: return
         if (parts[1] != iphoneId() || uidToKey[uid] != event.sourceKey) return // stale UID / other iPhone
         scope.launch { runCatching { c.performAction(uid, event.actionIndex) } }
+    }
+
+    /**
+     * The AMS media path: translate the mirrored session's [MediaCommand] to an AMS RemoteCommandID and
+     * write it — iOS routes it to whatever app is the active player. Best-effort like the ANCS action: a
+     * stale event (link down, another iPhone's card) is dropped, and iOS rejects a command the current
+     * player doesn't support at ATT level. SEEK never arrives (AMS has no absolute seek, so the card
+     * doesn't advertise ACTION_SEEK_TO); STOP maps to pause, the nearest AMS has.
+     */
+    private fun performAmsCommand(event: ActionEvent) {
+        val parts = event.sourceKey.split('|')
+        if (parts.size < 3 || parts[0] != AmsNotificationMapper.KEY_PREFIX) return // not an AMS source key
+        val c = client ?: return
+        if (parts[1] != iphoneId()) return // another (or no longer connected) iPhone's card
+        val command = when (event.mediaCommand) {
+            MediaCommand.PLAY -> Ams.CMD_PLAY
+            MediaCommand.PAUSE -> Ams.CMD_PAUSE
+            MediaCommand.PLAY_PAUSE -> Ams.CMD_TOGGLE_PLAY_PAUSE
+            MediaCommand.NEXT -> Ams.CMD_NEXT_TRACK
+            MediaCommand.PREVIOUS -> Ams.CMD_PREVIOUS_TRACK
+            MediaCommand.STOP -> Ams.CMD_PAUSE
+            MediaCommand.CUSTOM ->
+                event.mediaCustomAction?.let(AmsNotificationMapper::commandOfCustomAction) ?: return
+
+            MediaCommand.SEEK, null -> return
+        }
+        scope.launch { runCatching { c.sendMediaCommand(command) } }
+    }
+
+    /** The media master toggle turned off — tear the now-playing card down now (mesh + local). */
+    fun onMediaMirrorDisabled() {
+        amsBridge.onDisabled()
     }
 
     // ---- Helpers ----

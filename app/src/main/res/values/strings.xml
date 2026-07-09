@@ -326,6 +326,7 @@
     <string name="ios_pairing_failed">Couldn\'t start pairing: %1$s</string>
     <string name="ios_show_here">Mirror to this phone</string>
     <string name="ios_mirror_mesh">Mirror to my other devices</string>
+    <string name="ios_mirror_media">Mirror media playback</string>
     <string name="ios_apps_search_hint">Search iPhone apps</string>
     <string name="ios_apps_section_mirroring">Mirroring</string>
     <string name="ios_apps_section">iPhone apps</string>

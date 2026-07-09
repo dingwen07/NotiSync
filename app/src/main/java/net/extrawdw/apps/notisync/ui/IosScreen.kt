@@ -241,6 +241,7 @@ fun IosScreen() {
     val bridgeEnabled by settings.ancsBridgeEnabled.collectAsStateWithLifecycle()
     val localDisplay by settings.ancsLocalDisplay.collectAsStateWithLifecycle()
     val meshMirror by settings.ancsMeshMirror.collectAsStateWithLifecycle()
+    val mediaMirror by settings.ancsMediaMirror.collectAsStateWithLifecycle()
     val enabled by registry.enabled.collectAsStateWithLifecycle()
     val discovered by registry.discovered.collectAsStateWithLifecycle()
     val icons by viewModel<IosAppsViewModel>().icons.collectAsStateWithLifecycle()
@@ -452,8 +453,10 @@ fun IosScreen() {
                     ForwardingCard(
                         localDisplay = localDisplay,
                         meshMirror = meshMirror,
+                        mediaMirror = mediaMirror,
                         onLocal = { on -> scope.launch { settings.setAncsLocalDisplay(on) } },
                         onMesh = { on -> scope.launch { settings.setAncsMeshMirror(on) } },
+                        onMedia = { on -> scope.launch { settings.setAncsMediaMirror(on) } },
                     )
                 }
                 if (matching.isEmpty()) {
@@ -579,8 +582,10 @@ private fun PairingCard(
 private fun ForwardingCard(
     localDisplay: Boolean,
     meshMirror: Boolean,
+    mediaMirror: Boolean,
     onLocal: (Boolean) -> Unit,
-    onMesh: (Boolean) -> Unit
+    onMesh: (Boolean) -> Unit,
+    onMedia: (Boolean) -> Unit,
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp),
@@ -595,6 +600,11 @@ private fun ForwardingCard(
             label = stringResource(R.string.ios_mirror_mesh),
             checked = meshMirror,
             onCheckedChange = onMesh,
+        )
+        CompactSwitchRow(
+            label = stringResource(R.string.ios_mirror_media),
+            checked = mediaMirror,
+            onCheckedChange = onMedia,
         )
     }
 }
