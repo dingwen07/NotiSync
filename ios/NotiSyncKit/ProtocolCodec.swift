@@ -399,7 +399,8 @@ nonisolated enum KMPProtocolBridge {
             profile: value.profile.map { toKmp($0) },
             trust: value.trust.map { toKmp($0) },
             card: value.card.map { toKmp($0) },
-            filter: value.filter.map { toKmp($0) }
+            filter: value.filter.map { toKmp($0) },
+            notification: nil
         )
     }
 
@@ -571,7 +572,7 @@ nonisolated enum KMPProtocolBridge {
             text: value.text,
             bigText: value.bigText,
             subText: value.subText,
-            style: NotifStyle(rawValue: value.style.name) ?? .DEFAULT,
+            style: NotificationStyle(rawValue: value.style.name) ?? .DEFAULT,
             conversationTitle: value.conversationTitle,
             isGroupConversation: value.isGroupConversation,
             messages: value.messages.map(fromKmp),

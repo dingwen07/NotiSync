@@ -17,7 +17,7 @@ import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -75,7 +75,7 @@ data class DemoNotificationConfig(
     val text: String? = null,
     val bigText: String? = null,
     val subText: String? = null,
-    val style: NotifStyle = NotifStyle.DEFAULT,
+    val style: NotificationStyle = NotificationStyle.DEFAULT,
     val conversationTitle: String? = null,
     val isGroupConversation: Boolean = false,
     val messages: List<DemoConversationMessageConfig> = emptyList(),
@@ -394,7 +394,7 @@ private object DemoScenarioLoader {
                 appLabel = "Messages",
                 title = "Weekend plan",
                 text = "Are we still on for coffee?",
-                style = NotifStyle.MESSAGING,
+                style = NotificationStyle.MESSAGING,
                 conversationTitle = "Weekend plan",
                 isGroupConversation = true,
                 messages = listOf(
@@ -427,7 +427,7 @@ private object DemoScenarioLoader {
                 appLabel = "Food Delivery",
                 title = "Courier is nearby",
                 text = "Your ramen bowl is 3 minutes away.",
-                style = NotifStyle.BIG_PICTURE,
+                style = NotificationStyle.BIG_PICTURE,
                 category = MirrorCategory.SERVICE,
                 appIconAsset = "delivery-icon",
                 bigPictureAsset = "delivery-photo",

@@ -136,11 +136,39 @@ class CborWireCompatTest {
     }
 
     @Test
+    fun mixedFleet_richStyleFieldsSurviveBothConfigs() {
+        val call = simpleNotif().copy(
+            style = NotificationStyle.CALL,
+            callType = CallType.INCOMING,
+            callerName = "Alice",
+            callVerificationText = "Verified caller",
+            callAnswerIndex = 1,
+            callDeclineIndex = 0,
+            accentColor = 0xFF00C853.toInt(),
+            actions = listOf(
+                NotificationAction(index = 0, title = "Decline"),
+                NotificationAction(index = 1, title = "Answer"),
+            ),
+        )
+        assertEquals(call, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(call)))
+        assertEquals(call, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(call)))
+
+        val media = simpleNotif().copy(
+            style = NotificationStyle.MEDIA, isColorized = true, mediaCompactActionIndices = listOf(0, 1, 2),
+        )
+        assertEquals(media, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(media)))
+        assertEquals(media, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(media)))
+
+        val inbox = simpleNotif().copy(style = NotificationStyle.INBOX, inboxLines = listOf("Line 1", "Line 2"))
+        assertEquals(inbox, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(inbox)))
+    }
+
+    @Test
     fun mixedFleet_withAssets_preservesAllFields() {
         // CapturedNotification.equals can't be used here (PrivateAssetRef.assetKey is a ByteArray with
         // reference equality), so prove field preservation by re-encoding under a fixed codec.
         val rich = simpleNotif().copy(
-            largeIcon = asset, style = NotifStyle.MESSAGING,
+            largeIcon = asset, style = NotificationStyle.MESSAGING,
             messages = listOf(ConversationMessage("Alice", "hi", 1L, avatar = asset)),
         )
         val viaLegacy = codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(rich))

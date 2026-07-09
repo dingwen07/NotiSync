@@ -265,26 +265,37 @@ class SecureChannel(
             // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
             // handler_ms spans the inline handler dispatch (for NOTIFICATION that includes the immediate render).
             val handlerStartNanos = System.nanoTime()
-            handler(
-                InboundMessage(
-                    envelope.signerId,
-                    sender.ownDevice,
-                    envelope.typ,
-                    body,
-                    envelope.signerEpoch,
-                    id,
-                    deliveryMode
+            // Inbound handlers run INLINE on the FCM service / socket thread, so one must never crash
+            // delivery. A poison message — an unknown enum value from a newer peer (kotlinx throws on an
+            // unknown enum name even with ignoreUnknownKeys), a decode failure, or a render bug — is caught,
+            // logged, and marked handled below so it is acked and NOT redelivered into a crash loop, rather
+            // than propagating out of onMessageReceived and taking down the process.
+            try {
+                handler(
+                    InboundMessage(
+                        envelope.signerId,
+                        sender.ownDevice,
+                        envelope.typ,
+                        body,
+                        envelope.signerEpoch,
+                        id,
+                        deliveryMode
+                    )
                 )
-            )
+                result = "handled"
+            } catch (e: Exception) {
+                log.warn("inbound ${envelope.typ} handler threw; dropping message $id: ${e.message}")
+                result = "handler_error"
+            }
             span.metric("handler_ms", (System.nanoTime() - handlerStartNanos) / 1_000_000)
-            // Mark handled only now (after the handler ran): in-memory for the hot path, then durably.
+            // Mark handled either way (after the handler ran): in-memory for the hot path, then durably. A
+            // message that reliably throws is acked so the relay stops redelivering it.
             recent.add(id)
             dedup?.record(id)
             // Approximate cross-device delivery latency: this receiver's clock minus the sender's sealed-at
             // stamp. Clock skew between devices makes this a distribution signal (watch P50/P90), not an
             // exact per-event value; clamp skew-induced negatives to 0.
             span.metric("e2e_latency_ms", (now() - envelope.createdAt).coerceAtLeast(0))
-            result = "handled"
             return DeliveryOutcome.HANDLED
         } finally {
             span.attr("result", result)

@@ -4,7 +4,7 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.NotificationAction
 import net.extrawdw.notisync.protocol.OriginPlatform
 
@@ -56,7 +56,7 @@ object AncsNotificationMapper {
             text = body,
             bigText = if (isLong) message else null,
             subText = record.subtitle?.takeIf { it != record.title && it != body },
-            style = if (isLong) NotifStyle.BIG_TEXT else NotifStyle.DEFAULT,
+            style = if (isLong) NotificationStyle.BIG_TEXT else NotificationStyle.DEFAULT,
             category = mapCategory(record.source.categoryId),
             // Always HIGH: iOS shows notifications as banners, so the mirrored channel must stay banner-capable.
             // The per-notification iOS "silent" flag is deliberately ignored here — it flips at runtime (e.g. iOS

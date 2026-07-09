@@ -7,7 +7,7 @@ import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ConversationMessage
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 
 /**
  * Provider-side glue: plans a notification's graphics, extracts the private ones, uploads them as
@@ -51,21 +51,21 @@ class GraphicsPipeline(
             LargeIconHandling.OMIT -> omitted++
         }
 
-        if (result.style == NotifStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.PRIVATE) {
+        if (result.style == NotificationStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.PRIVATE) {
             val t0 = System.nanoTime()
             val bytes = extractor.bigPicture(sbn)
             span.metric("big_picture_ms", (System.nanoTime() - t0) / 1_000_000)
             if (bytes == null) omitted++
             else upload(bytes, AssetRole.BIG_PICTURE, captured)?.let { result = result.copy(bigPicture = it) }
-        } else if (result.style == NotifStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.OMIT) {
+        } else if (result.style == NotificationStyle.BIG_PICTURE && plan.bigPicture == GraphicsSlot.OMIT) {
             omitted++
         }
 
-        if (result.style == NotifStyle.MESSAGING && plan.avatar == GraphicsSlot.PRIVATE) {
+        if (result.style == NotificationStyle.MESSAGING && plan.avatar == GraphicsSlot.PRIVATE) {
             result = attachMessageAvatars(sbn, result)
         }
 
-        if (result.style == NotifStyle.MESSAGING) {
+        if (result.style == NotificationStyle.MESSAGING) {
             result = attachMessageData(sbn, result)
         }
 
@@ -157,7 +157,7 @@ class GraphicsPipeline(
         notif: CapturedNotification,
         avatarRef: net.extrawdw.notisync.protocol.PrivateAssetRef
     ): CapturedNotification {
-        if (notif.style == NotifStyle.MESSAGING) {
+        if (notif.style == NotificationStyle.MESSAGING) {
             // Attach the contact avatar to incoming messages that lack their own.
             return notif.copy(messages = notif.messages.map {
                 if (it.sender != null && it.avatar == null) it.copy(avatar = avatarRef) else it
@@ -172,7 +172,7 @@ class GraphicsPipeline(
             avatar = avatarRef,
         )
         return notif.copy(
-            style = NotifStyle.MESSAGING,
+            style = NotificationStyle.MESSAGING,
             isConversation = true,
             messages = listOf(message)
         )

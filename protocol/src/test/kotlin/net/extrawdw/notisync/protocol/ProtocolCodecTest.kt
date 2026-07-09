@@ -142,7 +142,7 @@ class ProtocolCodecTest {
             appLabel = "Chat",
             title = "Alice",
             text = "See you soon",
-            style = NotifStyle.MESSAGING,
+            style = NotificationStyle.MESSAGING,
             conversationTitle = "Alice",
             messages = listOf(
                 ConversationMessage(sender = "Alice", text = "Hey", timestamp = 1L),
@@ -210,7 +210,7 @@ class ProtocolCodecTest {
             packageName = "com.example.chat",
             appLabel = "Chat",
             largeIcon = largeIcon,
-            style = NotifStyle.MESSAGING,
+            style = NotificationStyle.MESSAGING,
             messages = listOf(
                 ConversationMessage(
                     sender = "Alice",

@@ -99,7 +99,7 @@ import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Purpose
@@ -1022,7 +1022,7 @@ class AppGraph(private val app: Application) {
             title = "Oversized test notification",
             text = "Oversized NotiSync diagnostic (delivered via wake + relay fetch).",
             bigText = bigText,
-            style = NotifStyle.BIG_TEXT,
+            style = NotificationStyle.BIG_TEXT,
             importance = MirrorImportance.HIGH,
             postTime = System.currentTimeMillis(),
             channelId = "notisync_test",

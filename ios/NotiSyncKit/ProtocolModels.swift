@@ -15,7 +15,7 @@ nonisolated enum Purpose: String, CaseIterable, Sendable { case ENVELOPE_SIGN, R
     static let allRawValues: [String] = allCases.map(\.rawValue)
 }
 nonisolated enum AssetRole: String, Sendable { case LARGE_ICON, BIG_PICTURE, AVATAR, INLINE_IMAGE, APP_ICON }
-nonisolated enum NotifStyle: String, Sendable { case DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
+nonisolated enum NotificationStyle: String, Sendable { case DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
 nonisolated enum MirrorImportance: String, Sendable { case MIN, LOW, DEFAULT, HIGH, NONE }
 nonisolated enum MirrorCategory: String, Sendable {
     case MESSAGE, EMAIL, CALL, ALARM, EVENT, REMINDER, SOCIAL, PROGRESS
@@ -23,7 +23,7 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER }
+nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum Capability: String, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
@@ -213,7 +213,7 @@ nonisolated struct CapturedNotification: Sendable {
     var text: String?
     var bigText: String?
     var subText: String?
-    var style: NotifStyle = .DEFAULT
+    var style: NotificationStyle = .DEFAULT
     var conversationTitle: String?
     var isGroupConversation: Bool = false
     var messages: [ConversationMessage] = []

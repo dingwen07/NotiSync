@@ -29,15 +29,20 @@ import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
+import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.GroupAlertBehavior
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.NotificationAction
 import java.util.concurrent.ConcurrentHashMap
+
+/** The framework template class name for an Android CallStyle notification (`Notification.EXTRA_TEMPLATE`),
+ *  shared by capture-time style detection and the listener's ongoing-gate exemption for calls. */
+private const val CALL_STYLE_TEMPLATE = "android.app.Notification\$CallStyle"
 
 /** Turns a platform [StatusBarNotification] into the normalized, transport-neutral form. */
 class NotificationNormalizer(private val pm: PackageManager) {
@@ -75,12 +80,30 @@ class NotificationNormalizer(private val pm: PackageManager) {
         val bigText = extras.getCharSequence(Notification.EXTRA_BIG_TEXT)?.toString()
         val hasBigPicture =
             extras.containsKey(Notification.EXTRA_PICTURE) || extras.containsKey(Notification.EXTRA_PICTURE_ICON)
+        val inboxLines = extras.getCharSequenceArray(Notification.EXTRA_TEXT_LINES)
+            ?.mapNotNull { it?.toString()?.takeIf(String::isNotBlank) }
+            .orEmpty()
+        // Rich-style detection keys off the source template (with a MediaSession fallback for media). CALL and
+        // MEDIA win over the text/picture styles, since a call/media post can also carry a large icon or text.
+        val template = runCatching { extras.getString(Notification.EXTRA_TEMPLATE) }.getOrNull()
+        val isMedia = template == TEMPLATE_MEDIA || extras.containsKey(KEY_MEDIA_SESSION)
+        val callType = if (template == CALL_STYLE_TEMPLATE) callTypeOf(extras) else null
+        val call = if (callType != null) captureCall(n, extras) else null
         val style = when {
-            messages.isNotEmpty() -> NotifStyle.MESSAGING
-            hasBigPicture -> NotifStyle.BIG_PICTURE
-            !bigText.isNullOrBlank() -> NotifStyle.BIG_TEXT
-            else -> NotifStyle.DEFAULT
+            callType != null -> NotificationStyle.CALL
+            template == TEMPLATE_DECORATED_MEDIA_CUSTOM -> NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+            isMedia -> NotificationStyle.MEDIA
+            template == TEMPLATE_DECORATED_CUSTOM -> NotificationStyle.DECORATED_CUSTOM_VIEW
+            messages.isNotEmpty() -> NotificationStyle.MESSAGING
+            hasBigPicture -> NotificationStyle.BIG_PICTURE
+            inboxLines.isNotEmpty() -> NotificationStyle.INBOX
+            !bigText.isNullOrBlank() -> NotificationStyle.BIG_TEXT
+            else -> NotificationStyle.DEFAULT
         }
+        // MediaStyle and its decorated variant surface up to five transport buttons; others cap at three.
+        val isMediaLike =
+            style == NotificationStyle.MEDIA || style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+        val maxActions = if (isMediaLike) MAX_MEDIA_ACTIONS else MAX_MIRRORED_ACTIONS
 
         return CapturedNotification(
             sourceClientId = sourceClientId,
@@ -96,13 +119,20 @@ class NotificationNormalizer(private val pm: PackageManager) {
             isGroupConversation = messaging?.isGroupConversation ?: false,
             messages = messages,
             category = categoryOf(n.category),
-            importance = if (n.category == Notification.CATEGORY_MESSAGE) MirrorImportance.HIGH else MirrorImportance.DEFAULT,
+            importance = if (n.category == Notification.CATEGORY_MESSAGE ||
+                n.category == Notification.CATEGORY_CALL ||
+                callType == CallType.INCOMING || callType == CallType.SCREENING
+            ) MirrorImportance.HIGH else MirrorImportance.DEFAULT,
             postTime = sbn.postTime,
             groupKey = n.group ?: runCatching { sbn.overrideGroupKey }.getOrNull(),
-            isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0,
+            // A call row may set FLAG_GROUP_SUMMARY on itself (WhatsApp); never treat a call as a group summary
+            // — it renders as the standalone call notification, not a receiver-built summary.
+            isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0 &&
+                n.category != Notification.CATEGORY_CALL,
             groupAlertBehavior = groupAlertBehaviorOf(n.groupAlertBehavior),
             isOngoing = sbn.isOngoing,
             isClearable = sbn.isClearable,
+            isForegroundService = n.flags and Notification.FLAG_FOREGROUND_SERVICE != 0,
             // Raw source flag. Do not infer full alert cadence from this alone: apps may keep child rows
             // ONLY_ALERT_ONCE while alerting through an unsilenced group summary.
             onlyAlertOnce = n.flags and Notification.FLAG_ONLY_ALERT_ONCE != 0,
@@ -116,8 +146,19 @@ class NotificationNormalizer(private val pm: PackageManager) {
             shortcutId = shortcutId,
             conversationId = runCatching { channel?.conversationId }.getOrNull(),
             parentChannelId = runCatching { channel?.parentChannelId }.getOrNull(),
-            actions = mirrorableActions(n),
+            actions = mirrorableActions(n, maxActions),
             hasContentIntent = n.contentIntent != null,
+            inboxLines = inboxLines,
+            isColorized = extras.getBoolean(Notification.EXTRA_COLORIZED, false),
+            mediaCompactActionIndices =
+                if (isMediaLike) extras.getIntArray(KEY_COMPACT_ACTIONS)?.toList().orEmpty() else emptyList(),
+            callType = callType,
+            callerName = call?.callerName,
+            callVerificationText = call?.verificationText,
+            callAnswerIndex = call?.answerIndex,
+            callDeclineIndex = call?.declineIndex,
+            callHangUpIndex = call?.hangUpIndex,
+            accentColor = n.color.takeIf { it != Notification.COLOR_DEFAULT },
         )
     }
 
@@ -137,11 +178,11 @@ class NotificationNormalizer(private val pm: PackageManager) {
      * into `notification.actions` directly — so the exported list can be sparse. Capped at the
      * platform shade's own button limit.
      */
-    private fun mirrorableActions(n: Notification): List<NotificationAction> {
+    private fun mirrorableActions(n: Notification, max: Int): List<NotificationAction> {
         val actions = n.actions ?: return emptyList()
-        val out = ArrayList<NotificationAction>(minOf(actions.size, MAX_MIRRORED_ACTIONS))
+        val out = ArrayList<NotificationAction>(minOf(actions.size, max))
         for ((index, action) in actions.withIndex()) {
-            if (out.size == MAX_MIRRORED_ACTIONS) break
+            if (out.size == max) break
             if (action?.actionIntent == null) continue
             val title = action.title?.toString()?.takeIf { it.isNotBlank() } ?: continue
             if (runCatching { action.isContextual }.getOrDefault(false)) continue
@@ -165,9 +206,70 @@ class NotificationNormalizer(private val pm: PackageManager) {
         return out
     }
 
+    /** Android CallStyle call type from its (framework-internal) extra; null when absent/unknown. */
+    private fun callTypeOf(extras: Bundle): CallType? = when (extras.getInt(KEY_CALL_TYPE, 0)) {
+        CALL_TYPE_INCOMING -> CallType.INCOMING
+        CALL_TYPE_ONGOING -> CallType.ONGOING
+        CALL_TYPE_SCREENING -> CallType.SCREENING
+        else -> null
+    }
+
+    private data class CallCapture(
+        val callerName: String?,
+        val verificationText: String?,
+        val answerIndex: Int?,
+        val declineIndex: Int?,
+        val hangUpIndex: Int?,
+    )
+
+    /**
+     * CallStyle detail: the caller name/verification, and which raw action indices are answer / decline /
+     * hang-up — resolved by matching the framework's answer/decline/hang-up PendingIntents (held in the
+     * notification's extras) against the generated action row, so the consumer can rebuild the CallStyle
+     * buttons and relay a press back to the origin. The caller photo, when present, rides the large icon.
+     */
+    private fun captureCall(n: Notification, extras: Bundle): CallCapture {
+        val person = runCatching {
+            extras.getParcelable(KEY_CALL_PERSON, android.app.Person::class.java)
+        }.getOrNull()
+        val actions = n.actions.orEmpty()
+        fun indexOfIntent(key: String): Int? {
+            val pi = runCatching { extras.getParcelable(key, PendingIntent::class.java) }.getOrNull()
+                ?: return null
+            return actions.indexOfFirst { it?.actionIntent == pi }.takeIf { it >= 0 }
+        }
+        return CallCapture(
+            callerName = person?.name?.toString(),
+            verificationText = extras.getCharSequence(KEY_CALL_VERIFICATION_TEXT)?.toString(),
+            answerIndex = indexOfIntent(KEY_CALL_ANSWER_INTENT),
+            declineIndex = indexOfIntent(KEY_CALL_DECLINE_INTENT),
+            hangUpIndex = indexOfIntent(KEY_CALL_HANG_UP_INTENT),
+        )
+    }
+
     private companion object {
         /** Mirrors the platform shade's visible-action cap; also bounds the E2E payload. */
         const val MAX_MIRRORED_ACTIONS = 3
+
+        /** MediaStyle can surface up to five transport buttons (three in the compact view). */
+        const val MAX_MEDIA_ACTIONS = 5
+
+        // Style templates + CallStyle/MediaStyle extras. Several keys are framework-internal (@hidden), so we
+        // read them by their stable literal name rather than a hidden constant — these are plain Bundle reads.
+        const val TEMPLATE_MEDIA = "android.app.Notification\$MediaStyle"
+        const val TEMPLATE_DECORATED_CUSTOM = "android.app.Notification\$DecoratedCustomViewStyle"
+        const val TEMPLATE_DECORATED_MEDIA_CUSTOM = "android.app.Notification\$DecoratedMediaCustomViewStyle"
+        const val KEY_MEDIA_SESSION = "android.mediaSession"
+        const val KEY_COMPACT_ACTIONS = "android.compactActions"
+        const val KEY_CALL_TYPE = "android.callType"
+        const val KEY_CALL_PERSON = "android.callPerson"
+        const val KEY_CALL_VERIFICATION_TEXT = "android.verificationText"
+        const val KEY_CALL_ANSWER_INTENT = "android.answerIntent"
+        const val KEY_CALL_DECLINE_INTENT = "android.declineIntent"
+        const val KEY_CALL_HANG_UP_INTENT = "android.hangUpIntent"
+        const val CALL_TYPE_INCOMING = 1
+        const val CALL_TYPE_ONGOING = 2
+        const val CALL_TYPE_SCREENING = 3
 
         /** NotificationCompat's `showsUserInterface` marker (androidx writes it into action extras). */
         const val EXTRA_SHOWS_USER_INTERFACE = "android.support.action.showsUserInterface"
@@ -449,17 +551,27 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         if (sbn.packageName == packageName) return                              // never mirror ourselves
         val n = sbn.notification
         val isGroupSummary = n.flags and Notification.FLAG_GROUP_SUMMARY != 0
+        // A call notification — the CallStyle template, OR any CATEGORY_CALL. WhatsApp (and other VoIP apps)
+        // post the incoming call on a voip_* channel with category=call, ONGOING, and FLAG_GROUP_SUMMARY on
+        // the call row itself. A call is exempt from the group-summary drop below (its "summary" row IS the
+        // call, not a duplicate the receiver rebuilds), but NOT from the ongoing opt-in: an ongoing call
+        // honors the per-app switch like any other ongoing post; a non-ongoing call isn't gated there anyway.
+        val isCall = n.category == Notification.CATEGORY_CALL ||
+            n.extras.getString(Notification.EXTRA_TEMPLATE) == CALL_STYLE_TEMPLATE
         // Most source summaries are duplicate rows; the receiver builds its own local summary from mirrored
         // children. Keep only explicit summary-alert carriers: some apps silence child rows and route the
         // audible alert through GROUP_ALERT_SUMMARY. GROUP_ALERT_ALL is Android's default, so forwarding it
         // would broaden mirroring to nearly every grouping app and can double-alert.
-        if (isGroupSummary && n.groupAlertBehavior != Notification.GROUP_ALERT_SUMMARY) return
+        if (isGroupSummary && !isCall && n.groupAlertBehavior != Notification.GROUP_ALERT_SUMMARY) return
         // Learn which apps post notifications (for the picker + recency sort), even if not enabled.
         graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)
         if (graph.appSelection?.isEnabled(sbn.packageName) != true) return // opt-in: default OFF
         val cfg = graph.appConfig?.configFor(sbn.packageName) ?: PerAppConfig()
-        // Ongoing (media / transport / foreground-service) notifications are mirrored only when the app opts in.
-        // isClearable is false whenever the ongoing flag is set, so this keys purely on the ongoing flag.
+        // Ongoing (media / transport / foreground-service / ongoing call) notifications are mirrored only when
+        // the app opts in. isClearable is false whenever the ongoing flag is set, so this keys purely on the
+        // ongoing flag — ongoing calls included: per the product rule, an ongoing call honors the opt-in just
+        // like any other ongoing post. A call that is NOT ongoing falls through here untouched (the gate only
+        // fires for ongoing posts) and mirrors as a normal alerting notification.
         if (sbn.isOngoing && !cfg.mirrorOngoing) return
         val eng = graph.mirrorEngine ?: return
         val clientId = graph.clientId ?: return
@@ -506,7 +618,13 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         // keys the app opted into (the gate above); the FIRST post fell through as a normal NOTIFICATION.
         // updateIntervalSec == 0 means "mirror only the initial post" — drop updates entirely.
         if (sbn.isOngoing && !firstSeen) {
-            val interval = cfg.updateIntervalSec
+            // A call is the exception: its transitions (ringing → answered → hung-up) are discrete, meaningful
+            // state changes, not progress ticks, so they must never be throttled or initial-only-dropped — else
+            // a picked-up/ended call leaves peers stuck on a stale "incoming call". Force "every update" for a
+            // call (interval < 0 → no throttle). The content-dedup above already drops identical re-posts (a
+            // chronometer duration ticks client-side without re-posting), so only real transitions get here;
+            // they still go out quietly, so answering on this device doesn't re-alert every peer.
+            val interval = if (isCall) -1 else cfg.updateIntervalSec
             if (interval == 0) return                                     // initial-only: don't mirror updates
             val intervalMs = if (interval < 0) 0L else interval * 1000L   // < 0 = every update, no throttle
             throttleOngoingUpdate(sbn.key, intervalMs, graph.scope) {

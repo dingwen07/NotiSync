@@ -30,7 +30,7 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -94,14 +94,14 @@ class MirrorEngineTest {
 
     private fun sampleNotif(source: ClientId) = CapturedNotification(
         sourceClientId = source, sourceKey = "0|com.x|1|t", packageName = "com.x", appLabel = "X",
-        title = "t", text = "x", style = NotifStyle.DEFAULT, category = MirrorCategory.MESSAGE,
+        title = "t", text = "x", style = NotificationStyle.DEFAULT, category = MirrorCategory.MESSAGE,
         importance = MirrorImportance.DEFAULT, postTime = 1L,
     )
 
     /** A notification bridged from an iPhone over ANCS: ANCS-shaped key, IOS_ANCS origin, iPhone name. */
     private fun iosNotif(source: ClientId) = CapturedNotification(
         sourceClientId = source, sourceKey = "ancs|ip|com.x|7", packageName = "com.x",
-        appLabel = "WhatsApp", title = "t", text = "x", style = NotifStyle.DEFAULT,
+        appLabel = "WhatsApp", title = "t", text = "x", style = NotificationStyle.DEFAULT,
         category = MirrorCategory.MESSAGE, importance = MirrorImportance.HIGH, postTime = 1L,
         originPlatform = OriginPlatform.IOS_ANCS, originDeviceName = "Dingwen's iPhone",
         originDeviceId = "ip",
@@ -944,7 +944,7 @@ class MirrorEngineTest {
             assetId = "inline-asset",
         )
         val notif = sampleNotif(sender.clientId).copy(
-            style = NotifStyle.MESSAGING,
+            style = NotificationStyle.MESSAGING,
             messages = listOf(
                 ConversationMessage(
                     sender = "Alice",

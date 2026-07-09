@@ -14,9 +14,20 @@ enum class MirrorCategory {
     TRANSPORT, SERVICE, STATUS, ERROR, NAVIGATION, NONE,
 }
 
-/** The producer declares the rendering style; the consumer reconstructs it, never guesses. */
+/** The producer declares the rendering style; the consumer reconstructs it, never guesses. Append-only —
+ *  keep CBOR ordinals stable. NOTE: an unknown enum value FAILS CBOR decode on an older consumer (kotlinx
+ *  throws on an unknown enum name even with ignoreUnknownKeys), so adding a value is a BREAKING change that
+ *  requires every client to update. DECORATED_*_CUSTOM_VIEW can't carry the source's custom RemoteViews
+ *  cross-device, so the consumer renders decorated-media as MEDIA and a plain decorated view as standard. */
 @Serializable
-enum class NotifStyle { DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
+enum class NotificationStyle {
+    DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX, MEDIA, CALL,
+    DECORATED_CUSTOM_VIEW, DECORATED_MEDIA_CUSTOM_VIEW,
+}
+
+/** The kind of call a [NotificationStyle.CALL] notification (Android CallStyle) represents. Append-only. */
+@Serializable
+enum class CallType { INCOMING, ONGOING, SCREENING }
 
 /** Android notification group alert behavior. Defaulting to CHILDREN preserves pre-field mirror behavior for
  *  older producers and non-Android captures: receiver-created summaries stay quiet, while child rows decide
@@ -135,7 +146,7 @@ data class CapturedNotification(
     val text: String? = null,
     val bigText: String? = null,
     val subText: String? = null,
-    val style: NotifStyle = NotifStyle.DEFAULT,
+    val style: NotificationStyle = NotificationStyle.DEFAULT,
     val conversationTitle: String? = null,
     val isGroupConversation: Boolean = false,
     val messages: List<ConversationMessage> = emptyList(),
@@ -153,6 +164,7 @@ data class CapturedNotification(
     val groupAlertBehavior: GroupAlertBehavior = GroupAlertBehavior.CHILDREN,
     val isOngoing: Boolean = false,
     val isClearable: Boolean = true,
+    val isForegroundService: Boolean = false,
     /** True if the platform redacted sensitive content (Android 15+); consumer should signal it. */
     val sensitiveRedacted: Boolean = false,
 
@@ -215,6 +227,31 @@ data class CapturedNotification(
      *  and the producer handles [MessageType.ACTION] — so a consumer may offer tap-to-open-on-origin
      *  (an [ActionKind.TAP] event). False for ANCS bridges (no such ANCS command) and old producers. */
     val hasContentIntent: Boolean = false,
+
+    // --- Rich notification styles (all appended; empty/null/false from an older producer decodes unchanged) ---
+    /** InboxStyle lines (`Notification.EXTRA_TEXT_LINES`) — populated for [NotificationStyle.INBOX]. */
+    val inboxLines: List<String> = emptyList(),
+    /** MediaStyle: the source declared a colorized (accent-tinted) notification (`EXTRA_COLORIZED`). */
+    val isColorized: Boolean = false,
+    /** MediaStyle compact-view action selection, in the SOURCE's raw action index space (the same space as
+     *  [NotificationAction.index]); the consumer maps each to its exported action position. */
+    val mediaCompactActionIndices: List<Int> = emptyList(),
+    /** CallStyle: the call kind — non-null only for [NotificationStyle.CALL]. */
+    val callType: CallType? = null,
+    /** CallStyle: the caller's display name (the CallStyle `Person`). The caller photo, when present, rides
+     *  the existing [largeIcon] asset. */
+    val callerName: String? = null,
+    /** CallStyle: optional caller-verification text (e.g. a STIR/SHAKEN attestation line). */
+    val callVerificationText: String? = null,
+    /** CallStyle answer / decline / hang-up actions, as [NotificationAction.index] values into [actions]: the
+     *  consumer builds the CallStyle buttons from the matching mirrored actions (pressing one relays an
+     *  [ActionKind.PERFORM] back to the origin, which answers/declines/hangs up the real call). Null = absent. */
+    val callAnswerIndex: Int? = null,
+    val callDeclineIndex: Int? = null,
+    val callHangUpIndex: Int? = null,
+    /** The source notification's accent color (`Notification.color`), or null when unset (COLOR_DEFAULT).
+     *  Applied on the consumer for MediaStyle colorization and the CallStyle accent. */
+    val accentColor: Int? = null,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */
