@@ -97,7 +97,13 @@ class AncsBleManager(
 
     private val handler = Handler(Looper.getMainLooper())
     private val attachRunnable = Runnable { tryAttachConnected() }
+    private val peripheralRestartRunnable = Runnable { reopenPeripheral() }
     private var reconnectAttempts = 0
+
+    // True only during a full peripheral reset ([restartPeripheral] → settle → [reopenPeripheral]): the GATT
+    // server is briefly closed, so any stray client-gone callback must NOT schedule a re-attach in the gap.
+    @Volatile
+    private var resettingPeripheral = false
 
     private val appNameCache =
         ConcurrentHashMap<String, String>() // bundleId -> resolved display name
@@ -166,6 +172,7 @@ class AncsBleManager(
         registerBondReceiver()
         running = true
         reconnectAttempts = 0
+        resettingPeripheral = false
         // Re-arm CompanionDeviceManager presence (if the user set up background auto-connect) so the OS keeps
         // waking us when the iPhone is in range — survives reboots / process death.
         AncsCompanion.observePresence(context)
@@ -174,7 +181,9 @@ class AncsBleManager(
 
     fun stop() {
         running = false
+        resettingPeripheral = false
         handler.removeCallbacks(attachRunnable)
+        handler.removeCallbacks(peripheralRestartRunnable)
         runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
         advertisingSet = null
         if (receiverRegistered) runCatching { context.unregisterReceiver(bondReceiver) }.also {
@@ -360,13 +369,76 @@ class AncsBleManager(
         onCentralConnected(target)
     }
 
-    /** Schedule [tryAttachConnected] with capped exponential backoff (reset on a successful SHARING). */
+    /**
+     * Schedule [tryAttachConnected] with capped exponential backoff (reset on a successful SHARING). But a
+     * re-attach only rebuilds the GATT *client* over the EXISTING link — when that link is wedged (a stale ACL
+     * our GATT *server* connection keeps alive, surfacing as "Connected, but notifications aren't shared"), it
+     * lands on the same dead link every cycle and never reaches SHARING. So after [MAX_LIGHT_RECOVERY_ATTEMPTS]
+     * such cycles, stop re-attaching and do a full peripheral reset instead — the automatic equivalent of the
+     * user toggling the iOS bridge switch off/on, which drops both GATT roles so the iPhone reconnects fresh.
+     */
     private fun scheduleAttach() {
-        if (!running) return
+        if (!running || resettingPeripheral) return
         handler.removeCallbacks(attachRunnable)
+        if (reconnectAttempts >= MAX_LIGHT_RECOVERY_ATTEMPTS) {
+            restartPeripheral()
+            return
+        }
         val delay = minOf(2_000L * (reconnectAttempts + 1), 20_000L)
         reconnectAttempts++
         handler.postDelayed(attachRunnable, delay)
+    }
+
+    /**
+     * Full peripheral reset — the automatic equivalent of the user toggling the iOS bridge switch off/on,
+     * reached only once lightweight re-attaches have repeatedly failed to reach SHARING ([scheduleAttach]).
+     * Drop the GATT client AND actively cancel the iPhone's link to our GATT *server* — the latter is what a
+     * client-only watchdog disconnect leaves up, pinning the wedged ACL so a re-attach just rebuilds on the
+     * same stale link — then stop advertising and close the server so the iPhone sees a genuine drop. After a
+     * settle, [reopenPeripheral] re-advertises and the iPhone reconnects on a fresh link.
+     */
+    private fun restartPeripheral() {
+        Log.w(
+            TAG,
+            "notifications still not sharing after $reconnectAttempts recovery attempts — full peripheral reset"
+        )
+        resettingPeripheral = true
+        reconnectAttempts = 0
+        handler.removeCallbacks(attachRunnable)
+        handler.removeCallbacks(peripheralRestartRunnable)
+        client?.disconnectAndClose(); client = null
+        runCatching { connectedDevice?.let { gattServer?.cancelConnection(it) } }
+        connectedDevice = null
+        runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
+        advertisingSet = null
+        runCatching { gattServer?.close() }; gattServer = null
+        deviceRepo.clearDeviceName()
+        deviceRepo.setStatus(AncsStatus.CONNECTING) // transient "recovering"; reopen flips to ADVERTISING
+        // Let the stack release the server + advertiser before reopening — a synchronous reopen races the close
+        // on some OEM stacks (same settle rationale as the GATT client's refresh/discovery delays).
+        handler.postDelayed(peripheralRestartRunnable, PERIPHERAL_RESTART_SETTLE_MS)
+    }
+
+    /** Second half of [restartPeripheral]: re-open the GATT server and re-advertise after the settle. */
+    private fun reopenPeripheral() {
+        if (!running) return
+        resettingPeripheral = false
+        val a = adapter
+        val adv = a?.bluetoothLeAdvertiser
+        if (a == null || !a.isEnabled || adv == null) {
+            // Bluetooth went away during the settle. Reset [running] so the adapter-on receiver's start() (or
+            // the iOS tab's auto-resume) can bring the bridge back cleanly — leaving it true would make start()
+            // no-op on its `running` guard and strand us with no advertising.
+            Log.w(TAG, "peripheral reopen: adapter unavailable — will resume when Bluetooth returns")
+            running = false
+            deviceRepo.setStatus(AncsStatus.ERROR)
+            return
+        }
+        Log.i(TAG, "peripheral reopen: re-opening GATT server + advertising")
+        advertiser = adv
+        openGattServer()
+        startAdvertising(adv)
+        deviceRepo.setStatus(AncsStatus.ADVERTISING)
     }
 
     private fun onCentralDisconnected() {
@@ -449,7 +521,9 @@ class AncsBleManager(
         if (!running && advertisingSet == null && client == null) return // already torn down
         Log.i(TAG, "Bluetooth off — tearing down BLE; will re-advertise when it returns")
         running = false
+        resettingPeripheral = false
         handler.removeCallbacks(attachRunnable)
+        handler.removeCallbacks(peripheralRestartRunnable)
         runCatching { advertiser?.stopAdvertisingSet(advertisingSetCallback) }
         advertisingSet = null
         client?.close(); client = null
@@ -628,5 +702,14 @@ class AncsBleManager(
     private companion object {
         const val TAG = "AncsBleManager"
         const val MIME_WEBP = "image/webp"
+
+        /** Lightweight client-only re-attaches to try before escalating to a full peripheral reset. Each cycle
+         *  is one failed session (~30s GATT-client watchdog + backoff), so this is ~1.5 min of self-healing on
+         *  the existing link before the heavier reset that drops the server link and re-advertises. */
+        const val MAX_LIGHT_RECOVERY_ATTEMPTS = 3
+
+        /** Settle between tearing the peripheral down and re-advertising, so the stack releases the server +
+         *  advertiser before we reopen (a synchronous reopen races the close on some OEM stacks). */
+        const val PERIPHERAL_RESTART_SETTLE_MS = 800L
     }
 }
