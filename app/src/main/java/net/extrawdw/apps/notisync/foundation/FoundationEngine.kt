@@ -45,6 +45,9 @@ class FoundationEngine(
     /** Hands a DATA_SYNC `FILTER` sub-body to the notification app (a peer's request to suppress some of the
      *  captures this device sends it). Defaults to a no-op for tests / provider-only builds. */
     private val onFilter: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hands a DATA_SYNC `NOTIFICATION` sub-body — a quiet full notification (e.g. a throttled update to an
+     *  ongoing notification) — to the notification app. Defaults to a no-op for tests / provider-only builds. */
+    private val onNotificationSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     private val activityText: ActivityText,
     /** Our own current key-epoch [SignedBlob], announced E2E in each trust broadcast so own-mesh peers
      *  converge it without polling the broker. Null when the NS2 operational layer isn't available. */
@@ -229,6 +232,10 @@ class FoundationEngine(
             // A peer's notification-suppression request — notification-app business, like ASSET; forward and
             // let it apply its own own-mesh gate + persistence.
             DataSyncKind.FILTER -> onFilter(msg, sync)
+
+            // A quiet full notification (e.g. a throttled ongoing-notification update) — notification-app
+            // business like ASSET/FILTER; forward and let it apply its own own-mesh gate + last-writer-wins.
+            DataSyncKind.NOTIFICATION -> onNotificationSync(msg, sync)
 
             DataSyncKind.PROFILE -> {
                 val update = sync.profile ?: return

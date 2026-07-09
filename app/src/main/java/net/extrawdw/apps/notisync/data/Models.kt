@@ -48,6 +48,39 @@ data class ActivityEvent(
     enum class Kind { CAPTURED, SENT, RECEIVED, DISMISSED, PAIRED, ROUTE_REPAIR, ERROR }
 }
 
+/**
+ * Per-app mirroring configuration beyond the on/off allowlist ([AppSelectionRepository]). Persisted as
+ * JSON (pkg -> config) in the shared Preferences DataStore by [AppConfigRepository]. Every field defaults
+ * to the pre-feature behaviour, so an app with no stored config mirrors exactly as before: no ongoing
+ * notifications, no channel suppression. Appended fields MUST keep defaults so previously-persisted JSON
+ * still decodes.
+ */
+@Serializable
+data class PerAppConfig(
+    /** Mirror this app's ongoing (media / transport / foreground-service) notifications. Default off. */
+    val mirrorOngoing: Boolean = false,
+    /** Minimum seconds between mirrored UPDATES of one of this app's ongoing notifications. 0 = mirror only
+     *  the initial post (no updates). Updates ride the quiet channel (DATA_SYNC / FCM NORMAL), never alerts. */
+    val updateIntervalSec: Int = 0,
+    /** Source channel ids the user disabled for mirroring (default: all channels ON). */
+    val disabledChannelIds: Set<String> = emptySet(),
+    /** Source channel-group ids the user disabled — suppresses every channel in the group. */
+    val disabledGroupIds: Set<String> = emptySet(),
+)
+
+/**
+ * A notification channel observed from an app's captures, remembered so the per-app config sheet can list
+ * real channels to toggle. Recorded on every capture (a cheap no-op once known); "removing" one only
+ * forgets it from the list — it reappears the next time a capture arrives on that channel.
+ */
+@Serializable
+data class SeenChannel(
+    val channelId: String,
+    val channelName: String? = null,
+    val groupId: String? = null,
+    val groupName: String? = null,
+)
+
 /** Snapshot of permission / connectivity state for the diagnostics surface. */
 data class DiagnosticsState(
     val listenerEnabled: Boolean = false,

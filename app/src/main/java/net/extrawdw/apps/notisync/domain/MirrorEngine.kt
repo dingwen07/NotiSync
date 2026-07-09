@@ -171,6 +171,18 @@ class MirrorEngine(
             }
         )
 
+    /**
+     * Highest quiet-update ([DataSyncKind.NOTIFICATION]) postTime applied per ([ClientId], sourceKey), for the
+     * last-writer-wins drop of a stale store-and-forward backlog. Bounded LRU; lost on restart (after which a
+     * stale backlog item at worst re-renders silently before the newest post wins).
+     */
+    private val lastQuietPostTime: MutableMap<String, Long> =
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, Long>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: Map.Entry<String, Long>): Boolean = size > 256
+            }
+        )
+
     /** Register inbound handlers. Call during graph construction, before the channel starts delivering. */
     fun register() {
         channel.onMessage(MessageType.NOTIFICATION, ::onNotification)
@@ -209,11 +221,37 @@ class MirrorEngine(
         else -> Recipients.OwnMeshFiltered(excluded)
     }
 
-    suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String) {
+    /**
+     * Seal [notif] to the own mesh over the QUIET channel — DATA_SYNC ([DataSyncKind.NOTIFICATION]) at
+     * [Urgency.NORMAL] (FCM NORMAL / APNs background) — so it updates peers without waking them like an alert
+     * push. GENERIC: any notification may ride this (the first user is throttled ongoing-notification updates,
+     * but the API is not ongoing-specific). Returns the recipient count. iOS peers are excluded: the iOS client
+     * does not yet consume this kind, so a background push it would only drop is not worth sending. A peer that
+     * asked (over a FILTER) not to receive a matching notification is still dropped, exactly as in [captureLocal].
+     */
+    suspend fun sendNotificationQuiet(notif: CapturedNotification): Int {
+        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val payload = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.NOTIFICATION, notification = notif))
+        val n = channel.send(
+            MessageType.DATA_SYNC,
+            payload,
+            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS),
+            Urgency.NORMAL,
+        )
+        if (n > 0) rememberTitle(notif)
+        return n
+    }
+
+    suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String, syncToMesh: Boolean = true) {
         // Drop the still-queued relay copy of the notification we're dismissing (no-op for our own
         // captures, which were never received). Done first so the ack is queued even if the DISMISSAL
-        // broadcast below fails — the queue is local and drained by the relay worker.
+        // broadcast below fails — the queue is local and drained by the relay worker. Runs even when we do
+        // NOT sync to the mesh, so a swiped mirror doesn't immediately re-post from a still-queued copy.
         ackIndex?.onDismissed(sourceClientId, sourceKey)
+        // A non-clearable source (an ongoing notification) can't be cleared on its origin, and its mirrors on
+        // OTHER peers should stay put — so a local swipe of such a mirror is local-only: no mesh DISMISSAL and
+        // no origin cancel. The relay-ack above already made the local swipe stick.
+        if (!syncToMesh) return
         // No local-suppression set here: echoes from our own cancelNotification() (issued on a remote
         // dismissal) carry REASON_LISTENER_CANCEL and are filtered out by the listener's reason
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
@@ -335,37 +373,65 @@ class MirrorEngine(
                 deliveryMode = msg.deliveryMode.ifKnown(),
             )
         }
-        // Fetch any missing private graphics in the background, then re-post (same tag/id) with them
-        // attached. The notification is never blocked on asset transfer. Anything still missing is
-        // remembered and repaired over an encrypted DATA_SYNC request to the sender.
+        fetchGraphicsThenReRender(notif)
+    }
+
+    /**
+     * Fetch any missing private graphics for [notif] off the hot path, then re-post (same tag/id, silent) with
+     * them attached — the notification is never blocked on asset transfer. Anything still missing is remembered
+     * and repaired over an encrypted DATA_SYNC request to the sender. Shared by the alerting [onNotification]
+     * path and the quiet [onQuietNotification] update path.
+     */
+    private fun fetchGraphicsThenReRender(notif: CapturedNotification) {
         val refs = notif.privateRefs()
         val resolver = assetResolver
-        if (resolver != null && refs.isNotEmpty()) {
-            scope.launch {
-                // Guarded: this whole tail is best-effort broker I/O (asset fetch + ASSET_MISSING send) and
-                // the notification was already posted above — a failure only costs the enrichment/repair
-                // round, and must not escape the launch (the graphics stay repairable via a later delivery).
-                runCatching {
-                    // The asset fetch + enriched re-render is timed by the `asset_resolve` trace inside ensureLocal
-                    // (split cached vs fetched metrics there); it runs OFF the inline deliver path, so it is not
-                    // part of `envelope_delivery` (which ends at the immediate cached-content render). The ENRICH
-                    // re-render's own latency is captured by `mirror_render{phase=enrich}`.
-                    val result = resolver.ensureLocal(refs)
-                    // Silent: the notification was already posted above; this only attaches the now-downloaded
-                    // graphics, so it must refresh in place without a second alert.
-                    if (result.newlyAvailable) renderer.render(notif, silent = true, phase = RenderPhase.ENRICH)
-                    if (result.stillMissing.isNotEmpty()) {
-                        result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
-                        sendAssetSync(
-                            notif.sourceClientId,
-                            AssetSync(
-                                AssetSyncKind.ASSET_MISSING,
-                                result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
-                        )
-                    }
+        if (resolver == null || refs.isEmpty()) return
+        scope.launch {
+            // Guarded: this whole tail is best-effort broker I/O (asset fetch + ASSET_MISSING send) and the
+            // notification was already posted — a failure only costs the enrichment/repair round, and must not
+            // escape the launch (the graphics stay repairable via a later delivery).
+            runCatching {
+                // The asset fetch + enriched re-render is timed by the `asset_resolve` trace inside ensureLocal;
+                // it runs OFF the inline deliver path, so it is not part of `envelope_delivery`. The ENRICH
+                // re-render's own latency is captured by `mirror_render{phase=enrich}`.
+                val result = resolver.ensureLocal(refs)
+                // Silent: the notification was already posted; this only attaches the now-downloaded graphics,
+                // so it must refresh in place without a second alert.
+                if (result.newlyAvailable) renderer.render(notif, silent = true, phase = RenderPhase.ENRICH)
+                if (result.stillMissing.isNotEmpty()) {
+                    result.stillMissing.forEach { pendingAssetRenders[it.assetHash] = notif }
+                    sendAssetSync(
+                        notif.sourceClientId,
+                        AssetSync(
+                            AssetSyncKind.ASSET_MISSING,
+                            result.stillMissing.map { AssetSyncItem(it.assetHash, it.assetId) }),
+                    )
                 }
             }
         }
+    }
+
+    /**
+     * A peer's quiet notification over DATA_SYNC ([DataSyncKind.NOTIFICATION]) — e.g. a throttled update to an
+     * ongoing notification — forwarded from the foundation's sole DATA_SYNC handler. Rendered SILENTLY and in
+     * place (same tag/id as the initial NOTIFICATION mirror). Last-writer-wins on [CapturedNotification.postTime]
+     * per ([CapturedNotification.sourceClientId], [CapturedNotification.sourceKey]): the broker relays these
+     * store-and-forward without coalescing and may deliver a stale backlog after this device was offline, so an
+     * older post must never overwrite a newer one already shown. Own-mesh only (the same gate as NOTIFICATION).
+     */
+    fun onQuietNotification(msg: InboundMessage, sync: DataSync) {
+        if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.NOTIFICATION, msg.senderOwnDevice)) return
+        val notif = sync.notification ?: return
+        val key = titleKey(notif.sourceClientId, notif.sourceKey)
+        val last = lastQuietPostTime[key]
+        if (last != null && notif.postTime <= last) return   // stale / out-of-order backlog — drop
+        lastQuietPostTime[key] = notif.postTime
+        // Remember which relay message delivered this update, so a later local dismissal can ack (drop) it.
+        ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
+        // Silent + in place: an update to an already-shown notification must refresh without a second alert.
+        renderer.render(notif, silent = true, phase = RenderPhase.REPLAY)
+        rememberTitle(notif)
+        fetchGraphicsThenReRender(notif)
     }
 
     private fun onDismissal(msg: InboundMessage) {

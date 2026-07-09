@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.domain
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.channel.InboundMessage
 import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
@@ -21,6 +22,8 @@ import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
+import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.GroupAlertBehavior
 import net.extrawdw.notisync.protocol.MessageType
@@ -731,6 +734,61 @@ class MirrorEngineTest {
         mirror.captureLocal(sampleNotif(me.clientId).copy(groupKey = "messages"))
 
         assertEquals(setOf(android.clientId, ios.clientId), transport.envelopes.single().recipientIds().toSet())
+    }
+
+    @Test
+    fun sendNotificationQuiet_excludesIosAndUsesDataSync() = runBlocking {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val android = newSigner();
+        val androidHpke = newHpke()
+        val ios = newSigner();
+        val iosHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(android, androidHpke.publicKeyset, ownDevice = true, platform = "android"),
+                peerOf(ios, iosHpke.publicKeyset, ownDevice = true, platform = "ios"),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        // A quiet update goes to Android own peers only (iOS isn't wired to consume it yet), over DATA_SYNC.
+        mirror.sendNotificationQuiet(sampleNotif(me.clientId))
+
+        val envelope = transport.envelopes.single()
+        assertEquals(setOf(android.clientId), envelope.recipientIds().toSet())
+        assertEquals(MessageType.DATA_SYNC, envelope.typ)
+    }
+
+    @Test
+    fun onQuietNotification_rendersSilentlyAndAppliesPostTimeLww() {
+        val me = newSigner();
+        val myHpke = newHpke()
+        val peer = newSigner();
+        val peerHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value =
+                listOf(peerOf(peer, peerHpke.publicKeyset, ownDevice = true, platform = "android"))
+        }
+        val renderer = RecordingRenderer()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, renderer)
+
+        val base = sampleNotif(peer.clientId)
+        fun deliver(postTime: Long) = mirror.onQuietNotification(
+            InboundMessage(peer.clientId, senderOwnDevice = true, MessageType.DATA_SYNC, ByteArray(0)),
+            DataSync(DataSyncKind.NOTIFICATION, notification = base.copy(postTime = postTime)),
+        )
+
+        deliver(5L) // first update: rendered, silently
+        assertEquals(1, renderer.renders)
+        assertEquals(1, renderer.silentRenders)
+
+        deliver(3L) // stale (older postTime for the same key): dropped by last-writer-wins
+        assertEquals(1, renderer.renders)
+
+        deliver(7L) // newer postTime: rendered again
+        assertEquals(2, renderer.renders)
     }
 
     @Test

@@ -29,7 +29,7 @@ android {
         minSdk = 34
         targetSdk = 37
         versionCode = 35
-        versionName = "1.6.2-rc.1"
+        versionName = "1.7.0-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"

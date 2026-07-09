@@ -12,6 +12,7 @@ import android.os.Bundle
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -23,6 +24,7 @@ import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.analytics.PerfSpan
 import net.extrawdw.apps.notisync.analytics.perfSpan
+import net.extrawdw.apps.notisync.data.PerAppConfig
 import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.notisync.protocol.ActionEvent
@@ -267,6 +269,18 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
     private val pendingDismissals: MutableMap<String, Job> =
         java.util.Collections.synchronizedMap(HashMap())
 
+    /**
+     * Per-key throttle state for ongoing-notification quiet updates ([throttleOngoingUpdate]). [ongoingLastSentAt]
+     * is the wall-clock time of the last quiet send for a source key; [ongoingPending] holds the LATEST coalesced
+     * send while within the interval; [ongoingFlushJobs] is the single trailing-flush job scheduled at the
+     * interval boundary. The check-and-schedule runs only on the single-threaded listener callback; the flush
+     * jobs run on the graph scope and touch only these concurrent maps. Entries are dropped when the source
+     * notification is removed (see [onNotificationRemoved]).
+     */
+    private val ongoingLastSentAt = ConcurrentHashMap<String, Long>()
+    private val ongoingPending = ConcurrentHashMap<String, suspend () -> Unit>()
+    private val ongoingFlushJobs = ConcurrentHashMap<String, Job>()
+
     override fun onListenerConnected() {
         app.runWhenGraphReady { graph ->
             graph.mirrorEngine?.originalCanceler = this
@@ -317,6 +331,11 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             delay(DISMISS_DEBOUNCE_MS)
             pendingDismissals.remove(sbn.key)
             lastSentSignature.remove(sbn.key)
+            // Ongoing-update throttle state is per source key; drop it and cancel any pending trailing flush so
+            // a stale quiet update can't fire after the notification is gone.
+            ongoingLastSentAt.remove(sbn.key)
+            ongoingPending.remove(sbn.key)
+            ongoingFlushJobs.remove(sbn.key)?.cancel()
             // Guard only the send, not the debounce delay above (which must stay cancellable so a
             // cancel+repost aborts cleanly): a re-attestation in cooldown throws, and this bare launch
             // would otherwise surface it as an uncaught exception that crashes the scope.
@@ -437,8 +456,11 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         if (isGroupSummary && n.groupAlertBehavior != Notification.GROUP_ALERT_SUMMARY) return
         // Learn which apps post notifications (for the picker + recency sort), even if not enabled.
         graph.appSelection?.recordSeen(sbn.packageName, sbn.postTime)
-        if (sbn.isOngoing && !sbn.isClearable) return                          // media / transport / service
         if (graph.appSelection?.isEnabled(sbn.packageName) != true) return // opt-in: default OFF
+        val cfg = graph.appConfig?.configFor(sbn.packageName) ?: PerAppConfig()
+        // Ongoing (media / transport / foreground-service) notifications are mirrored only when the app opts in.
+        // isClearable is false whenever the ongoing flag is set, so this keys purely on the ongoing flag.
+        if (sbn.isOngoing && !cfg.mirrorOngoing) return
         val eng = graph.mirrorEngine ?: return
         val clientId = graph.clientId ?: return
         val ranking = NotificationListenerService.Ranking()
@@ -452,10 +474,25 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         val normalizeNanos = System.nanoTime() - normalizeStartNanos
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 
+        // Source-side channel controls: learn this app's channels for the config sheet, and drop a capture whose
+        // channel or channel-group the user disabled. Before registration (below), so a suppressed capture is
+        // never tracked — otherwise its later removal would propagate a phantom dismissal for something peers
+        // never saw. Default is all-channels-ON, so an app with no config suppresses nothing.
+        graph.appConfig?.let { ac ->
+            ac.recordSeenChannel(
+                sbn.packageName, captured.channelId, captured.channelName,
+                captured.channelGroupId, captured.channelGroupName,
+            )
+            if (ac.isChannelSuppressed(sbn.packageName, captured.channelId, captured.channelGroupId)) return
+        }
+
         val signature = captureSignature(captured)
         // Register only once content is non-blank (a blank capture is never mirrored, so it must not be
         // registered — otherwise its later removal would propagate a dismissal for something peers never
         // saw). Always register even when we won't re-send, so dismissals still sync and live dedup works.
+        // First-seen vs update, decided BEFORE registering the key below. An ongoing key's FIRST post takes the
+        // normal alerting NOTIFICATION path; its later updates are throttled + delivered quietly (see below).
+        val firstSeen = sbn.key !in mirroredKeys && sbn.key !in mirroredSummaryKeys
         if (captured.isGroupSummary) mirroredSummaryKeys.add(sbn.key) else mirroredKeys.add(sbn.key)
         val unchanged = lastSentSignature.put(sbn.key, signature) == signature
         // Skip the SEND for identical re-posts, and for backfilled notifications we already mirrored
@@ -463,6 +500,21 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
         graph.settings.updateLastSeenPostTime(sbn.postTime)
+
+        // Ongoing-notification UPDATE: deliver quietly (DATA_SYNC / FCM NORMAL) and throttled, so a rapidly
+        // updating progress/media notification never wakes peers like an alert push. Only reached for ongoing
+        // keys the app opted into (the gate above); the FIRST post fell through as a normal NOTIFICATION.
+        // updateIntervalSec == 0 means "mirror only the initial post" — drop updates entirely.
+        if (sbn.isOngoing && !firstSeen) {
+            val interval = cfg.updateIntervalSec
+            if (interval == 0) return                                     // initial-only: don't mirror updates
+            val intervalMs = if (interval < 0) 0L else interval * 1000L   // < 0 = every update, no throttle
+            throttleOngoingUpdate(sbn.key, intervalMs, graph.scope) {
+                val withGraphics = graph.graphicsPipeline?.attach(sbn, captured) ?: captured
+                eng.sendNotificationQuiet(withGraphics)
+            }
+            return
+        }
         // Off the listener thread: extract/upload private graphics (best-effort), then seal + send. One
         // `mirror_capture` span covers both threads — opened here (recording the listener-thread normalize)
         // and closed after the async send — so it times the whole capture→sent path for a mirrored post.
@@ -492,6 +544,36 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         }
         pendingChildKey?.let { pendingGroupChildSends[it] = sendJob }
         sendJob.start()
+    }
+
+    /**
+     * Leading + trailing throttle for one ongoing key's quiet updates: fire [send] immediately when at least
+     * [intervalMs] has elapsed since the last quiet send for [key]; otherwise keep only the LATEST [send] and
+     * run it once at the interval boundary, so the newest state always lands but at most one send goes out per
+     * interval. Called only from the single-threaded listener callback (safe check-and-schedule).
+     */
+    private fun throttleOngoingUpdate(
+        key: String,
+        intervalMs: Long,
+        scope: CoroutineScope,
+        send: suspend () -> Unit,
+    ) {
+        val now = System.currentTimeMillis()
+        val elapsed = now - (ongoingLastSentAt[key] ?: 0L)
+        if (elapsed >= intervalMs) {
+            ongoingLastSentAt[key] = now
+            scope.launch { runCatching { send() } }
+            return
+        }
+        // Within the interval: remember the latest state and ensure ONE trailing flush at the boundary.
+        ongoingPending[key] = send
+        if (ongoingFlushJobs[key]?.isActive != true) {
+            ongoingFlushJobs[key] = scope.launch {
+                delay(intervalMs - elapsed)
+                ongoingLastSentAt[key] = System.currentTimeMillis()
+                ongoingPending.remove(key)?.let { runCatching { it() } }
+            }
+        }
     }
 
     private suspend fun waitForGroupChildIfSummary(captured: CapturedNotification, span: PerfSpan) {

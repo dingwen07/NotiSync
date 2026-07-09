@@ -287,9 +287,10 @@ data class AssetSyncItem(
     val ref: PrivateAssetRef? = null,
 )
 
-/** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable. */
+/** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable (the wire encodes
+ *  the serial NAME; an unknown value throws on decode and is dropped by the peer's guarded DataSync decode). */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
 
 /**
  * One suppression rule a client asks a peer (the notification *source*) to apply to deliveries bound
@@ -348,6 +349,16 @@ data class DataSync(
     val card: CardDelivery? = null,
     /** A peer's request to suppress notifications bound for it — populated iff [kind] == [DataSyncKind.FILTER]. */
     val filter: FilterSync? = null,
+    /**
+     * A full notification delivered over the quiet (FCM NORMAL / APNs background) channel — populated iff
+     * [kind] == [DataSyncKind.NOTIFICATION]. Deliberately GENERIC: any notification may ride the low-urgency
+     * channel (the first user is throttled updates to an ongoing notification), so a burst never wakes the
+     * device the way an alert push would. The consumer renders it SILENTLY and applies last-writer-wins per
+     * ([CapturedNotification.sourceClientId], [CapturedNotification.sourceKey]) on [CapturedNotification.postTime]:
+     * the broker relays these store-and-forward with no content coalescing and may deliver a stale backlog
+     * after the recipient was offline, so an out-of-order older post must never clobber a newer one.
+     */
+    val notification: CapturedNotification? = null,
 )
 
 /**

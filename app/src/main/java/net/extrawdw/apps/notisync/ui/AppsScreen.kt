@@ -172,10 +172,14 @@ private fun canPostNotifications(pm: PackageManager, info: ApplicationInfo): Boo
 fun AppsScreen() {
     val graph = rememberGraph()
     val selection = graph.appSelection!!
+    val appConfig = graph.appConfig!!
     val enabled by selection.enabled.collectAsStateWithLifecycle()
     val lastSeen by selection.lastSeen.collectAsStateWithLifecycle()
     val loaded by viewModel<AppsViewModel>().apps.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
+    // The app whose per-app config sheet is open (null = none). Transient, so plain remember (InstalledApp
+    // isn't Parcelable); re-tapping the row reopens it.
+    var configFor by remember { mutableStateOf<InstalledApp?>(null) }
 
     val loading = loaded == null
     val apps = loaded.orEmpty()
@@ -226,6 +230,9 @@ fun AppsScreen() {
                 canToggleAll = matching.isNotEmpty(),
                 onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
             )
+            configFor?.let { app ->
+                AppConfigSheet(app = app, appConfig = appConfig, onDismiss = { configFor = null })
+            }
             when {
                 loading -> Box(
                     Modifier.fillMaxSize(),
@@ -258,6 +265,7 @@ fun AppsScreen() {
                                 lastSeen[app.packageName],
                                 fmt,
                                 selection,
+                                onOpenConfig = { configFor = it },
                             )
                         }
                     }
@@ -273,10 +281,15 @@ private fun AppRow(
     isOn: Boolean,
     lastSeen: Long?,
     fmt: SimpleDateFormat,
-    selection: net.extrawdw.apps.notisync.data.AppSelectionRepository
+    selection: net.extrawdw.apps.notisync.data.AppSelectionRepository,
+    onOpenConfig: (InstalledApp) -> Unit,
 ) {
     ListItem(
-        modifier = Modifier.clickable { selection.setEnabled(app.packageName, !isOn) },
+        // Tapping an enabled app opens its per-app config sheet; tapping a disabled one enables it. The
+        // trailing Switch still toggles mirroring on/off either way.
+        modifier = Modifier.clickable {
+            if (isOn) onOpenConfig(app) else selection.setEnabled(app.packageName, true)
+        },
         leadingContent = { AppIcon(app.icon) },
         headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {

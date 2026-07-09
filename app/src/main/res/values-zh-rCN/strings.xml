@@ -33,6 +33,20 @@
     <string name="apps_enable_all">开启全部镜像</string>
     <string name="apps_disable_all">关闭全部镜像</string>
 
+    <!-- 单个应用设置（在“应用”列表中点按已启用的应用） -->
+    <string name="app_config_ongoing_title">镜像持续性通知</string>
+    <string name="app_config_ongoing_desc">媒体播放器、下载、导航等持续显示的通知。</string>
+    <string name="app_config_update_title">更新频率</string>
+    <string name="app_config_update_desc">持续性通知的更新多久镜像一次。更新会静默送达，不会提醒。</string>
+    <string name="app_config_update_initial_only">仅初始</string>
+    <string name="app_config_update_every">每次更新</string>
+    <string name="app_config_update_seconds">%1$d秒</string>
+    <string name="app_config_channels_title">通知渠道</string>
+    <string name="app_config_channels_desc">关闭你不想镜像的渠道或渠道组。渠道会随通知到达显示在此。</string>
+    <string name="app_config_channels_empty">尚未发现渠道。该应用发送通知后会显示在此。</string>
+    <string name="app_config_group_other">其他</string>
+    <string name="app_config_remove_channel">移除渠道</string>
+
     <!-- Activity screen -->
     <string name="activity_empty_title">暂无动态</string>
     <string name="activity_empty_body">配对设备后，您收到的通知将显示在此处。</string>
@@ -76,6 +90,10 @@
         <item quantity="other">已更新通知过滤（%1$d 条规则）</item>
     </plurals>
     <string name="activity_detail_filters_cleared">已清除通知过滤</string>
+    <string name="activity_detail_action_to">已将“%1$s”发送给 %2$s</string>
+    <string name="activity_detail_tap_to">正在 %1$s 上打开</string>
+    <string name="activity_detail_action_by">由 %2$s 执行“%1$s”</string>
+    <string name="activity_detail_tap_by">由 %1$s 打开</string>
     <string name="activity_trust_prompt_new_trust">新设备</string>
     <string name="activity_trust_prompt_re_trust">设备重新加入</string>
     <string name="activity_trust_prompt_new_revoke">设备移除</string>
@@ -259,6 +277,8 @@
     <!-- Mirrored notifications -->
     <string name="mirror_self_name">你</string>
     <string name="mirror_via">通过 %1$s</string>
+    <string name="mirror_check_on_device">在 %1$s 上查看</string>
+    <string name="mirror_reply_hint">回复</string>
     <string name="mirror_ios_device_fallback">iPhone</string>
     <plurals name="mirror_group_summary_count">
         <item quantity="other">%1$d 条通知</item>

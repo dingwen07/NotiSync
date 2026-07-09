@@ -13,6 +13,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
@@ -199,6 +200,125 @@ class AppSelectionRepository(
         if (timeMillis > (_lastSeen.value[packageName] ?: 0L)) {
             _lastSeen.value = _lastSeen.value + (packageName to timeMillis)
         }
+    }
+}
+
+/**
+ * Per-app mirroring configuration beyond the on/off allowlist ([AppSelectionRepository]): whether to mirror an
+ * app's ongoing (media/transport/foreground-service) notifications, how frequently their updates may be
+ * re-sent, and which of the app's notification channels / channel groups the user disabled. Two JSON blobs in
+ * the shared "notisync" Preferences DataStore — pkg -> [PerAppConfig], and pkg -> observed [SeenChannel]s.
+ *
+ * All source-side and locally owned — distinct from [NotificationFilterStore], which holds INBOUND suppression
+ * requests received from peers. Reads are capture-hot-path safe ([configFor]/[isChannelSuppressed], and
+ * [recordSeenChannel] on every post); writes are fire-and-forget like [AppSelectionRepository].
+ */
+class AppConfigRepository(
+    private val store: DataStore<Preferences>,
+    private val scope: CoroutineScope,
+) {
+    private val configKey = stringPreferencesKey("per_app_config_json")
+    private val seenKey = stringPreferencesKey("per_app_seen_channels_json")
+
+    private val _configs = MutableStateFlow(loadConfigs())
+    /** pkg -> the user's per-app config; an absent pkg means all-defaults ([PerAppConfig]). */
+    val configs: StateFlow<Map<String, PerAppConfig>> = _configs
+
+    private val _seenChannels = MutableStateFlow(loadSeen())
+    /** pkg -> channels observed from its captures (for the config sheet's channel list). */
+    val seenChannels: StateFlow<Map<String, List<SeenChannel>>> = _seenChannels
+
+    private fun loadConfigs(): Map<String, PerAppConfig> = runBlocking {
+        store.data.first()[configKey]?.let {
+            runCatching { ProtocolCodec.decodeFromJson<Map<String, PerAppConfig>>(it) }.getOrDefault(emptyMap())
+        } ?: emptyMap()
+    }
+
+    private fun loadSeen(): Map<String, List<SeenChannel>> = runBlocking {
+        store.data.first()[seenKey]?.let {
+            runCatching { ProtocolCodec.decodeFromJson<Map<String, List<SeenChannel>>>(it) }.getOrDefault(emptyMap())
+        } ?: emptyMap()
+    }
+
+    /** The stored config for [packageName], or all-defaults when none is set. */
+    fun configFor(packageName: String): PerAppConfig = _configs.value[packageName] ?: PerAppConfig()
+
+    /** Channels observed from [packageName]'s captures, for the config sheet. */
+    fun seenChannelsFor(packageName: String): List<SeenChannel> = _seenChannels.value[packageName].orEmpty()
+
+    fun setMirrorOngoing(packageName: String, enabled: Boolean) =
+        mutate(packageName) { it.copy(mirrorOngoing = enabled) }
+
+    fun setUpdateIntervalSec(packageName: String, seconds: Int) =
+        mutate(packageName) { it.copy(updateIntervalSec = seconds) }
+
+    fun setChannelEnabled(packageName: String, channelId: String, enabled: Boolean) =
+        mutate(packageName) {
+            it.copy(
+                disabledChannelIds =
+                    if (enabled) it.disabledChannelIds - channelId else it.disabledChannelIds + channelId,
+            )
+        }
+
+    fun setGroupEnabled(packageName: String, groupId: String, enabled: Boolean) =
+        mutate(packageName) {
+            it.copy(
+                disabledGroupIds =
+                    if (enabled) it.disabledGroupIds - groupId else it.disabledGroupIds + groupId,
+            )
+        }
+
+    private fun mutate(packageName: String, transform: (PerAppConfig) -> PerAppConfig) {
+        _configs.update { it + (packageName to transform(it[packageName] ?: PerAppConfig())) }
+        persist(configKey, ProtocolCodec.encodeToJson(_configs.value))
+    }
+
+    /**
+     * True when [channelId] or its [groupId] is disabled for [packageName] — the source-side capture gate.
+     * Default all-ON: an app with no config (or an unknown channel) is never suppressed.
+     */
+    fun isChannelSuppressed(packageName: String, channelId: String?, groupId: String?): Boolean {
+        val cfg = _configs.value[packageName] ?: return false
+        if (groupId != null && groupId in cfg.disabledGroupIds) return true
+        if (channelId != null && channelId in cfg.disabledChannelIds) return true
+        return false
+    }
+
+    /**
+     * Record a channel observed from [packageName]'s captures so the config sheet can list it. No-op without a
+     * [channelId] (iOS/ANCS captures, or an unavailable Ranking). Persists only when the channel is new or its
+     * name/group changed, so the capture hot path pays a write once per channel, not per post.
+     */
+    fun recordSeenChannel(
+        packageName: String,
+        channelId: String?,
+        channelName: String?,
+        groupId: String?,
+        groupName: String?,
+    ) {
+        val id = channelId?.takeIf { it.isNotBlank() } ?: return
+        val entry = SeenChannel(id, channelName, groupId, groupName)
+        if (_seenChannels.value[packageName]?.firstOrNull { it.channelId == id } == entry) return
+        _seenChannels.update { map ->
+            val current = map[packageName].orEmpty()
+            if (current.firstOrNull { it.channelId == id } == entry) map
+            else map + (packageName to (current.filterNot { it.channelId == id } + entry))
+        }
+        persist(seenKey, ProtocolCodec.encodeToJson(_seenChannels.value))
+    }
+
+    /** Forget a seen channel from the config sheet's list ONLY — it reappears on the next capture in it. */
+    fun removeSeenChannel(packageName: String, channelId: String) {
+        if (_seenChannels.value[packageName]?.any { it.channelId == channelId } != true) return
+        _seenChannels.update { map ->
+            val current = map[packageName] ?: return@update map
+            map + (packageName to current.filterNot { it.channelId == channelId })
+        }
+        persist(seenKey, ProtocolCodec.encodeToJson(_seenChannels.value))
+    }
+
+    private fun persist(key: Preferences.Key<String>, json: String) {
+        scope.launch { store.edit { it[key] = json } }
     }
 }
 

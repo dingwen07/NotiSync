@@ -424,12 +424,17 @@ class RemoteNotificationPoster(
             // summary (for example WhatsApp) are mirrored by silencing this durable child row and letting the
             // forwarded source summary carry the alert, not by rewriting this flag.
             .setOnlyAlertOnce(notif.onlyAlertOnce)
+            // Mirror the source's ongoing nature: on minSdk 34+ an ongoing notification is user-dismissible
+            // (individual swipe) yet exempt from "Clear all" and sorted with other ongoing posts, matching how
+            // the source app presents it. A local swipe of such a mirror does NOT sync back (see [deleteIntent]
+            // / MirrorEngine.dismissLocal) since a non-clearable source can't be cleared on its origin.
+            .setOngoing(notif.isOngoing)
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
             .setGroup(receiverGroupKey)
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
-            .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id))
+            .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id, notif.isClearable))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
         if (notif.hasContentIntent) {
             builder.setContentIntent(tapIntent(notif, id, originLabel))
@@ -907,11 +912,18 @@ class RemoteNotificationPoster(
         )
     }
 
-    private fun deleteIntent(sourceClientId: ClientId, sourceKey: String, id: Int): PendingIntent {
+    private fun deleteIntent(
+        sourceClientId: ClientId,
+        sourceKey: String,
+        id: Int,
+        clearable: Boolean,
+    ): PendingIntent {
         val intent = Intent(context, DismissReceiver::class.java).apply {
             action = "net.extrawdw.apps.notisync.DISMISS"
             putExtra(DismissReceiver.EXTRA_SOURCE_CLIENT, sourceClientId.value)
             putExtra(DismissReceiver.EXTRA_SOURCE_KEY, sourceKey)
+            // False for an ongoing/non-clearable source: a local swipe of the mirror must not sync back.
+            putExtra(DismissReceiver.EXTRA_CLEARABLE, clearable)
         }
         return PendingIntent.getBroadcast(
             context, id, intent,
@@ -999,7 +1011,11 @@ class DismissReceiver : BroadcastReceiver() {
                 } else {
                     val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return@launch
                     val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return@launch
-                    engine.dismissLocal(ClientId(sourceClient), sourceKey)
+                    // A non-clearable (ongoing) source: local swipe removes the local copy only — no mesh
+                    // DISMISSAL, no origin cancel (see MirrorEngine.dismissLocal). Defaults clearable so
+                    // mirrors posted before this extra existed still sync.
+                    val clearable = intent.getBooleanExtra(EXTRA_CLEARABLE, true)
+                    engine.dismissLocal(ClientId(sourceClient), sourceKey, syncToMesh = clearable)
                 }
             } finally {
                 pending.finish()
@@ -1037,6 +1053,7 @@ class DismissReceiver : BroadcastReceiver() {
         const val EXTRA_SOURCE_CLIENT = "source_client"
         const val EXTRA_SOURCE_KEY = "source_key"
         const val EXTRA_GROUP_KEY = "group_key"
+        const val EXTRA_CLEARABLE = "clearable"
     }
 }
 

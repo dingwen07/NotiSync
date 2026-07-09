@@ -52,6 +52,7 @@ import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.AndroidActivityText
+import net.extrawdw.apps.notisync.data.AppConfigRepository
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
@@ -165,6 +166,9 @@ class AppGraph(private val app: Application) {
 
     var appSelection: AppSelectionRepository? = null
         private set
+    /** Per-app ongoing/channel mirroring config + observed channels (source-side, locally owned). */
+    var appConfig: AppConfigRepository? = null
+        private set
     var secureChannel: SecureChannel? = null
         private set
     var mirrorEngine: MirrorEngine? = null
@@ -217,6 +221,7 @@ class AppGraph(private val app: Application) {
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
         appSelection = AppSelectionRepository(ds, scope)
+        appConfig = AppConfigRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
         // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
@@ -345,6 +350,7 @@ class AppGraph(private val app: Application) {
             onTrustPrompt = ::onTrustPrompt,
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
+            onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             activityText = activityText,
             // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
             // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.

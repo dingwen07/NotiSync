@@ -33,6 +33,20 @@
     <string name="apps_enable_all">Turn on all mirroring</string>
     <string name="apps_disable_all">Turn off all mirroring</string>
 
+    <!-- Per-app config sheet (tap an enabled app in the Apps list) -->
+    <string name="app_config_ongoing_title">Mirror ongoing notifications</string>
+    <string name="app_config_ongoing_desc">Media players, downloads, navigation, and other persistent notifications.</string>
+    <string name="app_config_update_title">Update frequency</string>
+    <string name="app_config_update_desc">How often updates to an ongoing notification are mirrored. Updates are delivered quietly, without alerting.</string>
+    <string name="app_config_update_initial_only">Initial only</string>
+    <string name="app_config_update_every">Every update</string>
+    <string name="app_config_update_seconds">%1$ds</string>
+    <string name="app_config_channels_title">Notification channels</string>
+    <string name="app_config_channels_desc">Turn off channels or groups you don\'t want mirrored. Channels appear here as notifications arrive.</string>
+    <string name="app_config_channels_empty">No channels seen yet. They\'ll appear here as this app posts notifications.</string>
+    <string name="app_config_group_other">Other</string>
+    <string name="app_config_remove_channel">Remove channel</string>
+
     <!-- Activity screen -->
     <string name="activity_empty_title">No activity yet</string>
     <string name="activity_empty_body">Pair a device, then notifications you receive will appear here.</string>
