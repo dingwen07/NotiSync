@@ -4,6 +4,7 @@ import net.extrawdw.apps.notisync.data.PerAppConfig
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.NotificationStyle
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -51,6 +52,28 @@ class NotificationCapturePolicyTest {
     @Test
     fun nonMediaNonOngoingCanReachIos() {
         assertFalse(shouldExcludeIosForCapture(notif(), PerAppConfig()))
+    }
+
+    @Test
+    fun nonOngoingMediaStillUsesMediaUpdatePathAfterFirstPost() {
+        assertFalse(shouldUseUpdatePath(sourceIsOngoing = false, isMediaPlayback = true, firstSeen = true))
+        assertTrue(shouldUseUpdatePath(sourceIsOngoing = false, isMediaPlayback = true, firstSeen = false))
+        assertTrue(shouldUseUpdatePath(sourceIsOngoing = true, isMediaPlayback = false, firstSeen = false))
+        assertFalse(shouldUseUpdatePath(sourceIsOngoing = false, isMediaPlayback = false, firstSeen = false))
+    }
+
+    @Test
+    fun updatePostTimeIsMonotonicWhenSourcePostTimeIsReused() {
+        assertEquals(1_000L, nextUpdatePostTime(sourcePostTime = 100L, now = 1_000L, previous = null))
+        assertEquals(1_001L, nextUpdatePostTime(sourcePostTime = 100L, now = 900L, previous = 1_000L))
+        assertEquals(2_000L, nextUpdatePostTime(sourcePostTime = 2_000L, now = 900L, previous = 1_000L))
+    }
+
+    @Test
+    fun localVolumeBroadcastRecapturesOnlyLocalPlayback() {
+        assertTrue(shouldRecaptureForLocalVolume(null))
+        assertTrue(shouldRecaptureForLocalVolume(1)) // MediaController.PlaybackInfo.PLAYBACK_TYPE_LOCAL
+        assertFalse(shouldRecaptureForLocalVolume(2)) // MediaController.PlaybackInfo.PLAYBACK_TYPE_REMOTE
     }
 
     private fun notif(
