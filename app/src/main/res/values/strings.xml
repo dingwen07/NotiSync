@@ -113,6 +113,7 @@
     <string name="settings_device_name">Device name</string>
     <string name="settings_broker_url">Broker URL (ws://…)</string>
     <string name="settings_call_ringer">Ring for mirrored calls</string>
+    <string name="settings_lock_screen_public_identity">Show app identity on lock screen</string>
     <string name="settings_batch_low_priority">Batch low-priority notifications</string>
     <string name="settings_advanced_diagnostics">Advanced diagnostics</string>
     <string name="settings_analytics">Share crash &amp; performance reports</string>

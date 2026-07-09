@@ -41,6 +41,7 @@ class SettingsRepository(
     private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
+    private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
 
     val brokerUrl: StateFlow<String> =
         store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
@@ -87,6 +88,14 @@ class SettingsRepository(
         store.data.map { it[callRingerKey] ?: false }.stateInEager(scope, false)
 
     suspend fun setCallRingerEnabled(on: Boolean) = store.edit { it[callRingerKey] = on }
+
+    /** Show source app identity (app name + icon) in the lock-screen public version of mirrored
+     *  notifications while keeping mirrored content private. Default on; users can disable it in Settings. */
+    val lockScreenPublicIdentity: StateFlow<Boolean> =
+        store.data.map { it[lockScreenPublicIdentityKey] ?: true }.stateInEager(scope, true)
+
+    suspend fun setLockScreenPublicIdentity(on: Boolean) =
+        store.edit { it[lockScreenPublicIdentityKey] = on }
 
     /** The PERSISTED switch, read directly from DataStore — use this (not [ancsBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */

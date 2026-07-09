@@ -285,6 +285,7 @@ class AppGraph(private val app: Application) {
             ringForCalls = { pkg ->
                 settings.callRingerEnabled.value && (appConfig?.configFor(pkg)?.ringForCalls ?: true)
             },
+            showPublicLockScreenIdentity = { settings.lockScreenPublicIdentity.value },
             mediaSessions = media,
         )
         val graphicsExtractor = GraphicsExtractor(app)

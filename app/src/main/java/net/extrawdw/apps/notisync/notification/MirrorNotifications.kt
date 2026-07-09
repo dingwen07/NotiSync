@@ -335,6 +335,8 @@ class RemoteNotificationPoster(
     private val callRinger: CallRinger? = null,
     /** Per-app "ring for calls" preference (receiver-side); false suppresses the ring but not the call mirror. */
     private val ringForCalls: (packageName: String) -> Boolean = { true },
+    /** Whether the lock-screen public version may show source app identity (name + icon). */
+    private val showPublicLockScreenIdentity: () -> Boolean = { true },
     /** Gives mirrored MEDIA notifications a real media session (the controls card); null renders them plainly. */
     private val mediaSessions: MirrorMediaSessions? = null,
 ) : MirrorRenderer {
@@ -648,6 +650,7 @@ class RemoteNotificationPoster(
         }
 
         applyLargeIcon(builder, notif)
+        applyPublicLockScreenIdentity(builder, notif, postChannelId, receiverGroupKey)
 
         val notifyStartNanos = System.nanoTime()
         // Build + post together, because the CallStyle FGS/FSI requirement is enforced at POST, not build: the
@@ -788,7 +791,7 @@ class RemoteNotificationPoster(
             children.size
         )
         val largeIcon = iconResolver.colorIcon(packageName, iosBundleId, appIconHash)
-        val summary = NotificationCompat.Builder(context, channelId)
+        val summaryBuilder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(smallIconFor(packageName, sourceSummary?.channelId))
             .setContentTitle(title)
             .setContentText(text)
@@ -804,7 +807,26 @@ class RemoteNotificationPoster(
             .setDeleteIntent(groupDeleteIntent(groupKey, summaryTag.hashCode()))
             .addExtras(summaryExtras(sourceSummary))
             .apply { largeIcon?.let { setLargeIcon(it) } }
-            .build()
+        if (showPublicLockScreenIdentity()) {
+            summaryBuilder
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                .setPublicVersion(
+                    publicLockScreenIdentity(
+                        channelId = channelId,
+                        packageName = packageName,
+                        sourceChannelId = sourceSummary?.channelId,
+                        title = sourceSummary?.appLabel ?: fallbackTitle,
+                        postTime = sourceSummary?.postTime ?: latest?.postTime ?: System.currentTimeMillis(),
+                        groupKey = groupKey,
+                        groupSummary = true,
+                        iosBundleId = iosBundleId,
+                        appIconHash = appIconHash,
+                        largeIcon = largeIcon,
+                        priority = NotificationCompat.PRIORITY_DEFAULT,
+                    )
+                )
+        }
+        val summary = summaryBuilder.build()
         runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
     }
 
@@ -861,14 +883,72 @@ class RemoteNotificationPoster(
      * the app installed here → the iOS bundle-id → Android-package mapping → none.
      */
     private fun applyLargeIcon(builder: NotificationCompat.Builder, notif: CapturedNotification) {
-        val bitmap = notif.largeIcon?.let { cachedBitmap(it.assetHash) }
-            ?: iconResolver.colorIcon(
-                notif.packageName,
-                notif.iosBundleId,
-                notif.appIcon?.assetHash
-            )
-        bitmap?.let { builder.setLargeIcon(it) }
+        largeIconFor(notif)?.let { builder.setLargeIcon(it) }
     }
+
+    private fun largeIconFor(notif: CapturedNotification): Bitmap? =
+        notif.largeIcon?.let { cachedBitmap(it.assetHash) }
+            ?: appIconFor(notif.packageName, notif.iosBundleId, notif.appIcon?.assetHash)
+
+    private fun appIconFor(packageName: String, iosBundleId: String?, appIconHash: String?): Bitmap? =
+        iconResolver.colorIcon(packageName, iosBundleId, appIconHash)
+
+    private fun applyPublicLockScreenIdentity(
+        builder: NotificationCompat.Builder,
+        notif: CapturedNotification,
+        channelId: String,
+        groupKey: String,
+    ) {
+        if (!showPublicLockScreenIdentity()) return
+        builder
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                publicLockScreenIdentity(
+                    channelId = channelId,
+                    packageName = notif.packageName,
+                    sourceChannelId = notif.channelId,
+                    title = notif.appLabel,
+                    postTime = notif.postTime,
+                    groupKey = groupKey,
+                    groupSummary = false,
+                    iosBundleId = notif.iosBundleId,
+                    appIconHash = notif.appIcon?.assetHash,
+                    largeIcon = appIconFor(notif.packageName, notif.iosBundleId, notif.appIcon?.assetHash),
+                    priority = toPriority(notif.importance),
+                )
+            )
+    }
+
+    private fun publicLockScreenIdentity(
+        channelId: String,
+        packageName: String,
+        sourceChannelId: String?,
+        title: String,
+        postTime: Long,
+        groupKey: String?,
+        groupSummary: Boolean,
+        iosBundleId: String?,
+        appIconHash: String?,
+        largeIcon: Bitmap?,
+        priority: Int,
+    ): Notification =
+        NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(smallIconFor(packageName, sourceChannelId))
+            .setContentTitle(title)
+            .setWhen(postTime)
+            .setShowWhen(true)
+            .setPriority(priority)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .apply {
+                if (groupKey != null) {
+                    setGroup(groupKey)
+                    setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+                    if (groupSummary) setGroupSummary(true)
+                }
+                (largeIcon ?: iconResolver.colorIcon(packageName, iosBundleId, appIconHash))
+                    ?.let { setLargeIcon(it) }
+            }
+            .build()
 
     /**
      * For an iOS/ANCS mirror whose icon isn't already in the shipped pack (and has no mirrored original),
