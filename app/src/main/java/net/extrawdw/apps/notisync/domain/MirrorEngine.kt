@@ -14,6 +14,7 @@ import net.extrawdw.apps.notisync.foundation.SendPolicy
 import net.extrawdw.apps.notisync.transport.ifKnown
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
+import net.extrawdw.notisync.protocol.MediaCommand
 import net.extrawdw.notisync.protocol.AssetSync
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
@@ -309,6 +310,26 @@ class MirrorEngine(
     /** The user tapped a mirrored notification — ask the origin to open it (fire its content intent). */
     suspend fun tapRemote(sourceClientId: ClientId, sourceKey: String): Boolean = sendAction(
         ActionEvent(sourceClientId = sourceClientId, sourceKey = sourceKey, kind = ActionKind.TAP, actedAt = now())
+    )
+
+    /** The user pressed a transport control on a mirrored MEDIA session — ask the origin to replay it on the
+     *  real source MediaSession (play/pause/skip/seek). Best-effort, HIGH urgency (user is waiting). */
+    suspend fun mediaCommandRemote(
+        sourceClientId: ClientId,
+        sourceKey: String,
+        command: MediaCommand,
+        seekMs: Long? = null,
+        customAction: String? = null,
+    ): Boolean = sendAction(
+        ActionEvent(
+            sourceClientId = sourceClientId,
+            sourceKey = sourceKey,
+            kind = ActionKind.MEDIA,
+            mediaCommand = command,
+            mediaSeekMs = seekMs,
+            mediaCustomAction = customAction,
+            actedAt = now(),
+        )
     )
 
     private suspend fun sendAction(event: ActionEvent): Boolean {

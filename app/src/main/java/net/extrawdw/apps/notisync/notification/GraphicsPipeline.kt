@@ -34,7 +34,10 @@ class GraphicsPipeline(
         when (plan.largeIcon) {
             LargeIconHandling.MIRROR -> {
                 val t0 = System.nanoTime()
-                val bytes = extractor.largeIcon(sbn)
+                // Media large icon = album art: keep it high-res (mediaArt), not downscaled to icon size.
+                val isMedia = captured.style == NotificationStyle.MEDIA ||
+                    captured.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+                val bytes = if (isMedia) extractor.mediaArt(sbn) else extractor.largeIcon(sbn)
                 span.metric("large_icon_ms", (System.nanoTime() - t0) / 1_000_000)
                 if (bytes == null) omitted++
                 else upload(bytes, AssetRole.LARGE_ICON, captured)?.let { result = result.copy(largeIcon = it) }

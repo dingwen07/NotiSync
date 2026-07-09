@@ -83,6 +83,7 @@ import net.extrawdw.apps.notisync.foundation.RotationManager
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.apps.notisync.notification.CallRinger
+import net.extrawdw.apps.notisync.notification.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.GraphicsPipeline
 import net.extrawdw.apps.notisync.notification.MirrorChannels
@@ -167,6 +168,10 @@ class AppGraph(private val app: Application) {
 
     /** Plays the incoming-call ringtone + vibration for ringing call mirrors (which are posted silent). */
     var callRinger: CallRinger? = null
+        private set
+
+    /** Per-mirror media sessions so mirrored MEDIA notifications render as real media controls (no FGS/sound). */
+    var mediaSessions: MirrorMediaSessions? = null
         private set
 
     var appSelection: AppSelectionRepository? = null
@@ -259,6 +264,16 @@ class AppGraph(private val app: Application) {
         callRinger = ringer
         // Turning the master switch OFF silences any ring already in progress, not just future ones.
         settings.callRingerEnabled.onEach { if (!it) ringer.stopAll() }.launchIn(scope)
+        // A transport press on a mirrored media session relays a command to the origin, which replays it on the
+        // real source session. mirrorEngine is read at call time (it's built just below).
+        val media = MirrorMediaSessions(app) { clientId, sourceKey, command, seekMs, customAction ->
+            mirrorEngine?.let { eng ->
+                scope.launch {
+                    runCatching { eng.mediaCommandRemote(clientId, sourceKey, command, seekMs, customAction) }
+                }
+            }
+        }
+        mediaSessions = media
         poster = RemoteNotificationPoster(
             app, assetCache, resolver,
             deviceNameOf = { id -> trust.displayName(id) },
@@ -270,6 +285,7 @@ class AppGraph(private val app: Application) {
             ringForCalls = { pkg ->
                 settings.callRingerEnabled.value && (appConfig?.configFor(pkg)?.ringForCalls ?: true)
             },
+            mediaSessions = media,
         )
         val graphicsExtractor = GraphicsExtractor(app)
         graphicsPipeline =

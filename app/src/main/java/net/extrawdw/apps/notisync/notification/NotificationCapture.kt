@@ -5,8 +5,15 @@ import android.app.Notification
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.RemoteInput
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.MediaSession
+import android.media.session.MediaSessionManager
+import android.media.session.PlaybackState
 import android.os.Build
 import android.os.Bundle
 import android.service.notification.NotificationListenerService
@@ -34,6 +41,8 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.GroupAlertBehavior
+import net.extrawdw.notisync.protocol.MediaCommand
+import net.extrawdw.notisync.protocol.MediaCustomAction
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
@@ -44,6 +53,47 @@ import java.util.concurrent.ConcurrentHashMap
  *  shared by capture-time style detection and the listener's ongoing-gate exemption for calls. */
 private const val CALL_STYLE_TEMPLATE = "android.app.Notification\$CallStyle"
 
+/** A snapshot of a source MediaSession's playback state, read at capture time (values as understood by
+ *  `PlaybackState`/`MediaMetadata`). Lets the consumer rebuild a real media session — system-drawn transport
+ *  buttons, play/pause state, seekbar — rather than a plain notification. */
+data class MediaPlaybackInfo(
+    val isPlaying: Boolean,
+    val positionMs: Long?,
+    val durationMs: Long?,
+    val actions: Long?,
+    val customActions: List<MediaCustomAction>,
+)
+
+/**
+ * Reads the live MediaSession behind a media notification, via the `EXTRA_MEDIA_SESSION` token the source
+ * app publishes. A notification listener may build a [MediaController] from that token and read its playback
+ * state + metadata. Best-effort: null when the notification carries no session token or it can't be read.
+ */
+object MediaCapture {
+    fun read(context: Context, n: Notification): MediaPlaybackInfo? {
+        val token = runCatching {
+            n.extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, MediaSession.Token::class.java)
+        }.getOrNull() ?: return null
+        return runCatching {
+            val controller = MediaController(context, token)
+            val state = controller.playbackState
+            val duration = controller.metadata
+                ?.getLong(MediaMetadata.METADATA_KEY_DURATION)?.takeIf { it > 0 }
+            val customActions = state?.customActions?.mapNotNull { ca ->
+                val act = ca?.action ?: return@mapNotNull null
+                MediaCustomAction(action = act, name = ca.name?.toString().orEmpty())
+            }.orEmpty()
+            MediaPlaybackInfo(
+                isPlaying = state?.state == PlaybackState.STATE_PLAYING,
+                positionMs = state?.position?.takeIf { it >= 0 },
+                durationMs = duration,
+                actions = state?.actions?.takeIf { it != 0L },
+                customActions = customActions,
+            )
+        }.getOrNull()
+    }
+}
+
 /** Turns a platform [StatusBarNotification] into the normalized, transport-neutral form. */
 class NotificationNormalizer(private val pm: PackageManager) {
     private val labelCache = ConcurrentHashMap<String, String>()
@@ -52,6 +102,7 @@ class NotificationNormalizer(private val pm: PackageManager) {
         sbn: StatusBarNotification,
         ranking: NotificationListenerService.Ranking?,
         sourceClientId: ClientId,
+        media: MediaPlaybackInfo? = null,
     ): CapturedNotification {
         val n = sbn.notification
         val extras = n.extras
@@ -163,6 +214,11 @@ class NotificationNormalizer(private val pm: PackageManager) {
             callDeclineIndex = call?.declineIndex,
             callHangUpIndex = call?.hangUpIndex,
             accentColor = n.color.takeIf { it != Notification.COLOR_DEFAULT },
+            mediaIsPlaying = media?.isPlaying,
+            mediaPositionMs = media?.positionMs,
+            mediaDurationMs = media?.durationMs,
+            mediaActions = media?.actions,
+            mediaCustomActions = media?.customActions.orEmpty(),
         )
     }
 
@@ -454,6 +510,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         const val TAG = "NotiSyncListener"
         const val DISMISS_DEBOUNCE_MS = 400L
         const val GROUP_SUMMARY_CHILD_WAIT_MS = 1_000L
+
+        /** Leading-edge throttle for a media notification's playback updates: a play/pause/track change fires
+         *  at once when idle, while rapid re-posts (some apps re-post the position) collapse to this cadence. */
+        const val MEDIA_UPDATE_THROTTLE_MS = 1_000L
     }
 
     override fun cancel(sourceKey: String) {
@@ -475,8 +535,44 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             when (event.kind) {
                 ActionKind.TAP -> openOriginal(sbn)
                 ActionKind.PERFORM -> performOriginalAction(sbn, event)
+                ActionKind.MEDIA -> performMediaCommand(sbn, event)
             }
         }.onFailure { Log.w(TAG, "perform action failed", it) }
+    }
+
+    /**
+     * Replay a mirrored media transport press on the real source MediaSession. Targets the source app's
+     * active session (matched by package) rather than the notification's action row, so play/pause/skip/seek
+     * work without ever mapping transport controls onto notification-action indices.
+     */
+    private fun performMediaCommand(sbn: StatusBarNotification, event: ActionEvent) {
+        val command = event.mediaCommand ?: return
+        val controller = activeMediaController(sbn.packageName) ?: run {
+            Log.d(TAG, "skip media command: no active session pkg=${sbn.packageName}")
+            return
+        }
+        val tc = controller.transportControls
+        when (command) {
+            MediaCommand.PLAY -> tc.play()
+            MediaCommand.PAUSE -> tc.pause()
+            MediaCommand.PLAY_PAUSE ->
+                if (controller.playbackState?.state == PlaybackState.STATE_PLAYING) tc.pause() else tc.play()
+            MediaCommand.NEXT -> tc.skipToNext()
+            MediaCommand.PREVIOUS -> tc.skipToPrevious()
+            MediaCommand.STOP -> tc.stop()
+            MediaCommand.SEEK -> event.mediaSeekMs?.let { tc.seekTo(it) }
+            MediaCommand.CUSTOM -> event.mediaCustomAction?.let { tc.sendCustomAction(it, null) }
+        }
+    }
+
+    /** The source app's currently-active [MediaController], via MediaSessionManager (permitted because this is
+     *  the enabled notification listener). Null when the app has no active session. */
+    private fun activeMediaController(packageName: String): MediaController? {
+        val msm = getSystemService(MediaSessionManager::class.java) ?: return null
+        val component = ComponentName(this, NotiSyncListenerService::class.java)
+        return runCatching {
+            msm.getActiveSessions(component).firstOrNull { it.packageName == packageName }
+        }.getOrNull()
     }
 
     /**
@@ -586,7 +682,10 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         // is preserved: rapid same-key updates can't race or invert on graph.scope's multi-threaded
         // dispatcher. Only the graphics attach + send is offloaded below.
         val normalizeStartNanos = System.nanoTime()
-        val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId)
+        // Read the source MediaSession (media notifications only — cheap null for the rest) so the mirror can
+        // rebuild a real media session. `this` (the listener service) is a Context able to build a controller.
+        val mediaInfo = MediaCapture.read(this, n)
+        val captured = normalizer.normalize(sbn, if (haveRanking) ranking else null, clientId, mediaInfo)
         val normalizeNanos = System.nanoTime() - normalizeStartNanos
         if (captured.title.isNullOrBlank() && captured.text.isNullOrBlank() && captured.messages.isEmpty()) return
 
@@ -622,15 +721,21 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         // keys the app opted into (the gate above); the FIRST post fell through as a normal NOTIFICATION.
         // updateIntervalSec == 0 means "mirror only the initial post" — drop updates entirely.
         if (sbn.isOngoing && !firstSeen) {
-            // A call is the exception: its transitions (ringing → answered → hung-up) are discrete, meaningful
-            // state changes, not progress ticks, so they must never be throttled or initial-only-dropped — else
-            // a picked-up/ended call leaves peers stuck on a stale "incoming call". Force "every update" for a
-            // call (interval < 0 → no throttle). The content-dedup above already drops identical re-posts (a
-            // chronometer duration ticks client-side without re-posting), so only real transitions get here;
-            // they still go out quietly, so answering on this device doesn't re-alert every peer.
-            val interval = if (isCall) -1 else cfg.updateIntervalSec
-            if (interval == 0) return                                     // initial-only: don't mirror updates
-            val intervalMs = if (interval < 0) 0L else interval * 1000L   // < 0 = every update, no throttle
+            // Calls and media are exceptions to the user's update-interval: a call's transitions (ringing →
+            // answered → hung-up) and a media notification's playback changes (play/pause, track, seek) are
+            // discrete, meaningful updates, not progress-tick spam, so they must sync PROMPTLY rather than be
+            // dropped by "Initial only" (0) or delayed. Calls use no throttle; media uses a short leading-edge
+            // throttle — a state change fires at once when idle, and any rapid re-posts collapse. Content-dedup
+            // above already drops identical re-posts; everything here still goes out quietly (no re-alert).
+            val isMedia = captured.style == NotificationStyle.MEDIA ||
+                captured.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
+            val intervalMs: Long = when {
+                isCall -> 0L
+                isMedia -> MEDIA_UPDATE_THROTTLE_MS
+                cfg.updateIntervalSec == 0 -> return                      // initial-only: don't mirror updates
+                cfg.updateIntervalSec < 0 -> 0L                          // every update, no throttle
+                else -> cfg.updateIntervalSec * 1000L
+            }
             throttleOngoingUpdate(sbn.key, intervalMs, graph.scope) {
                 val withGraphics = graph.graphicsPipeline?.attach(sbn, captured) ?: captured
                 eng.sendNotificationQuiet(withGraphics)

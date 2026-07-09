@@ -127,6 +127,19 @@ data class ConversationMessage(
 )
 
 /**
+ * One app-specific media transport button — a `PlaybackState` custom action (star / like / shuffle / repeat
+ * / thumbs) that isn't a standard control. [action] is the opaque id echoed back so the origin can run it on
+ * the real session; [name] is its display / accessibility label and drives the consumer's best-effort icon
+ * choice — the source app's own icon is a drawable resource in ITS package and can't cross devices, so the
+ * consumer heuristic-maps common ones to bundled icons and shows a generic icon otherwise.
+ */
+@Serializable
+data class MediaCustomAction(
+    val action: String,
+    val name: String = "",
+)
+
+/**
  * A normalized, platform-neutral notification — the plaintext body that gets CBOR-encoded and
  * end-to-end encrypted. The producer captures as much useful structure as the platform allows and
  * the user permits; the consumer faithfully reconstructs it.
@@ -254,6 +267,23 @@ data class CapturedNotification(
     /** The source notification's accent color (`Notification.color`), or null when unset (COLOR_DEFAULT).
      *  Applied on the consumer for MediaStyle colorization and the CallStyle accent. */
     val accentColor: Int? = null,
+
+    // --- MediaStyle playback state (appended; null from an older producer). Captured from the source's
+    // MediaSession so the consumer can rebuild a real media session — system-drawn transport controls,
+    // play/pause state, and a seekbar — with NO foreground service and NO sound. ---
+    /** True if the source MediaSession is PLAYING (else paused/stopped); null = not media / no session read. */
+    val mediaIsPlaying: Boolean? = null,
+    /** Current playback position (ms) from the source PlaybackState; drives the consumer's seekbar thumb. */
+    val mediaPositionMs: Long? = null,
+    /** Track duration (ms) from the source MediaMetadata; the seekbar's extent. */
+    val mediaDurationMs: Long? = null,
+    /** The source PlaybackState action bitmask (`PlaybackState.ACTION_*`, whose values equal AndroidX
+     *  `PlaybackStateCompat.ACTION_*`); the consumer rebuilds the transport controls it declares. */
+    val mediaActions: Long? = null,
+    /** App-specific media buttons (PlaybackState custom actions: star / like / shuffle / …). Relayed
+     *  best-effort — the press runs on the origin's session, but the consumer renders a heuristic icon
+     *  (the source app's own icon can't cross devices), so uncommon ones show a generic icon. */
+    val mediaCustomActions: List<MediaCustomAction> = emptyList(),
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */
@@ -264,7 +294,10 @@ data class DismissEvent(
     val dismissedAt: Long,
 )
 
-/** What the user did on a mirrored notification. Append-only — keep CBOR ordinals stable. */
+/** What the user did on a mirrored notification. Append-only — keep CBOR ordinals stable. NOTE: an unknown
+ *  enum value FAILS CBOR decode on an older origin (kotlinx throws even with ignoreUnknownKeys); the receive
+ *  path guards this (SecureChannel.deliver try/catch), so an old origin simply drops a MEDIA event instead of
+ *  crashing — the command just no-ops until it updates. */
 @Serializable
 enum class ActionKind {
     /** Pressed one of the mirrored action buttons ([CapturedNotification.actions]). */
@@ -272,7 +305,16 @@ enum class ActionKind {
 
     /** Tapped the notification body — the origin fires its content intent ("open it over there"). */
     TAP,
+
+    /** Pressed a transport control on a mirrored MEDIA session — the origin runs [ActionEvent.mediaCommand]
+     *  on the real source MediaSession. */
+    MEDIA,
 }
+
+/** A media transport command relayed for [ActionKind.MEDIA]: the consumer's mirrored media session got a
+ *  control press, and the origin replays it on the live source MediaSession. Append-only. */
+@Serializable
+enum class MediaCommand { PLAY, PAUSE, PLAY_PAUSE, NEXT, PREVIOUS, STOP, SEEK, CUSTOM }
 
 /**
  * The body of a [MessageType.ACTION] envelope: a user acted on a *mirrored* notification and the
@@ -295,6 +337,13 @@ data class ActionEvent(
     val actionTitle: String? = null,
     /** Free-form reply text for a [NotificationAction.remoteInput] action. */
     val remoteInputText: String? = null,
+    /** [ActionKind.MEDIA]: the transport command to replay on the origin's live source MediaSession. */
+    val mediaCommand: MediaCommand? = null,
+    /** Seek target (ms) for [MediaCommand.SEEK]. */
+    val mediaSeekMs: Long? = null,
+    /** The custom-action id for [MediaCommand.CUSTOM] (a [MediaCustomAction.action]) — run via
+     *  `sendCustomAction` on the origin's session. */
+    val mediaCustomAction: String? = null,
     /** Source-clock time of the user's press. */
     val actedAt: Long,
 )

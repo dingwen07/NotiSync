@@ -335,6 +335,8 @@ class RemoteNotificationPoster(
     private val callRinger: CallRinger? = null,
     /** Per-app "ring for calls" preference (receiver-side); false suppresses the ring but not the call mirror. */
     private val ringForCalls: (packageName: String) -> Boolean = { true },
+    /** Gives mirrored MEDIA notifications a real media session (the controls card); null renders them plainly. */
+    private val mediaSessions: MirrorMediaSessions? = null,
 ) : MirrorRenderer {
 
     // iOS bundle ids with an App Store icon fetch in flight, so concurrent renders don't pile up duplicates.
@@ -453,8 +455,10 @@ class RemoteNotificationPoster(
             // / MirrorEngine.dismissLocal) since a non-clearable source can't be cleared on its origin.
             // A RINGING incoming call is deliberately NOT marked ongoing: that makes the mirror user-dismissible
             // and lets setTimeoutAfter (below) be honored, so a phantom ring can't get stuck. An answered/ongoing
-            // call stays ongoing (sticky, live).
-            .setOngoing(notif.isOngoing && !isRingingCall(notif))
+            // call stays ongoing (sticky, live). A MEDIA mirror is also NOT ongoing so it can be dismissed from
+            // THIS device — no foreground service holds it here (unlike the source), and it re-appears on the
+            // next real playback update if the source is still going.
+            .setOngoing(notif.isOngoing && !isRingingCall(notif) && !isMediaStyle(notif))
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
@@ -570,10 +574,13 @@ class RemoteNotificationPoster(
                 builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
                 notif.accentColor?.let { builder.setColor(it) }
                 if (notif.isColorized) builder.setColorized(true)
-                // Album art rides the large icon (attached by applyLargeIcon below). No MediaSession token is
-                // available on the consumer, so the media template degrades to a rich notification whose
-                // transport buttons relay a press back to the origin — which is what controls playback.
                 val media = androidx.media.app.NotificationCompat.MediaStyle()
+                // Give the mirror its OWN media session (built from the source's playback state) and attach its
+                // token: on Android 13+ this is what makes the system render the media-controls card — album art,
+                // seekbar, system-drawn transport buttons — instead of a plain notification. No FGS, no sound.
+                // Album art rides the large icon (attached by applyLargeIcon below); reuse it for the session.
+                val albumArt = notif.largeIcon?.let { cachedBitmap(it.assetHash) }
+                mediaSessions?.apply(tag, notif, albumArt)?.let { media.setMediaSession(it) }
                 // The source's compact-view selection is in raw source-action index space; map each to its
                 // position in the exported action row (the order applyActions added them), dropping any not
                 // exported. The compact view shows at most three.
@@ -933,6 +940,7 @@ class RemoteNotificationPoster(
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
         callRinger?.stop(tag)   // the call's source removal/dismissal synced here → stop any ring for it
+        mediaSessions?.release(tag)   // media playback stopped/gone → drop its media-controls card
         val active = activeNotification(tag, tag.hashCode())
         val groupKey = active?.notification?.group
         val fallbackChannel = active?.notification?.channelId
@@ -1024,6 +1032,11 @@ class RemoteNotificationPoster(
     private fun isRingingCall(notif: CapturedNotification): Boolean =
         notif.callType == CallType.INCOMING || notif.callType == CallType.SCREENING ||
             (notif.callType == null && notif.category == MirrorCategory.CALL && !notif.isForegroundService)
+
+    /** A MEDIA (or decorated-media) mirror — rendered as a real media-controls card via [MirrorMediaSessions],
+     *  and kept NOT-ongoing so the user can dismiss it from this device (nothing pins it here). */
+    private fun isMediaStyle(notif: CapturedNotification): Boolean =
+        notif.style == NotificationStyle.MEDIA || notif.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
 
     /** A full-screen PendingIntent that opens NotiSync — attached to a CallStyle mirror so the platform's
      *  "CallStyle must be an FGS or have a fullScreenIntent" check passes (shown as a heads-up when the
@@ -1143,10 +1156,14 @@ class RemoteNotificationPoster(
         /** Per-app default mirror small icon, keyed by the (resolved) Android package. */
         private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(
             "com.google.android.apps.messaging" to R.drawable.ic_google_messages_notification,
+            "com.google.android.youtube" to R.drawable.ic_youtube_notification,
+            "com.google.android.apps.youtube.music" to R.drawable.ic_youtube_music_notification,
+            "com.spotify.music" to R.drawable.ic_spotify_notification,
             "com.whatsapp" to R.drawable.ic_whatsapp_notification,
             "com.tencent.mobileqq" to R.drawable.ic_qq_notification,
             "com.tencent.mm" to R.drawable.ic_wechat_notification,
             "com.google.android.dialer" to R.drawable.ic_phone_notification,
+            "tv.danmaku.bili" to R.drawable.ic_bilibili_notification,
         )
 
         /**
@@ -1156,6 +1173,9 @@ class RemoteNotificationPoster(
          * — its other channels (phone_incoming_call, phone_default, …) intentionally use the package default.
          */
         private val CHANNEL_SMALL_ICONS: Map<String, Map<String, Int>> = mapOf(
+            "com.apple.android.music" to mapOf(
+                "playback" to R.drawable.ic_apple_music_notification,
+            ),
             "com.google.android.dialer" to mapOf(
                 "phone_missed_call" to R.drawable.ic_phone_missed_notification,
                 "phone_voicemail" to R.drawable.ic_voicemail_notification,
@@ -1185,8 +1205,10 @@ class DismissReceiver : BroadcastReceiver() {
                 } else {
                     val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return@launch
                     val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return@launch
-                    // Swiping the call mirror away stops its ring at once.
-                    graph.callRinger?.stop(RemoteNotificationPoster.tagOf(ClientId(sourceClient), sourceKey))
+                    // Swiping the mirror away stops its ring / releases its media session at once.
+                    val swipedTag = RemoteNotificationPoster.tagOf(ClientId(sourceClient), sourceKey)
+                    graph.callRinger?.stop(swipedTag)
+                    graph.mediaSessions?.release(swipedTag)
                     // A non-clearable (ongoing) source: local swipe removes the local copy only — no mesh
                     // DISMISSAL, no origin cancel (see MirrorEngine.dismissLocal). Defaults clearable so
                     // mirrors posted before this extra existed still sync.
@@ -1202,7 +1224,9 @@ class DismissReceiver : BroadcastReceiver() {
     private suspend fun dismissGroup(context: Context, engine: MirrorEngine, groupKey: String) {
         val mgr = context.getSystemService(NotificationManager::class.java)
         val compat = NotificationManagerCompat.from(context)
-        val ringer = (context.applicationContext as? NotiSyncApp)?.graphIfReady?.callRinger
+        val dismissGraph = (context.applicationContext as? NotiSyncApp)?.graphIfReady
+        val ringer = dismissGraph?.callRinger
+        val mediaSessions = dismissGraph?.mediaSessions
         val children = runCatching {
             mgr.activeNotifications.filter { sbn ->
                 sbn.packageName == context.packageName &&
@@ -1221,6 +1245,7 @@ class DismissReceiver : BroadcastReceiver() {
             engine.dismissLocal(clientId, sourceKey)
             val tag = RemoteNotificationPoster.tagOf(clientId, sourceKey)
             ringer?.stop(tag)
+            mediaSessions?.release(tag)
             compat.cancel(tag, tag.hashCode())
         }
         val summaryTag = RemoteNotificationPoster.summaryTagOf(groupKey)

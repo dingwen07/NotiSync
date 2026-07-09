@@ -8,6 +8,9 @@ import android.graphics.ImageDecoder
 import android.graphics.drawable.BitmapDrawable
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
+import android.media.MediaMetadata
+import android.media.session.MediaController
+import android.media.session.MediaSession
 import android.service.notification.StatusBarNotification
 import androidx.core.app.NotificationCompat
 import androidx.core.graphics.createBitmap
@@ -28,6 +31,35 @@ class GraphicsExtractor(private val context: Context) {
     /** The large icon (often a contact photo), or null if absent / unrasterizable / over budget. */
     fun largeIcon(sbn: StatusBarNotification): ByteArray? =
         sbn.notification.getLargeIcon()?.let { rasterize(it, MAX_ICON_DIM, MAX_ICON_BYTES) }
+
+    /**
+     * A media notification's album art, at high resolution + quality (it's shown large on the media-controls
+     * card / lock screen). Prefers the MediaSession's `METADATA_KEY_ALBUM_ART` — the full-res art the source's
+     * OWN card renders — over the notification's small `getLargeIcon()` thumbnail, which is what looked blurry
+     * once mirrored. Falls back to the largeIcon when the session exposes no art bitmap (e.g. URI-only art).
+     */
+    fun mediaArt(sbn: StatusBarNotification): ByteArray? {
+        albumArtFromSession(sbn.notification)?.let {
+            return encode(it, MAX_MEDIA_ART_DIM, MAX_MEDIA_ART_BYTES, MEDIA_ART_QUALITY)
+        }
+        return sbn.notification.getLargeIcon()?.let {
+            rasterize(it, MAX_MEDIA_ART_DIM, MAX_MEDIA_ART_BYTES, MEDIA_ART_QUALITY)
+        }
+    }
+
+    /** The high-res album-art bitmap from the notification's MediaSession metadata (bitmap keys only — a
+     *  URI-only art can't be read cross-app). Prefers ALBUM_ART, then ART, then DISPLAY_ICON. */
+    private fun albumArtFromSession(n: Notification): Bitmap? {
+        val token = runCatching {
+            n.extras.getParcelable(Notification.EXTRA_MEDIA_SESSION, MediaSession.Token::class.java)
+        }.getOrNull() ?: return null
+        return runCatching {
+            val md = MediaController(context, token).metadata ?: return null
+            md.getBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART)
+                ?: md.getBitmap(MediaMetadata.METADATA_KEY_ART)
+                ?: md.getBitmap(MediaMetadata.METADATA_KEY_DISPLAY_ICON)
+        }.getOrNull()
+    }
 
     /**
      * The source app's launcher icon as WEBP bytes, for delivery as an `APP_ICON` asset so a consumer that
@@ -84,9 +116,11 @@ class GraphicsExtractor(private val context: Context) {
         }
     }
 
-    private fun rasterize(icon: Icon, maxDim: Int, maxBytes: Int): ByteArray? = runCatching {
+    private fun rasterize(
+        icon: Icon, maxDim: Int, maxBytes: Int, quality: IntArray = DEFAULT_QUALITY,
+    ): ByteArray? = runCatching {
         val drawable = icon.loadDrawable(context) ?: return null
-        encode(drawable.toBitmap(maxDim), maxDim, maxBytes)
+        encode(drawable.toBitmap(maxDim), maxDim, maxBytes, quality)
     }.getOrNull()
 
     private fun Drawable.toBitmap(maxDim: Int): Bitmap {
@@ -103,7 +137,9 @@ class GraphicsExtractor(private val context: Context) {
         return out
     }
 
-    private fun encode(bitmap: Bitmap, maxDim: Int, maxBytes: Int): ByteArray? {
+    private fun encode(
+        bitmap: Bitmap, maxDim: Int, maxBytes: Int, quality: IntArray = DEFAULT_QUALITY,
+    ): ByteArray? {
         val scaled = if (maxOf(bitmap.width, bitmap.height) <= maxDim) bitmap else {
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
             bitmap.scale(
@@ -111,9 +147,9 @@ class GraphicsExtractor(private val context: Context) {
                 maxOf(1, (bitmap.height * scale).toInt())
             )
         }
-        for (quality in intArrayOf(80, 50, 30)) {
+        for (q in quality) {
             val bytes = ByteArrayOutputStream().use {
-                scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, it); it.toByteArray()
+                scaled.compress(Bitmap.CompressFormat.WEBP_LOSSY, q, it); it.toByteArray()
             }
             if (bytes.size <= maxBytes) return bytes
         }
@@ -141,8 +177,16 @@ class GraphicsExtractor(private val context: Context) {
         const val MAX_ICON_DIM = 256
         const val MAX_AVATAR_DIM = 128
         const val MAX_PICTURE_DIM = 1024
+        /** Album art keeps big-picture-class resolution so the media card / lock screen renders it crisp. */
+        const val MAX_MEDIA_ART_DIM = 1024
         const val MAX_ICON_BYTES = 256 * 1024
         const val MAX_PICTURE_BYTES = 512 * 1024
+        const val MAX_MEDIA_ART_BYTES = 1024 * 1024
         const val MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+
+        /** WEBP quality ladder, tried in order until under budget. Album art gets a higher floor — it renders
+         *  large, so it must stay crisp — than the default used for small icons / avatars / big pictures. */
+        val DEFAULT_QUALITY = intArrayOf(80, 50, 30)
+        val MEDIA_ART_QUALITY = intArrayOf(92, 80, 65)
     }
 }
