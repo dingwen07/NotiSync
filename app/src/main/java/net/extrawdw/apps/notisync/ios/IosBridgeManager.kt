@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.Manifest
 import android.annotation.SuppressLint
@@ -38,9 +38,9 @@ import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 /**
- * Orchestrates the ANCS bridge: advertises this phone as a BLE peripheral soliciting the ANCS service (so it
+ * Orchestrates the iOS BLE bridge: advertises this phone as a BLE peripheral soliciting ANCS (so it
  * appears in the iPhone's Bluetooth settings), accepts the iPhone's connection via a GATT server, then runs
- * an [AncsGattClient] over that link to consume notifications. Each ANCS notification is fetched, resolved to
+ * an [IosGattClient] over that link to consume notifications. Each ANCS notification is fetched, resolved to
  * an app name + icon, filtered by the user's per-app opt-in, and dispatched to local display and/or the mesh.
  *
  * The same link also mirrors the iPhone's now-playing media over AMS (the media sibling of ANCS): the GATT
@@ -51,7 +51,7 @@ import java.util.concurrent.ConcurrentHashMap
  * [net.extrawdw.apps.notisync.AppGraph] and unit-reasonable.
  */
 @SuppressLint("MissingPermission")
-class AncsBleManager(
+class IosBridgeManager(
     private val context: Context,
     private val scope: CoroutineScope,
     private val clientId: ClientId,
@@ -83,7 +83,7 @@ class AncsBleManager(
     private var advertiser: BluetoothLeAdvertiser? = null
 
     @Volatile
-    private var client: AncsGattClient? = null
+    private var client: IosGattClient? = null
 
     @Volatile
     private var connectedDevice: BluetoothDevice? = null
@@ -162,12 +162,12 @@ class AncsBleManager(
             Log.w(
                 TAG,
                 "missing BLUETOOTH_CONNECT/ADVERTISE"
-            ); deviceRepo.setStatus(AncsStatus.ERROR); return
+            ); deviceRepo.setStatus(IosBridgeStatus.ERROR); return
         }
         val a = adapter
         if (a == null) {
             Log.w(TAG, "no Bluetooth adapter on this device")
-            deviceRepo.setStatus(AncsStatus.ERROR)
+            deviceRepo.setStatus(IosBridgeStatus.ERROR)
             return
         }
         // Arm this BEFORE the isEnabled bail so we hear STATE_ON and re-advertise when the user turns
@@ -175,7 +175,7 @@ class AncsBleManager(
         registerAdapterReceiver()
         if (!a.isEnabled) {
             Log.w(TAG, "Bluetooth is off — will re-advertise when it's turned back on")
-            deviceRepo.setStatus(AncsStatus.ERROR)
+            deviceRepo.setStatus(IosBridgeStatus.ERROR)
             return
         }
         // Gate on the ADVERTISER being available — NOT isMultipleAdvertisementSupported, which asks for
@@ -184,12 +184,12 @@ class AncsBleManager(
         val adv = a.bluetoothLeAdvertiser
         if (adv == null) {
             Log.w(TAG, "no BLE advertiser — this device can't act as a BLE peripheral")
-            deviceRepo.setStatus(AncsStatus.UNSUPPORTED)
+            deviceRepo.setStatus(IosBridgeStatus.UNSUPPORTED)
             return
         }
         Log.i(
             TAG,
-            "ANCS bridge start: multiAdv=${a.isMultipleAdvertisementSupported} " +
+            "iOS bridge start: multiAdv=${a.isMultipleAdvertisementSupported} " +
                     "extAdv=${runCatching { a.isLeExtendedAdvertisingSupported }.getOrNull()} " +
                     "maxAdvData=${runCatching { a.leMaximumAdvertisingDataLength }.getOrNull()}",
         )
@@ -202,8 +202,8 @@ class AncsBleManager(
         resettingPeripheral = false
         // Re-arm CompanionDeviceManager presence (if the user set up background auto-connect) so the OS keeps
         // waking us when the iPhone is in range — survives reboots / process death.
-        AncsCompanion.observePresence(context)
-        deviceRepo.setStatus(AncsStatus.ADVERTISING)
+        IosCompanion.observePresence(context)
+        deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
     }
 
     fun stop() {
@@ -227,7 +227,7 @@ class AncsBleManager(
         connectedDevice = null
         runCatching { gattServer?.close() }; gattServer = null
         deviceRepo.clearDeviceName()
-        deviceRepo.setStatus(AncsStatus.OFF)
+        deviceRepo.setStatus(IosBridgeStatus.OFF)
     }
 
     // ---- Advertising + GATT server (peripheral role) ----
@@ -263,7 +263,7 @@ class AncsBleManager(
         }
             .onFailure {
                 Log.w(TAG, "startAdvertisingSet threw", it); deviceRepo.setStatus(
-                AncsStatus.ERROR
+                IosBridgeStatus.ERROR
             )
             }
     }
@@ -275,7 +275,7 @@ class AncsBleManager(
                 Log.i(TAG, "ANCS advertising set started (txPower=$txPower)")
             } else {
                 Log.w(TAG, "ANCS advertising set start failed: status=$status")
-                deviceRepo.setStatus(AncsStatus.ERROR)
+                deviceRepo.setStatus(IosBridgeStatus.ERROR)
             }
         }
 
@@ -322,7 +322,7 @@ class AncsBleManager(
         // bonded link, so an unbonded central is never the paired iPhone. Bridging one anyway grabbed this single
         // client slot, spammed it with createBond() pairing requests, and locked out the real (bonded) iPhone —
         // which then shows "Connected" on iOS but never reaches SHARING until the user toggles iPhone Bluetooth.
-        // Pairing a NEW iPhone is the CDM "Set up" flow (AncsCompanion.bondDevice) or iOS Settings; both bond at
+        // Pairing a NEW iPhone is the CDM "Set up" flow (IosCompanion.bondDevice) or iOS Settings; both bond at
         // the OS level, after which the iPhone reconnects bonded and lands here.
         if (device.bondState != BluetoothDevice.BOND_BONDED) {
             Log.i(
@@ -340,12 +340,12 @@ class AncsBleManager(
         connectedDevice = device
         lastDevice = device
         deviceRepo.setDeviceName(runCatching { device.name }.getOrNull())
-        val c = AncsGattClient(
+        val c = IosGattClient(
             context = context,
             device = device,
             onStatus = { status ->
                 deviceRepo.setStatus(status)
-                if (status == AncsStatus.SHARING) {
+                if (status == IosBridgeStatus.SHARING) {
                     reconnectAttempts = 0
                     handler.removeCallbacks(attachRunnable)
                     refreshDeviceName(device)
@@ -448,7 +448,7 @@ class AncsBleManager(
         advertisingSet = null
         runCatching { gattServer?.close() }; gattServer = null
         deviceRepo.clearDeviceName()
-        deviceRepo.setStatus(AncsStatus.CONNECTING) // transient "recovering"; reopen flips to ADVERTISING
+        deviceRepo.setStatus(IosBridgeStatus.CONNECTING) // transient "recovering"; reopen flips to ADVERTISING
         // Let the stack release the server + advertiser before reopening — a synchronous reopen races the close
         // on some OEM stacks (same settle rationale as the GATT client's refresh/discovery delays).
         handler.postDelayed(peripheralRestartRunnable, PERIPHERAL_RESTART_SETTLE_MS)
@@ -466,14 +466,14 @@ class AncsBleManager(
             // no-op on its `running` guard and strand us with no advertising.
             Log.w(TAG, "peripheral reopen: adapter unavailable — will resume when Bluetooth returns")
             running = false
-            deviceRepo.setStatus(AncsStatus.ERROR)
+            deviceRepo.setStatus(IosBridgeStatus.ERROR)
             return
         }
         Log.i(TAG, "peripheral reopen: re-opening GATT server + advertising")
         advertiser = adv
         openGattServer()
         startAdvertising(adv)
-        deviceRepo.setStatus(AncsStatus.ADVERTISING)
+        deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
     }
 
     private fun onCentralDisconnected() {
@@ -484,7 +484,7 @@ class AncsBleManager(
         uidToKey.clear() // UIDs are session-scoped; drop the removal map on disconnect
         selfClearedUids.clear() // ditto — pending self-clear confirmations don't carry across sessions
         deviceRepo.clearDeviceName() // no device connected — don't leave a stale name in the FGS / tab / group labels
-        deviceRepo.setStatus(AncsStatus.ADVERTISING)
+        deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
     }
 
     private fun refreshDeviceName(device: BluetoothDevice) {
@@ -567,7 +567,7 @@ class AncsBleManager(
         amsBridge.onGone()
         runCatching { gattServer?.close() }; gattServer = null
         deviceRepo.clearDeviceName() // link torn down — drop the stale name
-        deviceRepo.setStatus(AncsStatus.ERROR)
+        deviceRepo.setStatus(IosBridgeStatus.ERROR)
     }
 
     // ---- Notification handling ----
@@ -789,7 +789,7 @@ class AncsBleManager(
         ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
 
     private companion object {
-        const val TAG = "AncsBleManager"
+        const val TAG = "IosBridgeManager"
         const val MIME_WEBP = "image/webp"
 
         /** Lightweight client-only re-attaches to try before escalating to a full peripheral reset. Each cycle

@@ -1,10 +1,10 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 
-/** User-facing ANCS bridge status for the iOS tab. */
-enum class AncsStatus {
+/** User-facing iOS bridge status for the iOS tab. */
+enum class IosBridgeStatus {
     /** The bridge is switched off. */
     OFF,
 
@@ -30,15 +30,15 @@ enum class AncsStatus {
     ERROR,
 }
 
-/** Live ANCS bridge state for the UI: connection status + the connected iPhone's name. In-memory. */
+/** Live iOS bridge state for the UI: connection status + the connected iPhone's name. In-memory. */
 class IosDeviceRepository {
-    private val _status = MutableStateFlow(AncsStatus.OFF)
-    val status: StateFlow<AncsStatus> = _status
+    private val _status = MutableStateFlow(IosBridgeStatus.OFF)
+    val status: StateFlow<IosBridgeStatus> = _status
 
     private val _deviceName = MutableStateFlow<String?>(null)
     val deviceName: StateFlow<String?> = _deviceName
 
-    fun setStatus(status: AncsStatus) {
+    fun setStatus(status: IosBridgeStatus) {
         _status.value = status
     }
 

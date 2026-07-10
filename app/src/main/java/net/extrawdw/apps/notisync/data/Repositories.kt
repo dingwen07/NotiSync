@@ -36,10 +36,10 @@ class SettingsRepository(
     private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
     private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
     private val selfEpochActivatedKey = longPreferencesKey("self_epoch_activated_at")
-    private val ancsBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
-    private val ancsLocalKey = booleanPreferencesKey("ancs_local_display")
-    private val ancsMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
-    private val ancsMediaKey = booleanPreferencesKey("ancs_media_mirror")
+    private val iosBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
+    private val iosLocalKey = booleanPreferencesKey("ancs_local_display")
+    private val iosMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
+    private val iosMediaKey = booleanPreferencesKey("ancs_media_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
@@ -70,22 +70,22 @@ class SettingsRepository(
      *  process start, so an opted-out user isn't briefly re-enabled. */
     suspend fun analyticsEnabledNow(): Boolean = store.data.first()[analyticsEnabledKey] ?: true
 
-    /** ANCS bridge master switch: whether to advertise + connect to a paired iPhone. Default off (opt-in). */
-    val ancsBridgeEnabled: StateFlow<Boolean> =
-        store.data.map { it[ancsBridgeKey] ?: false }.stateInEager(scope, false)
+    /** iOS bridge master switch: whether to advertise + connect to a paired iPhone. Default off (opt-in). */
+    val iosBridgeEnabled: StateFlow<Boolean> =
+        store.data.map { it[iosBridgeKey] ?: false }.stateInEager(scope, false)
 
     /** Show captured iPhone notifications on THIS phone (like a smartwatch). Default on once bridging. */
-    val ancsLocalDisplay: StateFlow<Boolean> =
-        store.data.map { it[ancsLocalKey] ?: true }.stateInEager(scope, true)
+    val iosLocalDisplay: StateFlow<Boolean> =
+        store.data.map { it[iosLocalKey] ?: true }.stateInEager(scope, true)
 
     /** Mirror captured iPhone notifications to the user's other mesh devices. Default on once bridging. */
-    val ancsMeshMirror: StateFlow<Boolean> =
-        store.data.map { it[ancsMeshKey] ?: true }.stateInEager(scope, true)
+    val iosMeshMirror: StateFlow<Boolean> =
+        store.data.map { it[iosMeshKey] ?: true }.stateInEager(scope, true)
 
     /** Mirror the iPhone's now-playing media (AMS) as a media-controls card — here and, when
-     *  [ancsMeshMirror] is on, on the user's other Android devices. Default on once bridging. */
-    val ancsMediaMirror: StateFlow<Boolean> =
-        store.data.map { it[ancsMediaKey] ?: true }.stateInEager(scope, true)
+     *  [iosMeshMirror] is on, on the user's other Android devices. Default on once bridging. */
+    val iosMediaMirror: StateFlow<Boolean> =
+        store.data.map { it[iosMediaKey] ?: true }.stateInEager(scope, true)
 
     /** Master switch for the incoming-call ringer ([net.extrawdw.apps.notisync.notification.CallRinger]).
      *  Default off. When off, NO mirrored call rings on this device, regardless of the per-app
@@ -103,14 +103,14 @@ class SettingsRepository(
     suspend fun setLockScreenPublicIdentity(on: Boolean) =
         store.edit { it[lockScreenPublicIdentityKey] = on }
 
-    /** The PERSISTED switch, read directly from DataStore — use this (not [ancsBridgeEnabled].value, which is
+    /** The PERSISTED switch, read directly from DataStore — use this (not [iosBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
-    suspend fun ancsBridgeEnabledNow(): Boolean = store.data.first()[ancsBridgeKey] ?: false
+    suspend fun iosBridgeEnabledNow(): Boolean = store.data.first()[iosBridgeKey] ?: false
 
-    suspend fun setAncsBridgeEnabled(on: Boolean) = store.edit { it[ancsBridgeKey] = on }
-    suspend fun setAncsLocalDisplay(on: Boolean) = store.edit { it[ancsLocalKey] = on }
-    suspend fun setAncsMeshMirror(on: Boolean) = store.edit { it[ancsMeshKey] = on }
-    suspend fun setAncsMediaMirror(on: Boolean) = store.edit { it[ancsMediaKey] = on }
+    suspend fun setIosBridgeEnabled(on: Boolean) = store.edit { it[iosBridgeKey] = on }
+    suspend fun setIosLocalDisplay(on: Boolean) = store.edit { it[iosLocalKey] = on }
+    suspend fun setIosMeshMirror(on: Boolean) = store.edit { it[iosMeshKey] = on }
+    suspend fun setIosMediaMirror(on: Boolean) = store.edit { it[iosMediaKey] = on }
 
     /** Whether first-launch onboarding was finished (every step completed or skipped). Direct read only —
      *  it gates what the launch frame shows, so an eager StateFlow's still-default value would flash

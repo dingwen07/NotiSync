@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId

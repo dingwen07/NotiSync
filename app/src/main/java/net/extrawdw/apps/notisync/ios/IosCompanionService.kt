@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceService
@@ -16,19 +16,19 @@ import net.extrawdw.apps.notisync.NotiSyncApp
  * the start is still guarded so any residual denial logs rather than crashing this system-bound service.
  */
 @Suppress("OVERRIDE_DEPRECATION") // the AssociationInfo overloads are the correct ones to implement on minSdk 34
-class AncsCompanionService : CompanionDeviceService() {
+class IosCompanionService : CompanionDeviceService() {
     override fun onDeviceAppeared(associationInfo: AssociationInfo) {
         // Honor the master switch: don't resurrect the bridge on presence if the user turned it off (but kept
         // the association). Reliable while warm; on a cold start spawned by this callback, AppGraph.init() also
-        // runs resumeAncsBridgeIfEnabled() (a persisted read) to cover the not-yet-loaded window. The start is
+        // runs resumeIosBridgeIfEnabled() (a persisted read) to cover the not-yet-loaded window. The start is
         // synchronous so it stays inside the companion-presence foreground-service exemption.
-        if (!AncsBridgeService.hasPermissions(applicationContext)) return
+        if (!IosBridgeService.hasPermissions(applicationContext)) return
         val graph = (application as? NotiSyncApp)?.graphIfReady ?: return
-        if (graph.settings.ancsBridgeEnabled.value != true) return
-        runCatching { AncsBridgeService.start(applicationContext) }
+        if (graph.settings.iosBridgeEnabled.value != true) return
+        runCatching { IosBridgeService.start(applicationContext) }
             .onFailure {
                 Log.w(
-                    "AncsCompanionService",
+                    "IosCompanionService",
                     "onDeviceAppeared: bridge start denied",
                     it
                 )

@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
@@ -15,14 +15,14 @@ import java.util.regex.Pattern
 
 /**
  * CompanionDeviceManager (CDM) glue for **background reliability**. After the user creates a one-time
- * association (a system device picker) and we observe device presence, the OS wakes [AncsCompanionService]
- * whenever the iPhone comes into BLE range — which (re)starts [AncsBridgeService] so notifications keep
+ * association (a system device picker) and we observe device presence, the OS wakes [IosCompanionService]
+ * whenever the iPhone comes into BLE range — which (re)starts [IosBridgeService] so notifications keep
  * flowing even when NotiSync isn't open. The foreground-service path works without this; CDM is additive.
  *
  * All calls are guarded — a CDM quirk must never crash the app or break the core bridge.
  */
-object AncsCompanion {
-    private const val TAG = "AncsCompanion"
+object IosCompanion {
+    private const val TAG = "IosCompanion"
 
     fun manager(context: Context): CompanionDeviceManager? =
         runCatching { context.getSystemService(CompanionDeviceManager::class.java) }.getOrNull()
@@ -113,7 +113,7 @@ object AncsCompanion {
         }
     }
 
-    /** (Re)arm presence observation for every association so [AncsCompanionService.onDeviceAppeared] fires.
+    /** (Re)arm presence observation for every association so [IosCompanionService.onDeviceAppeared] fires.
      *  Safe to call repeatedly (e.g. on every bridge start, to survive reboots). No-op if not associated. */
     @SuppressLint("MissingPermission")
     fun observePresence(context: Context) {

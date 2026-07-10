@@ -58,11 +58,11 @@ import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
-import net.extrawdw.apps.notisync.ancs.AncsBleManager
-import net.extrawdw.apps.notisync.ancs.AncsBridgeService
-import net.extrawdw.apps.notisync.ancs.AncsCompanion
-import net.extrawdw.apps.notisync.ancs.IosAppRegistry
-import net.extrawdw.apps.notisync.ancs.IosDeviceRepository
+import net.extrawdw.apps.notisync.ios.IosBridgeManager
+import net.extrawdw.apps.notisync.ios.IosBridgeService
+import net.extrawdw.apps.notisync.ios.IosCompanion
+import net.extrawdw.apps.notisync.ios.IosAppRegistry
+import net.extrawdw.apps.notisync.ios.IosDeviceRepository
 import net.extrawdw.apps.notisync.appicon.AppStoreIconCache
 import net.extrawdw.apps.notisync.appicon.AppStoreIconClient
 import net.extrawdw.apps.notisync.appicon.AppStoreIconProvider
@@ -201,11 +201,11 @@ class AppGraph(private val app: Application) {
     var iosAppRegistry: IosAppRegistry? = null
         private set
 
-    /** The ANCS BLE bridge; hosted by [AncsBridgeService] while enabled. */
-    var ancsManager: AncsBleManager? = null
+    /** The iOS BLE bridge; hosted by [IosBridgeService] while enabled. */
+    var iosBridgeManager: IosBridgeManager? = null
         private set
 
-    /** Live ANCS connection status + bonded iPhone name for the iOS tab. */
+    /** Live iOS bridge status + bonded iPhone name for the iOS tab. */
     val iosDeviceRepo = IosDeviceRepository()
 
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
@@ -355,7 +355,7 @@ class AppGraph(private val app: Application) {
         // and/or the own mesh — reusing the same capture/render pipeline as a local Android capture.
         val registry = IosAppRegistry(ds, scope)
         iosAppRegistry = registry
-        ancsManager = AncsBleManager(
+        iosBridgeManager = IosBridgeManager(
             context = app,
             scope = scope,
             clientId = identity.clientId,
@@ -371,9 +371,9 @@ class AppGraph(private val app: Application) {
             },
             registry = registry,
             deviceRepo = iosDeviceRepo,
-            localDisplayEnabled = { settings.ancsLocalDisplay.value },
-            meshMirrorEnabled = { settings.ancsMeshMirror.value },
-            mediaMirrorEnabled = { settings.ancsMediaMirror.value },
+            localDisplayEnabled = { settings.iosLocalDisplay.value },
+            meshMirrorEnabled = { settings.iosMeshMirror.value },
+            mediaMirrorEnabled = { settings.iosMediaMirror.value },
             captureToMesh = { notif -> mirror.captureLocal(notif) },
             sendQuietToMesh = { notif -> mirror.sendNotificationQuiet(notif) },
             renderLocal = { notif, silent ->
@@ -384,13 +384,13 @@ class AppGraph(private val app: Application) {
         )
         // Turning the iPhone-media switch OFF tears the now-playing card down live (local + mesh), like the
         // ringer master switch above — not just for future sessions.
-        settings.ancsMediaMirror.onEach { if (!it) ancsManager?.onMediaMirrorDisabled() }.launchIn(scope)
+        settings.iosMediaMirror.onEach { if (!it) iosBridgeManager?.onMediaMirrorDisabled() }.launchIn(scope)
         // Dismissing an iOS mirror — swiped here or relayed from another own device — clears it on the iPhone
         // too (best-effort ANCS negative action), so it doesn't linger on iOS or reappear on the next reconnect.
-        mirror.iosOriginCanceler = OriginalCanceler { key -> ancsManager?.dismissOnIphone(key) }
+        mirror.iosOriginCanceler = OriginalCanceler { key -> iosBridgeManager?.dismissOnIphone(key) }
         // A peer pressing a mirrored ANCS action button (e.g. Answer/Decline on a call) performs the
         // matching positive/negative action on the bridged iPhone. No-op for non-ANCS keys.
-        mirror.iosOriginActionPerformer = OriginalActionPerformer { event -> ancsManager?.performOnIphone(event) }
+        mirror.iosOriginActionPerformer = OriginalActionPerformer { event -> iosBridgeManager?.performOnIphone(event) }
         // Trust/device/profile foundation: trust-table + card + profile wire I/O, backed by TrustStore.
         val foundation = FoundationEngine(
             channel = channel,
@@ -493,10 +493,10 @@ class AppGraph(private val app: Application) {
         // Trim handled-message history past its retention window on each start — bounds the dedup db on
         // long-lived processes and rarely-opened devices alike (off-main; the db opens lazily here).
         scope.launch { runCatching { messageStore.prune() } }
-        // Resume the ANCS bridge if the user left its switch on — covers any cold start of this process
-        // (FCM wake, etc.). Reboot / app-update arrive via AncsBootReceiver, which starts the same FGS inside
+        // Resume the iOS bridge if the user left its switch on — covers any cold start of this process
+        // (FCM wake, etc.). Reboot / app-update arrive via IosBridgeBootReceiver, which starts the same FGS inside
         // the boot exemption window; both are idempotent.
-        scope.launch { resumeAncsBridgeIfEnabled() }
+        scope.launch { resumeIosBridgeIfEnabled() }
 
         Log.i(
             TAG,
@@ -667,41 +667,41 @@ class AppGraph(private val app: Application) {
     }
 
     /**
-     * Toggle the ANCS iOS-notification bridge: persist the choice and start/stop the foreground bridge
+     * Toggle the iOS bridge: persist the choice and start/stop the foreground bridge
      * service that owns the BLE link. Called from the iOS tab (always foreground, so starting the
-     * `connectedDevice` foreground service is permitted). With the switch on, [AncsBridgeService] keeps the
-     * link alive in the background; [net.extrawdw.apps.notisync.ancs.AncsCompanionService] can re-start it on
+     * `connectedDevice` foreground service is permitted). With the switch on, [IosBridgeService] keeps the
+     * link alive in the background; [net.extrawdw.apps.notisync.ios.IosCompanionService] can re-start it on
      * device presence after a process death.
      */
-    fun setAncsBridgeEnabled(enabled: Boolean) {
+    fun setIosBridgeEnabled(enabled: Boolean) {
         // Persist FIRST, then act. The iOS tab's auto-resume effect keys on this persisted flag; a
         // fire-and-forget persist races the synchronous service stop (status -> OFF), so the effect would see
         // the stale enabled=true together with OFF and immediately restart the bridge — "off" never sticks.
         scope.launch {
-            runCatching { settings.setAncsBridgeEnabled(enabled) }
+            runCatching { settings.setIosBridgeEnabled(enabled) }
             if (enabled) {
-                AncsBridgeService.start(app)
+                IosBridgeService.start(app)
             } else {
-                AncsBridgeService.stop(app)
-                AncsCompanion.stopObservingPresence(app) // user turned it off: don't let CDM presence re-wake us
+                IosBridgeService.stop(app)
+                IosCompanion.stopObservingPresence(app) // user turned it off: don't let CDM presence re-wake us
             }
         }
     }
 
     /**
-     * Bring the ANCS bridge back after a process (re)start if the user left the switch on. Reads the
-     * PERSISTED flag (the [SettingsRepository.ancsBridgeEnabled] StateFlow is still its default here, before
+     * Bring the iOS bridge back after a process (re)start if the user left the switch on. Reads the
+     * PERSISTED flag (the [SettingsRepository.iosBridgeEnabled] StateFlow is still its default here, before
      * DataStore loads) and gates on BT permissions so the `connectedDevice` FGS start can't throw, then
      * starts the bridge and re-arms CompanionDeviceManager presence. Guarded throughout: a background-start
      * denial (no exemption) is harmless — the iOS tab, CDM presence, and
-     * [net.extrawdw.apps.notisync.ancs.AncsBootReceiver] are the other resume paths. Called from [init] (every
-     * process spawn — cold start, FCM wake) and AncsBootReceiver (reboot / app update).
+     * [net.extrawdw.apps.notisync.ios.IosBridgeBootReceiver] are the other resume paths. Called from [init] (every
+     * process spawn — cold start, FCM wake) and IosBridgeBootReceiver (reboot / app update).
      */
-    suspend fun resumeAncsBridgeIfEnabled() {
-        if (!runCatching { settings.ancsBridgeEnabledNow() }.getOrDefault(false)) return
-        if (!AncsBridgeService.hasPermissions(app)) return
-        runCatching { AncsBridgeService.start(app) }
-        runCatching { AncsCompanion.observePresence(app) }
+    suspend fun resumeIosBridgeIfEnabled() {
+        if (!runCatching { settings.iosBridgeEnabledNow() }.getOrDefault(false)) return
+        if (!IosBridgeService.hasPermissions(app)) return
+        runCatching { IosBridgeService.start(app) }
+        runCatching { IosCompanion.observePresence(app) }
     }
 
     /** Surface a pending trust decision as a local notification: tap opens Devices; add/re-add carry Approve/Reject. */

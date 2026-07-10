@@ -27,10 +27,10 @@
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_USE_DATA_IN_BACKGROUND" />
     <uses-permission android:name="android.permission.REQUEST_OBSERVE_COMPANION_DEVICE_PRESENCE" />
-    <!-- Lets AncsCompanionService.onDeviceAppeared start the connectedDevice FGS from the background when the
+    <!-- Lets IosCompanionService.onDeviceAppeared start the connectedDevice FGS from the background when the
          associated iPhone comes into range — without it that background start throws on API 31+. -->
     <uses-permission android:name="android.permission.REQUEST_COMPANION_START_FOREGROUND_SERVICES_FROM_BACKGROUND" />
-    <!-- Restart the bridge (if the user left it on) after a reboot / app update — see ancs.AncsBootReceiver. -->
+    <!-- Restart the bridge (if the user left it on) after a reboot / app update — see ios.IosBridgeBootReceiver. -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
 
     <uses-feature
@@ -126,16 +126,16 @@
             </intent-filter>
         </service>
 
-        <!-- Hosts the ANCS Bluetooth bridge so the link to a paired iPhone survives backgrounding. -->
+        <!-- Hosts the iOS Bluetooth bridge so the link to a paired iPhone survives backgrounding. -->
         <service
-            android:name=".ancs.AncsBridgeService"
+            android:name=".ios.IosBridgeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 
         <!-- Optional reliability: the OS (re)starts the bridge when the associated iPhone is in range, after
              the user creates a CompanionDeviceManager association from the iOS tab. -->
         <service
-            android:name=".ancs.AncsCompanionService"
+            android:name=".ios.IosCompanionService"
             android:exported="true"
             android:permission="android.permission.BIND_COMPANION_DEVICE_SERVICE">
             <intent-filter>
@@ -143,10 +143,10 @@
             </intent-filter>
         </service>
 
-        <!-- Resumes the ANCS bridge (if the switch is on) after a reboot or an app update. Both actions are
+        <!-- Resumes the iOS bridge (if the switch is on) after a reboot or an app update. Both actions are
              protected system broadcasts, so exported="true" is safe. -->
         <receiver
-            android:name=".ancs.AncsBootReceiver"
+            android:name=".ios.IosBridgeBootReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

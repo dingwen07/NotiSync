@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals

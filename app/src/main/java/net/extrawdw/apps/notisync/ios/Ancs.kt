@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat

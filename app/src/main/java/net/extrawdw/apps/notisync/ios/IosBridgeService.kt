@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.Manifest
 import android.app.Notification
@@ -28,21 +28,21 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
 
 /**
- * Foreground service (type `connectedDevice`) that hosts the ANCS bridge, so the BLE link to the iPhone
+ * Foreground service (type `connectedDevice`) that hosts the iOS bridge, so the BLE link to the iPhone
  * survives while the app is backgrounded. Started/stopped by the iOS tab's master switch (and, optionally,
- * by [AncsCompanionService] on device presence). The actual BLE work lives in [AncsBleManager]; this service
+ * by [IosCompanionService] on device presence). The actual BLE work lives in [IosBridgeManager]; this service
  * just owns its lifecycle and keeps the process alive.
  *
  * Its notification tracks the live bridge state ([IosDeviceRepository.status]) so the shade always reflects
  * what the bridge is doing (advertising / pairing / sharing / error), and is posted as the summary of its
  * own private notification group so the OS never auto-bundles this persistent entry with mirrored posts.
  */
-class AncsBridgeService : Service() {
+class IosBridgeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     /** Service-lifetime scope for the status collector; cancelled in [onDestroy]. */
     private val scope =
-        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AncsBridgeService"))
+        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("IosBridgeService"))
 
     /** Guards [observeStatus]: repeated [onStartCommand] (multiple start sources, START_STICKY redelivery)
      *  must not stack duplicate collectors that each re-post the notification on every state change. */
@@ -52,7 +52,7 @@ class AncsBridgeService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (!hasPermissions(this)) {
-            (application as? NotiSyncApp)?.graphIfReady?.iosDeviceRepo?.setStatus(AncsStatus.ERROR)
+            (application as? NotiSyncApp)?.graphIfReady?.iosDeviceRepo?.setStatus(IosBridgeStatus.ERROR)
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -65,14 +65,14 @@ class AncsBridgeService : Service() {
                 this,
                 NOTIF_ID,
                 buildNotification(
-                    repo?.status?.value ?: AncsStatus.CONNECTING,
+                    repo?.status?.value ?: IosBridgeStatus.CONNECTING,
                     repo?.deviceName?.value
                 ),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
         }.isSuccess
         if (!foregroundStarted) {
-            repo?.setStatus(AncsStatus.ERROR)
+            repo?.setStatus(IosBridgeStatus.ERROR)
             stopSelf(startId)
             return START_NOT_STICKY
         }
@@ -92,7 +92,7 @@ class AncsBridgeService : Service() {
 
     override fun onDestroy() {
         scope.cancel()
-        runCatching { (application as? NotiSyncApp)?.graphIfReady?.ancsManager?.stop() }
+        runCatching { (application as? NotiSyncApp)?.graphIfReady?.iosBridgeManager?.stop() }
         super.onDestroy()
     }
 
@@ -101,7 +101,7 @@ class AncsBridgeService : Service() {
             collecting = true
             observeStatus(repo)
         }
-        runCatching { graph.ancsManager?.start() }
+        runCatching { graph.iosBridgeManager?.start() }
     }
 
     /**
@@ -140,9 +140,9 @@ class AncsBridgeService : Service() {
         )
     }
 
-    private fun buildNotification(status: AncsStatus, deviceName: String?): Notification {
+    private fun buildNotification(status: IosBridgeStatus, deviceName: String?): Notification {
         // While sharing we know the iPhone's name — surface it as the title; otherwise a static title.
-        val title = deviceName?.takeIf { status == AncsStatus.SHARING && it.isNotBlank() }
+        val title = deviceName?.takeIf { status == IosBridgeStatus.SHARING && it.isNotBlank() }
             ?: getString(R.string.ancs_service_title)
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_ancs_bridge)
@@ -156,20 +156,20 @@ class AncsBridgeService : Service() {
     }
 
     @StringRes
-    private fun statusText(status: AncsStatus): Int = when (status) {
-        AncsStatus.OFF -> R.string.ios_status_off
-        AncsStatus.UNSUPPORTED -> R.string.ios_status_unsupported
-        AncsStatus.ADVERTISING -> R.string.ios_status_advertising
-        AncsStatus.CONNECTING -> R.string.ios_status_connecting
-        AncsStatus.NEEDS_PAIRING -> R.string.ios_status_needs_pairing
-        AncsStatus.SHARING -> R.string.ios_status_sharing
-        AncsStatus.NO_ANCS -> R.string.ios_status_no_ancs
-        AncsStatus.ERROR -> R.string.ios_status_error
+    private fun statusText(status: IosBridgeStatus): Int = when (status) {
+        IosBridgeStatus.OFF -> R.string.ios_status_off
+        IosBridgeStatus.UNSUPPORTED -> R.string.ios_status_unsupported
+        IosBridgeStatus.ADVERTISING -> R.string.ios_status_advertising
+        IosBridgeStatus.CONNECTING -> R.string.ios_status_connecting
+        IosBridgeStatus.NEEDS_PAIRING -> R.string.ios_status_needs_pairing
+        IosBridgeStatus.SHARING -> R.string.ios_status_sharing
+        IosBridgeStatus.NO_ANCS -> R.string.ios_status_no_ancs
+        IosBridgeStatus.ERROR -> R.string.ios_status_error
     }
 
     companion object {
         private const val CHANNEL_ID = "notisync.ancs"
-        private const val GROUP_ID = "notisync.ancs.bridge"
+        private const val GROUP_ID = "notisync.ios.bridge"
         private const val NOTIF_ID = 0x4E43 // "NC" — Notification Consumer
 
         /** Leading-edge throttle window for status→notification reposts: the first change posts at once,
@@ -178,7 +178,7 @@ class AncsBridgeService : Service() {
         private const val STATUS_NOTIFY_THROTTLE_MS = 250L
 
         /** Permissions the `connectedDevice` FGS needs to start without throwing on API 34+. Resume paths
-         *  (cold start, AncsBootReceiver) must gate [start] on this — a missing-permission start throws. */
+         *  (cold start, IosBridgeBootReceiver) must gate [start] on this — a missing-permission start throws. */
         fun hasPermissions(context: Context): Boolean =
             arrayOf(
                 Manifest.permission.BLUETOOTH_CONNECT,
@@ -190,11 +190,11 @@ class AncsBridgeService : Service() {
         fun start(context: Context) =
             ContextCompat.startForegroundService(
                 context,
-                Intent(context, AncsBridgeService::class.java)
+                Intent(context, IosBridgeService::class.java)
             )
 
         fun stop(context: Context) {
-            context.stopService(Intent(context, AncsBridgeService::class.java))
+            context.stopService(Intent(context, IosBridgeService::class.java))
         }
     }
 }

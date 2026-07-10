@@ -78,11 +78,11 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.ancs.AncsBridgeService
-import net.extrawdw.apps.notisync.ancs.AncsCompanion
-import net.extrawdw.apps.notisync.ancs.AncsStatus
-import net.extrawdw.apps.notisync.ancs.IosApp
-import net.extrawdw.apps.notisync.ancs.IosBundleIdExclusions
+import net.extrawdw.apps.notisync.ios.IosBridgeService
+import net.extrawdw.apps.notisync.ios.IosCompanion
+import net.extrawdw.apps.notisync.ios.IosBridgeStatus
+import net.extrawdw.apps.notisync.ios.IosApp
+import net.extrawdw.apps.notisync.ios.IosBundleIdExclusions
 import java.util.Locale
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.PI
@@ -94,7 +94,7 @@ import kotlin.math.sin
 
 private const val ICON_PX = 128
 
-/** The runtime Bluetooth permissions needed to advertise + connect for ANCS (all runtime on minSdk 34). */
+/** Runtime Bluetooth permissions needed to advertise + connect for the iOS BLE bridge. */
 private val BT_PERMISSIONS = arrayOf(
     Manifest.permission.BLUETOOTH_CONNECT,
     Manifest.permission.BLUETOOTH_ADVERTISE,
@@ -238,10 +238,10 @@ fun IosScreen() {
 
     val status by graph.iosDeviceRepo.status.collectAsStateWithLifecycle()
     val deviceName by graph.iosDeviceRepo.deviceName.collectAsStateWithLifecycle()
-    val bridgeEnabled by settings.ancsBridgeEnabled.collectAsStateWithLifecycle()
-    val localDisplay by settings.ancsLocalDisplay.collectAsStateWithLifecycle()
-    val meshMirror by settings.ancsMeshMirror.collectAsStateWithLifecycle()
-    val mediaMirror by settings.ancsMediaMirror.collectAsStateWithLifecycle()
+    val bridgeEnabled by settings.iosBridgeEnabled.collectAsStateWithLifecycle()
+    val localDisplay by settings.iosLocalDisplay.collectAsStateWithLifecycle()
+    val meshMirror by settings.iosMeshMirror.collectAsStateWithLifecycle()
+    val mediaMirror by settings.iosMediaMirror.collectAsStateWithLifecycle()
     val enabled by registry.enabled.collectAsStateWithLifecycle()
     val discovered by registry.discovered.collectAsStateWithLifecycle()
     val icons by viewModel<IosAppsViewModel>().icons.collectAsStateWithLifecycle()
@@ -250,7 +250,7 @@ fun IosScreen() {
 
     val permissionLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) graph.setAncsBridgeEnabled(true)
+            if (result.values.all { it }) graph.setIosBridgeEnabled(true)
         }
 
     // If the bridge was left enabled but isn't running — after a process death (status OFF) or a transient
@@ -258,7 +258,7 @@ fun IosScreen() {
     // foreground service is allowed because this tab is foregrounded. UNSUPPORTED is hardware-permanent, so
     // we don't retry it. (Re-entry is safe: the manager's own `running` guard no-ops a redundant start.)
     LaunchedEffect(bridgeEnabled, status) {
-        if (bridgeEnabled && (status == AncsStatus.OFF || status == AncsStatus.ERROR) &&
+        if (bridgeEnabled && (status == IosBridgeStatus.OFF || status == IosBridgeStatus.ERROR) &&
             BT_PERMISSIONS.all {
                 ContextCompat.checkSelfPermission(
                     context,
@@ -267,10 +267,10 @@ fun IosScreen() {
             } &&
             // Re-confirm the PERSISTED intent: right after the user toggles off, `bridgeEnabled` (DataStore-backed)
             // can still read true here while `status` has already flipped to OFF — without this the effect would
-            // restart the bridge it was just asked to stop. (setAncsBridgeEnabled persists before stopping.)
-            settings.ancsBridgeEnabledNow()
+            // restart the bridge it was just asked to stop. (setIosBridgeEnabled persists before stopping.)
+            settings.iosBridgeEnabledNow()
         ) {
-            AncsBridgeService.start(context)
+            IosBridgeService.start(context)
         }
     }
 
@@ -281,7 +281,7 @@ fun IosScreen() {
                     it
                 ) == android.content.pm.PackageManager.PERMISSION_GRANTED
             }) {
-            graph.setAncsBridgeEnabled(true)
+            graph.setIosBridgeEnabled(true)
         } else {
             permissionLauncher.launch(BT_PERMISSIONS)
         }
@@ -289,18 +289,18 @@ fun IosScreen() {
 
     // --- iPhone pairing via CompanionDeviceManager (one-time association + bond + presence) ---
     val cdm = remember { context.getSystemService(CompanionDeviceManager::class.java) }
-    var cdmAssociated by remember { mutableStateOf(AncsCompanion.isAssociated(context)) }
-    var cdmDeviceName by remember { mutableStateOf(AncsCompanion.associatedDeviceName(context)) }
+    var cdmAssociated by remember { mutableStateOf(IosCompanion.isAssociated(context)) }
+    var cdmDeviceName by remember { mutableStateOf(IosCompanion.associatedDeviceName(context)) }
     val intentSenderLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
-            val picked = AncsCompanion.deviceFromPickerResult(result.data)
-            AncsCompanion.bondDevice(picked)
-            cdmAssociated = AncsCompanion.isAssociated(context)
-            cdmDeviceName = AncsCompanion.associatedDeviceName(context)
+            val picked = IosCompanion.deviceFromPickerResult(result.data)
+            IosCompanion.bondDevice(picked)
+            cdmAssociated = IosCompanion.isAssociated(context)
+            cdmDeviceName = IosCompanion.associatedDeviceName(context)
             if (cdmAssociated) {
-                AncsCompanion.observePresence(context)
-                graph.setAncsBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
+                IosCompanion.observePresence(context)
+                graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
             }
             // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
             if (picked != null) {
@@ -338,7 +338,7 @@ fun IosScreen() {
         }
         runCatching {
             mgr.associate(
-                AncsCompanion.request(),
+                IosCompanion.request(),
                 context.mainExecutor,
                 object : CompanionDeviceManager.Callback() {
                     override fun onAssociationPending(intentSender: IntentSender) {
@@ -353,11 +353,11 @@ fun IosScreen() {
                     override fun onAssociationCreated(associationInfo: AssociationInfo) {
                         Log.i("IosScreen", "CDM association created: ${associationInfo.id}")
                         cdmAssociated = true
-                        cdmDeviceName = AncsCompanion.associatedDeviceName(context)
-                        AncsCompanion.observePresence(context)
+                        cdmDeviceName = IosCompanion.associatedDeviceName(context)
+                        IosCompanion.observePresence(context)
                         // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                        AncsCompanion.bondDevice(runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull())
-                        graph.setAncsBridgeEnabled(true) // run the bridge so it connects once bonded
+                        IosCompanion.bondDevice(runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull())
+                        graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
                     }
 
                     override fun onFailure(error: CharSequence?) {
@@ -426,7 +426,7 @@ fun IosScreen() {
                         deviceName = deviceName,
                         bridgeEnabled = bridgeEnabled,
                         onToggle = { on ->
-                            if (on) enableBridge() else graph.setAncsBridgeEnabled(
+                            if (on) enableBridge() else graph.setIosBridgeEnabled(
                                 false
                             )
                         },
@@ -438,7 +438,7 @@ fun IosScreen() {
                         pairedName = cdmDeviceName,
                         onPair = ::startPairing,
                         onForget = {
-                            AncsCompanion.disassociateAll(context)
+                            IosCompanion.disassociateAll(context)
                             cdmAssociated = false
                             cdmDeviceName = null
                             Toast.makeText(
@@ -454,9 +454,9 @@ fun IosScreen() {
                         localDisplay = localDisplay,
                         meshMirror = meshMirror,
                         mediaMirror = mediaMirror,
-                        onLocal = { on -> scope.launch { settings.setAncsLocalDisplay(on) } },
-                        onMesh = { on -> scope.launch { settings.setAncsMeshMirror(on) } },
-                        onMedia = { on -> scope.launch { settings.setAncsMediaMirror(on) } },
+                        onLocal = { on -> scope.launch { settings.setIosLocalDisplay(on) } },
+                        onMesh = { on -> scope.launch { settings.setIosMeshMirror(on) } },
+                        onMedia = { on -> scope.launch { settings.setIosMediaMirror(on) } },
                     )
                 }
                 if (matching.isEmpty()) {
@@ -501,7 +501,7 @@ fun IosScreen() {
 
 @Composable
 private fun ConnectionCard(
-    status: AncsStatus,
+    status: IosBridgeStatus,
     deviceName: String?,
     bridgeEnabled: Boolean,
     onToggle: (Boolean) -> Unit
@@ -531,7 +531,7 @@ private fun ConnectionCard(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (bridgeEnabled && deviceName != null && status == AncsStatus.SHARING) {
+                if (bridgeEnabled && deviceName != null && status == IosBridgeStatus.SHARING) {
                     ConnectedDeviceText(deviceName)
                 }
             }
@@ -670,15 +670,15 @@ private fun AppIconSquare(icon: ImageBitmap?) {
 }
 
 @Composable
-private fun statusText(status: AncsStatus): String = stringResource(
+private fun statusText(status: IosBridgeStatus): String = stringResource(
     when (status) {
-        AncsStatus.OFF -> R.string.ios_status_off
-        AncsStatus.UNSUPPORTED -> R.string.ios_status_unsupported
-        AncsStatus.ADVERTISING -> R.string.ios_status_advertising
-        AncsStatus.CONNECTING -> R.string.ios_status_connecting
-        AncsStatus.NEEDS_PAIRING -> R.string.ios_status_needs_pairing
-        AncsStatus.SHARING -> R.string.ios_status_sharing
-        AncsStatus.NO_ANCS -> R.string.ios_status_no_ancs
-        AncsStatus.ERROR -> R.string.ios_status_error
+        IosBridgeStatus.OFF -> R.string.ios_status_off
+        IosBridgeStatus.UNSUPPORTED -> R.string.ios_status_unsupported
+        IosBridgeStatus.ADVERTISING -> R.string.ios_status_advertising
+        IosBridgeStatus.CONNECTING -> R.string.ios_status_connecting
+        IosBridgeStatus.NEEDS_PAIRING -> R.string.ios_status_needs_pairing
+        IosBridgeStatus.SHARING -> R.string.ios_status_sharing
+        IosBridgeStatus.NO_ANCS -> R.string.ios_status_no_ancs
+        IosBridgeStatus.ERROR -> R.string.ios_status_error
     },
 )

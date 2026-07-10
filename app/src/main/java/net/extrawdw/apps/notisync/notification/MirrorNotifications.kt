@@ -94,7 +94,7 @@ object MirrorChannels {
     private const val IOS_DEVICE_GROUP = "_device"
     private const val IOS_APP_CHANNEL = "_ios"
 
-    /** Matches AncsBleManager.iphoneId()'s own fallback, for a bridged capture missing its origin id. */
+    /** Matches IosBridgeManager.iphoneId()'s own fallback, for a bridged capture missing its origin id. */
     private const val IOS_FALLBACK_ORIGIN = "iphone"
     // The [originId] segment (a stable origin-device id, e.g. a hashed iPhone id) separates notifications a
     // bridging client relays for *different* origin devices (its own Android vs a paired iPhone) — otherwise

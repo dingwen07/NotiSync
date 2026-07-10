@@ -70,9 +70,9 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.ancs.AncsCompanion
+import net.extrawdw.apps.notisync.ios.IosCompanion
 
-/** The runtime Bluetooth permissions the ANCS bridge needs (requested before the CDM pairing flow). */
+/** Runtime Bluetooth permissions needed before the iPhone pairing flow. */
 private val ONBOARDING_BT_PERMISSIONS = arrayOf(
     Manifest.permission.BLUETOOTH_CONNECT,
     Manifest.permission.BLUETOOTH_ADVERTISE,
@@ -94,7 +94,7 @@ private fun previousStep(from: OnboardingStep, listenerEnabled: Boolean): Onboar
 
 /**
  * First-launch setup wizard: welcome → post-notifications permission → notification-listener access
- * (grant or skip; granting continues into the choose-apps-to-mirror reminder) → iPhone/ANCS pairing
+ * (grant or skip; granting continues into the choose-apps-to-mirror reminder) → iPhone bridge pairing
  * (skippable) → pair-your-other-devices guidance. Finishing lands on the Devices tab, which is the
  * NavHost start destination that composes right after [onFinish].
  */
@@ -149,18 +149,18 @@ fun OnboardingScreen(onFinish: () -> Unit) {
     // presence + bridge start). Onboarding additionally front-loads the Bluetooth permissions so the
     // bridge the association enables can actually start.
     val cdm = remember { context.getSystemService(CompanionDeviceManager::class.java) }
-    var cdmAssociated by remember { mutableStateOf(AncsCompanion.isAssociated(context)) }
-    var cdmDeviceName by remember { mutableStateOf(AncsCompanion.associatedDeviceName(context)) }
+    var cdmAssociated by remember { mutableStateOf(IosCompanion.isAssociated(context)) }
+    var cdmDeviceName by remember { mutableStateOf(IosCompanion.associatedDeviceName(context)) }
     val intentSenderLauncher =
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
-            val picked = AncsCompanion.deviceFromPickerResult(result.data)
-            AncsCompanion.bondDevice(picked)
-            cdmAssociated = AncsCompanion.isAssociated(context)
-            cdmDeviceName = AncsCompanion.associatedDeviceName(context)
+            val picked = IosCompanion.deviceFromPickerResult(result.data)
+            IosCompanion.bondDevice(picked)
+            cdmAssociated = IosCompanion.isAssociated(context)
+            cdmDeviceName = IosCompanion.associatedDeviceName(context)
             if (cdmAssociated) {
-                AncsCompanion.observePresence(context)
-                graph.setAncsBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
+                IosCompanion.observePresence(context)
+                graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
             }
             // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
             if (picked != null) {
@@ -195,7 +195,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         }
         runCatching {
             mgr.associate(
-                AncsCompanion.request(),
+                IosCompanion.request(),
                 context.mainExecutor,
                 object : CompanionDeviceManager.Callback() {
                     override fun onAssociationPending(intentSender: IntentSender) {
@@ -210,13 +210,13 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     override fun onAssociationCreated(associationInfo: AssociationInfo) {
                         Log.i("OnboardingScreen", "CDM association created: ${associationInfo.id}")
                         cdmAssociated = true
-                        cdmDeviceName = AncsCompanion.associatedDeviceName(context)
-                        AncsCompanion.observePresence(context)
+                        cdmDeviceName = IosCompanion.associatedDeviceName(context)
+                        IosCompanion.observePresence(context)
                         // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                        AncsCompanion.bondDevice(
+                        IosCompanion.bondDevice(
                             runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull()
                         )
-                        graph.setAncsBridgeEnabled(true) // run the bridge so it connects once bonded
+                        graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
                     }
 
                     override fun onFailure(error: CharSequence?) {

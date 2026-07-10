@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothDevice
@@ -39,13 +39,13 @@ import java.util.UUID
  * operations share [cpMutex], each awaiting its own completion callback before releasing the lock, so they
  * can never interleave with an ANCS request's write or each other.
  *
- * Bluetooth permissions are guaranteed by the caller ([AncsBleManager] checks before constructing this).
+ * Bluetooth permissions are guaranteed by the caller ([IosBridgeManager] checks before constructing this).
  */
 @SuppressLint("MissingPermission")
-class AncsGattClient(
+class IosGattClient(
     private val context: Context,
     private val device: BluetoothDevice,
-    private val onStatus: (AncsStatus) -> Unit,
+    private val onStatus: (IosBridgeStatus) -> Unit,
     private val onSourceEvent: (Ancs.SourcePacket) -> Unit,
     private val onBondNeeded: () -> Unit,
     /** Invoked once this client terminally disconnects or fails to connect, so the manager can drop it and
@@ -163,7 +163,7 @@ class AncsGattClient(
 
     @Suppress("DEPRECATION") // the transport overload is the one we want (force BLE); the 3-arg picks TRANSPORT_AUTO
     fun connect() {
-        onStatus(AncsStatus.CONNECTING)
+        onStatus(IosBridgeStatus.CONNECTING)
         Log.i(TAG, "connecting GATT client to ${device.address} (bond=${device.bondState})")
         armWatchdog(CONNECT_DEADLINE_MS)
         // autoConnect=FALSE: a direct connection. The iPhone has just connected to our peripheral, so the link
@@ -233,7 +233,7 @@ class AncsGattClient(
         val g = gatt ?: return
         refreshGattCache(g)
         handler.postDelayed(
-            { gatt?.let { if (!it.discoverServices()) onStatus(AncsStatus.ERROR) } },
+            { gatt?.let { if (!it.discoverServices()) onStatus(IosBridgeStatus.ERROR) } },
             REFRESH_SETTLE_MS
         )
     }
@@ -426,7 +426,7 @@ class AncsGattClient(
             reachedSharing = true
             handler.removeCallbacks(watchdog)
             Log.i(TAG, "ANCS subscribed — SHARING")
-            onStatus(AncsStatus.SHARING)
+            onStatus(IosBridgeStatus.SHARING)
             // ANCS is fully enabled (its CCCD chain is done) — now bring up AMS on the same link.
             startAmsSetup()
             return
@@ -448,12 +448,12 @@ class AncsGattClient(
             Log.i(TAG, "client conn: status=$status newState=$newState bond=${device.bondState}")
             when (newState) {
                 BluetoothProfile.STATE_CONNECTED -> {
-                    onStatus(AncsStatus.CONNECTING); g.requestMtu(MTU)
+                    onStatus(IosBridgeStatus.CONNECTING); g.requestMtu(MTU)
                 }
                 // Covers both a clean disconnect and a failed connect (newState=DISCONNECTED with an error
                 // status like 133/135). Tear down and tell the manager so it can retry the next connection.
                 BluetoothProfile.STATE_DISCONNECTED -> {
-                    onStatus(AncsStatus.ADVERTISING); teardown()
+                    onStatus(IosBridgeStatus.ADVERTISING); teardown()
                 }
             }
         }
@@ -464,7 +464,7 @@ class AncsGattClient(
             // first discovery come back EMPTY, so we'd loop several times before ANCS shows up. A fresh link's OTA
             // discovery returns the real DB (ANCS included) directly; we only refresh if a populated DB turns out
             // to be missing ANCS (a stale cache — handled in onServicesDiscovered).
-            if (!g.discoverServices()) onStatus(AncsStatus.ERROR)
+            if (!g.discoverServices()) onStatus(IosBridgeStatus.ERROR)
         }
 
         override fun onServicesDiscovered(g: BluetoothGatt, status: Int) {
@@ -487,7 +487,7 @@ class AncsGattClient(
                 // give up (NO_ANCS) once it's still absent after bonding (the peer isn't sharing notifications).
                 if (device.bondState != BluetoothDevice.BOND_BONDED) {
                     Log.i(TAG, "ANCS not visible yet & not bonded — requesting bond")
-                    onStatus(AncsStatus.NEEDS_PAIRING)
+                    onStatus(IosBridgeStatus.NEEDS_PAIRING)
                     armWatchdog(PAIRING_DEADLINE_MS) // user-paced: give them time to accept pairing
                     onBondNeeded()
                 } else if (++discoveryAttempts <= MAX_DISCOVERY_ATTEMPTS) {
@@ -501,7 +501,7 @@ class AncsGattClient(
                         handler.postDelayed({
                             gatt?.let {
                                 if (!it.discoverServices()) onStatus(
-                                    AncsStatus.ERROR
+                                    IosBridgeStatus.ERROR
                                 )
                             }
                         }, DISCOVERY_RETRY_MS)
@@ -518,7 +518,7 @@ class AncsGattClient(
                         TAG,
                         "ANCS still absent after $MAX_DISCOVERY_ATTEMPTS refreshes — peer not sharing"
                     )
-                    onStatus(AncsStatus.NO_ANCS)
+                    onStatus(IosBridgeStatus.NO_ANCS)
                 }
                 return
             }
@@ -554,7 +554,7 @@ class AncsGattClient(
             if (device.bondState != BluetoothDevice.BOND_BONDED) {
                 // Not bonded yet — pair, then onBonded() re-discovers + re-enables once it completes.
                 Log.i(TAG, "CCCD rejected & not bonded — requesting bond")
-                onStatus(AncsStatus.NEEDS_PAIRING)
+                onStatus(IosBridgeStatus.NEEDS_PAIRING)
                 armWatchdog(PAIRING_DEADLINE_MS) // user-paced: give them time to accept pairing
                 onBondNeeded()
                 return
@@ -574,7 +574,7 @@ class AncsGattClient(
                     TAG,
                     "CCCD still failing after $MAX_CCCD_ATTEMPTS attempts — link won't encrypt; giving up"
                 )
-                onStatus(AncsStatus.NO_ANCS)
+                onStatus(IosBridgeStatus.NO_ANCS)
             }
         }
 
@@ -658,7 +658,7 @@ class AncsGattClient(
     }
 
     private companion object {
-        const val TAG = "AncsGattClient"
+        const val TAG = "IosGattClient"
         const val MTU = 517
         const val REQUEST_TIMEOUT_MS = 5_000L
 

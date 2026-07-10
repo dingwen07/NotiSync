@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -48,7 +48,7 @@ object AmsNotificationMapper {
     /** Synthetic package for the mirrored now-playing card (AMS has no bundle id); one stable channel/tag. */
     const val MEDIA_PACKAGE = "ios.media"
 
-    /** Source-key prefix for AMS captures — [AncsBleManager] routes MEDIA action events by it. */
+    /** Source-key prefix for AMS captures — [IosBridgeManager] routes MEDIA action events by it. */
     const val KEY_PREFIX = "ams"
 
     /** English fallback when the Player name hasn't arrived (labels ride the wire; v1 is not localized,

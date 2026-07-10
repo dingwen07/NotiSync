@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import android.util.Log
 import kotlinx.coroutines.CoroutineScope
@@ -12,7 +12,7 @@ import net.extrawdw.notisync.protocol.ClientId
 
 /**
  * Accumulates AMS Entity Update / Remote Command notifications into one coherent [AmsNowPlaying] and
- * dispatches it as a mirrored now-playing card — the iPhone-media analogue of what [AncsBleManager] does
+ * dispatches it as a mirrored now-playing card — the iPhone-media analogue of what [IosBridgeManager] does
  * for notifications. One card per iPhone (stable source key), updated in place across track changes.
  *
  * Dispatch policy mirrors an Android media capture ([NotificationCapture]): the FIRST post of a session
@@ -34,7 +34,7 @@ class AmsMediaBridge(
     private val meshMirrorEnabled: () -> Boolean,
     private val iphoneId: () -> String,
     private val iphoneName: () -> String?,
-    /** Full-value fetch for a truncated attribute ([AncsGattClient.readEntityAttribute]). */
+    /** Full-value fetch for a truncated attribute ([IosGattClient.readEntityAttribute]). */
     private val readAttribute: suspend (entityId: Int, attributeId: Int) -> String?,
     /** Post/refresh the card locally ([RemoteNotificationPoster.render]); silent = in-place update. */
     private val renderLocal: (CapturedNotification, Boolean) -> Unit,

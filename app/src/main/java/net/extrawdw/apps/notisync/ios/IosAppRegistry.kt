@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ancs
+package net.extrawdw.apps.notisync.ios
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences

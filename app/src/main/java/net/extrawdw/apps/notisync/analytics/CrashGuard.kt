@@ -6,12 +6,12 @@ import kotlinx.coroutines.CoroutineExceptionHandler
 
 /**
  * Last-resort [CoroutineExceptionHandler] for the app's fire-and-forget scopes (the graph scope, the
- * broadcast-receiver scopes, the ANCS service scope). Work launched into them — broker sends, asset
+ * broadcast-receiver scopes, the iOS bridge service scope). Work launched into them — broker sends, asset
  * repair, trust broadcasts — is best-effort: each launch site guards its own network I/O with
  * `runCatching`, and losing one unit of work is always preferable to losing the process. Without a
  * handler, an exception that slips past a site guard (e.g. a `SocketTimeoutException` out of a
  * broker send) reaches the default handler and kills the app — tearing down the notification
- * listener and the ANCS bridge over routine network weather. This demotes such an escape to a log
+ * listener and the iOS bridge over routine network weather. This demotes such an escape to a log
  * line plus a Crashlytics NON-FATAL, so a missed guard stays diagnosable without costing a restart.
  *
  * Crash-proof itself: the Crashlytics call is guarded for environments without a `FirebaseApp` (JVM

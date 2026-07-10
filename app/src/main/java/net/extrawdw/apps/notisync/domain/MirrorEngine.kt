@@ -329,7 +329,7 @@ class MirrorEngine(
      * The user pressed a mirrored action button — unicast a PERFORM [ActionEvent] to the origin
      * client (the only peer that can fire the real PendingIntent), at HIGH urgency because the user
      * is standing at this device waiting for the origin to act. When the origin IS this device — a
-     * bridged iPhone notification the ANCS bridge rendered locally — the action is performed here
+     * bridged iPhone notification the iOS bridge rendered locally — the action is performed here
      * directly instead (see [sendAction]), since a self-addressed broker unicast reaches no one.
      * Best-effort like [dismissLocal]: a button press must never throw. Returns true when it reached
      * the broker for the origin (or was performed locally).
