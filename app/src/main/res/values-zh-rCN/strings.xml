@@ -112,6 +112,8 @@
     <string name="settings_device_name">设备名称</string>
     <string name="settings_broker_url">Broker 地址 (ws://…)</string>
     <string name="settings_call_ringer">为镜像来电响铃</string>
+    <string name="settings_call_ringer_fsi_blocked">全屏来电提醒已被阻止</string>
+    <string name="settings_call_ringer_fsi_blocked_hint">请允许全屏通知，镜像来电才能在锁屏时显示来电界面。点按打开系统设置。</string>
     <string name="settings_lock_screen_public_identity">在锁屏显示应用名称和图标</string>
     <string name="settings_batch_low_priority">合并低优先级通知</string>
     <string name="settings_advanced_diagnostics">高级诊断</string>
@@ -288,6 +290,13 @@
     <string name="mirror_check_on_device">在 %1$s 上查看</string>
     <string name="mirror_reply_hint">回复</string>
     <string name="mirror_ios_device_fallback">iPhone</string>
+    <string name="incoming_call_title">来电</string>
+    <string name="incoming_call_on_device">在 %1$s 上的来电</string>
+    <string name="incoming_call_unknown_caller">未知来电者</string>
+    <string name="incoming_call_answer">接听</string>
+    <string name="incoming_call_decline">拒绝</string>
+    <string name="incoming_call_dismiss">关闭</string>
+    <string name="incoming_call_action_failed">无法发送通话操作</string>
     <plurals name="mirror_group_summary_count">
         <item quantity="other">%1$d 条通知</item>
     </plurals>

@@ -18,8 +18,10 @@ import net.extrawdw.notisync.protocol.MediaCommand
 import net.extrawdw.notisync.protocol.AssetSync
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
+import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.DismissEvent
@@ -175,16 +177,41 @@ class MirrorEngine(
         )
 
     /**
-     * Highest quiet-update ([DataSyncKind.NOTIFICATION]) postTime applied per ([ClientId], sourceKey), for the
-     * last-writer-wins drop of a stale store-and-forward backlog. Bounded LRU; lost on restart (after which a
-     * stale backlog item at worst re-renders silently before the newest post wins).
+     * Highest postTime applied per ([ClientId], sourceKey) — the single last-writer-wins watermark shared by
+     * EVERY inbound render path: the alerting NOTIFICATION ([onNotification]), the prompt silentUpdate variant,
+     * and the quiet DATA_SYNC update ([onQuietNotification]). Those paths ride different transport priorities
+     * (HIGH vs NORMAL) and can reorder in flight, and the broker also relays a stale store-and-forward backlog
+     * without coalescing — an older post must never overwrite (or re-alert for) a newer state already shown.
+     * Bounded LRU; lost on restart (after which a stale backlog item at worst re-renders silently before the
+     * newest post wins).
      */
-    private val lastQuietPostTime: MutableMap<String, Long> =
+    private val lastAppliedPostTime: MutableMap<String, Long> =
         java.util.Collections.synchronizedMap(
             object : java.util.LinkedHashMap<String, Long>(64, 0.75f, true) {
                 override fun removeEldestEntry(eldest: Map.Entry<String, Long>): Boolean = size > 256
             }
         )
+
+    /** Outcome of the watermark check-and-advance in [acceptPostTime]. */
+    private enum class PostTimeAccept { FIRST, NEWER, STALE }
+
+    /** Atomically compare [postTime] against the [lastAppliedPostTime] watermark for [key] and advance it when
+     *  newer. FIRST = nothing was ever applied for this key (this process); STALE = strictly BEHIND the
+     *  watermark. An EQUAL postTime is accepted (as NEWER): the ANCS bridge re-sends a modified iPhone
+     *  notification with its unchanged Date, and an old-version source can emit an update that ties its
+     *  original post to the millisecond — both must still apply (idempotent at worst), while true reorderings
+     *  are strictly older thanks to the capture side's strictly-increasing update postTimes. */
+    private fun acceptPostTime(key: String, postTime: Long): PostTimeAccept =
+        synchronized(lastAppliedPostTime) {
+            val last = lastAppliedPostTime[key]
+            when {
+                last != null && postTime < last -> PostTimeAccept.STALE
+                else -> {
+                    if (last == null || postTime > last) lastAppliedPostTime[key] = postTime
+                    if (last == null) PostTimeAccept.FIRST else PostTimeAccept.NEWER
+                }
+            }
+        }
 
     /** Register inbound handlers. Call during graph construction, before the channel starts delivering. */
     fun register() {
@@ -434,6 +461,14 @@ class MirrorEngine(
             renderQuietUpdate(notif, msg)
             return
         }
+        // Shared last-writer-wins watermark with the in-place update paths: the alerting post rides HIGH
+        // transport while quiet updates ride NORMAL, so it can arrive AFTER a newer state for the same key —
+        // rendering it would regress the mirror and re-alert (re-ring a call the source already answered).
+        // Only a STRICTLY older post drops (an equal-postTime re-send — an ANCS modification — still renders).
+        // The relay copy of a dropped envelope was still handled, so it is acked and not redelivered.
+        if (acceptPostTime(titleKey(notif.sourceClientId, notif.sourceKey), notif.postTime) ==
+            PostTimeAccept.STALE
+        ) return
         // Remember which relay message delivered this mirror, so a later local dismissal can ack it
         // (drop the still-queued copy) instead of letting it be redelivered and reappear.
         ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
@@ -505,16 +540,37 @@ class MirrorEngine(
      * per ([CapturedNotification.sourceClientId], [CapturedNotification.sourceKey]) so a stale store-and-forward
      * backlog never overwrites a newer post. Shared by the quiet DATA_SYNC path ([onQuietNotification]) and the
      * prompt NOTIFICATION path ([onNotification] when [CapturedNotification.silentUpdate] is set) — both consult the
-     * SAME [lastQuietPostTime] high-water map, so a prompt update and a quiet update for one key can never invert.
-     * The caller owns the own-mesh accept gate; this only renders.
+     * SAME [lastAppliedPostTime] high-water map (as does the alerting path), so a prompt update and a quiet
+     * update for one key can never invert. The caller owns the own-mesh accept gate; this only renders.
+     *
+     * One promotion: an update can only refresh a mirror this process has already applied. When NOTHING has
+     * been applied for this key, the alerting post lost the transport race (or a restart dropped the watermark)
+     * — and a fresh RINGING call must not degrade into a silently pre-created row, which would never ring, and
+     * would demote the alerting post (when it lands) to an update, which the platform never launches a
+     * full-screen intent for. Such an update takes the full alerting render; the late alerting post then drops
+     * as stale above. Non-call states (media / progress) still apply silently — showing them is enough.
      */
     private fun renderQuietUpdate(notif: CapturedNotification, msg: InboundMessage) {
         val key = titleKey(notif.sourceClientId, notif.sourceKey)
-        val last = lastQuietPostTime[key]
-        if (last != null && notif.postTime <= last) return   // stale / out-of-order backlog — drop
-        lastQuietPostTime[key] = notif.postTime
+        val accepted = acceptPostTime(key, notif.postTime)
+        if (accepted == PostTimeAccept.STALE) return   // stale / out-of-order backlog — drop
         // Remember which relay message delivered this update, so a later local dismissal can ack (drop) it.
         ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
+        if (promoteQuietRenderToAlert(accepted == PostTimeAccept.FIRST, notif, now())) {
+            renderer.render(notif) // full alerting render: ring + full-screen call surface
+            rememberTitle(notif)
+            if (!notif.isGroupSummary) {
+                activityLog.add(
+                    ActivityEvent.Kind.RECEIVED,
+                    originTitle(notif),
+                    activityText.fromDevice(peerNameResolver(msg.senderId)),
+                    now(),
+                    deliveryMode = msg.deliveryMode.ifKnown(),
+                )
+            }
+            fetchGraphicsThenReRender(notif)
+            return
+        }
         // Silent + in place: an update to an already-shown notification must refresh without a second alert.
         renderer.render(notif, silent = true, phase = RenderPhase.REPLAY)
         rememberTitle(notif)
@@ -677,6 +733,41 @@ class MirrorEngine(
         val IOS_PLATFORMS = setOf("ios")
     }
 }
+
+/**
+ * A RINGING (as opposed to answered/ongoing) incoming call. CallStyle gives the call type directly; a
+ * non-CallStyle call (e.g. WhatsApp, `category=call`) is "ringing" when it is NOT a foreground service (the
+ * answered call is an FGS). That FGS proxy is Android-only: an ANCS capture is never a foreground service and
+ * its CALL category also covers missed calls / voicemail, so the proxy would ring those — an ANCS incoming
+ * call is marked [CallType.INCOMING] instead (see AncsNotificationMapper), and the proxy is skipped for its
+ * origin. Shared by the render policy (RemoteNotificationPoster: ring + full-screen surface) and [MirrorEngine]
+ * (whether a first-applied quiet update must be promoted to an alerting render).
+ */
+internal fun CapturedNotification.isRingingCall(): Boolean =
+    callType == CallType.INCOMING || callType == CallType.SCREENING ||
+        (callType == null && category == MirrorCategory.CALL &&
+            originPlatform != OriginPlatform.IOS_ANCS && !isForegroundService)
+
+/**
+ * Whether a ringing call is still FRESH enough to alert (ring / launch the call screen). A call notification
+ * can reach this device long after it was posted — queued behind a BLE/mesh reconnect, a delayed relay, or an
+ * ANCS replay whose Date is old — and must not ring the phone (or pop the lock-screen call surface) minutes
+ * after it actually rang. The mirror still posts; only the alerting surfaces are gated. A future /
+ * slightly-negative age (source clock ahead of ours) counts as fresh.
+ */
+internal fun CapturedNotification.isFreshCall(nowMs: Long): Boolean = nowMs - postTime <= STALE_CALL_RING_MS
+
+/** Max age (now − postTime) of a ringing-call mirror that may still ring or launch the call screen. */
+internal const val STALE_CALL_RING_MS = 60_000L
+
+/** Whether a quiet/prompt in-place update must take the full ALERTING render instead: nothing was ever
+ *  applied for its key here (the alerting post lost the race or never arrived), and it is a ringing call
+ *  fresh enough to still alert. See [MirrorEngine.renderQuietUpdate]. */
+internal fun promoteQuietRenderToAlert(
+    firstApplied: Boolean,
+    notif: CapturedNotification,
+    nowMs: Long,
+): Boolean = firstApplied && notif.isRingingCall() && notif.isFreshCall(nowMs)
 
 /** Every private asset referenced by a notification body (icons, pictures, avatars, inline media). */
 private fun CapturedNotification.privateRefs(): List<PrivateAssetRef> =

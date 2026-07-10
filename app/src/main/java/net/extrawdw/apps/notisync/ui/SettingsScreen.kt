@@ -1,6 +1,11 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.app.NotificationManager
+import android.content.Intent
+import android.provider.Settings
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,6 +31,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.TextRange
@@ -33,6 +39,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.core.net.toUri
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
 import kotlinx.coroutines.launch
@@ -48,6 +56,17 @@ fun SettingsScreen() {
     val analytics by graph.settings.analyticsEnabled.collectAsStateWithLifecycle()
     val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
     val lockScreenPublicIdentity by graph.settings.lockScreenPublicIdentity.collectAsStateWithLifecycle()
+
+    // The full-screen-intent special access gates the mirrored incoming-call screen; the user (or Play) can
+    // revoke it silently. Re-read on every resume so returning from the system settings screen refreshes it.
+    val context = LocalContext.current
+    var fullScreenAllowed by remember { mutableStateOf(true) }
+    LifecycleResumeEffect(Unit) {
+        fullScreenAllowed = runCatching {
+            context.getSystemService(NotificationManager::class.java)?.canUseFullScreenIntent() == true
+        }.getOrDefault(true)
+        onPauseOrDispose { }
+    }
 
     // Diagnostics probe, hoisted to screen scope so it loads once when the Settings tab is opened (and
     // on manual refresh) — not on every list-scroll recomposition of the card item, and never on a timer.
@@ -101,6 +120,9 @@ fun SettingsScreen() {
                     stringResource(R.string.settings_call_ringer),
                     callRinger
                 ) { scope.launch { graph.settings.setCallRingerEnabled(it) } }
+            }
+            if (callRinger && !fullScreenAllowed) {
+                item { FullScreenIntentBlockedRow() }
             }
             item {
                 ToggleRow(
@@ -239,6 +261,38 @@ private fun SettingsTextField(
             isFocused = state.isFocused
         },
     )
+}
+
+/** Shown under the call-ringer switch while USE_FULL_SCREEN_INTENT is revoked: without it the platform strips
+ *  the incoming-call screen at post time. Tapping opens the system's per-app full-screen-notification page. */
+@Composable
+private fun FullScreenIntentBlockedRow() {
+    val context = LocalContext.current
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .clickable {
+                runCatching {
+                    context.startActivity(
+                        Intent(
+                            Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT,
+                            "package:${context.packageName}".toUri(),
+                        )
+                    )
+                }
+            },
+    ) {
+        Text(
+            stringResource(R.string.settings_call_ringer_fsi_blocked),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.error,
+        )
+        Text(
+            stringResource(R.string.settings_call_ringer_fsi_blocked_hint),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
 }
 
 @Composable

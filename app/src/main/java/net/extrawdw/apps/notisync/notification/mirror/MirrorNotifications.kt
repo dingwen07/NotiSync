@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.notification.mirror
 
 import android.Manifest
 import android.app.Activity
+import android.app.KeyguardManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationChannelGroup
@@ -11,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.os.PowerManager
 import android.util.Log
 import android.graphics.Bitmap
 import android.graphics.BitmapShader
@@ -32,6 +34,7 @@ import androidx.core.content.FileProvider
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.net.toUri
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -51,6 +54,8 @@ import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.MirrorRenderer
 import net.extrawdw.apps.notisync.domain.RenderPhase
+import net.extrawdw.apps.notisync.domain.isFreshCall
+import net.extrawdw.apps.notisync.domain.isRingingCall
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.GroupAlertBehavior
@@ -136,7 +141,7 @@ object MirrorChannels {
      * [CallRinger] on the receiver — so the channel must never also sound and double the ring.
      */
     private fun mirrorChannelSilent(notif: CapturedNotification): Boolean =
-        notif.channelSilent == true
+        notif.channelSilent == true || isCallCapture(notif)
 
     private fun isIosOrigin(notif: CapturedNotification) =
         notif.originPlatform == OriginPlatform.IOS_ANCS
@@ -292,6 +297,11 @@ object MirrorChannels {
             mapImportance(notif.channelImportance ?: notif.importance)
 
         notif.originPlatform == OriginPlatform.IOS_ANCS -> NotificationManager.IMPORTANCE_HIGH
+        // Calls: HIGH, never derived from one capture. The channel importance is fixed at creation and can
+        // only ever be LOWERED (see ensure()), and both heads-up and the full-screen call surface require a
+        // HIGH channel — a call channel first seen through a quieter capture (an ongoing-call state, a source
+        // whose ranking read failed) would otherwise strand every future incoming call below heads-up/FSI.
+        isCallCapture(notif) -> NotificationManager.IMPORTANCE_HIGH
         else -> mapImportance(notif.channelImportance ?: notif.importance)
     }
 
@@ -448,6 +458,39 @@ class RemoteNotificationPoster(
         val id = tag.hashCode()
         // Toast/feedback label for tap + UI-opening actions: where the user should look next.
         val originLabel = groupDeviceName ?: notif.sourceClientId.shortForm()
+        val ringingCall = notif.isRingingCall()
+        // A stale ringing call (postTime older than STALE_CALL_RING_MS) still posts, but must not ring or pop
+        // the lock-screen call surface minutes after the phone actually rang (late relay / replay / backlog).
+        val freshCall = notif.isFreshCall(System.currentTimeMillis())
+        val fsiEligible = ringingCall && freshCall
+        // A call that changed to ongoing/missed (or otherwise stopped ringing) closes any lock-screen surface
+        // immediately; identity matching prevents a late update for one call from closing a newer call screen.
+        if (!ringingCall && (notif.style == NotificationStyle.CALL || notif.category == MirrorCategory.CALL)) {
+            IncomingCallActivity.requestFinish(context, notif.sourceClientId.value, notif.sourceKey)
+        }
+
+        fun intentForAction(index: Int?): PendingIntent? = index
+            ?.let { wanted -> notif.actions.firstOrNull { it.index == wanted } }
+            ?.let { actionIntent(notif, it, tag, originLabel) }
+
+        val callScreenActions = if (fsiEligible) notif.incomingCallActions() else null
+        val callScreenAnswerIntent = callScreenActions?.answer
+            ?.let { actionIntent(notif, it, tag, originLabel) }
+        val callScreenDeclineIntent = callScreenActions?.decline
+            ?.let { actionIntent(notif, it, tag, originLabel) }
+        val incomingCallIntent = if (fsiEligible) {
+            IncomingCallActivity.pendingIntent(
+                context = context,
+                requestCode = id,
+                notif = notif,
+                deviceName = originLabel,
+                answer = callScreenActions?.answer,
+                answerIntent = callScreenAnswerIntent,
+                decline = callScreenActions?.decline,
+                declineIntent = callScreenDeclineIntent,
+                showPrivateDetails = showPublicLockScreenIdentity(),
+            )
+        } else null
 
         val builder = NotificationCompat.Builder(context, postChannelId)
             .setSmallIcon(smallIconFor(notif.packageName, notif.channelId))
@@ -476,7 +519,7 @@ class RemoteNotificationPoster(
             // call stays ongoing (sticky, live). A MEDIA mirror is also NOT ongoing so it can be dismissed from
             // THIS device — no foreground service holds it here (unlike the source), and it re-appears on the
             // next real playback update if the source is still going.
-            .setOngoing(notif.isOngoing && !isRingingCall(notif) && !isMediaStyle(notif))
+            .setOngoing(notif.isOngoing && !ringingCall && !isMediaStyle(notif))
             .setWhen(notif.postTime)
             .setShowWhen(true)
             .setPriority(toPriority(notif.importance))
@@ -511,13 +554,23 @@ class RemoteNotificationPoster(
         // syncs (network/broker) and leaves a phantom call. The OS then fires the delete intent, which is
         // local-only for a non-clearable source — it never declines the real call. Honored because a ringing
         // call is not marked ongoing (setOngoing above). Answered/ongoing calls get no timeout.
-        if (isRingingCall(notif)) {
+        if (ringingCall) {
             builder.setTimeoutAfter(CALL_RING_TIMEOUT_MS)
-            // Posted silent (the ringtone is CallRinger's job), so attach a full-screen intent — the platform
-            // still presents it as an incoming call (a heads-up when USE_FULL_SCREEN_INTENT isn't granted)
-            // rather than a quiet shade row. A CallStyle call also sets this in the CALL branch; setting it
-            // twice is harmless, and this covers non-CallStyle calls (WhatsApp, category=call) too.
-            fullScreenIntentToApp(id)?.let { builder.setFullScreenIntent(it, true) }
+            // Posted silent (the ringtone is CallRinger's job), so attach the dedicated incoming-call activity
+            // — but only while the call is FRESH: a stale ringing mirror must not pop the call screen long
+            // after the call rang (it still posts; the CALL branch below anchors its CallStyle instead).
+            // The platform launches it only in full-screen-eligible device states; while the phone is in use,
+            // the same intent request yields the persistent heads-up call card instead.
+            incomingCallIntent?.let { builder.setFullScreenIntent(it, true) }
+            // The launch is a special app access the user/store can revoke; without it the system strips the
+            // intent at post and the call screen never appears. Surfaced in Settings; logged here for repros.
+            if (fsiEligible && !canUseFullScreenIntent()) {
+                Log.w(
+                    "MirrorNotifications",
+                    "USE_FULL_SCREEN_INTENT not granted — the incoming-call screen cannot launch " +
+                        "(Settings → Apps → Special app access → Full screen notifications)"
+                )
+            }
         }
 
         when (notif.style) {
@@ -628,12 +681,9 @@ class RemoteNotificationPoster(
                     .build()
                 // Build the CallStyle buttons from the mirrored answer/decline/hang-up actions: pressing one
                 // relays a PERFORM to the origin, which acts on the real call.
-                fun intentFor(index: Int?): PendingIntent? = index
-                    ?.let { idx -> notif.actions.firstOrNull { it.index == idx } }
-                    ?.let { actionIntent(notif, it, tag, originLabel) }
-                val answer = intentFor(notif.callAnswerIndex)
-                val decline = intentFor(notif.callDeclineIndex)
-                val hangUp = intentFor(notif.callHangUpIndex)
+                val answer = intentForAction(notif.callAnswerIndex)
+                val decline = intentForAction(notif.callDeclineIndex)
+                val hangUp = intentForAction(notif.callHangUpIndex)
                 val callStyle = when (notif.callType) {
                     CallType.INCOMING -> if (answer != null && decline != null)
                         NotificationCompat.CallStyle.forIncomingCall(person, decline, answer) else null
@@ -650,11 +700,13 @@ class RemoteNotificationPoster(
                     notif.callVerificationText?.let { callStyle.setVerificationText(it) }
                     builder.setStyle(callStyle).setCategory(NotificationCompat.CATEGORY_CALL)
                     // Android REQUIRES a CallStyle notification to be a foreground service OR carry a full-screen
-                    // intent, else NotificationManager throws at post ("CallStyle notifications must either be for
-                    // a foreground Service or use a fullScreenIntent"). A mirror is neither, so attach an FSI that
-                    // opens NotiSync. Without the USE_FULL_SCREEN_INTENT special access (default on Android 14+)
-                    // it shows as a heads-up instead of full screen, which still satisfies the requirement.
-                    fullScreenIntentToApp(id)?.let { builder.setFullScreenIntent(it, true) }
+                    // intent. A fresh ringing call already carries IncomingCallActivity above. An ongoing call —
+                    // and a STALE ringing call, whose real call screen is deliberately withheld — needs only the
+                    // structural anchor: highPriority=false plus a no-display target prevents it from opening UI
+                    // while still satisfying NotificationManager's post-time validation.
+                    if (!fsiEligible) {
+                        builder.setFullScreenIntent(callStyleAnchorIntent(id, tag), false)
+                    }
                 } else {
                     // Missing the intents CallStyle needs — fall back to a plain notification with the mirrored
                     // actions (the generic action row was skipped above for CALL).
@@ -675,6 +727,16 @@ class RemoteNotificationPoster(
 
         applyLargeIcon(builder, notif)
         applyPublicLockScreenIdentity(builder, notif, postChannelId, receiverGroupKey)
+
+        // The platform launches a full-screen intent only when the notification is ADDED — refreshing an
+        // existing row never re-fires it. A fresh ringing call can land on an occupied tag: dialers reuse one
+        // key per call (the previous call's row may still be posted), or an in-place update raced ahead of the
+        // alert. Re-post from scratch, but only in the device states where the platform would actually launch
+        // the call screen (locked / non-interactive) — while the phone is in use a heads-up would flicker for
+        // nothing. A programmatic self-cancel fires no delete intent, so no dismissal syncs anywhere.
+        if (!silent && fsiEligible && isTagActive(tag, id) && deviceLockedOrAsleep()) {
+            NotificationManagerCompat.from(context).cancel(tag, id)
+        }
 
         val notifyStartNanos = System.nanoTime()
         // Build + post together, because the CallStyle FGS/FSI requirement is enforced at POST, not build: the
@@ -703,8 +765,8 @@ class RemoteNotificationPoster(
         // call (postTime older than STALE_CALL_RING_MS) still posts but never rings, so a late relay/replay can't
         // ring the phone minutes after the call actually came in.
         if (notif.style == NotificationStyle.CALL || notif.category == MirrorCategory.CALL) {
-            if (isRingingCall(notif)) {
-                if (!silent && ringForCalls(notif.packageName) && isFreshCall(notif)) callRinger?.start(tag)
+            if (ringingCall) {
+                if (!silent && ringForCalls(notif.packageName) && freshCall) callRinger?.start(tag)
             } else callRinger?.stop(tag)
         }
         if (notif.style == NotificationStyle.MESSAGING) {
@@ -1050,6 +1112,7 @@ class RemoteNotificationPoster(
         // dismissal path (a local swipe or a mesh peer relaying a dismissal reached here).
         Log.i("MirrorNotifications", "clear key=$sourceKey")
         callRinger?.stop(tag)   // the call's source removal/dismissal synced here → stop any ring for it
+        IncomingCallActivity.requestFinish(context, sourceClientId.value, sourceKey)
         mediaSessions?.release(tag)   // media playback stopped/gone → drop its media-controls card
         val active = activeNotification(tag, tag.hashCode())
         val groupKey = active?.notification?.group
@@ -1135,36 +1198,37 @@ class RemoteNotificationPoster(
         }
     }
 
-    /** A RINGING (as opposed to answered/ongoing) incoming call — non-dismissible and prone to going stale, so
-     *  the render makes it dismissible + auto-clearing. CallStyle gives the call type directly; a non-CallStyle
-     *  call (e.g. WhatsApp, `category=call`) is "ringing" when it is NOT a foreground service (the answered call
-     *  is an FGS). That FGS proxy is Android-only: an ANCS capture is never a foreground service and its CALL
-     *  category also covers missed calls / voicemail, so the proxy would ring those — an ANCS incoming call is
-     *  marked [CallType.INCOMING] instead (see AncsNotificationMapper), and the proxy is skipped for its origin. */
-    private fun isRingingCall(notif: CapturedNotification): Boolean =
-        notif.callType == CallType.INCOMING || notif.callType == CallType.SCREENING ||
-            (notif.callType == null && notif.category == MirrorCategory.CALL &&
-                notif.originPlatform != OriginPlatform.IOS_ANCS && !notif.isForegroundService)
+    /** Whether a mirror with this ([tag], [id]) is currently posted by us — i.e. whether a notify() would be an
+     *  in-place UPDATE (which the platform never launches a full-screen intent for) rather than an ADD. */
+    private fun isTagActive(tag: String, id: Int): Boolean = runCatching {
+        context.getSystemService(NotificationManager::class.java)
+            ?.activeNotifications?.any { it.tag == tag && it.id == id } == true
+    }.getOrDefault(false)
 
-    /** Whether a ringing call is still FRESH enough to actually ring. A call notification can reach this device
-     *  long after it was posted — queued behind a BLE/mesh reconnect, a delayed relay, or an ANCS replay whose
-     *  Date is old — and must not ring the phone minutes after it actually rang. The mirror still posts (the user
-     *  sees the call); only the audible ring is gated. A future / slightly-negative age (source clock ahead of
-     *  ours) counts as fresh. */
-    private fun isFreshCall(notif: CapturedNotification): Boolean =
-        System.currentTimeMillis() - notif.postTime <= STALE_CALL_RING_MS
+    /** Keyguard up or screen off — the device states in which the platform launches a full-screen intent
+     *  (while the phone is in use it shows a heads-up instead). Errs on false: skip the cancel+re-post. */
+    private fun deviceLockedOrAsleep(): Boolean = runCatching {
+        context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true ||
+            context.getSystemService(PowerManager::class.java)?.isInteractive == false
+    }.getOrDefault(false)
+
+    /** The USE_FULL_SCREEN_INTENT special app access (revocable by the user and by Play on targetSdk 34+).
+     *  Errs on true: never spam the warning when the state can't be read. */
+    private fun canUseFullScreenIntent(): Boolean = runCatching {
+        context.getSystemService(NotificationManager::class.java)?.canUseFullScreenIntent() == true
+    }.getOrDefault(true)
 
     /** A MEDIA (or decorated-media) mirror — rendered as a real media-controls card via [MirrorMediaSessions],
      *  and kept NOT-ongoing so the user can dismiss it from this device (nothing pins it here). */
     private fun isMediaStyle(notif: CapturedNotification): Boolean =
         notif.style == NotificationStyle.MEDIA || notif.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
 
-    /** A full-screen PendingIntent that opens NotiSync — attached to a CallStyle mirror so the platform's
-     *  "CallStyle must be an FGS or have a fullScreenIntent" check passes (shown as a heads-up when the
-     *  USE_FULL_SCREEN_INTENT special access isn't granted). Null if the app has no launcher entry. */
-    private fun fullScreenIntentToApp(id: Int): PendingIntent? {
-        val launch = context.packageManager.getLaunchIntentForPackage(context.packageName)
-            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) ?: return null
+    /** Non-visual FSI anchor for an ONGOING CallStyle: required structurally, never a reason to open call UI. */
+    private fun callStyleAnchorIntent(id: Int, tag: String): PendingIntent {
+        val launch = Intent(context, MirrorTapActivity::class.java).apply {
+            action = "net.extrawdw.apps.notisync.CALL_STYLE_ANCHOR"
+            data = "notisync://call-style-anchor/${Uri.encode(tag)}".toUri()
+        }
         return PendingIntent.getActivity(
             context, id, launch,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
@@ -1271,13 +1335,9 @@ class RemoteNotificationPoster(
 
         /** Auto-clear window for a ringing incoming-call mirror — a backstop against a stuck phantom call if the
          *  source's removal never syncs. Longer than a normal ring, so a real ring/answer/decline resolves (its
-         *  removal syncs) well before this fires. */
+         *  removal syncs) well before this fires. Staleness of the ring itself is gated separately by
+         *  [net.extrawdw.apps.notisync.domain.STALE_CALL_RING_MS] (shared with the engine's render promotion). */
         private const val CALL_RING_TIMEOUT_MS = 120_000L
-
-        /** Max age (now − postTime) of a ringing-call mirror that may still ring. A call arriving later than this
-         *  — a delayed relay/replay, a reconnect backlog — posts but stays silent, so it can't ring long after the
-         *  phone actually rang. It still auto-clears via [CALL_RING_TIMEOUT_MS]. */
-        private const val STALE_CALL_RING_MS = 60_000L
 
         /** Per-app default mirror small icon, keyed by the (resolved) Android package. */
         private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(
@@ -1309,6 +1369,12 @@ class RemoteNotificationPoster(
                 "phone_voicemail" to R.drawable.ic_voicemail_notification,
                 "phone_ongoing_call" to R.drawable.ic_phone_in_talk_notification,
             ),
+            "com.samsung.android.dialer" to mapOf(
+                "missedCall" to R.drawable.ic_phone_missed_notification,
+            ),
+            "com.samsung.android.incallui" to mapOf(
+                "Ongoing_call" to R.drawable.ic_phone_in_talk_notification,
+            ),
         )
 
         fun tagOf(sourceClientId: ClientId, sourceKey: String) =
@@ -1322,6 +1388,12 @@ class RemoteNotificationPoster(
 class DismissReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val app = context.applicationContext as? NotiSyncApp ?: return
+        val directSourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT)
+        val directSourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY)
+        if (directSourceClient != null && directSourceKey != null) {
+            // Do not wait for graph initialization: a timeout/swipe must take down the lock-screen UI at once.
+            IncomingCallActivity.requestFinish(context, directSourceClient, directSourceKey)
+        }
         val pending = goAsync()
         CoroutineScope(Dispatchers.Default + crashGuard("DismissReceiver")).launch {
             try {
@@ -1369,6 +1441,7 @@ class DismissReceiver : BroadcastReceiver() {
                     ?: return@forEach
             val sourceKey = child.notification.extras.getString(MirrorNotificationExtras.SOURCE_KEY)
                 ?: return@forEach
+            IncomingCallActivity.requestFinish(context, sourceClient, sourceKey)
             val clientId = ClientId(sourceClient)
             engine.dismissLocal(clientId, sourceKey)
             val tag = RemoteNotificationPoster.tagOf(clientId, sourceKey)
@@ -1401,6 +1474,7 @@ class MirrorActionReceiver : BroadcastReceiver() {
         val app = context.applicationContext as? NotiSyncApp ?: return
         val sourceClient = intent.getStringExtra(EXTRA_SOURCE_CLIENT) ?: return
         val sourceKey = intent.getStringExtra(EXTRA_SOURCE_KEY) ?: return
+        IncomingCallActivity.requestFinish(context, sourceClient, sourceKey)
         val actionTitle = intent.getStringExtra(EXTRA_ACTION_TITLE) ?: return
         val actionIndex = intent.getIntExtra(EXTRA_ACTION_INDEX, -1)
         if (actionIndex < 0) return

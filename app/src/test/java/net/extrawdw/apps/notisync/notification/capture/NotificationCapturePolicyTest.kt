@@ -66,7 +66,14 @@ class NotificationCapturePolicyTest {
     fun updatePostTimeIsMonotonicWhenSourcePostTimeIsReused() {
         assertEquals(1_000L, nextUpdatePostTime(sourcePostTime = 100L, now = 1_000L, previous = null))
         assertEquals(1_001L, nextUpdatePostTime(sourcePostTime = 100L, now = 900L, previous = 1_000L))
-        assertEquals(2_000L, nextUpdatePostTime(sourcePostTime = 2_000L, now = 900L, previous = 1_000L))
+        assertEquals(2_001L, nextUpdatePostTime(sourcePostTime = 2_000L, now = 900L, previous = 1_000L))
+    }
+
+    @Test
+    fun updatePostTimeIsStrictlyAfterTheSourcePostEvenInTheSameMillisecond() {
+        // The receiver's last-writer-wins watermark orders an update AFTER its alerting post; a tie would make
+        // the update indistinguishable from a same-state re-send.
+        assertEquals(5_001L, nextUpdatePostTime(sourcePostTime = 5_000L, now = 5_000L, previous = null))
     }
 
     @Test

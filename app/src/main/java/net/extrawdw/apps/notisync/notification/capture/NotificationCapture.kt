@@ -535,9 +535,13 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         reason: Int
     ) {
         untrackMediaSession(sbn.key)
+        // Echo / regroup / snooze / package churn: leave the mirror AND all per-key state (mirrored keys,
+        // dedup signature, throttle clocks) intact — the notification is not gone for the user, and clearing
+        // the keys here would misclassify its eventual re-post as a FIRST post (a duplicate alert to peers
+        // instead of an in-place update).
+        if (reason !in dismissReasons) return
         val wasMirrored = mirroredKeys.remove(sbn.key)
         val wasMirroredSummary = mirroredSummaryKeys.remove(sbn.key)
-        if (reason !in dismissReasons) return // echo / regroup / snooze / package churn — leave the mirror
         if (wasMirroredSummary) {
             lastSentSignature.remove(sbn.key)
             return
@@ -962,10 +966,25 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
                 }
                 return
             }
-            // Non-media ongoing update (progress / foreground-service / ongoing call): the quiet channel under the
-            // user's per-app interval. A call uses no throttle so its transitions land at once.
+            // A call's transitions (ringing → answered → hung-up) are latency-critical: a late "answered"
+            // keeps every peer ringing, and the quiet channel's NORMAL priority can defer for minutes on a
+            // dozing receiver (or reorder against the HIGH alerting post). So calls ride the prompt
+            // silentUpdate path — HIGH transport, rendered silently in place under the same last-writer-wins
+            // watermark — exactly like a media DRAMATIC change, with no throttle. iOS peers stay excluded,
+            // matching the quiet channel these updates used to ride.
+            if (isCall) {
+                val update = captured.withUpdatePostTime(sbn.key)
+                graph.scope.launch {
+                    runCatching {
+                        val withGraphics = graph.graphicsPipeline?.attach(sbn, update) ?: update
+                        eng.sendOngoingUpdatePrompt(withGraphics, allowIos = false)
+                    }
+                }
+                return
+            }
+            // Non-media ongoing update (progress / foreground-service): the quiet channel under the user's
+            // per-app interval.
             val intervalMs: Long = when {
-                isCall -> 0L
                 cfg.updateIntervalSec == 0 -> return                      // initial-only: don't mirror updates
                 cfg.updateIntervalSec < 0 -> 0L                          // every update, no throttle
                 else -> cfg.updateIntervalSec * 1000L
@@ -1105,9 +1124,12 @@ internal fun CapturedNotification.isMediaPlaybackStyle(): Boolean =
 internal fun shouldUseUpdatePath(sourceIsOngoing: Boolean, isMediaPlayback: Boolean, firstSeen: Boolean): Boolean =
     !firstSeen && (sourceIsOngoing || isMediaPlayback)
 
+// An update's postTime is STRICTLY greater than the post it updates (sourcePostTime + 1): the receiver's
+// last-writer-wins watermark must be able to order an update after its alerting post even when both were
+// stamped in the same millisecond. The +1 is invisible in the rendered timestamp.
 internal fun nextUpdatePostTime(sourcePostTime: Long, now: Long, previous: Long?): Long =
     max(
-        max(sourcePostTime, now),
+        max(if (sourcePostTime == Long.MAX_VALUE) Long.MAX_VALUE else sourcePostTime + 1, now),
         previous?.let { if (it == Long.MAX_VALUE) Long.MAX_VALUE else it + 1 } ?: Long.MIN_VALUE,
     )
 

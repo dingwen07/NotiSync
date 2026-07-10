@@ -306,6 +306,10 @@ nonisolated enum KMPProtocolBridge {
             actionIndex: Int32(value.actionIndex),
             actionTitle: value.actionTitle,
             remoteInputText: value.remoteInputText,
+            mediaCommand: nil,
+            mediaSeekMs: nil,
+            mediaCustomAction: nil,
+            mediaVolume: nil,
             actedAt: value.actedAt
         )
     }

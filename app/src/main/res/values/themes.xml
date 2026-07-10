@@ -4,4 +4,11 @@
     <style name="Theme.NotiSync" parent="android:Theme.Material.Light.NoActionBar">
         <item name="android:windowBackground">@color/window_background</item>
     </style>
+
+    <!-- Dark from the first frame so waking the display for an incoming call never flashes a light window. -->
+    <style name="Theme.NotiSync.CallScreen" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@android:color/system_neutral1_900</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowLightStatusBar">false</item>
+    </style>
 </resources>

@@ -106,6 +106,19 @@
             </intent-filter>
         </activity>
 
+        <!-- Dedicated full-screen surface for a mirrored incoming call. It lives in a separate, hidden task,
+             can wake/show over keyguard, and never dismisses keyguard (the real call is on the source device). -->
+        <activity
+            android:name=".notification.mirror.IncomingCallActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:showWhenLocked="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync.CallScreen"
+            android:turnScreenOn="true" />
+
         <!-- Provider: captures local notifications. The system binds this automatically. -->
         <service
             android:name=".notification.capture.NotiSyncListenerService"
