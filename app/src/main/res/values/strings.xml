@@ -336,6 +336,7 @@
     <string name="ios_apps_section">iPhone apps</string>
     <string name="ios_apps_empty">Apps appear here as your iPhone sends notifications — iOS can\'t list them all in advance. Turn one on to start mirroring it.</string>
     <string name="ios_apps_no_match">No iPhone apps match \"%1$s\"</string>
+    <string name="ios_apps_forget_app">Forget app</string>
     <string name="ios_status_off">Off</string>
     <string name="ios_status_unsupported">This phone can\'t advertise over Bluetooth LE</string>
     <string name="ios_status_advertising">Waiting for an iPhone to connect…</string>

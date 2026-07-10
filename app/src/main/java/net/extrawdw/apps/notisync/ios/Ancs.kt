@@ -52,6 +52,18 @@ object Ancs {
     const val CAT_LOCATION = 10
     const val CAT_ENTERTAINMENT = 11
 
+    /**
+     * Beyond Apple's published 0–11 CategoryIDs: an IN-PROGRESS / active call. Observed on-device (logcat) — when
+     * an incoming call ([CAT_INCOMING_CALL]) is answered, iOS REMOVES the incoming notification and ADDs a fresh
+     * one under this category (new UID) carrying a single negative "End Call" action and no Answer. Treated as an
+     * ongoing call so it renders a Hang up button and its dismissal can't end the real call.
+     */
+    const val CAT_ACTIVE_CALL = 12
+
+    /** True for a phone / VoIP call category — a ringing incoming call or an in-progress active call. */
+    fun isCallCategory(categoryId: Int): Boolean =
+        categoryId == CAT_INCOMING_CALL || categoryId == CAT_ACTIVE_CALL
+
     // Control Point CommandID
     const val CMD_GET_NOTIFICATION_ATTRIBUTES = 0
     const val CMD_GET_APP_ATTRIBUTES = 1

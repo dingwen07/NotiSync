@@ -39,7 +39,8 @@ internal object IosBundleIdExclusions {
  *
  * iOS can't be enumerated, so [discovered] grows only as apps actually post notifications over ANCS — the
  * iOS tab lists those and lets the user enable the ones they want. Enabled bundle ids persist; the
- * discovered set is in-memory (rebuilt each session as notifications arrive).
+ * discovered set persists so previously seen apps survive process death, and a forgotten app reappears the
+ * next time ANCS reports it.
  */
 class IosAppRegistry(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
     private val enabledKey = stringPreferencesKey("ancs_enabled_bundles_json")
@@ -129,5 +130,13 @@ class IosAppRegistry(private val store: DataStore<Preferences>, private val scop
             val json = ProtocolCodec.encodeToJson(_discovered.value)
             scope.launch { store.edit { it[discoveredKey] = json } }
         }
+    }
+
+    /** Forget a discovered app from the iOS tab's list only — it reappears the next time ANCS sees it. */
+    fun forgetSeen(bundleId: String) {
+        if (bundleId !in _discovered.value) return
+        _discovered.update { it - bundleId }
+        val json = ProtocolCodec.encodeToJson(_discovered.value)
+        scope.launch { store.edit { it[discoveredKey] = json } }
     }
 }

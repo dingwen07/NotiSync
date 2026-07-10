@@ -33,6 +33,8 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
@@ -57,6 +59,7 @@ import androidx.compose.ui.graphics.Path as ComposePath
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
@@ -490,6 +493,7 @@ fun IosScreen() {
                                 canToggle = !IosBundleIdExclusions.isExcluded(app.bundleId),
                                 icon = icons[app.bundleId],
                                 onToggle = { on -> registry.setEnabled(app.bundleId, on) },
+                                onForget = { registry.forgetSeen(app.bundleId) },
                             )
                         }
                     }
@@ -634,7 +638,8 @@ private fun IosAppRow(
     isOn: Boolean,
     canToggle: Boolean,
     icon: ImageBitmap?,
-    onToggle: (Boolean) -> Unit
+    onToggle: (Boolean) -> Unit,
+    onForget: () -> Unit,
 ) {
     ListItem(
         modifier = if (canToggle) Modifier.clickable { onToggle(!isOn) } else Modifier,
@@ -648,11 +653,19 @@ private fun IosAppRow(
             )
         },
         trailingContent = {
-            Switch(
-                checked = isOn,
-                onCheckedChange = onToggle,
-                enabled = canToggle
-            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onForget) {
+                    Icon(
+                        painterResource(R.drawable.ic_delete_history),
+                        contentDescription = stringResource(R.string.ios_apps_forget_app),
+                    )
+                }
+                Switch(
+                    checked = isOn,
+                    onCheckedChange = onToggle,
+                    enabled = canToggle
+                )
+            }
         },
     )
 }

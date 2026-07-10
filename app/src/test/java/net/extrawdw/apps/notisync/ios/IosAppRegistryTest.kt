@@ -57,4 +57,22 @@ class IosAppRegistryTest {
             )
         )
     }
+
+    @Test
+    fun forgetSeenRemovesDiscoveredAppWithoutChangingAllowlist() = runBlocking {
+        val registry = newRegistry()
+        val bundleId = "com.apple.MobileSMS"
+
+        registry.recordSeen(bundleId, "Messages", 1L)
+        registry.setEnabled(bundleId, true)
+
+        registry.forgetSeen(bundleId)
+
+        assertFalse(bundleId in registry.discovered.value)
+        assertTrue(registry.isEnabled(bundleId))
+
+        registry.recordSeen(bundleId, "Messages", 2L)
+
+        assertEquals(IosApp(bundleId, "Messages", 2L), registry.discovered.value[bundleId])
+    }
 }

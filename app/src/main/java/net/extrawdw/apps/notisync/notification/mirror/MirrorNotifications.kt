@@ -482,6 +482,11 @@ class RemoteNotificationPoster(
             .setPriority(toPriority(notif.importance))
             .setGroup(receiverGroupKey)
             .setGroupAlertBehavior(NotificationCompat.GROUP_ALERT_CHILDREN)
+            // Call-dismissal protection is NOT special-cased here: a live call's dismissal is stopped at the ANCS
+            // choke point instead (IosBridgeManager.dismissOnIphone consults liveCallKeys), so a swipe / auto-
+            // dismiss / timeout can't Decline or Hang-up. That single guard is race-free (liveCallKeys is kept in
+            // lockstep with uidToKey) and covers every dismissal path, so the delete intent stays plain — clearable
+            // just follows the source's own flag.
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id, notif.isClearable))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
         if (notif.hasContentIntent) {
@@ -1040,6 +1045,10 @@ class RemoteNotificationPoster(
 
     override fun clear(sourceClientId: ClientId, sourceKey: String) {
         val tag = tagOf(sourceClientId, sourceKey)
+        // Diagnostic: the single point where a mirror is programmatically cancelled. Correlate with the ANCS
+        // logs — a "clear" with a preceding "ANCS removed" is an iPhone-side removal; a "clear" WITHOUT one is a
+        // dismissal path (a local swipe or a mesh peer relaying a dismissal reached here).
+        Log.i("MirrorNotifications", "clear key=$sourceKey")
         callRinger?.stop(tag)   // the call's source removal/dismissal synced here → stop any ring for it
         mediaSessions?.release(tag)   // media playback stopped/gone → drop its media-controls card
         val active = activeNotification(tag, tag.hashCode())

@@ -30,6 +30,7 @@ import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
+import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MediaCommand
@@ -155,6 +156,16 @@ class IosBridgeManager(
     // must NOT re-broadcast to the mesh — the dismissal it answers already propagated there (it's what triggered
     // the clear), so re-sending it would echo back to the peer that dismissed. Session-scoped, like [uidToKey].
     private val selfClearedUids = java.util.Collections.synchronizedSet(HashSet<Int>())
+
+    // Source keys of LIVE calls this session — a ringing incoming call OR an answered/active one. This is the
+    // SINGLE guard that stops a dismissal from ending a call: [dismissOnIphone] (reached by every dismissal path —
+    // a local swipe, the ring-window timeout, a mesh peer relaying a dismissal) skips the ANCS negative for a key
+    // in here, since for a live call that negative is DECLINE (ringing) or HANG UP (active) and would drop the real
+    // call. Ending it needs the explicit Decline / Hang up button (the PERFORM action path). Kept in lockstep with
+    // [uidToKey] — added together in [onSourceEvent], and [onRemoved] drops uidToKey BEFORE this — so the guard is
+    // race-free (see [dismissOnIphone]). Session-scoped; a missed call / voicemail isn't tracked (its negative is a
+    // harmless "Clear", so a dismissal SHOULD clear it on the iPhone).
+    private val liveCallKeys = java.util.Collections.synchronizedSet(HashSet<String>())
 
     fun start() {
         if (running) return // idempotent: the foreground service may re-deliver onStartCommand
@@ -482,6 +493,7 @@ class IosBridgeManager(
         connectedDevice = null
         amsBridge.onGone() // media state is session-scoped like the UID map below
         uidToKey.clear() // UIDs are session-scoped; drop the removal map on disconnect
+        liveCallKeys.clear() // ditto — live-call protection is scoped to the connection
         selfClearedUids.clear() // ditto — pending self-clear confirmations don't carry across sessions
         deviceRepo.clearDeviceName() // no device connected — don't leave a stale name in the FGS / tab / group labels
         deviceRepo.setStatus(IosBridgeStatus.ADVERTISING)
@@ -574,6 +586,15 @@ class IosBridgeManager(
 
     private fun onSourceEvent(packet: Ancs.SourcePacket) {
         val c = client ?: return
+        // Diagnostic trace of the raw ANCS stream: we ADD / REMOVE a mirror only in response to these events —
+        // there is NO independent local timer — so a call mirror that vanishes in under a second means iOS itself
+        // sent us EVENT_REMOVED (evt=2) for it. evt: 0=added 1=modified 2=removed; cat 1=incoming-call.
+        Log.i(
+            TAG,
+            "ANCS src evt=${packet.eventId} cat=${packet.categoryId} uid=${packet.notificationUid}" +
+                " flags=0x${packet.eventFlags.toString(16)} pos=${packet.hasPositiveAction}" +
+                " neg=${packet.hasNegativeAction} preExisting=${packet.isPreExisting}"
+        )
         scope.launch {
             if (packet.isRemoved) {
                 onRemoved(packet); return@launch
@@ -584,7 +605,11 @@ class IosBridgeManager(
             // notification skips the two extra attribute reads.
             val attrs = c.fetchNotificationAttributes(
                 packet.notificationUid,
-                includeActionLabels = packet.hasPositiveAction,
+                // Also fetch labels for a call (incoming, or the active-call category) advertising only a negative
+                // "Hang up"/"End Call" with no positive, so the ongoing-call Hang up button has an action to fire;
+                // a lone negative on a non-call notification is just "Clear" and stays skipped.
+                includeActionLabels = packet.hasPositiveAction ||
+                    (Ancs.isCallCategory(packet.categoryId) && packet.hasNegativeAction),
             ) ?: return@launch
             val bundleId = attrs.appId ?: return@launch
             val displayName = appNameCache.getOrPut(bundleId) {
@@ -625,11 +650,20 @@ class IosBridgeManager(
             // Only ship the app icon as an asset when mirroring — a local render resolves the icon directly.
             if (toMesh) notif = attachAppIcon(notif, androidPkg)
             uidToKey[packet.notificationUid] = notif.sourceKey
+            // Track a live call (ringing or active) so its dismissal can't decline / hang up the real call on the
+            // iPhone (see [liveCallKeys]); only the explicit Decline / Hang up button may.
+            if (notif.callType == CallType.INCOMING || notif.callType == CallType.ONGOING) {
+                liveCallKeys.add(notif.sourceKey)
+            }
             val contentKey = contentKeyOf(record)
             keyToContent[notif.sourceKey] = contentKey
             // Dismissed earlier while the iPhone was unreachable? This replay (fresh UID this session) is our
             // chance to clear it on the source instead of re-showing a notification the user already swiped.
             if (pendingClear.remove(contentKey)) {
+                // A parked dismissal drained on replay → we PerformNotificationAction NEGATIVE and never render.
+                // For a call NEGATIVE = Decline/Hang-up, so if this fires for cat=1 it would end the call on
+                // arrival (and it never shows) — logged so it can be told apart from an iOS-side removal.
+                Log.i(TAG, "ANCS auto-clear on replay uid=${packet.notificationUid} cat=${packet.categoryId} → NEGATIVE (parked dismissal)")
                 selfClearedUids.add(packet.notificationUid) // our own clear → don't re-broadcast its removal
                 runCatching { c.performAction(packet.notificationUid, Ancs.ACTION_NEGATIVE) }
                 return@launch
@@ -657,7 +691,16 @@ class IosBridgeManager(
     }
 
     private fun onRemoved(packet: Ancs.SourcePacket) {
-        val key = uidToKey.remove(packet.notificationUid) ?: return
+        val key = uidToKey.remove(packet.notificationUid)
+        // Diagnostic: this is the ONLY reason an ANCS mirror is cleared from the iPhone side. If a ringing-call
+        // mirror disappears, expect this line right before it — the iPhone removed the notification (whether the
+        // caller hung up, it went to voicemail, iOS handled the call in its own UI, or the UID rotated).
+        Log.i(
+            TAG,
+            "ANCS removed uid=${packet.notificationUid} key=$key liveCall=${key != null && key in liveCallKeys}"
+        )
+        if (key == null) return
+        liveCallKeys.remove(key) // call ended on the iPhone — no longer a live call to protect
         // Drop the content mapping first: the dismissMesh below routes back through [dismissOnIphone], and with
         // the notification already gone from the iPhone we don't want it to (re-)park a clear for a dead key.
         keyToContent.remove(key)
@@ -681,6 +724,13 @@ class IosBridgeManager(
     fun dismissOnIphone(sourceKey: String) {
         val parts = sourceKey.split('|')
         if (parts.size < 4 || parts[0] != "ancs") return // not an ANCS source key
+        // A live call (ringing OR active): a plain dismissal (mirror swipe, ring-window timeout, or a mesh-relayed
+        // dismissal — all funnel here) must NOT perform the ANCS negative action — for a call that's DECLINE
+        // (ringing) or HANG UP (active), which would drop the real call. Declining / hanging up requires the
+        // explicit Decline / Hang up button (performAncsAction). Race-free: the NEGATIVE below only fires while
+        // uidToKey still maps this uid, and [onRemoved] drops uidToKey before liveCallKeys — so a still-live call
+        // is always still tracked here. The mirror is already gone locally; the call continues on the iPhone.
+        if (sourceKey in liveCallKeys) return
         val uid = parts[3].toIntOrNull() ?: return
         // Live this session (same UID still mapped to this exact key) on our connected iPhone → clear now.
         if (client != null && parts[1] == iphoneId() && uidToKey[uid] == sourceKey) {

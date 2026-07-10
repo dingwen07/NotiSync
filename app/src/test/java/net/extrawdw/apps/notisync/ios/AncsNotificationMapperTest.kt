@@ -4,6 +4,7 @@ import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
+import net.extrawdw.notisync.protocol.NotificationStyle
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -61,16 +62,73 @@ class AncsNotificationMapperTest {
     }
 
     @Test
-    fun map_incomingCall_marksCallTypeIncomingSoTheReceiverRings() {
-        // A live incoming call is the one call-category notification that should ring: mark it INCOMING.
+    fun map_incomingCall_rendersAsCallStyleWithAnswerDecline() {
+        // A live incoming call with Answer + Decline is the one call-category notification that should ring, and
+        // it renders as a native CallStyle card (green Answer / RED Decline) whose buttons ARE the ANCS actions.
         val notif = mapWithFlags(
             Ancs.FLAG_POSITIVE_ACTION or Ancs.FLAG_NEGATIVE_ACTION,
             categoryId = Ancs.CAT_INCOMING_CALL,
+            title = "John Appleseed",
             positiveLabel = "Answer",
             negativeLabel = "Decline",
         )
         assertEquals(MirrorCategory.CALL, notif.category)
         assertEquals(CallType.INCOMING, notif.callType)
+        assertEquals(NotificationStyle.CALL, notif.style)
+        assertEquals("John Appleseed", notif.callerName)
+        assertEquals(Ancs.ACTION_POSITIVE, notif.callAnswerIndex)
+        assertEquals(Ancs.ACTION_NEGATIVE, notif.callDeclineIndex)
+    }
+
+    @Test
+    fun map_activeCall_rendersAsOngoingCallStyleWithHangUp() {
+        // An answered/active call is the same incoming-call category with only a Hang up (negative) — "Answer" is
+        // gone once answered. It renders as CallStyle.forOngoingCall (a single RED Hang up), is ONGOING (so it does
+        // NOT ring), and the lone Hang up negative IS mirrored (an incoming-call carve-out) to drive the button.
+        val notif = mapWithFlags(
+            Ancs.FLAG_NEGATIVE_ACTION,
+            categoryId = Ancs.CAT_INCOMING_CALL,
+            negativeLabel = "Hang up",
+        )
+        assertEquals(CallType.ONGOING, notif.callType)
+        assertEquals(NotificationStyle.CALL, notif.style)
+        assertEquals(Ancs.ACTION_NEGATIVE, notif.callHangUpIndex)
+        assertNull(notif.callAnswerIndex)
+        assertNull(notif.callDeclineIndex)
+        assertEquals(listOf(Ancs.ACTION_NEGATIVE), notif.actions.map { it.index })
+    }
+
+    @Test
+    fun map_activeCallCategory_rendersAsOngoingCallStyleWithHangUp() {
+        // iOS answers an incoming call by REMOVING it and ADDing a fresh CAT_ACTIVE_CALL (cat 12) with only an
+        // End Call (negative) action. It must be a CALL: ONGOING CallStyle with a Hang up button, so its
+        // dismissal is guarded and it renders as a call — not a plain, swipe-ends-the-call notification.
+        val notif = mapWithFlags(
+            Ancs.FLAG_NEGATIVE_ACTION,
+            categoryId = Ancs.CAT_ACTIVE_CALL,
+            negativeLabel = "End Call",
+        )
+        assertEquals(MirrorCategory.CALL, notif.category)
+        assertEquals(CallType.ONGOING, notif.callType)
+        assertEquals(NotificationStyle.CALL, notif.style)
+        assertEquals(Ancs.ACTION_NEGATIVE, notif.callHangUpIndex)
+        assertNull(notif.callAnswerIndex)
+        assertEquals(listOf(Ancs.ACTION_NEGATIVE), notif.actions.map { it.index })
+    }
+
+    @Test
+    fun map_incomingCallWithoutDecline_isNotCallStyleButStillRings() {
+        // No decline action → nothing to colour red, so it stays a plain (non-CallStyle) notification, but it is
+        // still an INCOMING call so the receiver rings it.
+        val notif = mapWithFlags(
+            Ancs.FLAG_POSITIVE_ACTION,
+            categoryId = Ancs.CAT_INCOMING_CALL,
+            positiveLabel = "Answer",
+        )
+        assertEquals(CallType.INCOMING, notif.callType)
+        assertFalse(notif.style == NotificationStyle.CALL)
+        assertNull(notif.callAnswerIndex)
+        assertNull(notif.callDeclineIndex)
     }
 
     @Test
@@ -97,6 +155,7 @@ class AncsNotificationMapperTest {
     private fun mapWithFlags(
         flags: Int,
         categoryId: Int = Ancs.CAT_SOCIAL,
+        title: String = "Alice",
         positiveLabel: String? = null,
         negativeLabel: String? = null,
     ) = AncsNotificationMapper.map(
@@ -111,7 +170,7 @@ class AncsNotificationMapperTest {
             ),
             bundleId = "net.whatsapp.WhatsApp",
             displayName = "WhatsApp",
-            title = "Alice",
+            title = title,
             subtitle = null,
             message = "Hello",
             date = null,

@@ -323,6 +323,7 @@
     <string name="ios_apps_section">iPhone 应用</string>
     <string name="ios_apps_empty">当 iPhone 发送通知时，应用会显示在这里 — iOS 无法预先列出全部应用。开启某个应用即可开始镜像。</string>
     <string name="ios_apps_no_match">没有与“%1$s”匹配的 iPhone 应用</string>
+    <string name="ios_apps_forget_app">忘记应用</string>
     <string name="ios_status_off">已关闭</string>
     <string name="ios_status_unsupported">此手机无法通过 Bluetooth LE 广播</string>
     <string name="ios_status_advertising">正在等待 iPhone 连接…</string>
