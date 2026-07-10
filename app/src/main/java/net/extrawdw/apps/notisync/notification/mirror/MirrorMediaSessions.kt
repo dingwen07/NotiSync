@@ -40,8 +40,8 @@ import java.util.concurrent.TimeUnit
  * this phone's own audio route. When the source reports an adjustable volume, the session exposes it —
  * hardware volume keys, the system volume panel, and the Output Switcher slider all work — and every
  * change relays to the origin as [MediaCommand.SET_VOLUME] / [MediaCommand.ADJUST_VOLUME] (the origin's
- * echo re-capture then confirms the level that actually landed). An unknown/fixed source volume (e.g. the
- * AMS now-playing card) renders as fixed: no slider, keys blocked.
+ * echo re-capture then confirms the level that actually landed). AMS now-playing is relative-only when
+ * iOS advertises volume commands, so keys work there but the Output Switcher stays sliderless.
  */
 class MirrorMediaSessions(
     context: Context,

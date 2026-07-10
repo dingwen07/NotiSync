@@ -102,6 +102,7 @@ class AmsMediaBridge(
         state = when (entityId) {
             Ams.ENTITY_PLAYER -> when (attributeId) {
                 Ams.PLAYER_ATTR_NAME -> state.copy(playerName = value.takeIf { it.isNotBlank() })
+                Ams.PLAYER_ATTR_VOLUME -> state.copy(volumePercent = Ams.parseVolumePercent(value))
                 Ams.PLAYER_ATTR_PLAYBACK_INFO -> {
                     val info = Ams.parsePlaybackInfo(value)
                     // An empty/malformed PlaybackInfo means no active player — clear the play state so a

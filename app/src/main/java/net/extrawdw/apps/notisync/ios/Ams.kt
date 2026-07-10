@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.ios
 
 import java.util.UUID
+import kotlin.math.roundToInt
 
 /**
  * Apple Media Service (AMS) protocol constants, packet parsers, and request builders.
@@ -64,8 +65,8 @@ object Ams {
     const val PLAYBACK_REWINDING = 2
     const val PLAYBACK_FAST_FORWARDING = 3
 
-    /** The Player attributes we register for (name + play state; volume is not mirrored). */
-    val PLAYER_ATTRS = intArrayOf(PLAYER_ATTR_NAME, PLAYER_ATTR_PLAYBACK_INFO)
+    /** The Player attributes we register for: name, play state, and relative volume feedback. */
+    val PLAYER_ATTRS = intArrayOf(PLAYER_ATTR_NAME, PLAYER_ATTR_PLAYBACK_INFO, PLAYER_ATTR_VOLUME)
 
     /** The Track attributes we register for, i.e. everything the now-playing card renders. */
     val TRACK_ATTRS =
@@ -122,6 +123,14 @@ object Ams {
             rate = parts[1].toFloatOrNull() ?: return null,
             elapsedSec = parts[2].toDoubleOrNull() ?: return null,
         )
+    }
+
+    /** Parse the Player Volume attribute into a 0..100 UI scale. AMS sends a normalized 0.0..1.0 value;
+     *  accept percentage-shaped values too so a vendor quirk does not disable volume controls. */
+    fun parseVolumePercent(s: String): Int? {
+        val raw = s.trim().toDoubleOrNull() ?: return null
+        val percent = if (raw <= 1.0) raw * 100.0 else raw
+        return percent.roundToInt().coerceIn(0, 100)
     }
 
     // ---- Requests ----

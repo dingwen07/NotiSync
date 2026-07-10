@@ -68,6 +68,16 @@ class AmsPacketParseTest {
     }
 
     @Test
+    fun parseVolumePercent_acceptsNormalizedAndPercentValues() {
+        assertEquals(42, Ams.parseVolumePercent("0.42"))
+        assertEquals(42, Ams.parseVolumePercent("42"))
+        assertEquals(2, Ams.parseVolumePercent("2.0"))
+        assertEquals(100, Ams.parseVolumePercent("250"))
+        assertEquals(0, Ams.parseVolumePercent("-1"))
+        assertNull(Ams.parseVolumePercent(""))
+    }
+
+    @Test
     fun parseSupportedCommands_oneCommandPerByte() {
         val cmds = Ams.parseSupportedCommands(
             byteArrayOf(
@@ -86,6 +96,15 @@ class AmsPacketParseTest {
 
     @Test
     fun buildEntityUpdateRegistration_entityThenAttributes() {
+        assertArrayEquals(
+            byteArrayOf(
+                Ams.ENTITY_PLAYER.toByte(),
+                Ams.PLAYER_ATTR_NAME.toByte(),
+                Ams.PLAYER_ATTR_PLAYBACK_INFO.toByte(),
+                Ams.PLAYER_ATTR_VOLUME.toByte(),
+            ),
+            Ams.buildEntityUpdateRegistration(Ams.ENTITY_PLAYER, Ams.PLAYER_ATTRS),
+        )
         assertArrayEquals(
             byteArrayOf(
                 Ams.ENTITY_TRACK.toByte(),

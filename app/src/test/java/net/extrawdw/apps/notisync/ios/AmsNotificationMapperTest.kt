@@ -31,6 +31,7 @@ class AmsNotificationMapperTest {
         album = "1989",
         title = "Blank Space",
         durationSec = 231.0,
+        volumePercent = 42,
         supportedCommands = supported,
     )
 
@@ -109,7 +110,7 @@ class AmsNotificationMapperTest {
             playing(
                 supported = listOf(
                     Ams.CMD_PLAY, Ams.CMD_ADVANCE_SHUFFLE_MODE, Ams.CMD_LIKE_TRACK,
-                    Ams.CMD_VOLUME_UP, // never surfaced — a card has no volume affordance
+                    Ams.CMD_VOLUME_UP, // volume is surfaced through mediaVolumeControl, not a custom button
                 ),
             ),
             iphoneId, null, 10_000L,
@@ -118,6 +119,30 @@ class AmsNotificationMapperTest {
         val shuffleId = notif.mediaCustomActions.first().action
         // The relayed CUSTOM press round-trips back to the RemoteCommandID.
         assertEquals(Ams.CMD_ADVANCE_SHUFFLE_MODE, AmsNotificationMapper.commandOfCustomAction(shuffleId))
+    }
+
+    @Test
+    fun map_volumeCommandsExposeRelativeVolume() {
+        val notif = AmsNotificationMapper.map(
+            client,
+            playing(supported = listOf(Ams.CMD_PLAY, Ams.CMD_VOLUME_UP, Ams.CMD_VOLUME_DOWN)),
+            iphoneId, null, 10_000L,
+        )
+        assertEquals(1, notif.mediaVolumeControl) // VolumeProvider.VOLUME_CONTROL_RELATIVE
+        assertEquals(100, notif.mediaVolumeMax)
+        assertEquals(42, notif.mediaVolumeCurrent)
+    }
+
+    @Test
+    fun map_withoutVolumeCommandsKeepsVolumeFixed() {
+        val notif = AmsNotificationMapper.map(
+            client,
+            playing(supported = listOf(Ams.CMD_PLAY)).copy(volumePercent = 42),
+            iphoneId, null, 10_000L,
+        )
+        assertNull(notif.mediaVolumeControl)
+        assertNull(notif.mediaVolumeMax)
+        assertNull(notif.mediaVolumeCurrent)
     }
 
     @Test

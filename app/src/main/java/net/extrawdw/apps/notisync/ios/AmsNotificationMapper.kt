@@ -25,6 +25,8 @@ data class AmsNowPlaying(
     val album: String? = null,
     val title: String? = null,
     val durationSec: Double? = null,
+    /** Latest AMS Player Volume, normalized to Android's familiar 0..100 media scale. */
+    val volumePercent: Int? = null,
     /** The AMS RemoteCommandIDs the active player currently accepts (Remote Command notifications). */
     val supportedCommands: List<Int> = emptyList(),
 ) {
@@ -43,6 +45,11 @@ data class AmsNowPlaying(
  * AMS carries no artwork (text-only, like ANCS), so the card renders without album art — deliberately NOT
  * back-filled from a public catalog, since a match by artist+title isn't definitive. No app icon either:
  * the Player entity exposes only a localized display name, never a bundle id, so icon resolution can't run.
+ *
+ * Volume is relative-only on the command side: AMS offers VolumeUp/VolumeDown remote commands, not an
+ * absolute set-volume command. When the active player advertises either volume command, the mirrored media
+ * session exposes a relative [CapturedNotification.mediaVolumeControl] so Android volume keys / panels can
+ * call back with [net.extrawdw.notisync.protocol.MediaCommand.ADJUST_VOLUME].
  */
 object AmsNotificationMapper {
     /** Synthetic package for the mirrored now-playing card (AMS has no bundle id); one stable channel/tag. */
@@ -75,7 +82,7 @@ object AmsNotificationMapper {
     /** AMS commands surfaced as custom actions ([MediaCustomAction.action] = `ams:<RemoteCommandID>`,
      *  relayed back as a [net.extrawdw.notisync.protocol.MediaCommand.CUSTOM] press). The names feed the
      *  consumer's icon heuristics (shuffle/repeat/like/dislike/bookmark all match bundled icons). Volume
-     *  up/down are deliberately absent — a notification card has no volume affordance. */
+     *  up/down are deliberately absent here; they are exposed through the media session's volume provider. */
     private val CUSTOM_ACTIONS = listOf(
         Ams.CMD_ADVANCE_SHUFFLE_MODE to "Shuffle",
         Ams.CMD_ADVANCE_REPEAT_MODE to "Repeat",
@@ -85,6 +92,9 @@ object AmsNotificationMapper {
         Ams.CMD_DISLIKE_TRACK to "Dislike",
         Ams.CMD_BOOKMARK_TRACK to "Bookmark",
     )
+
+    private const val MEDIA_VOLUME_CONTROL_RELATIVE = 1
+    private const val MEDIA_VOLUME_MAX = 100
 
     /** The stable per-iPhone source key: ONE now-playing card that updates in place across tracks. */
     fun sourceKey(iphoneId: String) = "$KEY_PREFIX|$iphoneId|nowplaying"
@@ -119,6 +129,7 @@ object AmsNotificationMapper {
             .mapNotNull { STANDARD_ACTIONS[it] }
             .fold(0L) { acc, bit -> acc or bit }
             .takeIf { supported.isNotEmpty() }
+        val supportsVolume = Ams.CMD_VOLUME_UP in supported || Ams.CMD_VOLUME_DOWN in supported
         return CapturedNotification(
             sourceClientId = clientId,
             sourceKey = sourceKey(iphoneId),
@@ -147,6 +158,9 @@ object AmsNotificationMapper {
             mediaCustomActions = CUSTOM_ACTIONS
                 .filter { (cmd, _) -> cmd in supported }
                 .map { (cmd, name) -> MediaCustomAction(customActionId(cmd), name) },
+            mediaVolumeCurrent = state.volumePercent?.takeIf { supportsVolume },
+            mediaVolumeMax = MEDIA_VOLUME_MAX.takeIf { supportsVolume },
+            mediaVolumeControl = MEDIA_VOLUME_CONTROL_RELATIVE.takeIf { supportsVolume },
             // hasContentIntent stays false (no "open on iPhone" command), and actions stays empty — the
             // transport row is system-drawn from the media session, not mirrored action buttons.
         )

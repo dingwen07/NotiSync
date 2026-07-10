@@ -292,7 +292,8 @@ data class CapturedNotification(
     /** Max volume index of [mediaVolumeCurrent]'s scale. */
     val mediaVolumeMax: Int? = null,
     /** How the source volume can be driven: `VolumeProvider.VOLUME_CONTROL_*` (0 fixed / 1 relative /
-     *  2 absolute). Local playback reports absolute (stream volume); AMS now-playing stays null/fixed. */
+     *  2 absolute). Local playback reports absolute (stream volume); AMS now-playing reports relative when
+     *  iOS advertises VolumeUp/Down remote commands. */
     val mediaVolumeControl: Int? = null,
 
     // --- Delivery hint (appended; false from an older producer) ---
