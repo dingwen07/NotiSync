@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.notification
+package net.extrawdw.apps.notisync.notification.mirror
 
 import android.Manifest
 import android.app.Activity

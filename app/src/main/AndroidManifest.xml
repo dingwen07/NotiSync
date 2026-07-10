@@ -108,7 +108,7 @@
 
         <!-- Provider: captures local notifications. The system binds this automatically. -->
         <service
-            android:name=".notification.NotiSyncListenerService"
+            android:name=".notification.capture.NotiSyncListenerService"
             android:exported="true"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
@@ -174,12 +174,12 @@
 
         <!-- Fires when the user swipes away a mirrored notification, to sync the dismissal. -->
         <receiver
-            android:name=".notification.DismissReceiver"
+            android:name=".notification.mirror.DismissReceiver"
             android:exported="false" />
 
         <!-- Fires when the user presses a mirrored action button (incl. inline reply), to perform it on the origin. -->
         <receiver
-            android:name=".notification.MirrorActionReceiver"
+            android:name=".notification.mirror.MirrorActionReceiver"
             android:exported="false" />
 
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's
@@ -188,7 +188,7 @@
              providers); the route itself is feature-gated and visibility-restricted to this package, and
              SELF_SCAN_ONLY (honored on newer Android) spares it other apps' scans. -->
         <service
-            android:name=".notification.MirrorRouteProviderService"
+            android:name=".notification.mirror.MirrorRouteProviderService"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.media.MediaRoute2ProviderService" />
@@ -199,7 +199,7 @@
         <!-- No-UI trampoline for tapping a mirrored notification: collapses the shade, toasts
              "Check on <device>", and asks the origin to open the real notification. -->
         <activity
-            android:name=".notification.MirrorTapActivity"
+            android:name=".notification.mirror.MirrorTapActivity"
             android:excludeFromRecents="true"
             android:exported="false"
             android:noHistory="true"

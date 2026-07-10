@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.notification
+package net.extrawdw.apps.notisync.notification.capture
 
 import net.extrawdw.apps.notisync.data.PerAppConfig
 import net.extrawdw.notisync.protocol.CapturedNotification

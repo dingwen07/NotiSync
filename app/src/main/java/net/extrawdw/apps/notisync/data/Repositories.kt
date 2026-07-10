@@ -87,7 +87,7 @@ class SettingsRepository(
     val iosMediaMirror: StateFlow<Boolean> =
         store.data.map { it[iosMediaKey] ?: true }.stateInEager(scope, true)
 
-    /** Master switch for the incoming-call ringer ([net.extrawdw.apps.notisync.notification.CallRinger]).
+    /** Master switch for the incoming-call ringer ([net.extrawdw.apps.notisync.notification.mirror.CallRinger]).
      *  Default off. When off, NO mirrored call rings on this device, regardless of the per-app
      *  [PerAppConfig.ringForCalls] toggle — calls still mirror and pop up, just silently. */
     val callRingerEnabled: StateFlow<Boolean> =

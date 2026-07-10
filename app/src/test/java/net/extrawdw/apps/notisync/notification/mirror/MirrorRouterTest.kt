@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.notification
+package net.extrawdw.apps.notisync.notification.mirror
 
 import net.extrawdw.notisync.protocol.ClientId
 import org.junit.Assert.assertEquals

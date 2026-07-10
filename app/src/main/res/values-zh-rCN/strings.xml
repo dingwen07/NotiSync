@@ -188,7 +188,7 @@
     <!-- Devices screen -->
     <string name="pair_a_device">配对设备</string>
     <string name="devices_enable_access_title">启用通知访问权限</string>
-    <string name="devices_enable_access_body">NotiSync 需要通知使用权才能镜像此设备的通知。</string>
+    <string name="devices_enable_access_body">NotiSync 需要“读取、回复和控制通知”特殊应用权限才能镜像此设备上的通知。</string>
     <string name="devices_open_settings">打开设置</string>
     <string name="devices_allow_posting_title">允许显示通知</string>
     <string name="devices_allow_posting_body">授予通知发送权限，以便镜像的通知能在此设备上显示。</string>

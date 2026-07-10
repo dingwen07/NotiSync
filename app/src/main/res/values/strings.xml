@@ -197,7 +197,7 @@
     <!-- Devices screen -->
     <string name="pair_a_device">Pair a device</string>
     <string name="devices_enable_access_title">Enable notification access</string>
-    <string name="devices_enable_access_body">NotiSync needs notification listener access to mirror this device\'s notifications.</string>
+    <string name="devices_enable_access_body">NotiSync needs Notification read, reply &amp; control special app access to mirror this device\'s notifications.</string>
     <string name="devices_open_settings">Open settings</string>
     <string name="devices_allow_posting_title">Allow showing notifications</string>
     <string name="devices_allow_posting_body">Grant notification posting so mirrored notifications can appear on this device.</string>

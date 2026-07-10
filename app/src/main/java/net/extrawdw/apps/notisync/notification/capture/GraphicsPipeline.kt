@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.notification
+package net.extrawdw.apps.notisync.notification.capture
 
 import android.service.notification.StatusBarNotification
 import net.extrawdw.apps.notisync.analytics.PerfSpan
