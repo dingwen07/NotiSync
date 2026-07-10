@@ -63,6 +63,13 @@ class MirrorMediaSessions(
         /** Elapsed-clock stamp of the last local volume action: captures arriving inside the grace window
          *  don't overwrite the optimistic slider position (the in-flight echo carries the true level). */
         var lastUserVolumeAt = 0L
+
+        /** Source-clock postTime of the latest mirrored media payload applied to this local session. */
+        var lastRemotePostTime = 0L
+
+        /** A local-only pause applied to a likely-stale payload so OEMs that gate clearing on playback state
+         *  allow the card to be dismissed. A newer payload clears it and resumes source-authoritative state. */
+        var staleLocalPausePostTime: Long? = null
     }
 
     /** tag -> entry, re-inserted on every [apply] so iteration order tracks recency ([setVolumeFromSwitcher]
@@ -78,17 +85,19 @@ class MirrorMediaSessions(
         sourceDeviceName: String? = null,
     ): MediaSessionCompat.Token? =
         onMain {
-            val entry = sessions.remove(tag) ?: Entry(
-                MediaSessionCompat(appContext, MEDIA_SESSION_TAG).apply {
-                    setCallback(callbackFor(notif.sourceClientId, notif.sourceKey))
-                    isActive = true
-                },
-                notif.sourceClientId,
-                notif.sourceKey,
-            )
+            val entry = sessions.remove(tag) ?: run {
+                val session = MediaSessionCompat(appContext, MEDIA_SESSION_TAG).apply { isActive = true }
+                Entry(session, notif.sourceClientId, notif.sourceKey).also { e ->
+                    session.setCallback(callbackFor(e))
+                }
+            }
             sessions[tag] = entry // re-insert: iteration order tracks recency
             entry.session.setMetadata(metadataFor(notif, albumArt))
-            entry.session.setPlaybackState(playbackStateFor(notif))
+            if ((entry.staleLocalPausePostTime ?: Long.MIN_VALUE) < notif.postTime) {
+                entry.staleLocalPausePostTime = null
+            }
+            entry.lastRemotePostTime = notif.postTime
+            entry.session.setPlaybackState(playbackStateFor(entry, notif))
             val provider = applyVolume(entry, notif)
             router?.activate(
                 tag, notif.sourceClientId, sourceDeviceName, notif.mediaIsPlaying == true,
@@ -201,9 +210,11 @@ class MirrorMediaSessions(
             putLong(MediaMetadataCompat.METADATA_KEY_DURATION, notif.mediaDurationMs ?: 0L)
         }.build()
 
-    private fun playbackStateFor(notif: CapturedNotification): PlaybackStateCompat {
+    private fun playbackStateFor(entry: Entry, notif: CapturedNotification): PlaybackStateCompat {
         val playing = notif.mediaIsPlaying == true
-        val state = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val sourceState = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
+        val state =
+            if (entry.staleLocalPausePostTime == notif.postTime) PlaybackStateCompat.STATE_PAUSED else sourceState
         val position = notif.mediaPositionMs ?: PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN
         // Only advertise transport controls we can actually service (they relay to the origin). Intersect the
         // source's declared actions with that set; if the source reported none, fall back to the common set so
@@ -211,7 +222,7 @@ class MirrorMediaSessions(
         val declared = notif.mediaActions ?: DEFAULT_ACTIONS
         val actions = (declared and SUPPORTED_ACTIONS).takeIf { it != 0L } ?: (DEFAULT_ACTIONS and SUPPORTED_ACTIONS)
         return PlaybackStateCompat.Builder()
-            .setState(state, position, if (playing) 1f else 0f)
+            .setState(state, position, if (state == PlaybackStateCompat.STATE_PLAYING) 1f else 0f)
             .setActions(actions)
             .apply {
                 // App-specific buttons (star/like/shuffle/…): the system draws these from the custom actions.
@@ -226,6 +237,35 @@ class MirrorMediaSessions(
                     )
                 }
             }
+            .build()
+    }
+
+    /** A pause press on a very old mirrored media payload is likely the user trying to make a stale card
+     *  clearable. Keep that state local-only until a newer source payload arrives. */
+    private fun pauseLocallyIfRemoteLooksStale(entry: Entry) {
+        if (!remoteLooksStale(entry.lastRemotePostTime)) return
+        entry.staleLocalPausePostTime = entry.lastRemotePostTime
+        val current = runCatching { entry.session.controller.playbackState }.getOrNull()
+        runCatching { entry.session.setPlaybackState(current.withPlaybackState(PlaybackStateCompat.STATE_PAUSED)) }
+    }
+
+    private fun remoteLooksStale(remotePostTime: Long): Boolean =
+        remotePostTime > 0 && System.currentTimeMillis() - remotePostTime >= STALE_REMOTE_MEDIA_MS
+
+    private fun PlaybackStateCompat?.withPlaybackState(state: Int): PlaybackStateCompat {
+        val speed = if (state == PlaybackStateCompat.STATE_PLAYING) {
+            this?.playbackSpeed?.takeIf { it > 0f } ?: 1f
+        } else {
+            0f
+        }
+        return PlaybackStateCompat.Builder()
+            .setState(
+                state,
+                this?.position ?: PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
+                speed,
+            )
+            .setActions(this?.actions ?: (DEFAULT_ACTIONS and SUPPORTED_ACTIONS))
+            .apply { this@withPlaybackState?.customActions?.forEach { addCustomAction(it) } }
             .build()
     }
 
@@ -245,15 +285,19 @@ class MirrorMediaSessions(
         }
     }
 
-    private fun callbackFor(clientId: ClientId, sourceKey: String) = object : MediaSessionCompat.Callback() {
-        override fun onPlay() = onCommand(clientId, sourceKey, MediaCommand.PLAY, null, null, null)
-        override fun onPause() = onCommand(clientId, sourceKey, MediaCommand.PAUSE, null, null, null)
-        override fun onSkipToNext() = onCommand(clientId, sourceKey, MediaCommand.NEXT, null, null, null)
-        override fun onSkipToPrevious() = onCommand(clientId, sourceKey, MediaCommand.PREVIOUS, null, null, null)
-        override fun onStop() = onCommand(clientId, sourceKey, MediaCommand.STOP, null, null, null)
-        override fun onSeekTo(pos: Long) = onCommand(clientId, sourceKey, MediaCommand.SEEK, pos, null, null)
+    private fun callbackFor(entry: Entry) = object : MediaSessionCompat.Callback() {
+        override fun onPlay() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.PLAY, null, null, null)
+        override fun onPause() {
+            pauseLocallyIfRemoteLooksStale(entry)
+            onCommand(entry.clientId, entry.sourceKey, MediaCommand.PAUSE, null, null, null)
+        }
+        override fun onSkipToNext() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.NEXT, null, null, null)
+        override fun onSkipToPrevious() =
+            onCommand(entry.clientId, entry.sourceKey, MediaCommand.PREVIOUS, null, null, null)
+        override fun onStop() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.STOP, null, null, null)
+        override fun onSeekTo(pos: Long) = onCommand(entry.clientId, entry.sourceKey, MediaCommand.SEEK, pos, null, null)
         override fun onCustomAction(action: String?, extras: Bundle?) {
-            action?.let { onCommand(clientId, sourceKey, MediaCommand.CUSTOM, null, it, null) }
+            action?.let { onCommand(entry.clientId, entry.sourceKey, MediaCommand.CUSTOM, null, it, null) }
         }
     }
 
@@ -281,6 +325,10 @@ class MirrorMediaSessions(
         /** After a local volume action, ignore capture-carried volume this long — the optimistic position
          *  stands until the origin's echo (or a later capture) confirms it, instead of snapping back. */
         const val VOLUME_SYNC_GRACE_MS = 2_000L
+
+        /** Only stale media cards get local optimistic pause; fresh cards wait for source truth to avoid
+         *  play/pause bounce on normal in-flight command echoes. */
+        const val STALE_REMOTE_MEDIA_MS = 15 * 60 * 1_000L
         val SUPPORTED_ACTIONS =
             PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
                 PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or

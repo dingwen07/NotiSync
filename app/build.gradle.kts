@@ -28,8 +28,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 38
-        versionName = "1.7.2-rc.1"
+        versionCode = 39
+        versionName = "1.7.2-rc.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
