@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.ios
 
+import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -58,6 +59,11 @@ object AncsNotificationMapper {
             subText = record.subtitle?.takeIf { it != record.title && it != body },
             style = if (isLong) NotificationStyle.BIG_TEXT else NotificationStyle.DEFAULT,
             category = mapCategory(record.source.categoryId),
+            // A live incoming call is marked INCOMING so the receiver rings it; a missed call / voicemail share
+            // MirrorCategory.CALL but carry NO callType, so they mirror as ordinary notifications that never ring
+            // (the receiver's non-CallStyle "any call-category post rings" heuristic is Android-only — see
+            // RemoteNotificationPoster.isRingingCall — because an ANCS capture is never a foreground service).
+            callType = mapCallType(record.source.categoryId),
             // Always HIGH: iOS shows notifications as banners, so the mirrored channel must stay banner-capable.
             // The per-notification iOS "silent" flag is deliberately ignored here — it flips at runtime (e.g. iOS
             // sets it whenever the iPhone is unlocked/in use), and feeding it into the channel's importance would
@@ -90,6 +96,12 @@ object AncsNotificationMapper {
             if (negative != null) add(NotificationAction(index = Ancs.ACTION_NEGATIVE, title = negative))
         }
     }
+
+    /** ANCS lumps incoming call / missed call / voicemail into one [MirrorCategory.CALL] bucket, but only a
+     *  live incoming call should ring. Marking just that one [CallType.INCOMING] lets the receiver ring it while
+     *  a missed call / voicemail (no callType) mirrors as a normal, silent notification. */
+    private fun mapCallType(categoryId: Int): CallType? =
+        if (categoryId == Ancs.CAT_INCOMING_CALL) CallType.INCOMING else null
 
     private fun mapCategory(categoryId: Int): MirrorCategory = when (categoryId) {
         Ancs.CAT_INCOMING_CALL, Ancs.CAT_MISSED_CALL, Ancs.CAT_VOICEMAIL -> MirrorCategory.CALL

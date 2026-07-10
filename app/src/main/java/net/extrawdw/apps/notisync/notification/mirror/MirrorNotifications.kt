@@ -694,10 +694,12 @@ class RemoteNotificationPoster(
         // Incoming-call ringer: a ringing call plays the phone ringtone + vibration itself (the mirror above is
         // posted silent). Start only on the genuine alerting post — a silent asset/backlog re-render of the same
         // call is already ringing — and stop on any non-ringing render of the same call (answered → ongoing/FGS).
-        // Answer/Decline press, swipe, source dismissal and timeout each stop it via their own paths.
+        // Answer/Decline press, swipe, source dismissal and timeout each stop it via their own paths. A stale
+        // call (postTime older than STALE_CALL_RING_MS) still posts but never rings, so a late relay/replay can't
+        // ring the phone minutes after the call actually came in.
         if (notif.style == NotificationStyle.CALL || notif.category == MirrorCategory.CALL) {
             if (isRingingCall(notif)) {
-                if (!silent && ringForCalls(notif.packageName)) callRinger?.start(tag)
+                if (!silent && ringForCalls(notif.packageName) && isFreshCall(notif)) callRinger?.start(tag)
             } else callRinger?.stop(tag)
         }
         if (notif.style == NotificationStyle.MESSAGING) {
@@ -1127,10 +1129,21 @@ class RemoteNotificationPoster(
     /** A RINGING (as opposed to answered/ongoing) incoming call — non-dismissible and prone to going stale, so
      *  the render makes it dismissible + auto-clearing. CallStyle gives the call type directly; a non-CallStyle
      *  call (e.g. WhatsApp, `category=call`) is "ringing" when it is NOT a foreground service (the answered call
-     *  is an FGS). */
+     *  is an FGS). That FGS proxy is Android-only: an ANCS capture is never a foreground service and its CALL
+     *  category also covers missed calls / voicemail, so the proxy would ring those — an ANCS incoming call is
+     *  marked [CallType.INCOMING] instead (see AncsNotificationMapper), and the proxy is skipped for its origin. */
     private fun isRingingCall(notif: CapturedNotification): Boolean =
         notif.callType == CallType.INCOMING || notif.callType == CallType.SCREENING ||
-            (notif.callType == null && notif.category == MirrorCategory.CALL && !notif.isForegroundService)
+            (notif.callType == null && notif.category == MirrorCategory.CALL &&
+                notif.originPlatform != OriginPlatform.IOS_ANCS && !notif.isForegroundService)
+
+    /** Whether a ringing call is still FRESH enough to actually ring. A call notification can reach this device
+     *  long after it was posted — queued behind a BLE/mesh reconnect, a delayed relay, or an ANCS replay whose
+     *  Date is old — and must not ring the phone minutes after it actually rang. The mirror still posts (the user
+     *  sees the call); only the audible ring is gated. A future / slightly-negative age (source clock ahead of
+     *  ours) counts as fresh. */
+    private fun isFreshCall(notif: CapturedNotification): Boolean =
+        System.currentTimeMillis() - notif.postTime <= STALE_CALL_RING_MS
 
     /** A MEDIA (or decorated-media) mirror — rendered as a real media-controls card via [MirrorMediaSessions],
      *  and kept NOT-ongoing so the user can dismiss it from this device (nothing pins it here). */
@@ -1251,6 +1264,11 @@ class RemoteNotificationPoster(
          *  source's removal never syncs. Longer than a normal ring, so a real ring/answer/decline resolves (its
          *  removal syncs) well before this fires. */
         private const val CALL_RING_TIMEOUT_MS = 120_000L
+
+        /** Max age (now − postTime) of a ringing-call mirror that may still ring. A call arriving later than this
+         *  — a delayed relay/replay, a reconnect backlog — posts but stays silent, so it can't ring long after the
+         *  phone actually rang. It still auto-clears via [CALL_RING_TIMEOUT_MS]. */
+        private const val STALE_CALL_RING_MS = 60_000L
 
         /** Per-app default mirror small icon, keyed by the (resolved) Android package. */
         private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(

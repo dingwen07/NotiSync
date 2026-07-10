@@ -1,9 +1,12 @@
 package net.extrawdw.apps.notisync.ios
 
+import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -57,8 +60,43 @@ class AncsNotificationMapperTest {
         assertTrue(notif.actions.isEmpty())
     }
 
+    @Test
+    fun map_incomingCall_marksCallTypeIncomingSoTheReceiverRings() {
+        // A live incoming call is the one call-category notification that should ring: mark it INCOMING.
+        val notif = mapWithFlags(
+            Ancs.FLAG_POSITIVE_ACTION or Ancs.FLAG_NEGATIVE_ACTION,
+            categoryId = Ancs.CAT_INCOMING_CALL,
+            positiveLabel = "Answer",
+            negativeLabel = "Decline",
+        )
+        assertEquals(MirrorCategory.CALL, notif.category)
+        assertEquals(CallType.INCOMING, notif.callType)
+    }
+
+    @Test
+    fun map_missedCall_isCallCategoryButNeverRings() {
+        // A missed call shares MirrorCategory.CALL but must NOT ring — no callType, so the receiver mirrors it
+        // as an ordinary notification instead of a ringing incoming call.
+        val notif = mapWithFlags(0, categoryId = Ancs.CAT_MISSED_CALL)
+        assertEquals(MirrorCategory.CALL, notif.category)
+        assertNull(notif.callType)
+    }
+
+    @Test
+    fun map_voicemail_isCallCategoryButNeverRings() {
+        val notif = mapWithFlags(0, categoryId = Ancs.CAT_VOICEMAIL)
+        assertEquals(MirrorCategory.CALL, notif.category)
+        assertNull(notif.callType)
+    }
+
+    @Test
+    fun map_socialNotification_hasNoCallType() {
+        assertNull(mapWithFlags(0).callType)
+    }
+
     private fun mapWithFlags(
         flags: Int,
+        categoryId: Int = Ancs.CAT_SOCIAL,
         positiveLabel: String? = null,
         negativeLabel: String? = null,
     ) = AncsNotificationMapper.map(
@@ -67,7 +105,7 @@ class AncsNotificationMapperTest {
             source = Ancs.SourcePacket(
                 eventId = Ancs.EVENT_ADDED,
                 eventFlags = flags,
-                categoryId = Ancs.CAT_SOCIAL,
+                categoryId = categoryId,
                 categoryCount = 1,
                 notificationUid = 42,
             ),
