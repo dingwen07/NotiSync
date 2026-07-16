@@ -214,7 +214,10 @@ fun NotiSyncRoot(
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
 
     LaunchedEffect(pendingPairingPayload, quarantined) {
-        if (pendingPairingPayload != null && !quarantined) showPairing = true
+        if (pendingPairingPayload != null && !quarantined) {
+            navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+            showPairing = true
+        }
     }
 
     LaunchedEffect(openDevices) {

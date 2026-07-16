@@ -76,7 +76,7 @@
             android:name=".MainActivity"
             android:enableOnBackInvokedCallback="true"
             android:exported="true"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -105,6 +105,46 @@
                     android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
+             ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains
+             callable by browsers. Android 17 requires NFC-dispatched activities in target-37 apps to be
+             protected by DISPATCH_NFC_MESSAGE, a platform permission unavailable on older releases, so
+             resource-qualified flags select exactly one of these otherwise-identical aliases. -->
+        <activity-alias
+            android:name=".pairing.LegacyNfcPairingActivity"
+            android:enabled="@bool/enable_legacy_nfc_pairing_alias"
+            android:exported="true"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data
+                    android:scheme="https"
+                    android:host="notisync.apps.extrawdw.net"
+                    android:path="/pair" />
+            </intent-filter>
+        </activity-alias>
+
+        <activity-alias
+            android:name=".pairing.NfcPairingActivity"
+            android:enabled="@bool/enable_protected_nfc_pairing_alias"
+            android:exported="true"
+            android:permission="android.permission.DISPATCH_NFC_MESSAGE"
+            android:targetActivity=".MainActivity">
+            <intent-filter>
+                <action android:name="android.nfc.action.NDEF_DISCOVERED" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+
+                <data
+                    android:scheme="https"
+                    android:host="notisync.apps.extrawdw.net"
+                    android:path="/pair" />
+            </intent-filter>
+        </activity-alias>
 
         <!-- Dedicated full-screen surface for a mirrored incoming call. It lives in a separate, hidden task,
              can wake/show over keyguard, and never dismisses keyguard (the real call is on the source device). -->

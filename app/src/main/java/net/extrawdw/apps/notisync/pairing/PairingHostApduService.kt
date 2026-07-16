@@ -20,7 +20,9 @@ object PairingNfcController {
         val cardEmulation = cardEmulation(context) ?: return PairingNfcSession.clear()
         val component =
             ComponentName(context.applicationContext, PairingHostApduService::class.java)
-        if (!PairingNfcSession.setPairingUrl(pairingUrl)) return PairingNfcSession.clear()
+        if (!PairingNfcSession.setPairingUrl(pairingUrl, context.applicationContext.packageName)) {
+            return PairingNfcSession.clear()
+        }
         val registered = runCatching {
             cardEmulation.registerAidsForService(
                 component,
@@ -163,8 +165,13 @@ private object PairingNfcSession {
 
     val isActive: Boolean get() = files != null
 
-    fun setPairingUrl(pairingUrl: String): Boolean = runCatching {
-        val ndefBytes = NdefMessage(arrayOf(NdefRecord.createUri(pairingUrl))).toByteArray()
+    fun setPairingUrl(pairingUrl: String, packageName: String): Boolean = runCatching {
+        val ndefBytes = NdefMessage(
+            arrayOf(
+                NdefRecord.createUri(pairingUrl),
+                NdefRecord.createApplicationRecord(packageName),
+            )
+        ).toByteArray()
         require(ndefBytes.size <= MAX_NDEF_PAYLOAD_BYTES)
         val ndefFile = ByteArray(ndefBytes.size + NLEN_SIZE)
         ndefFile[0] = (ndefBytes.size shr 8).toByte()
