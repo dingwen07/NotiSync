@@ -1,5 +1,8 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
+
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
 import net.extrawdw.apps.notisync.testsupport.FakeTrustState
@@ -264,6 +267,32 @@ class SecureChannelTest {
             dedup.seen("m1")
         )
         assertEquals(DeliveryOutcome.DUPLICATE, channel.deliver(env))
+    }
+
+    @Test
+    fun retryableHandlerFailure_isNotAcknowledgedOrDeduplicated() {
+        val me = newSigner()
+        val myHpke = newHpke()
+        val sender = newSigner()
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset))
+        }
+        val dedup = FakeDedup()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
+        channel.onMessage(MessageType.ACTION) { throw RetryableDeliveryException("disk unavailable") }
+        val envelope = seal(
+            sender,
+            MessageType.ACTION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "durable-action",
+        )
+
+        assertEquals(DeliveryOutcome.DROPPED, channel.deliver(envelope))
+        assertFalse(dedup.seen("durable-action"))
+        assertEquals(DeliveryOutcome.DROPPED, channel.deliver(envelope))
     }
 
     @Test

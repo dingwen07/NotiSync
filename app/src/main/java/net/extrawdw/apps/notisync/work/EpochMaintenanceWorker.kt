@@ -9,7 +9,7 @@ import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import net.extrawdw.apps.notisync.NotiSyncApp
-import net.extrawdw.apps.notisync.foundation.RotationManager
+import net.extrawdw.notisync.peer.foundation.RotationManager
 import java.util.concurrent.TimeUnit
 
 /**

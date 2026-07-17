@@ -75,6 +75,7 @@ dependencies {
     // compileOnly Tink in :protocol-crypto on the Android side.
     implementation(project(":protocol"))
     implementation(project(":protocol-crypto"))
+    implementation(project(":peer-core"))
     implementation(libs.tink.android)
 
     // Compose / Material 3 Expressive

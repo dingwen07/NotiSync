@@ -18,6 +18,12 @@ Kotlin/Ktor broker, so the wire format and signature verification can never drif
 :protocol-crypto  Pure-Kotlin/JVM. Tink-based envelope sealing/opening (random DEK → AES-256-GCM
                   body + HPKE per-recipient DEK), ECDSA-P256 signing/verification, client-id
                   derivation. Shared verbatim by client and server.
+:peer-core        Shared JVM peer engine: secure channel, signed trust store and convergence,
+                  pairing, key rotation, broker HTTP/WebSocket client, and platform ports.
+:notisync-local-api
+                  Versioned JSON DTOs for the process-scoped local Unix-socket API.
+:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon,
+                  the `notisync` peer-management CLI, and the `nsrun` command wrapper.
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
@@ -97,6 +103,67 @@ To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file 
 `app/google-services.json` (for the `extrawdw-notifly` Firebase project) is already in place.
 In **Settings → Broker URL**, point the app at your broker. From the Android emulator, use
 `ws://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
+
+### Desktop daemon and NotiSync Run
+
+Build the Linux/macOS distribution and put its three launchers on `PATH`:
+
+```bash
+./gradlew :notisyncd:installDist
+export PATH="$PWD/notisyncd/build/install/notisyncd/bin:$PATH"
+
+notisyncd start                 # detached; plain `notisyncd` stays in the foreground
+notisync status
+notisync config set device-name "Workstation"
+notisync pair show              # pairing link plus a terminal QR code
+notisync pair accept LINK       # add an own device; use --other for another user
+notisync devices list
+
+nsrun -- git commit             # preserves interactive terminal/PTY behavior
+nsrun --update-interval 15s -- ./long-build
+```
+
+On-demand startup is persistent: when `notisync` or `nsrun` launches `notisyncd`, closing that
+client does not stop the daemon or its WebSocket receive/reconnect loop. Use `notisyncd stop`
+explicitly. Desktop process-title tools show the long-lived peer as `notisyncd` and the wrapper as
+`nsrun`. On macOS the distribution uses universal native launchers that host the configured Java
+21 runtime in-process, so Activity Monitor and `ps -o ucomm` no longer report them as `java`.
+
+`nsrun` starts `notisyncd` on demand but always starts the child command even if reporting is
+unavailable. It records a private, sequence-preserving NDJSON terminal log under
+`~/.notisync/runs/`, detects progress and likely input waits, and sends completion status back to
+trusted display-capable devices. Incoming notification dismissals do not signal the child; explicit
+Interrupt and Terminate actions do.
+
+Desktop configuration uses GnuPG-style, one-option-per-line files rather than JSON. The daemon reads
+only `~/.notisync/notisyncd.conf`; `nsrun` reads only `~/.notisync/nsrun.conf`:
+
+```text
+# ~/.notisync/notisyncd.conf
+broker-url "wss://notisync-api.extrawdw.net"
+device-name "Workstation"
+platform-name "Linux x86_64"
+auto-apply-trusted-device-tables no
+websocket-ping-seconds 30
+```
+
+```text
+# ~/.notisync/nsrun.conf
+update-interval-seconds 30
+stuck-after-seconds 300
+pty auto
+log-retention-days 30
+log-max-bytes 104857600
+```
+
+The daemon defaults `device-name` to the operating-system hostname. Use `notisync config get` and
+`notisync config set device-name NAME` (or the broader `notisyncd config get/set` interface) for
+daemon settings, and `nsrun config get/set` for Run settings.
+`nsrun config` never contacts or starts the daemon. Optional OpenAI-compatible LLM settings, including
+the literal API key, live only in `nsrun.conf` and are used only when `--llm` is passed. The initial
+desktop key provider deliberately stores unencrypted key material under
+`~/.notisync/private-keys-v1/`; key operations are behind a provider boundary for future OS-keychain
+or GnuPG-backed implementations.
 
 ## Pairing
 

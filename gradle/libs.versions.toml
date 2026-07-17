@@ -9,6 +9,11 @@ jvmTarget = "21"
 serialization = "1.9.0"   # pinned: 1.10/1.11 require Kotlin 2.3+
 coroutines = "1.11.0"
 tink = "1.22.0"
+clikt = "5.1.0"
+junixsocket = "2.10.1"
+pty4j = "0.13.4"
+jna = "5.14.0"
+slf4j = "2.0.18"
 
 # Server
 ktor = "3.5.1"
@@ -62,6 +67,11 @@ kotlinx-serialization-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-
 kotlinx-serialization-json = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-json", version.ref = "serialization" }
 kotlinx-serialization-cbor = { group = "org.jetbrains.kotlinx", name = "kotlinx-serialization-cbor", version.ref = "serialization" }
 kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "coroutines" }
+clikt = { group = "com.github.ajalt.clikt", name = "clikt", version.ref = "clikt" }
+junixsocket-core = { group = "com.kohlschutter.junixsocket", name = "junixsocket-core", version.ref = "junixsocket" }
+pty4j = { group = "org.jetbrains.pty4j", name = "pty4j", version.ref = "pty4j" }
+jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 
 # --- Crypto (Tink): tink (JVM) for server, tink-android for app; shared module uses compileOnly ---
 tink = { group = "com.google.crypto.tink", name = "tink", version.ref = "tink" }

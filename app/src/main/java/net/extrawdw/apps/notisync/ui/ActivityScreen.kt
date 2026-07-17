@@ -25,7 +25,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.ActivityEvent
-import net.extrawdw.apps.notisync.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale

@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 16 promoted ongoing notifications (Live Updates). The sender still has to request
+         promotion on each eligible notification; the system/user remains the final arbiter. -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <!-- Lets a mirrored CallStyle notification carry a full-screen intent (the platform requires a CallStyle
          notification to be a foreground service OR have an FSI, else it throws at post). On Android 14+ this is
          a user-grantable special access; when ungranted the mirrored call is shown as a heads-up, not full screen. -->

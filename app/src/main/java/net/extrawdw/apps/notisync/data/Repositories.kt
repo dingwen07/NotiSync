@@ -17,7 +17,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
-import net.extrawdw.apps.notisync.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** Global app + transport settings, persisted in Preferences DataStore. */

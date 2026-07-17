@@ -146,7 +146,7 @@ class MainActivity : ComponentActivity() {
         // QR-launched task that's the original pairing deep link. Ignore it, otherwise every
         // return-from-Recents would surface the trust dialog again.
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
-        val payload = PairingDeepLinks.payloadFrom(intent.data) ?: return
+        val payload = PairingDeepLinks.payloadFrom(intent.dataString) ?: return
         pendingPairingPayload.value = payload
         // Consume the link so the same intent can't re-trigger pairing on a later recreation
         // (e.g. a configuration change, which restarts the activity with this same intent).

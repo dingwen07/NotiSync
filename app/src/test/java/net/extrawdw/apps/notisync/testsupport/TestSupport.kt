@@ -67,7 +67,9 @@ class CapturingTransport : Transport {
     override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? =
         null
 
-    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
+    override suspend fun runLiveDelivery(
+        onEnvelope: (Envelope) -> net.extrawdw.notisync.protocol.LiveDeliveryDisposition
+    ) = Unit
 }
 
 /**

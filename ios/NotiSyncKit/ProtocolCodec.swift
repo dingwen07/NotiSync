@@ -310,7 +310,9 @@ nonisolated enum KMPProtocolBridge {
             mediaSeekMs: nil,
             mediaCustomAction: nil,
             mediaVolume: nil,
-            actedAt: value.actedAt
+            actedAt: value.actedAt,
+            actionGeneration: value.actionGeneration.map { KotlinLong(longLong: $0) },
+            actionToken: value.actionToken
         )
     }
 
@@ -560,11 +562,15 @@ nonisolated enum KMPProtocolBridge {
             remoteInput: value.remoteInput,
             remoteInputLabel: value.remoteInputLabel,
             semanticAction: Int(value.semanticAction),
-            showsUserInterface: value.showsUserInterface
+            showsUserInterface: value.showsUserInterface,
+            actionGeneration: value.actionGeneration?.int64Value,
+            actionToken: value.actionToken
         )
     }
 
     static func fromKmp(_ value: NotiSyncProtocol.CapturedNotification) throws -> CapturedNotification {
+        // value.liveUpdate is an Android-only presentation hint. Decode it in shared KMP so the wire remains
+        // forward compatible, but deliberately leave it out of the native iOS presentation model.
         CapturedNotification(
             sourceClientId: string(value.sourceClientId),
             sourceKey: value.sourceKey,

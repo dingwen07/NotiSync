@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
+import net.extrawdw.apps.notisync.analytics.AndroidPeerTelemetry
 import net.extrawdw.apps.notisync.analytics.PerfSpan
 import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.analytics.perfTrace
@@ -71,16 +72,16 @@ import net.extrawdw.apps.notisync.appicon.ShippedIcons
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
-import net.extrawdw.apps.notisync.channel.DeliveryOutcome
-import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.notisync.peer.channel.DeliveryOutcome
+import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
-import net.extrawdw.apps.notisync.foundation.RotationManager
-import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
+import net.extrawdw.notisync.peer.foundation.RotationManager
+import net.extrawdw.notisync.peer.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.apps.notisync.notification.capture.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.capture.GraphicsPipeline
@@ -90,9 +91,9 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorChannels
 import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
-import net.extrawdw.apps.notisync.transport.BrokerClient
-import net.extrawdw.apps.notisync.transport.DeliveryMode
-import net.extrawdw.apps.notisync.transport.ifKnown
+import net.extrawdw.notisync.peer.transport.BrokerClient
+import net.extrawdw.notisync.peer.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.ifKnown
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
@@ -101,6 +102,7 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
+import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
@@ -259,6 +261,7 @@ class AppGraph(private val app: Application) {
         val selfEpoch = trust.advanceSelfEpoch(1)
         epochHpke = EpochHpkeKeyManager(app, vault).apply { loadOrCreate(selfEpoch) }
         operational = AndroidOperationalSigner.loadOrCreate(identity.clientId, selfEpoch)
+        val peerTelemetry = AndroidPeerTelemetry()
         transport = BrokerClient(
             signer = identity,
             operationalSigner = { operational },
@@ -267,6 +270,7 @@ class AppGraph(private val app: Application) {
             clientKeyEpochProvider = ::buildClientKeyEpochBlob,
             tokenStore = KeyVaultAuthTokenStore(app, vault),
             scope = scope,
+            telemetry = peerTelemetry,
         )
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)
@@ -337,6 +341,7 @@ class AppGraph(private val app: Application) {
                     deliveryMode = deliveryMode.ifKnown(),
                 )
             },
+            telemetry = peerTelemetry,
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
             onUnresolvedSender = { id ->
@@ -571,7 +576,12 @@ class AppGraph(private val app: Application) {
             // our broadcast actually reaches it (the pull is the bootstrap; the broadcast is anti-entropy).
             runCatching { foundationEngine?.convergeKeyEpochs() }
             runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster + key-epoch
-            transport.runLiveDelivery { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
+            transport.runLiveDelivery {
+                when (secureChannel?.deliver(it, DeliveryMode.WEBSOCKET)) {
+                    DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> LiveDeliveryDisposition.ACK
+                    DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED, null -> LiveDeliveryDisposition.RETRY
+                }
+            }
         }
         tickRotation() // advance any staged rotation across an activation/retirement boundary
     }

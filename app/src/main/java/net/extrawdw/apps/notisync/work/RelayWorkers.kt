@@ -14,7 +14,7 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.data.MessageStore
-import net.extrawdw.apps.notisync.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import java.util.concurrent.TimeUnit
 
 /**

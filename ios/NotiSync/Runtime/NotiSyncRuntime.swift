@@ -393,6 +393,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             let actions = info["actions"] as? [[String: Any]]
             let action = actions?.first { ($0["index"] as? Int) == index }
             let title = action?["title"] as? String
+            let actionGeneration = (action?["actionGeneration"] as? NSNumber)?.int64Value
+            let actionToken = action?["actionToken"] as? String
             let isRemoteInput = (action?["remoteInput"] as? Bool) == true
             let text = (response as? UNTextInputNotificationResponse)?.userText
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -401,7 +403,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             await sendMirrorAction(
                 ActionEvent(sourceClientId: scid, sourceKey: sk, kind: .PERFORM, actionIndex: index,
                             actionTitle: title, remoteInputText: isRemoteInput ? text : nil,
-                            actedAt: NotiSyncEngine.nowMillis()))
+                            actedAt: NotiSyncEngine.nowMillis(), actionGeneration: actionGeneration,
+                            actionToken: actionToken))
         }
     }
 

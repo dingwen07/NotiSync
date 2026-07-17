@@ -495,8 +495,9 @@ private fun DeviceRow(
                         )
                     }
                     // Permanently forgettable only after the tombstone has outlived the stale-trust window.
-                    val canPurge = device.revokedAt != null &&
-                            now - device.revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
+                    val revokedAt = device.revokedAt
+                    val canPurge = revokedAt != null &&
+                            now - revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
                     IconButton(
                         onClick = { onPurge(device.clientId) },
                         enabled = canPurge && enabled

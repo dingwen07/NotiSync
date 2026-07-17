@@ -1,7 +1,9 @@
 package net.extrawdw.apps.notisync.analytics
 
+import android.util.Log
 import com.google.firebase.perf.FirebasePerformance
 import com.google.firebase.perf.metrics.Trace
+import net.extrawdw.notisync.peer.ports.PeerTelemetry
 
 /**
  * Crash-proof, opt-out-aware wrapper around a Firebase Performance custom [Trace].
@@ -50,5 +52,26 @@ internal inline fun <T> perfTrace(name: String, block: (PerfSpan) -> T): T {
         block(span)
     } finally {
         span.stop()
+    }
+}
+
+/** Android observability adapter for the platform-neutral peer runtime. */
+class AndroidPeerTelemetry : PeerTelemetry {
+    override fun warning(component: String, message: String) {
+        Log.w(component, message)
+    }
+
+    override fun event(
+        name: String,
+        attributes: Map<String, String>,
+        metrics: Map<String, Long>,
+    ) {
+        val span = perfSpan(name)
+        try {
+            attributes.forEach(span::attr)
+            metrics.forEach(span::metric)
+        } finally {
+            span.stop()
+        }
     }
 }

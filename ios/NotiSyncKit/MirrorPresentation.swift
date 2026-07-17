@@ -309,9 +309,13 @@ nonisolated enum MirrorPresentation {
             // action keyed by index (title = the echo the origin verifies before firing; label + semantic
             // rebuild the native iOS category row and replay text-input responses).
             "hasContentIntent": n.hasContentIntent,
-            "actions": n.actions.map {
-                ["index": $0.index, "title": $0.title, "remoteInput": $0.remoteInput,
-                 "remoteInputLabel": $0.remoteInputLabel ?? "", "semanticAction": $0.semanticAction]
+            "actions": n.actions.map { action -> [String: Any] in
+                var item: [String: Any] =
+                    ["index": action.index, "title": action.title, "remoteInput": action.remoteInput,
+                     "remoteInputLabel": action.remoteInputLabel ?? "", "semanticAction": action.semanticAction]
+                if let generation = action.actionGeneration { item["actionGeneration"] = generation }
+                if let token = action.actionToken { item["actionToken"] = token }
+                return item
             },
         ]
         return info

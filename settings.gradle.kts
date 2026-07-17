@@ -27,6 +27,9 @@ rootProject.name = "NotiSync"
 // Shared protocol + crypto consumed verbatim by both the Android app and the Ktor server.
 include(":protocol")
 include(":protocol-crypto")
+include(":peer-core")
+include(":notisync-local-api")
+include(":notisyncd")
 include(":server")
 
 // Android client.

@@ -61,13 +61,16 @@ data class RelayAck(
 
 /**
  * The pluggable client-integrity methods the broker can verify, named by
- * [IntegrityVerificationRequest.attestationType]. [FIREBASE_APP_CHECK] is the live method (App Check uses
- * Play Integrity / App Attest internally on the device); [APPLE_APP_ATTEST] is reserved for a future native
- * path. [PLAY_INTEGRITY] is the retired legacy method: the broker no longer verifies it (the direct Play
- * Integrity decode was removed), but the constant is kept as the historical wire/metrics label and the
- * absent-field default for old requests.
+ * [IntegrityVerificationRequest.attestationType]. [FIREBASE_APP_CHECK] is the live mobile method (App Check
+ * uses Play Integrity / App Attest internally on the device); [APPLE_APP_ATTEST] is reserved for a future
+ * native path. [NONE] explicitly represents a client without a platform attestor and is usable only when the
+ * broker is lenient. [PLAY_INTEGRITY] is the retired legacy method: the broker no longer verifies it (the
+ * direct Play Integrity decode was removed), but the constant is kept as the historical wire/metrics label
+ * and the absent-field default for old requests.
  */
 object AttestationType {
+    /** No platform attestation is available. Accepted only by brokers configured for lenient integrity. */
+    const val NONE = "none"
     /** Retired: the broker no longer has a Play Integrity verifier. Kept only as a legacy label/default. */
     const val PLAY_INTEGRITY = "playIntegrity"
     const val FIREBASE_APP_CHECK = "firebaseAppCheck"

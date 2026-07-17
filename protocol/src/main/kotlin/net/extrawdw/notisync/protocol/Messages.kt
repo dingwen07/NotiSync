@@ -113,6 +113,10 @@ data class NotificationAction(
     /** Origin hint that performing this opens UI *there* (Android `showsUserInterface`) — the
      *  consumer should surface "check on <origin device>" feedback after sending the event. */
     val showsUserInterface: Boolean = false,
+    /** Optional origin-issued generation for replay-safe local integrations such as NotiSync Run. */
+    val actionGeneration: Long? = null,
+    /** Opaque origin-issued capability, echoed only in the encrypted [ActionEvent]. */
+    val actionToken: String? = null,
 )
 
 /** One message in a MessagingStyle conversation. A null [sender] denotes the local user ("you"). */
@@ -137,6 +141,33 @@ data class ConversationMessage(
 data class MediaCustomAction(
     val action: String,
     val name: String = "",
+)
+
+/**
+ * Progress attached to a promoted ongoing notification. [current] and [total] intentionally use
+ * [Long] so producers can report byte/item counts without narrowing them to Android's `Int`-sized
+ * progress API. A consumer clamps or scales the pair for its native renderer. When
+ * [indeterminate] is true, [current] and [total] are ignored; otherwise a determinate presentation
+ * requires both values and a positive [total].
+ */
+@Serializable
+data class NotificationProgress(
+    val current: Long? = null,
+    val total: Long? = null,
+    val indeterminate: Boolean = false,
+)
+
+/**
+ * Optional presentation metadata for Android 16 promoted ongoing ("Live Update") notifications.
+ * It is nested and nullable so older peers ignore one unknown field, while notifications from
+ * older producers decode with no change in behavior. Non-Android consumers may ignore this hint.
+ */
+@Serializable
+data class NotificationLiveUpdate(
+    val requestPromotedOngoing: Boolean = false,
+    val progress: NotificationProgress? = null,
+    /** Very short text for Android's promoted-notification chip (Android recommends <= 7 chars). */
+    val shortCriticalText: String? = null,
 )
 
 /**
@@ -306,6 +337,10 @@ data class CapturedNotification(
      *  ticks still ride that quiet DATA_SYNC channel; this flag is only set for the discrete, meaningful
      *  changes. False for any first post / plain capture, which alerts normally. */
     val silentUpdate: Boolean = false,
+
+    // --- Promoted ongoing / Live Update presentation (appended; null from an older producer) ---
+    /** Android 16 Live Update metadata. Other platforms deliberately ignore this optional hint. */
+    val liveUpdate: NotificationLiveUpdate? = null,
 )
 
 /** Idempotent dismissal: removing the mirrored notification keyed by ([sourceClientId], [sourceKey]). */
@@ -373,6 +408,10 @@ data class ActionEvent(
     val mediaVolume: Int? = null,
     /** Source-clock time of the user's press. */
     val actedAt: Long,
+    /** Echo of [NotificationAction.actionGeneration], when supplied by the origin. */
+    val actionGeneration: Long? = null,
+    /** Echo of [NotificationAction.actionToken], when supplied by the origin. */
+    val actionToken: String? = null,
 )
 
 /** Direction of an [AssetSync] item in the private-asset repair flow. */

@@ -3,15 +3,15 @@ package net.extrawdw.apps.notisync.domain
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.analytics.PerfSpan
-import net.extrawdw.apps.notisync.channel.InboundMessage
-import net.extrawdw.apps.notisync.channel.Recipients
-import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.notisync.peer.channel.InboundMessage
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
-import net.extrawdw.apps.notisync.foundation.SendPolicy
-import net.extrawdw.apps.notisync.transport.ifKnown
+import net.extrawdw.notisync.peer.foundation.SendPolicy
+import net.extrawdw.notisync.peer.transport.ifKnown
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.MediaCommand
@@ -402,6 +402,8 @@ class MirrorEngine(
         actionIndex: Int,
         actionTitle: String,
         remoteInputText: String? = null,
+        actionGeneration: Long? = null,
+        actionToken: String? = null,
     ): Boolean = sendAction(
         ActionEvent(
             sourceClientId = sourceClientId,
@@ -411,6 +413,8 @@ class MirrorEngine(
             actionTitle = actionTitle,
             remoteInputText = remoteInputText,
             actedAt = now(),
+            actionGeneration = actionGeneration,
+            actionToken = actionToken,
         )
     )
 

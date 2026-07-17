@@ -3,6 +3,9 @@ package net.extrawdw.apps.notisync.integrity
 import com.google.android.gms.tasks.Task
 import com.google.firebase.appcheck.FirebaseAppCheck
 import kotlinx.coroutines.suspendCancellableCoroutine
+import net.extrawdw.notisync.peer.ports.IntegrityEvidence
+import net.extrawdw.notisync.peer.ports.IntegrityEvidenceProvider
+import net.extrawdw.notisync.protocol.AttestationType
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
@@ -13,7 +16,7 @@ import kotlin.coroutines.resumeWithException
  * against the App Check JWKS. The provider factory is variant-specific (Play Integrity in release, the debug
  * provider in debug builds) — see the `appCheckProviderFactory()` in src/release and src/debug.
  */
-class AppCheckAttestor {
+class AppCheckAttestor : IntegrityEvidenceProvider {
     private val appCheck = FirebaseAppCheck.getInstance().apply {
         installAppCheckProviderFactory(appCheckProviderFactory())
         setTokenAutoRefreshEnabled(true)
@@ -21,6 +24,11 @@ class AppCheckAttestor {
 
     /** A current App Check token (the SDK caches and auto-refreshes it). Throws on failure. */
     suspend fun token(): String = appCheck.getAppCheckToken(false).await().token
+
+    override suspend fun evidence(): IntegrityEvidence = IntegrityEvidence(
+        type = AttestationType.FIREBASE_APP_CHECK,
+        token = token(),
+    )
 }
 
 private suspend fun <T> Task<T>.await(): T =

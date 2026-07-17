@@ -4,9 +4,9 @@ import android.annotation.SuppressLint
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
-import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.apps.notisync.work.WakeFetchWorker
-import net.extrawdw.apps.notisync.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import java.util.Base64

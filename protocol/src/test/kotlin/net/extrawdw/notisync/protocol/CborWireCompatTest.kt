@@ -26,6 +26,18 @@ import org.junit.Test
  */
 class CborWireCompatTest {
 
+    /** CapturedNotification's pre-Live-Update wire shape, sufficient to exercise mixed-version decode. */
+    @Serializable
+    private data class LegacyCapturedNotification(
+        val sourceClientId: ClientId,
+        val sourceKey: String,
+        val packageName: String,
+        val appLabel: String,
+        val title: String? = null,
+        val text: String? = null,
+        val postTime: Long,
+    )
+
     @Serializable
     private enum class LegacyCapability {
         CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION,
@@ -132,6 +144,7 @@ class CborWireCompatTest {
         assertFalse(bytes.containsKey("onlyAlertOnce"))
         assertFalse(bytes.containsKey("actions"))
         assertFalse(bytes.containsKey("hasContentIntent"))
+        assertFalse(bytes.containsKey("liveUpdate"))
         // Self-calibrating regression guard: flipping encodeDefaults back to true roughly triples the size.
         val lean = bytes.size
         val fat = legacyFat.encodeToByteArray(notif).size
@@ -158,6 +171,30 @@ class CborWireCompatTest {
         )
         assertEquals(withActions, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(withActions)))
         assertEquals(withActions, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(withActions)))
+    }
+
+    @Test
+    fun mixedFleet_liveUpdateIsOptionalAndIgnoredByOlderReader() {
+        val old = LegacyCapturedNotification(
+            sourceClientId = ClientId("desktop"), sourceKey = "run", packageName = "notisync.run",
+            appLabel = "NotiSync Run", title = "Build", text = "Starting", postTime = 1L,
+        )
+        val decodedByCurrent = codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(old))
+        assertEquals(old.sourceKey, decodedByCurrent.sourceKey)
+        assertEquals(old.title, decodedByCurrent.title)
+        assertEquals(null, decodedByCurrent.liveUpdate)
+
+        val current = simpleNotif().copy(
+            isOngoing = true,
+            liveUpdate = NotificationLiveUpdate(
+                requestPromotedOngoing = true,
+                progress = NotificationProgress(current = 7L, total = 10L),
+                shortCriticalText = "70%",
+            ),
+        )
+        val decodedByOld = legacyFat.decodeFromByteArray<LegacyCapturedNotification>(codec.encodeToByteArray(current))
+        assertEquals(current.sourceKey, decodedByOld.sourceKey)
+        assertEquals(current.title, decodedByOld.title)
     }
 
     @Test

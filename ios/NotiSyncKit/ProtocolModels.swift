@@ -45,6 +45,7 @@ nonisolated enum SignedType {
 }
 
 nonisolated enum AttestationType {
+    static let none = "none"
     static let playIntegrity = "playIntegrity"
     static let firebaseAppCheck = "firebaseAppCheck"
     static let appleAppAttest = "appleAppAttest"
@@ -156,6 +157,10 @@ nonisolated struct NotificationAction: Sendable {
     var semanticAction: Int = 0
     /// Origin hint that performing this opens UI *there* (not on this device).
     var showsUserInterface: Bool = false
+    /// Optional replay-safe generation issued by the origin.
+    var actionGeneration: Int64?
+    /// Opaque capability echoed only when the user performs this action.
+    var actionToken: String?
 }
 
 nonisolated enum ActionKind: String, Sendable {
@@ -180,6 +185,8 @@ nonisolated struct ActionEvent: Sendable {
     /// Free-form reply text for a remote-input action.
     var remoteInputText: String?
     var actedAt: Int64
+    var actionGeneration: Int64?
+    var actionToken: String?
 }
 
 nonisolated struct ConversationMessage: Sendable {
@@ -204,6 +211,7 @@ nonisolated struct PrivateAssetRef: Sendable {
 
 /// The normalized notification body (decoded from a NOTIFICATION envelope). We decode the fields the
 /// iOS mirror renders; unknown fields are ignored (CBOR decode is tolerant), matching kotlinx semantics.
+/// In particular, Android promoted-ongoing `liveUpdate` metadata is intentionally not represented here.
 nonisolated struct CapturedNotification: Sendable {
     var sourceClientId: String
     var sourceKey: String

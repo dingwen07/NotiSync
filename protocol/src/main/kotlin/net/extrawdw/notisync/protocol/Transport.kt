@@ -40,7 +40,7 @@ interface Transport {
      * completes leaves the envelope queued in the relay for redelivery (the channel dedups by message
      * id, so a redelivery is harmless).
      */
-    suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit)
+    suspend fun runLiveDelivery(onEnvelope: (Envelope) -> LiveDeliveryDisposition)
 
     /**
      * Upload an opaque private-asset blob (AEAD ciphertext) under ([sourceClientId], [assetId]).
@@ -51,4 +51,10 @@ interface Transport {
 
     /** Fetch an opaque private-asset blob, or null if the broker no longer has it. */
     suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray?
+}
+
+/** Whether a live relay item is durably handled and may be removed from the broker queue. */
+enum class LiveDeliveryDisposition {
+    ACK,
+    RETRY,
 }
