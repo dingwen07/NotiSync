@@ -38,6 +38,10 @@ nonisolated struct TrustedPeerRecord: Codable, Sendable {
     var updatedAt: Int64
     var epochs: [EpochRecord]
     var currentEpoch: Int
+    /// Optional for migration: old trust files did not persist peer capability declarations.
+    var capabilities: [Capability]? = nil
+    /// Profile LWW clock, separate from trust-state [updatedAt]. Optional for migration.
+    var profileUpdatedAt: Int64? = nil
     /// Monotonic anti-rollback floor. Optional for old records → 0 (no floor yet). (#1)
     var floor: Int? = nil
     /// Local provenance: the peer whose roster broadcast first surfaced this device to us (a mesh
@@ -53,6 +57,8 @@ nonisolated struct TrustedPeerRecord: Codable, Sendable {
     }
 
     var isTrusted: Bool { status == TrustStatus.TRUSTED.rawValue }
+    var announcedCapabilities: [Capability] { capabilities ?? [] }
+    var profileRevision: Int64 { profileUpdatedAt ?? 0 }
     /// True when this peer is the broker's Experience Mode demo device, identified by the server-set,
     /// identity-signed card `platform` (pinned verbatim at pairing). Experience peers are pruned (deleted,
     /// not revoked) before a new Experience session and never appear in — nor receive — the trust roster.
@@ -107,11 +113,14 @@ nonisolated final class TrustStore {
         var record = peers[card.clientId] ?? TrustedPeerRecord(
             clientId: card.clientId, identitySpki: card.identityPublicKey, displayName: card.displayName,
             platform: card.platform, status: TrustStatus.TRUSTED.rawValue, ownDevice: ownDevice,
-            updatedAt: nowMillis, epochs: [], currentEpoch: 0
+            updatedAt: nowMillis, epochs: [], currentEpoch: 0,
+            capabilities: card.capabilities, profileUpdatedAt: card.createdAt
         )
         record.identitySpki = card.identityPublicKey
         record.displayName = card.displayName
         record.platform = card.platform
+        record.capabilities = card.capabilities
+        record.profileUpdatedAt = max(record.profileRevision, card.createdAt)
         record.ownDevice = ownDevice
         record.status = TrustStatus.TRUSTED.rawValue
         record.updatedAt = nowMillis
@@ -167,11 +176,13 @@ nonisolated final class TrustStore {
     }
 
     /// Apply a peer's mutable profile (a `ProfileUpdate` rename / platform change). (#5)
-    func setProfile(_ clientId: String, displayName: String, platform: String, at nowMillis: Int64) {
+    func setProfile(_ clientId: String, displayName: String, platform: String,
+                    capabilities: [Capability], at nowMillis: Int64) {
         guard var record = peers[clientId] else { return }
         record.displayName = displayName
         record.platform = platform
-        record.updatedAt = nowMillis
+        record.capabilities = capabilities
+        record.profileUpdatedAt = nowMillis
         peers[clientId] = record
     }
 
@@ -264,6 +275,11 @@ nonisolated final class TrustStore {
         if record.identitySpki.isEmpty { record.identitySpki = card.identityPublicKey; changed = true }
         if record.displayName.isEmpty { record.displayName = card.displayName; changed = true }
         if record.platform.isEmpty { record.platform = card.platform; changed = true }
+        if record.capabilities == nil {
+            record.capabilities = card.capabilities
+            record.profileUpdatedAt = max(record.profileRevision, card.createdAt)
+            changed = true
+        }
         guard changed else { return false }
         peers[card.clientId] = record
         return true
@@ -283,7 +299,9 @@ nonisolated final class TrustStore {
                 clientId: clientId, identitySpki: card?.identityPublicKey ?? Data(),
                 displayName: card?.displayName ?? "", platform: card?.platform ?? "",
                 status: status.rawValue, ownDevice: ownDevice, updatedAt: at,
-                epochs: [], currentEpoch: 0, floor: nil, introducedBy: introducedBy)
+                epochs: [], currentEpoch: 0,
+                capabilities: card?.capabilities, profileUpdatedAt: card?.createdAt,
+                floor: nil, introducedBy: introducedBy)
         }
     }
 

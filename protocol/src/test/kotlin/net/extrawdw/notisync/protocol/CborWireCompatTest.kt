@@ -3,10 +3,13 @@ package net.extrawdw.notisync.protocol
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.encodeToByteArray
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.Serializable
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertThrows
 import org.junit.Test
 
 /**
@@ -22,6 +25,17 @@ import org.junit.Test
  * [legacyFat] simulates a peer (or a persisted blob) produced by the pre-change config.
  */
 class CborWireCompatTest {
+
+    @Serializable
+    private enum class LegacyCapability {
+        CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION,
+    }
+
+    @Serializable
+    private data class CurrentCapabilityList(val capabilities: List<Capability>)
+
+    @Serializable
+    private data class LegacyCapabilityList(val capabilities: List<LegacyCapability>)
 
     private val codec = ProtocolCodec.cbor // production: encodeDefaults = false
     private val legacyFat = Cbor { ignoreUnknownKeys = true; encodeDefaults = true } // pre-change peer
@@ -52,6 +66,17 @@ class CborWireCompatTest {
         category = MirrorCategory.MESSAGE, importance = MirrorImportance.HIGH, postTime = 1_750_000_000_000L,
         channelId = "messages", channelName = "Messages",
     )
+
+    @Test
+    fun legacyDecoder_rejectsUnknownCapabilityWithoutChangingTheWireFormat() {
+        val bytes = codec.encodeToByteArray(
+            CurrentCapabilityList(listOf(Capability.CAPABILITY_ROUTING_V1)),
+        )
+
+        assertThrows(SerializationException::class.java) {
+            legacyFat.decodeFromByteArray<LegacyCapabilityList>(bytes)
+        }
+    }
 
     @Test
     fun discriminators_v_and_suite_stayOnWire() {

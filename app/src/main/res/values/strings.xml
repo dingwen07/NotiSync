@@ -236,6 +236,32 @@
     <string name="device_added_by">Added by %1$s</string>
     <string name="device_approve_hint">Approve only if it matches the device\'s own verification number.</string>
     <string name="device_removed_by">Removed by %1$s</string>
+    <!-- Read-only cryptographic details shown after tapping a device row. -->
+    <string name="device_details_key_epoch">Key Epoch</string>
+    <string name="device_details_verified">✓ Verified</string>
+    <string name="device_details_not_verified">✗ Not verified</string>
+    <string name="device_details_operational_unavailable">Operational Key · Not available</string>
+    <string name="device_details_not_before">Not Before</string>
+    <string name="device_details_not_after">Not After</string>
+    <string name="device_details_minimum_epoch">Minimum Epoch</string>
+    <string name="device_details_immediate">Immediate</string>
+    <string name="device_details_no_expiry">No expiry</string>
+    <string name="device_details_capabilities">Capabilities</string>
+    <string name="device_details_platform_android">Android</string>
+    <string name="device_details_platform_ios">iOS</string>
+    <string name="device_details_platform_web">Web</string>
+    <string name="device_details_platform_desktop">Desktop</string>
+    <string name="device_details_platform_unknown">Unknown platform</string>
+    <string name="device_capability_capture">Capture</string>
+    <string name="device_capability_display">Display</string>
+    <string name="device_capability_dismiss_sync">Dismiss sync</string>
+    <string name="device_capability_provide_assets">Provide assets</string>
+    <string name="device_capability_background_wake">Background wake</string>
+    <string name="device_capability_foreground_connection">Foreground connection</string>
+    <string name="device_capability_routing">Capability routing</string>
+    <string name="device_capability_push_filtering">Push filtering</string>
+    <string name="device_capability_notification_updates">Notification updates</string>
+    <string name="device_capability_android_group_summaries">Android group summaries</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>

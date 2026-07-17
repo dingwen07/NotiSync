@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 
@@ -25,14 +26,16 @@ sealed interface Recipients {
     /** Every trusted device — own AND "other" (used only by profile updates). */
     data object AllTrusted : Recipients
 
-    /** This user's own devices except specific peers and (optionally) platform families. Every own device NOT
-     *  in [excluded] (the devices that asked, over a DATA_SYNC FILTER, not to receive a capture) and whose
-     *  platform is not in [excludedPlatforms] should receive it. The platform filter keeps platform-private
-     *  render-control payloads (e.g. Android group summaries, which iOS cannot consume correctly) off those
-     *  peers; with an empty [excludedPlatforms] this is a plain own-mesh-minus-[excluded] send. */
+    /** This user's own devices except specific peers and (optionally) platform families. [excludedPlatforms]
+     *  is an unconditional policy/user gate. [legacyExcludedPlatforms] is only the compatibility fallback for
+     *  peers without CAPABILITY_ROUTING_V1; a routed peer uses [requiredCapabilities] instead. */
     data class OwnMeshFiltered(
         val excluded: Set<ClientId> = emptySet(),
         val excludedPlatforms: Set<String> = emptySet(),
+        val legacyExcludedPlatforms: Set<String> = emptySet(),
+        /** Existing requirements (for example DISPLAY) apply to every peer. New requirements apply once a
+         *  peer advertises CAPABILITY_ROUTING_V1; legacy peers use [legacyExcludedPlatforms] as fallback. */
+        val requiredCapabilities: Set<Capability> = emptySet(),
     ) : Recipients
 
     /** A single device by id (unicast: card / asset repair). */

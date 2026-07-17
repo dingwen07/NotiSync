@@ -25,8 +25,10 @@ nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
 nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
-nonisolated enum Capability: String, Sendable {
+nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
+    case CAPABILITY_ROUTING_V1, PUSH_FILTERING, DISPLAY_NOTIFICATION_UPDATES
+    case DISPLAY_ANDROID_GROUP_SUMMARIES
 }
 
 nonisolated enum TransportType: String, Sendable { case FCM, WEBSOCKET, APNS, WEBPUSH }
@@ -252,6 +254,9 @@ nonisolated struct CapturedNotification: Sendable {
     /// True when the origin can open this notification's UI on request (tap-to-open-on-origin: an
     /// `ActionKind.TAP` event). False for ANCS bridges and old producers.
     var hasContentIntent: Bool = false
+    /// Prompt transport update hint. iOS only demotes these to passive best effort; it does not advertise
+    /// PUSH_FILTERING or DISPLAY_NOTIFICATION_UPDATES until true pre-display filtering/update support exists.
+    var silentUpdate: Bool = false
 
     /// The importance that drives alerting: the source channel's importance if present, else the
     /// per-notification importance (mirrors Android `importanceOf`).

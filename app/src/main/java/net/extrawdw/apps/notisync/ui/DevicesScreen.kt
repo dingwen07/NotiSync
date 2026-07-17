@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -85,6 +86,8 @@ fun DevicesScreen(
     val otherDevices = roster.filterNot { it.ownDevice }
     // The own device whose received notification-filters sheet is open (null = closed).
     var filterSheetFor by remember { mutableStateOf<RosterDevice?>(null) }
+    // Device details are keyed by id so a live profile/key-epoch update refreshes the open sheet.
+    var detailsSheetFor by remember { mutableStateOf<ClientId?>(null) }
 
     NotiScaffold(stringResource(R.string.tab_devices)) { modifier ->
         LazyColumn(
@@ -170,7 +173,14 @@ fun DevicesScreen(
                 item {
                     DeviceListCard(
                         ownDevices, now, graph, enabled = !quarantined,
-                        onShowFilters = { filterSheetFor = it },
+                        onShowFilters = {
+                            detailsSheetFor = null
+                            filterSheetFor = it
+                        },
+                        onShowDetails = {
+                            filterSheetFor = null
+                            detailsSheetFor = it.clientId
+                        },
                     )
                 }
             }
@@ -189,7 +199,18 @@ fun DevicesScreen(
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
                 }
-                item { DeviceListCard(otherDevices, now, graph, enabled = !quarantined) }
+                item {
+                    DeviceListCard(
+                        otherDevices,
+                        now,
+                        graph,
+                        enabled = !quarantined,
+                        onShowDetails = {
+                            filterSheetFor = null
+                            detailsSheetFor = it.clientId
+                        },
+                    )
+                }
             }
         }
 
@@ -202,6 +223,15 @@ fun DevicesScreen(
                 onDismiss = { filterSheetFor = null },
             )
         }
+
+        detailsSheetFor?.let { clientId ->
+            roster.firstOrNull { it.clientId == clientId }?.let { device ->
+                DeviceDetailsSheet(
+                    device = device,
+                    onDismiss = { detailsSheetFor = null },
+                )
+            }
+        }
     }
 }
 
@@ -212,6 +242,7 @@ private fun DeviceListCard(
     graph: net.extrawdw.apps.notisync.AppGraph,
     enabled: Boolean = true,
     onShowFilters: (RosterDevice) -> Unit = {},
+    onShowDetails: (RosterDevice) -> Unit = {},
 ) {
     val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
     Card(Modifier.fillMaxWidth()) {
@@ -222,6 +253,7 @@ private fun DeviceListCard(
                     now = now,
                     enabled = enabled,
                     onShowFilters = { onShowFilters(device) },
+                    onShowDetails = { onShowDetails(device) },
                     hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                     onApprove = {
@@ -367,6 +399,7 @@ private fun DeviceRow(
     now: Long,
     enabled: Boolean = true,
     onShowFilters: () -> Unit = {},
+    onShowDetails: () -> Unit = {},
     hasFilters: Boolean = false,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
@@ -396,7 +429,10 @@ private fun DeviceRow(
     val by = device.introducedByName ?: stringResource(R.string.device_introducer_unknown)
 
     Column(
-        Modifier.fillMaxWidth().padding(16.dp),
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onShowDetails)
+            .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(8.dp),
     ) {
         Row(

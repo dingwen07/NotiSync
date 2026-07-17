@@ -11,6 +11,7 @@ import net.extrawdw.apps.notisync.data.TrustState
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
@@ -100,6 +101,8 @@ class FakeTrustState : TrustState {
 
     /** Best-known platforms for keyless peers not present in [peers]. */
     var peerPlatforms: Map<ClientId, String> = emptyMap()
+    /** Best-known capability declarations for keyless peers not present in [peers]. */
+    var peerCapabilitySets: Map<ClientId, List<Capability>> = emptyMap()
 
     /** clientId → current key-epoch blob, for [currentKeyEpochBlob] (the repair-relay source). */
     var currentKeyEpochBlobs: Map<ClientId, SignedBlob> = emptyMap()
@@ -114,6 +117,10 @@ class FakeTrustState : TrustState {
 
     override fun peerPlatform(clientId: ClientId): String? =
         peers.value.firstOrNull { it.clientId == clientId }?.platform ?: peerPlatforms[clientId]
+
+    override fun peerCapabilities(clientId: ClientId): List<Capability> =
+        peers.value.firstOrNull { it.clientId == clientId }?.capabilities
+            ?: peerCapabilitySets[clientId].orEmpty()
 
     override fun buildTrustTable(): TrustTable = table
     override fun trustedCards(): List<SignedBlob> = cards
@@ -174,6 +181,7 @@ fun peerOf(
     ownDevice: Boolean = true,
     name: String = "peer",
     platform: String = "android",
+    capabilities: List<Capability> = listOf(Capability.DISPLAY),
     profileTs: Long = 0L,
     currentEpoch: Int = 0,
 ): Peer = Peer(
@@ -183,6 +191,7 @@ fun peerOf(
     identityPublicKeyB64 = enc.encodeToString(signer.publicKeySpki),
     hpkePublicKeyB64 = enc.encodeToString(hpkePublicKey),
     addedAt = 1L,
+    capabilities = capabilities,
     profileUpdatedAt = profileTs,
     ownDevice = ownDevice,
     currentEpoch = currentEpoch,

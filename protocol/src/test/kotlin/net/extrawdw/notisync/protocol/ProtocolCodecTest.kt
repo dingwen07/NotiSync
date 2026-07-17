@@ -10,6 +10,22 @@ import org.junit.Test
 class ProtocolCodecTest {
 
     @Test
+    fun allPeerCapabilities_roundTripInClientCard() {
+        val card = ClientCard(
+            clientId = ClientId("all-capabilities"),
+            identityPublicKey = byteArrayOf(1, 2, 3),
+            displayName = "All capabilities",
+            platform = "android",
+            capabilities = Capability.entries,
+            createdAt = 1L,
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<ClientCard>(ProtocolCodec.encodeToCbor(card))
+
+        assertEquals(Capability.entries, decoded.capabilities)
+    }
+
+    @Test
     fun base32_matchesRfc4648Vector() {
         // RFC 4648 base32("foobar") = "MZXW6YTBOI"; we emit lowercase, no padding.
         assertEquals("mzxw6ytboi", Base32.encode("foobar".toByteArray()))

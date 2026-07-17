@@ -70,6 +70,14 @@ nonisolated enum EngineError: Error, LocalizedError {
     }
 }
 
+private nonisolated let iosSelfCapabilities: [Capability] = [
+    .DISPLAY,
+    .DISMISS_SYNC,
+    .BACKGROUND_WAKE,
+    .FOREGROUND_CONNECTION,
+    .CAPABILITY_ROUTING_V1,
+]
+
 nonisolated enum KeyEpochStatus: Sendable { case verified, absent, invalid }
 
 nonisolated struct PairingCandidate: Identifiable, Sendable {
@@ -217,7 +225,7 @@ nonisolated final class NotiSyncEngine: Sendable {
         let card = ClientCard(
             clientId: selfClientId, identityPublicKey: selfIdentitySpki, displayName: displayName,
             platform: NotiSyncConfig.platform,
-            capabilities: [.DISPLAY, .DISMISS_SYNC, .BACKGROUND_WAKE, .FOREGROUND_CONNECTION],
+            capabilities: iosSelfCapabilities,
             createdAt: Self.nowMillis()
         )
         let payload = ProtocolCodec.encode(card)
@@ -331,7 +339,9 @@ nonisolated final class NotiSyncEngine: Sendable {
     /// keys it by our signer id and resolves races last-writer-wins on [updatedAt]. Nil if the recipient is
     /// not a trusted, currently-sealable peer.
     func sealNotificationFilter(to recipientId: String, rules: [NotificationFilterRule], updatedAt: Int64) throws -> Envelope? {
-        guard let peer = trust().peers[recipientId], peer.isTrusted, let e = peer.sealable(now: Self.nowMillis()) else { return nil }
+        guard let peer = trust().peers[recipientId], peer.isTrusted,
+              peer.announcedCapabilities.contains(.CAPTURE),
+              let e = peer.sealable(now: Self.nowMillis()) else { return nil }
         let body = ProtocolCodec.encode(DataSync(kind: .FILTER, filter: FilterSync(rules: rules, updatedAt: updatedAt)))
         let recipient = EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
         return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
@@ -489,8 +499,12 @@ nonisolated final class NotiSyncEngine: Sendable {
     func applyProfile(_ update: ProfileUpdate, from signerId: String) -> Bool {
         guard update.clientId == signerId else { return false }
         return mutateTrust { store in
-            guard let record = store.peers[update.clientId], record.isTrusted, update.updatedAt > record.updatedAt else { return false }
-            store.setProfile(update.clientId, displayName: update.displayName, platform: update.platform, at: update.updatedAt)
+            guard let record = store.peers[update.clientId], record.isTrusted else { return false }
+            let cardFloor = CardStore.blob(update.clientId)
+                .flatMap { try? ProtocolCodec.decodeClientCard($0.payload) }?.createdAt ?? 0
+            guard update.updatedAt > max(record.profileRevision, cardFloor) else { return false }
+            store.setProfile(update.clientId, displayName: update.displayName, platform: update.platform,
+                             capabilities: update.capabilities, at: update.updatedAt)
             return true
         }
     }
@@ -608,11 +622,17 @@ nonisolated final class NotiSyncEngine: Sendable {
         let recipients = store.allTrustedRecipients(excluding: selfClientId)
         guard !recipients.isEmpty else { return nil }
         let update = ProfileUpdate(clientId: selfClientId, displayName: displayName, platform: NotiSyncConfig.platform,
-                                   capabilities: [.DISPLAY, .DISMISS_SYNC, .BACKGROUND_WAKE, .FOREGROUND_CONNECTION],
+                                   capabilities: iosSelfCapabilities,
                                    updatedAt: updatedAt)
         let body = ProtocolCodec.encode(DataSync(kind: .PROFILE, profile: update))
         return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
                                        recipients: recipients, messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
+    }
+
+    /// Stable persisted-profile input. Changes whenever the name/platform/capability declaration changes.
+    func selfProfileFingerprint(displayName: String) -> String {
+        ([displayName, NotiSyncConfig.platform] + iosSelfCapabilities.map(\.rawValue))
+            .joined(separator: "\u{1f}")
     }
 
     // MARK: Pairing (bidirectional QR / CardDelivery)

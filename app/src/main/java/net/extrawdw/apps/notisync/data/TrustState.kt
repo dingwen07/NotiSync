@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.data
 
 import kotlinx.coroutines.flow.StateFlow
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -21,6 +22,9 @@ interface TrustState {
 
     /** Best-known platform for a device, or null when we have no profile/card metadata for it. */
     fun peerPlatform(clientId: ClientId): String? = null
+
+    /** Best-known peer capability declaration, including for a trusted peer whose key epoch is missing. */
+    fun peerCapabilities(clientId: ClientId): List<Capability> = emptyList()
 
     /** This device's broadcast roster (its TRUSTED + REVOKED decisions), for anti-entropy. */
     fun buildTrustTable(): TrustTable

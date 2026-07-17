@@ -142,7 +142,7 @@ final class NotificationService: UNNotificationServiceExtension {
                     let senderImage = senderImage(for: n, message: last)
                     prepared = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                  attachments: attachments, senderImage: senderImage.data,
-                                                                 alerting: MirrorPresentation.messageShouldAlert(last),
+                                                                 alerting: !n.silentUpdate && MirrorPresentation.messageShouldAlert(last),
                                                                  categoryIdentifier: categoryIdentifier)
                     fetch = senderImage.data == nil ? senderImage.fetch : nil
                     // Record the per-message map id of the message we just displayed so the app's multi-post
@@ -172,7 +172,9 @@ final class NotificationService: UNNotificationServiceExtension {
                                                                 categoryIdentifier: categoryIdentifier)
                     fetch = icon.data == nil ? icon.fetch : nil
                 }
-                bestAttempt = filterAlert ? MirrorPresentation.passiveContent(prepared, removeActions: true) : prepared
+                bestAttempt = filterAlert
+                    ? MirrorPresentation.passiveContent(prepared, removeActions: true)
+                    : (n.silentUpdate ? MirrorPresentation.passiveContent(prepared) : prepared)
 
                 // Piggyback dismissal drain: the broker's `pnc` hint on this alert push says DISMISSAL
                 // envelopes are queued for us — pull + apply them while the NSE is awake. Runs after
@@ -222,7 +224,7 @@ final class NotificationService: UNNotificationServiceExtension {
                         let attachments = await fetchAttachments(for: last, engine: engine)
                         content = MirrorPresentation.messageContent(for: n, message: last, messageId: messageId,
                                                                     attachments: attachments, senderImage: data,
-                                                                    alerting: MirrorPresentation.messageShouldAlert(last),
+                                                                    alerting: !n.silentUpdate && MirrorPresentation.messageShouldAlert(last),
                                                                     categoryIdentifier: categoryIdentifier)
                     } else {
                         let attachments = await fetchAttachments(for: n, engine: engine)
@@ -241,8 +243,11 @@ final class NotificationService: UNNotificationServiceExtension {
                 // Removals issued by the drain are asynchronous — round-trip the center before exiting so
                 // they land even if the process is suspended right after contentHandler.
                 if perfDrain?.removedAny == true { await MirrorRemoval.settle() }
-                reportPerf(filterAlert ? "filtered" : (suppressed ? "tombstoned" : "delivered"), postTime: n.postTime)
-                finish(filterAlert ? MirrorPresentation.passiveContent(content, removeActions: true) : content)
+                reportPerf(filterAlert ? "filtered" : (suppressed ? "tombstoned" : (n.silentUpdate ? "silent_update" : "delivered")),
+                           postTime: n.postTime)
+                finish(filterAlert
+                    ? MirrorPresentation.passiveContent(content, removeActions: true)
+                    : (n.silentUpdate ? MirrorPresentation.passiveContent(content) : content))
             } catch {
                 releaseClaim(dedupId)
                 reportPerf("error")

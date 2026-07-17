@@ -4,6 +4,7 @@ import net.extrawdw.apps.notisync.channel.PeerDirectory
 import net.extrawdw.apps.notisync.channel.Recipients
 import net.extrawdw.apps.notisync.channel.SenderKey
 import net.extrawdw.apps.notisync.data.TrustState
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import java.util.Base64
@@ -39,11 +40,14 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             // Own mesh minus the devices that asked (over a FILTER) not to receive this capture, and minus any
             // platform family that can't consume it (e.g. iOS for Android group summaries).
             is Recipients.OwnMeshFiltered -> {
-                val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
                 peers.filter {
                     it.ownDevice &&
                         it.clientId !in scope.excluded &&
-                        it.platform.normalizedPlatform() !in excludedPlatforms
+                        capabilityOrLegacyPlatformAllows(
+                            it.capabilities,
+                            it.platform,
+                            scope,
+                        )
                 }
             }
             // Unicast is own-mesh only, matching the original sendCard/sendAssetSync `&& it.ownDevice`
@@ -73,22 +77,49 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             is Recipients.OwnMeshFiltered -> {
                 val remaining = needing.toSet() - scope.excluded
                 // Skip the roster re-scan when there's nothing left to repair (the steady-state case).
-                if (remaining.isEmpty()) remaining else remaining - platformExcludedIds(remaining, scope)
+                if (remaining.isEmpty()) remaining else remaining.filterTo(mutableSetOf()) { id ->
+                    capabilityOrLegacyPlatformAllows(
+                        trust.peerCapabilities(id),
+                        trust.peerPlatform(id).orEmpty(),
+                        scope,
+                    )
+                }
             }
             is Recipients.Only -> if (scope.id in needing) setOf(scope.id) else emptySet()
         }
     }
 
-    private fun platformExcludedIds(ids: Set<ClientId>, scope: Recipients.OwnMeshFiltered): Set<ClientId> {
-        val excludedPlatforms = scope.excludedPlatforms.normalizedPlatforms()
-        if (excludedPlatforms.isEmpty()) return emptySet()
-        return ids
-            .filter { id -> trust.peerPlatform(id)?.normalizedPlatform()?.let { it in excludedPlatforms } == true }
-            .toSet()
+    private fun capabilityOrLegacyPlatformAllows(
+        capabilities: List<Capability>,
+        platform: String,
+        scope: Recipients.OwnMeshFiltered,
+    ): Boolean {
+        val normalizedPlatform = platform.normalizedPlatform()
+        if (normalizedPlatform in scope.excludedPlatforms.normalizedPlatforms()) return false
+        // Existing capabilities predate capability routing and are safe to enforce across the whole fleet.
+        // The marker is needed only before relying on newly-added declarations instead of platform fallback.
+        val existingRequired = scope.requiredCapabilities.filterTo(mutableSetOf()) { it in LEGACY_CAPABILITIES }
+        if (!capabilities.containsAll(existingRequired)) return false
+        return if (Capability.CAPABILITY_ROUTING_V1 in capabilities) {
+            capabilities.containsAll(scope.requiredCapabilities)
+        } else {
+            normalizedPlatform !in scope.legacyExcludedPlatforms.normalizedPlatforms()
+        }
     }
 
     private fun Set<String>.normalizedPlatforms(): Set<String> =
         mapNotNullTo(mutableSetOf()) { it.normalizedPlatform().takeIf { normalized -> normalized.isNotEmpty() } }
 
     private fun String.normalizedPlatform(): String = trim().lowercase()
+
+    private companion object {
+        val LEGACY_CAPABILITIES = setOf(
+            Capability.CAPTURE,
+            Capability.DISPLAY,
+            Capability.DISMISS_SYNC,
+            Capability.PROVIDE_ASSETS,
+            Capability.BACKGROUND_WAKE,
+            Capability.FOREGROUND_CONNECTION,
+        )
+    }
 }

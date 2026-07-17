@@ -249,8 +249,9 @@ extension NotiSyncRuntime {
         let content = await MirrorPresentation.content(for: n, messageId: messageId, attachments: attachments,
                                                        appIcon: appIcon, communicationStyle: commAppIcons,
                                                        categoryIdentifier: categoryIdentifier)
+        let presented = n.silentUpdate ? MirrorPresentation.passiveContent(content) : content
         try? await UNUserNotificationCenter.current().add(
-            UNNotificationRequest(identifier: identifier, content: content, trigger: nil))
+            UNNotificationRequest(identifier: identifier, content: presented, trigger: nil))
         let entry = MirrorMapEntry(identifier: identifier, sourceClientId: n.sourceClientId,
                                    sourceKey: n.sourceKey, messageId: messageId, deliveryMode: mode.rawValue,
                                    isClearable: n.isClearable)
@@ -282,7 +283,7 @@ extension NotiSyncRuntime {
             guard existing[id] == nil else { continue }   // this message is already shown — don't re-post/re-alert
             let avatar = await messageAvatar(message, fallback: n)
             let attachments = await fetchAttachments(for: message)
-            let shouldAlert = i == lastIndex && !newestIsSelf
+            let shouldAlert = !n.silentUpdate && i == lastIndex && !newestIsSelf
                 && MirrorPresentation.messageShouldAlert(message)
             let content = MirrorPresentation.messageContent(for: n, message: message, messageId: messageId,
                                                             attachments: attachments, senderImage: avatar,

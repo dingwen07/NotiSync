@@ -28,6 +28,8 @@ class SettingsRepository(
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
     private val deviceNameUpdatedKey = longPreferencesKey("device_name_updated_at")
+    private val selfProfileFingerprintKey = stringPreferencesKey("self_profile_fingerprint")
+    private val selfProfileUpdatedKey = longPreferencesKey("self_profile_updated_at")
     private val batchLowKey = booleanPreferencesKey("batch_low_priority")
     private val advancedKey = booleanPreferencesKey("advanced_diagnostics")
     private val analyticsEnabledKey = booleanPreferencesKey("analytics_enabled")
@@ -54,6 +56,13 @@ class SettingsRepository(
      *  outgoing [ProfileUpdate]s so peers can apply last-writer-wins. */
     val deviceNameUpdatedAt: StateFlow<Long> =
         store.data.map { it[deviceNameUpdatedKey] ?: 0L }.stateInEager(scope, 0L)
+    private val _selfProfileUpdatedAt = MutableStateFlow(
+        runBlocking {
+            store.data.first().let { it[selfProfileUpdatedKey] ?: it[deviceNameUpdatedKey] ?: 0L }
+        }
+    )
+    /** Revision of the complete advertised profile (name, platform, and capabilities). */
+    val selfProfileUpdatedAt: StateFlow<Long> = _selfProfileUpdatedAt
     val batchLowPriority: StateFlow<Boolean> =
         store.data.map { it[batchLowKey] ?: false }.stateInEager(scope, false)
     val advancedDiagnostics: StateFlow<Boolean> =
@@ -122,6 +131,25 @@ class SettingsRepository(
     suspend fun setDeviceName(name: String) = store.edit {
         it[deviceNameKey] = name
         it[deviceNameUpdatedKey] = System.currentTimeMillis()
+    }
+
+    /**
+     * Persist the complete self-profile fingerprint and monotonically advance its LWW revision when any
+     * advertised field changes. Returns the new revision when callers must broadcast, or null when current.
+     */
+    suspend fun ensureSelfProfileRevision(fingerprint: String, now: Long = System.currentTimeMillis()): Long? {
+        var changedAt: Long? = null
+        store.edit { prefs ->
+            if (prefs[selfProfileFingerprintKey] != fingerprint || prefs[selfProfileUpdatedKey] == null) {
+                val previous = prefs[selfProfileUpdatedKey] ?: prefs[deviceNameUpdatedKey] ?: 0L
+                val revision = maxOf(now, previous + 1L)
+                prefs[selfProfileFingerprintKey] = fingerprint
+                prefs[selfProfileUpdatedKey] = revision
+                changedAt = revision
+            }
+        }
+        changedAt?.let { _selfProfileUpdatedAt.value = it }
+        return changedAt
     }
 
     suspend fun setBatchLowPriority(on: Boolean) = store.edit { it[batchLowKey] = on }

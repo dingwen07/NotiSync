@@ -227,6 +227,32 @@
     <string name="device_added_by">由 %1$s 添加</string>
     <string name="device_approve_hint">仅当它与该设备自身的验证码一致时才批准。</string>
     <string name="device_removed_by">由 %1$s 移除</string>
+    <!-- 点击设备行后显示的只读密码学详情。 -->
+    <string name="device_details_key_epoch">密钥世代</string>
+    <string name="device_details_verified">✓ 已验证</string>
+    <string name="device_details_not_verified">✗ 未验证</string>
+    <string name="device_details_operational_unavailable">操作密钥 · 不可用</string>
+    <string name="device_details_not_before">生效时间</string>
+    <string name="device_details_not_after">失效时间</string>
+    <string name="device_details_minimum_epoch">最低世代</string>
+    <string name="device_details_immediate">立即</string>
+    <string name="device_details_no_expiry">永不过期</string>
+    <string name="device_details_capabilities">功能</string>
+    <string name="device_details_platform_android">Android</string>
+    <string name="device_details_platform_ios">iOS</string>
+    <string name="device_details_platform_web">Web</string>
+    <string name="device_details_platform_desktop">桌面端</string>
+    <string name="device_details_platform_unknown">未知平台</string>
+    <string name="device_capability_capture">捕获</string>
+    <string name="device_capability_display">显示</string>
+    <string name="device_capability_dismiss_sync">同步忽略</string>
+    <string name="device_capability_provide_assets">提供资源</string>
+    <string name="device_capability_background_wake">后台唤醒</string>
+    <string name="device_capability_foreground_connection">前台连接</string>
+    <string name="device_capability_routing">功能路由</string>
+    <string name="device_capability_push_filtering">推送过滤</string>
+    <string name="device_capability_notification_updates">通知更新</string>
+    <string name="device_capability_android_group_summaries">Android 分组摘要</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>

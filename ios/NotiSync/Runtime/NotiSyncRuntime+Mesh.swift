@@ -316,11 +316,14 @@ extension NotiSyncRuntime {
     }
 
     /// #5 — broadcast this device's profile (name) to every trusted device so peers converge the rename.
-    func broadcastProfile(displayName: String? = nil, updatedAt: Int64 = NotiSyncEngine.nowMillis()) async {
+    func broadcastProfile(displayName: String? = nil, updatedAt: Int64? = nil) async {
         guard let engine, let broker else { return }
-        let name = displayName ?? settings().deviceName
+        _ = ensureSelfProfileRevision()
+        let s = settings()
+        let name = displayName ?? s.deviceName
+        let revision = updatedAt ?? s.selfProfileUpdatedAt
         let result = await Task.detached(priority: .utility) {
-            try await Self.sendProfile(displayName: name, updatedAt: updatedAt, engine: engine, broker: broker)
+            try await Self.sendProfile(displayName: name, updatedAt: revision, engine: engine, broker: broker)
         }.result
         if case let .failure(error) = result {
             record(error: error, domain: .profileBroadcast)

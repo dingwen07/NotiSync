@@ -12,6 +12,7 @@ import net.extrawdw.apps.notisync.testsupport.sealOperational
 import net.extrawdw.apps.notisync.testsupport.testChannel
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertArrayEquals
@@ -482,5 +483,45 @@ class SecureChannelTest {
         assertEquals(1, n)
         assertEquals(setOf(android.clientId), transport.envelopes.single().recipientIds().toSet())
         assertEquals(listOf(androidKeyless.clientId), repairRequests)
+    }
+
+    @Test
+    fun send_filteredScope_doesNotRepairCapabilityExcludedPeer() = runBlocking {
+        val me = newSigner()
+        val myHpke = newHpke()
+        val supported = newSigner()
+        val unsupported = newSigner()
+        val repairRequests = mutableListOf<ClientId>()
+        val trust = FakeTrustState().apply {
+            peersNeeding = listOf(supported.clientId, unsupported.clientId)
+            peerCapabilitySets = mapOf(
+                supported.clientId to listOf(
+                    Capability.CAPABILITY_ROUTING_V1,
+                    Capability.DISPLAY,
+                    Capability.DISPLAY_NOTIFICATION_UPDATES,
+                ),
+                unsupported.clientId to listOf(Capability.CAPABILITY_ROUTING_V1),
+            )
+        }
+        val channel = testChannel(
+            me,
+            myHpke.privateKeyset,
+            trust,
+            onUnresolvedSender = { repairRequests.add(it) },
+        )
+
+        channel.send(
+            MessageType.DATA_SYNC,
+            byteArrayOf(9),
+            Recipients.OwnMeshFiltered(
+                requiredCapabilities = setOf(
+                    Capability.DISPLAY,
+                    Capability.DISPLAY_NOTIFICATION_UPDATES,
+                ),
+            ),
+            Urgency.NORMAL,
+        )
+
+        assertEquals(listOf(supported.clientId), repairRequests)
     }
 }

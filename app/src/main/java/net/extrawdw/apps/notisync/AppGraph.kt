@@ -132,6 +132,20 @@ data class RotationKeyInfo(
     val nextEventAtMillis: Long,
 )
 
+/** Complete Android declaration. Card and profile builders must both use this exact list. */
+internal val ANDROID_SELF_CAPABILITIES = listOf(
+    Capability.CAPTURE,
+    Capability.DISPLAY,
+    Capability.DISMISS_SYNC,
+    Capability.PROVIDE_ASSETS,
+    Capability.BACKGROUND_WAKE,
+    Capability.FOREGROUND_CONNECTION,
+    Capability.CAPABILITY_ROUTING_V1,
+    Capability.PUSH_FILTERING,
+    Capability.DISPLAY_NOTIFICATION_UPDATES,
+    Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+)
+
 class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
     val activityLog = ActivityLog()
@@ -484,6 +498,7 @@ class AppGraph(private val app: Application) {
         publishSelf()
         observeProcessLifecycle()
         observeProfileChanges()
+        announceProfileOnProcessStart()
         // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
         // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
         RelayDrainWorker.schedulePeriodic(app)
@@ -642,21 +657,14 @@ class AppGraph(private val app: Application) {
 
 
     /**
-     * Going to the background: drop the live socket, then do the work that matters precisely *because*
-     * we're about to go dark — refresh the FCM wake route (the only delivery path while idle) and, if
-     * we've been renamed, re-announce our profile so peers that were offline at rename time still
-     * converge via the broker's store-and-forward relay. Both run here rather than on every foreground:
-     * while foregrounded the live WebSocket already delivers, so a per-resume FCM repair is wasted work.
+     * Going to the background: drop the live socket, refresh the FCM wake route (the only delivery path
+     * while idle), and re-broadcast trust. Profile anti-entropy runs once per process start and renames still
+     * announce immediately, so it does not need another background-transition broadcast.
      */
     private fun onAppBackgrounded() {
         stopLiveConnection()
         registerFcmRoute()
         scope.launch {
-            if (settings.deviceNameUpdatedAt.value > 0L) runCatching {
-                foundationEngine?.broadcastProfile(
-                    buildProfileUpdate()
-                )
-            }
             runCatching { foundationEngine?.broadcastTrust() }
         }
     }
@@ -882,10 +890,17 @@ class AppGraph(private val app: Application) {
     }
 
     /** This device's advertised capabilities — shared by the published card and profile updates. */
-    private fun selfCapabilities(): List<Capability> = listOf(
-        Capability.CAPTURE, Capability.DISPLAY, Capability.DISMISS_SYNC,
-        Capability.BACKGROUND_WAKE, Capability.FOREGROUND_CONNECTION,
-    )
+    private fun selfCapabilities(): List<Capability> = ANDROID_SELF_CAPABILITIES
+
+    private fun selfProfileFingerprint(): String = buildString {
+        append(settings.deviceName.value)
+        append('\u001f')
+        append("android")
+        selfCapabilities().forEach {
+            append('\u001f')
+            append(it.name)
+        }
+    }
 
     /**
      * Build this device's self-signed client card — the QR/E2E-only pairing bundle (identity anchor +
@@ -949,14 +964,26 @@ class AppGraph(private val app: Application) {
         )
     }
 
-    /** This device's current mutable profile, stamped with when the name last changed (no key material). */
-    fun buildProfileUpdate(): ProfileUpdate = ProfileUpdate(
+    /** This device's current mutable profile, stamped when any advertised field last changed. */
+    fun buildProfileUpdate(updatedAt: Long = settings.selfProfileUpdatedAt.value): ProfileUpdate = ProfileUpdate(
         clientId = identity.clientId,
         displayName = settings.deviceName.value,
         platform = "android",
         capabilities = selfCapabilities(),
-        updatedAt = settings.deviceNameUpdatedAt.value,
+        updatedAt = updatedAt,
     )
+
+    /**
+     * Re-announce on every process start. The revision advances only when the declaration changed, so this
+     * is cheap anti-entropy for background-only starts while remaining idempotent at receivers.
+     */
+    private fun announceProfileOnProcessStart() {
+        scope.launch {
+            val revision = settings.ensureSelfProfileRevision(selfProfileFingerprint())
+                ?: settings.selfProfileUpdatedAt.value
+            runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate(revision)) }
+        }
+    }
 
     /**
      * Propagate device-profile changes (today: a rename). The Settings field commits only when editing
@@ -972,8 +999,9 @@ class AppGraph(private val app: Application) {
             .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
             .distinctUntilChanged()
             .onEach {
+                val changedAt = settings.ensureSelfProfileRevision(selfProfileFingerprint()) ?: return@onEach
                 // The profile is not key material and never goes to the broker; converge peers over E2E only.
-                runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate()) }
+                runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate(changedAt)) }
             }
             .launchIn(scope)
     }

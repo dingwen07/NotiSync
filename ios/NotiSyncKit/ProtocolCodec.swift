@@ -605,7 +605,8 @@ nonisolated enum KMPProtocolBridge {
             originDeviceId: value.originDeviceId,
             onlyAlertOnce: value.onlyAlertOnce,
             actions: value.actions.map(fromKmp),
-            hasContentIntent: value.hasContentIntent
+            hasContentIntent: value.hasContentIntent,
+            silentUpdate: value.silentUpdate
         )
     }
 

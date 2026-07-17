@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.Serializable
+import net.extrawdw.apps.notisync.crypto.KeyFingerprint
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
@@ -93,6 +94,25 @@ data class RosterDevice(
     /** NS2: the highest key-epoch we hold for it (0 = none → not sealable, shown "unavailable"). The UI
      *  surfaces this so a device that is trusted-but-not-yet-converged is visibly distinct from a reachable one. */
     val currentEpoch: Int = 0,
+    /** Mutable profile fields shown in the device-details sheet. */
+    val platform: String? = null,
+    val capabilities: List<Capability> = emptyList(),
+    /** Fingerprint of the verified, immutable identity anchor. Null when the device is still keyless. */
+    val identityKeyFingerprint: String? = null,
+    /** The newest verified operational certificate held for this device. */
+    val keyEpoch: RosterKeyEpoch? = null,
+    /** Whether the held identity/card and newest epoch (when present) pass their cryptographic checks. */
+    val verified: Boolean = false,
+)
+
+/** User-visible, non-secret fields from a verified [ClientKeyEpoch]. */
+data class RosterKeyEpoch(
+    val epoch: Int,
+    val signingKeyFingerprint: String?,
+    val encryptionKeyFingerprint: String?,
+    val notBefore: Long,
+    val notAfter: Long,
+    val minEpoch: Int,
 )
 
 /** What [TrustStore.applyIncomingTable] surfaces back to the caller. */
@@ -177,6 +197,7 @@ class TrustStore(
     fun cardFor(clientId: ClientId): SignedBlob? = _state.value.cards[clientId]
     override fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
     override fun peerPlatform(clientId: ClientId): String? = platformFor(clientId, _state.value)
+    override fun peerCapabilities(clientId: ClientId): List<Capability> = capabilitiesFor(clientId, _state.value)
     fun statusOf(clientId: ClientId): TrustStatus? = _state.value.entries[clientId]?.status
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----
@@ -564,19 +585,53 @@ class TrustStore(
 
     /** All known devices — pending at the top, trusted in the middle, revoked tombstones at the bottom. */
     private fun computeRoster(st: State): List<RosterDevice> = st.entries.values
-        .map {
+        .map { entry ->
+            // Re-check the individual signatures before marking anything "Verified" in the details sheet.
+            // The store signature protects these values at rest, while these checks preserve the more precise
+            // claim the badge makes: the identity authorized this card and operational key-epoch.
+            val cardBlob = st.cards[entry.clientId]
+            val card = cardBlob?.let(::verifyCard)
+            val newestEpochPair = st.epochs.peers[entry.clientId.value]?.let { peerEpochs ->
+                decodeRing(peerEpochs)
+                    .filter { it.first.epoch >= peerEpochs.floor }
+                    .maxByOrNull { it.first.epoch }
+            }
+            val verifiedEpoch = newestEpochPair?.second?.let { blob ->
+                KeyEpochs.verify(blob, pinnedIdentitySpki = card?.identityPublicKey)
+            }
+            val identityKey = card?.identityPublicKey
+                ?: verifiedEpoch?.identityPublicKey?.takeIf { it.isNotEmpty() }
+            val epochDetails = verifiedEpoch?.let { epoch ->
+                RosterKeyEpoch(
+                    epoch = epoch.epoch,
+                    signingKeyFingerprint = fingerprintOrNull(epoch.operationalSigningKey),
+                    encryptionKeyFingerprint = fingerprintOrNull(epoch.hpkePublicKey),
+                    notBefore = epoch.notBefore,
+                    notAfter = epoch.notAfter,
+                    minEpoch = epoch.minEpoch,
+                )
+            }
             RosterDevice(
-                clientId = it.clientId,
-                status = it.status,
-                displayName = displayNameFor(it.clientId, st),
-                keyAvailable = st.cards.containsKey(it.clientId),
-                introducedByName = it.introducedBy?.let { by -> displayNameFor(by, st) },
-                revokedAt = if (it.status == TrustStatus.REVOKED) it.updatedAt else null,
-                ownDevice = it.ownDevice,
-                currentEpoch = peerEpochOf(it.clientId, st),
+                clientId = entry.clientId,
+                status = entry.status,
+                displayName = displayNameFor(entry.clientId, st),
+                keyAvailable = st.cards.containsKey(entry.clientId),
+                introducedByName = entry.introducedBy?.let { by -> displayNameFor(by, st) },
+                revokedAt = if (entry.status == TrustStatus.REVOKED) entry.updatedAt else null,
+                ownDevice = entry.ownDevice,
+                currentEpoch = peerEpochOf(entry.clientId, st),
+                platform = platformFor(entry.clientId, st),
+                capabilities = capabilitiesFor(entry.clientId, st),
+                identityKeyFingerprint = identityKey?.let { KeyFingerprint.short(it) },
+                keyEpoch = epochDetails,
+                verified = identityKey != null && (cardBlob == null || card != null) &&
+                    (newestEpochPair == null || verifiedEpoch != null),
             )
         }
         .sortedWith(compareBy({ statusOrder(it.status) }, { it.displayName ?: it.clientId.value }))
+
+    private fun fingerprintOrNull(key: ByteArray): String? =
+        key.takeIf { it.isNotEmpty() }?.let { KeyFingerprint.short(it) }
 
     private fun statusOrder(s: TrustStatus): Int = when (s) {
         TrustStatus.PENDING_TRUST -> 0
@@ -592,6 +647,11 @@ class TrustStore(
     private fun platformFor(id: ClientId, st: State): String? =
         st.overlays[id]?.platform
             ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.platform
+
+    private fun capabilitiesFor(id: ClientId, st: State): List<Capability> =
+        st.overlays[id]?.capabilities
+            ?: st.cards[id]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }?.capabilities
+            ?: emptyList()
 
     // A peer is *sealable* (active) once we hold a usable key-epoch for it — that is what carries the
     // current operational + HPKE keys an NS2 envelope needs. The card (if held) only supplies the display

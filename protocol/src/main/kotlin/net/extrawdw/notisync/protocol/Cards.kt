@@ -14,6 +14,10 @@ enum class Capability {
     PROVIDE_ASSETS,         // can supply public app assets on request
     BACKGROUND_WAKE,        // can receive background wake events (e.g. FCM data messages)
     FOREGROUND_CONNECTION,  // can hold a live foreground connection (e.g. WebSocket)
+    CAPABILITY_ROUTING_V1,  // capability declaration is complete; senders may stop platform-based routing
+    PUSH_FILTERING,         // can inspect and suppress/demote a push before user-visible presentation
+    DISPLAY_NOTIFICATION_UPDATES, // can apply stable-id, silent/quiet notification replacements
+    DISPLAY_ANDROID_GROUP_SUMMARIES, // can consume Android group-summary render-control captures
 }
 
 /** What an operational key in a [ClientKeyEpoch] is authorized for (NS2). */

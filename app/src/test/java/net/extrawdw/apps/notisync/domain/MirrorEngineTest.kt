@@ -20,6 +20,7 @@ import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
 import net.extrawdw.notisync.protocol.CapturedNotification
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ConversationMessage
 import net.extrawdw.notisync.protocol.DataSync
@@ -763,6 +764,68 @@ class MirrorEngineTest {
     }
 
     @Test
+    fun captureLocal_requiresDisplayEvenWithoutRoutingMarker() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val display = newSigner(); val displayHpke = newHpke()
+        val noDisplay = newSigner(); val noDisplayHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(display, displayHpke.publicKeyset, capabilities = listOf(Capability.DISPLAY)),
+                peerOf(noDisplay, noDisplayHpke.publicKeyset, capabilities = emptyList()),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.captureLocal(sampleNotif(me.clientId))
+
+        assertEquals(setOf(display.clientId), transport.envelopes.single().recipientIds().toSet())
+    }
+
+    @Test
+    fun sendNotificationQuiet_requiresUpdateCapabilityFromCapabilityRoutingPeers() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val legacy = newSigner(); val legacyHpke = newHpke()
+        val update = newSigner(); val updateHpke = newHpke()
+        val pushOnly = newSigner(); val pushOnlyHpke = newHpke()
+        val updateWithoutDisplay = newSigner(); val updateWithoutDisplayHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(legacy, legacyHpke.publicKeyset, platform = "android"),
+                peerOf(
+                    update, updateHpke.publicKeyset,
+                    platform = "ios",
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY,
+                        Capability.DISPLAY_NOTIFICATION_UPDATES,
+                    ),
+                ),
+                peerOf(
+                    pushOnly, pushOnlyHpke.publicKeyset,
+                    capabilities = listOf(Capability.CAPABILITY_ROUTING_V1, Capability.PUSH_FILTERING),
+                ),
+                peerOf(
+                    updateWithoutDisplay, updateWithoutDisplayHpke.publicKeyset,
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY_NOTIFICATION_UPDATES,
+                    ),
+                ),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.sendNotificationQuiet(sampleNotif(me.clientId))
+
+        assertEquals(
+            setOf(legacy.clientId, update.clientId),
+            transport.envelopes.single().recipientIds().toSet(),
+        )
+    }
+
+    @Test
     fun onQuietNotification_rendersSilentlyAndAppliesPostTimeLww() {
         val me = newSigner();
         val myHpke = newHpke()
@@ -840,6 +903,98 @@ class MirrorEngineTest {
             setOf(android.clientId, ios.clientId),
             transport.envelopes.single().recipientIds().toSet(),
         )
+    }
+
+    @Test
+    fun sendOngoingUpdatePrompt_requiresPushAndUpdateCapabilitiesTogether() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val both = newSigner(); val bothHpke = newHpke()
+        val updateOnly = newSigner(); val updateOnlyHpke = newHpke()
+        val pushOnly = newSigner(); val pushOnlyHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(
+                    both, bothHpke.publicKeyset,
+                    platform = "ios",
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY,
+                        Capability.PUSH_FILTERING,
+                        Capability.DISPLAY_NOTIFICATION_UPDATES,
+                    ),
+                ),
+                peerOf(
+                    updateOnly, updateOnlyHpke.publicKeyset,
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY,
+                        Capability.DISPLAY_NOTIFICATION_UPDATES,
+                    ),
+                ),
+                peerOf(
+                    pushOnly, pushOnlyHpke.publicKeyset,
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY,
+                        Capability.PUSH_FILTERING,
+                    ),
+                ),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.sendOngoingUpdatePrompt(
+            sampleNotif(me.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true),
+            allowIos = true,
+        )
+
+        assertEquals(setOf(both.clientId), transport.envelopes.single().recipientIds().toSet())
+
+        // The per-app opt-in is still authoritative: capabilities describe support, not user consent.
+        mirror.sendOngoingUpdatePrompt(
+            sampleNotif(me.clientId).copy(style = NotificationStyle.MEDIA, isOngoing = true),
+            allowIos = false,
+        )
+        assertEquals(1, transport.envelopes.size)
+    }
+
+    @Test
+    fun captureLocal_requiresDisplayAndGroupSummaryCapabilitiesFromRoutingPeers() = runBlocking {
+        val me = newSigner(); val myHpke = newHpke()
+        val full = newSigner(); val fullHpke = newHpke()
+        val displayOnly = newSigner(); val displayOnlyHpke = newHpke()
+        val noDisplay = newSigner(); val noDisplayHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(
+                peerOf(
+                    full, fullHpke.publicKeyset,
+                    platform = "ios",
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY,
+                        Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+                    ),
+                ),
+                peerOf(
+                    displayOnly, displayOnlyHpke.publicKeyset,
+                    capabilities = listOf(Capability.CAPABILITY_ROUTING_V1, Capability.DISPLAY),
+                ),
+                peerOf(
+                    noDisplay, noDisplayHpke.publicKeyset,
+                    capabilities = listOf(
+                        Capability.CAPABILITY_ROUTING_V1,
+                        Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+                    ),
+                ),
+            )
+        }
+        val transport = CapturingTransport()
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
+
+        mirror.captureLocal(sampleNotif(me.clientId).copy(isGroupSummary = true))
+
+        assertEquals(setOf(full.clientId), transport.envelopes.single().recipientIds().toSet())
     }
 
     @Test

@@ -19,6 +19,7 @@ import net.extrawdw.notisync.protocol.AssetSync
 import net.extrawdw.notisync.protocol.AssetSyncItem
 import net.extrawdw.notisync.protocol.AssetSyncKind
 import net.extrawdw.notisync.protocol.CallType
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -252,20 +253,38 @@ class MirrorEngine(
         notif: CapturedNotification,
         excluded: Set<ClientId>,
         excludeIos: Boolean,
-    ): Recipients = when {
-        // iOS peers are dropped when the caller asks ([excludeIos]) — media playback and non-media ongoing
-        // notifications are each behind an iOS opt-in because an iPhone lacking
-        // com.apple.developer.usernotifications.filtering cannot render updates silently, so it would re-alert
-        // on every playback/progress change. They are also dropped for two payloads iOS can never consume: an
-        // Android group-summary capture (a
-        // render-control/alert carrier — the real child notification is sent to iOS separately), and an iPhone's
-        // own now-playing card bridged over AMS (mirroring the iPhone's media back to an iOS device is circular,
-        // and its MEDIA rendering is Android-side anyway).
-        excludeIos || notif.isGroupSummary || isIosBridgedMedia(notif) ->
-            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS)
+    ): Recipients {
+        val requiredCapabilities = buildSet {
+            add(Capability.DISPLAY)
+            when {
+                notif.isGroupSummary -> add(Capability.DISPLAY_ANDROID_GROUP_SUMMARIES)
+                isIosBridgedMedia(notif) || excludeIos -> add(Capability.DISPLAY_NOTIFICATION_UPDATES)
+            }
+        }
+        return when {
+            // This is the caller's user/app opt-in gate, so it remains authoritative even after the peer moves
+            // to capability routing. The capability is an additional requirement, not a replacement for consent.
+            excludeIos -> Recipients.OwnMeshFiltered(
+                excluded = excluded,
+                excludedPlatforms = IOS_PLATFORMS,
+                requiredCapabilities = requiredCapabilities,
+            )
 
-        excluded.isEmpty() -> Recipients.OwnMesh
-        else -> Recipients.OwnMeshFiltered(excluded)
+            // These payloads historically skipped iOS: Android group-summary render control and an iPhone's own
+            // now-playing card bridged over AMS. Preserve that fallback for legacy peers; a routed peer can opt in
+            // only by declaring the precise capability.
+            notif.isGroupSummary || isIosBridgedMedia(notif) ->
+                Recipients.OwnMeshFiltered(
+                    excluded = excluded,
+                    legacyExcludedPlatforms = IOS_PLATFORMS,
+                    requiredCapabilities = requiredCapabilities,
+                )
+
+            else -> Recipients.OwnMeshFiltered(
+                excluded = excluded,
+                requiredCapabilities = requiredCapabilities,
+            )
+        }
     }
 
     private fun isIosBridgedMedia(notif: CapturedNotification): Boolean =
@@ -275,9 +294,9 @@ class MirrorEngine(
      * Seal [notif] to the own mesh over the QUIET channel — DATA_SYNC ([DataSyncKind.NOTIFICATION]) at
      * [Urgency.NORMAL] (FCM NORMAL / APNs background) — so it updates peers without waking them like an alert
      * push. GENERIC: any notification may ride this (the first user is throttled ongoing-notification updates,
-     * but the API is not ongoing-specific). Returns the recipient count. iOS peers are excluded: the iOS client
-     * does not yet consume this kind, so a background push it would only drop is not worth sending. A peer that
-     * asked (over a FILTER) not to receive a matching notification is still dropped, exactly as in [captureLocal].
+     * but the API is not ongoing-specific). Returns the recipient count. Legacy iOS peers are excluded; a routed
+     * peer must explicitly announce DISPLAY_NOTIFICATION_UPDATES. A peer that asked (over a FILTER) not to receive
+     * a matching notification is still dropped, exactly as in [captureLocal].
      */
     suspend fun sendNotificationQuiet(notif: CapturedNotification): Int {
         val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
@@ -285,7 +304,14 @@ class MirrorEngine(
         val n = channel.send(
             MessageType.DATA_SYNC,
             payload,
-            Recipients.OwnMeshFiltered(excluded = excluded, excludedPlatforms = IOS_PLATFORMS),
+            Recipients.OwnMeshFiltered(
+                excluded = excluded,
+                legacyExcludedPlatforms = IOS_PLATFORMS,
+                requiredCapabilities = setOf(
+                    Capability.DISPLAY,
+                    Capability.DISPLAY_NOTIFICATION_UPDATES,
+                ),
+            ),
             Urgency.NORMAL,
         )
         if (n > 0) rememberTitle(notif)
@@ -300,15 +326,24 @@ class MirrorEngine(
      * so the consumer renders it silently in place with last-writer-wins, exactly like [sendNotificationQuiet]
      * (see [onNotification] → [renderQuietUpdate]) — the HIGH priority buys latency, not a second alert.
      *
-     * iOS peers are dropped unless [allowIos] (the caller's relevant per-app iOS opt-in): without
-     * com.apple.developer.usernotifications.filtering an iPhone can't render this silently and would re-alert on
-     * every change. A peer that asked (over a FILTER) not to receive a matching notification is still dropped.
+     * iOS peers are dropped unless [allowIos] (the caller's relevant per-app iOS opt-in), even when capability
+     * routing says the peer can consume the update. Without com.apple.developer.usernotifications.filtering an
+     * iPhone can't render this silently and would re-alert on every change. A peer that asked (over a FILTER) not
+     * to receive a matching notification is still dropped.
      * Returns the recipient count.
      */
     suspend fun sendOngoingUpdatePrompt(notif: CapturedNotification, allowIos: Boolean): Int {
         val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
         val marked = notif.copy(silentUpdate = true)
-        val recipients = notificationRecipients(marked, excluded, excludeIos = !allowIos)
+        val recipients = Recipients.OwnMeshFiltered(
+            excluded = excluded,
+            excludedPlatforms = if (allowIos) emptySet() else IOS_PLATFORMS,
+            requiredCapabilities = setOf(
+                Capability.DISPLAY,
+                Capability.PUSH_FILTERING,
+                Capability.DISPLAY_NOTIFICATION_UPDATES,
+            ),
+        )
         val payload = ProtocolCodec.encodeToCbor(marked)
         val n = channel.send(MessageType.NOTIFICATION, payload, recipients, Urgency.HIGH)
         if (n > 0) rememberTitle(marked)

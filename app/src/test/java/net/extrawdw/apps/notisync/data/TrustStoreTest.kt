@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.crypto.KeyFingerprint
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
@@ -329,6 +330,36 @@ class TrustStoreTest {
             store.applyKeyEpoch(other.clientId, keyEpochBlobFor(other, epoch = 1, minEpoch = 1))
         )
         assertEquals(2, store.peerEpoch(other.clientId))
+    }
+
+    @Test
+    fun rosterDetails_exposeVerifiedIdentitySigningAndEncryptionFingerprints() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(other), now = 10L, ownDevice = true))
+        val epochBlob = keyEpochBlobFor(other, epoch = 2, minEpoch = 2)
+        val epoch = epochBlob.decode<ClientKeyEpoch>()
+
+        assertTrue(store.applyKeyEpoch(other.clientId, epochBlob))
+
+        val details = store.roster.value.single { it.clientId == other.clientId }
+        assertTrue(details.verified)
+        assertEquals("android", details.platform)
+        assertEquals(KeyFingerprint.short(other.publicKeySpki), details.identityKeyFingerprint)
+        assertEquals(2, details.keyEpoch?.epoch)
+        assertEquals(
+            KeyFingerprint.short(epoch.operationalSigningKey),
+            details.keyEpoch?.signingKeyFingerprint,
+        )
+        assertEquals(
+            "the encryption row must fingerprint the HPKE public key",
+            KeyFingerprint.short(epoch.hpkePublicKey),
+            details.keyEpoch?.encryptionKeyFingerprint,
+        )
+        assertEquals(0L, details.keyEpoch?.notBefore)
+        assertEquals(Long.MAX_VALUE, details.keyEpoch?.notAfter)
+        assertEquals(2, details.keyEpoch?.minEpoch)
     }
 
     @Test

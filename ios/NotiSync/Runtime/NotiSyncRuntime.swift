@@ -115,6 +115,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
                 ShownStore.clearSuspicions()
             }.value
             await self.bringUpCore()
+            let profileChanged = self.ensureSelfProfileRevision()
+            if profileChanged { await self.broadcastProfile() }
             self.refreshRotationInfo()
             self.ensureThisDeviceRow()
             self.scheduleRelayRefresh()
@@ -427,11 +429,25 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         saveModelContext()
         if brokerChanged { NotiSyncConfig.brokerURL = brokerURL }
         if renamed { ensureThisDeviceRow() }
-        let profileUpdatedAt = NotiSyncEngine.nowMillis()
+        _ = ensureSelfProfileRevision()
         Task {
             if routeChanged { await publishCurrentRoute() }
-            if renamed { await broadcastProfile(displayName: deviceName, updatedAt: profileUpdatedAt) }   // #5 — converge the rename across the mesh
+            if renamed { await broadcastProfile(displayName: deviceName) }   // #5 — converge the rename across the mesh
         }
+    }
+
+    /// Advance the persisted profile LWW clock whenever name/platform/capabilities change (including upgrade).
+    @discardableResult
+    func ensureSelfProfileRevision() -> Bool {
+        guard let engine else { return false }
+        let s = settings()
+        let fingerprint = engine.selfProfileFingerprint(displayName: s.deviceName)
+        guard s.selfProfileFingerprint != fingerprint || s.selfProfileUpdatedAt == 0 else { return false }
+        s.selfProfileFingerprint = fingerprint
+        let now = NotiSyncEngine.nowMillis()
+        s.selfProfileUpdatedAt = max(now, s.selfProfileUpdatedAt + 1)
+        saveModelContext()
+        return true
     }
 
     func publishCurrentRoute() async {

@@ -322,6 +322,9 @@ final class AppSettings {
     var lastRoutePublishAt: Date?
     var lastRelayDrainAt: Date?
     var lastError: String?
+    /// Complete self-profile declaration persisted across launches. Optional/defaulted for migration.
+    var selfProfileFingerprint: String?
+    var selfProfileUpdatedAt: Int64 = 0
     /// First-launch onboarding finished (every step completed or skipped). Inline default so rows
     /// persisted before this field existed migrate to `false` and see the flow once.
     var hasCompletedOnboarding: Bool = false
