@@ -21,6 +21,7 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunControl
 import net.extrawdw.notisync.protocol.RunControlKind
+import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
 import net.extrawdw.notisync.protocol.RunSync
 import net.extrawdw.notisync.protocol.RunSyncKind
@@ -29,6 +30,9 @@ import net.extrawdw.notisync.protocol.Urgency
 fun interface RunStatePresenter {
     /** True only when posted; false means notification permission is currently unavailable. */
     fun render(state: RunState): Boolean
+
+    /** Remove the stable notification when a Run leaves the local Active section. */
+    fun dismiss(key: RunKey) = Unit
 }
 
 /** Text-prompt affordances submit one terminal line; the lower-level control API remains byte-exact. */
@@ -86,11 +90,13 @@ class RunEngine internal constructor(
         if (state.hostClientId != message.senderId || !state.validForDisplay()) return
         synchronized(presentationLock) {
             val key = RunKey(message.senderId.value, state.runId)
+            val activeBefore = activeKeys()
             val result = try {
                 repository.apply(state)
             } catch (error: Exception) {
                 throw RetryableDeliveryException("could not persist Run state", error)
             }
+            dismissRunsNoLongerActive(activeBefore)
             if (result == RunApplyResult.OLDER) return
 
             // Equal is intentionally re-presented: it is the delivery retry produced by a crash or renderer
@@ -121,6 +127,11 @@ class RunEngine internal constructor(
     /** Re-post only snapshots that committed without a successful presentation checkpoint. */
     fun reconcilePendingPresentations() {
         synchronized(presentationLock) {
+            // A store can age an active-phase snapshot into History during cold start, before this presenter exists.
+            // Dismiss any stable ongoing notification left behind by a previous process in that case.
+            repository.runs.value
+                .filter { !it.active && it.state.remotePhaseIsActive() }
+                .forEach { stored -> runCatching { presenter.dismiss(stored.key) } }
             repository.runs.value.filter { it.presentationPending }.forEach { stored ->
                 runCatching {
                     val posted = presenter.render(stored.state)
@@ -135,8 +146,28 @@ class RunEngine internal constructor(
     /** Testable one-shot used by the long-lived maintenance loop. */
     internal fun runMaintenanceNow() {
         synchronized(presentationLock) {
-            runCatching { repository.prune() }
+            val activeBefore = activeKeys()
+            if (runCatching { repository.prune() }.isSuccess) {
+                dismissRunsNoLongerActive(activeBefore)
+            }
         }
+    }
+
+    /** A future higher-revision snapshot can reactivate this Run through [RunRepository.apply]. */
+    fun markInactive(key: RunKey): Boolean = synchronized(presentationLock) {
+        val changed = runCatching { repository.markInactive(key) }.getOrDefault(false)
+        if (changed) {
+            refreshByKey[key]?.let { requestId -> completeRefresh(requestId, key) }
+            runCatching { presenter.dismiss(key) }
+        }
+        changed
+    }
+
+    fun clearHistory(): Boolean = synchronized(presentationLock) {
+        val historicalKeys = repository.runs.value.filterNot { it.active }.map { it.key }
+        if (runCatching { repository.clearHistory() }.isFailure) return@synchronized false
+        historicalKeys.forEach { key -> runCatching { presenter.dismiss(key) } }
+        true
     }
 
     private fun receiveControlResult(
@@ -228,18 +259,28 @@ class RunEngine internal constructor(
         _pendingRefreshes.value = refreshByKey.keys.toSet()
     }
 
+    private fun activeKeys(): Set<RunKey> =
+        repository.runs.value.filter { it.active }.map { it.key }.toSet()
+
+    private fun dismissRunsNoLongerActive(activeBefore: Set<RunKey>) {
+        (activeBefore - activeKeys()).forEach { key -> runCatching { presenter.dismiss(key) } }
+    }
+
     private fun RunState.validForDisplay(): Boolean =
         runId.isNotBlank() &&
             revision >= 0 &&
             argv.isNotEmpty() &&
             terminal.text.toByteArray(Charsets.UTF_8).size <= MAX_TERMINAL_BYTES
 
+    private fun RunState.remotePhaseIsActive(): Boolean =
+        phase == RunPhase.RUNNING || phase == RunPhase.BLOCKED
+
     companion object {
         private const val MAX_TERMINAL_BYTES = 64 * 1024
         private const val MAX_INPUT_BYTES = 64 * 1024
         private const val MAX_SIGNAL_LENGTH = 64
         private const val REFRESH_TIMEOUT_MS = 15_000L
-        private const val RUN_MAINTENANCE_INTERVAL_MS = 6L * 60 * 60 * 1000
+        private const val RUN_MAINTENANCE_INTERVAL_MS = 15L * 60 * 1000
 
         private suspend fun sendOverChannel(channel: SecureChannel, control: RunControl): Boolean =
             channel.send(

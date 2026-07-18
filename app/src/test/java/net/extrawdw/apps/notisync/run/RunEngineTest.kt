@@ -193,6 +193,29 @@ class RunEngineTest {
     }
 
     @Test
+    fun terminalUpdateDismissesThePreviousOngoingNotification() {
+        val initial = running()
+        val repository = FakeRepository(initial)
+        val dismissed = mutableListOf<RunKey>()
+        val job = SupervisorJob()
+        val engine = RunEngine(
+            repository = repository,
+            presenter = object : RunStatePresenter {
+                override fun render(state: RunState) = true
+                override fun dismiss(key: RunKey) { dismissed += key }
+            },
+            scope = CoroutineScope(job + Dispatchers.Unconfined),
+            sendControl = { true },
+        )
+
+        engine.onRunSync(message(HOST, own = true), stateSync(completed()))
+
+        assertEquals(listOf(RunKey(HOST.value, initial.runId)), dismissed)
+        assertFalse(repository.runs.value.single().active)
+        job.cancel()
+    }
+
+    @Test
     fun reconciliationOnlyRendersUnpresentedRevisions() {
         val pending = completed(runId = "pending", revision = 2)
         val presented = running(runId = "presented", revision = 3)
@@ -213,6 +236,34 @@ class RunEngineTest {
     }
 
     @Test
+    fun reconciliationDismissesLocallyInactiveRemoteActiveRun() {
+        val state = running()
+        val stored = StoredRun(
+            state = state,
+            receivedAt = state.updatedAt,
+            presentedRevision = state.revision,
+            active = false,
+        )
+        val repository = FakeRepository(listOf(stored))
+        val dismissed = mutableListOf<RunKey>()
+        val job = SupervisorJob()
+        val engine = RunEngine(
+            repository = repository,
+            presenter = object : RunStatePresenter {
+                override fun render(state: RunState) = true
+                override fun dismiss(key: RunKey) { dismissed += key }
+            },
+            scope = CoroutineScope(job + Dispatchers.Unconfined),
+            sendControl = { true },
+        )
+
+        engine.reconcilePendingPresentations()
+
+        assertEquals(listOf(stored.key), dismissed)
+        job.cancel()
+    }
+
+    @Test
     fun maintenanceDelegatesToRepository() {
         val repository = FakeRepository()
         val harness = harness(repository)
@@ -221,6 +272,39 @@ class RunEngineTest {
 
         assertEquals(1, repository.pruneCalls)
         harness.close()
+    }
+
+    @Test
+    fun manualInactiveAndClearHistoryDismissStableNotifications() {
+        val active = running(runId = "active")
+        val history = completed(runId = "history")
+        val repository = FakeRepository(
+            listOf(
+                StoredRun(active, active.updatedAt),
+                StoredRun(history, history.updatedAt),
+            )
+        )
+        val dismissed = mutableListOf<RunKey>()
+        val job = SupervisorJob()
+        val engine = RunEngine(
+            repository = repository,
+            presenter = object : RunStatePresenter {
+                override fun render(state: RunState) = true
+                override fun dismiss(key: RunKey) { dismissed += key }
+            },
+            scope = CoroutineScope(job + Dispatchers.Unconfined),
+            sendControl = { true },
+        )
+
+        assertTrue(engine.markInactive(RunKey(HOST.value, active.runId)))
+        assertFalse(repository.find(RunKey(HOST.value, active.runId))!!.active)
+        assertTrue(engine.clearHistory())
+        assertTrue(repository.runs.value.isEmpty())
+        assertEquals(
+            setOf(RunKey(HOST.value, active.runId), RunKey(HOST.value, history.runId)),
+            dismissed.toSet(),
+        )
+        job.cancel()
     }
 
     @Test
@@ -334,6 +418,21 @@ class RunEngineTest {
                     stored.copy(presentedRevision = revision)
                 } else stored
             }
+        }
+
+        override fun markInactive(key: RunKey): Boolean {
+            val existing = find(key) ?: return false
+            if (!existing.active) return false
+            mutable.value = mutable.value.map { stored ->
+                if (stored.key == key) {
+                    stored.copy(active = false, presentedRevision = stored.state.revision)
+                } else stored
+            }
+            return true
+        }
+
+        override fun clearHistory() {
+            mutable.value = mutable.value.filter { it.active }
         }
 
         override fun prune() {

@@ -75,13 +75,84 @@ class RunStoreTest {
             exitCode = 0,
         )
         store.apply(completed)
+        clock = fortyDays
         store.apply(running(runId = "active", revision = 1))
         store.close()
-        clock = fortyDays
         val reopened = RunStore(context, now = { clock })
 
         assertEquals(listOf("active"), reopened.runs.value.map { it.state.runId })
         assertTrue(reopened.runs.value.single().active)
+        reopened.close()
+    }
+
+    @Test
+    fun activeRunMovesToHistoryAfterThreeHoursAndNewRevisionReactivatesIt() {
+        var clock = 10_000L
+        val store = RunStore(context, now = { clock })
+        val initial = running(revision = 1)
+        val key = RunKey(initial.hostClientId.value, initial.runId)
+        store.apply(initial)
+
+        clock += RunStore.ACTIVE_STALE_AFTER_MS
+        store.prune()
+        assertTrue("exactly three hours is not more than three hours", store.find(key)!!.active)
+
+        clock++
+        store.prune()
+        assertFalse(store.find(key)!!.active)
+        assertFalse(store.find(key)!!.presentationPending)
+        store.close()
+
+        val reopened = RunStore(context, now = { clock })
+        assertFalse(reopened.find(key)!!.active)
+        assertEquals(RunApplyResult.UPDATED, reopened.apply(running(revision = 2)))
+        assertTrue(reopened.find(key)!!.active)
+        reopened.close()
+    }
+
+    @Test
+    fun manualInactivePersistsUntilANewerRevision() {
+        val store = RunStore(context, now = { 10_000L })
+        val initial = running(revision = 1)
+        val key = RunKey(initial.hostClientId.value, initial.runId)
+        store.apply(initial)
+
+        assertTrue(store.markInactive(key))
+        assertFalse(store.find(key)!!.active)
+        assertFalse(store.find(key)!!.presentationPending)
+        assertEquals(RunApplyResult.EQUAL, store.apply(initial))
+        assertFalse(store.find(key)!!.active)
+        store.close()
+
+        val reopened = RunStore(context, now = { 10_000L })
+        assertFalse(reopened.find(key)!!.active)
+        reopened.apply(running(revision = 2))
+        assertTrue(reopened.find(key)!!.active)
+        reopened.close()
+    }
+
+    @Test
+    fun clearHistoryDeletesInactiveRunsOnly() {
+        val store = RunStore(context, now = { 10_000L })
+        val manuallyInactive = running(runId = "manual", revision = 1)
+        store.apply(manuallyInactive)
+        store.markInactive(RunKey(manuallyInactive.hostClientId.value, manuallyInactive.runId))
+        store.apply(
+            running(runId = "completed", revision = 2).copy(
+                phase = RunPhase.COMPLETED,
+                updateReason = RunUpdateReason.COMPLETED,
+                endedAt = 2_000,
+                exitCode = 0,
+            )
+        )
+        store.apply(running(runId = "active", revision = 1))
+
+        store.clearHistory()
+
+        assertEquals(listOf("active"), store.runs.value.map { it.state.runId })
+        store.close()
+        val reopened = RunStore(context, now = { 10_000L })
+        assertEquals(listOf("active"), reopened.runs.value.map { it.state.runId })
         reopened.close()
     }
 

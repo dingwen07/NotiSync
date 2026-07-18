@@ -120,6 +120,11 @@ class RunNotificationPresenter(
         return true
     }
 
+    override fun dismiss(key: RunKey) {
+        val tag = tagOf(key)
+        NotificationManagerCompat.from(context).cancel(tag, tag.hashCode())
+    }
+
     private fun openIntent(key: RunKey, id: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_OPEN_RUN

@@ -31,11 +31,13 @@ dependencies {
 
 private val isMacOs = System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") }
 private val launcherDirectory = if (isMacOs) "libexec" else "bin"
+private val defaultJvmOptions = listOf("--enable-native-access=ALL-UNNAMED")
 
 application {
     mainClass.set("net.extrawdw.notisync.daemon.NotisyncdMainKt")
     applicationName = "notisyncd"
     executableDir = launcherDirectory
+    applicationDefaultJvmArgs = defaultJvmOptions
 }
 
 private data class DesktopLauncher(
@@ -85,6 +87,7 @@ private val additionalStartScripts = additionalLaunchers.associateWith { launche
         applicationName = launcher.name
         mainClass.set(launcher.mainClass)
         classpath = files(tasks.named("jar"), configurations.runtimeClasspath)
+        defaultJvmOpts = defaultJvmOptions
         // Keep these outside build/scripts: the application plugin copies that directory
         // wholesale for the primary launcher.
         outputDir = layout.buildDirectory.dir("additional-start-scripts/${launcher.name}").get().asFile

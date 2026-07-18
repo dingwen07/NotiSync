@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.CheckCircle
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Refresh
 import androidx.compose.material.icons.outlined.Terminal
@@ -88,6 +89,7 @@ fun RunScreen(
     val runs by engine.runs.collectAsStateWithLifecycle()
     val pendingRefreshes by engine.pendingRefreshes.collectAsStateWithLifecycle()
     var selectedEncoded by rememberSaveable { mutableStateOf<String?>(null) }
+    var showClearHistory by rememberSaveable { mutableStateOf(false) }
     val selectedKey = selectedEncoded?.let(RunKey::decode)
     val selected = selectedKey?.let { key -> runs.firstOrNull { it.key == key } }
 
@@ -110,6 +112,7 @@ fun RunScreen(
             selectedKey = selectedKey,
             deviceNameOf = { id -> graph.trust.displayName(id) },
             onSelect = { run -> selectedEncoded = run.key.encoded() },
+            onClearHistory = { showClearHistory = true },
             modifier = Modifier.fillMaxSize().padding(padding),
         )
     }
@@ -123,6 +126,28 @@ fun RunScreen(
             onDismiss = { selectedEncoded = null },
         )
     }
+
+    if (showClearHistory) {
+        AlertDialog(
+            onDismissRequest = { showClearHistory = false },
+            title = { Text(stringResource(R.string.run_clear_history_title)) },
+            text = { Text(stringResource(R.string.run_clear_history_body)) },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        showClearHistory = false
+                        engine.clearHistory()
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                ) { Text(stringResource(R.string.run_clear_history_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearHistory = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
 }
 
 @Composable
@@ -131,6 +156,7 @@ private fun RunList(
     selectedKey: RunKey?,
     deviceNameOf: (net.extrawdw.notisync.protocol.ClientId) -> String?,
     onSelect: (StoredRun) -> Unit,
+    onClearHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     if (runs.isEmpty()) {
@@ -169,7 +195,12 @@ private fun RunList(
             }
         }
         if (history.isNotEmpty()) {
-            item { RunSectionHeader(stringResource(R.string.run_section_history)) }
+            item {
+                RunSectionHeader(
+                    title = stringResource(R.string.run_section_history),
+                    onClear = onClearHistory,
+                )
+            }
             items(history, key = { it.key.encoded() }) { run ->
                 RunListItem(run, selectedKey == run.key, deviceNameOf(run.state.hostClientId), onSelect)
             }
@@ -178,13 +209,26 @@ private fun RunList(
 }
 
 @Composable
-private fun RunSectionHeader(title: String) {
-    Text(
-        title,
-        modifier = Modifier.padding(start = 16.dp, top = 20.dp, end = 16.dp, bottom = 8.dp),
-        style = MaterialTheme.typography.titleSmall,
-        color = MaterialTheme.colorScheme.primary,
-    )
+private fun RunSectionHeader(title: String, onClear: (() -> Unit)? = null) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            title,
+            modifier = Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        if (onClear != null) {
+            IconButton(onClick = onClear) {
+                Icon(
+                    Icons.Outlined.DeleteSweep,
+                    contentDescription = stringResource(R.string.run_clear_history_action),
+                )
+            }
+        }
+    }
 }
 
 @Composable
@@ -206,7 +250,7 @@ private fun RunListItem(
             supportingContent = {
                 Column {
                     Text(
-                        runStatus(state),
+                        runStatus(run),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
@@ -283,7 +327,7 @@ private fun RunDetail(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        runStatus(state),
+                        runStatus(run),
                         color = phaseColor(state.phase),
                         style = MaterialTheme.typography.bodyMedium,
                     )
@@ -400,6 +444,9 @@ private fun RunDetail(
                         ) { Text(stringResource(R.string.run_action_kill)) }
                         TextButton(onClick = { showSignal = true }) {
                             Text(stringResource(R.string.run_action_signal))
+                        }
+                        TextButton(onClick = { engine.markInactive(run.key) }) {
+                            Text(stringResource(R.string.run_action_mark_inactive))
                         }
                     }
                 }
@@ -565,22 +612,28 @@ private fun phaseColor(phase: RunPhase): Color = when (phase) {
 }
 
 @Composable
-private fun runStatus(state: RunState): String = when (state.phase) {
-    RunPhase.RUNNING -> state.progress?.let { progress ->
-        if (!progress.indeterminate) {
-            val percent = (progress.current!!.toDouble() / progress.total!!.toDouble() * 100).toInt()
-            stringResource(R.string.run_status_progress, percent)
-        } else null
-    } ?: stringResource(R.string.run_status_running)
-    RunPhase.BLOCKED -> when (state.blockedReason) {
-        RunBlockedReason.TERMINAL_INPUT -> stringResource(R.string.run_status_waiting_input)
-        RunBlockedReason.OUTPUT_AND_CPU_IDLE -> stringResource(R.string.run_status_attention)
-        null -> stringResource(R.string.run_status_blocked)
+private fun runStatus(run: StoredRun): String {
+    val state = run.state
+    if (!run.active && (state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED)) {
+        return stringResource(R.string.run_status_inactive)
     }
-    RunPhase.COMPLETED -> if (state.exitCode == 0) {
-        stringResource(R.string.run_status_completed)
-    } else stringResource(R.string.run_status_exit_code, state.exitCode ?: 0)
-    RunPhase.FAILED_TO_START -> stringResource(R.string.run_status_failed_start)
+    return when (state.phase) {
+        RunPhase.RUNNING -> state.progress?.let { progress ->
+            if (!progress.indeterminate) {
+                val percent = (progress.current!!.toDouble() / progress.total!!.toDouble() * 100).toInt()
+                stringResource(R.string.run_status_progress, percent)
+            } else null
+        } ?: stringResource(R.string.run_status_running)
+        RunPhase.BLOCKED -> when (state.blockedReason) {
+            RunBlockedReason.TERMINAL_INPUT -> stringResource(R.string.run_status_waiting_input)
+            RunBlockedReason.OUTPUT_AND_CPU_IDLE -> stringResource(R.string.run_status_attention)
+            null -> stringResource(R.string.run_status_blocked)
+        }
+        RunPhase.COMPLETED -> if (state.exitCode == 0) {
+            stringResource(R.string.run_status_completed)
+        } else stringResource(R.string.run_status_exit_code, state.exitCode ?: 0)
+        RunPhase.FAILED_TO_START -> stringResource(R.string.run_status_failed_start)
+    }
 }
 
 private fun commandLabel(state: RunState): String =

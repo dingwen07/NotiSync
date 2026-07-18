@@ -20,10 +20,10 @@
     <string name="error_unknown">Unknown error</string>
 
     <!-- Run screen + locally-rendered Run live updates -->
-    <string name="run_screen_title">NotiSync Run</string>
-    <string name="run_notification_channel_description">Run status and attention alerts from %1$s</string>
-    <string name="run_notification_subtext">NotiSync Run</string>
-    <string name="run_notification_via">NotiSync Run · %1$s</string>
+    <string name="run_screen_title" translatable="false">NotiSync Run</string>
+    <string name="run_notification_channel_description">Run status and alerts from %1$s</string>
+    <string name="run_notification_subtext" translatable="false">NotiSync Run</string>
+    <string name="run_notification_via" translatable="false">NotiSync Run · %1$s</string>
     <string name="run_command_fallback">Command</string>
     <string name="run_empty_title">No Runs yet</string>
     <string name="run_empty_body">Commands shared from your computers will appear here.</string>
@@ -31,6 +31,10 @@
     <string name="run_select_body">Choose a current or historical Run to inspect its terminal.</string>
     <string name="run_section_active">Active</string>
     <string name="run_section_history">History</string>
+    <string name="run_clear_history_action">Delete all history</string>
+    <string name="run_clear_history_title">Delete all NotiSync Run history?</string>
+    <string name="run_clear_history_body">Active Runs will be kept.</string>
+    <string name="run_clear_history_confirm">Delete all</string>
     <string name="run_terminal">Terminal</string>
     <string name="run_terminal_empty">No terminal output yet.</string>
     <string name="run_terminal_truncated">Showing the latest output; earlier output was truncated.</string>
@@ -54,6 +58,7 @@
     <string name="run_action_kill">Kill</string>
     <string name="run_action_signal">Send signal…</string>
     <string name="run_action_refresh">Refresh</string>
+    <string name="run_action_mark_inactive">Mark not active</string>
     <string name="run_input_hint">Send to command</string>
     <string name="run_input_send">Send</string>
     <string name="run_signal_title">Send signal</string>
@@ -69,6 +74,7 @@
     <string name="run_status_waiting_input">Waiting for input</string>
     <string name="run_status_attention">May need your attention</string>
     <string name="run_status_blocked">Waiting</string>
+    <string name="run_status_inactive">No longer active</string>
     <string name="run_status_completed">Completed successfully</string>
     <string name="run_status_exit_code">Exited with code %1$d</string>
     <string name="run_status_failed_start">Could not start</string>

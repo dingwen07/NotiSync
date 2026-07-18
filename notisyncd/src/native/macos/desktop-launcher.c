@@ -376,6 +376,7 @@ int main(int argc, char **argv) {
     if (create_vm == NULL) fail("the selected Java runtime does not export JNI_CreateJavaVM");
 
     StringList option_strings = {0};
+    list_add(&option_strings, "--enable-native-access=ALL-UNNAMED");
     append_option_string(&option_strings, getenv("JAVA_OPTS"), "JAVA_OPTS");
     const char *options_variable = options_variable_for(name);
     append_option_string(&option_strings, getenv(options_variable), options_variable);

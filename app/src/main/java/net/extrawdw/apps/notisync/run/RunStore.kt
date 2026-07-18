@@ -29,9 +29,10 @@ data class StoredRun(
     val state: RunState,
     val receivedAt: Long,
     val presentedRevision: Long = NO_PRESENTED_REVISION,
+    /** Local presentation state. A newer remote revision replaces this with the phase-derived value. */
+    val active: Boolean = state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED,
 ) {
     val key: RunKey get() = RunKey(state.hostClientId.value, state.runId)
-    val active: Boolean get() = state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED
     val presentationPending: Boolean get() = presentedRevision < state.revision
 
     companion object {
@@ -46,6 +47,8 @@ interface RunRepository {
     fun apply(state: RunState): RunApplyResult
     fun find(key: RunKey): StoredRun?
     fun markPresented(key: RunKey, revision: Long)
+    fun markInactive(key: RunKey): Boolean
+    fun clearHistory()
     fun prune()
 }
 
@@ -174,6 +177,48 @@ class RunStore(
         }
     }
 
+    /**
+     * Move an active snapshot to local history without changing the authenticated remote payload. Marking its
+     * current revision presented also prevents startup reconciliation from recreating an ongoing notification.
+     */
+    @Synchronized
+    override fun markInactive(key: RunKey): Boolean {
+        val stored = find(key) ?: return false
+        if (!stored.active) return false
+        val changed = writableDatabase.update(
+            "runs",
+            ContentValues().apply {
+                put("active", 0)
+                put("presented_revision", stored.state.revision)
+            },
+            "host_client = ? AND run_id = ? AND active = 1",
+            arrayOf(key.hostClientId, key.runId),
+        ) > 0
+        if (changed) {
+            _runs.value = _runs.value.map { candidate ->
+                if (candidate.key == key) {
+                    candidate.copy(active = false, presentedRevision = candidate.state.revision)
+                } else candidate
+            }.sortedWith(RUN_ORDER)
+        }
+        return changed
+    }
+
+    /** Delete every locally historical row while leaving active work intact. */
+    @Synchronized
+    override fun clearHistory() {
+        if (_runs.value.none { !it.active }) return
+        val db = writableDatabase
+        try {
+            db.delete("runs", "active = 0", null)
+        } finally {
+            // SQLite may have committed before reporting a later failure; reload to keep the observable cache exact.
+            _runs.value = readAll()
+        }
+        // Logical deletion is authoritative even if physical compaction must be retried by later maintenance.
+        runCatching { checkpointAndCompact(db, vacuum = true) }
+    }
+
     /** Apply age retention, then enforce the cap against SQLite pages and the database/WAL/SHM files. */
     @Synchronized
     override fun prune() = prune(protectedKey = null)
@@ -182,6 +227,8 @@ class RunStore(
         val db = writableDatabase
         val removed = linkedSetOf<RunKey>()
         try {
+            markStaleRunsInactive(db, now() - ACTIVE_STALE_AFTER_MS)
+
             val expired = completedBefore(db, now() - COMPLETED_RETENTION_MS)
                 .filterNot { it.key == protectedKey }
             if (expired.isNotEmpty()) {
@@ -225,6 +272,30 @@ class RunStore(
             // lock-step with SQLite and allow future periodic maintenance to retry the physical compaction.
             if (removed.isNotEmpty()) _runs.value = _runs.value.filterNot { it.key in removed }
         }
+    }
+
+    /** Local receipt time avoids trusting a host clock and advances only for a genuinely newer revision. */
+    private fun markStaleRunsInactive(db: SQLiteDatabase, cutoff: Long) {
+        val staleKeys = db.rawQuery(
+            "SELECT host_client, run_id FROM runs WHERE active = 1 AND received_at < ?",
+            arrayOf(cutoff.toString()),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(RunKey(cursor.getString(0), cursor.getString(1)))
+            }
+        }
+        if (staleKeys.isEmpty()) return
+        db.execSQL(
+            "UPDATE runs SET active = 0, presented_revision = revision " +
+                "WHERE active = 1 AND received_at < ?",
+            arrayOf(cutoff),
+        )
+        val stale = staleKeys.toSet()
+        _runs.value = _runs.value.map { stored ->
+            if (stored.key in stale) {
+                stored.copy(active = false, presentedRevision = stored.state.revision)
+            } else stored
+        }.sortedWith(RUN_ORDER)
     }
 
     @Synchronized
@@ -331,7 +402,8 @@ class RunStore(
 
     private fun readAll(): List<StoredRun> = runCatching {
         readableDatabase.rawQuery(
-            "SELECT payload, received_at, presented_revision FROM runs ORDER BY active DESC, updated_at DESC",
+            "SELECT payload, received_at, presented_revision, active " +
+                "FROM runs ORDER BY active DESC, updated_at DESC",
             emptyArray(),
         ).use { cursor ->
             buildList {
@@ -339,7 +411,14 @@ class RunStore(
                     val state = runCatching {
                         ProtocolCodec.decodeFromCbor<RunState>(cursor.getBlob(0))
                     }.getOrNull() ?: continue
-                    add(StoredRun(state, cursor.getLong(1), cursor.getLong(2)))
+                    add(
+                        StoredRun(
+                            state = state,
+                            receivedAt = cursor.getLong(1),
+                            presentedRevision = cursor.getLong(2),
+                            active = cursor.getInt(3) != 0,
+                        )
+                    )
                 }
             }
         }
@@ -355,6 +434,7 @@ class RunStore(
     companion object {
         private const val DB_NAME = "runs.db"
         private const val VERSION = 2
+        internal const val ACTIVE_STALE_AFTER_MS = 3L * 60 * 60 * 1000
         private const val COMPLETED_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
         private const val MAX_STORAGE_BYTES = 100L * 1024 * 1024
         private const val MAX_COMPLETED_RUNS = 50
