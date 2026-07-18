@@ -42,6 +42,7 @@ import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
+import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.Transport
@@ -156,10 +157,11 @@ class BrokerClient(
     override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult {
         // Operational-signed request (hot path): the envelope inside is already operational-signed; the
         // broker accepts an operational request signature (floor + window + REQUEST_AUTH) and self-heals to
-        // identity attestation on a 401 if our epoch isn't yet known there.
+        // identity attestation on a 401 if our epoch isn't yet known there. Urgency rides inside the signed
+        // request body so the broker can honor it without trusting a mutable HTTP header.
         val resp = authedPost(
             "${httpBase()}/v2/send",
-            ProtocolCodec.encodeToCbor(envelope),
+            ProtocolCodec.encodeToCbor(SendRequest(envelope, urgency)),
             operational = true
         )
         return runCatching { ProtocolCodec.decodeFromJson<SendResult>(resp.bodyAsText()) }

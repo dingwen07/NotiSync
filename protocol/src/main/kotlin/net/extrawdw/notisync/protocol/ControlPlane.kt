@@ -14,6 +14,17 @@ data class HealthResponse(
     val version: String,
 )
 
+/**
+ * Authenticated CBOR body for `/v2/send`. Keeping [urgency] beside the encrypted [envelope] binds the
+ * requested delivery priority to the request signature while leaving the broker unable to inspect the
+ * envelope's plaintext body.
+ */
+@Serializable
+data class SendRequest(
+    val envelope: Envelope,
+    val urgency: Urgency,
+)
+
 /** Result of /v2/send. Tells the caller which recipients delivered and what the broker is missing. */
 @Serializable
 data class SendResult(

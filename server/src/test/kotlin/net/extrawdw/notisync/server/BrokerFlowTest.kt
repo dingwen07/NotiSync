@@ -38,6 +38,7 @@ import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
+import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
@@ -857,6 +858,54 @@ class BrokerFlowTest {
     }
 
     @Test
+    fun sendRequestPreservesClientRequestedUrgency() = testApplication {
+        val tmp = File.createTempFile("notisync-send-urgency", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        val config = ServerConfig.fromEnv()
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        client.register(sender, Hpke.generateKeyPair())
+        client.register(recipient, recipientHpke)
+        val recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset))
+
+        fun envelope(typ: MessageType, messageId: String, seq: Long) = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = typ,
+            bodyPlaintext = "opaque".toByteArray(),
+            recipients = recipients,
+            messageId = messageId,
+            seq = seq,
+            createdAt = 1_750_000_000_000L + seq,
+        )
+
+        val highDataSync = envelope(MessageType.DATA_SYNC, "01J0URGHS01", 1L)
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/send") {
+                setBody(ProtocolCodec.encodeToCbor(SendRequest(highDataSync, Urgency.HIGH)))
+            }.status,
+        )
+
+        val normalNotification = envelope(MessageType.NOTIFICATION, "01J0URGN001", 2L)
+        assertEquals(
+            HttpStatusCode.OK,
+            client.post("/v2/send") {
+                setBody(ProtocolCodec.encodeToCbor(SendRequest(normalNotification, Urgency.NORMAL)))
+            }.status,
+        )
+
+        val queuedUrgencies = RelayStore(NotiSyncDb.connect(config)).pending(recipient.clientId)
+            .associate { it.messageId to it.urgency }
+        assertEquals(Urgency.HIGH.name, queuedUrgencies[highDataSync.messageId])
+        assertEquals(Urgency.NORMAL.name, queuedUrgencies[normalNotification.messageId])
+    }
+
+    @Test
     fun relayList_typFilterListsOnlyDismissals() = testApplication {
         val tmp = File.createTempFile("notisync-relaytyp", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
@@ -975,18 +1024,18 @@ class BrokerFlowTest {
 
         // A dismissal is a quiet push and never advertises a hint of its own.
         val dismissal = sealed(MessageType.DISMISSAL, "01J0PNCD001", 1L, dismissBody)
-        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal)
+        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal, Urgency.NORMAL)
         assertEquals(MessageType.DISMISSAL.name, captured.last()["mtyp"])
         assertNull(captured.last()["pnc"])
 
         // Queued DATA_SYNC must not inflate the hint — the NSE only ever pulls dismissals.
         val dataSync = sealed(MessageType.DATA_SYNC, "01J0PNCS001", 2L, "opaque".toByteArray())
-        broker.send(ProtocolCodec.encodeToCbor(dataSync), dataSync)
+        broker.send(ProtocolCodec.encodeToCbor(dataSync), dataSync, Urgency.NORMAL)
 
         // A notification sent while that dismissal is still queued (push-delivered but unacked) advertises
         // exactly it: pnc=1, not 2, despite the DATA_SYNC sharing the queue.
         val first = sealed(MessageType.NOTIFICATION, "01J0PNCN001", 3L, notifBody)
-        broker.send(ProtocolCodec.encodeToCbor(first), first)
+        broker.send(ProtocolCodec.encodeToCbor(first), first, Urgency.HIGH)
         assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
         assertEquals("1", captured.last()["pnc"])
 
@@ -994,7 +1043,7 @@ class BrokerFlowTest {
         assertEquals(1, broker.ackMany(recipient.clientId, listOf("01J0PNCD001")))
         broker.ackMany(recipient.clientId, listOf("01J0PNCN001"))
         val second = sealed(MessageType.NOTIFICATION, "01J0PNCN002", 4L, notifBody)
-        broker.send(ProtocolCodec.encodeToCbor(second), second)
+        broker.send(ProtocolCodec.encodeToCbor(second), second, Urgency.HIGH)
         assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
         assertNull(captured.last()["pnc"])
     }
@@ -1037,20 +1086,31 @@ class BrokerFlowTest {
             recipients = listOf(RecipientKey(origin.clientId, originHpke.publicKeyset)),
             messageId = "01J0ACT0001", seq = 1L, createdAt = 1_750_000_000_000L,
         )
-        val result = broker.send(ProtocolCodec.encodeToCbor(action), action)
+        val result = broker.send(ProtocolCodec.encodeToCbor(action), action, Urgency.HIGH)
         assertEquals(listOf(origin.clientId), result.delivered)
         assertEquals(Urgency.HIGH, captured.last().urgency)
         assertEquals(MessageType.ACTION.name, captured.last().data["mtyp"])
         assertNull(captured.last().data["pnc"])
 
-        // Contrast pin: a DISMISSAL still coasts at NORMAL urgency.
+        // Urgency is caller-owned, independent of envelope type: a DATA_SYNC request can explicitly use
+        // HIGH and reaches the push transport unchanged.
+        val dataSync = EnvelopeCrypto.seal(
+            signer = sender, typ = MessageType.DATA_SYNC, bodyPlaintext = "opaque".toByteArray(),
+            recipients = listOf(RecipientKey(origin.clientId, originHpke.publicKeyset)),
+            messageId = "01J0ACT0S01", seq = 2L, createdAt = 1_750_000_000_100L,
+        )
+        broker.send(ProtocolCodec.encodeToCbor(dataSync), dataSync, Urgency.HIGH)
+        assertEquals(Urgency.HIGH, captured.last().urgency)
+        assertEquals(MessageType.DATA_SYNC.name, captured.last().data["mtyp"])
+
+        // Contrast pin: callers can still request NORMAL for quiet traffic.
         val dismissal = EnvelopeCrypto.seal(
             signer = sender, typ = MessageType.DISMISSAL,
             bodyPlaintext = ProtocolCodec.encodeToCbor(DismissEvent(sender.clientId, "k", 1L)),
             recipients = listOf(RecipientKey(origin.clientId, originHpke.publicKeyset)),
-            messageId = "01J0ACT0D01", seq = 2L, createdAt = 1_750_000_000_100L,
+            messageId = "01J0ACT0D01", seq = 3L, createdAt = 1_750_000_000_200L,
         )
-        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal)
+        broker.send(ProtocolCodec.encodeToCbor(dismissal), dismissal, Urgency.NORMAL)
         assertEquals(Urgency.NORMAL, captured.last().urgency)
     }
 

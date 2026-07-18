@@ -66,6 +66,17 @@ nonisolated enum ProtocolCodec {
         KMPProtocolBridge.data(kmp.encodeEnvelope(value: KMPProtocolBridge.toKmp(e)))
     }
 
+    static func encodeSendRequest(_ envelope: Envelope, urgency: Urgency) -> Data {
+        KMPProtocolBridge.data(
+            kmp.encodeSendRequest(
+                value: NotiSyncProtocol.SendRequest(
+                    envelope: KMPProtocolBridge.toKmp(envelope),
+                    urgency: KMPProtocolBridge.kmp(urgency)
+                )
+            )
+        )
+    }
+
     static func encodeSignedBlobList(_ blobs: [SignedBlob]) -> Data {
         KMPProtocolBridge.data(kmp.encodeSignedBlobList(value: blobs.map(KMPProtocolBridge.toKmp)))
     }
@@ -711,6 +722,10 @@ nonisolated enum KMPProtocolBridge {
 
     static func kmp(_ value: MessageType) -> NotiSyncProtocol.MessageType {
         NotiSyncProtocol.MessageType.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.MessageType.notification
+    }
+
+    static func kmp(_ value: Urgency) -> NotiSyncProtocol.Urgency {
+        NotiSyncProtocol.Urgency.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.Urgency.normal
     }
 
     static func kmp(_ value: ActionKind) -> NotiSyncProtocol.ActionKind {

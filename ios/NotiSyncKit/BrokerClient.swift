@@ -236,9 +236,19 @@ actor BrokerClient {
     }
 
     @discardableResult
-    func send(_ envelope: Envelope) async throws -> Bool {
+    func send(_ envelope: Envelope, urgency: Urgency? = nil) async throws -> Bool {
+        let requestedUrgency: Urgency
+        if let urgency {
+            requestedUrgency = urgency
+        } else {
+            switch envelope.typ {
+            case .NOTIFICATION, .ACTION: requestedUrgency = .HIGH
+            case .DISMISSAL, .DATA_SYNC: requestedUrgency = .NORMAL
+            }
+        }
         let (_, resp) = try await authed(path: "/v2/send", method: "POST",
-                                         body: ProtocolCodec.encode(envelope), contentType: "application/cbor", operational: true)
+                                         body: ProtocolCodec.encodeSendRequest(envelope, urgency: requestedUrgency),
+                                         contentType: "application/cbor", operational: true)
         return Self.ok(resp)
     }
 

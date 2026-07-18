@@ -11,6 +11,7 @@ nonisolated enum CipherSuite {
 // MARK: - Enums (serialize to CBOR as their Kotlin name)
 
 nonisolated enum MessageType: String, Sendable { case NOTIFICATION, DISMISSAL, DATA_SYNC, ACTION }
+nonisolated enum Urgency: String, Sendable { case HIGH, NORMAL }
 nonisolated enum Purpose: String, CaseIterable, Sendable { case ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL
     static let allRawValues: [String] = allCases.map(\.rawValue)
 }

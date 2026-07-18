@@ -41,10 +41,12 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteClaim
+import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
+import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.WsAuth
 import net.extrawdw.notisync.protocol.WsChallenge
 import net.extrawdw.notisync.protocol.WsKind
@@ -357,13 +359,24 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             val bytes = call.receiveCapped(MAX_CONTROL_BODY_BYTES)
                 ?: return@post call.respond(HttpStatusCode.PayloadTooLarge, ErrorResponse("too_large"))
             val principal = auth.requireJwtSigned(call, bytes, broker) ?: return@post
-            val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(bytes) }.getOrNull()
+            val request = runCatching { ProtocolCodec.decodeFromCbor<SendRequest>(bytes) }.getOrNull()
+            // Mixed-fleet compatibility: clients predating SendRequest posted the bare Envelope. Preserve
+            // their historical type-based urgency until they upgrade and explicitly sign their preference.
+            val envelope = request?.envelope
+                ?: runCatching { ProtocolCodec.decodeFromCbor<Envelope>(bytes) }.getOrNull()
             if (envelope == null) {
                 call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_envelope"))
             } else if (config.securityEnabled && envelope.signerId != principal.clientId) {
                 call.respond(HttpStatusCode.Forbidden, ErrorResponse("client_mismatch"))
             } else {
-                call.respond(HttpStatusCode.OK, broker.send(bytes, envelope))
+                val urgency = request?.urgency ?: when (envelope.typ) {
+                    MessageType.NOTIFICATION, MessageType.ACTION -> Urgency.HIGH
+                    MessageType.DISMISSAL, MessageType.DATA_SYNC -> Urgency.NORMAL
+                }
+                call.respond(
+                    HttpStatusCode.OK,
+                    broker.send(ProtocolCodec.encodeToCbor(envelope), envelope, urgency),
+                )
             }
         }
 
