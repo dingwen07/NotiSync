@@ -96,6 +96,7 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
     ): Boolean {
         val normalizedPlatform = platform.normalizedPlatform()
         if (normalizedPlatform in scope.excludedPlatforms.normalizedPlatforms()) return false
+        if (capabilities.any(scope.forbiddenCapabilities::contains)) return false
         // Existing capabilities predate capability routing and are safe to enforce across the whole fleet.
         // The marker is needed only before relying on newly-added declarations instead of platform fallback.
         val existingRequired = scope.requiredCapabilities.filterTo(mutableSetOf()) { it in LEGACY_CAPABILITIES }

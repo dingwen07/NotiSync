@@ -3,6 +3,7 @@ package net.extrawdw.notisync.peer.channel
 import net.extrawdw.notisync.peer.ports.PeerTelemetry
 import net.extrawdw.notisync.peer.ports.trace
 import net.extrawdw.notisync.peer.transport.DeliveryMode
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.MessageType
@@ -140,6 +141,15 @@ class SecureChannel(
         urgency: Urgency,
         signWith: SignerSelection = SignerSelection.OPERATIONAL,
     ): Int {
+        if (typ == MessageType.DATA_SYNC && urgency == Urgency.HIGH) {
+            val filtered = scope as? Recipients.OwnMeshFiltered
+            require(
+                filtered?.requireCapabilityRoutingV1 == true &&
+                    filtered.requiredCapabilities.containsAll(HIGH_DATA_SYNC_CAPABILITIES),
+            ) {
+                "HIGH DATA_SYNC requires a capability-routed OwnMeshFiltered audience with DISPLAY, BACKGROUND_WAKE, and PUSH_FILTERING"
+            }
+        }
         val recipients = directory.recipients(scope)
         // Send-initiated key-epoch repair (same handler as the receive-side unresolved-sender path): a trusted
         // peer this scope targets but that we can't currently seal to was filtered out of `recipients`, so
@@ -316,4 +326,12 @@ class SecureChannel(
 
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */
     val clientId: ClientId get() = signer.clientId
+
+    private companion object {
+        val HIGH_DATA_SYNC_CAPABILITIES = setOf(
+            Capability.DISPLAY,
+            Capability.BACKGROUND_WAKE,
+            Capability.PUSH_FILTERING,
+        )
+    }
 }

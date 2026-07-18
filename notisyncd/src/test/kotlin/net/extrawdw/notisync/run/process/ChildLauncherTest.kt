@@ -56,4 +56,40 @@ class ChildLauncherTest {
             assertTrue(waiter.awaitTermination(2, TimeUnit.SECONDS))
         }
     }
+
+    @Test
+    fun `arbitrary signal names and Kill target the managed child`() {
+        assumeFalse(System.getProperty("os.name").contains("windows", ignoreCase = true))
+        val launcher = ChildLauncher(terminalAttached = { false })
+        val custom = launcher.launch(
+            listOf("/bin/sh", "-c", "trap 'exit 41' USR1; echo ready; while :; do sleep 1; done"),
+            Path.of("/tmp"),
+            System.getenv(),
+            PtyMode.NEVER,
+        )
+        try {
+            assertEquals("ready", custom.mergedOutput.bufferedReader().readLine())
+            assertTrue(custom.signal("USR1"))
+            assertEquals(41, custom.waitFor())
+        } finally {
+            if (custom.isAlive()) ProcessHandle.of(custom.pid).ifPresent(ProcessHandle::destroyForcibly)
+            custom.close()
+        }
+
+        val killed = launcher.launch(
+            listOf("/bin/sh", "-c", "echo ready; while :; do sleep 1; done"),
+            Path.of("/tmp"),
+            System.getenv(),
+            PtyMode.NEVER,
+        )
+        try {
+            assertEquals("ready", killed.mergedOutput.bufferedReader().readLine())
+            assertTrue(killed.signal("SIGKILL"))
+            killed.waitFor()
+            assertFalse(killed.isAlive())
+        } finally {
+            if (killed.isAlive()) ProcessHandle.of(killed.pid).ifPresent(ProcessHandle::destroyForcibly)
+            killed.close()
+        }
+    }
 }

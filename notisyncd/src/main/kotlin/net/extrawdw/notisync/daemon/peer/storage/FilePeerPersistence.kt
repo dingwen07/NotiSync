@@ -4,12 +4,20 @@ import java.time.Clock
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.daemon.NotificationOutbox
 import net.extrawdw.notisync.daemon.PendingNotification
+import net.extrawdw.notisync.daemon.PendingRunState
+import net.extrawdw.notisync.daemon.PendingRunControlResult
+import net.extrawdw.notisync.daemon.RunOutbox
+import net.extrawdw.notisync.daemon.RunResultOutbox
+import net.extrawdw.notisync.daemon.RunIosNotificationOutbox
+import net.extrawdw.notisync.daemon.coalesceRunIosNotifications
+import net.extrawdw.notisync.daemon.coalesceRuns
 import net.extrawdw.notisync.localapi.NotificationActionKind
 import net.extrawdw.notisync.localapi.NotificationActionLifetime
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.DurableJsonState
 import net.extrawdw.notisync.daemon.storage.SecureFileSystem
 import net.extrawdw.notisync.localapi.NotificationPhase
+import net.extrawdw.notisync.localapi.LocalRunPromptKind
 import net.extrawdw.notisync.peer.channel.MessageDedup
 import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.peer.transport.AuthTokenStore
@@ -116,7 +124,8 @@ class DaemonDatabaseRepository(
     private val clock: Clock = Clock.systemUTC(),
     private val maximumDedupEntries: Int = DEFAULT_MAXIMUM_DEDUP_ENTRIES,
     fileSystem: SecureFileSystem = SecureFileSystem(),
-) : MessageDedup, NotificationOutbox {
+    private val beforeRunAcceptanceCommit: (() -> Unit)? = null,
+) : MessageDedup, NotificationOutbox, RunOutbox, RunResultOutbox, RunIosNotificationOutbox {
     private val state: DurableJsonState<DaemonDatabase>
 
     init {
@@ -166,6 +175,55 @@ class DaemonDatabaseRepository(
             current.copy(
                 sessions = current.sessions + (session.id to session),
                 deduplication = current.deduplication.recorded(messageId),
+            )
+        }
+    }
+
+    /** Atomically stop redelivering an applied control and queue its result for retryable mesh delivery. */
+    fun persistSessionAndEnqueueRunResult(session: StoredLocalSession, result: PendingRunControlResult) {
+        session.validate()
+        validateMessageId(result.id)
+        update { current ->
+            current.copy(
+                sessions = current.sessions + (session.id to session),
+                runResultOutbox = current.runResultOutbox
+                    .filterNot { it.id == result.id }
+                    .plus(result),
+            )
+        }
+    }
+
+    /**
+     * Commit one accepted local Run snapshot as a single crash boundary: the authoritative session
+     * revision/input context and both platform-specific durable delivery records become visible
+     * together. A retry can therefore never encounter a persisted stale revision whose Android or
+     * iOS delivery intent was lost.
+     */
+    fun persistRunAcceptance(
+        session: StoredLocalSession,
+        runState: PendingRunState,
+        iosProjection: PendingNotification?,
+    ) {
+        session.validate()
+        validateMessageId(runState.id)
+        require(runState.sourceKey == session.sourceKey) { "Run state source does not match session" }
+        iosProjection?.let {
+            validateOutboxItem(it)
+            require(it.sourceKey == session.sourceKey) { "Run iOS source does not match session" }
+            require(it.audience == net.extrawdw.notisync.daemon.NotificationAudience.RUN_IOS_COMPAT)
+        }
+        update { current ->
+            val runs = linkedMapOf<String, PendingRunState>()
+            current.runOutbox.forEach { runs[it.id] = it }
+            coalesceRuns(runs, runState)
+            val ios = linkedMapOf<String, PendingNotification>()
+            current.runIosOutbox.forEach { ios[it.id] = it }
+            iosProjection?.let { coalesceRunIosNotifications(ios, it) }
+            beforeRunAcceptanceCommit?.invoke()
+            current.copy(
+                sessions = current.sessions + (session.id to session),
+                runOutbox = runs.values.toList(),
+                runIosOutbox = ios.values.toList(),
             )
         }
     }
@@ -224,6 +282,89 @@ class DaemonDatabaseRepository(
         }
     }
 
+    override fun enqueue(item: PendingRunState) {
+        validateMessageId(item.id)
+        require(item.sourceKey.isNotBlank() && item.sourceKey.length <= MAXIMUM_SOURCE_KEY_LENGTH) {
+            "invalid Run source key"
+        }
+        update { current ->
+            val pending = linkedMapOf<String, PendingRunState>()
+            current.runOutbox.forEach { pending[it.id] = it }
+            coalesceRuns(pending, item)
+            current.copy(runOutbox = pending.values.toList())
+        }
+    }
+
+    override fun peekRun(): PendingRunState? = load().runOutbox.firstOrNull()
+
+    override fun removeRun(id: String) {
+        validateMessageId(id)
+        update { current -> current.copy(runOutbox = current.runOutbox.filterNot { it.id == id }) }
+    }
+
+    override fun retryRunLater(id: String) {
+        validateMessageId(id)
+        if (load().runOutbox.let { it.size <= 1 && it.firstOrNull()?.id == id }) return
+        update { current ->
+            val pending = current.runOutbox.toMutableList()
+            val index = pending.indexOfFirst { it.id == id }
+            if (index < 0) current else current.copy(runOutbox = pending.apply { add(removeAt(index)) })
+        }
+    }
+
+    override fun enqueueResult(item: PendingRunControlResult) {
+        validateMessageId(item.id)
+        update { current ->
+            if (current.runResultOutbox.any { it.id == item.id }) current
+            else current.copy(runResultOutbox = current.runResultOutbox + item)
+        }
+    }
+
+    override fun peekResult(): PendingRunControlResult? = load().runResultOutbox.firstOrNull()
+
+    override fun removeResult(id: String) {
+        validateMessageId(id)
+        update { current -> current.copy(runResultOutbox = current.runResultOutbox.filterNot { it.id == id }) }
+    }
+
+    override fun retryResultLater(id: String) {
+        validateMessageId(id)
+        if (load().runResultOutbox.let { it.size <= 1 && it.firstOrNull()?.id == id }) return
+        update { current ->
+            val pending = current.runResultOutbox.toMutableList()
+            val index = pending.indexOfFirst { it.id == id }
+            if (index < 0) current else current.copy(runResultOutbox = pending.apply { add(removeAt(index)) })
+        }
+    }
+
+    override fun enqueueIos(item: PendingNotification) {
+        validateOutboxItem(item)
+        require(item.audience == net.extrawdw.notisync.daemon.NotificationAudience.RUN_IOS_COMPAT)
+        update { current ->
+            val pending = linkedMapOf<String, PendingNotification>()
+            current.runIosOutbox.forEach { pending[it.id] = it }
+            coalesceRunIosNotifications(pending, item)
+            current.copy(runIosOutbox = pending.values.toList())
+        }
+    }
+
+    override fun peekIos(): PendingNotification? = load().runIosOutbox.firstOrNull()
+
+    override fun removeIos(id: String) {
+        validateMessageId(id)
+        update { current -> current.copy(runIosOutbox = current.runIosOutbox.filterNot { it.id == id }) }
+    }
+
+    override fun retryIosLater(id: String) {
+        validateMessageId(id)
+        if (load().runIosOutbox.let { it.size <= 1 && it.firstOrNull()?.id == id }) return
+        update { current ->
+            val pending = current.runIosOutbox.toMutableList()
+            val index = pending.indexOfFirst { it.id == id }
+            if (index < 0) current else current.copy(runIosOutbox = pending.apply { add(removeAt(index)) })
+        }
+    }
+
     fun pendingCount(): Int = load().outbox.size
 
     private fun validateMessageId(messageId: String) {
@@ -265,6 +406,9 @@ data class DaemonDatabase(
     val sessions: Map<String, StoredLocalSession> = emptyMap(),
     val deduplication: Map<String, Long> = emptyMap(),
     val outbox: List<PendingNotification> = emptyList(),
+    val runOutbox: List<PendingRunState> = emptyList(),
+    val runResultOutbox: List<PendingRunControlResult> = emptyList(),
+    val runIosOutbox: List<PendingNotification> = emptyList(),
 ) {
     fun validated(): DaemonDatabase = also {
         require(schemaVersion == 1) { "unsupported daemon database version $schemaVersion" }
@@ -275,6 +419,15 @@ data class DaemonDatabase(
         require(deduplication.keys.none(String::isBlank)) { "daemon database contains an empty message id" }
         require(outbox.map(PendingNotification::id).distinct().size == outbox.size) {
             "daemon database contains duplicate outbox ids"
+        }
+        require(runOutbox.map(PendingRunState::id).distinct().size == runOutbox.size) {
+            "daemon database contains duplicate Run outbox ids"
+        }
+        require(runResultOutbox.map(PendingRunControlResult::id).distinct().size == runResultOutbox.size) {
+            "daemon database contains duplicate Run result outbox ids"
+        }
+        require(runIosOutbox.map(PendingNotification::id).distinct().size == runIosOutbox.size) {
+            "daemon database contains duplicate Run iOS outbox ids"
         }
     }
 }
@@ -317,6 +470,12 @@ data class StoredLocalSession(
     val sessionActions: List<StoredWireAction> = emptyList(),
     /** Keyed by event id; iteration order is delivery order. */
     val events: Map<String, net.extrawdw.notisync.localapi.LocalEvent> = emptyMap(),
+    val runId: String? = null,
+    val latestRunRevision: Long = -1,
+    val interactionGeneration: Long = 0,
+    val runActive: Boolean = false,
+    val runPrompt: LocalRunPromptKind? = null,
+    val handledRunControlRequestIds: Map<String, Long> = emptyMap(),
 ) {
     fun validate() {
         require(id.isNotBlank()) { "stored session has an empty id" }
@@ -345,11 +504,23 @@ data class StoredLocalSession(
         require(events.all { (eventId, event) -> eventId == event.id && event.sessionId == id }) {
             "stored session contains an event under the wrong id or session"
         }
+        require(runId == null || runId.isNotBlank()) { "stored session has an invalid Run id" }
+        require(latestRunRevision >= -1) { "stored session has an invalid Run revision" }
+        require(interactionGeneration >= 0) { "stored session has an invalid interaction generation" }
+        require(!runActive || runId != null) { "active stored Run session has no Run id" }
+        require(runPrompt == null || runActive) { "inactive stored Run session has an input prompt" }
+        require(handledRunControlRequestIds.size <= MAXIMUM_RUN_CONTROL_IDS) {
+            "stored session has too many handled Run control ids"
+        }
+        require(handledRunControlRequestIds.keys.none(String::isBlank)) {
+            "stored session has an invalid handled Run control id"
+        }
     }
 
     private companion object {
         const val SHA_256_BYTES = 32
         const val MAXIMUM_EVENTS = 1_024
         const val MAXIMUM_SESSION_ACTIONS = 16
+        const val MAXIMUM_RUN_CONTROL_IDS = 1_024
     }
 }

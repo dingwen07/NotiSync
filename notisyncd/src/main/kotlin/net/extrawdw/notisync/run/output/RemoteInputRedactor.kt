@@ -17,6 +17,9 @@ internal class RemoteInputRedactor {
     @Synchronized
     fun register(value: String) {
         val normalized = value.trimEnd('\r', '\n')
+        // Yes/No controls are public UI choices, not secrets. Treating their one-byte values as
+        // substring patterns would corrupt almost every later line containing "y" or "n".
+        if (normalized == "y" || normalized == "n") return
         addPattern(normalized)
         // PTYs commonly echo an embedded LF as CRLF, so also redact every non-empty input line.
         // This intentionally favors privacy over preserving later coincidental matching output.

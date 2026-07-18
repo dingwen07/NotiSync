@@ -53,6 +53,38 @@ class TrustPeerDirectoryTest {
         assertEquals(listOf(routed.clientId), recipients.map { it.clientId })
     }
 
+    @Test
+    fun forbiddenCapabilityExcludesOtherwiseMatchingPeer() {
+        val compatibility = peer(
+            "compatibility",
+            setOf(
+                Capability.DISPLAY,
+                Capability.BACKGROUND_WAKE,
+                Capability.CAPABILITY_ROUTING_V1,
+            ),
+        )
+        val filtering = peer(
+            "filtering",
+            setOf(
+                Capability.DISPLAY,
+                Capability.BACKGROUND_WAKE,
+                Capability.CAPABILITY_ROUTING_V1,
+                Capability.PUSH_FILTERING,
+            ),
+        )
+        val directory = TrustPeerDirectory(FakeTrustState(listOf(compatibility, filtering)))
+
+        val recipients = directory.recipients(
+            Recipients.OwnMeshFiltered(
+                requiredCapabilities = setOf(Capability.DISPLAY, Capability.BACKGROUND_WAKE),
+                forbiddenCapabilities = setOf(Capability.PUSH_FILTERING),
+                requireCapabilityRoutingV1 = true,
+            )
+        )
+
+        assertEquals(listOf(compatibility.clientId), recipients.map { it.clientId })
+    }
+
     private fun peer(id: String, capabilities: Set<Capability>) = Peer(
         clientId = ClientId(id.padEnd(52, 'a')),
         displayName = id,

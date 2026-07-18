@@ -13,6 +13,8 @@ data class OutputSnapshot(
     val tail: String,
     val progress: DetectedProgress?,
     val prompt: PromptKind?,
+    val rawBytesSeen: Long = tail.encodeToByteArray().size.toLong(),
+    val truncated: Boolean = false,
 )
 
 /**
@@ -21,31 +23,44 @@ data class OutputSnapshot(
  */
 class OutputAnalyzer(
     private val rows: Int = 8,
-    private val maxLineChars: Int = 4096,
+    private val maxLineChars: Int = MAX_TERMINAL_BYTES,
+    private val maxTerminalBytes: Int = MAX_TERMINAL_BYTES,
 ) {
     private enum class EscapeState { NORMAL, ESC, CSI, OSC, OSC_ESC }
 
     private val completed = ArrayDeque<String>()
     private val current = StringBuilder()
     private var escapeState = EscapeState.NORMAL
+    private var rawBytesSeen = 0L
+    private var terminalTruncated = false
+    private var pendingUtf8 = ByteArray(0)
 
     @Synchronized
     fun accept(bytes: ByteArray, length: Int = bytes.size) {
-        val text = String(bytes, 0, length, StandardCharsets.UTF_8)
+        require(length in 0..bytes.size)
+        rawBytesSeen += length
+        val combined = pendingUtf8 + bytes.copyOf(length)
+        val completeLength = combined.completeUtf8PrefixLength()
+        pendingUtf8 = combined.copyOfRange(completeLength, combined.size)
+        val text = String(combined, 0, completeLength, StandardCharsets.UTF_8)
         for (character in text) accept(character)
     }
 
     @Synchronized
     fun snapshot(): OutputSnapshot {
-        val lines = buildList {
+        val allLines = buildList {
             addAll(completed)
             if (current.isNotEmpty()) add(current.toString())
-        }.takeLast(rows)
-        val tail = lines.joinToString("\n").trimEnd()
+        }
+        val detectionLines = allLines.takeLast(rows)
+        val complete = allLines.joinToString("\n").trimEnd()
+        val tail = complete.takeLastUtf8Bytes(maxTerminalBytes)
         return OutputSnapshot(
             tail = tail,
-            progress = ProgressDetector.detect(lines.asReversed()),
-            prompt = PromptDetector.detect(lines.lastOrNull().orEmpty()),
+            progress = ProgressDetector.detect(detectionLines.asReversed()),
+            prompt = PromptDetector.detect(detectionLines.lastOrNull().orEmpty()),
+            rawBytesSeen = rawBytesSeen,
+            truncated = terminalTruncated || tail != complete,
         )
     }
 
@@ -85,13 +100,51 @@ class OutputAnalyzer(
     }
 
     private fun appendPrintable(character: Char) {
-        if (current.length < maxLineChars) current.append(character)
+        if (current.length < maxLineChars) current.append(character) else terminalTruncated = true
     }
 
     private fun commitLine() {
         completed.addLast(current.toString())
         current.setLength(0)
-        while (completed.size > rows * 3) completed.removeFirst()
+        var retainedBytes = completed.sumOf { it.encodeToByteArray().size + 1 }
+        while (retainedBytes > maxTerminalBytes * 2 && completed.size > rows) {
+            retainedBytes -= completed.removeFirst().encodeToByteArray().size + 1
+            terminalTruncated = true
+        }
+    }
+
+    private fun String.takeLastUtf8Bytes(limit: Int): String {
+        if (encodeToByteArray().size <= limit) return this
+        var bytes = 0
+        var index = length
+        while (index > 0) {
+            val previous = offsetByCodePoints(index, -1)
+            val count = substring(previous, index).encodeToByteArray().size
+            if (bytes + count > limit) break
+            bytes += count
+            index = previous
+        }
+        return substring(index)
+    }
+
+    private fun ByteArray.completeUtf8PrefixLength(): Int {
+        if (isEmpty()) return 0
+        var leadIndex = lastIndex
+        while (leadIndex >= 0 && (this[leadIndex].toInt() and 0xC0) == 0x80) leadIndex--
+        if (leadIndex < 0) return size
+        val lead = this[leadIndex].toInt() and 0xFF
+        val expected = when {
+            lead and 0x80 == 0 -> 1
+            lead and 0xE0 == 0xC0 -> 2
+            lead and 0xF0 == 0xE0 -> 3
+            lead and 0xF8 == 0xF0 -> 4
+            else -> 1
+        }
+        return if (size - leadIndex < expected) leadIndex else size
+    }
+
+    private companion object {
+        const val MAX_TERMINAL_BYTES = 64 * 1024
     }
 }
 

@@ -444,7 +444,7 @@ data class AssetSyncItem(
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable (the wire encodes
  *  the serial NAME; an unknown value throws on decode and is dropped by the peer's guarded DataSync decode). */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
 
 /**
  * One suppression rule a client asks a peer (the notification *source*) to apply to deliveries bound
@@ -484,11 +484,12 @@ data class FilterSync(
 )
 
 /**
- * The body of a [MessageType.DATA_SYNC] envelope: the group's low-urgency (FCM NORMAL), end-to-end-
- * encrypted control channel, which the broker only ever relays as opaque ciphertext. [kind] selects
- * the populated sub-body — a flat discriminated struct (like [WsMessage]) rather than polymorphic
- * serialization, so it encodes byte-identically on Android + JVM and a new variant never has to be
- * told apart by a fragile try-decode.
+ * The body of a [MessageType.DATA_SYNC] envelope: the group's end-to-end-encrypted data/control
+ * channel, which the broker only ever relays as opaque ciphertext. Most kinds use low urgency (FCM
+ * NORMAL); selected [DataSyncKind.RUN] lifecycle edges may use HIGH only for explicitly capable
+ * recipients. [kind] selects the populated sub-body — a flat discriminated struct (like [WsMessage])
+ * rather than polymorphic serialization, so it encodes byte-identically on Android + JVM and a new
+ * variant never has to be told apart by a fragile try-decode.
  */
 @Serializable
 data class DataSync(
@@ -513,6 +514,8 @@ data class DataSync(
      * after the recipient was offline, so an out-of-order older post must never clobber a newer one.
      */
     val notification: CapturedNotification? = null,
+    /** NotiSync Run state and control traffic — populated iff [kind] == [DataSyncKind.RUN]. */
+    val run: RunSync? = null,
 )
 
 /**

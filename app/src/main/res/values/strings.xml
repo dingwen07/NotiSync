@@ -5,6 +5,7 @@
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
     <string name="tab_ios">iPhone</string>
+    <string name="tab_run">Run</string>
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 
@@ -17,6 +18,67 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_back">Back</string>
     <string name="error_unknown">Unknown error</string>
+
+    <!-- Run screen + locally-rendered Run live updates -->
+    <string name="run_notification_channel_description">Run status and attention alerts from %1$s</string>
+    <string name="run_notification_subtext">NotiSync Run</string>
+    <string name="run_notification_via">NotiSync Run · %1$s</string>
+    <string name="run_command_fallback">Command</string>
+    <string name="run_empty_title">No Runs yet</string>
+    <string name="run_empty_body">Commands shared from your computers will appear here.</string>
+    <string name="run_select_title">Select a Run</string>
+    <string name="run_select_body">Choose a current or historical Run to inspect its terminal.</string>
+    <string name="run_section_active">Active</string>
+    <string name="run_section_history">History</string>
+    <string name="run_terminal">Terminal</string>
+    <string name="run_terminal_empty">No terminal output yet.</string>
+    <string name="run_terminal_truncated">Showing the latest output; earlier output was truncated.</string>
+    <string name="run_summary">Summary</string>
+    <string name="run_details">Details</string>
+    <string name="run_detail_command">Command</string>
+    <string name="run_detail_directory">Directory</string>
+    <string name="run_detail_host">Host</string>
+    <string name="run_detail_started">Started</string>
+    <string name="run_detail_updated">Updated</string>
+    <string name="run_detail_finished">Finished</string>
+    <string name="run_detail_exit">Exit code</string>
+    <string name="run_detail_pty">PTY</string>
+    <string name="run_yes">Yes</string>
+    <string name="run_no">No</string>
+    <string name="run_action_yes">Yes</string>
+    <string name="run_action_no">No</string>
+    <string name="run_action_input">Input</string>
+    <string name="run_action_interrupt">Interrupt</string>
+    <string name="run_action_terminate">Terminate</string>
+    <string name="run_action_kill">Kill</string>
+    <string name="run_action_signal">Send signal…</string>
+    <string name="run_action_refresh">Refresh</string>
+    <string name="run_input_hint">Send to command</string>
+    <string name="run_input_send">Send</string>
+    <string name="run_signal_title">Send signal</string>
+    <string name="run_signal_hint">Signal name or number</string>
+    <string name="run_signal_send">Send signal</string>
+    <string name="run_kill_title">Kill this command?</string>
+    <string name="run_kill_body">Kill cannot be handled or ignored by the command. Unsaved work may be lost.</string>
+    <string name="run_kill_confirm">Kill</string>
+    <string name="run_back">Back to Runs</string>
+    <string name="run_status_running">Still running</string>
+    <string name="run_status_resumed">Running again</string>
+    <string name="run_status_progress">%1$d%% complete</string>
+    <string name="run_status_waiting_input">Waiting for input</string>
+    <string name="run_status_attention">May need your attention</string>
+    <string name="run_status_blocked">Waiting</string>
+    <string name="run_status_completed">Completed successfully</string>
+    <string name="run_status_exit_code">Exited with code %1$d</string>
+    <string name="run_status_failed_start">Could not start</string>
+    <string name="run_short_input">Input</string>
+    <string name="run_short_attention">Check</string>
+    <string name="run_short_done">Done</string>
+    <string name="run_short_failed">Failed</string>
+    <string name="run_short_running">Run</string>
+    <string name="run_progress_description">%1$d%%</string>
+    <string name="run_pty_yes">Yes</string>
+    <string name="run_pty_no">No</string>
 
     <!-- Apps screen -->
     <string name="apps_search_hint">Search apps</string>

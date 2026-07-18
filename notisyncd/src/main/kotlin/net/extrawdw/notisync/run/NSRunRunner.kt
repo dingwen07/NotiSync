@@ -3,6 +3,7 @@ package net.extrawdw.notisync.run
 import java.io.InputStream
 import java.io.OutputStream
 import java.nio.file.Path
+import java.time.Clock
 import java.time.Duration
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ExecutionException
@@ -18,8 +19,12 @@ import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.DaemonLocalApi
 import net.extrawdw.notisync.desktop.api.EventStream
+import net.extrawdw.notisync.desktop.api.LocalApiException
 import net.extrawdw.notisync.localapi.CreateSessionRequest
+import net.extrawdw.notisync.localapi.EventCompletionRequest
 import net.extrawdw.notisync.localapi.LocalEventType
+import net.extrawdw.notisync.localapi.LocalRunControlKind
+import net.extrawdw.notisync.localapi.LocalRunControlStatus
 import net.extrawdw.notisync.localapi.SessionResponse
 import net.extrawdw.notisync.run.llm.CappedTree
 import net.extrawdw.notisync.run.llm.ContentGenerator
@@ -53,6 +58,7 @@ class NSRunRunner(
     private val stdout: OutputStream = System.out,
     private val stderr: Appendable = System.err,
     private val reportingSetupTimeout: Duration = Duration.ofSeconds(2),
+    private val clock: Clock = Clock.systemUTC(),
 ) {
     fun run(options: RunOptions): Int {
         val pwd = Path.of("").toAbsolutePath().normalize()
@@ -74,14 +80,19 @@ class NSRunRunner(
             options.config.llm?.let(::OpenAiCompatibleContentGenerator)
         } else null
 
+        val attemptStartedAt = clock.millis()
         val child = try {
             childLauncher.launch(options.command, pwd, System.getenv(), options.ptyMode)
         } catch (error: Exception) {
+            val failedAt = clock.millis().coerceAtLeast(attemptStartedAt)
             val connection = connectForReporting(runId, pwd)
             val reporter = Reporter(connection.api, connection.session, ::warn)
-            val notifications = notificationCoordinator(options, pwd, reporter, connection.session, generator, tree = "")
+            val notifications = runStateCoordinator(
+                options, pwd, runId, false, reporter, connection.session, generator, tree = "",
+                startedAt = attemptStartedAt,
+            )
             record { it.state("spawn-failed") }
-            notifications.spawnFailed(error.message ?: error.javaClass.simpleName)
+            notifications.spawnFailed(error.message ?: error.javaClass.simpleName, failedAt)
             record { it.completed(127) }
             notifications.close()
             reporter.close()
@@ -109,7 +120,7 @@ class NSRunRunner(
         var inputThread: Thread? = null
         var scheduler: ScheduledExecutorService? = null
         var reporter: Reporter? = null
-        var notifications: RunNotificationCoordinator? = null
+        var notifications: RunStateCoordinator? = null
         val terminalShutdownHook = if (child.usesPty) Thread({
             outputOpen.set(false)
             if (child.isAlive()) runCatching { child.signal(ChildSignal.TERMINATE) }
@@ -257,14 +268,16 @@ class NSRunRunner(
             val tree = if (generator != null) {
                 runCatching { CappedTree.collect(pwd, requireNotNull(options.config.llm)) }.getOrDefault("")
             } else ""
-            val activeNotifications = notificationCoordinator(
-                options, pwd, activeReporter, connection.session, generator, tree,
+            val activeNotifications = runStateCoordinator(
+                options, pwd, runId, child.usesPty, activeReporter, connection.session, generator, tree,
+                startedAt = attemptStartedAt,
             )
             notifications = activeNotifications
             activeNotifications.initial(analyzer.snapshot())
             // An ACK can fail after the child action succeeds. Remember handled durable IDs so
             // reconnecting retries the ACK without writing input or delivering a signal twice.
             val handledEventIds = linkedSetOf<String>()
+            val handledControlOutcomes = linkedMapOf<String, Pair<LocalRunControlStatus, String?>>()
             val eventThread = if (connection.session != null) daemonThread("nsrun-events") {
                 var reconnectDelayMillis = 250L
                 val streamFailureWarned = AtomicBoolean()
@@ -278,10 +291,57 @@ class NSRunRunner(
                             reconnectDelayMillis = 250L
                             streamFailureWarned.set(false)
                             if (event.type != LocalEventType.HEARTBEAT) {
-                                if (event.id !in handledEventIds) {
-                                    if (event.type == LocalEventType.ACTION) {
+                                if (event.type == LocalEventType.RUN_CONTROL) {
+                                    val outcome = handledControlOutcomes.getOrPut(event.id) {
+                                        when (event.runControlKind) {
+                                            LocalRunControlKind.REFRESH -> {
+                                                val requestId = event.requestId
+                                                if (requestId == null) {
+                                                    LocalRunControlStatus.REJECTED to "refresh request id is missing"
+                                                } else {
+                                                    if (activeNotifications.refresh(requestId)) {
+                                                        LocalRunControlStatus.APPLIED to null
+                                                    } else {
+                                                        LocalRunControlStatus.FAILED to
+                                                            "could not publish the refreshed Run state"
+                                                    }
+                                                }
+                                            }
+                                            LocalRunControlKind.WRITE_INPUT -> {
+                                                if (event.interactionGeneration !=
+                                                    activeNotifications.currentInteractionGeneration()
+                                                ) {
+                                                    LocalRunControlStatus.STALE to "input context is stale"
+                                                } else {
+                                                    val remoteInput = event.inputText
+                                                    if (remoteInput == null) {
+                                                        LocalRunControlStatus.REJECTED to "input text is missing"
+                                                    } else {
+                                                        remoteInputRedactor.register(remoteInput)
+                                                        childInput.write(remoteInput)
+                                                        LocalRunControlStatus.APPLIED to null
+                                                    }
+                                                }
+                                            }
+                                            LocalRunControlKind.SIGNAL -> {
+                                                val signal = event.signal
+                                                when {
+                                                    signal == null -> LocalRunControlStatus.REJECTED to
+                                                        "signal is missing"
+                                                    child.signal(signal) -> LocalRunControlStatus.APPLIED to null
+                                                    else -> LocalRunControlStatus.FAILED to
+                                                        "signal $signal is unsupported or could not be delivered"
+                                                }
+                                            }
+                                            null -> LocalRunControlStatus.REJECTED to "control kind is missing"
+                                        }
+                                    }
+                                    activeReporter.complete(event.id, outcome.first, outcome.second)
+                                    handledControlOutcomes.remove(event.id)
+                                } else {
+                                    if (event.id !in handledEventIds && event.type == LocalEventType.ACTION) {
                                         val currentGeneration =
-                                            event.generation == activeNotifications.currentGeneration()
+                                            event.generation == activeNotifications.currentInteractionGeneration()
                                         when (event.actionId) {
                                             // Process-control actions are valid for the live session,
                                             // even when an older notification instance produced them.
@@ -294,10 +354,10 @@ class NSRunRunner(
                                                 childInput.write(remoteInput.trimEnd('\r', '\n') + "\n")
                                             }
                                         }
+                                        handledEventIds += event.id
                                     }
-                                    handledEventIds += event.id
+                                    activeReporter.ack(event.id)
                                 }
-                                activeReporter.ack(event.id)
                             }
                         }
                     } catch (error: Exception) {
@@ -352,9 +412,10 @@ class NSRunRunner(
             }, 2, 2, TimeUnit.SECONDS)
 
             val exitCode = child.waitFor()
+            val completedAt = clock.millis().coerceAtLeast(attemptStartedAt)
             finishInteractiveIo()
             record { it.completed(exitCode) }
-            activeNotifications.completed(exitCode, analyzer.snapshot())
+            activeNotifications.completed(exitCode, analyzer.snapshot(), completedAt)
             return exitCode
         } finally {
             finishInteractiveIo()
@@ -426,20 +487,27 @@ class NSRunRunner(
         }
     }
 
-    private fun notificationCoordinator(
+    private fun runStateCoordinator(
         options: RunOptions,
         pwd: Path,
+        runId: String,
+        usesPty: Boolean,
         reporter: Reporter,
         session: SessionResponse?,
         generator: ContentGenerator?,
         tree: String,
-    ) = RunNotificationCoordinator(
+        startedAt: Long,
+    ) = RunStateCoordinator(
         sessionId = session?.sessionId ?: "offline",
+        runId = runId,
         argv = options.command,
         pwd = pwd,
-        publish = reporter::post,
+        usesPty = usesPty,
+        publish = reporter::postRun,
         generator = generator,
         tree = tree,
+        clock = clock,
+        startedAt = startedAt,
         llmShutdownTimeoutSeconds = (options.config.llm?.timeoutSeconds?.toLong() ?: 8L) + 1,
     )
 
@@ -500,10 +568,12 @@ class NSRunRunner(
     ) {
         private val warned = AtomicBoolean()
 
-        fun post(request: net.extrawdw.notisync.localapi.NotificationRequest) {
-            val currentApi = api ?: return
-            val currentSession = session ?: return
-            runCatching { currentApi.postNotification(currentSession, request) }.onFailure(::warnOnce)
+        fun postRun(request: net.extrawdw.notisync.localapi.RunStateRequest): Boolean {
+            val currentApi = api ?: return false
+            val currentSession = session ?: return false
+            return runCatching { currentApi.postRunState(currentSession, request) }
+                .onFailure(::warnOnce)
+                .isSuccess
         }
 
         fun openEvents(): EventStream? {
@@ -515,7 +585,30 @@ class NSRunRunner(
         fun ack(id: String) {
             val currentApi = api ?: return
             val currentSession = session ?: return
-            runCatching { currentApi.acknowledgeEvent(currentSession, id) }.onFailure(::warnOnce)
+            runCatching { currentApi.acknowledgeEvent(currentSession, id) }
+                .onFailure(::warnOnce)
+                .getOrThrow()
+        }
+
+        fun complete(id: String, status: LocalRunControlStatus, message: String?) {
+            val currentApi = api ?: return
+            val currentSession = session ?: return
+            try {
+                currentApi.completeEvent(
+                    currentSession,
+                    id,
+                    EventCompletionRequest(currentSession.sessionId, status, message),
+                )
+            } catch (error: LocalApiException) {
+                // The daemon may have committed the completion and lost only the local HTTP response.
+                if (error.status != 409) {
+                    warnOnce(error)
+                    throw error
+                }
+            } catch (error: Exception) {
+                warnOnce(error)
+                throw error
+            }
         }
 
         fun close() {

@@ -16,8 +16,10 @@ import net.extrawdw.notisync.localapi.DeviceActionRequest
 import net.extrawdw.notisync.localapi.DeviceListResponse
 import net.extrawdw.notisync.localapi.DismissalRequest
 import net.extrawdw.notisync.localapi.EventAckRequest
+import net.extrawdw.notisync.localapi.EventCompletionRequest
 import net.extrawdw.notisync.localapi.LocalEvent
 import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.PairingInspectRequest
@@ -67,6 +69,7 @@ class DaemonService(
     private val configStore: NotisyncdConfigStore,
     private val sessions: LocalSessionRegistry,
     private val dispatcher: NotificationDispatcher,
+    private val runDispatcher: RunDispatcher? = null,
     peerAdministration: PeerAdministration = UnavailablePeerAdministration(),
     private val genericControl: GenericMeshControl? = null,
     private val clock: Clock = Clock.systemUTC(),
@@ -127,6 +130,10 @@ class DaemonService(
     fun postNotification(peer: LocalPeer, bearer: String?, request: NotificationRequest): AcceptedResponse =
         dispatcher.accept(request, bearer, peer)
 
+    fun postRunState(peer: LocalPeer, bearer: String?, request: RunStateRequest): AcceptedResponse =
+        (runDispatcher ?: throw PeerUnavailableException("Run transport is not initialized"))
+            .accept(request, bearer, peer)
+
     suspend fun postDismissal(peer: LocalPeer, bearer: String?, request: DismissalRequest): AcceptedResponse {
         val session = sessions.authorizeNotificationGeneration(
             request.sessionId,
@@ -151,6 +158,16 @@ class DaemonService(
 
     fun acknowledgeEvent(peer: LocalPeer, bearer: String?, eventId: String, request: EventAckRequest) {
         sessions.acknowledge(request.sessionId, eventId, bearer, peer)
+    }
+
+    suspend fun completeEvent(
+        peer: LocalPeer,
+        bearer: String?,
+        eventId: String,
+        request: EventCompletionRequest,
+    ) {
+        (runDispatcher ?: throw PeerUnavailableException("Run transport is not initialized"))
+            .complete(eventId, request, bearer, peer)
     }
 
     fun requestShutdown() {

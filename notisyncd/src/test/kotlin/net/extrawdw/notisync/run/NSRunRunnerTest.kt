@@ -7,12 +7,17 @@ import java.io.PrintStream
 import java.io.PipedInputStream
 import java.io.PipedOutputStream
 import java.nio.file.Files
+import java.time.Clock
 import java.time.Duration
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZoneOffset
 import java.util.Base64
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonLocalApi
 import net.extrawdw.notisync.desktop.api.EventStream
@@ -24,9 +29,13 @@ import net.extrawdw.notisync.localapi.DaemonConnectionState
 import net.extrawdw.notisync.localapi.DaemonStatus
 import net.extrawdw.notisync.localapi.LocalEvent
 import net.extrawdw.notisync.localapi.LocalEventType
+import net.extrawdw.notisync.localapi.EventCompletionRequest
+import net.extrawdw.notisync.localapi.LocalRunControlKind
+import net.extrawdw.notisync.localapi.LocalRunControlStatus
 import net.extrawdw.notisync.localapi.LocalApiJson
-import net.extrawdw.notisync.localapi.NotificationPhase
-import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.LocalRunPhase
+import net.extrawdw.notisync.localapi.LocalRunUpdateReason
+import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.SessionResponse
 import net.extrawdw.notisync.run.process.ChildProcessLauncher
 import net.extrawdw.notisync.run.process.ChildSignal
@@ -42,6 +51,77 @@ import kotlinx.serialization.decodeFromString
 import net.extrawdw.notisync.run.logging.RunLogRecord
 
 class NSRunRunnerTest {
+    @Test
+    fun `Run timestamps use launch attempt and child exit boundaries`() {
+        val root = Files.createTempDirectory("nsrun-timestamps").toRealPath()
+        val clock = TestClock(100)
+        val alive = AtomicBoolean(true)
+        val child = object : ManagedChild {
+            override val pid = ProcessHandle.current().pid()
+            override val input = ByteArrayOutputStream()
+            override val mergedOutput = ByteArrayInputStream(ByteArray(0))
+            override val usesPty = false
+            override fun waitFor(): Int {
+                clock.now = 700
+                alive.set(false)
+                return 0
+            }
+            override fun isAlive() = alive.get()
+            override fun resize(columns: Int, rows: Int) = Unit
+            override fun signal(signal: ChildSignal) = Unit
+            override fun close() = Unit
+        }
+        val daemon = RecordingDaemon()
+        val runner = NSRunRunner(
+            paths = DesktopPaths(root),
+            daemonConnector = { daemon },
+            childLauncher = ChildProcessLauncher { _, _, _, _ ->
+                clock.now = 400
+                child
+            },
+            terminalFactory = { NoTerminal },
+            stdin = ByteArrayInputStream(ByteArray(0)),
+            stderr = StringBuilder(),
+            clock = clock,
+        )
+
+        assertEquals(0, runner.run(defaultOptions()))
+
+        assertEquals(100L, daemon.runs.first().startedAt)
+        assertEquals(700L, daemon.runs.last().endedAt)
+        assertTrue(daemon.runs.all { it.updatedAt >= it.startedAt })
+        assertTrue(daemon.runs.last().updatedAt >= requireNotNull(daemon.runs.last().endedAt))
+    }
+
+    @Test
+    fun `failed launch end time is captured before delayed reporting setup`() {
+        val root = Files.createTempDirectory("nsrun-failed-timestamps").toRealPath()
+        val clock = TestClock(100)
+        val daemon = RecordingDaemon()
+        val runner = NSRunRunner(
+            paths = DesktopPaths(root),
+            daemonConnector = {
+                clock.now = 900
+                daemon
+            },
+            childLauncher = ChildProcessLauncher { _, _, _, _ ->
+                clock.now = 200
+                error("launch failed")
+            },
+            terminalFactory = { NoTerminal },
+            stderr = StringBuilder(),
+            clock = clock,
+        )
+
+        assertEquals(127, runner.run(defaultOptions()))
+
+        val failed = daemon.runs.single()
+        assertEquals(LocalRunPhase.FAILED_TO_START, failed.phase)
+        assertEquals(100L, failed.startedAt)
+        assertEquals(200L, failed.endedAt)
+        assertEquals(900L, failed.updatedAt)
+    }
+
     @Test
     fun `external child group termination restores PTY terminal before runner returns`() {
         val root = Files.createTempDirectory("nsrun-external-signal").toRealPath()
@@ -219,8 +299,8 @@ class NSRunRunnerTest {
             )
             assertEquals(7, code)
             assertEquals("half 50%\ndone\n", output.toString(Charsets.UTF_8))
-            assertEquals(NotificationPhase.INITIAL, daemon.notifications.first().phase)
-            assertEquals(NotificationPhase.COMPLETED, daemon.notifications.last().phase)
+            assertEquals(LocalRunUpdateReason.INITIAL, daemon.runs.first().updateReason)
+            assertEquals(LocalRunPhase.COMPLETED, daemon.runs.last().phase)
             assertTrue(Files.walk(root.resolve("runs")).use { files ->
                 files.anyMatch { it.fileName.toString() == "run.ndjson" }
             })
@@ -296,7 +376,7 @@ class NSRunRunnerTest {
         val events = listOf(
             LocalEvent(
                 "old-input", LocalEventType.ACTION, "session", System.currentTimeMillis(),
-                generation = 0, actionId = "input", inputText = "stale input",
+                generation = -1, actionId = "input", inputText = "stale input",
             ),
             LocalEvent(
                 "old-signal", LocalEventType.ACTION, "session", System.currentTimeMillis(),
@@ -338,7 +418,7 @@ class NSRunRunnerTest {
                     delivered = true
                     return LocalEvent(
                         "event", LocalEventType.ACTION, "session", System.currentTimeMillis(),
-                        generation = 1, actionId = "input", inputText = secret,
+                        generation = 0, actionId = "input", inputText = secret,
                     )
                 }
                 override fun close() = Unit
@@ -374,8 +454,10 @@ class NSRunRunnerTest {
             .toString(Charsets.UTF_8)
         assertFalse(captured.contains(secret))
         assertTrue(captured.contains("[remote input redacted]"))
-        assertTrue(daemon.notifications.none { request ->
-            request.text.contains(secret) || request.expandedText.orEmpty().contains(secret)
+        assertTrue(daemon.runs.none { request ->
+            request.terminal.text.contains(secret) ||
+                request.llmSummary?.text.orEmpty().contains(secret) ||
+                request.llmSummary?.expandedText.orEmpty().contains(secret)
         })
     }
 
@@ -386,7 +468,7 @@ class NSRunRunnerTest {
         val ackAttempts = AtomicInteger()
         val event = LocalEvent(
             "durable-action", LocalEventType.ACTION, "session", System.currentTimeMillis(),
-            generation = 1, actionId = "yes",
+            generation = 0, actionId = "yes",
         )
         val daemon = RecordingDaemon(
             eventFactory = {
@@ -416,6 +498,85 @@ class NSRunRunnerTest {
         assertEquals("y\n", child.inputBytes.toString(Charsets.UTF_8))
     }
 
+    @Test
+    fun `Run controls deliver Kill and arbitrary signals exactly once`() {
+        listOf("KILL", "USR1").forEachIndexed { index, signal ->
+            val root = Files.createTempDirectory("nsrun-signal-${signal.lowercase()}").toRealPath()
+            val child = NamedSignalCompletingChild()
+            val requestId = "123e4567-e89b-12d3-a456-42661417400${index + 1}"
+            val event = LocalEvent(
+                id = "signal-$signal",
+                type = LocalEventType.RUN_CONTROL,
+                sessionId = "session",
+                createdAtEpochMillis = System.currentTimeMillis(),
+                senderClientId = "android",
+                requestId = requestId,
+                runId = "run",
+                runControlKind = LocalRunControlKind.SIGNAL,
+                signal = signal,
+            )
+            val completions = mutableListOf<EventCompletionRequest>()
+            val daemon = RecordingDaemon(
+                eventFactory = { singleEventStream(event) },
+                completion = {
+                    completions += it
+                    child.complete()
+                },
+            )
+            val runner = NSRunRunner(
+                paths = DesktopPaths(root),
+                daemonConnector = { daemon },
+                childLauncher = ChildProcessLauncher { _, _, _, _ -> child },
+                terminalFactory = { NoTerminal },
+                stdinTerminalAttached = { true },
+                stdin = DelayedInput(),
+                stderr = StringBuilder(),
+            )
+
+            assertEquals(0, runner.run(defaultOptions()))
+            assertEquals(listOf(signal), child.namedSignals)
+            assertEquals(LocalRunControlStatus.APPLIED, completions.single().status)
+        }
+    }
+
+    @Test
+    fun `refresh control publishes correlated full state before completing`() {
+        val root = Files.createTempDirectory("nsrun-refresh").toRealPath()
+        val child = NamedSignalCompletingChild()
+        val requestId = "123e4567-e89b-12d3-a456-426614174010"
+        val event = LocalEvent(
+            id = "refresh",
+            type = LocalEventType.RUN_CONTROL,
+            sessionId = "session",
+            createdAtEpochMillis = System.currentTimeMillis(),
+            senderClientId = "android",
+            requestId = requestId,
+            runId = "run",
+            runControlKind = LocalRunControlKind.REFRESH,
+        )
+        lateinit var daemon: RecordingDaemon
+        daemon = RecordingDaemon(
+            eventFactory = { singleEventStream(event) },
+            completion = { completion ->
+                assertEquals(LocalRunControlStatus.APPLIED, completion.status)
+                assertTrue(daemon.runs.any { it.responseToRequestId == requestId })
+                child.complete()
+            },
+        )
+        val runner = NSRunRunner(
+            paths = DesktopPaths(root),
+            daemonConnector = { daemon },
+            childLauncher = ChildProcessLauncher { _, _, _, _ -> child },
+            terminalFactory = { NoTerminal },
+            stdinTerminalAttached = { true },
+            stdin = DelayedInput(),
+            stderr = StringBuilder(),
+        )
+
+        assertEquals(0, runner.run(defaultOptions()))
+        assertTrue(daemon.runs.any { it.updateReason == LocalRunUpdateReason.REFRESH })
+    }
+
     private fun defaultOptions(ptyMode: PtyMode = PtyMode.NEVER) = RunOptions(
         listOf("fake"), false, Duration.ofSeconds(30), Duration.ofMinutes(5), ptyMode, NSRunConfig(),
     )
@@ -428,18 +589,44 @@ class NSRunRunnerTest {
             }
         },
         private val acknowledge: (String) -> Unit = {},
+        private val completion: (EventCompletionRequest) -> Unit = {},
     ) : DaemonLocalApi {
-        val notifications = mutableListOf<NotificationRequest>()
+        val runs = mutableListOf<RunStateRequest>()
         private val session = SessionResponse("session", "source", "bearer", true)
         override fun status() = DaemonStatus("1", connectionState = DaemonConnectionState.CONNECTED)
         override fun createSession(request: CreateSessionRequest) = session
         override fun closeSession(session: SessionResponse) = Unit
-        override fun postNotification(session: SessionResponse, request: NotificationRequest): AcceptedResponse {
-            notifications += request
-            return AcceptedResponse(request.generation.toString(), System.currentTimeMillis())
+        override fun postNotification(
+            session: SessionResponse,
+            request: net.extrawdw.notisync.localapi.NotificationRequest,
+        ): AcceptedResponse = error("nsrun must not use notification mirroring")
+        override fun postRunState(session: SessionResponse, request: RunStateRequest): AcceptedResponse {
+            runs += request
+            return AcceptedResponse(request.revision.toString(), System.currentTimeMillis())
         }
         override fun openEvents(session: SessionResponse): EventStream = eventFactory()
         override fun acknowledgeEvent(session: SessionResponse, eventId: String) = acknowledge(eventId)
+        override fun completeEvent(
+            session: SessionResponse,
+            eventId: String,
+            request: EventCompletionRequest,
+        ) = completion(request)
+    }
+
+    private class TestClock(initial: Long) : Clock() {
+        private val current = AtomicLong(initial)
+        var now: Long
+            get() = current.get()
+            set(value) = current.set(value)
+        override fun getZone(): ZoneId = ZoneOffset.UTC
+        override fun withZone(zone: ZoneId): Clock = this
+        override fun instant(): Instant = Instant.ofEpochMilli(now)
+    }
+
+    private fun singleEventStream(event: LocalEvent) = object : EventStream {
+        private var delivered = false
+        override fun next(): LocalEvent? = if (delivered) null else event.also { delivered = true }
+        override fun close() = Unit
     }
 
     private class FakeChild(output: String, private val code: Int) : ManagedChild {
@@ -473,6 +660,30 @@ class NSRunRunnerTest {
             alive.set(false)
             done.countDown()
         }
+        override fun close() = Unit
+    }
+
+    private class NamedSignalCompletingChild : ManagedChild {
+        private val done = CountDownLatch(1)
+        private val alive = AtomicBoolean(true)
+        val namedSignals = mutableListOf<String>()
+        override val pid = ProcessHandle.current().pid()
+        override val input = ByteArrayOutputStream()
+        override val mergedOutput = ByteArrayInputStream(ByteArray(0))
+        override val usesPty = false
+        override fun waitFor(): Int {
+            check(done.await(3, TimeUnit.SECONDS)) { "Run control was not delivered" }
+            alive.set(false)
+            return 0
+        }
+        override fun isAlive() = alive.get()
+        override fun resize(columns: Int, rows: Int) = Unit
+        override fun signal(signal: ChildSignal) = Unit
+        override fun signal(signal: String): Boolean {
+            namedSignals += signal
+            return true
+        }
+        fun complete() = done.countDown()
         override fun close() = Unit
     }
 

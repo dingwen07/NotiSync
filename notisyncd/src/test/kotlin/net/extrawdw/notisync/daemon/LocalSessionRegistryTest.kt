@@ -13,6 +13,17 @@ import net.extrawdw.notisync.localapi.NotificationActionKind
 import net.extrawdw.notisync.localapi.NotificationActionLifetime
 import net.extrawdw.notisync.localapi.NotificationPhase
 import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.LocalRunPhase
+import net.extrawdw.notisync.localapi.LocalRunBlockedReason
+import net.extrawdw.notisync.localapi.LocalRunPromptKind
+import net.extrawdw.notisync.localapi.LocalRunTerminalSnapshot
+import net.extrawdw.notisync.localapi.LocalRunUpdateReason
+import net.extrawdw.notisync.localapi.RunStateRequest
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.RunControl
+import net.extrawdw.notisync.protocol.RunControlKind
+import net.extrawdw.notisync.protocol.RunControlResult
+import net.extrawdw.notisync.protocol.RunControlResultStatus
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
@@ -86,6 +97,21 @@ class LocalSessionRegistryTest {
 
         assertFalse(deliver(registry, session.sourceKey, old.actions.single(), "stale", input = "stale"))
         assertTrue(deliver(registry, session.sourceKey, current.actions.single(), "fresh", input = "fresh"))
+    }
+
+    @Test
+    fun `same contextual generation reuses action capabilities`() {
+        val registry = LocalSessionRegistry(resolver, clock)
+        val peer = currentPeer()
+        val session = registry.create(peer, CreateSessionRequest("test"))
+        val first = registry.registerNotification(notification(session.sessionId, 3), session.bearerToken, peer)
+        val summaryReplacement = registry.registerNotification(
+            notification(session.sessionId, 3).copy(text = "LLM summary"),
+            session.bearerToken,
+            peer,
+        )
+
+        assertEquals(first.actions, summaryReplacement.actions)
     }
 
     @Test
@@ -275,6 +301,172 @@ class LocalSessionRegistryTest {
         )
     }
 
+    @Test
+    fun `Run controls reject stale input and durably deduplicate an applied signal`() {
+        val database = DaemonDatabaseRepository(
+            DaemonStorageLayout(Files.createTempDirectory("notisync-run-controls").toRealPath()),
+            clock,
+        )
+        val peer = currentPeer()
+        val registry = LocalSessionRegistry(resolver, clock, database = database)
+        val session = registry.create(peer, CreateSessionRequest("nsrun"))
+        registry.registerRunState(
+            runState(session.sessionId, interactionGeneration = 2).copy(
+                phase = LocalRunPhase.BLOCKED,
+                updateReason = LocalRunUpdateReason.BLOCKED,
+                blockedReason = LocalRunBlockedReason.TERMINAL_INPUT,
+                prompt = LocalRunPromptKind.TEXT,
+            ),
+            null,
+            session.bearerToken,
+            peer,
+        )
+
+        val stale = runControl(
+            requestId = "123e4567-e89b-12d3-a456-426614174001",
+            kind = RunControlKind.WRITE_INPUT,
+            interactionGeneration = 1,
+            inputText = "stale\n",
+        )
+        assertEquals(
+            RunControlDelivery.STALE,
+            registry.deliverRunControl(stale, "android", true, "relay-stale"),
+        )
+        assertEquals(null, registry.awaitEvent(session.sessionId, session.bearerToken, peer, 0))
+
+        val signal = runControl(
+            requestId = "123e4567-e89b-12d3-a456-426614174002",
+            kind = RunControlKind.SIGNAL,
+            signal = "KILL",
+        )
+        assertEquals(
+            RunControlDelivery.ENQUEUED,
+            registry.deliverRunControl(signal, "android", true, "relay-signal"),
+        )
+        assertEquals(
+            RunControlDelivery.DUPLICATE,
+            registry.deliverRunControl(signal, "android", true, "relay-signal-retry"),
+        )
+        val event = registry.awaitEvent(session.sessionId, session.bearerToken, peer, 0)!!
+        assertEquals(LocalEventType.RUN_CONTROL, event.type)
+        assertEquals("KILL", event.signal)
+
+        val pendingResult = PendingRunControlResult(
+            id = "result-1",
+            recipient = ClientId("android"),
+            result = RunControlResult(
+                signal.requestId,
+                signal.runId,
+                RunControlResultStatus.APPLIED,
+                clock.millis(),
+            ),
+            acceptedAt = clock.millis(),
+        )
+        registry.completeRunControl(
+            session.sessionId,
+            event.id,
+            session.bearerToken,
+            peer,
+            pendingResult,
+            InMemoryRunOutbox(),
+        )
+
+        assertEquals(null, registry.awaitEvent(session.sessionId, session.bearerToken, peer, 0))
+        assertEquals(listOf(pendingResult), database.load().runResultOutbox)
+        assertEquals(
+            RunControlDelivery.DUPLICATE,
+            registry.deliverRunControl(signal, "android", true, "relay-signal-after-complete"),
+        )
+    }
+
+    @Test
+    fun `Run input requires an authoritative prompt while signals remain generation independent`() {
+        val peer = currentPeer()
+        val registry = LocalSessionRegistry(resolver, clock)
+        val session = registry.create(peer, CreateSessionRequest("nsrun"))
+        val initial = runState(session.sessionId, interactionGeneration = 0)
+        registry.registerRunState(initial, null, session.bearerToken, peer)
+
+        assertEquals(
+            RunControlDelivery.REJECTED,
+            registry.deliverRunControl(
+                runControl(
+                    requestId = "123e4567-e89b-12d3-a456-426614174010",
+                    kind = RunControlKind.WRITE_INPUT,
+                    interactionGeneration = 0,
+                    inputText = "not requested\n",
+                ),
+                "android", true, "relay-running-input",
+            ),
+        )
+
+        registry.registerRunState(
+            initial.copy(
+                revision = 2,
+                phase = LocalRunPhase.BLOCKED,
+                updateReason = LocalRunUpdateReason.BLOCKED,
+                blockedReason = LocalRunBlockedReason.OUTPUT_AND_CPU_IDLE,
+            ),
+            null,
+            session.bearerToken,
+            peer,
+        )
+        assertEquals(
+            RunControlDelivery.REJECTED,
+            registry.deliverRunControl(
+                runControl(
+                    requestId = "123e4567-e89b-12d3-a456-426614174011",
+                    kind = RunControlKind.WRITE_INPUT,
+                    interactionGeneration = 0,
+                    inputText = "still not requested\n",
+                ),
+                "android", true, "relay-hang-input",
+            ),
+        )
+
+        registry.registerRunState(
+            initial.copy(
+                revision = 3,
+                phase = LocalRunPhase.BLOCKED,
+                updateReason = LocalRunUpdateReason.BLOCKED,
+                blockedReason = LocalRunBlockedReason.TERMINAL_INPUT,
+                prompt = LocalRunPromptKind.TEXT,
+                interactionGeneration = 1,
+            ),
+            null,
+            session.bearerToken,
+            peer,
+        )
+        assertEquals(
+            RunControlDelivery.STALE,
+            registry.deliverRunControl(
+                runControl(
+                    requestId = "123e4567-e89b-12d3-a456-426614174012",
+                    kind = RunControlKind.WRITE_INPUT,
+                    interactionGeneration = 0,
+                    inputText = "old context\n",
+                ),
+                "android", true, "relay-stale-prompt-input",
+            ),
+        )
+        assertEquals(
+            RunControlDelivery.ENQUEUED,
+            registry.deliverRunControl(
+                runControl(
+                    requestId = "123e4567-e89b-12d3-a456-426614174013",
+                    kind = RunControlKind.WRITE_INPUT,
+                    interactionGeneration = 1,
+                    inputText = "current context\n",
+                ),
+                "android", true, "relay-current-prompt-input",
+            ),
+        )
+        assertEquals(
+            LocalEventType.RUN_CONTROL,
+            registry.awaitEvent(session.sessionId, session.bearerToken, peer, 0)?.type,
+        )
+    }
+
     private fun deliver(
         registry: LocalSessionRegistry,
         sourceKey: String,
@@ -314,6 +506,38 @@ class LocalSessionRegistryTest {
         actions = listOf(
             inputAction(generation),
         ),
+    )
+
+    private fun runState(sessionId: String, interactionGeneration: Long) = RunStateRequest(
+        sessionId = sessionId,
+        runId = "run-1",
+        revision = 1,
+        phase = LocalRunPhase.RUNNING,
+        updateReason = LocalRunUpdateReason.INITIAL,
+        startedAt = clock.millis(),
+        updatedAt = clock.millis(),
+        argv = listOf("build"),
+        cwd = "/work",
+        usesPty = false,
+        terminal = LocalRunTerminalSnapshot("running", false, 7),
+        interactionGeneration = interactionGeneration,
+    )
+
+    private fun runControl(
+        requestId: String,
+        kind: RunControlKind,
+        interactionGeneration: Long? = null,
+        inputText: String? = null,
+        signal: String? = null,
+    ) = RunControl(
+        requestId = requestId,
+        hostClientId = ClientId("desktop"),
+        runId = "run-1",
+        kind = kind,
+        requestedAt = clock.millis(),
+        interactionGeneration = interactionGeneration,
+        inputText = inputText,
+        signal = signal,
     )
 
     private fun inputAction(generation: Long) = LocalNotificationAction(

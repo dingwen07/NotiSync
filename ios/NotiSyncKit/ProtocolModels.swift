@@ -24,7 +24,7 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
+nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION

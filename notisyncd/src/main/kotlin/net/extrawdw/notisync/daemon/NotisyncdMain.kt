@@ -76,10 +76,19 @@ class NotisyncdCli(
                 outbox = peer.notificationOutbox,
                 sender = peer.notificationSender,
             )
+            val runDispatcher = RunDispatcher(
+                sessions = registry,
+                runOutbox = peer.runOutbox,
+                resultOutbox = peer.runResultOutbox,
+                iosOutbox = peer.runIosOutbox,
+                iosSender = peer.notificationSender,
+                sender = peer.runSender,
+            )
             val service = DaemonService(
                 configStore = configStore,
                 sessions = registry,
                 dispatcher = dispatcher,
+                runDispatcher = runDispatcher,
                 peerAdministration = peer.administration,
                 genericControl = peer.meshControl,
             )
@@ -89,16 +98,19 @@ class NotisyncdCli(
                     service.requestShutdown()
                     runCatching { server.close() }
                     runCatching { dispatcher.close() }
+                    runCatching { runDispatcher.close() }
                     runCatching { peer.runtime.close() }
                 }, "notisyncd-shutdown"),
             )
             dispatcher.start()
+            runDispatcher.start()
             peer.runtime.start()
             try {
                 server.run()
             } finally {
                 service.requestShutdown()
                 dispatcher.close()
+                runDispatcher.close()
                 peer.runtime.close()
             }
         }

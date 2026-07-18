@@ -22,6 +22,12 @@ import net.extrawdw.notisync.daemon.NotificationMeshSender
 import net.extrawdw.notisync.daemon.PeerAdministration
 import net.extrawdw.notisync.daemon.PeerUnavailableException
 import net.extrawdw.notisync.daemon.SecureChannelNotificationSender
+import net.extrawdw.notisync.daemon.RunControlDelivery
+import net.extrawdw.notisync.daemon.RunMeshSender
+import net.extrawdw.notisync.daemon.SecureChannelRunSender
+import net.extrawdw.notisync.daemon.InMemoryRunOutbox
+import net.extrawdw.notisync.daemon.PendingRunControlResult
+import net.extrawdw.notisync.daemon.RunResultOutbox
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
 import net.extrawdw.notisync.localapi.ActionSendRequest
 import net.extrawdw.notisync.localapi.DaemonConnectionState
@@ -76,6 +82,9 @@ import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
+import net.extrawdw.notisync.protocol.RunControlResult
+import net.extrawdw.notisync.protocol.RunControlResultStatus
+import net.extrawdw.notisync.protocol.RunSyncKind
 import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.Urgency
 
@@ -97,6 +106,7 @@ class DesktopPeerRuntime(
     authTokens: AuthTokenRepository,
     deduplication: MessageDedupRepository,
     private val sessions: LocalSessionRegistry,
+    private val runResultOutbox: RunResultOutbox = InMemoryRunOutbox(),
     parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
     private val clock: Clock = Clock.systemUTC(),
     private val channelLogger: ChannelLogger = ChannelLogger { message ->
@@ -171,6 +181,7 @@ class DesktopPeerRuntime(
 
     /** Install this adapter in [net.extrawdw.notisync.daemon.NotificationDispatcher]. */
     val notificationMeshSender: NotificationMeshSender = SecureChannelNotificationSender(secureChannel)
+    val runMeshSender: RunMeshSender = SecureChannelRunSender(secureChannel)
 
     init {
         require(healthPollMillis > 0) { "healthPollMillis must be positive" }
@@ -192,6 +203,7 @@ class DesktopPeerRuntime(
             onAsset = { _, _ -> Unit },
             onFilter = { _, _ -> Unit },
             onNotificationSync = { _, _ -> Unit },
+            onRunSync = ::onRunSync,
             incomingTrustPolicy = IncomingTrustPolicy { change ->
                 configProvider().automaticallyApplyTrustedDeviceTables &&
                     change.senderIsTrustedOwnDevice
@@ -446,6 +458,59 @@ class DesktopPeerRuntime(
             )
         } catch (error: Exception) {
             throw RetryableDeliveryException("could not persist local action event", error)
+        }
+    }
+
+    private fun onRunSync(message: InboundMessage, sync: net.extrawdw.notisync.protocol.DataSync) {
+        if (!message.senderOwnDevice) return
+        val run = sync.run ?: return
+        if (run.kind != RunSyncKind.CONTROL) return
+        val control = run.control ?: return
+        val delivery = if (control.hostClientId != secureChannel.clientId) {
+            RunControlDelivery.REJECTED
+        } else {
+            try {
+                sessions.deliverRunControl(
+                    control = control,
+                    senderClientId = message.senderId.value,
+                    senderIsTrustedOwnDevice = true,
+                    relayMessageId = message.messageId,
+                )
+            } catch (error: Exception) {
+                throw RetryableDeliveryException("could not persist local Run control event", error)
+            }
+        }
+        val status = when (delivery) {
+            RunControlDelivery.ENQUEUED -> null
+            RunControlDelivery.DUPLICATE -> RunControlResultStatus.REJECTED
+            RunControlDelivery.NOT_ACTIVE -> RunControlResultStatus.NOT_ACTIVE
+            RunControlDelivery.STALE -> RunControlResultStatus.STALE
+            RunControlDelivery.REJECTED -> RunControlResultStatus.REJECTED
+        } ?: return
+        try {
+            val now = clock.millis()
+            runResultOutbox.enqueueResult(
+                PendingRunControlResult(
+                    id = UUID.randomUUID().toString(),
+                    recipient = message.senderId,
+                    result = RunControlResult(
+                        requestId = control.requestId,
+                        runId = control.runId,
+                        status = status,
+                        respondedAt = now,
+                        message = when (delivery) {
+                            RunControlDelivery.DUPLICATE -> "duplicate control request"
+                            RunControlDelivery.NOT_ACTIVE -> "Run is not active"
+                            RunControlDelivery.STALE -> "input context is stale"
+                            RunControlDelivery.REJECTED -> "control is not valid for this host"
+                            RunControlDelivery.ENQUEUED -> null
+                        },
+                    ),
+                    acceptedAt = now,
+                ),
+            )
+        } catch (error: Exception) {
+            throw RetryableDeliveryException("could not persist Run control result", error)
         }
     }
 

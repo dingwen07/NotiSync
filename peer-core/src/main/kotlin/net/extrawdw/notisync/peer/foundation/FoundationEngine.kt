@@ -47,6 +47,9 @@ open class FoundationEngine(
     /** Hands a DATA_SYNC `NOTIFICATION` sub-body — a quiet full notification (e.g. a throttled update to an
      *  ongoing notification) — to the notification app. Defaults to a no-op for tests / provider-only builds. */
     private val onNotificationSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hands an authenticated own-mesh DATA_SYNC `RUN` sub-body to the platform Run feature. The foundation
+     *  remains the single decoder; state persistence and control validation stay with that feature. */
+    private val onRunSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     private val eventSink: FoundationEventSink = FoundationEventSink.None,
     private val incomingTrustPolicy: IncomingTrustPolicy = IncomingTrustPolicy.MANUAL,
     /** Our own current key-epoch [SignedBlob], announced E2E in each trust broadcast so own-mesh peers
@@ -231,6 +234,11 @@ open class FoundationEngine(
             // A quiet full notification (e.g. a throttled ongoing-notification update) — notification-app
             // business like ASSET/FILTER; forward and let it apply its own own-mesh gate + last-writer-wins.
             DataSyncKind.NOTIFICATION -> onNotificationSync(msg, sync)
+
+            DataSyncKind.RUN -> {
+                if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.RUN, msg.senderOwnDevice)) return
+                onRunSync(msg, sync)
+            }
 
             DataSyncKind.PROFILE -> {
                 val update = sync.profile ?: return

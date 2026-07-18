@@ -20,4 +20,15 @@ class RemoteInputRedactorTest {
         assertEquals("before [remote input redacted] after", text)
         assertFalse(text.contains("sëcret-value"))
     }
+
+    @Test
+    fun `yes and no control bytes do not become global substring secrets`() {
+        val redactor = RemoteInputRedactor()
+        redactor.register("y\n")
+        redactor.register("n\n")
+
+        val captured = redactor.accept("syncing normally\n".encodeToByteArray()) + redactor.finish()
+
+        assertEquals("syncing normally\n", captured.decodeToString())
+    }
 }

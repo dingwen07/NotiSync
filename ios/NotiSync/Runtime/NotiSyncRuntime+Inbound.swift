@@ -416,6 +416,10 @@ extension NotiSyncRuntime {
         case .NOTIFICATION:
             // Quiet notification updates are Android-only for now.
             break
+        case .RUN:
+            // Run state and controls are consumed by PUSH_FILTERING peers (Android). iOS keeps the
+            // compatibility NOTIFICATION/ACTION path and deliberately ignores a misrouted RUN sync.
+            break
         }
     }
 

@@ -30,9 +30,11 @@ import net.extrawdw.notisync.localapi.CreateSessionRequest
 import net.extrawdw.notisync.localapi.DaemonStatus
 import net.extrawdw.notisync.localapi.DismissalRequest
 import net.extrawdw.notisync.localapi.EventAckRequest
+import net.extrawdw.notisync.localapi.EventCompletionRequest
 import net.extrawdw.notisync.localapi.LocalApiJson
 import net.extrawdw.notisync.localapi.LocalEvent
 import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.SessionResponse
 
 interface DaemonLocalApi {
@@ -40,12 +42,17 @@ interface DaemonLocalApi {
     fun createSession(request: CreateSessionRequest): SessionResponse
     fun closeSession(session: SessionResponse)
     fun postNotification(session: SessionResponse, request: NotificationRequest): AcceptedResponse
+    fun postRunState(session: SessionResponse, request: RunStateRequest): AcceptedResponse =
+        throw UnsupportedOperationException("Run state sends are not implemented by this client")
     fun postDismissal(session: SessionResponse, request: DismissalRequest): AcceptedResponse =
         throw UnsupportedOperationException("dismissal sends are not implemented by this client")
     fun postAction(session: SessionResponse, request: ActionSendRequest): AcceptedResponse =
         throw UnsupportedOperationException("action sends are not implemented by this client")
     fun openEvents(session: SessionResponse): EventStream
     fun acknowledgeEvent(session: SessionResponse, eventId: String)
+    fun completeEvent(session: SessionResponse, eventId: String, request: EventCompletionRequest) {
+        acknowledgeEvent(session, eventId)
+    }
 }
 
 interface EventStream : Closeable {
@@ -98,6 +105,16 @@ class UnixDaemonClient(
         session,
     )
 
+    override fun postRunState(session: SessionResponse, request: RunStateRequest): AcceptedResponse {
+        require(request.sessionId == session.sessionId) { "Run state session does not match bearer" }
+        return request(
+            "POST",
+            "/v1/runs",
+            LocalApiJson.encodeToString(request),
+            session,
+        )
+    }
+
     override fun postDismissal(session: SessionResponse, request: DismissalRequest): AcceptedResponse {
         require(request.sessionId == session.sessionId) { "dismissal session does not match bearer" }
         return request(
@@ -148,6 +165,16 @@ class UnixDaemonClient(
             "POST",
             "/v1/events/${encodePathPart(eventId)}/ack",
             LocalApiJson.encodeToString(EventAckRequest(session.sessionId)),
+            session,
+        )
+    }
+
+    override fun completeEvent(session: SessionResponse, eventId: String, request: EventCompletionRequest) {
+        require(request.sessionId == session.sessionId) { "event completion session does not match bearer" }
+        request<UnitResponse>(
+            "POST",
+            "/v1/events/${encodePathPart(eventId)}/complete",
+            LocalApiJson.encodeToString(request),
             session,
         )
     }

@@ -10,7 +10,8 @@ import net.extrawdw.notisync.protocol.MessageType
  *
  * The rule: an "other" device (someone else's, kept in the synced private contact list) may ONLY
  * send a `PROFILE` update — its rename converges across the mesh. Everything else — notifications,
- * dismissals, asset repair, trust rosters, card deliveries, notification filters — is own-mesh only.
+ * dismissals, asset repair, trust rosters, card deliveries, notification filters, and Run traffic — is
+ * own-mesh only.
  */
 object SendPolicy {
     /** May a message of this [typ] / DataSync [kind] be accepted from a sender with this classification? */

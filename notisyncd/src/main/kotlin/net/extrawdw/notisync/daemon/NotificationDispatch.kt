@@ -42,7 +42,11 @@ data class PendingNotification(
     val acceptedAt: Long,
     /** Daemon-generated generation capabilities, persisted with the outbox item. */
     val actions: List<WireAction> = emptyList(),
+    val audience: NotificationAudience = NotificationAudience.MIRROR,
 )
+
+@Serializable
+enum class NotificationAudience { MIRROR, RUN_IOS_COMPAT }
 
 interface NotificationOutbox {
     /** Must durably commit before returning. */
@@ -106,7 +110,17 @@ class SecureChannelNotificationSender(
 
     override suspend fun send(item: PendingNotification) {
         val notification = item.toCapturedNotification(clientId)
-        val recipientCount = if (item.request.phase == NotificationPhase.PERIODIC) {
+        val recipientCount = if (item.audience == NotificationAudience.RUN_IOS_COMPAT) {
+            channel.send(
+                typ = MessageType.NOTIFICATION,
+                body = ProtocolCodec.encodeToCbor(notification),
+                scope = Recipients.OwnMeshFiltered(
+                    requiredCapabilities = setOf(Capability.DISPLAY, Capability.BACKGROUND_WAKE),
+                    forbiddenCapabilities = setOf(Capability.PUSH_FILTERING),
+                ),
+                urgency = Urgency.HIGH,
+            )
+        } else if (item.request.phase == NotificationPhase.PERIODIC) {
             channel.send(
                 typ = MessageType.DATA_SYNC,
                 body = ProtocolCodec.encodeToCbor(

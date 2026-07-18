@@ -417,7 +417,8 @@ nonisolated enum KMPProtocolBridge {
             trust: value.trust.map { toKmp($0) },
             card: value.card.map { toKmp($0) },
             filter: value.filter.map { toKmp($0) },
-            notification: nil
+            notification: nil,
+            run: nil
         )
     }
 

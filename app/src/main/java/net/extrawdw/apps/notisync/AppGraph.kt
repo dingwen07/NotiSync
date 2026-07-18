@@ -91,6 +91,9 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorChannels
 import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
+import net.extrawdw.apps.notisync.run.RunEngine
+import net.extrawdw.apps.notisync.run.RunNotificationPresenter
+import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.transport.ifKnown
@@ -205,6 +208,10 @@ class AppGraph(private val app: Application) {
     var mirrorEngine: MirrorEngine? = null
         private set
     var foundationEngine: FoundationEngine? = null
+        private set
+    lateinit var runStore: RunStore
+        private set
+    var runEngine: RunEngine? = null
         private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
@@ -355,6 +362,23 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        // DATA_SYNC/RUN is a first-class Android application path. It has its own durable history and
+        // notification renderer; it must never be adapted into CapturedNotification/MirrorEngine.
+        val runsStore = RunStore(app)
+        runStore = runsStore
+        val runs = RunEngine(
+            channel = channel,
+            store = runsStore,
+            presenter = RunNotificationPresenter(
+                app,
+                deviceNameOf = { id -> trust.displayName(id) },
+            ),
+            scope = scope,
+        )
+        runEngine = runs
+        // A process can die after a Run snapshot commits but before its stable notification posts. The store's
+        // presentation checkpoint makes this startup reconciliation precise and idempotent.
+        scope.launch { runs.reconcilePendingPresentations() }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
             channel = channel,
@@ -420,6 +444,7 @@ class AppGraph(private val app: Application) {
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
+            onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
             activityText = activityText,
             // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
             // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.
@@ -569,6 +594,8 @@ class AppGraph(private val app: Application) {
 
     /** Foreground only: refresh our key-epoch on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
+        // Also retry after notification permission is granted while the process remains alive.
+        scope.launch { runEngine?.reconcilePendingPresentations() }
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
             publishKeyEpochUnlessRotating()

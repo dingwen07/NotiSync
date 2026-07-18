@@ -238,6 +238,11 @@
             android:name=".notification.mirror.MirrorActionReceiver"
             android:exported="false" />
 
+        <!-- Run shade controls are DATA_SYNC/RUN actions, separate from notification mirroring. -->
+        <receiver
+            android:name=".run.RunActionReceiver"
+            android:exported="false" />
+
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's
              active output, so a mirrored media card's Output Switcher chip names the source device instead of
              claiming playback on this phone. Bound by the system (exported is the platform contract for route

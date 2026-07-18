@@ -8,6 +8,10 @@ import net.extrawdw.notisync.daemon.LocalSessionRegistry
 import net.extrawdw.notisync.daemon.NotificationMeshSender
 import net.extrawdw.notisync.daemon.NotificationOutbox
 import net.extrawdw.notisync.daemon.PeerAdministration
+import net.extrawdw.notisync.daemon.RunMeshSender
+import net.extrawdw.notisync.daemon.RunOutbox
+import net.extrawdw.notisync.daemon.RunResultOutbox
+import net.extrawdw.notisync.daemon.RunIosNotificationOutbox
 import net.extrawdw.notisync.daemon.peer.storage.DaemonDatabaseRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileAuthTokenRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
@@ -34,6 +38,10 @@ data class FileBackedDesktopPeer(
     val meshControl: GenericMeshControl get() = runtime
     val notificationSender: NotificationMeshSender get() = runtime.notificationMeshSender
     val notificationOutbox: NotificationOutbox get() = database
+    val runSender: RunMeshSender get() = runtime.runMeshSender
+    val runOutbox: RunOutbox get() = database
+    val runResultOutbox: RunResultOutbox get() = database
+    val runIosOutbox: RunIosNotificationOutbox get() = database
 }
 
 /** Build the initial unencrypted-private-key provider and every durable peer repository. */
@@ -58,6 +66,7 @@ fun createFileBackedDesktopPeer(
         authTokens = auth,
         deduplication = database,
         sessions = sessions,
+        runResultOutbox = database,
         parentScope = parentScope,
         clock = clock,
     )

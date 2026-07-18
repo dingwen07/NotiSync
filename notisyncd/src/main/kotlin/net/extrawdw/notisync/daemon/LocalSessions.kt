@@ -19,7 +19,11 @@ import net.extrawdw.notisync.localapi.LocalNotificationAction
 import net.extrawdw.notisync.localapi.NotificationActionKind
 import net.extrawdw.notisync.localapi.NotificationActionLifetime
 import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.LocalRunPromptKind
+import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.SessionResponse
+import net.extrawdw.notisync.protocol.RunControl
+import net.extrawdw.notisync.protocol.RunControlKind
 
 class LocalAuthorizationException(message: String) : RuntimeException(message)
 class LocalConflictException(message: String) : RuntimeException(message)
@@ -58,6 +62,21 @@ data class NotificationRegistration(
     val postTime: Long,
 )
 
+data class RunRegistration(
+    val session: AuthorizedSession,
+    val sourceKey: String,
+    val postTime: Long,
+    val actions: List<WireAction>,
+)
+
+data class AcceptedRunState(
+    val registration: RunRegistration,
+    val stateItem: PendingRunState,
+    val iosItem: PendingNotification?,
+)
+
+enum class RunControlDelivery { ENQUEUED, DUPLICATE, NOT_ACTIVE, STALE, REJECTED }
+
 /**
  * Process-bound local namespaces plus their durable-until-ACK event queues. This class contains no
  * Run semantics: an action is merely routed back to the process that registered the source.
@@ -80,12 +99,19 @@ class LocalSessionRegistry(
         var actions: List<WireAction> = emptyList(),
         val sessionActions: MutableList<WireAction> = mutableListOf(),
         val events: LinkedHashMap<String, LocalEvent> = linkedMapOf(),
+        var runId: String? = null,
+        var latestRunRevision: Long = -1,
+        var interactionGeneration: Long = 0,
+        var runActive: Boolean = false,
+        var runPrompt: LocalRunPromptKind? = null,
+        val handledRunControlRequestIds: LinkedHashMap<String, Long> = linkedMapOf(),
     )
 
     private val lock = ReentrantLock()
     private val changed = lock.newCondition()
     private val sessions = linkedMapOf<String, Session>()
     private val sourceToSession = linkedMapOf<String, String>()
+    private val runToSession = linkedMapOf<String, String>()
 
     init {
         database?.load()?.sessions?.values?.forEach { stored ->
@@ -94,6 +120,7 @@ class LocalSessionRegistry(
             if (!session.peer.processIdentityVerified || identityResolver.stillMatches(session.peer)) {
                 sessions[session.id] = session
                 sourceToSession[session.sourceKey] = session.id
+                session.runId?.let { runToSession[it] = session.id }
             } else {
                 database.update { it.copy(sessions = it.sessions - session.id) }
             }
@@ -174,42 +201,173 @@ class LocalSessionRegistry(
     ): NotificationRegistration = lock.withLock {
         val authorized = authorize(request.sessionId, bearer, peer)
         val session = sessions.getValue(request.sessionId)
-        if (request.generation < session.latestGeneration) {
-            throw LocalConflictException("stale notification generation")
+        val registration = prepareNotificationLocked(request, authorized, session, postTimeCandidate)
+        persistLocked(session)
+        registration
+    }
+
+    fun registerRunState(
+        request: RunStateRequest,
+        iosProjection: NotificationRequest?,
+        bearer: String?,
+        peer: LocalPeer,
+        postTimeCandidate: Long = clock.millis(),
+    ): RunRegistration = lock.withLock {
+        val session = authorize(request.sessionId, bearer, peer).let { sessions.getValue(it.id) }
+        val previous = session.toStored()
+        try {
+            prepareRunStateLocked(request, iosProjection, bearer, peer, postTimeCandidate).also {
+                persistLocked(session)
+            }
+        } catch (error: Exception) {
+            restoreSessionLocked(previous)
+            throw error
         }
-        require(request.actions.size <= 3) { "at most three notification actions are supported" }
-        require(request.actions.map(LocalNotificationAction::id).distinct().size == request.actions.size) {
-            "notification action ids must be unique"
-        }
-        require(request.actions.all { it.generation == request.generation }) {
-            "every action must carry the notification generation"
-        }
-        request.actions.forEach { action ->
-            require(action.id.isNotBlank() && action.id.length <= 64) { "invalid action id" }
-            require(action.title.isNotBlank() && action.title.length <= 80) { "invalid action title" }
-            require(
-                action.lifetime != NotificationActionLifetime.SESSION ||
-                    action.kind == NotificationActionKind.SIGNAL,
-            ) { "session-lifetime actions must be process signals" }
-            if (action.kind == NotificationActionKind.SIGNAL) {
-                val signal = action.signal
-                require(!signal.isNullOrBlank() && signal.length <= 32) {
-                    "signal actions require a valid signal name"
+    }
+
+    /**
+     * Accept a complete Run snapshot and its two platform delivery intents as one transaction.
+     * Production's file-backed outboxes share [database], while in-memory tests receive equivalent
+     * all-or-rollback behavior.
+     */
+    fun acceptRunState(
+        request: RunStateRequest,
+        iosProjection: NotificationRequest?,
+        bearer: String?,
+        peer: LocalPeer,
+        acceptedAt: Long,
+        runItemId: String,
+        iosItemId: String?,
+        runOutbox: RunOutbox,
+        iosOutbox: RunIosNotificationOutbox,
+    ): AcceptedRunState = lock.withLock {
+        val session = authorize(request.sessionId, bearer, peer).let { sessions.getValue(it.id) }
+        val previous = session.toStored()
+        try {
+            val registration = prepareRunStateLocked(request, iosProjection, bearer, peer, acceptedAt)
+            val stateItem = PendingRunState(runItemId, registration.sourceKey, request, acceptedAt)
+            val iosItem = iosProjection?.let { projection ->
+                PendingNotification(
+                    id = requireNotNull(iosItemId) { "iOS Run projection id is missing" },
+                    sourceKey = registration.sourceKey,
+                    request = projection,
+                    postTime = registration.postTime,
+                    acceptedAt = acceptedAt,
+                    actions = registration.actions,
+                    audience = NotificationAudience.RUN_IOS_COMPAT,
+                )
+            }
+            if (database != null) {
+                require(runOutbox === database && iosOutbox === database) {
+                    "durable Run acceptance requires the registry's shared database outboxes"
+                }
+                database.persistRunAcceptance(session.toStored(), stateItem, iosItem)
+            } else {
+                try {
+                    runOutbox.enqueue(stateItem)
+                    iosItem?.let(iosOutbox::enqueueIos)
+                } catch (error: Exception) {
+                    runCatching { runOutbox.removeRun(stateItem.id) }
+                    iosItem?.let { runCatching { iosOutbox.removeIos(it.id) } }
+                    throw error
                 }
             }
+            AcceptedRunState(registration, stateItem, iosItem)
+        } catch (error: Exception) {
+            restoreSessionLocked(previous)
+            throw error
         }
-        val actions = resolveWireActions(session, request) { randomToken(32) }
-        session.latestGeneration = request.generation
-        session.latestPostTime = maxOf(postTimeCandidate, session.latestPostTime + 1)
-        session.actions = actions
-        persistLocked(session)
-        NotificationRegistration(
-            authorized,
-            request.generation,
-            session.sourceKey,
-            actions,
-            session.latestPostTime,
+    }
+
+    fun deliverRunControl(
+        control: RunControl,
+        senderClientId: String,
+        senderIsTrustedOwnDevice: Boolean,
+        relayMessageId: String,
+    ): RunControlDelivery = lock.withLock {
+        if (!senderIsTrustedOwnDevice) return RunControlDelivery.REJECTED
+        if (database?.seen(relayMessageId) == true) return RunControlDelivery.DUPLICATE
+        val session = runToSession[control.runId]?.let(sessions::get) ?: return RunControlDelivery.NOT_ACTIVE
+        if (session.peer.processIdentityVerified && !identityResolver.stillMatches(session.peer)) {
+            expireLocked(session)
+            return RunControlDelivery.NOT_ACTIVE
+        }
+        if (!session.runActive) return RunControlDelivery.NOT_ACTIVE
+        if (control.requestId in session.handledRunControlRequestIds) return RunControlDelivery.DUPLICATE
+        if (control.kind == RunControlKind.WRITE_INPUT) {
+            if (session.runPrompt == null) return RunControlDelivery.REJECTED
+            if (control.interactionGeneration != session.interactionGeneration) return RunControlDelivery.STALE
+        }
+
+        val event = LocalEvent(
+            id = UUID.randomUUID().toString(),
+            type = LocalEventType.RUN_CONTROL,
+            sessionId = session.id,
+            createdAtEpochMillis = clock.millis(),
+            inputText = control.inputText,
+            senderClientId = senderClientId,
+            requestId = control.requestId,
+            runId = control.runId,
+            runControlKind = net.extrawdw.notisync.localapi.LocalRunControlKind.valueOf(control.kind.name),
+            interactionGeneration = control.interactionGeneration,
+            signal = control.signal,
         )
+        session.handledRunControlRequestIds[control.requestId] = clock.millis()
+        while (session.handledRunControlRequestIds.size > MAXIMUM_RUN_CONTROL_IDS) {
+            session.handledRunControlRequestIds.remove(session.handledRunControlRequestIds.keys.first())
+        }
+        try {
+            enqueueLocked(session, event, relayMessageId)
+        } catch (error: Exception) {
+            session.handledRunControlRequestIds.remove(control.requestId)
+            throw error
+        }
+        RunControlDelivery.ENQUEUED
+    }
+
+    fun runControlEvent(
+        sessionId: String,
+        eventId: String,
+        bearer: String?,
+        peer: LocalPeer,
+    ): LocalEvent = lock.withLock {
+        authorize(sessionId, bearer, peer)
+        val event = sessions.getValue(sessionId).events[eventId]
+            ?: throw LocalConflictException("Run control event is no longer pending")
+        if (event.type != LocalEventType.RUN_CONTROL) {
+            throw LocalConflictException("event is not a Run control")
+        }
+        event
+    }
+
+    fun completeRunControl(
+        sessionId: String,
+        eventId: String,
+        bearer: String?,
+        peer: LocalPeer,
+        result: PendingRunControlResult,
+        resultOutbox: RunResultOutbox,
+    ) = lock.withLock {
+        authorize(sessionId, bearer, peer)
+        val session = sessions.getValue(sessionId)
+        val event = session.events[eventId]
+            ?: throw LocalConflictException("Run control event is no longer pending")
+        if (event.type != LocalEventType.RUN_CONTROL) {
+            throw LocalConflictException("event is not a Run control")
+        }
+        val previousEvents = LinkedHashMap(session.events)
+        session.events.remove(eventId)
+        try {
+            if (database != null) {
+                database.persistSessionAndEnqueueRunResult(session.toStored(), result)
+            } else {
+                resultOutbox.enqueueResult(result)
+            }
+        } catch (error: Exception) {
+            session.events.clear()
+            session.events.putAll(previousEvents)
+            throw error
+        }
     }
 
     /** Internal inspection seam used by the dispatcher and socket-level tests; never exposed by UDS. */
@@ -360,12 +518,104 @@ class LocalSessionRegistry(
     private fun removeLocked(session: Session) {
         sessions.remove(session.id)
         sourceToSession.remove(session.sourceKey)
+        session.runId?.let(runToSession::remove)
         database?.update { it.copy(sessions = it.sessions - session.id) }
     }
 
     private fun persistLocked(session: Session) {
         val stored = session.toStored()
         database?.update { it.copy(sessions = it.sessions + (session.id to stored)) }
+    }
+
+    private fun prepareNotificationLocked(
+        request: NotificationRequest,
+        authorized: AuthorizedSession,
+        session: Session,
+        postTimeCandidate: Long,
+    ): NotificationRegistration {
+        if (request.generation < session.latestGeneration) {
+            throw LocalConflictException("stale notification generation")
+        }
+        require(request.actions.size <= 3) { "at most three notification actions are supported" }
+        require(request.actions.map(LocalNotificationAction::id).distinct().size == request.actions.size) {
+            "notification action ids must be unique"
+        }
+        require(request.actions.all { it.generation == request.generation }) {
+            "every action must carry the notification generation"
+        }
+        request.actions.forEach { action ->
+            require(action.id.isNotBlank() && action.id.length <= 64) { "invalid action id" }
+            require(action.title.isNotBlank() && action.title.length <= 80) { "invalid action title" }
+            require(
+                action.lifetime != NotificationActionLifetime.SESSION ||
+                    action.kind == NotificationActionKind.SIGNAL,
+            ) { "session-lifetime actions must be process signals" }
+            if (action.kind == NotificationActionKind.SIGNAL) {
+                val signal = action.signal
+                require(!signal.isNullOrBlank() && signal.length <= 32) {
+                    "signal actions require a valid signal name"
+                }
+            }
+        }
+        val actions = resolveWireActions(session, request) { randomToken(32) }
+        session.latestGeneration = request.generation
+        session.latestPostTime = maxOf(postTimeCandidate, session.latestPostTime + 1)
+        session.actions = actions
+        return NotificationRegistration(
+            authorized,
+            request.generation,
+            session.sourceKey,
+            actions,
+            session.latestPostTime,
+        )
+    }
+
+    private fun prepareRunStateLocked(
+        request: RunStateRequest,
+        iosProjection: NotificationRequest?,
+        bearer: String?,
+        peer: LocalPeer,
+        postTimeCandidate: Long,
+    ): RunRegistration {
+        val authorized = authorize(request.sessionId, bearer, peer)
+        val session = sessions.getValue(request.sessionId)
+        if (session.runId != null && session.runId != request.runId) {
+            throw LocalConflictException("local session is already bound to another Run")
+        }
+        if (request.revision <= session.latestRunRevision) {
+            throw LocalConflictException("stale Run revision")
+        }
+        if (request.interactionGeneration < session.interactionGeneration) {
+            throw LocalConflictException("stale Run interaction generation")
+        }
+        val notification = iosProjection?.let {
+            require(it.sessionId == request.sessionId) { "iOS projection session does not match Run" }
+            prepareNotificationLocked(it, authorized, session, postTimeCandidate)
+        }
+        session.runId = request.runId
+        runToSession[request.runId] = session.id
+        session.latestRunRevision = request.revision
+        session.interactionGeneration = request.interactionGeneration
+        session.runActive = request.phase == net.extrawdw.notisync.localapi.LocalRunPhase.RUNNING ||
+            request.phase == net.extrawdw.notisync.localapi.LocalRunPhase.BLOCKED
+        session.runPrompt = request.prompt.takeIf { session.runActive }
+        if (notification == null) {
+            session.latestPostTime = maxOf(postTimeCandidate, session.latestPostTime + 1)
+        }
+        return RunRegistration(
+            session = authorized,
+            sourceKey = session.sourceKey,
+            postTime = notification?.postTime ?: session.latestPostTime,
+            actions = notification?.actions.orEmpty(),
+        )
+    }
+
+    private fun restoreSessionLocked(stored: StoredLocalSession) {
+        sessions[stored.id]?.runId?.let(runToSession::remove)
+        val restored = stored.toSession()
+        sessions[stored.id] = restored
+        sourceToSession[stored.sourceKey] = stored.id
+        restored.runId?.let { runToSession[it] = restored.id }
     }
 
     private fun StoredLocalSession.toSession() = Session(
@@ -406,6 +656,12 @@ class LocalSessionRegistry(
             )
         },
         events = LinkedHashMap(events),
+        runId = runId,
+        latestRunRevision = latestRunRevision,
+        interactionGeneration = interactionGeneration,
+        runActive = runActive,
+        runPrompt = runPrompt,
+        handledRunControlRequestIds = LinkedHashMap(handledRunControlRequestIds),
     )
 
     private fun Session.toStored() = StoredLocalSession(
@@ -434,6 +690,12 @@ class LocalSessionRegistry(
             )
         },
         events = LinkedHashMap(events),
+        runId = runId,
+        latestRunRevision = latestRunRevision,
+        interactionGeneration = interactionGeneration,
+        runActive = runActive,
+        runPrompt = runPrompt,
+        handledRunControlRequestIds = LinkedHashMap(handledRunControlRequestIds),
     )
 
     private fun resolveWireActions(
@@ -452,7 +714,12 @@ class LocalSessionRegistry(
             }
         }
 
-        val usedIndices = session.sessionActions.mapTo(mutableSetOf(), WireAction::index)
+        val reusableGenerationActions = session.actions
+            .filter { it.generation == request.generation && it.lifetime == NotificationActionLifetime.GENERATION }
+            .associateBy(WireAction::id)
+        val usedIndices = session.sessionActions.mapTo(mutableSetOf(), WireAction::index).apply {
+            addAll(reusableGenerationActions.values.map(WireAction::index))
+        }
         request.actions
             .filter { it.lifetime == NotificationActionLifetime.SESSION && it.id !in retainedById }
             .forEach { requested ->
@@ -471,14 +738,15 @@ class LocalSessionRegistry(
             if (requested.lifetime == NotificationActionLifetime.SESSION) {
                 currentSessionActions.getValue(requested.id)
             } else {
-                requested.toWireAction(
-                    index = allocateWireIndex(
-                        "generation\u0000${request.generation}\u0000$ordinal\u0000${requested.id}",
-                        usedIndices,
-                    ),
-                    generation = request.generation,
-                    actionToken = actionToken(),
-                )
+                reusableGenerationActions[requested.id]?.takeIf { it.matches(requested) }
+                    ?: requested.toWireAction(
+                        index = allocateWireIndex(
+                            "generation\u0000${request.generation}\u0000$ordinal\u0000${requested.id}",
+                            usedIndices,
+                        ),
+                        generation = request.generation,
+                        actionToken = actionToken(),
+                    )
             }
         }
     }
@@ -511,6 +779,7 @@ class LocalSessionRegistry(
         const val MAX_REMOTE_INPUT_CHARS = 64 * 1024
         const val MAXIMUM_UNACKNOWLEDGED_EVENTS = 1_024
         const val MAXIMUM_SESSION_ACTIONS = 16
+        const val MAXIMUM_RUN_CONTROL_IDS = 1_024
     }
 }
 

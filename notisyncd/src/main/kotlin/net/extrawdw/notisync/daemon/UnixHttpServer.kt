@@ -28,10 +28,12 @@ import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DeviceActionRequest
 import net.extrawdw.notisync.localapi.DismissalRequest
 import net.extrawdw.notisync.localapi.EventAckRequest
+import net.extrawdw.notisync.localapi.EventCompletionRequest
 import net.extrawdw.notisync.localapi.LocalApiJson
 import net.extrawdw.notisync.localapi.LocalEvent
 import net.extrawdw.notisync.localapi.LocalEventType
 import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingInspectRequest
 import net.extrawdw.notisync.localapi.QuarantineActionRequest
@@ -165,6 +167,8 @@ class UnixHttpServer(
         }
         request.method == "POST" && request.path == "/v1/notifications" ->
             json(202, service.postNotification(peer, request.bearer, request.decode<NotificationRequest>()))
+        request.method == "POST" && request.path == "/v1/runs" ->
+            json(202, service.postRunState(peer, request.bearer, request.decode<RunStateRequest>()))
         request.method == "POST" && request.path == "/v1/dismissals" -> runBlocking {
             json(202, service.postDismissal(peer, request.bearer, request.decode<DismissalRequest>()))
         }
@@ -174,6 +178,11 @@ class UnixHttpServer(
         request.method == "POST" && EVENT_ACK.matches(request.path) -> {
             val eventId = decodeComponent(EVENT_ACK.matchEntire(request.path)!!.groupValues[1])
             service.acknowledgeEvent(peer, request.bearer, eventId, request.decode<EventAckRequest>())
+            empty(204)
+        }
+        request.method == "POST" && EVENT_COMPLETE.matches(request.path) -> runBlocking {
+            val eventId = decodeComponent(EVENT_COMPLETE.matchEntire(request.path)!!.groupValues[1])
+            service.completeEvent(peer, request.bearer, eventId, request.decode<EventCompletionRequest>())
             empty(204)
         }
         request.method == "POST" && request.path == "/v1/shutdown" -> {
@@ -381,6 +390,7 @@ class UnixHttpServer(
         val ALLOWED_METHODS = setOf("GET", "POST", "PATCH", "DELETE")
         val DEVICE_ACTION = Regex("^/v1/devices/([^/]+)/actions$")
         val EVENT_ACK = Regex("^/v1/events/([^/]+)/ack$")
+        val EVENT_COMPLETE = Regex("^/v1/events/([^/]+)/complete$")
         val REASONS = mapOf(
             200 to "OK",
             201 to "Created",

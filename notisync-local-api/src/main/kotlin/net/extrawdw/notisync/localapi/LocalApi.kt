@@ -204,10 +204,83 @@ data class NotificationRequest(
 )
 
 @Serializable
+enum class LocalRunPhase { RUNNING, BLOCKED, COMPLETED, FAILED_TO_START }
+
+@Serializable
+enum class LocalRunUpdateReason { INITIAL, PERIODIC, BLOCKED, RESUMED, COMPLETED, FAILED, LLM_SUMMARY, REFRESH }
+
+@Serializable
+enum class LocalRunBlockedReason { TERMINAL_INPUT, OUTPUT_AND_CPU_IDLE }
+
+@Serializable
+enum class LocalRunPromptKind { YES_NO, TEXT }
+
+@Serializable
+data class LocalRunProgress(
+    val current: Long? = null,
+    val total: Long? = null,
+    val indeterminate: Boolean = false,
+) {
+    init {
+        require(indeterminate || (current != null && total != null && total > 0)) {
+            "determinate progress requires current and a positive total"
+        }
+    }
+}
+
+@Serializable
+data class LocalRunTerminalSnapshot(
+    val text: String,
+    val truncated: Boolean,
+    val rawBytesSeen: Long,
+)
+
+@Serializable
+data class LocalRunLlmSummary(
+    val title: String,
+    val text: String,
+    val expandedText: String? = null,
+)
+
+/**
+ * A complete local Run snapshot. The daemon binds [hostClientId] on the authenticated mesh envelope,
+ * so the process-owned local source cannot claim another host identity.
+ */
+@Serializable
+data class RunStateRequest(
+    val sessionId: String,
+    val runId: String,
+    val revision: Long,
+    val phase: LocalRunPhase,
+    val updateReason: LocalRunUpdateReason,
+    val startedAt: Long,
+    val updatedAt: Long,
+    val argv: List<String>,
+    val cwd: String,
+    val usesPty: Boolean,
+    val terminal: LocalRunTerminalSnapshot,
+    val interactionGeneration: Long = 0,
+    val endedAt: Long? = null,
+    val blockedReason: LocalRunBlockedReason? = null,
+    val prompt: LocalRunPromptKind? = null,
+    val progress: LocalRunProgress? = null,
+    val exitCode: Int? = null,
+    val failureMessage: String? = null,
+    val llmSummary: LocalRunLlmSummary? = null,
+    val responseToRequestId: String? = null,
+)
+
+@Serializable
 data class AcceptedResponse(val id: String, val acceptedAtEpochMillis: Long)
 
 @Serializable
-enum class LocalEventType { ACTION, DISMISSAL, DAEMON_SHUTDOWN, SESSION_EXPIRED, HEARTBEAT }
+enum class LocalEventType { ACTION, RUN_CONTROL, DISMISSAL, DAEMON_SHUTDOWN, SESSION_EXPIRED, HEARTBEAT }
+
+@Serializable
+enum class LocalRunControlKind { REFRESH, WRITE_INPUT, SIGNAL }
+
+@Serializable
+enum class LocalRunControlStatus { APPLIED, REJECTED, NOT_ACTIVE, STALE, FAILED }
 
 /** One line on GET /v1/events. Payload fields are intentionally narrow and source-scoped. */
 @Serializable
@@ -220,10 +293,22 @@ data class LocalEvent(
     val actionId: String? = null,
     val inputText: String? = null,
     val senderClientId: String? = null,
+    val requestId: String? = null,
+    val runId: String? = null,
+    val runControlKind: LocalRunControlKind? = null,
+    val interactionGeneration: Long? = null,
+    val signal: String? = null,
 )
 
 @Serializable
 data class EventAckRequest(val sessionId: String)
+
+@Serializable
+data class EventCompletionRequest(
+    val sessionId: String,
+    val status: LocalRunControlStatus,
+    val message: String? = null,
+)
 
 @Serializable
 data class DismissalRequest(

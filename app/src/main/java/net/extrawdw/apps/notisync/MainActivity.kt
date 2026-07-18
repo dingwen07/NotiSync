@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.History
 import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
@@ -62,6 +63,7 @@ import kotlinx.serialization.Serializable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
+import net.extrawdw.apps.notisync.run.RunKey
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -70,23 +72,27 @@ import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
+import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
 class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
     private val pendingOpenDevices = MutableStateFlow(false)
+    private val pendingOpenRun = MutableStateFlow<RunKey?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         updatePendingPairingPayload(intent)
         consumeOpenDevices(intent)
+        consumeOpenRun(intent)
         enableEdgeToEdge()
         setContent {
             val app = applicationContext as NotiSyncApp
             val graphReady by app.graphReady.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
+            val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             NotiSyncTheme {
                 if (graphReady) {
                     val graph = remember { app.graph }
@@ -112,6 +118,8 @@ class MainActivity : ComponentActivity() {
                             onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
                             openDevices = openDevices,
                             onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                            openRun = openRun,
+                            onOpenRunConsumed = { pendingOpenRun.value = null },
                         )
                         null -> LoadingBox()
                     }
@@ -127,6 +135,7 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         updatePendingPairingPayload(intent)
         consumeOpenDevices(intent)
+        consumeOpenRun(intent)
     }
 
     /** A trust notification asked us to open the Devices tab. */
@@ -136,8 +145,22 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(EXTRA_OPEN_DEVICES) // consume so a config change / Recents can't re-trigger it
     }
 
+    /** A locally-rendered Run notification asked us to open its durable detail record. */
+    private fun consumeOpenRun(intent: Intent?) {
+        intent ?: return
+        if (intent.action != ACTION_OPEN_RUN && !intent.hasExtra(EXTRA_RUN_ID)) return
+        val host = intent.getStringExtra(EXTRA_RUN_HOST_CLIENT_ID) ?: return
+        val runId = intent.getStringExtra(EXTRA_RUN_ID) ?: return
+        pendingOpenRun.value = RunKey(host, runId)
+        intent.removeExtra(EXTRA_RUN_HOST_CLIENT_ID)
+        intent.removeExtra(EXTRA_RUN_ID)
+    }
+
     companion object {
         const val EXTRA_OPEN_DEVICES = "net.extrawdw.apps.notisync.OPEN_DEVICES"
+        const val ACTION_OPEN_RUN = "net.extrawdw.apps.notisync.OPEN_RUN"
+        const val EXTRA_RUN_HOST_CLIENT_ID = "net.extrawdw.apps.notisync.RUN_HOST_CLIENT_ID"
+        const val EXTRA_RUN_ID = "net.extrawdw.apps.notisync.RUN_ID"
     }
 
     private fun updatePendingPairingPayload(intent: Intent?) {
@@ -166,6 +189,9 @@ private sealed interface Route {
     data object Ios : Route
 
     @Serializable
+    data object Run : Route
+
+    @Serializable
     data object Activity : Route
 
     @Serializable
@@ -181,6 +207,7 @@ private enum class TopLevelDestination(
     DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
     APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
     IOS(Route.Ios, R.string.tab_ios, Icons.Outlined.PhoneIphone),
+    RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
     ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),
     SETTINGS(Route.Settings, R.string.tab_settings, Icons.Outlined.Settings),
 }
@@ -197,6 +224,8 @@ fun NotiSyncRoot(
     onPendingPairingPayloadConsumed: () -> Unit = {},
     openDevices: Boolean = false,
     onOpenDevicesConsumed: () -> Unit = {},
+    openRun: RunKey? = null,
+    onOpenRunConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -225,6 +254,10 @@ fun NotiSyncRoot(
             navController.navigateToTopLevel(TopLevelDestination.DEVICES)
             onOpenDevicesConsumed()
         }
+    }
+
+    LaunchedEffect(openRun) {
+        if (openRun != null) navController.navigateToTopLevel(TopLevelDestination.RUN)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -268,6 +301,12 @@ fun NotiSyncRoot(
                 }
                 composable<Route.Apps> { AppsScreen() }
                 composable<Route.Ios> { IosScreen() }
+                composable<Route.Run> {
+                    RunScreen(
+                        initialSelection = openRun,
+                        onInitialSelectionConsumed = onOpenRunConsumed,
+                    )
+                }
                 composable<Route.Activity> { ActivityScreen() }
                 composable<Route.Settings> { SettingsScreen() }
             }

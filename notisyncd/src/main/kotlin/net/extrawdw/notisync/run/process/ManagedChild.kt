@@ -14,6 +14,12 @@ interface ManagedChild : AutoCloseable {
     fun isAlive(): Boolean
     fun resize(columns: Int, rows: Int)
     fun signal(signal: ChildSignal)
+    /** Returns false when this child implementation cannot deliver an otherwise valid arbitrary signal. */
+    fun signal(signal: String): Boolean = when (signal.uppercase().removePrefix("SIG")) {
+        ChildSignal.INTERRUPT.unixName -> true.also { signal(ChildSignal.INTERRUPT) }
+        ChildSignal.TERMINATE.unixName -> true.also { signal(ChildSignal.TERMINATE) }
+        else -> false
+    }
     override fun close()
 }
 
@@ -107,6 +113,12 @@ private class ProcessManagedChild(
     }
 
     override fun signal(signal: ChildSignal) {
+        signal(signal.unixName)
+    }
+
+    override fun signal(signal: String): Boolean {
+        val signalName = signal.uppercase().removePrefix("SIG")
+        if (!signalName.isSafeSignal()) return false
         val snapshot = inspector.snapshot(pid)
         val processGroup = snapshot?.foregroundProcessGroupId
             ?.takeIf { it > 0 }
@@ -118,17 +130,29 @@ private class ProcessManagedChild(
             val stopped = inspector.foregroundProcessGroup(pid).any {
                 it.processGroupId == processGroup && it.state == 'T'
             }
-            sendUnixGroupSignal(processGroup, signal.unixName).also { sent ->
+            sendUnixGroupSignal(processGroup, signalName).also { sent ->
                 // INT/TERM remains pending for a stopped foreground job. Resume only a group that
                 // was actually stopped: SIGCONT is observable by handlers on a running process.
-                if (sent && stopped) sendUnixGroupSignal(processGroup, "CONT")
+                if (sent && stopped && signalName in RESUME_AFTER_SIGNALS) {
+                    sendUnixGroupSignal(processGroup, "CONT")
+                }
             }
         } else {
-            sendChildTreeSignal(signal)
+            sendChildTreeSignal(signalName)
         }
-        if (!delivered) {
-            if (signal == ChildSignal.INTERRUPT) process.descendants().forEach { it.destroy() }
-            process.destroy()
+        if (delivered) return true
+        return when (signalName) {
+            "TERM" -> {
+                process.descendants().toList().asReversed().forEach { it.destroy() }
+                process.destroy()
+                true
+            }
+            "KILL" -> {
+                process.descendants().toList().asReversed().forEach { it.destroyForcibly() }
+                process.destroyForcibly()
+                true
+            }
+            else -> false
         }
     }
 
@@ -142,12 +166,14 @@ private class ProcessManagedChild(
             .waitFor() == 0
     }.getOrDefault(false)
 
-    private fun sendChildTreeSignal(signal: ChildSignal): Boolean {
+    private fun sendChildTreeSignal(signalName: String): Boolean {
         val targets = process.descendants().map(ProcessHandle::pid).toList().asReversed() + process.pid()
         val stopped = targets.any { inspector.snapshot(it)?.state == 'T' }
         var delivered = false
-        for (target in targets) delivered = sendUnixPidSignal(target, signal.unixName) || delivered
-        if (delivered && stopped) targets.forEach { sendUnixPidSignal(it, "CONT") }
+        for (target in targets) delivered = sendUnixPidSignal(target, signalName) || delivered
+        if (delivered && stopped && signalName in RESUME_AFTER_SIGNALS) {
+            targets.forEach { sendUnixPidSignal(it, "CONT") }
+        }
         return delivered
     }
 
@@ -165,5 +191,15 @@ private class ProcessManagedChild(
         runCatching { process.outputStream.close() }
         runCatching { process.inputStream.close() }
         runCatching { process.errorStream.close() }
+    }
+
+    private fun String.isSafeSignal(): Boolean = when {
+        isEmpty() || length > 64 -> false
+        all(Char::isDigit) -> true
+        else -> first().isLetter() && all { it.isLetterOrDigit() || it == '_' || it == '+' || it == '-' }
+    }
+
+    private companion object {
+        val RESUME_AFTER_SIGNALS = setOf("INT", "TERM", "KILL")
     }
 }
