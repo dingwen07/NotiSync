@@ -86,6 +86,39 @@ class RunStoreTest {
     }
 
     @Test
+    fun completedLogKeepsNewestFiftyAndExemptsActiveRuns() {
+        var clock = 1_000L
+        val store = RunStore(context, now = { clock })
+        repeat(55) { index ->
+            clock++
+            store.apply(
+                running(runId = "completed-$index", revision = 2).copy(
+                    phase = RunPhase.COMPLETED,
+                    updateReason = RunUpdateReason.COMPLETED,
+                    updatedAt = 2_000L + index,
+                    endedAt = 2_000L + index,
+                    exitCode = 0,
+                ),
+            )
+        }
+        repeat(3) { index -> store.apply(running(runId = "active-$index", revision = 1)) }
+
+        val completedIds = store.runs.value.filterNot { it.active }.map { it.state.runId }.toSet()
+        assertEquals(50, completedIds.size)
+        assertFalse("completed-0" in completedIds)
+        assertFalse("completed-4" in completedIds)
+        assertTrue("completed-5" in completedIds)
+        assertTrue("completed-54" in completedIds)
+        assertEquals(3, store.runs.value.count { it.active })
+        store.close()
+
+        val reopened = RunStore(context, now = { clock })
+        assertEquals(50, reopened.runs.value.count { !it.active })
+        assertEquals(3, reopened.runs.value.count { it.active })
+        reopened.close()
+    }
+
+    @Test
     fun storageCapUsesDatabaseFootprintAndNeverPrunesActiveRuns() {
         val budget = 512L * 1024
         val store = RunStore(context, now = { 10_000 }, maxStorageBytes = budget)

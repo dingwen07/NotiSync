@@ -14,8 +14,8 @@ import net.extrawdw.notisync.localapi.LocalRunTerminalSnapshot
 import net.extrawdw.notisync.localapi.LocalRunUpdateReason
 import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.run.llm.ContentGenerator
-import net.extrawdw.notisync.run.llm.GeneratedContent
 import net.extrawdw.notisync.run.llm.GenerationContext
+import net.extrawdw.notisync.run.llm.TitleGenerationMode
 import net.extrawdw.notisync.run.output.OutputSnapshot
 import net.extrawdw.notisync.run.output.PromptKind
 import net.extrawdw.notisync.run.process.BlockedReason
@@ -50,6 +50,10 @@ class RunStateCoordinator(
     private var llmSummary: LocalRunLlmSummary? = null
     private var lastPeriodicFingerprint: String? = null
     private var llmFuture: Future<*>? = null
+    /** Changes for every model request so superseded content can never publish out of order. */
+    private var llmRequestGeneration = 0L
+    /** Remains pending across superseding ordinary updates until a replacement title succeeds. */
+    private var pendingTitleMode: TitleGenerationMode? = null
 
     @Synchronized
     fun currentInteractionGeneration(): Long = interactionGeneration
@@ -60,7 +64,12 @@ class RunStateCoordinator(
     }
 
     fun initial(snapshot: OutputSnapshot) {
-        transition(LocalRunPhase.RUNNING, LocalRunUpdateReason.INITIAL, snapshot)
+        transition(
+            LocalRunPhase.RUNNING,
+            LocalRunUpdateReason.INITIAL,
+            snapshot,
+            replacementTitleMode = TitleGenerationMode.TASK_IDENTITY,
+        )
     }
 
     @Synchronized
@@ -68,20 +77,38 @@ class RunStateCoordinator(
         val fingerprint = "${snapshot.progress}:${snapshot.prompt}:${snapshot.tail}:${snapshot.truncated}"
         if (fingerprint == lastPeriodicFingerprint) return
         lastPeriodicFingerprint = fingerprint
-        transitionLocked(LocalRunPhase.RUNNING, LocalRunUpdateReason.PERIODIC, snapshot)
+        transitionLocked(
+            LocalRunPhase.RUNNING,
+            LocalRunUpdateReason.PERIODIC,
+            snapshot,
+            replacementTitleMode = null,
+        )
     }
 
     fun blocked(snapshot: OutputSnapshot, reason: BlockedReason) {
         synchronized(this) {
             blockedReason = reason.toLocal()
-            transitionLocked(LocalRunPhase.BLOCKED, LocalRunUpdateReason.BLOCKED, snapshot)
+            transitionLocked(
+                LocalRunPhase.BLOCKED,
+                LocalRunUpdateReason.BLOCKED,
+                snapshot,
+                replacementTitleMode = if (reason == BlockedReason.OUTPUT_AND_CPU_IDLE) {
+                    TitleGenerationMode.HANG
+                } else null,
+            )
         }
     }
 
     fun resumed(snapshot: OutputSnapshot) {
         synchronized(this) {
+            val resumedFromHang = blockedReason == LocalRunBlockedReason.OUTPUT_AND_CPU_IDLE
             blockedReason = null
-            transitionLocked(LocalRunPhase.RUNNING, LocalRunUpdateReason.RESUMED, snapshot)
+            transitionLocked(
+                LocalRunPhase.RUNNING,
+                LocalRunUpdateReason.RESUMED,
+                snapshot,
+                replacementTitleMode = if (resumedFromHang) TitleGenerationMode.RECOVERY else null,
+            )
         }
     }
 
@@ -90,7 +117,12 @@ class RunStateCoordinator(
             this.exitCode = exitCode
             endedAt = completedAt.coerceAtLeast(startedAt)
             blockedReason = null
-            transitionLocked(LocalRunPhase.COMPLETED, LocalRunUpdateReason.COMPLETED, snapshot)
+            transitionLocked(
+                LocalRunPhase.COMPLETED,
+                LocalRunUpdateReason.COMPLETED,
+                snapshot,
+                replacementTitleMode = TitleGenerationMode.OUTCOME,
+            )
         }
     }
 
@@ -102,6 +134,7 @@ class RunStateCoordinator(
                 LocalRunPhase.FAILED_TO_START,
                 LocalRunUpdateReason.FAILED,
                 OutputSnapshot("", null, null),
+                replacementTitleMode = TitleGenerationMode.OUTCOME,
             )
         }
     }
@@ -114,14 +147,20 @@ class RunStateCoordinator(
         return publish(buildState(LocalRunUpdateReason.REFRESH, requestId, ++revision, currentPhase))
     }
 
-    private fun transition(newPhase: LocalRunPhase, reason: LocalRunUpdateReason, snapshot: OutputSnapshot) {
-        synchronized(this) { transitionLocked(newPhase, reason, snapshot) }
+    private fun transition(
+        newPhase: LocalRunPhase,
+        reason: LocalRunUpdateReason,
+        snapshot: OutputSnapshot,
+        replacementTitleMode: TitleGenerationMode?,
+    ) {
+        synchronized(this) { transitionLocked(newPhase, reason, snapshot, replacementTitleMode) }
     }
 
     private fun transitionLocked(
         newPhase: LocalRunPhase,
         reason: LocalRunUpdateReason,
         snapshot: OutputSnapshot,
+        replacementTitleMode: TitleGenerationMode?,
     ) {
         val nextPrompt = snapshot.prompt?.toLocal()?.takeIf {
             newPhase == LocalRunPhase.BLOCKED && blockedReason == LocalRunBlockedReason.TERMINAL_INPUT
@@ -132,23 +171,57 @@ class RunStateCoordinator(
         }
         this.phase = newPhase
         this.snapshot = snapshot
-        llmSummary = null
-        val postedRevision = ++revision
-        publish(buildState(reason, null, postedRevision, newPhase))
-        requestSummary(newPhase, snapshot, postedRevision)
+        if (replacementTitleMode != null) pendingTitleMode = replacementTitleMode
+        publish(buildState(reason, null, ++revision, newPhase))
+        requestSummary(reason, newPhase, snapshot)
     }
 
-    private fun requestSummary(newPhase: LocalRunPhase, snapshot: OutputSnapshot, postedRevision: Long) {
+    private fun requestSummary(
+        reason: LocalRunUpdateReason,
+        newPhase: LocalRunPhase,
+        snapshot: OutputSnapshot,
+    ) {
         val activeGenerator = generator ?: return
-        val context = GenerationContext(newPhase.name, argv, pwd, tree, snapshot.tail, exitCode)
+        val requestedTitleMode = pendingTitleMode ?: TitleGenerationMode.KEEP
+        val context = GenerationContext(
+            phase = newPhase.name,
+            argv = argv,
+            pwd = pwd,
+            tree = tree,
+            output = snapshot.tail,
+            exitCode = exitCode,
+            event = reason.name,
+            titleMode = requestedTitleMode,
+            currentTitle = llmSummary?.title.takeIf { requestedTitleMode == TitleGenerationMode.KEEP },
+            failureMessage = failureMessage,
+        )
+        val requestGeneration = ++llmRequestGeneration
         llmFuture?.cancel(true)
         llmFuture = llmExecutor.submit {
             val generated = runCatching { activeGenerator.generate(context) }.getOrNull() ?: return@submit
-            if (generated.title.isBlank() || generated.text.isBlank()) return@submit
+            if (generated.text.isBlank()) return@submit
             synchronized(this) {
-                if (revision != postedRevision || phase != newPhase) return@synchronized
-                llmSummary = generated.toLocalSummary()
-                publish(buildState(LocalRunUpdateReason.LLM_SUMMARY, null, ++revision, newPhase))
+                if (llmRequestGeneration != requestGeneration || phase == null) return@synchronized
+                val normalizedText = generated.text.normalizeModelText(MAX_TEXT_BYTES, multiline = true)
+                    .takeIf { it.isNotBlank() } ?: return@synchronized
+                val replacementTitle = generated.title
+                    ?.normalizeModelText(MAX_TITLE_BYTES, multiline = false)
+                    ?.takeIf { it.isNotBlank() }
+                val title = when (requestedTitleMode) {
+                    TitleGenerationMode.KEEP -> llmSummary?.title ?: return@synchronized
+                    else -> replacementTitle ?: llmSummary?.title ?: return@synchronized
+                }
+                if (requestedTitleMode != TitleGenerationMode.KEEP && replacementTitle != null) {
+                    pendingTitleMode = null
+                }
+                llmSummary = LocalRunLlmSummary(
+                    title = title.normalizeModelText(MAX_TITLE_BYTES, multiline = false),
+                    text = normalizedText,
+                    expandedText = generated.expandedText
+                        ?.normalizeModelText(MAX_EXPANDED_BYTES, multiline = true)
+                        ?.takeIf { it.isNotBlank() },
+                )
+                publish(buildState(LocalRunUpdateReason.LLM_SUMMARY, null, ++revision))
             }
         }
     }
@@ -203,12 +276,6 @@ class RunStateCoordinator(
         PromptKind.TEXT -> LocalRunPromptKind.TEXT
     }
 
-    private fun GeneratedContent.toLocalSummary() = LocalRunLlmSummary(
-        title = title.takeUtf8Bytes(MAX_TITLE_BYTES),
-        text = text.takeUtf8Bytes(MAX_TEXT_BYTES),
-        expandedText = expandedText?.takeUtf8Bytes(MAX_EXPANDED_BYTES),
-    )
-
     private fun String.takeUtf8Bytes(limit: Int): String {
         if (encodeToByteArray().size <= limit) return this
         var bytes = 0
@@ -222,6 +289,50 @@ class RunStateCoordinator(
         }
         return substring(0, index)
     }
+
+    /** Normalize untrusted model copy before it reaches local DTOs, wire models, or platform notifications. */
+    private fun String.normalizeModelText(limit: Int, multiline: Boolean): String {
+        val normalized = StringBuilder(length.coerceAtMost(limit))
+        var index = 0
+        var previousWasCarriageReturn = false
+
+        fun appendSpace() {
+            if (normalized.isNotEmpty() && normalized.last() != ' ' && normalized.last() != '\n') {
+                normalized.append(' ')
+            }
+        }
+
+        fun appendLineBreak() {
+            while (normalized.isNotEmpty() && normalized.last() == ' ') normalized.setLength(normalized.length - 1)
+            if (normalized.isNotEmpty() && normalized.last() != '\n') normalized.append('\n')
+        }
+
+        while (index < length) {
+            val codePoint = codePointAt(index)
+            index += Character.charCount(codePoint)
+            if (codePoint == '\n'.code && previousWasCarriageReturn) {
+                previousWasCarriageReturn = false
+                continue
+            }
+            previousWasCarriageReturn = codePoint == '\r'.code
+            when {
+                codePoint == '\r'.code || codePoint == '\n'.code || codePoint == 0x2028 || codePoint == 0x2029 ->
+                    if (multiline) appendLineBreak() else appendSpace()
+                codePoint == '\t'.code -> appendSpace()
+                !codePoint.isSafeModelCodePoint() -> Unit
+                Character.isWhitespace(codePoint) || Character.isSpaceChar(codePoint) -> appendSpace()
+                else -> normalized.appendCodePoint(codePoint)
+            }
+        }
+        return normalized.toString().trim().takeUtf8Bytes(limit).trimEnd()
+    }
+
+    private fun Int.isSafeModelCodePoint(): Boolean =
+        this >= 0x20 && this != 0x7f && this !in 0x80..0x9f && this !in 0xd800..0xdfff &&
+            Character.getType(this) != Character.FORMAT.toInt() &&
+            this != 0x061c && this !in 0x200e..0x200f && this !in 0x202a..0x202e &&
+            this !in 0x2066..0x2069 && this !in 0x206a..0x206f &&
+            this !in 0xfdd0..0xfdef && (this and 0xffff) !in 0xfffe..0xffff
 
     private companion object {
         const val MAX_TITLE_BYTES = 160

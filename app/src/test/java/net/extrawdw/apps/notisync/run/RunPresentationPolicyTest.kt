@@ -3,10 +3,12 @@ package net.extrawdw.apps.notisync.run
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunBlockedReason
+import net.extrawdw.notisync.protocol.RunLlmSummary
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunPromptKind
 import net.extrawdw.notisync.protocol.RunState
@@ -32,6 +34,31 @@ class RunPresentationPolicyTest {
         assertTrue(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.LLM_SUMMARY)))
         assertTrue(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.REFRESH)))
         assertFalse(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.RESUMED)))
+    }
+
+    @Test
+    fun stickySummaryBodyIsHiddenOnDeterministicLifecycleSnapshots() {
+        val summary = RunLlmSummary(
+            title = "Sticky title",
+            text = "Old model status",
+            expandedText = "Old model explanation",
+        )
+        val completed = running().copy(
+            phase = RunPhase.COMPLETED,
+            updateReason = RunUpdateReason.COMPLETED,
+            updatedAt = 2_000,
+            endedAt = 2_000,
+            exitCode = 1,
+            llmSummary = summary,
+        )
+
+        assertNull(RunPresentationPolicy.summaryBody(completed))
+        assertEquals(
+            summary,
+            RunPresentationPolicy.summaryBody(
+                completed.copy(updateReason = RunUpdateReason.LLM_SUMMARY)
+            ),
+        )
     }
 
     @Test

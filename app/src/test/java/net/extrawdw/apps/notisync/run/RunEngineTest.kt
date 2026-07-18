@@ -58,7 +58,7 @@ class RunEngineTest {
     }
 
     @Test
-    fun equalRevisionRerendersDurableSnapshotButOlderRevisionDoesNot() {
+    fun presentedEqualRevisionAndOlderRevisionDoNotRerender() {
         val durable = running(revision = 2)
         val repository = FakeRepository(
             listOf(StoredRun(durable, durable.updatedAt, presentedRevision = durable.revision))
@@ -72,8 +72,25 @@ class RunEngineTest {
         harness.engine.onRunSync(message(HOST, own = true), stateSync(alternateEqual))
         harness.engine.onRunSync(message(HOST, own = true), stateSync(running(revision = 1)))
 
-        assertEquals(listOf(durable), rendered)
+        assertTrue(rendered.isEmpty())
         assertEquals(durable, repository.runs.value.single().state)
+        harness.close()
+    }
+
+    @Test
+    fun unpresentedEqualRevisionRendersDurableSnapshot() {
+        val durable = running(revision = 2)
+        val repository = FakeRepository(listOf(StoredRun(durable, durable.updatedAt)))
+        val rendered = mutableListOf<RunState>()
+        val harness = harness(repository, rendered)
+        val alternateEqual = durable.copy(
+            terminal = RunTerminalSnapshot("must not replace durable data", false, 29),
+        )
+
+        harness.engine.onRunSync(message(HOST, own = true), stateSync(alternateEqual))
+
+        assertEquals(listOf(durable), rendered)
+        assertFalse(repository.runs.value.single().presentationPending)
         harness.close()
     }
 

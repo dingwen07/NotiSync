@@ -14,14 +14,30 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.data.MessageStore
+import net.extrawdw.notisync.peer.channel.DeliveryOutcome
+import net.extrawdw.notisync.peer.channel.safeToAck
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import java.util.concurrent.TimeUnit
+
+internal enum class RelayHandleResult { COMPLETE, RETRY }
+
+/** Ack only after SecureChannel and its inline durable handler completed successfully. */
+internal suspend fun finishRelayDelivery(
+    messageId: String,
+    outcome: DeliveryOutcome,
+    ack: suspend (List<String>) -> Boolean,
+    queueAck: (String) -> Unit,
+): RelayHandleResult {
+    if (!outcome.safeToAck) return RelayHandleResult.RETRY
+    if (!runCatching { ack(listOf(messageId)) }.getOrDefault(false)) queueAck(messageId)
+    return RelayHandleResult.COMPLETE
+}
 
 /**
  * Handle an FCM-wake relay fetch out-of-band. The messaging service always enqueues wake pointers here so
  * the FCM callback does not block on graph init, network, or relay fetch time. It survives process death and
  * retries with backoff once the network returns, so an oversized notification still lands rather than waiting
- * for the next app foreground. Delivery is idempotent (the channel dedups by message id).
+ * for the next app foreground. Fetch is a broker peek; explicit ack follows only after durable handling.
  */
 class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result {
@@ -31,8 +47,20 @@ class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
         val envelope = runCatching { graph.transport.fetchRelayMessage(messageId) }.getOrNull()
         return when {
             envelope != null -> {
-                channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
-                Result.success()
+                val outcome = channel.deliver(envelope, DeliveryMode.FCM_RELAY_FETCH)
+                when (
+                    finishRelayDelivery(
+                        messageId = messageId,
+                        outcome = outcome,
+                        ack = graph.transport::ackRelayMessages,
+                        queueAck = graph.messageStore::enqueueAck,
+                    )
+                ) {
+                    RelayHandleResult.COMPLETE -> Result.success()
+                    RelayHandleResult.RETRY -> if (runAttemptCount < MAX_ATTEMPTS) {
+                        Result.retry()
+                    } else Result.success() // Still queued at the broker for the periodic/foreground backstop.
+                }
             }
             // null = not fetchable right now (offline/transient) OR already gone (delivered over a
             // foreground socket / acked / TTL-expired). Retry a bounded number of times for the
@@ -70,7 +98,7 @@ class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(
  *     the drain below won't re-list what we've already handled, and it stops the relay backlog that was
  *     re-posting after a restart from accumulating in the first place.
  *  2. **Drain** whatever is still queued (FCM-deferred normal-priority, or a wake fetch that failed
- *     offline): pull + deliver each. Idempotent — the channel dedups by id (across restarts now too).
+ *     offline): peek + deliver + ack each only after durable handling. Idempotent across restarts.
  *  3. **Prune** handled-message history past its retention window.
  *
  * Deferrable + constrained (connected, battery-not-low) so it is near-free on battery.
@@ -95,14 +123,27 @@ class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker
         // 2. Drain anything still queued and deliver it.
         val ids =
             runCatching { graph.transport.fetchPendingRelayIds() }.getOrElse { return Result.retry() }
+        var retryNeeded = false
         for (id in ids) {
             val envelope = runCatching { graph.transport.fetchRelayMessage(id) }.getOrNull()
-            if (envelope != null) channel.deliver(envelope, DeliveryMode.RELAY_DRAIN)
+            if (envelope == null) {
+                retryNeeded = true
+                continue
+            }
+            val outcome = channel.deliver(envelope, DeliveryMode.RELAY_DRAIN)
+            if (
+                finishRelayDelivery(
+                    messageId = id,
+                    outcome = outcome,
+                    ack = graph.transport::ackRelayMessages,
+                    queueAck = store::enqueueAck,
+                ) == RelayHandleResult.RETRY
+            ) retryNeeded = true
         }
 
         // 3. Trim dedup/mapping/ack history past its retention window.
         runCatching { store.prune() }
-        return Result.success()
+        return if (retryNeeded) Result.retry() else Result.success()
     }
 
     companion object {

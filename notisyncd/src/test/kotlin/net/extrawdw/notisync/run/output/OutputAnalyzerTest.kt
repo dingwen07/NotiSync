@@ -53,4 +53,50 @@ class OutputAnalyzerTest {
 
         assertEquals("cost €5", analyzer.snapshot().tail)
     }
+
+    @Test
+    fun `carriage return and backspace move the cursor without erasing the suffix`() {
+        val analyzer = OutputAnalyzer()
+
+        analyzer.accept("abcdef\rxy\nabcdef\b\bX".encodeToByteArray())
+
+        assertEquals("xycdef\nabcdXf", analyzer.snapshot().tail)
+    }
+
+    @Test
+    fun `tabs advance to the next eight-column stop`() {
+        val analyzer = OutputAnalyzer()
+
+        analyzer.accept("ab\tX\nabcdefgh\r\tX".encodeToByteArray())
+
+        assertEquals("ab      X\nabcdefghX", analyzer.snapshot().tail)
+    }
+
+    @Test
+    fun `strips seven-bit and C1 control strings plus bidi controls`() {
+        val analyzer = OutputAnalyzer()
+        val unsafe = buildString {
+            append("safe")
+            append("\u001bPignored\u001b\\")
+            append("\u009dtitle\u009c")
+            append("\u009b31m")
+            append('\u202e')
+            append("text")
+        }
+
+        analyzer.accept(unsafe.encodeToByteArray())
+
+        assertEquals("safetext", analyzer.snapshot().tail)
+    }
+
+    @Test
+    fun `raw byte count can be observed before redacted display bytes`() {
+        val analyzer = OutputAnalyzer()
+
+        analyzer.observeRawBytes(123)
+        analyzer.acceptDisplay("[remote input redacted]".encodeToByteArray())
+
+        assertEquals(123, analyzer.snapshot().rawBytesSeen)
+        assertEquals("[remote input redacted]", analyzer.snapshot().tail)
+    }
 }

@@ -92,6 +92,7 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.run.RunEngine
+import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.notisync.peer.transport.BrokerClient
@@ -376,6 +377,9 @@ class AppGraph(private val app: Application) {
             scope = scope,
         )
         runEngine = runs
+        // Recover notification actions committed before a cold graph was ready, including a process death in the
+        // receiver's post-persist/pre-WorkManager window.
+        RunControlDrainWorker.enqueue(app)
         // A process can die after a Run snapshot commits but before its stable notification posts. The store's
         // presentation checkpoint makes this startup reconciliation precise and idempotent.
         scope.launch { runs.reconcilePendingPresentations() }

@@ -389,6 +389,9 @@ internal fun RunStateRequest.toIosNotification(): NotificationRequest? {
     if (updateReason == LocalRunUpdateReason.PERIODIC || updateReason == LocalRunUpdateReason.REFRESH) return null
     val terminalPhase = phase == LocalRunPhase.COMPLETED || phase == LocalRunPhase.FAILED_TO_START
     val summary = llmSummary
+    // Keep the model title across transitions, but never alert with body copy from an older state. Model text and
+    // expansion become current only on their correlated LLM_SUMMARY snapshot.
+    val freshSummary = summary.takeIf { updateReason == LocalRunUpdateReason.LLM_SUMMARY }
     val currentProgress = progress
     val deterministicText = when (phase) {
         LocalRunPhase.RUNNING -> if (updateReason == LocalRunUpdateReason.RESUMED) "Running again" else {
@@ -426,8 +429,8 @@ internal fun RunStateRequest.toIosNotification(): NotificationRequest? {
             LocalRunUpdateReason.REFRESH -> NotificationPhase.PERIODIC
         },
         title = (summary?.title ?: command).take(160),
-        text = (summary?.text ?: deterministicText).take(512),
-        expandedText = (summary?.expandedText ?: terminal.text.ifBlank { failureMessage }).orEmpty()
+        text = (freshSummary?.text ?: deterministicText).take(512),
+        expandedText = (freshSummary?.expandedText?.takeIf(String::isNotBlank) ?: failureMessage ?: terminal.text)
             .take(2_048).ifBlank { null },
         shortCriticalText = when {
             phase == LocalRunPhase.BLOCKED &&

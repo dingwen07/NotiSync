@@ -13,6 +13,8 @@ import net.extrawdw.notisync.localapi.LocalRunUpdateReason
 import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.run.llm.ContentGenerator
 import net.extrawdw.notisync.run.llm.GeneratedContent
+import net.extrawdw.notisync.run.llm.GenerationContext
+import net.extrawdw.notisync.run.llm.TitleGenerationMode
 import net.extrawdw.notisync.run.output.DetectedProgress
 import net.extrawdw.notisync.run.output.OutputSnapshot
 import net.extrawdw.notisync.run.output.PromptKind
@@ -174,7 +176,7 @@ class RunStateCoordinatorTest {
         ).use { coordinator ->
             coordinator.initial(OutputSnapshot("starting", null, null))
             assertTrue(started.await(2, TimeUnit.SECONDS))
-            coordinator.blocked(OutputSnapshot("input", null, PromptKind.TEXT), BlockedReason.TERMINAL_INPUT)
+            coordinator.blocked(OutputSnapshot("idle", null, null), BlockedReason.OUTPUT_AND_CPU_IDLE)
             assertTrue(secondFinished.await(2, TimeUnit.SECONDS))
             val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
             while (synchronized(states) { states.none { it.updateReason == LocalRunUpdateReason.LLM_SUMMARY } } &&
@@ -186,11 +188,163 @@ class RunStateCoordinatorTest {
         val deterministic = snapshot.first { it.updateReason == LocalRunUpdateReason.BLOCKED }
         val refined = snapshot.last { it.updateReason == LocalRunUpdateReason.LLM_SUMMARY }
         assertNull(deterministic.llmSummary)
-        assertEquals("input", deterministic.terminal.text)
+        assertEquals("idle", deterministic.terminal.text)
         assertEquals("Model title", refined.llmSummary?.title)
-        assertEquals("input", refined.terminal.text)
+        assertEquals("idle", refined.terminal.text)
         assertTrue(refined.revision > deterministic.revision)
         assertEquals(1, maximum.get())
+    }
+
+    @Test
+    fun `LLM refreshes main content while title changes only for task hang recovery and end`() {
+        data class ModelCall(
+            val event: String,
+            val titleMode: TitleGenerationMode,
+            val currentTitle: String?,
+        )
+        val calls = mutableListOf<ModelCall>()
+        val states = mutableListOf<RunStateRequest>()
+        val generator = ContentGenerator { context ->
+            synchronized(calls) {
+                calls += ModelCall(requireNotNull(context.event), context.titleMode, context.currentTitle)
+            }
+            GeneratedContent("${context.titleMode} title", "${context.event} text")
+        }
+        RunStateCoordinator(
+            "session", "run", listOf("build"), Path.of("/work"), false,
+            publish = { synchronized(states) { states.add(it) } },
+            generator = generator,
+            clock = CLOCK,
+        ).use { coordinator ->
+            coordinator.initial(OutputSnapshot("starting", null, null))
+            awaitState(states) { it.llmSummary?.title == "TASK_IDENTITY title" }
+
+            coordinator.periodic(OutputSnapshot("25%", DetectedProgress(1, 4), null))
+            awaitState(states) {
+                it.llmSummary?.let { summary ->
+                    summary.title == "TASK_IDENTITY title" && summary.text == "PERIODIC text"
+                } == true
+            }
+            val callsBeforeRefresh = synchronized(calls) { calls.size }
+            coordinator.refresh("123e4567-e89b-12d3-a456-426614174001")
+            assertEquals(callsBeforeRefresh, synchronized(calls) { calls.size })
+            coordinator.blocked(
+                OutputSnapshot("Continue? [Y/n]", null, PromptKind.YES_NO),
+                BlockedReason.TERMINAL_INPUT,
+            )
+            awaitState(states) {
+                it.llmSummary?.let { summary ->
+                    summary.title == "TASK_IDENTITY title" && summary.text == "BLOCKED text"
+                } == true
+            }
+            coordinator.resumed(OutputSnapshot("continuing", null, null))
+            awaitState(states) {
+                it.llmSummary?.let { summary ->
+                    summary.title == "TASK_IDENTITY title" && summary.text == "RESUMED text"
+                } == true
+            }
+
+            coordinator.blocked(OutputSnapshot("no output", null, null), BlockedReason.OUTPUT_AND_CPU_IDLE)
+            awaitState(states) { it.llmSummary?.title == "HANG title" }
+            coordinator.resumed(OutputSnapshot("moving again", null, null))
+            awaitState(states) { it.llmSummary?.title == "RECOVERY title" }
+            coordinator.completed(0, OutputSnapshot("done", null, null))
+            awaitState(states) { it.llmSummary?.title == "OUTCOME title" }
+        }
+
+        assertEquals(
+            listOf(
+                "INITIAL" to TitleGenerationMode.TASK_IDENTITY,
+                "PERIODIC" to TitleGenerationMode.KEEP,
+                "BLOCKED" to TitleGenerationMode.KEEP,
+                "RESUMED" to TitleGenerationMode.KEEP,
+                "BLOCKED" to TitleGenerationMode.HANG,
+                "RESUMED" to TitleGenerationMode.RECOVERY,
+                "COMPLETED" to TitleGenerationMode.OUTCOME,
+            ),
+            synchronized(calls) { calls.map { it.event to it.titleMode } },
+        )
+        assertTrue(
+            synchronized(calls) {
+                calls.filter { it.titleMode == TitleGenerationMode.KEEP }
+                    .all { it.currentTitle == "TASK_IDENTITY title" }
+            }
+        )
+    }
+
+    @Test
+    fun `failed-start model context receives only the capped untrusted failure detail`() {
+        val contexts = mutableListOf<GenerationContext>()
+        val generator = ContentGenerator { context ->
+            synchronized(contexts) { contexts += context }
+            GeneratedContent("Task title", "Status text")
+        }
+        RunStateCoordinator(
+            "session", "normal", listOf("build"), Path.of("/work"), false,
+            publish = { true }, generator = generator, clock = CLOCK,
+        ).use { coordinator ->
+            coordinator.initial(OutputSnapshot("starting", null, null))
+            awaitContextCount(contexts, 1)
+        }
+        val failure = "permission denied " + "界".repeat(2_000) + "FAILURE_SENTINEL"
+        RunStateCoordinator(
+            "session", "failed", listOf("build"), Path.of("/work"), false,
+            publish = { true }, generator = generator, clock = CLOCK,
+        ).use { coordinator ->
+            coordinator.spawnFailed(failure)
+            awaitContextCount(contexts, 2)
+        }
+
+        val captured = synchronized(contexts) { contexts.toList() }
+        assertNull(captured[0].failureMessage)
+        assertTrue(requireNotNull(captured[1].failureMessage).encodeToByteArray().size <= 2 * 1024)
+        assertFalse(requireNotNull(captured[1].failureMessage).contains("FAILURE_SENTINEL"))
+    }
+
+    @Test
+    fun `untrusted model copy is normalized before publication`() {
+        val states = mutableListOf<RunStateRequest>()
+        RunStateCoordinator(
+            "session", "run", listOf("build"), Path.of("/work"), false,
+            publish = { synchronized(states) { states += it }; true },
+            generator = ContentGenerator {
+                GeneratedContent(
+                    title = "  Build\r\n\u202e app  ",
+                    text = "  Running\r\n now\u009b  ",
+                    expandedText = "Line one\r\nLine two\u202e",
+                )
+            },
+            clock = CLOCK,
+        ).use { coordinator ->
+            coordinator.initial(OutputSnapshot("starting", null, null))
+            awaitState(states) { it.llmSummary != null }
+        }
+
+        val summary = synchronized(states) { requireNotNull(states.last().llmSummary) }
+        assertEquals("Build app", summary.title)
+        assertEquals("Running\nnow", summary.text)
+        assertEquals("Line one\nLine two", summary.expandedText)
+    }
+
+    private fun awaitState(
+        states: MutableList<RunStateRequest>,
+        predicate: (RunStateRequest) -> Boolean,
+    ) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (synchronized(states) { states.any(predicate) }) return
+            Thread.yield()
+        }
+        assertTrue("timed out waiting for Run state", synchronized(states) { states.any(predicate) })
+    }
+
+    private fun awaitContextCount(contexts: MutableList<GenerationContext>, expected: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (synchronized(contexts) { contexts.size >= expected }) return
+            Thread.yield()
+        }
+        assertTrue("timed out waiting for model context", synchronized(contexts) { contexts.size >= expected })
     }
 
     private fun coordinator(publish: (RunStateRequest) -> Boolean) = RunStateCoordinator(

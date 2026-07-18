@@ -5,6 +5,7 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.notisync.peer.channel.SecureChannel
+import net.extrawdw.notisync.peer.channel.safeToAck
 import net.extrawdw.apps.notisync.work.WakeFetchWorker
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.Envelope
@@ -32,12 +33,25 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
             }.getOrNull() ?: return
             val graph = (applicationContext as NotiSyncApp)
                 .awaitGraphReadyBlocking(INLINE_GRAPH_WAIT_MS)
-                ?: return
-            val channel = graph.secureChannel ?: return
+            if (graph == null) {
+                // Cold graph initialization can outlive Firebase's callback budget. The inline envelope also has
+                // a relay copy; hand its id to durable WorkManager instead of silently waiting for foreground.
+                WakeFetchWorker.enqueue(applicationContext, envelope.messageId)
+                return
+            }
+            val channel = graph.secureChannel
+            if (channel == null) {
+                WakeFetchWorker.enqueue(applicationContext, envelope.messageId)
+                return
+            }
             // Inline delivery never gets fetched, so the broker can't drop its relay copy on its own —
             // queue it for the worker's batch ack (skipped for a dropped-unhandled message).
             val outcome = channel.deliver(envelope, DeliveryMode.FCM_INLINE)
             graph.onInlineDelivered(envelope.messageId, outcome)
+            if (!outcome.safeToAck) {
+                // Retryable handler/storage failures and key-convergence races remain queued at the broker.
+                WakeFetchWorker.enqueue(applicationContext, envelope.messageId)
+            }
             return
         }
         // Wake-only message ("typ"="wake"): the payload was too large to inline. Hand off immediately

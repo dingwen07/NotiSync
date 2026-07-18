@@ -190,6 +190,15 @@ class RunStore(
                 checkpointAndCompact(db, vacuum = true)
             }
 
+            // The visible log is intentionally bounded independently of the byte/age policy. Active Runs are
+            // exempt; among completed Runs retain the 50 most recently received entries.
+            val overCount = completedBeyondLogLimit(db, protectedKey)
+            if (overCount.isNotEmpty()) {
+                deleteKeys(db, overCount)
+                removed += overCount
+                checkpointAndCompact(db, vacuum = true)
+            }
+
             var usage = storageUsage(db)
             if (usage.accountedBytes > maxStorageBytes) {
                 // A large WAL may be the only reason the cap is exceeded. Fold it into the main database before
@@ -242,6 +251,30 @@ class RunStore(
                 add(SizedRunKey(RunKey(cursor.getString(0), cursor.getString(1)), cursor.getLong(2)))
             }
         }
+    }
+
+    private fun completedBeyondLogLimit(db: SQLiteDatabase, protectedKey: RunKey?): List<RunKey> {
+        val newestFirst = db.rawQuery(
+            "SELECT host_client, run_id FROM runs " +
+                "WHERE active = 0 ORDER BY received_at DESC, updated_at DESC, host_client, run_id",
+            emptyArray(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) add(RunKey(cursor.getString(0), cursor.getString(1)))
+            }
+        }
+        if (newestFirst.size <= MAX_COMPLETED_RUNS) return emptyList()
+
+        // A just-committed snapshot must survive until its renderer checkpoints it, even under a clock tie.
+        val protectedCompleted = protectedKey?.takeIf { it in newestFirst }
+        val retained = buildList {
+            protectedCompleted?.let(::add)
+            newestFirst.asSequence()
+                .filterNot { it == protectedCompleted }
+                .take(MAX_COMPLETED_RUNS - if (protectedCompleted == null) 0 else 1)
+                .forEach(::add)
+        }.toSet()
+        return newestFirst.filterNot { it in retained }
     }
 
     private fun oldestCompletedForBudget(
@@ -324,6 +357,7 @@ class RunStore(
         private const val VERSION = 2
         private const val COMPLETED_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
         private const val MAX_STORAGE_BYTES = 100L * 1024 * 1024
+        private const val MAX_COMPLETED_RUNS = 50
         private const val PRUNE_BATCH_LIMIT = 64
         private val RUN_ORDER = compareByDescending<StoredRun> { it.active }
             .thenByDescending { it.state.updatedAt }

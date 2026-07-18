@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.run
 
 import net.extrawdw.notisync.protocol.RunBlockedReason
+import net.extrawdw.notisync.protocol.RunLlmSummary
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunPromptKind
 import net.extrawdw.notisync.protocol.RunState
@@ -14,6 +15,10 @@ internal object RunPresentationPolicy {
         state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED
 
     fun silent(state: RunState): Boolean = state.updateReason in SILENT_REASONS
+
+    /** A summary title may stay sticky, but prose is valid only on the snapshot that delivered that summary. */
+    fun summaryBody(state: RunState): RunLlmSummary? =
+        state.llmSummary.takeIf { state.updateReason == RunUpdateReason.LLM_SUMMARY }
 
     fun blockedNeedsInput(state: RunState): Boolean =
         state.phase == RunPhase.BLOCKED && state.blockedReason == RunBlockedReason.TERMINAL_INPUT

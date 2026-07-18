@@ -205,6 +205,10 @@ class NSRunRunner(
                             stdout.write(buffer, 0, count)
                             stdout.flush()
                             if (trackTerminalPresentation) terminal.observeOutput(buffer, 0, count)
+                            // Count at the child boundary. The analyzer/log/LLM receive only the redacted
+                            // projection below, but rawBytesSeen describes the actual child-output volume.
+                            analyzer.observeRawBytes(count)
+                            outputActivity.set(System.nanoTime())
                             val captured = remoteInputRedactor.accept(buffer, count)
                             if (captured.isNotEmpty()) {
                                 capture(captured, analyzer, loggedProgress, outputActivity, ::record)
@@ -436,7 +440,7 @@ class NSRunRunner(
         record: ((RunLog) -> Unit) -> Unit,
     ) {
         record { it.output(bytes) }
-        analyzer.accept(bytes)
+        analyzer.acceptDisplay(bytes)
         analyzer.snapshot().progress?.let { progress ->
             if (loggedProgress.getAndSet(progress) != progress) {
                 record { it.progress(progress.current, progress.total) }

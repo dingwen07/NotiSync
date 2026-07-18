@@ -5,6 +5,7 @@
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
     <string name="tab_ios">iPhone</string>
+    <string name="tab_run">Run</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
@@ -17,6 +18,9 @@
     <string name="action_cancel">取消</string>
     <string name="action_back">返回</string>
     <string name="error_unknown">未知错误</string>
+
+    <!-- Run 保留产品名称，不翻译。 -->
+    <string name="run_screen_title">NotiSync Run</string>
 
     <!-- Apps screen -->
     <string name="apps_search_hint">搜索应用</string>

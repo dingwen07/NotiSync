@@ -193,7 +193,41 @@ class RunProtocolTest {
         assertThrows(IllegalArgumentException::class.java) {
             RunTerminalSnapshot("safe\u001b[31munsafe", false, rawBytesSeen = 1)
         }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunTerminalSnapshot("safe\u009b31munsafe", false, rawBytesSeen = 1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunTerminalSnapshot("safe\u202eunsafe", false, rawBytesSeen = 1)
+        }
         assertTrue(RunTerminalSnapshot("unicode 👍", false, rawBytesSeen = 4).text.endsWith("👍"))
+        val unicodeSeparator = runningState().copy(
+            terminal = RunTerminalSnapshot("line one\u2028line two", false, rawBytesSeen = 17),
+        ).cborRoundTrip()
+        assertEquals("line one\u2028line two", unicodeSeparator.terminal.text)
+    }
+
+    @Test
+    fun llmSummaryAllowsParagraphsButRejectsUnsafeCopy() {
+        assertEquals(
+            "Paragraph one\nParagraph two",
+            RunLlmSummary("Build app", "Paragraph one\nParagraph two").text,
+        )
+        assertEquals("Line one\nLine two", RunLlmSummary("Build app", "Running", "Line one\nLine two").expandedText)
+        assertThrows(IllegalArgumentException::class.java) {
+            RunLlmSummary("Build\napp", "Running")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunLlmSummary("Build app", "Run\u009bning")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunLlmSummary("Build app", "Paragraph one\u2028Paragraph two")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunLlmSummary("Build app", "Running", "safe\u202eunsafe")
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            RunLlmSummary("Build app", "Running", "   ")
+        }
     }
 
     private fun runningState() = RunState(

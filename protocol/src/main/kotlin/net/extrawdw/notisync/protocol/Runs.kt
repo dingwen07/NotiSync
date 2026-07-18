@@ -61,7 +61,7 @@ data class RunTerminalSnapshot(
         require(text.utf8Size() <= RUN_TERMINAL_MAX_UTF8_BYTES) {
             "Run terminal text exceeds $RUN_TERMINAL_MAX_UTF8_BYTES UTF-8 bytes"
         }
-        require(text.all { it == '\n' || (it >= ' ' && it != '\u007f') }) {
+        require(text.isSanitizedRunTerminalText()) {
             "Run terminal text must be sanitized"
         }
         require(rawBytesSeen >= 0) { "rawBytesSeen must be non-negative" }
@@ -99,10 +99,18 @@ data class RunLlmSummary(
         require(title.isNotBlank() && title.utf8Size() <= RUN_LLM_TITLE_MAX_UTF8_BYTES) {
             "LLM summary title must contain 1..$RUN_LLM_TITLE_MAX_UTF8_BYTES UTF-8 bytes"
         }
+        require(title.isSanitizedRunSingleLine()) { "LLM summary title must be sanitized and single-line" }
         require(text.isNotBlank() && text.utf8Size() <= RUN_LLM_TEXT_MAX_UTF8_BYTES) {
             "LLM summary text must contain 1..$RUN_LLM_TEXT_MAX_UTF8_BYTES UTF-8 bytes"
         }
-        require(expandedText == null || expandedText.utf8Size() <= RUN_LLM_EXPANDED_TEXT_MAX_UTF8_BYTES) {
+        require(text.isSanitizedRunMultiline()) { "LLM summary text must be sanitized" }
+        require(
+            expandedText == null || (
+                expandedText.isNotBlank() &&
+                    expandedText.utf8Size() <= RUN_LLM_EXPANDED_TEXT_MAX_UTF8_BYTES &&
+                    expandedText.isSanitizedRunMultiline()
+                ),
+        ) {
             "LLM expanded text exceeds $RUN_LLM_EXPANDED_TEXT_MAX_UTF8_BYTES UTF-8 bytes"
         }
     }
@@ -351,6 +359,50 @@ data class RunSync(
 }
 
 private fun String.utf8Size(): Int = encodeToByteArray().size
+
+/** Common-code validation matching the host sanitizer, including surrogate and bidi safety. */
+private fun String.isSanitizedRunTerminalText(): Boolean {
+    // Terminal snapshots preserve printable Unicode exactly. U+2028/U+2029 are valid child
+    // output; unlike model-authored presentation copy, they do not need canonical paragraph
+    // separators.
+    return isSanitizedRunText(allowNewline = true, requireCanonicalNewline = false)
+}
+
+private fun String.isSanitizedRunSingleLine(): Boolean =
+    isSanitizedRunText(allowNewline = false, requireCanonicalNewline = true)
+
+private fun String.isSanitizedRunMultiline(): Boolean =
+    isSanitizedRunText(allowNewline = true, requireCanonicalNewline = true)
+
+private fun String.isSanitizedRunText(allowNewline: Boolean, requireCanonicalNewline: Boolean): Boolean {
+    var index = 0
+    while (index < length) {
+        val first = this[index].code
+        val codePoint: Int
+        if (first in 0xd800..0xdbff) {
+            if (index + 1 >= length) return false
+            val second = this[index + 1].code
+            if (second !in 0xdc00..0xdfff) return false
+            codePoint = 0x10000 + ((first - 0xd800) shl 10) + (second - 0xdc00)
+            index += 2
+        } else {
+            if (first in 0xdc00..0xdfff) return false
+            codePoint = first
+            index++
+        }
+        if (codePoint == '\n'.code) {
+            if (allowNewline) continue else return false
+        }
+        if (requireCanonicalNewline && (codePoint == 0x2028 || codePoint == 0x2029)) return false
+        if (codePoint < 0x20 || codePoint == 0x7f || codePoint in 0x80..0x9f) return false
+        if (
+            codePoint == 0x061c || codePoint in 0x200e..0x200f ||
+            codePoint in 0x202a..0x202e || codePoint in 0x2066..0x2069 ||
+            codePoint in 0x206a..0x206f
+        ) return false
+    }
+    return true
+}
 
 private fun validateRunId(runId: String) {
     require(runId.isNotBlank() && runId.utf8Size() <= RUN_ID_MAX_UTF8_BYTES && '\u0000' !in runId) {

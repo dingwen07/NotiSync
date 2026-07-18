@@ -3,7 +3,6 @@ package net.extrawdw.apps.notisync.ui
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
@@ -41,6 +40,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -48,11 +48,6 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.adaptive.layout.AnimatedPane
-import androidx.compose.material3.adaptive.layout.ListDetailPaneScaffoldRole
-import androidx.compose.material3.adaptive.navigation.NavigableListDetailPaneScaffold
-import androidx.compose.material3.adaptive.navigation.ThreePaneScaffoldNavigator
-import androidx.compose.material3.adaptive.navigation.rememberListDetailPaneScaffoldNavigator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -61,6 +56,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameNanos
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -91,58 +87,40 @@ fun RunScreen(
     val engine = graph.runEngine ?: return
     val runs by engine.runs.collectAsStateWithLifecycle()
     val pendingRefreshes by engine.pendingRefreshes.collectAsStateWithLifecycle()
-    val navigator = rememberListDetailPaneScaffoldNavigator<String>()
-    val scope = rememberCoroutineScope()
-    val selectedKey = navigator.currentDestination?.contentKey?.let(RunKey::decode)
+    var selectedEncoded by rememberSaveable { mutableStateOf<String?>(null) }
+    val selectedKey = selectedEncoded?.let(RunKey::decode)
     val selected = selectedKey?.let { key -> runs.firstOrNull { it.key == key } }
 
     LaunchedEffect(initialSelection) {
         if (initialSelection != null) {
-            navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, initialSelection.encoded())
+            selectedEncoded = initialSelection.encoded()
             onInitialSelectionConsumed()
         }
+    }
+    LaunchedEffect(selectedEncoded, selected) {
+        if (selectedEncoded != null && selected == null) selectedEncoded = null
     }
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.tab_run)) }) },
+        topBar = { TopAppBar(title = { Text(stringResource(R.string.run_screen_title)) }) },
     ) { padding ->
-        NavigableListDetailPaneScaffold(
-            navigator = navigator,
+        RunList(
+            runs = runs,
+            selectedKey = selectedKey,
+            deviceNameOf = { id -> graph.trust.displayName(id) },
+            onSelect = { run -> selectedEncoded = run.key.encoded() },
             modifier = Modifier.fillMaxSize().padding(padding),
-            listPane = {
-                AnimatedPane {
-                    RunList(
-                        runs = runs,
-                        selectedKey = selectedKey,
-                        deviceNameOf = { id -> graph.trust.displayName(id) },
-                        onSelect = { run ->
-                            scope.launch {
-                                navigator.navigateTo(ListDetailPaneScaffoldRole.Detail, run.key.encoded())
-                            }
-                        },
-                    )
-                }
-            },
-            detailPane = {
-                AnimatedPane {
-                    if (selected == null) {
-                        RunSelectionPlaceholder(
-                            onBack = if (navigator.canNavigateBack()) {
-                                { scope.launch { navigator.navigateBack() } }
-                            } else null,
-                        )
-                    } else {
-                        RunDetail(
-                            run = selected,
-                            engine = engine,
-                            deviceName = graph.trust.displayName(selected.state.hostClientId),
-                            refreshing = selected.key in pendingRefreshes,
-                            onBack = { scope.launch { navigator.navigateBack() } },
-                        )
-                    }
-                }
-            },
+        )
+    }
+
+    selected?.let { run ->
+        RunDetailSheet(
+            run = run,
+            engine = engine,
+            deviceName = graph.trust.displayName(run.state.hostClientId),
+            refreshing = run.key in pendingRefreshes,
+            onDismiss = { selectedEncoded = null },
         )
     }
 }
@@ -153,10 +131,11 @@ private fun RunList(
     selectedKey: RunKey?,
     deviceNameOf: (net.extrawdw.notisync.protocol.ClientId) -> String?,
     onSelect: (StoredRun) -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     if (runs.isEmpty()) {
         Column(
-            Modifier.fillMaxSize().padding(24.dp),
+            modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -180,7 +159,7 @@ private fun RunList(
     val active = runs.filter { it.active }
     val history = runs.filterNot { it.active }
     LazyColumn(
-        Modifier.fillMaxSize(),
+        modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 96.dp),
     ) {
         if (active.isNotEmpty()) {
@@ -247,31 +226,24 @@ private fun RunListItem(
 }
 
 @Composable
-private fun RunSelectionPlaceholder(onBack: (() -> Unit)?) {
-    Box(Modifier.fillMaxSize()) {
-        if (onBack != null) {
-            IconButton(onClick = onBack, modifier = Modifier.align(Alignment.TopStart).padding(8.dp)) {
-                Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = stringResource(R.string.run_back))
-            }
-        }
-        Column(
-            Modifier.align(Alignment.Center).padding(24.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-        ) {
-            Icon(
-                Icons.Outlined.Terminal,
-                contentDescription = null,
-                modifier = Modifier.size(48.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.size(12.dp))
-            Text(stringResource(R.string.run_select_title), style = MaterialTheme.typography.titleMedium)
-            Text(
-                stringResource(R.string.run_select_body),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
+private fun RunDetailSheet(
+    run: StoredRun,
+    engine: RunEngine,
+    deviceName: String?,
+    refreshing: Boolean,
+    onDismiss: () -> Unit,
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+    ) {
+        RunDetail(
+            run = run,
+            engine = engine,
+            deviceName = deviceName,
+            refreshing = refreshing,
+            onBack = onDismiss,
+            modifier = Modifier.fillMaxWidth(),
+        )
     }
 }
 
@@ -282,6 +254,7 @@ private fun RunDetail(
     deviceName: String?,
     refreshing: Boolean,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
     val state = run.state
     val scope = rememberCoroutineScope()
@@ -290,7 +263,7 @@ private fun RunDetail(
     var showKill by remember { mutableStateOf(false) }
 
     LazyColumn(
-        Modifier.fillMaxSize(),
+        modifier,
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {

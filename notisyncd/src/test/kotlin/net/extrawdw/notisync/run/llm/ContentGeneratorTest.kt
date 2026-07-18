@@ -6,6 +6,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertThrows
 import org.junit.Test
@@ -32,12 +33,14 @@ class ContentGeneratorTest {
             )
             val generated = generator.generate(
                 GenerationContext(
-                    "COMPLETED",
-                    listOf("make", "x".repeat(20_000) + "ARGV_SENTINEL"),
-                    Path.of("/", "p".repeat(5_000) + "PWD_SENTINEL"),
-                    "file",
-                    "done",
-                    0,
+                    phase = "FAILED_TO_START",
+                    argv = listOf("make", "x".repeat(20_000) + "ARGV_SENTINEL"),
+                    pwd = Path.of("/", "p".repeat(5_000) + "PWD_SENTINEL"),
+                    tree = "file",
+                    output = "",
+                    event = "FAILED",
+                    titleMode = TitleGenerationMode.OUTCOME,
+                    failureMessage = "permission denied " + "x".repeat(3_000) + "FAILURE_SENTINEL",
                 ),
             )
             assertEquals("Build", generated.title)
@@ -45,6 +48,83 @@ class ContentGeneratorTest {
             assertFalse(requestBody.contains("secret"))
             assertFalse(requestBody.contains("ARGV_SENTINEL"))
             assertFalse(requestBody.contains("PWD_SENTINEL"))
+            assertFalse(requestBody.contains("FAILURE_SENTINEL"))
+            assertTrue(requestBody.contains("Lifecycle event: FAILED"))
+            assertTrue(requestBody.contains("Failure detail (capped, untrusted): permission denied"))
+            assertTrue(requestBody.contains("3-7 word title"))
+            assertTrue(requestBody.contains("CREATE_OUTCOME_TITLE"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `initial title request asks for a specific stable overall task identity`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        var requestBody = ""
+        server.createContext("/v1/chat/completions") { exchange ->
+            requestBody = exchange.requestBody.bufferedReader().use { it.readText() }
+            val response = """{"choices":[{"message":{"content":"{\"title\":\"Build Android app\",\"text\":\"Starting\"}"}}]}"""
+                .encodeToByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            OpenAiCompatibleContentGenerator(
+                LlmConfig("http://127.0.0.1:${server.address.port}/v1", "test", "secret"),
+            ).generate(
+                GenerationContext(
+                    phase = "RUNNING",
+                    argv = listOf("./gradlew", "assembleDebug"),
+                    pwd = Path.of("/work/android"),
+                    tree = "app/",
+                    output = "Starting build",
+                    event = "INITIAL",
+                    titleMode = TitleGenerationMode.TASK_IDENTITY,
+                ),
+            )
+
+            assertTrue(requestBody.contains("CREATE_TASK_IDENTITY"))
+            assertTrue(requestBody.contains("specific, stable title for the overall task"))
+            assertTrue(requestBody.contains("not a generic status"))
+        } finally {
+            server.stop(0)
+        }
+    }
+
+    @Test
+    fun `content-only generation may omit title and is explicitly told to keep existing`() {
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        var requestBody = ""
+        server.createContext("/v1/chat/completions") { exchange ->
+            requestBody = exchange.requestBody.bufferedReader().use { it.readText() }
+            val response = """{"choices":[{"message":{"content":"{\"text\":\"Halfway there\"}"}}]}"""
+                .encodeToByteArray()
+            exchange.sendResponseHeaders(200, response.size.toLong())
+            exchange.responseBody.use { it.write(response) }
+        }
+        server.start()
+        try {
+            val generated = OpenAiCompatibleContentGenerator(
+                LlmConfig("http://127.0.0.1:${server.address.port}/v1", "test", "secret"),
+            ).generate(
+                GenerationContext(
+                    phase = "RUNNING",
+                    argv = listOf("make"),
+                    pwd = Path.of("/work"),
+                    tree = "",
+                    output = "50%",
+                    event = "PERIODIC",
+                    titleMode = TitleGenerationMode.KEEP,
+                    currentTitle = "Build Android app",
+                )
+            )
+
+            assertNull(generated.title)
+            assertEquals("Halfway there", generated.text)
+            assertTrue(requestBody.contains("KEEP_EXISTING"))
+            assertTrue(requestBody.contains("omit the title field"))
         } finally {
             server.stop(0)
         }

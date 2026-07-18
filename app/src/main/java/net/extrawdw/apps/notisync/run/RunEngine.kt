@@ -94,10 +94,12 @@ class RunEngine internal constructor(
             if (result == RunApplyResult.OLDER) return
 
             // Equal is intentionally re-presented: it is the delivery retry produced by a crash or renderer
-            // failure after SQLite committed. Always render the durable current row, never alternate data carrying
-            // the same revision number.
+            // failure after SQLite committed. An equal row whose checkpoint is already current is instead a
+            // durable-outbox resend with a new envelope; rendering it again could duplicate sound/vibration.
             val durable = repository.find(key)
                 ?: throw RetryableDeliveryException("persisted Run state is unavailable")
+            if (result == RunApplyResult.EQUAL && !durable.presentationPending) return
+            // Always render the durable current row, never alternate data carrying the same revision number.
             try {
                 val posted = presenter.render(durable.state)
                 if (posted || !durable.active) {
@@ -209,6 +211,10 @@ class RunEngine internal constructor(
             )
         }.getOrDefault(false)
     }
+
+    /** WorkManager/outbox path: preserve the caller-minted request id across transport retries. */
+    internal suspend fun sendPersistedControl(control: RunControl): Boolean =
+        runCatching { send(control) }.getOrDefault(false)
 
     private suspend fun send(control: RunControl): Boolean = sendControl(control)
 

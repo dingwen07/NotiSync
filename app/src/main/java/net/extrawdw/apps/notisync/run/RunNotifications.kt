@@ -13,17 +13,27 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
 import androidx.core.content.ContextCompat
 import androidx.core.net.toUri
+import java.net.URI
+import java.net.URLDecoder
+import java.net.URLEncoder
 import java.security.MessageDigest
+import java.util.Locale
+import java.util.UUID
 import kotlin.math.roundToInt
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunBlockedReason
 import net.extrawdw.notisync.protocol.RunPhase
@@ -48,9 +58,10 @@ class RunNotificationPresenter(
         val terminal = !active
         val silent = RunPresentationPolicy.silent(state)
         val title = state.llmSummary?.title?.takeIf { it.isNotBlank() } ?: commandLabel(state)
+        val summaryBody = RunPresentationPolicy.summaryBody(state)
         val deterministicStatus = statusText(state)
-        val contentText = state.llmSummary?.text?.takeIf { it.isNotBlank() } ?: deterministicStatus
-        val expanded = state.llmSummary?.expandedText?.takeIf { it.isNotBlank() }
+        val contentText = summaryBody?.text?.takeIf { it.isNotBlank() } ?: deterministicStatus
+        val expanded = summaryBody?.expandedText?.takeIf { it.isNotBlank() }
             ?: state.failureMessage?.takeIf { it.isNotBlank() }
             ?: state.terminal.text.takeLast(NOTIFICATION_TERMINAL_CHARS).takeIf { it.isNotBlank() }
         val progress = state.progress?.takeUnless { terminal }?.toNativeProgress()
@@ -132,11 +143,9 @@ class RunNotificationPresenter(
     ): PendingIntent {
         val intent = Intent(context, RunActionReceiver::class.java).apply {
             this.action = RunActionReceiver.ACTION_CONTROL
-            data = "notisync://run-control/${action.name.lowercase()}/${Uri.encode(key.hostClientId)}/${Uri.encode(key.runId)}".toUri()
-            putExtra(RunActionReceiver.EXTRA_HOST_CLIENT_ID, key.hostClientId)
-            putExtra(RunActionReceiver.EXTRA_RUN_ID, key.runId)
-            putExtra(RunActionReceiver.EXTRA_INTERACTION_GENERATION, generation)
-            putExtra(RunActionReceiver.EXTRA_CONTROL, action.name)
+            // INPUT must use a mutable PendingIntent for RemoteInput. Bind every privileged routing field into
+            // the already-populated base data URI; fill-in extras can then carry text but cannot retarget/control.
+            data = runActionRouteData(key, generation, action.name).toUri()
         }
         val mutable = if (action == RunShadeAction.INPUT) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
         return PendingIntent.getBroadcast(
@@ -277,48 +286,119 @@ internal object RunNotificationChannels {
     private const val HEX = "0123456789abcdef"
 }
 
-/** Notification shade action receiver. All actions become DATA_SYNC/RUN controls. */
+internal data class RunActionRoute(val key: RunKey, val control: String, val interactionGeneration: Long)
+
+internal fun runActionRouteData(key: RunKey, interactionGeneration: Long, control: String): String =
+    "notisync://run-control/${control.lowercase(Locale.ROOT)}/" +
+        "${key.hostClientId.encodePathSegment()}/${key.runId.encodePathSegment()}/$interactionGeneration"
+
+/** Parse only immutable base Intent data. Mutable RemoteInput fill-in extras are deliberately ignored here. */
+internal fun parseRunActionRoute(dataString: String?): RunActionRoute? = runCatching {
+    val uri = URI(dataString ?: return null)
+    if (
+        uri.scheme != "notisync" || uri.host != "run-control" || uri.port != -1 || uri.userInfo != null ||
+        uri.rawQuery != null || uri.rawFragment != null
+    ) return null
+    val segments = uri.rawPath.orEmpty().removePrefix("/").split('/')
+    if (segments.size != 4) return null
+    val control = segments[0].decodePathSegment().uppercase(Locale.ROOT)
+    if (control !in RUN_NOTIFICATION_CONTROLS) return null
+    val host = segments[1].decodePathSegment()
+    val runId = segments[2].decodePathSegment()
+    val generation = segments[3].toLongOrNull() ?: return null
+    if (host.isBlank() || runId.isBlank() || generation < 0) return null
+    RunActionRoute(RunKey(host, runId), control, generation)
+}.getOrNull()
+
+internal fun buildRunNotificationControl(
+    route: RunActionRoute,
+    remoteInput: String?,
+    requestId: String,
+    requestedAt: Long,
+): net.extrawdw.notisync.protocol.RunControl? = runCatching {
+    val base = net.extrawdw.notisync.protocol.RunControl(
+        requestId = requestId,
+        hostClientId = ClientId(route.key.hostClientId),
+        runId = route.key.runId,
+        kind = when (route.control) {
+            "YES", "NO", "INPUT" -> net.extrawdw.notisync.protocol.RunControlKind.WRITE_INPUT
+            else -> net.extrawdw.notisync.protocol.RunControlKind.SIGNAL
+        },
+        requestedAt = requestedAt,
+        interactionGeneration = when (route.control) {
+            "YES", "NO", "INPUT" -> route.interactionGeneration
+            else -> null
+        },
+        inputText = when (route.control) {
+            "YES" -> "y\n"
+            "NO" -> "n\n"
+            "INPUT" -> remoteInput?.asRunTerminalLine() ?: return null
+            else -> null
+        },
+        signal = when (route.control) {
+            "INTERRUPT" -> "INT"
+            "TERMINATE" -> "TERM"
+            else -> null
+        },
+    )
+    base
+}.getOrNull()
+
+private fun String.encodePathSegment(): String =
+    URLEncoder.encode(this, Charsets.UTF_8).replace("+", "%20")
+
+private fun String.decodePathSegment(): String = URLDecoder.decode(this, Charsets.UTF_8)
+
+private val RUN_CONTEXTUAL_CONTROLS = setOf("YES", "NO", "INPUT")
+private val RUN_NOTIFICATION_CONTROLS = RUN_CONTEXTUAL_CONTROLS + setOf("INTERRUPT", "TERMINATE")
+
+/** Notification shade action receiver. All actions become durable DATA_SYNC/RUN controls. */
+
 class RunActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ACTION_CONTROL) return
-        val host = intent.getStringExtra(EXTRA_HOST_CLIENT_ID) ?: return
-        val runId = intent.getStringExtra(EXTRA_RUN_ID) ?: return
-        val control = intent.getStringExtra(EXTRA_CONTROL) ?: return
-        val generation = intent.getLongExtra(EXTRA_INTERACTION_GENERATION, -1L)
+        val route = parseRunActionRoute(intent.dataString) ?: return
         val remoteInput = RemoteInput.getResultsFromIntent(intent)?.getCharSequence(REMOTE_INPUT_KEY)?.toString()
+        val control = buildRunNotificationControl(
+            route = route,
+            remoteInput = remoteInput,
+            requestId = UUID.randomUUID().toString(),
+            requestedAt = System.currentTimeMillis(),
+        ) ?: return
+        val app = context.applicationContext as? NotiSyncApp ?: return
         val pending = goAsync()
-        val app = context.applicationContext as? NotiSyncApp ?: run { pending.finish(); return }
-        app.runWhenGraphReady { graph ->
-            graph.scope.launch {
-                try {
-                    val engine = graph.runEngine ?: return@launch
-                    val key = RunKey(host, runId)
-                    runCatching {
-                        when (control) {
-                            "YES" -> if (generation >= 0) engine.writeInput(key, "y\n", generation)
-                            "NO" -> if (generation >= 0) engine.writeInput(key, "n\n", generation)
-                            "INPUT" -> if (generation >= 0) {
-                                remoteInput?.let {
-                                    engine.writeInput(key, it.asRunTerminalLine(), generation)
-                                }
-                            }
-                            "INTERRUPT" -> engine.signal(key, "INT")
-                            "TERMINATE" -> engine.signal(key, "TERM")
-                        }
+        CoroutineScope(Dispatchers.IO + crashGuard("RunActionReceiver")).launch {
+            var outbox: RunControlOutbox? = null
+            try {
+                val queue = RunControlOutbox(context)
+                outbox = queue
+                queue.enqueue(control)
+                runCatching { RunControlDrainWorker.enqueue(context) }
+                val graph = app.awaitGraphReady(RECEIVER_GRAPH_WAIT_MS)
+                val engine = graph?.runEngine
+                if (engine != null) {
+                    // Use the remaining broadcast budget for a fast send. Timeout/cancellation leaves the exact
+                    // request in SQLite for WorkManager; no new request id is minted on retry.
+                    withTimeoutOrNull(RECEIVER_SEND_JOIN_MS) {
+                        RunControlOutboxDrainer.drain(
+                            queue = queue,
+                            send = engine::sendPersistedControl,
+                        )
                     }
-                } finally {
-                    pending.finish()
                 }
+            } catch (error: Exception) {
+                Log.w("RunActionReceiver", "could not queue Run action", error)
+            } finally {
+                outbox?.close()
+                pending.finish()
             }
         }
     }
 
     companion object {
         const val ACTION_CONTROL = "net.extrawdw.apps.notisync.RUN_CONTROL"
-        const val EXTRA_HOST_CLIENT_ID = "run_host_client_id"
-        const val EXTRA_RUN_ID = "run_id"
-        const val EXTRA_INTERACTION_GENERATION = "run_interaction_generation"
-        const val EXTRA_CONTROL = "run_control"
         const val REMOTE_INPUT_KEY = "run_input"
+        private const val RECEIVER_GRAPH_WAIT_MS = 7_000L
+        private const val RECEIVER_SEND_JOIN_MS = 2_000L
     }
 }

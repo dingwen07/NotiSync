@@ -301,6 +301,8 @@ class NSRunRunnerTest {
             assertEquals("half 50%\ndone\n", output.toString(Charsets.UTF_8))
             assertEquals(LocalRunUpdateReason.INITIAL, daemon.runs.first().updateReason)
             assertEquals(LocalRunPhase.COMPLETED, daemon.runs.last().phase)
+            assertEquals("half 50%\ndone", daemon.runs.last().terminal.text)
+            assertEquals("half 50%\ndone\n".encodeToByteArray().size.toLong(), daemon.runs.last().terminal.rawBytesSeen)
             assertTrue(Files.walk(root.resolve("runs")).use { files ->
                 files.anyMatch { it.fileName.toString() == "run.ndjson" }
             })
@@ -459,6 +461,10 @@ class NSRunRunnerTest {
                 request.llmSummary?.text.orEmpty().contains(secret) ||
                 request.llmSummary?.expandedText.orEmpty().contains(secret)
         })
+        assertEquals(
+            ("echo: $secret\r\n").encodeToByteArray().size.toLong(),
+            daemon.runs.maxOf { it.terminal.rawBytesSeen },
+        )
     }
 
     @Test

@@ -89,21 +89,42 @@ class RunDispatcherTest {
             blockedReason = LocalRunBlockedReason.TERMINAL_INPUT,
             prompt = LocalRunPromptKind.YES_NO,
             interactionGeneration = 1,
-            llmSummary = LocalRunLlmSummary("Summary", "Needs confirmation"),
+            llmSummary = LocalRunLlmSummary("Summary", "Needs confirmation", "Stale model detail"),
         )
 
         val projection = blocked.toIosNotification()!!
 
         assertEquals("Summary", projection.title)
-        assertEquals("Needs confirmation", projection.text)
+        assertEquals("Waiting for input", projection.text)
+        assertEquals("running", projection.expandedText)
         assertEquals("Input", projection.shortCriticalText)
         assertEquals(listOf("yes", "no", "signal-int"), projection.actions.map { it.id })
+        val freshSummary = blocked.copy(
+            revision = 3,
+            updateReason = LocalRunUpdateReason.LLM_SUMMARY,
+        ).toIosNotification()!!
+        assertEquals("Summary", freshSummary.title)
+        assertEquals("Needs confirmation", freshSummary.text)
+        assertEquals("Stale model detail", freshSummary.expandedText)
         val hangProjection = blocked.copy(
             prompt = null,
             blockedReason = LocalRunBlockedReason.OUTPUT_AND_CPU_IDLE,
         ).toIosNotification()!!
+        assertEquals("May need your attention", hangProjection.text)
         assertEquals("Check", hangProjection.shortCriticalText)
         assertEquals(listOf("signal-int", "signal-term"), hangProjection.actions.map { it.id })
+        val completedProjection = blocked.copy(
+            revision = 4,
+            phase = LocalRunPhase.COMPLETED,
+            updateReason = LocalRunUpdateReason.COMPLETED,
+            endedAt = clock.millis(),
+            blockedReason = null,
+            prompt = null,
+            exitCode = 0,
+        ).toIosNotification()!!
+        assertEquals("Summary", completedProjection.title)
+        assertEquals("Completed successfully", completedProjection.text)
+        assertEquals("running", completedProjection.expandedText)
         assertNull(
             runState("session").copy(
                 revision = 3,

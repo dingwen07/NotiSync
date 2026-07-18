@@ -20,6 +20,7 @@
     <string name="error_unknown">Unknown error</string>
 
     <!-- Run screen + locally-rendered Run live updates -->
+    <string name="run_screen_title">NotiSync Run</string>
     <string name="run_notification_channel_description">Run status and attention alerts from %1$s</string>
     <string name="run_notification_subtext">NotiSync Run</string>
     <string name="run_notification_via">NotiSync Run · %1$s</string>
