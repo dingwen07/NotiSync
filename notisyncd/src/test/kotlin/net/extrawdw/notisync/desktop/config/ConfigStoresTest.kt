@@ -20,6 +20,28 @@ class ConfigStoresTest {
     }
 
     @Test
+    fun `complete daemon config does not resolve dynamic defaults`() {
+        val path = Files.createTempDirectory("notisync-complete-config-test").toRealPath().resolve("notisyncd.conf")
+        val config = NotisyncdConfigCodec.decodeWithDefaults(
+            text = """
+                broker-url wss://example.test
+                device-name Configured Desktop
+                platform-name Configured Platform
+                auto-apply-trusted-device-tables yes
+                log-level DEBUG
+                websocket-ping-seconds 45
+            """.trimIndent(),
+            path = path,
+            deviceNameDefault = { error("device-name default must remain lazy") },
+            platformNameDefault = { error("platform-name default must remain lazy") },
+        )
+
+        assertEquals("Configured Desktop", config.deviceName)
+        assertEquals("Configured Platform", config.platformName)
+        assertEquals(45, config.websocketPingSeconds)
+    }
+
+    @Test
     fun `daemon and run stores are independent files`() {
         val root = Files.createTempDirectory("notisync-config-test").toRealPath()
         val daemon = NotisyncdConfigStore(root.resolve("notisyncd.conf"))

@@ -10,14 +10,19 @@ import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.PrivateFiles
 
+private const val DEFAULT_BROKER_URL = "wss://notisync-api.extrawdw.net"
+private const val DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES = false
+private const val DEFAULT_LOG_LEVEL = "INFO"
+private const val DEFAULT_WEBSOCKET_PING_SECONDS = 30
+
 @Serializable
 data class NotisyncdConfig(
-    val brokerUrl: String = "wss://notisync-api.extrawdw.net",
+    val brokerUrl: String = DEFAULT_BROKER_URL,
     val deviceName: String = defaultDeviceName(),
     val platformName: String = defaultPlatformName(),
-    val automaticallyApplyTrustedDeviceTables: Boolean = false,
-    val logLevel: String = "INFO",
-    val websocketPingSeconds: Int = 30,
+    val automaticallyApplyTrustedDeviceTables: Boolean = DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
+    val logLevel: String = DEFAULT_LOG_LEVEL,
+    val websocketPingSeconds: Int = DEFAULT_WEBSOCKET_PING_SECONDS,
 ) {
     fun validate(): NotisyncdConfig = apply {
         require(brokerUrl.startsWith("ws://") || brokerUrl.startsWith("wss://")) {
@@ -168,17 +173,28 @@ internal object NotisyncdConfigCodec {
         "websocket-ping-seconds",
     )
 
-    fun decode(text: String, path: Path): NotisyncdConfig {
+    fun decode(text: String, path: Path): NotisyncdConfig = decodeWithDefaults(
+        text,
+        path,
+        deviceNameDefault = ::defaultDeviceName,
+        platformNameDefault = ::defaultPlatformName,
+    )
+
+    internal fun decodeWithDefaults(
+        text: String,
+        path: Path,
+        deviceNameDefault: () -> String,
+        platformNameDefault: () -> String,
+    ): NotisyncdConfig {
         val values = LineConfig.parse(text, path, options)
-        val defaults = NotisyncdConfig()
         return NotisyncdConfig(
-            brokerUrl = values.string("broker-url") ?: defaults.brokerUrl,
-            deviceName = values.string("device-name") ?: defaults.deviceName,
-            platformName = values.string("platform-name") ?: defaults.platformName,
+            brokerUrl = values.string("broker-url") ?: DEFAULT_BROKER_URL,
+            deviceName = values.string("device-name") ?: deviceNameDefault(),
+            platformName = values.string("platform-name") ?: platformNameDefault(),
             automaticallyApplyTrustedDeviceTables = values.boolean("auto-apply-trusted-device-tables")
-                ?: defaults.automaticallyApplyTrustedDeviceTables,
-            logLevel = values.string("log-level") ?: defaults.logLevel,
-            websocketPingSeconds = values.int("websocket-ping-seconds") ?: defaults.websocketPingSeconds,
+                ?: DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
+            logLevel = values.string("log-level") ?: DEFAULT_LOG_LEVEL,
+            websocketPingSeconds = values.int("websocket-ping-seconds") ?: DEFAULT_WEBSOCKET_PING_SECONDS,
         ).validate()
     }
 
