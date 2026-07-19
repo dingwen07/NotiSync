@@ -7,6 +7,7 @@ import java.nio.file.StandardCopyOption
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 import kotlinx.serialization.encodeToString
+import net.extrawdw.notisync.cli.DaemonConnectionException
 import net.extrawdw.notisync.cli.DaemonAdminClient
 import net.extrawdw.notisync.cli.NotisyncCli
 import net.extrawdw.notisync.daemon.peer.runtime.createFileBackedDesktopPeer
@@ -189,9 +190,19 @@ class NotisyncdCli(
     }
 
     private fun status(): Int {
-        val status = DaemonAdminClient(paths.socket).status()
-        output.appendLine(LocalApiJson.encodeToString(status))
-        return 0
+        return try {
+            val status = DaemonAdminClient(paths.socket).status()
+            output.appendLine(LocalApiJson.encodeToString(status))
+            0
+        } catch (failure: DaemonConnectionException) {
+            val message = if (failure.daemonNotRunning) {
+                "notisyncd: not running"
+            } else {
+                "notisyncd: unable to connect"
+            }
+            error.appendLine(message)
+            1
+        }
     }
 
     private fun config(arguments: List<String>): Int {

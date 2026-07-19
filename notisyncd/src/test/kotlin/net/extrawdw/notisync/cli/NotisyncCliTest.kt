@@ -1,5 +1,6 @@
 package net.extrawdw.notisync.cli
 
+import java.io.IOException
 import java.nio.file.Path
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
@@ -22,6 +23,18 @@ import org.junit.Test
 
 class NotisyncCliTest {
     @Test
+    fun `help lists every device action inline`() {
+        val fixture = CliFixture()
+
+        assertEquals(0, fixture.cli.run(arrayOf("--help")))
+        assertTrue(
+            fixture.output.toString().contains(
+                "devices action approve|reject|revoke|confirm-revoke|decline-revoke|restore|keep|purge DEVICE_ID",
+            ),
+        )
+    }
+
+    @Test
     fun `daemon restart delegates without autostarting first`() {
         val daemonCommands = mutableListOf<List<String>>()
         var autostarts = 0
@@ -40,29 +53,37 @@ class NotisyncCliTest {
     }
 
     @Test
-    fun `daemon status is nested and root status is rejected`() {
+    fun `daemon status is nested and root status remains an alias`() {
         val fixture = CliFixture()
 
         assertEquals(0, fixture.cli.run(arrayOf("daemon", "status")))
         assertTrue(fixture.output.toString().contains("notisyncd 1.2.3: connected"))
         fixture.output.clear()
 
-        assertEquals(1, fixture.cli.run(arrayOf("status")))
-        assertTrue(fixture.error.toString().contains("unknown command: status"))
+        assertEquals(0, fixture.cli.run(arrayOf("status")))
+        assertTrue(fixture.output.toString().contains("notisyncd 1.2.3: connected"))
     }
 
     @Test
-    fun `daemon status autostarts but daemon start is not exposed`() {
+    fun `daemon status does not autostart and daemon start is explicit`() {
         val administration = FakeAdministration(mutableListOf(), statusFailures = 1)
         var autostarts = 0
-        val fixture = CliFixture(administration, autostart = { autostarts += 1 })
+        val daemonCommands = mutableListOf<List<String>>()
+        val fixture = CliFixture(
+            administration,
+            autostart = { autostarts += 1 },
+            daemonRunner = {
+                daemonCommands += it.toList()
+                0
+            },
+        )
 
-        assertEquals(0, fixture.cli.run(arrayOf("daemon", "status")))
-        assertEquals(1, autostarts)
-        assertTrue(fixture.output.toString().contains("notisyncd 1.2.3: connected"))
+        assertEquals(1, fixture.cli.run(arrayOf("daemon")))
+        assertEquals(0, autostarts)
+        assertTrue(fixture.error.toString().contains("notisyncd is not running"))
 
-        assertEquals(1, fixture.cli.run(arrayOf("daemon", "start")))
-        assertTrue(fixture.error.toString().contains("daemon requires status, stop, or restart"))
+        assertEquals(0, fixture.cli.run(arrayOf("daemon", "start")))
+        assertEquals(listOf(listOf("start")), daemonCommands)
     }
 
     @Test
@@ -147,7 +168,7 @@ class NotisyncCliTest {
         override fun status(): DaemonStatus {
             if (statusFailures > 0) {
                 statusFailures -= 1
-                error("daemon is unavailable")
+                throw DaemonConnectionException(Path.of("/private/tmp/missing-notisyncd"), IOException("missing"))
             }
             return DaemonStatus(
                 version = "1.2.3",

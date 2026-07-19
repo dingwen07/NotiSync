@@ -3,12 +3,16 @@ package net.extrawdw.notisync.cli
 import java.io.BufferedInputStream
 import java.io.ByteArrayOutputStream
 import java.io.EOFException
+import java.io.IOException
+import java.net.ConnectException
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels.Channels
 import java.nio.channels.SocketChannel
 import java.nio.charset.StandardCharsets
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.time.Duration
 import kotlinx.serialization.decodeFromString
@@ -31,6 +35,16 @@ class DaemonAdminException(
     val status: Int,
     val error: ApiError?,
 ) : RuntimeException(error?.message ?: "notisyncd returned HTTP $status")
+
+class DaemonConnectionException(
+    val socketPath: Path,
+    cause: IOException,
+) : IOException("unable to connect to notisyncd", cause) {
+    val daemonNotRunning: Boolean =
+        !Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS) ||
+            cause is ConnectException ||
+            cause.message?.contains("connection refused", ignoreCase = true) == true
+}
 
 interface DaemonAdministration {
     fun status(): DaemonStatus
@@ -92,7 +106,11 @@ class DaemonAdminClient(
 
     private fun exchangeNow(method: String, target: String, body: String?): Response {
         SocketChannel.open(StandardProtocolFamily.UNIX).use { channel ->
-            channel.connect(UnixDomainSocketAddress.of(socketPath))
+            try {
+                channel.connect(UnixDomainSocketAddress.of(socketPath))
+            } catch (failure: IOException) {
+                throw DaemonConnectionException(socketPath, failure)
+            }
             val bodyBytes = body?.toByteArray(StandardCharsets.UTF_8) ?: ByteArray(0)
             val head = buildString {
                 append(method).append(' ').append(target).append(" HTTP/1.1\r\n")

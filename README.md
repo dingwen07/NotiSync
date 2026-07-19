@@ -117,15 +117,19 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 The default installation is under `~/.local/share/notisync`. Add the `PATH` export to the shell's
-startup file. The `notisync` and `nsrun` commands start the daemon automatically when needed:
+startup file. Operational `notisync` commands and `nsrun` start the daemon automatically when
+needed:
 
 ```bash
 notisync config set device-name "Workstation"
-notisync daemon status
+notisync status
 ```
 
-Use `notisync daemon stop` and `notisync daemon restart` for lifecycle control. The daemon executable
-itself provides the lower-level `notisyncd start|stop|restart|status` commands.
+Use `notisync daemon start|stop|restart` for explicit lifecycle control. `notisync daemon` and
+`notisync daemon status` only report status and do not autostart; `notisync status` is an alias with
+the same behavior. The daemon executable itself provides the lower-level
+`notisyncd start|stop|restart|status` commands. Its `status` command writes JSON to stdout when the
+daemon is running and a concise error to stderr when it is not.
 
 The desktop defaults to `wss://notisync-api.extrawdw.net`. For a custom broker, configure the same
 WebSocket URL in the Android app and on the desktop:
@@ -174,9 +178,9 @@ notisync daemon stop
 ```
 
 Configuration and daemon logs live in `~/.notisync/`. Rerun `./scripts/install-desktop.sh` to update
-the installed commands; the installer stops a running daemon before replacing the installation.
-The current desktop key provider stores unencrypted key material in the private
-`~/.notisync/private-keys-v1/` directory.
+the installed commands; if the daemon is running, the installer stops it before replacing the
+installation and starts the updated daemon afterward. The current desktop key provider stores
+unencrypted key material in the private `~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 

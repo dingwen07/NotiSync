@@ -45,6 +45,7 @@ class NotisyncCli(
         } else {
             val client = clientFactory(paths.socket)
             when (arguments[0]) {
+                "status" -> status(client)
                 "config" -> withDaemon(client) { config(it, arguments.drop(1)) }
                 "devices" -> withDaemon(client) { devices(it, arguments.drop(1)) }
                 "quarantine" -> withDaemon(client) { quarantine(it, arguments.drop(1)) }
@@ -66,19 +67,24 @@ class NotisyncCli(
         val command = arguments.firstOrNull() ?: "status"
         if (arguments.size > 1) throw CliError("daemon $command takes no arguments")
         return when (command) {
-            "status" -> {
-                val client = clientFactory(paths.socket)
-                withDaemon(client) { status(it) }
-                0
-            }
-            "stop", "restart" -> daemonRunner(arrayOf(command))
+            "status" -> status(clientFactory(paths.socket)).let { 0 }
+            "start", "stop", "restart" -> daemonRunner(arrayOf(command))
             "help", "--help", "-h" -> output.appendLine(daemonUsage()).let { 0 }
-            else -> throw CliError("daemon requires status, stop, or restart")
+            else -> throw CliError("daemon requires status, start, stop, or restart")
         }
     }
 
     private fun status(client: DaemonAdministration) {
-        val status = client.status()
+        val status = try {
+            client.status()
+        } catch (failure: DaemonConnectionException) {
+            val message = if (failure.daemonNotRunning) {
+                "notisyncd is not running"
+            } else {
+                "unable to connect to notisyncd"
+            }
+            throw CliError(message)
+        }
         output.appendLine("notisyncd ${status.version}: ${status.connectionState.name.lowercase()}")
         output.appendLine("device: ${status.deviceName ?: "unknown"}")
         output.appendLine("client: ${status.clientId ?: "initializing"}")
@@ -223,23 +229,22 @@ class NotisyncCli(
     private fun usage(): String = """
         Usage: notisync COMMAND
 
+          status
           daemon [status]
-          daemon stop|restart
+          daemon start|stop|restart
           config get
           config set device-name NAME
           devices [list]
           devices pair show [--payload]
           devices pair inspect LINK|PAYLOAD|-
           devices pair accept [--own|--other] LINK|PAYLOAD|-
-          devices action ACTION DEVICE_ID
+          devices action approve|reject|revoke|confirm-revoke|decline-revoke|restore|keep|purge DEVICE_ID
           devices action approve --all
           quarantine approve|clear
-
-        ACTION is approve, reject, revoke, confirm-revoke, decline-revoke, restore, keep, or purge.
     """.trimIndent()
 
     private fun daemonUsage(): String = """
-        Usage: notisync daemon [status|stop|restart]
+        Usage: notisync daemon [status|start|stop|restart]
     """.trimIndent()
 }
 

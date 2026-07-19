@@ -43,6 +43,7 @@ done
 # Stage next to the destination so the final rename stays on one filesystem.
 stage_dir="$(mktemp -d "$(dirname -- "$install_dir")/.notisync-install.XXXXXX")"
 backup_dir=""
+daemon_was_running=false
 
 cleanup() {
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then
@@ -61,14 +62,18 @@ trap cleanup EXIT HUP INT TERM
 cp -R "$distribution_dir/." "$stage_dir/"
 
 if "$distribution_dir/bin/notisyncd" status >/dev/null 2>&1; then
+    daemon_was_running=true
     echo "Stopping the running NotiSync daemon..."
     "$distribution_dir/bin/notisyncd" stop
+else
+    echo "NotiSync daemon is not running."
 fi
 
 if [[ -e "$install_dir" || -L "$install_dir" ]]; then
     backup_dir="$(dirname -- "$install_dir")/.notisync-backup.$$"
     mv -- "$install_dir" "$backup_dir"
 fi
+echo "Installing NotiSync to $install_dir..."
 mv -- "$stage_dir" "$install_dir"
 stage_dir=""
 
@@ -79,6 +84,11 @@ done
 if [[ -n "$backup_dir" ]]; then
     rm -rf -- "$backup_dir"
     backup_dir=""
+fi
+
+if [[ "$daemon_was_running" == true ]]; then
+    echo "Starting the updated NotiSync daemon..."
+    "$install_dir/bin/notisyncd" start
 fi
 
 trap - EXIT HUP INT TERM
