@@ -32,12 +32,18 @@ dependencies {
 private val isMacOs = System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") }
 private val launcherDirectory = if (isMacOs) "libexec" else "bin"
 private val defaultJvmOptions = listOf("--enable-native-access=ALL-UNNAMED")
+private val daemonJvmOptions = defaultJvmOptions + listOf(
+    // JDK 24+ warns when Protobuf's Unsafe fast path is initialized. Java 21 does not recognize
+    // the suppression option, so the daemon also enables forward-compatible VM options.
+    "-XX:+IgnoreUnrecognizedVMOptions",
+    "--sun-misc-unsafe-memory-access=allow",
+)
 
 application {
     mainClass.set("net.extrawdw.notisync.daemon.NotisyncdMainKt")
     applicationName = "notisyncd"
     executableDir = launcherDirectory
-    applicationDefaultJvmArgs = defaultJvmOptions
+    applicationDefaultJvmArgs = daemonJvmOptions
 }
 
 private data class DesktopLauncher(

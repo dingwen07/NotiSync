@@ -45,6 +45,7 @@ import net.extrawdw.notisync.protocol.RunSyncKind
 import net.extrawdw.notisync.protocol.RunTerminalSnapshot
 import net.extrawdw.notisync.protocol.RunUpdateReason
 import net.extrawdw.notisync.protocol.Urgency
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
 
@@ -193,6 +194,7 @@ class RunDispatcher(
     private val sender: RunMeshSender,
     private val clock: Clock = Clock.systemUTC(),
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job()),
+    private val logger: DaemonLogger = DaemonLogger("WARN"),
 ) : AutoCloseable {
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val resultWake = Channel<Unit>(Channel.CONFLATED)
@@ -217,11 +219,15 @@ class RunDispatcher(
                     sender.sendState(item)
                     runOutbox.removeRun(item.id)
                     consecutiveFailures = 0
+                    logger.info("Delivered Run state ${item.id}")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     runOutbox.retryRunLater(item.id)
                     consecutiveFailures = (consecutiveFailures + 1).coerceAtMost(5)
+                    val message =
+                        "Run state ${item.id} delivery failed (attempt $consecutiveFailures): ${error.conciseMessage()}"
+                    if (consecutiveFailures == 1) logger.warn(message) else logger.debug(message)
                     delay((1_000L shl (consecutiveFailures - 1)).coerceAtMost(30_000L))
                 }
             }
@@ -243,11 +249,15 @@ class RunDispatcher(
                     }
                     resultOutbox.removeResult(item.id)
                     consecutiveFailures = 0
+                    logger.info("Delivered Run control result ${item.id}")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     resultOutbox.retryResultLater(item.id)
                     consecutiveFailures = (consecutiveFailures + 1).coerceAtMost(5)
+                    val message = "Run control result ${item.id} delivery failed " +
+                        "(attempt $consecutiveFailures): ${error.conciseMessage()}"
+                    if (consecutiveFailures == 1) logger.warn(message) else logger.debug(message)
                     delay((1_000L shl (consecutiveFailures - 1)).coerceAtMost(30_000L))
                 }
             }
@@ -265,11 +275,15 @@ class RunDispatcher(
                     iosSender.send(item)
                     iosOutbox.removeIos(item.id)
                     consecutiveFailures = 0
+                    logger.info("Delivered iOS-compatible Run notification ${item.id}")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     iosOutbox.retryIosLater(item.id)
                     consecutiveFailures = (consecutiveFailures + 1).coerceAtMost(5)
+                    val message = "iOS-compatible Run notification ${item.id} delivery failed " +
+                        "(attempt $consecutiveFailures): ${error.conciseMessage()}"
+                    if (consecutiveFailures == 1) logger.warn(message) else logger.debug(message)
                     delay((1_000L shl (consecutiveFailures - 1)).coerceAtMost(30_000L))
                 }
             }
@@ -296,6 +310,7 @@ class RunDispatcher(
             iosWake.trySend(Unit)
         }
         wake.trySend(Unit)
+        logger.info("Accepted Run state ${accepted.stateItem.id} (${request.phase})")
         return AcceptedResponse(accepted.stateItem.id, acceptedAt)
     }
 
@@ -331,6 +346,7 @@ class RunDispatcher(
             resultOutbox = resultOutbox,
         )
         resultWake.trySend(Unit)
+        logger.info("Completed Run control $eventId with ${request.status}")
     }
 
     override fun close() {
@@ -340,6 +356,7 @@ class RunDispatcher(
         wake.close()
         resultWake.close()
         iosWake.close()
+        logger.debug("Run dispatcher stopped")
     }
 
     private fun validateRunState(request: RunStateRequest) {
@@ -535,3 +552,6 @@ private val REPLACEABLE_RUN_UPDATES = setOf(
     LocalRunUpdateReason.LLM_SUMMARY,
     LocalRunUpdateReason.REFRESH,
 )
+
+private fun Throwable.conciseMessage(): String =
+    message?.takeIf(String::isNotBlank) ?: javaClass.simpleName

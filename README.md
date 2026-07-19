@@ -177,10 +177,14 @@ nsrun config set pty auto            # auto, always, or never
 notisync daemon stop
 ```
 
-Configuration and daemon logs live in `~/.notisync/`. Rerun `./scripts/install-desktop.sh` to update
-the installed commands; if the daemon is running, the installer stops it before replacing the
-installation and starts the updated daemon afterward. The current desktop key provider stores
-unencrypted key material in the private `~/.notisync/private-keys-v1/` directory.
+Configuration and private daemon data live in `~/.notisync/`. Daemon logs use the platform's user log
+location: `$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
+`~/.local/state/notisync/log/notisyncd.log`. Log lines include an ISO-8601
+timestamp, severity, and thread name; the default level is `WARN` and can be changed with
+`notisyncd config set log-level info`. Rerun `./scripts/install-desktop.sh` to update the installed
+commands; if the daemon is running, the installer stops it before replacing the installation and starts
+the updated daemon afterward. The current desktop key provider stores unencrypted key material in the
+private `~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 

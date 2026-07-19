@@ -377,12 +377,22 @@ int main(int argc, char **argv) {
 
     StringList option_strings = {0};
     list_add(&option_strings, "--enable-native-access=ALL-UNNAMED");
+    if (strcmp(name, "notisyncd") == 0) {
+        /* JDK 24+ warns when Protobuf initializes its Unsafe fast path. Java 21 does not know the
+         * suppression option, so the daemon also enables forward-compatible VM options. */
+        list_add(&option_strings, "-XX:+IgnoreUnrecognizedVMOptions");
+        list_add(&option_strings, "--sun-misc-unsafe-memory-access=allow");
+    }
     append_option_string(&option_strings, getenv("JAVA_OPTS"), "JAVA_OPTS");
     const char *options_variable = options_variable_for(name);
     append_option_string(&option_strings, getenv(options_variable), options_variable);
     const char *data_directory = getenv("NOTISYNC_DATA_DIR");
     if (data_directory != NULL && data_directory[0] != '\0') {
         list_add_owned(&option_strings, property("notisync.dataDir", data_directory));
+    }
+    const char *log_directory = getenv("NOTISYNC_LOG_DIR");
+    if (log_directory != NULL && log_directory[0] != '\0') {
+        list_add_owned(&option_strings, property("notisync.logDir", log_directory));
     }
     list_add_owned(&option_strings, property("java.class.path", classpath));
     list_add_owned(&option_strings, property("sun.java.command", name));

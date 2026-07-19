@@ -12,7 +12,7 @@ import net.extrawdw.notisync.desktop.PrivateFiles
 
 private const val DEFAULT_BROKER_URL = "wss://notisync-api.extrawdw.net"
 private const val DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES = false
-private const val DEFAULT_LOG_LEVEL = "INFO"
+private const val DEFAULT_LOG_LEVEL = "WARN"
 private const val DEFAULT_WEBSOCKET_PING_SECONDS = 30
 const val NOTISYNCD_PLATFORM_NAME = "desktop"
 
@@ -29,6 +29,9 @@ data class NotisyncdConfig(
             "broker-url must use ws:// or wss://"
         }
         require(deviceName.isNotBlank()) { "device-name must not be blank" }
+        require(logLevel.uppercase() in setOf("TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "OFF")) {
+            "log-level must be trace, debug, info, warn, error, or off"
+        }
         require(websocketPingSeconds in 5..300) { "websocket-ping-seconds must be between 5 and 300" }
     }
 }

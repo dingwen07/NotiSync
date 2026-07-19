@@ -28,6 +28,7 @@ import net.extrawdw.notisync.daemon.SecureChannelRunSender
 import net.extrawdw.notisync.daemon.InMemoryRunOutbox
 import net.extrawdw.notisync.daemon.PendingRunControlResult
 import net.extrawdw.notisync.daemon.RunResultOutbox
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
 import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
 import net.extrawdw.notisync.localapi.ActionSendRequest
@@ -110,9 +111,8 @@ class DesktopPeerRuntime(
     private val runResultOutbox: RunResultOutbox = InMemoryRunOutbox(),
     parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
     private val clock: Clock = Clock.systemUTC(),
-    private val channelLogger: ChannelLogger = ChannelLogger { message ->
-        System.err.println("notisyncd: $message")
-    },
+    private val logger: DaemonLogger = DaemonLogger(configProvider().logLevel),
+    private val channelLogger: ChannelLogger = ChannelLogger(logger::warn),
     telemetry: PeerTelemetry = PeerTelemetry.None,
     private val healthPollMillis: Long = DEFAULT_HEALTH_POLL_MILLIS,
     private val antiEntropyMillis: Long = DEFAULT_ANTI_ENTROPY_MILLIS,
@@ -150,13 +150,15 @@ class DesktopPeerRuntime(
         telemetry = telemetry,
         webSocketPingSeconds = configProvider().websocketPingSeconds.toLong(),
         onWebSocketConnectionChanged = { connected ->
-            webSocketConnected.set(connected)
+            val changed = webSocketConnected.getAndSet(connected) != connected
             if (connected) {
                 state.set(DaemonConnectionState.CONNECTED)
                 connectionMessage.set(null)
+                if (changed) logger.info("Broker WebSocket connected")
             } else if (state.get() != DaemonConnectionState.UNSUPPORTED_INTEGRITY) {
                 state.set(DaemonConnectionState.BACKING_OFF)
                 connectionMessage.set("WebSocket disconnected; reconnecting")
+                if (changed) logger.warn("Broker WebSocket disconnected; reconnecting")
             }
         },
     )
@@ -197,9 +199,9 @@ class DesktopPeerRuntime(
             trust = trustState,
             scope = scope,
             onTrustPrompt = { subject, prompt, introducedBy ->
-                trustMessage.set(
-                    "Trust decision required for ${subject.shortForm()} ($prompt), introduced by $introducedBy",
-                )
+                val message = "Trust decision required for ${subject.shortForm()} ($prompt), introduced by $introducedBy"
+                trustMessage.set(message)
+                logger.warn(message)
             },
             onAsset = { _, _ -> Unit },
             onFilter = { _, _ -> Unit },
@@ -232,6 +234,7 @@ class DesktopPeerRuntime(
     fun start() {
         if (!started.compareAndSet(false, true)) return
         state.set(DaemonConnectionState.CONNECTING)
+        logger.info("Starting desktop peer $clientId")
         scope.launch(CoroutineName("notisyncd-websocket")) { runLiveDeliveryForever() }
         scope.launch(CoroutineName("notisyncd-maintenance")) { runMaintenance() }
     }
@@ -259,6 +262,9 @@ class DesktopPeerRuntime(
             delivery.epochBlob?.let { trustStore.applyKeyEpoch(delivery.card.clientId, it) }
         }
         trustMessage.set(null)
+        logger.info(
+            "Accepted pairing with ${candidate.clientId} as ${request.classification.name.lowercase()}",
+        )
         scope.launch {
             runCatching { broker.publishKeyEpoch(keyMaterial.currentKeyEpoch()) }
             runCatching { foundation.broadcastTrust() }
@@ -296,6 +302,7 @@ class DesktopPeerRuntime(
                 "${request.action} is not valid for a $before device"
             }
             refreshTrustMessage()
+            logger.info("Device ${id.shortForm()} changed from $before to $after via ${request.action}")
             if (shouldBroadcast) scope.launch { runCatching { foundation.broadcastTrust() } }
             devices()
         }
@@ -308,6 +315,7 @@ class DesktopPeerRuntime(
                 QuarantineAction.CLEAR -> trustStore.clearQuarantine()
             }
             trustMessage.set(null)
+            logger.warn("Trust-store quarantine resolved with ${request.action}")
             scope.launch { runCatching { foundation.broadcastTrust() } }
             devices()
         }
@@ -366,6 +374,7 @@ class DesktopPeerRuntime(
 
     override fun close() {
         if (state.getAndSet(DaemonConnectionState.STOPPED) == DaemonConnectionState.STOPPED) return
+        logger.info("Stopping desktop peer $clientId")
         lifecycle.cancel()
         broker.close()
     }
@@ -380,8 +389,8 @@ class DesktopPeerRuntime(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                state.set(DaemonConnectionState.BACKING_OFF)
-                connectionMessage.set("WebSocket delivery failed: ${error.conciseMessage()}")
+                val message = "WebSocket delivery failed: ${error.conciseMessage()}"
+                setConnectionWarning(message, "$message; retrying")
                 delay(1_000)
             }
         }
@@ -395,17 +404,17 @@ class DesktopPeerRuntime(
                 val verification = broker.fetchVerificationStatus()
                 if (verification?.integrityRequired == true) {
                     state.set(DaemonConnectionState.UNSUPPORTED_INTEGRITY)
-                    connectionMessage.set(
-                        "The broker requires platform integrity evidence, which this desktop peer does not provide",
-                    )
+                    val message = "The broker requires platform integrity evidence, which this desktop peer does not provide"
+                    if (connectionMessage.getAndSet(message) != message) {
+                        logger.error("Broker requires unsupported platform integrity evidence")
+                    }
                     delay(healthPollMillis)
                     continue
                 }
 
                 val health = broker.fetchHealth()
                 if (health == null) {
-                    state.set(DaemonConnectionState.BACKING_OFF)
-                    connectionMessage.set("Broker is unreachable; reconnecting")
+                    setConnectionWarning("Broker is unreachable; reconnecting", "Broker health check failed; reconnecting")
                     delay(healthPollMillis)
                     continue
                 }
@@ -416,6 +425,7 @@ class DesktopPeerRuntime(
                     foundation.convergeKeyEpochs()
                     foundation.broadcastTrust()
                     lastAntiEntropyAt = now
+                    logger.debug("Completed broker trust and key convergence")
                 }
 
                 val config = configProvider()
@@ -423,6 +433,7 @@ class DesktopPeerRuntime(
                 if (profileFingerprint != lastProfileFingerprint) {
                     foundation.broadcastProfile(buildProfile(config, now))
                     lastProfileFingerprint = profileFingerprint
+                    logger.info("Published desktop profile for ${config.deviceName}")
                 }
                 if (webSocketConnected.get()) {
                     state.set(DaemonConnectionState.CONNECTED)
@@ -434,8 +445,8 @@ class DesktopPeerRuntime(
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                state.set(DaemonConnectionState.BACKING_OFF)
-                connectionMessage.set("Broker synchronization failed: ${error.conciseMessage()}")
+                val message = "Broker synchronization failed: ${error.conciseMessage()}"
+                setConnectionWarning(message)
             }
             delay(healthPollMillis)
         }
@@ -457,6 +468,7 @@ class DesktopPeerRuntime(
                 actionToken = event.actionToken,
                 relayMessageId = message.messageId,
             )
+            logger.info("Delivered action ${message.messageId} from ${message.senderId.shortForm()}")
         } catch (error: Exception) {
             throw RetryableDeliveryException("could not persist local action event", error)
         }
@@ -481,6 +493,9 @@ class DesktopPeerRuntime(
                 throw RetryableDeliveryException("could not persist local Run control event", error)
             }
         }
+        logger.info(
+            "Handled Run control ${control.kind} for ${control.runId} from ${message.senderId.shortForm()}: $delivery",
+        )
         val status = when (delivery) {
             RunControlDelivery.ENQUEUED -> null
             RunControlDelivery.DUPLICATE -> RunControlResultStatus.REJECTED
@@ -526,13 +541,15 @@ class DesktopPeerRuntime(
                 senderIsTrustedOwnDevice = true,
                 relayMessageId = message.messageId,
             )
+            logger.info("Delivered dismissal from ${message.senderId.shortForm()}")
         } catch (error: Exception) {
             throw RetryableDeliveryException("could not persist local dismissal event", error)
         }
     }
 
-    @Suppress("UNUSED_PARAMETER")
-    private fun onUnsupportedNotification(message: InboundMessage) = Unit
+    private fun onUnsupportedNotification(message: InboundMessage) {
+        logger.warn("Ignored misrouted notification ${message.messageId} from ${message.senderId.shortForm()}")
+    }
 
     private fun buildClientCard(): SignedBlob {
         val config = configProvider()
@@ -586,6 +603,11 @@ class DesktopPeerRuntime(
         trustMessage.set(
             if (pending == 0) null else "$pending trusted-device change(s) require review",
         )
+    }
+
+    private fun setConnectionWarning(statusMessage: String, logMessage: String = statusMessage) {
+        state.set(DaemonConnectionState.BACKING_OFF)
+        if (connectionMessage.getAndSet(statusMessage) != statusMessage) logger.warn(logMessage)
     }
 
     private fun profileFingerprint(config: NotisyncdConfig): String = buildString {

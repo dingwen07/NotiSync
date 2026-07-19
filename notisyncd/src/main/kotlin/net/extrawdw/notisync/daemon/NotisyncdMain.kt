@@ -11,6 +11,7 @@ import net.extrawdw.notisync.cli.DaemonConnectionException
 import net.extrawdw.notisync.cli.DaemonAdminClient
 import net.extrawdw.notisync.cli.NotisyncCli
 import net.extrawdw.notisync.daemon.peer.runtime.createFileBackedDesktopPeer
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.daemon.storage.DaemonAlreadyRunningException
 import net.extrawdw.notisync.daemon.storage.DaemonInstanceLock
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
@@ -30,29 +31,36 @@ class NotisyncdCli(
     private val output: Appendable = System.out,
     private val error: Appendable = System.err,
 ) {
-    private val layout = DaemonStorageLayout(paths.dataDirectory)
+    private val layout = DaemonStorageLayout(paths.dataDirectory, paths.logDirectory)
     private val fileSystem = SecureFileSystem()
+    private val daemonLogger = DaemonLogger("WARN", error)
+    private var runningForeground = false
 
-    fun run(arguments: Array<String>): Int = try {
-        when (arguments.firstOrNull() ?: "foreground") {
-            "foreground", "run" -> foreground()
-            "start" -> start()
-            "stop" -> stop()
-            "restart" -> restart()
-            "status" -> status()
-            "config" -> config(arguments.drop(1))
-            "pair", "pairing" ->
-                NotisyncCli(paths, output, error).run(arrayOf("devices", "pair") + arguments.drop(1))
-            "devices", "peers" -> NotisyncCli(paths, output, error).run(arrayOf("devices") + arguments.drop(1))
-            "help", "--help", "-h" -> output.appendLine(usage()).let { 0 }
-            else -> throw IllegalArgumentException("unknown command: ${arguments[0]}")
+    fun run(arguments: Array<String>): Int {
+        val command = arguments.firstOrNull() ?: "foreground"
+        runningForeground = command == "foreground" || command == "run"
+        return try {
+            when (command) {
+                "foreground", "run" -> foreground()
+                "start" -> start()
+                "stop" -> stop()
+                "restart" -> restart()
+                "status" -> status()
+                "config" -> config(arguments.drop(1))
+                "pair", "pairing" ->
+                    NotisyncCli(paths, output, error).run(arrayOf("devices", "pair") + arguments.drop(1))
+                "devices", "peers" ->
+                    NotisyncCli(paths, output, error).run(arrayOf("devices") + arguments.drop(1))
+                "help", "--help", "-h" -> output.appendLine(usage()).let { 0 }
+                else -> throw IllegalArgumentException("unknown command: ${arguments[0]}")
+            }
+        } catch (running: DaemonAlreadyRunningException) {
+            reportFailure(running.message ?: "notisyncd is already running", warning = true)
+            2
+        } catch (failure: Throwable) {
+            reportFailure(failure.message ?: failure.javaClass.simpleName, warning = false)
+            1
         }
-    } catch (running: DaemonAlreadyRunningException) {
-        error.appendLine("notisyncd: ${running.message}")
-        2
-    } catch (failure: Throwable) {
-        error.appendLine("notisyncd: ${failure.message ?: failure.javaClass.simpleName}")
-        1
     }
 
     private fun foreground(): Int {
@@ -63,7 +71,14 @@ class NotisyncdCli(
         DaemonInstanceLock.acquire(layout, fileSystem).use {
             removeStaleSocket()
             val configStore = NotisyncdConfigStore(layout.daemonConfigFile)
-            configStore.loadRecovering { message -> error.appendLine("notisyncd: $message") }
+            val recoveryMessages = mutableListOf<String>()
+            val config = configStore.loadRecovering(recoveryMessages::add)
+            daemonLogger.updateLevel(config.logLevel)
+            recoveryMessages.forEach(daemonLogger::warn)
+            daemonLogger.info(
+                "Starting notisyncd (PID ${ProcessHandle.current().pid()}); " +
+                    "data=${layout.dataDirectory}, logs=${layout.logDirectory}, level=${config.logLevel.uppercase()}",
+            )
             val identityResolver = ProcessIdentityResolver()
             val peer = createFileBackedDesktopPeer(
                 layout = layout,
@@ -72,12 +87,14 @@ class NotisyncdCli(
                     LocalSessionRegistry(identityResolver, database = database)
                 },
                 fileSystem = fileSystem,
+                logger = daemonLogger,
             )
             val registry = peer.sessions
             val dispatcher = NotificationDispatcher(
                 sessions = registry,
                 outbox = peer.notificationOutbox,
                 sender = peer.notificationSender,
+                logger = daemonLogger,
             )
             val runDispatcher = RunDispatcher(
                 sessions = registry,
@@ -86,6 +103,7 @@ class NotisyncdCli(
                 iosOutbox = peer.runIosOutbox,
                 iosSender = peer.notificationSender,
                 sender = peer.runSender,
+                logger = daemonLogger,
             )
             val service = DaemonService(
                 configStore = configStore,
@@ -94,10 +112,18 @@ class NotisyncdCli(
                 runDispatcher = runDispatcher,
                 peerAdministration = peer.administration,
                 genericControl = peer.meshControl,
+                onConfigChanged = { old, updated ->
+                    daemonLogger.updateLevel(updated.logLevel)
+                    daemonLogger.info(
+                        "Configuration updated" +
+                            if (old.logLevel != updated.logLevel) "; log level is ${updated.logLevel.uppercase()}" else "",
+                    )
+                },
             )
             val server = UnixHttpServer(paths.socket, service, identityResolver)
             Runtime.getRuntime().addShutdownHook(
                 Thread({
+                    daemonLogger.info("Shutdown requested")
                     service.requestShutdown()
                     runCatching { server.close() }
                     runCatching { dispatcher.close() }
@@ -108,6 +134,7 @@ class NotisyncdCli(
             dispatcher.start()
             runDispatcher.start()
             peer.runtime.start()
+            daemonLogger.info("Daemon ready on ${paths.socket}")
             try {
                 server.run()
             } finally {
@@ -115,6 +142,7 @@ class NotisyncdCli(
                 dispatcher.close()
                 runDispatcher.close()
                 peer.runtime.close()
+                daemonLogger.info("notisyncd stopped")
             }
         }
         return 0
@@ -144,6 +172,7 @@ class NotisyncdCli(
             mutableListOf(
                 java,
                 "-Dnotisync.dataDir=${paths.dataDirectory.toAbsolutePath().normalize()}",
+                "-Dnotisync.logDir=${paths.logDirectory.toAbsolutePath().normalize()}",
                 "-D${DesktopProcessSession.DETACH_PROPERTY}=${DesktopProcessSession.DETACH_VALUE}",
                 "-cp",
                 System.getProperty("java.class.path"),
@@ -160,6 +189,7 @@ class NotisyncdCli(
         if (nativeLauncher != null) {
             DesktopProcessSession.requestNativeDetach(processBuilder)
             processBuilder.environment()["NOTISYNC_DATA_DIR"] = paths.dataDirectory.toAbsolutePath().normalize().toString()
+            processBuilder.environment()["NOTISYNC_LOG_DIR"] = paths.logDirectory.toAbsolutePath().normalize().toString()
         }
         val process = processBuilder.start()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(15)
@@ -274,6 +304,14 @@ class NotisyncdCli(
         "true", "yes", "on", "1" -> true
         "false", "no", "off", "0" -> false
         else -> throw IllegalArgumentException("expected true/false")
+    }
+
+    private fun reportFailure(message: String, warning: Boolean) {
+        if (runningForeground) {
+            if (warning) daemonLogger.warn(message) else daemonLogger.error(message)
+        } else {
+            error.appendLine("notisyncd: $message")
+        }
     }
 
     private fun usage(): String = """

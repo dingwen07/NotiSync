@@ -30,6 +30,7 @@ import net.extrawdw.notisync.protocol.NotificationProgress
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
 
@@ -155,6 +156,7 @@ class NotificationDispatcher(
     private val sender: NotificationMeshSender,
     private val clock: Clock = Clock.systemUTC(),
     private val scope: CoroutineScope = CoroutineScope(Dispatchers.IO + Job()),
+    private val logger: DaemonLogger = DaemonLogger("WARN"),
 ) : AutoCloseable {
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val started = AtomicBoolean(false)
@@ -175,11 +177,15 @@ class NotificationDispatcher(
                     sender.send(item)
                     outbox.remove(item.id)
                     consecutiveFailures = 0
+                    logger.info("Delivered notification ${item.id}")
                 } catch (cancelled: CancellationException) {
                     throw cancelled
-                } catch (_: Exception) {
+                } catch (error: Exception) {
                     outbox.retryLater(item.id)
                     consecutiveFailures = (consecutiveFailures + 1).coerceAtMost(5)
+                    val message =
+                        "Notification ${item.id} delivery failed (attempt $consecutiveFailures): ${error.conciseMessage()}"
+                    if (consecutiveFailures == 1) logger.warn(message) else logger.debug(message)
                     delay((1_000L shl (consecutiveFailures - 1)).coerceAtMost(30_000L))
                 }
             }
@@ -202,12 +208,14 @@ class NotificationDispatcher(
         )
         outbox.enqueue(item)
         wake.trySend(Unit)
+        logger.info("Accepted notification ${item.id} (${request.phase})")
         return AcceptedResponse(item.id, acceptedAt)
     }
 
     override fun close() {
         worker?.cancel()
         wake.close()
+        logger.debug("Notification dispatcher stopped")
     }
 
     private fun validateNotification(request: NotificationRequest) {
@@ -220,6 +228,9 @@ class NotificationDispatcher(
         require(request.metadata.size <= 32) { "notification metadata is too large" }
     }
 }
+
+private fun Throwable.conciseMessage(): String =
+    message?.takeIf(String::isNotBlank) ?: javaClass.simpleName
 
 private fun PendingNotification.toCapturedNotification(clientId: ClientId): CapturedNotification {
     val isTerminal = request.phase == NotificationPhase.COMPLETED || request.phase == NotificationPhase.FAILED

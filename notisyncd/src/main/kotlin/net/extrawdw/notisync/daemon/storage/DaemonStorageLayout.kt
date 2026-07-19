@@ -4,15 +4,16 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 
-/** The daemon-owned portion of `~/.notisync`. It intentionally has no `nsrun.conf` path. */
+/** The daemon's private data and log roots. It intentionally has no `nsrun.conf` path. */
 data class DaemonStorageLayout(
     val dataDirectory: Path,
+    val logDirectory: Path = dataDirectory.resolve("logs"),
 ) {
     val socketFile: Path = dataDirectory.resolve("S.notisyncd")
     val lockFile: Path = dataDirectory.resolve("notisyncd.lock")
     val pidFile: Path = dataDirectory.resolve("notisyncd.pid")
     val daemonConfigFile: Path = dataDirectory.resolve("notisyncd.conf")
-    val daemonLogFile: Path = dataDirectory.resolve("notisyncd.log")
+    val daemonLogFile: Path = logDirectory.resolve("notisyncd.log")
 
     val privateKeysDirectory: Path = dataDirectory.resolve("private-keys-v1")
     val stateDirectory: Path = dataDirectory.resolve("state")
@@ -24,6 +25,7 @@ data class DaemonStorageLayout(
     /** Create the directory skeleton and validate any existing daemon-managed nodes. */
     fun prepare(fileSystem: SecureFileSystem = SecureFileSystem()): DaemonStorageLayout {
         fileSystem.ensurePrivateDirectory(dataDirectory)
+        fileSystem.ensurePrivateDirectory(logDirectory)
         fileSystem.ensurePrivateDirectory(privateKeysDirectory)
         fileSystem.ensurePrivateDirectory(stateDirectory)
         fileSystem.ensurePrivateDirectory(runsDirectory)
@@ -32,12 +34,14 @@ data class DaemonStorageLayout(
             lockFile,
             pidFile,
             daemonConfigFile,
-            daemonLogFile,
             trustStateFile,
             authStateFile,
             databaseFile,
         ).forEach { path ->
             if (Files.exists(path, LinkOption.NOFOLLOW_LINKS)) fileSystem.validatePrivateFile(path)
+        }
+        if (Files.exists(daemonLogFile, LinkOption.NOFOLLOW_LINKS)) {
+            fileSystem.validatePrivateFile(daemonLogFile)
         }
         if (Files.exists(socketFile, LinkOption.NOFOLLOW_LINKS)) {
             fileSystem.validatePrivateNode(socketFile)
@@ -64,8 +68,8 @@ data class DaemonStorageLayout(
     companion object {
         private val SAFE_COMPONENT = Regex("[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
 
-        fun default(): DaemonStorageLayout = DaemonStorageLayout(
-            Path.of(System.getProperty("user.home"), ".notisync"),
-        )
+        fun default(): DaemonStorageLayout = net.extrawdw.notisync.desktop.DesktopPaths.default().let {
+            DaemonStorageLayout(it.dataDirectory, it.logDirectory)
+        }
     }
 }

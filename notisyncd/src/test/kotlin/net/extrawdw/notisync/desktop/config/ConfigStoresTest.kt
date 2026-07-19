@@ -63,6 +63,19 @@ class ConfigStoresTest {
         assertFalse(Files.exists(path))
     }
 
+    @Test
+    fun `daemon log level defaults to warn`() {
+        val path = Files.createTempDirectory("notisyncd-default-test").toRealPath().resolve("notisyncd.conf")
+
+        assertEquals("WARN", NotisyncdConfigStore(path).load().logLevel)
+        assertFalse(Files.exists(path))
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `invalid daemon log level is rejected`() {
+        NotisyncdConfig(logLevel = "verbose").validate()
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun `symbolic link configuration is rejected`() {
         val root = Files.createTempDirectory("notisync-symlink-test").toRealPath()

@@ -18,13 +18,35 @@ class SecureFileSystemTest : StorageTestSupport() {
     private val fileSystem = SecureFileSystem()
 
     @Test
+    fun `only the daemon log uses the separate log root`() {
+        val data = temporaryDirectory.resolve("home/.notisync")
+        val logs = temporaryDirectory.resolve("home/logs/NotiSync")
+        val layout = DaemonStorageLayout(data, logs)
+
+        assertEquals(logs.resolve("notisyncd.log"), layout.daemonLogFile)
+        listOf(
+            layout.socketFile,
+            layout.lockFile,
+            layout.pidFile,
+            layout.daemonConfigFile,
+            layout.privateKeysDirectory,
+            layout.stateDirectory,
+            layout.runsDirectory,
+        ).forEach { path -> assertTrue(path.startsWith(data)) }
+    }
+
+    @Test
     fun `layout creates only private daemon directories`() {
-        val layout = DaemonStorageLayout(temporaryDirectory.resolve("home/.notisync"))
+        val layout = DaemonStorageLayout(
+            temporaryDirectory.resolve("home/.notisync"),
+            temporaryDirectory.resolve("home/logs/NotiSync"),
+        )
 
         layout.prepare(fileSystem)
 
         listOf(
             layout.dataDirectory,
+            layout.logDirectory,
             layout.privateKeysDirectory,
             layout.stateDirectory,
             layout.runsDirectory,

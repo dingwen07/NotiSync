@@ -75,6 +75,7 @@ class DaemonService(
     private val genericControl: GenericMeshControl? = null,
     private val clock: Clock = Clock.systemUTC(),
     private val version: String = "0.1.0",
+    private val onConfigChanged: (NotisyncdConfig, NotisyncdConfig) -> Unit = { _, _ -> },
 ) {
     private val peer = AtomicReference(peerAdministration)
     private val stopping = AtomicBoolean(false)
@@ -111,6 +112,7 @@ class DaemonService(
             websocketPingSeconds = patch.websocketPingSeconds ?: old.websocketPingSeconds,
         ).validate()
         configStore.save(updated)
+        onConfigChanged(old, updated)
         return updated.view()
     }
 

@@ -12,6 +12,7 @@ import net.extrawdw.notisync.daemon.RunMeshSender
 import net.extrawdw.notisync.daemon.RunOutbox
 import net.extrawdw.notisync.daemon.RunResultOutbox
 import net.extrawdw.notisync.daemon.RunIosNotificationOutbox
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.daemon.peer.storage.DaemonDatabaseRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileAuthTokenRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
@@ -52,6 +53,7 @@ fun createFileBackedDesktopPeer(
     parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
     clock: Clock = Clock.systemUTC(),
     fileSystem: SecureFileSystem = SecureFileSystem(),
+    logger: DaemonLogger = DaemonLogger(configStore.load().logLevel),
 ): FileBackedDesktopPeer {
     layout.prepare(fileSystem)
     val keys = FileKeyMaterialProvider(layout, fileSystem)
@@ -69,6 +71,7 @@ fun createFileBackedDesktopPeer(
         runResultOutbox = database,
         parentScope = parentScope,
         clock = clock,
+        logger = logger,
     )
     return FileBackedDesktopPeer(runtime, database, sessions)
 }
