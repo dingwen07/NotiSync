@@ -136,6 +136,8 @@ data class RunState(
     /** Changes only when the contextual prompt/input contract changes; zero means no context yet. */
     val interactionGeneration: Long = 0,
     val endedAt: Long? = null,
+    /** Monotonic elapsed time from the launch attempt until child exit; absent while active and on legacy states. */
+    val durationMs: Long? = null,
     val blockedReason: RunBlockedReason? = null,
     val prompt: RunPromptKind? = null,
     val progress: RunProgress? = null,
@@ -155,6 +157,7 @@ data class RunState(
         validateArgv(argv)
         validateAbsolutePath(cwd)
         require(interactionGeneration >= 0) { "interactionGeneration must be non-negative" }
+        require(durationMs == null || durationMs >= 0) { "durationMs must be non-negative" }
         require(responseToRequestId == null || responseToRequestId.isUuid()) {
             "responseToRequestId must be a UUID"
         }
@@ -165,10 +168,13 @@ data class RunState(
         when (phase) {
             RunPhase.RUNNING -> require(
                 endedAt == null && blockedReason == null && prompt == null &&
-                    exitCode == null && failureMessage == null,
+                    durationMs == null && exitCode == null && failureMessage == null,
             ) { "RUNNING state cannot carry blocked or terminal outcome fields" }
             RunPhase.BLOCKED -> {
-                require(endedAt == null && blockedReason != null && exitCode == null && failureMessage == null) {
+                require(
+                    endedAt == null && durationMs == null && blockedReason != null &&
+                        exitCode == null && failureMessage == null,
+                ) {
                     "BLOCKED state requires a reason and cannot carry terminal outcome fields"
                 }
                 require(prompt == null || blockedReason == RunBlockedReason.TERMINAL_INPUT) {
@@ -181,7 +187,7 @@ data class RunState(
             ) { "COMPLETED state requires endedAt/exitCode and no active or failure fields" }
             RunPhase.FAILED_TO_START -> require(
                 endedAt != null && endedAt >= startedAt && blockedReason == null && prompt == null &&
-                    progress == null && exitCode == null && !failureMessage.isNullOrBlank(),
+                    durationMs == null && progress == null && exitCode == null && !failureMessage.isNullOrBlank(),
             ) { "FAILED_TO_START requires endedAt/failureMessage and no active outcome fields" }
         }
         require(endedAt == null || updatedAt >= endedAt) { "updatedAt must not precede endedAt" }

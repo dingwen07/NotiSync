@@ -61,6 +61,7 @@ class RunProtocolTest {
             updateReason = RunUpdateReason.COMPLETED,
             updatedAt = 1_750_000_010_000,
             endedAt = 1_750_000_010_000,
+            durationMs = 10_000,
             progress = null,
             exitCode = 17,
         )
@@ -75,6 +76,7 @@ class RunProtocolTest {
         )
 
         assertEquals(completed, completed.cborRoundTrip())
+        assertEquals(10_000L, completed.cborRoundTrip().durationMs)
         assertEquals(failed, failed.cborRoundTrip())
     }
 
@@ -167,6 +169,12 @@ class RunProtocolTest {
     fun stateAndControlInvariantsRejectAmbiguousPayloads() {
         assertThrows(IllegalArgumentException::class.java) {
             runningState().copy(phase = RunPhase.BLOCKED, updateReason = RunUpdateReason.BLOCKED)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runningState().copy(durationMs = 1)
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runningState().copy(durationMs = -1)
         }
         assertThrows(IllegalArgumentException::class.java) {
             RunControl(requestId, host, "run-1", RunControlKind.WRITE_INPUT, requestedAt = 1, inputText = "yes\n")

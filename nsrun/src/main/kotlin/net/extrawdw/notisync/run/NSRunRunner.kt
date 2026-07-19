@@ -53,6 +53,7 @@ class NSRunRunner(
     private val stderr: Appendable = System.err,
     private val reportingSetupTimeout: Duration = Duration.ofSeconds(2),
     private val clock: Clock = Clock.systemUTC(),
+    private val monotonicNanos: () -> Long = { System.nanoTime() },
 ) {
     fun run(options: RunOptions): Int {
         val pwd = Path.of("").toAbsolutePath().normalize()
@@ -74,6 +75,7 @@ class NSRunRunner(
             options.config.llm?.let(::OpenAiCompatibleContentGenerator)
         } else null
 
+        val attemptStartedNanos = monotonicNanos()
         val attemptStartedAt = clock.millis()
         val child = try {
             childLauncher.launch(options.command, pwd, System.getenv(), options.ptyMode)
@@ -94,6 +96,23 @@ class NSRunRunner(
             warn("Unable to start ${options.command.first()}: ${error.message}")
             return 127
         }
+        val childCompletion = CompletableFuture<ChildCompletion>()
+        daemonThread("nsrun-child-waiter") {
+            try {
+                val exitCode = child.waitFor()
+                childCompletion.complete(
+                    ChildCompletion(
+                        exitCode = exitCode,
+                        endedAt = clock.millis().coerceAtLeast(attemptStartedAt),
+                        durationMs = TimeUnit.NANOSECONDS.toMillis(
+                            (monotonicNanos() - attemptStartedNanos).coerceAtLeast(0L),
+                        ),
+                    ),
+                )
+            } catch (error: Throwable) {
+                childCompletion.completeExceptionally(error)
+            }
+        }.start()
 
         val childInput = ChildInput(child.input)
         val remoteInputRedactor = RemoteInputRedactor()
@@ -404,12 +423,16 @@ class NSRunRunner(
                 }
             }, 2, 2, TimeUnit.SECONDS)
 
-            val exitCode = child.waitFor()
-            val completedAt = clock.millis().coerceAtLeast(attemptStartedAt)
+            val completion = childCompletion.get()
             finishInteractiveIo()
-            record { it.completed(exitCode) }
-            activeNotifications.completed(exitCode, analyzer.snapshot(), completedAt)
-            return exitCode
+            record { it.completed(completion.exitCode) }
+            activeNotifications.completed(
+                completion.exitCode,
+                analyzer.snapshot(),
+                completion.endedAt,
+                completion.durationMs,
+            )
+            return completion.exitCode
         } finally {
             finishInteractiveIo()
             runCatching { notifications?.close() }
@@ -549,6 +572,12 @@ class NSRunRunner(
     private fun warn(message: String) {
         synchronized(stderr) { stderr.appendLine("nsrun: $message") }
     }
+
+    private data class ChildCompletion(
+        val exitCode: Int,
+        val endedAt: Long,
+        val durationMs: Long,
+    )
 
     private fun daemonThread(name: String, body: () -> Unit): Thread =
         Thread({ runCatching(body).onFailure { warn("$name: ${it.message}") } }, name).apply { isDaemon = true }

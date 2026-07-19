@@ -19,8 +19,8 @@ class DaemonLoggerTest {
 
         assertEquals(
             """
-                2026-07-20T08:09:10.123Z WARN  [peer-worker] broker disconnected
-                2026-07-20T08:09:10.123Z WARN  [peer-worker] retrying
+                2026-07-20T08:09:10.123Z WARN [peer-worker] broker disconnected
+                2026-07-20T08:09:10.123Z WARN [peer-worker] retrying
 
             """.trimIndent(),
             output.toString(),
@@ -37,7 +37,7 @@ class DaemonLoggerTest {
         logger.info("configuration reloaded")
 
         assertEquals(
-            "2026-07-20T08:09:10.123Z INFO  [main] configuration reloaded\n",
+            "2026-07-20T08:09:10.123Z INFO [main] configuration reloaded\n",
             output.toString(),
         )
     }
@@ -50,7 +50,7 @@ class DaemonLoggerTest {
         logger.info("ready")
 
         assertEquals(
-            "2026-07-20T08:09:10.123Z INFO  [unnamed] ready\n",
+            "2026-07-20T08:09:10.123Z INFO [unnamed] ready\n",
             output.toString(),
         )
     }
@@ -64,7 +64,7 @@ class DaemonLoggerTest {
             Clock.fixed(Instant.parse("2026-07-20T08:09:10Z"), ZoneOffset.UTC),
         ) { "main" }.info("whole")
         assertEquals(
-            "2026-07-20T08:09:10.000Z INFO  [main] whole\n",
+            "2026-07-20T08:09:10.000Z INFO [main] whole\n",
             wholeSecond.toString(),
         )
 
@@ -75,7 +75,7 @@ class DaemonLoggerTest {
             Clock.fixed(Instant.parse("2026-07-20T08:09:10.123999999Z"), ZoneOffset.UTC),
         ) { "main" }.info("precise")
         assertEquals(
-            "2026-07-20T08:09:10.123Z INFO  [main] precise\n",
+            "2026-07-20T08:09:10.123Z INFO [main] precise\n",
             subMillisecond.toString(),
         )
     }

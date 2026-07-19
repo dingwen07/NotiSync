@@ -48,6 +48,7 @@ class RunStateCoordinator(
     private var exitCode: Int? = null
     private var failureMessage: String? = null
     private var endedAt: Long? = null
+    private var durationMs: Long? = null
     private var llmSummary: RunLlmSummary? = null
     private var lastPeriodicFingerprint: String? = null
     private var llmFuture: Future<*>? = null
@@ -121,10 +122,17 @@ class RunStateCoordinator(
         }
     }
 
-    fun completed(exitCode: Int, snapshot: OutputSnapshot, completedAt: Long = clock.millis()) {
+    fun completed(
+        exitCode: Int,
+        snapshot: OutputSnapshot,
+        completedAt: Long = clock.millis(),
+        durationMs: Long? = null,
+    ) {
         synchronized(this) {
+            require(durationMs == null || durationMs >= 0) { "durationMs must be non-negative" }
             this.exitCode = exitCode
             endedAt = completedAt.coerceAtLeast(startedAt)
+            this.durationMs = durationMs
             blockedReason = null
             transitionLocked(
                 RunPhase.COMPLETED,
@@ -262,6 +270,7 @@ class RunStateCoordinator(
             startedAt = startedAt,
             updatedAt = updatedAt,
             endedAt = endedAt,
+            durationMs = durationMs,
             argv = argv,
             cwd = pwd.toString(),
             usesPty = usesPty,

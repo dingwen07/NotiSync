@@ -37,7 +37,11 @@ class RunStateCoordinatorTest {
                 BlockedReason.TERMINAL_INPUT,
             )
             coordinator.resumed(OutputSnapshot("running", DetectedProgress(5, 10), null, rawBytesSeen = 22))
-            coordinator.completed(0, OutputSnapshot("done", DetectedProgress(10, 10), null, rawBytesSeen = 27))
+            coordinator.completed(
+                0,
+                OutputSnapshot("done", DetectedProgress(10, 10), null, rawBytesSeen = 27),
+                durationMs = 1_234,
+            )
         }
 
         assertEquals(listOf(1L, 2L, 3L, 4L), states.map { it.revision })
@@ -55,6 +59,7 @@ class RunStateCoordinatorTest {
         assertEquals(PromptKind.YES_NO.name, states[1].prompt?.name)
         assertEquals(RunPhase.COMPLETED, states.last().phase)
         assertEquals(0, states.last().exitCode)
+        assertEquals(1_234L, states.last().durationMs)
         assertNull(states.last().progress)
         assertEquals("done", states.last().terminal.text)
     }

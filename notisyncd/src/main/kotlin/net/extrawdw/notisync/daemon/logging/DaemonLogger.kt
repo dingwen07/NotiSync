@@ -48,7 +48,7 @@ class DaemonLogger(
             .getOrNull()
             ?.takeIf(String::isNotEmpty)
             ?: "unnamed"
-        val prefix = "$timestamp ${level.name.padEnd(5)} [$currentThreadName] "
+        val prefix = "$timestamp ${level.name} [$currentThreadName] "
         val lines = message.lineSequence().toList().ifEmpty { listOf("") }
         // Logging must never take down the daemon because a redirected stream became unavailable.
         runCatching {

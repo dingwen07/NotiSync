@@ -1,5 +1,8 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.icu.text.MeasureFormat
+import android.icu.util.Measure
+import android.icu.util.MeasureUnit
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
@@ -61,12 +64,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.DateFormat
+import java.time.Duration
 import java.util.Date
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
@@ -469,6 +474,12 @@ private fun RunDetail(
                 state.endedAt?.let {
                     DetailField(stringResource(R.string.run_detail_finished), formatter.format(Date(it)))
                 }
+                state.durationMs?.let {
+                    DetailField(
+                        stringResource(R.string.run_detail_duration),
+                        formatRunDuration(it),
+                    )
+                }
                 state.exitCode?.let {
                     DetailField(stringResource(R.string.run_detail_exit), it.toString())
                 }
@@ -650,3 +661,28 @@ private fun rememberTimeFormatter(): DateFormat = remember { DateFormat.getTimeI
 @Composable
 private fun rememberDateTimeFormatter(): DateFormat =
     remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
+
+@Composable
+private fun formatRunDuration(durationMs: Long): String {
+    require(durationMs >= 0) { "durationMs must be non-negative" }
+    val locale = LocalConfiguration.current.locales[0]
+    val formatter = remember(locale) {
+        MeasureFormat.getInstance(locale, MeasureFormat.FormatWidth.SHORT)
+    }
+
+    val duration = Duration.ofMillis(durationMs)
+    val days = duration.toDaysPart()
+    val hours = duration.toHoursPart()
+    val minutes = duration.toMinutesPart()
+    val seconds = duration.toSecondsPart()
+    val milliseconds = duration.toMillisPart()
+
+    val measures = buildList {
+        if (days > 0) add(Measure(days, MeasureUnit.DAY))
+        if (hours > 0) add(Measure(hours, MeasureUnit.HOUR))
+        if (minutes > 0) add(Measure(minutes, MeasureUnit.MINUTE))
+        if (seconds > 0) add(Measure(seconds, MeasureUnit.SECOND))
+        if (milliseconds > 0 || isEmpty()) add(Measure(milliseconds, MeasureUnit.MILLISECOND))
+    }
+    return formatter.formatMeasures(*measures.toTypedArray())
+}

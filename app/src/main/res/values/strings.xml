@@ -46,6 +46,7 @@
     <string name="run_detail_started">Started</string>
     <string name="run_detail_updated">Updated</string>
     <string name="run_detail_finished">Finished</string>
+    <string name="run_detail_duration">Duration</string>
     <string name="run_detail_exit">Exit code</string>
     <string name="run_detail_pty">PTY</string>
     <string name="run_yes">Yes</string>

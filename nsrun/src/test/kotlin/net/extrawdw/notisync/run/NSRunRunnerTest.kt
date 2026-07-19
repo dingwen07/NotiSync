@@ -58,6 +58,7 @@ class NSRunRunnerTest {
     fun `Run timestamps use launch attempt and child exit boundaries`() {
         val root = Files.createTempDirectory("nsrun-timestamps").toRealPath()
         val clock = TestClock(100)
+        val monotonicNanos = AtomicLong(1_000_000)
         val alive = AtomicBoolean(true)
         val child = object : ManagedChild {
             override val pid = ProcessHandle.current().pid()
@@ -66,6 +67,7 @@ class NSRunRunnerTest {
             override val usesPty = false
             override fun waitFor(): Int {
                 clock.now = 700
+                monotonicNanos.set(601_000_000)
                 alive.set(false)
                 return 0
             }
@@ -86,12 +88,14 @@ class NSRunRunnerTest {
             stdin = ByteArrayInputStream(ByteArray(0)),
             stderr = StringBuilder(),
             clock = clock,
+            monotonicNanos = monotonicNanos::get,
         )
 
         assertEquals(0, runner.run(defaultOptions()))
 
         assertEquals(100L, daemon.runs.first().startedAt)
         assertEquals(700L, daemon.runs.last().endedAt)
+        assertEquals(600L, daemon.runs.last().durationMs)
         assertTrue(daemon.runs.all { it.updatedAt >= it.startedAt })
         assertTrue(daemon.runs.last().updatedAt >= requireNotNull(daemon.runs.last().endedAt))
     }

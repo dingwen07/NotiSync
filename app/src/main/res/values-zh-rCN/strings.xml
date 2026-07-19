@@ -42,6 +42,7 @@
     <string name="run_detail_started">开始时间</string>
     <string name="run_detail_updated">更新时间</string>
     <string name="run_detail_finished">完成时间</string>
+    <string name="run_detail_duration">执行时长</string>
     <string name="run_detail_exit">退出代码</string>
     <string name="run_detail_pty">PTY</string>
     <string name="run_yes">是</string>

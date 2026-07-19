@@ -77,7 +77,7 @@ class UnixHttpServerIntegrationTest {
 
             val accessLines = fixture.logs.lines()
             val patchAccess = accessLines.single { it.contains("\"PATCH /v1/config HTTP/1.1\"") }
-            assertTrue(patchAccess.contains("INFO  [notisyncd-http-"))
+            assertTrue(patchAccess.contains("INFO [notisyncd-http-"))
             assertTrue(
                 patchAccess.contains(
                     "pid=${ProcessHandle.current().pid()} process=",
