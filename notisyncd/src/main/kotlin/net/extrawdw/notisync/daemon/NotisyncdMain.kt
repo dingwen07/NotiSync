@@ -14,6 +14,7 @@ import net.extrawdw.notisync.daemon.peer.runtime.createFileBackedDesktopPeer
 import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.daemon.storage.DaemonAlreadyRunningException
 import net.extrawdw.notisync.daemon.storage.DaemonInstanceLock
+import net.extrawdw.notisync.daemon.storage.DaemonPidRecord
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
 import net.extrawdw.notisync.desktop.DesktopPaths
@@ -90,7 +91,7 @@ class NotisyncdCli(
             )
             val sendResolver = GenericSendResolver(peer.applications, peer.actionOrigins)
             val sendDispatcher = GenericSendDispatcher(
-                outbox = peer.applications,
+                outbox = peer.outbox,
                 sender = peer.sender,
                 logger = daemonLogger,
             )
@@ -193,13 +194,28 @@ class NotisyncdCli(
     }
 
     private fun stop(): Int {
+        val record = DaemonInstanceLock.readPidRecord(layout.pidFile, fileSystem)
+        val process = record?.let(::matchingProcess)
         val client = DaemonAdminClient(paths.socket)
         client.shutdown()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
-        while (System.nanoTime() < deadline && daemonResponds()) Thread.sleep(50)
+        while (
+            System.nanoTime() < deadline &&
+            (daemonResponds() || process?.isAlive == true)
+        ) {
+            Thread.sleep(50)
+        }
         check(!daemonResponds()) { "notisyncd did not stop within 10 seconds" }
+        check(process?.isAlive != true) { "notisyncd process did not exit within 10 seconds" }
         output.appendLine("stopped notisyncd")
         return 0
+    }
+
+    private fun matchingProcess(record: DaemonPidRecord): ProcessHandle? {
+        val process = ProcessHandle.of(record.pid).orElse(null) ?: return null
+        val recordedStart = record.processStartTime ?: return process
+        val actualStart = process.info().startInstant().orElse(null)?.toString()
+        return process.takeIf { actualStart == recordedStart }
     }
 
     private fun restart(): Int {

@@ -308,14 +308,14 @@ class DesktopPeerRuntime(
             devices()
         }
 
-    override suspend fun send(batch: List<PendingSend>, onAccepted: (PendingSend) -> Unit) {
+    override suspend fun send(batch: List<PendingSend>, onAccepted: (PendingSend) -> Unit): Int {
         require(batch.isNotEmpty()) { "strict send batch must not be empty" }
         val first = batch.first()
         require(batch.all { first.belongsToSameDispatchGroup(it) }) {
             "strict send batch contains different dispatch groups"
         }
         val byId = batch.associateBy(PendingSend::messageId)
-        secureChannel.sendAllStrict(
+        return secureChannel.sendAllStrict(
             typ = first.messageType,
             items = batch.map { OutboundItem(it.messageId, it.body) },
             scope = first.scope,
@@ -442,7 +442,8 @@ class DesktopPeerRuntime(
         try {
             val matched = receiveRouter.accept(message, sync)
             logger.info(
-                "Received DATA_SYNC ${message.messageId} from ${message.senderId.shortForm()}; " +
+                "Received DATA_SYNC/${sync.kind.name} ${message.messageId} " +
+                    "from ${message.senderId.shortForm()}; " +
                     if (matched) "fanned out to local applications" else "no live local interest",
             )
         } catch (full: LocalEventQueueFullException) {

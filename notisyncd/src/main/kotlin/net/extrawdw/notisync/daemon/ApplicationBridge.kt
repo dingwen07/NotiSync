@@ -31,7 +31,7 @@ interface ApplicationRegistry {
 
     fun effectiveCapabilities(): List<Capability>
 
-    /** Idempotently remove an application and all of its durable generic-send state. */
+    /** Idempotently remove an application registration. */
     fun delete(applicationId: String): Boolean
 }
 
@@ -92,9 +92,9 @@ data class PendingSend(
             signWith == other.signWith
 }
 
-/** Durable acceptance and ordered dispatch boundary for generic local submissions. */
+/** Daemon-lifetime acceptance and ordered dispatch boundary for generic local submissions. */
 interface GenericSendOutbox {
-    /** Atomically accept all records, or persist none if any record is invalid or conflicts. */
+    /** Atomically accept all records, or retain none if any record is invalid or conflicts. */
     fun accept(sends: List<ResolvedSend>): List<SendAccepted>
 
     fun accept(send: ResolvedSend): SendAccepted = accept(listOf(send)).single()
@@ -102,8 +102,11 @@ interface GenericSendOutbox {
     /** Return the maximal consecutive prefix with one dispatch tuple, optionally capped by [maxItems]. */
     fun peekConsecutive(maxItems: Int = Int.MAX_VALUE): List<PendingSend>
 
-    /** Persist the broker-accepted checkpoint for one item; idempotent even if already superseded. */
+    /** Record the broker-accepted checkpoint for one item; idempotent even if already superseded. */
     fun checkpoint(messageId: String): Boolean
+
+    /** Remove pending sends and daemon-lifetime policy/idempotency state owned by one application. */
+    fun removeApplication(applicationId: String)
 
     fun pendingCount(): Int
 }

@@ -45,7 +45,7 @@ class FilePeerPersistenceTest : StorageTestSupport() {
     }
 
     @Test
-    fun `database persists only generic bridge state and relay deduplication`() {
+    fun `database persists only application profile and relay deduplication`() {
         val layout = layout()
         val clock = Clock.fixed(Instant.ofEpochMilli(5_000), ZoneOffset.UTC)
         val repository = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2)
@@ -53,13 +53,18 @@ class FilePeerPersistenceTest : StorageTestSupport() {
 
         val recreated = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2)
         assertTrue(recreated.seen("message-1"))
-        assertEquals(2, recreated.load().schemaVersion)
+        assertEquals(1, recreated.load().schemaVersion)
         assertTrue(recreated.load().applications.isEmpty())
-        assertTrue(recreated.load().genericOutbox.isEmpty())
-        assertTrue(recreated.load().submissions.isEmpty())
-        assertTrue(recreated.load().streamSequences.isEmpty())
         val encoded = Files.readString(layout.databaseFile)
-        listOf("sessions", "outbox", "runOutbox", "runResultOutbox", "runIosOutbox").forEach {
+        listOf(
+            "sessions",
+            "genericOutbox",
+            "submissions",
+            "streamSequences",
+            "runOutbox",
+            "runResultOutbox",
+            "runIosOutbox",
+        ).forEach {
             assertFalse(encoded.contains("\"$it\""))
         }
     }

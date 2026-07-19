@@ -26,6 +26,12 @@ interface TrustState {
     /** Best-known peer capability declaration, including for a trusted peer whose key epoch is missing. */
     fun peerCapabilities(clientId: ClientId): List<Capability> = emptyList()
 
+    /**
+     * Whether a trusted peer belongs to this user's own mesh, including when its key epoch is missing.
+     * Null means the lightweight implementation has no ownership metadata for this peer.
+     */
+    fun peerOwnDevice(clientId: ClientId): Boolean? = null
+
     /** This device's broadcast roster (its TRUSTED + REVOKED decisions), for anti-entropy. */
     fun buildTrustTable(): TrustTable
 

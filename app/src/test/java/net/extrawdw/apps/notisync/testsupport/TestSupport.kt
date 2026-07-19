@@ -105,6 +105,8 @@ class FakeTrustState : TrustState {
     var peerPlatforms: Map<ClientId, String> = emptyMap()
     /** Best-known capability declarations for keyless peers not present in [peers]. */
     var peerCapabilitySets: Map<ClientId, List<Capability>> = emptyMap()
+    /** Own-mesh classification for keyless peers not present in [peers]. */
+    var peerOwnDevices: Map<ClientId, Boolean> = emptyMap()
 
     /** clientId → current key-epoch blob, for [currentKeyEpochBlob] (the repair-relay source). */
     var currentKeyEpochBlobs: Map<ClientId, SignedBlob> = emptyMap()
@@ -123,6 +125,9 @@ class FakeTrustState : TrustState {
     override fun peerCapabilities(clientId: ClientId): List<Capability> =
         peers.value.firstOrNull { it.clientId == clientId }?.capabilities
             ?: peerCapabilitySets[clientId].orEmpty()
+
+    override fun peerOwnDevice(clientId: ClientId): Boolean? =
+        peers.value.firstOrNull { it.clientId == clientId }?.ownDevice ?: peerOwnDevices[clientId]
 
     override fun buildTrustTable(): TrustTable = table
     override fun trustedCards(): List<SignedBlob> = cards

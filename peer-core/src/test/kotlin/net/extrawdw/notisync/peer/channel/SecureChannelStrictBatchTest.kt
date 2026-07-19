@@ -16,6 +16,7 @@ import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
 import net.extrawdw.notisync.protocol.crypto.SoftwareOperationalSigner
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SecureChannelStrictBatchTest {
@@ -95,21 +96,72 @@ class SecureChannelStrictBatchTest {
     }
 
     @Test
-    fun strictBatch_emptyAudienceFailsWithoutCheckpointing() = runBlocking {
+    fun strictBatch_emptyAudienceReturnsZeroWithoutCheckpointing() = runBlocking {
         val transport = RecordingTransport()
         val channel = channel(RecordingDirectory(emptyList()), transport)
 
-        assertThrows(IllegalStateException::class.java) {
+        val recipientCount = channel.sendAllStrict(
+            MessageType.NOTIFICATION,
+            listOf(OutboundItem("no-audience", byteArrayOf(1))),
+            Recipients.OwnMesh,
+            Urgency.NORMAL,
+        ) { error("must not checkpoint") }
+
+        assertEquals(0, recipientCount)
+        assertEquals(emptyList<Envelope>(), transport.attempted)
+    }
+
+    @Test
+    fun strictBatch_unsealableAudienceRequestsRepairAndRemainsRetryable() = runBlocking {
+        val peer = ClientId("peer-needing-key-repair")
+        val transport = RecordingTransport()
+        val repaired = mutableListOf<ClientId>()
+        val channel = channel(
+            RecordingDirectory(emptyList(), setOf(peer)),
+            transport,
+            onUnresolvedSender = repaired::add,
+        )
+
+        val failure = assertThrows(IllegalStateException::class.java) {
             runBlocking {
                 channel.sendAllStrict(
                     MessageType.NOTIFICATION,
-                    listOf(OutboundItem("no-audience", byteArrayOf(1))),
+                    listOf(OutboundItem("missing-key", byteArrayOf(1))),
                     Recipients.OwnMesh,
                     Urgency.NORMAL,
                 ) { error("must not checkpoint") }
             }
         }
 
+        assertTrue(failure.message.orEmpty().contains("key repair requested"))
+        assertEquals(listOf(peer), repaired)
+        assertEquals(emptyList<Envelope>(), transport.attempted)
+    }
+
+    @Test
+    fun strictBatch_mixedSealableAndUnsealableAudienceRetriesBeforePartialDelivery() = runBlocking {
+        val sealable = RecipientKey(ClientId("ready"), Hpke.generateKeyPair().publicKeyset)
+        val keyless = ClientId("peer-needing-key-repair")
+        val transport = RecordingTransport()
+        val repaired = mutableListOf<ClientId>()
+        val channel = channel(
+            RecordingDirectory(listOf(sealable), setOf(keyless)),
+            transport,
+            onUnresolvedSender = repaired::add,
+        )
+
+        assertThrows(IllegalStateException::class.java) {
+            runBlocking {
+                channel.sendAllStrict(
+                    MessageType.NOTIFICATION,
+                    listOf(OutboundItem("mixed-audience", byteArrayOf(1))),
+                    Recipients.OwnMesh,
+                    Urgency.NORMAL,
+                ) { error("must not checkpoint") }
+            }
+        }
+
+        assertEquals(listOf(keyless), repaired)
         assertEquals(emptyList<Envelope>(), transport.attempted)
     }
 
@@ -139,6 +191,7 @@ class SecureChannelStrictBatchTest {
     private fun channel(
         directory: PeerDirectory,
         transport: Transport,
+        onUnresolvedSender: (ClientId) -> Unit = {},
         onSignerResolution: () -> Unit = {},
     ): SecureChannel {
         val identity = SoftwareIdentitySigner.generate()
@@ -153,12 +206,14 @@ class SecureChannelStrictBatchTest {
             transport = transport,
             directory = directory,
             log = ChannelLogger { },
+            onUnresolvedSender = onUnresolvedSender,
             now = { 1_750_000_000_000L },
         )
     }
 
     private class RecordingDirectory(
         private val resolved: List<RecipientKey>,
+        private val unsealable: Set<ClientId> = emptySet(),
     ) : PeerDirectory {
         var recipientResolutions = 0
         var unsealableResolutions = 0
@@ -172,7 +227,7 @@ class SecureChannelStrictBatchTest {
 
         override fun unsealableRecipients(scope: Recipients): Set<ClientId> {
             unsealableResolutions++
-            return emptySet()
+            return unsealable
         }
     }
 

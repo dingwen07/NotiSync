@@ -3,7 +3,6 @@ package net.extrawdw.notisync.daemon.peer.storage
 import java.time.Clock
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.daemon.ApplicationProfilePublicationState
-import net.extrawdw.notisync.daemon.PendingSend
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.DurableJsonState
 import net.extrawdw.notisync.desktop.SecureFileSystem
@@ -102,11 +101,12 @@ private data class AuthFileState(
 }
 
 /**
- * The one atomic durable state boundary used by the generic application bridge and relay deduplication.
+ * The one atomic durable state boundary used by application registrations, profile publication,
+ * and relay deduplication.
  *
- * Local receive interests and application inboxes are deliberately absent: they are memory-only and
- * disappear with the daemon. The incompatible pre-release schema has no migration path so an old
- * development database is rejected without touching trust, keys, auth, or configuration.
+ * The local send outbox, its idempotency/sequence indexes, receive interests, and application
+ * inboxes are deliberately absent: they are memory-only and disappear with the daemon. This is an
+ * incompatible pre-release schema change; version 2 files are rejected with manual removal guidance.
  */
 class DaemonDatabaseRepository(
     layout: DaemonStorageLayout,
@@ -131,7 +131,7 @@ class DaemonDatabaseRepository(
     /** Return one consistent snapshot and reject corrupt or incompatible schemas. */
     fun load(): DaemonDatabase = validateDatabase(state.load())
 
-    /** Atomically update application, generic outbox, profile-publication, or dedup state. */
+    /** Atomically update application, profile-publication, or relay-deduplication state. */
     fun update(transform: (DaemonDatabase) -> DaemonDatabase): DaemonDatabase =
         state.update { current -> validateDatabase(transform(validateDatabase(current))) }
 
@@ -169,88 +169,28 @@ class DaemonDatabaseRepository(
     }
 
     private companion object {
-        const val DAEMON_DATABASE_SCHEMA_VERSION = 2
+        const val DAEMON_DATABASE_SCHEMA_VERSION = 1
         const val DEFAULT_MAXIMUM_DEDUP_ENTRIES = 50_000
     }
 }
 
-/** Complete durable schema for `state/notisyncd.db`. */
+/** Complete disk schema for `state/notisyncd.db`; outbound application sends are process-local. */
 @Serializable
 data class DaemonDatabase(
-    val schemaVersion: Int = 2,
+    val schemaVersion: Int = 1,
     val profilePublication: ApplicationProfilePublicationState = ApplicationProfilePublicationState(),
     /** Persistent same-UID application declarations keyed by application id. */
     val applications: Map<String, StoredApplicationRegistration> = emptyMap(),
-    /** One globally ordered generic send queue. */
-    val genericOutbox: List<PendingSend> = emptyList(),
-    /** Application-scoped idempotency records, retained after broker acceptance. */
-    val submissions: Map<String, Map<String, StoredSubmission>> = emptyMap(),
-    /** Latest accepted sequence for each application-local stream key. */
-    val streamSequences: Map<String, Map<String, Long>> = emptyMap(),
     /** Durable relay-envelope deduplication markers. */
     val deduplication: Map<String, Long> = emptyMap(),
 ) {
     fun validated(): DaemonDatabase = also {
-        require(schemaVersion == 2) { "unsupported daemon database version $schemaVersion" }
+        require(schemaVersion == 1) { "unsupported daemon database version $schemaVersion" }
         profilePublication.validateStored()
         require(applications.all { (id, application) -> id == application.applicationId }) {
             "daemon database contains an application under the wrong id"
         }
         applications.values.forEach(StoredApplicationRegistration::validate)
-        require(genericOutbox.map(PendingSend::messageId).distinct().size == genericOutbox.size) {
-            "daemon database contains duplicate generic outbox message ids"
-        }
-        genericOutbox.forEach { pending ->
-            require(pending.applicationId in applications) {
-                "daemon database contains a generic send for an unregistered application"
-            }
-            pending.validateStored()
-        }
-        require(submissions.keys.all { it in applications }) {
-            "daemon database contains submissions for an unregistered application"
-        }
-        submissions.forEach { (_, records) ->
-            records.keys.forEach(::validateStoredSubmissionId)
-            records.values.forEach(StoredSubmission::validate)
-        }
-        require(
-            submissions.values.flatMap { it.values }.map(StoredSubmission::messageId).let {
-                it.distinct().size == it.size
-            },
-        ) { "daemon database contains duplicate submission message ids" }
-        val submissionMessageIds = submissions.values.flatMap { it.values }.mapTo(hashSetOf()) { it.messageId }
-        genericOutbox.forEach { pending ->
-            val submissionId = pending.submissionId
-            if (submissionId == null) {
-                require(pending.messageId !in submissionMessageIds) {
-                    "daemon database contains a non-idempotent send reusing a submission message id"
-                }
-            } else {
-                require(submissions[pending.applicationId]?.get(submissionId)?.messageId == pending.messageId) {
-                    "daemon database contains a generic send without its idempotency record"
-                }
-            }
-            pending.queuePolicy?.streamKey?.let { streamKey ->
-                val latest = streamSequences[pending.applicationId]?.get(streamKey)
-                require(latest != null && checkNotNull(pending.queuePolicy.sequence) <= latest) {
-                    "daemon database contains a generic send without its stream sequence state"
-                }
-            }
-        }
-        require(
-            genericOutbox.mapNotNull { pending ->
-                pending.queuePolicy?.coalesceKey?.let { pending.applicationId to it }
-            }.let { it.distinct().size == it.size },
-        ) { "daemon database contains duplicate application coalescing keys" }
-        require(streamSequences.keys.all { it in applications }) {
-            "daemon database contains stream sequences for an unregistered application"
-        }
-        streamSequences.values.forEach { sequences ->
-            require(sequences.values.all { it >= 0 }) {
-                "daemon database contains invalid stream sequence state"
-            }
-            sequences.keys.forEach(::validateStoredQueueKey)
-        }
         require(deduplication.keys.none(String::isBlank)) {
             "daemon database contains an empty message id"
         }

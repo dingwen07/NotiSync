@@ -7,6 +7,9 @@ import java.time.ZoneId
 import java.time.ZoneOffset
 import java.util.ArrayDeque
 import net.extrawdw.notisync.daemon.ApplicationProfilePublicationState
+import net.extrawdw.notisync.daemon.ApplicationProfilePublicationStateStore
+import net.extrawdw.notisync.daemon.ApplicationRegistry
+import net.extrawdw.notisync.daemon.GenericSendOutbox
 import net.extrawdw.notisync.daemon.ResolvedSend
 import net.extrawdw.notisync.daemon.StaleSendSequenceException
 import net.extrawdw.notisync.daemon.SubmissionConflictException
@@ -98,7 +101,7 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     }
 
     @Test
-    fun `submission idempotency survives dispatch and recreation while conflicting reuse is rejected`() {
+    fun `submission idempotency survives dispatch for this daemon life and resets on restart`() {
         val layout = layout()
         val clock = MutableClock(1_000)
         val first = store(layout, clock, "message-1")
@@ -109,16 +112,18 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
         assertEquals("message-1", accepted.messageId)
         assertTrue(first.checkpoint("message-1"))
         assertEquals(0, first.pendingCount())
+        assertEquals(accepted, first.accept(send))
+        assertEquals(0, first.pendingCount())
+        assertThrows(SubmissionConflictException::class.java) {
+            first.accept(send.copy(body = byteArrayOf(9)))
+        }
 
         clock.millis = 2_000
         val recreated = store(layout, clock, "message-2")
-        assertEquals(accepted, recreated.accept(send))
-        assertEquals(0, recreated.pendingCount())
-
-        assertThrows(SubmissionConflictException::class.java) {
-            recreated.accept(send.copy(body = byteArrayOf(9)))
-        }
-        assertEquals(0, recreated.pendingCount())
+        val restartedAcceptance = recreated.accept(send.copy(body = byteArrayOf(9)))
+        assertEquals("message-2", restartedAcceptance.messageId)
+        assertEquals(2_000, restartedAcceptance.acceptedAtEpochMillis)
+        assertEquals(1, recreated.pendingCount())
     }
 
     @Test
@@ -143,15 +148,30 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     }
 
     @Test
-    fun `pending message id and body survive daemon repository recreation`() {
+    fun `pending bodies and message ids disappear on daemon restart`() {
         val layout = layout()
         val first = store(layout, MutableClock(1_000), "stable-message")
         first.register("nsrun", ApplicationRegistrationRequest("NotiSync Run"))
         first.accept(resolved(body = byteArrayOf(7, 8, 9)))
+        assertEquals("stable-message", first.peekConsecutive().single().messageId)
 
-        val pending = store(layout, MutableClock(2_000), "unused").peekConsecutive().single()
-        assertEquals("stable-message", pending.messageId)
-        assertTrue(byteArrayOf(7, 8, 9).contentEquals(pending.body))
+        assertTrue(store(layout, MutableClock(2_000), "unused").peekConsecutive().isEmpty())
+    }
+
+    @Test
+    fun `queue stream sequences disappear on daemon restart`() {
+        val layout = layout()
+        val first = store(layout, MutableClock(1_000), "before")
+        first.register("nsrun", ApplicationRegistrationRequest("NotiSync Run"))
+        first.accept(resolved(queuePolicy = QueuePolicy(streamKey = "run", sequence = 7)))
+
+        val restarted = store(layout, MutableClock(2_000), "after")
+        assertEquals(
+            "after",
+            restarted.accept(
+                resolved(queuePolicy = QueuePolicy(streamKey = "run", sequence = 1)),
+            ).messageId,
+        )
     }
 
     @Test
@@ -261,6 +281,7 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
         store.accept(send)
 
         assertTrue(store.delete("nsrun"))
+        store.removeApplication("nsrun")
         assertFalse(store.delete("nsrun"))
         assertEquals(0, store.pendingCount())
         store.register("nsrun", ApplicationRegistrationRequest("NotiSync Run"))
@@ -291,11 +312,11 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     }
 
     @Test
-    fun `schema one fails with manual database-only removal guidance and retains trust`() {
+    fun `schema two fails with manual database-only removal guidance and retains trust`() {
         val layout = layout()
         val trust = FileTrustPersistence(layout)
         trust.write(mapOf("entries" to "trusted"))
-        SecureFileSystem().atomicWrite(layout.databaseFile, "{\"schemaVersion\":1}".encodeToByteArray())
+        SecureFileSystem().atomicWrite(layout.databaseFile, "{\"schemaVersion\":2}".encodeToByteArray())
 
         val failure = assertThrows(IllegalStateException::class.java) {
             DaemonDatabaseRepository(layout)
@@ -326,16 +347,21 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
         layout: DaemonStorageLayout,
         clock: Clock,
         vararg ids: String,
-    ): PersistentApplicationBridgeStore {
+    ): TestBridgeStore {
         val pendingIds = ArrayDeque(ids.toList())
-        return PersistentApplicationBridgeStore(
+        val registry = PersistentApplicationBridgeStore(
             database = DaemonDatabaseRepository(layout, clock),
+            clock = clock,
+        )
+        val outbox = InMemoryGenericSendOutbox(
+            applications = registry,
             clock = clock,
             messageIdFactory = { pendingIds.removeFirst() },
         )
+        return TestBridgeStore(registry, outbox)
     }
 
-    private fun allPending(store: PersistentApplicationBridgeStore): List<String> {
+    private fun allPending(store: GenericSendOutbox): List<String> {
         val result = mutableListOf<String>()
         while (store.pendingCount() > 0) {
             val next = store.peekConsecutive().first()
@@ -346,6 +372,13 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     }
 
     private fun layout() = DaemonStorageLayout(temporaryDirectory.resolve(".notisync"))
+
+    private class TestBridgeStore(
+        registry: PersistentApplicationBridgeStore,
+        outbox: InMemoryGenericSendOutbox,
+    ) : ApplicationRegistry by registry,
+        ApplicationProfilePublicationStateStore by registry,
+        GenericSendOutbox by outbox
 
     private class MutableClock(var millis: Long) : Clock() {
         override fun getZone(): ZoneId = ZoneOffset.UTC

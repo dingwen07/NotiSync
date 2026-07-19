@@ -67,25 +67,30 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
     }
 
     override fun unsealableRecipients(scope: Recipients): Set<ClientId> {
-        // Trusted peers we hold no usable key-epoch for (the convergence-pull target set). OwnMesh/AllTrusted
-        // repair the whole set — a notification to own-mesh should heal every keyless device, and pulling a
-        // trusted "other" contact's public key-epoch is harmless. Only(id) is precise (unicast targets one id).
+        // Trusted peers we hold no usable key-epoch for (the convergence-pull target set). This result is also
+        // the strict sender's retry boundary, so it must describe the exact requested audience: an unrelated
+        // keyless "other" contact must not turn an empty own-mesh projection into a permanently blocked send.
         val needing = trust.peersNeedingKeyEpoch(System.currentTimeMillis())
         return when (scope) {
-            Recipients.OwnMesh, Recipients.AllTrusted -> needing.toSet()
+            Recipients.OwnMesh -> needing.filterTo(mutableSetOf()) { trust.peerOwnDevice(it) == true }
+            Recipients.AllTrusted -> needing.toSet()
             // Don't drive key-epoch repair for a peer we're intentionally NOT sending this capture to.
             is Recipients.OwnMeshFiltered -> {
                 val remaining = needing.toSet() - scope.excluded
                 // Skip the roster re-scan when there's nothing left to repair (the steady-state case).
                 if (remaining.isEmpty()) remaining else remaining.filterTo(mutableSetOf()) { id ->
-                    capabilityOrLegacyPlatformAllows(
+                    trust.peerOwnDevice(id) == true && capabilityOrLegacyPlatformAllows(
                         trust.peerCapabilities(id),
                         trust.peerPlatform(id).orEmpty(),
                         scope,
                     )
                 }
             }
-            is Recipients.Only -> if (scope.id in needing) setOf(scope.id) else emptySet()
+            is Recipients.Only -> if (scope.id in needing && trust.peerOwnDevice(scope.id) == true) {
+                setOf(scope.id)
+            } else {
+                emptySet()
+            }
         }
     }
 

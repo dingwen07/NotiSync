@@ -85,8 +85,81 @@ class TrustPeerDirectoryTest {
         assertEquals(listOf(compatibility.clientId), recipients.map { it.clientId })
     }
 
+    @Test
+    fun ownMeshRepairsOnlyKeylessOwnDevices() {
+        val own = keylessPeer("own", ownDevice = true)
+        val other = keylessPeer("other", ownDevice = false)
+        val directory = TrustPeerDirectory(FakeTrustState(emptyList(), listOf(own, other)))
+
+        assertEquals(
+            setOf(own.clientId),
+            directory.unsealableRecipients(Recipients.OwnMesh),
+        )
+    }
+
+    @Test
+    fun filteredOwnMeshRepairsOnlyKeylessOwnDevicesMatchingItsCapabilityScope() {
+        val required = setOf(
+            Capability.DISPLAY,
+            Capability.BACKGROUND_WAKE,
+            Capability.CAPABILITY_ROUTING_V1,
+        )
+        val matchingOwn = keylessPeer("matching-own", ownDevice = true, capabilities = required)
+        val mismatchedOwn = keylessPeer(
+            "mismatched-own",
+            ownDevice = true,
+            capabilities = setOf(Capability.DISPLAY, Capability.CAPABILITY_ROUTING_V1),
+        )
+        val matchingOther = keylessPeer("matching-other", ownDevice = false, capabilities = required)
+        val directory = TrustPeerDirectory(
+            FakeTrustState(emptyList(), listOf(matchingOwn, mismatchedOwn, matchingOther)),
+        )
+
+        assertEquals(
+            setOf(matchingOwn.clientId),
+            directory.unsealableRecipients(
+                Recipients.OwnMeshFiltered(
+                    requiredCapabilities = required,
+                    requireCapabilityRoutingV1 = true,
+                ),
+            ),
+        )
+    }
+
+    @Test
+    fun unicastRepairsAKeylessTargetOnlyWhenItIsAnOwnDevice() {
+        val own = keylessPeer("own", ownDevice = true)
+        val other = keylessPeer("other", ownDevice = false)
+        val directory = TrustPeerDirectory(FakeTrustState(emptyList(), listOf(own, other)))
+
+        assertEquals(
+            setOf(own.clientId),
+            directory.unsealableRecipients(Recipients.Only(own.clientId)),
+        )
+        assertEquals(
+            emptySet<ClientId>(),
+            directory.unsealableRecipients(Recipients.Only(other.clientId)),
+        )
+    }
+
+    @Test
+    fun allTrustedStillRepairsKeylessOwnAndOtherDevicesRegardlessOfCapabilities() {
+        val own = keylessPeer(
+            "own",
+            ownDevice = true,
+            capabilities = setOf(Capability.DISPLAY),
+        )
+        val other = keylessPeer("other", ownDevice = false)
+        val directory = TrustPeerDirectory(FakeTrustState(emptyList(), listOf(own, other)))
+
+        assertEquals(
+            setOf(own.clientId, other.clientId),
+            directory.unsealableRecipients(Recipients.AllTrusted),
+        )
+    }
+
     private fun peer(id: String, capabilities: Set<Capability>) = Peer(
-        clientId = ClientId(id.padEnd(52, 'a')),
+        clientId = clientId(id),
         displayName = id,
         platform = "linux",
         identityPublicKeyB64 = Base64.getEncoder().encodeToString(byteArrayOf(1)),
@@ -96,9 +169,35 @@ class TrustPeerDirectoryTest {
         currentEpoch = 1,
     )
 
-    private class FakeTrustState(peers: List<Peer>) : TrustState {
+    private fun keylessPeer(
+        id: String,
+        ownDevice: Boolean,
+        capabilities: Set<Capability> = emptySet(),
+        platform: String = "linux",
+    ) = KeylessPeerMetadata(clientId(id), ownDevice, platform, capabilities.toList())
+
+    private fun clientId(id: String) = ClientId(id.padEnd(52, 'a'))
+
+    private data class KeylessPeerMetadata(
+        val clientId: ClientId,
+        val ownDevice: Boolean,
+        val platform: String,
+        val capabilities: List<Capability>,
+    )
+
+    private class FakeTrustState(
+        peers: List<Peer>,
+        keylessPeers: List<KeylessPeerMetadata> = emptyList(),
+    ) : TrustState {
+        private val keylessPeers = keylessPeers.associateBy(KeylessPeerMetadata::clientId)
+
         override val activePeers: StateFlow<List<Peer>> = MutableStateFlow(peers)
         override fun displayName(clientId: ClientId): String? = null
+        override fun peerPlatform(clientId: ClientId): String? = keylessPeers[clientId]?.platform
+        override fun peerCapabilities(clientId: ClientId): List<Capability> =
+            keylessPeers[clientId]?.capabilities.orEmpty()
+        override fun peerOwnDevice(clientId: ClientId): Boolean? = keylessPeers[clientId]?.ownDevice
+        override fun peersNeedingKeyEpoch(now: Long): List<ClientId> = keylessPeers.keys.toList()
         override fun buildTrustTable() = TrustTable(emptyList())
         override fun trustedCards(): List<SignedBlob> = emptyList()
         override fun applyProfile(update: ProfileUpdate) = false

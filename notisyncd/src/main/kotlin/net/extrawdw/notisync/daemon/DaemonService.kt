@@ -143,7 +143,8 @@ class DaemonService(
 
     fun removeApplication(applicationId: String) = synchronized(eventLock) {
         val before = applications.effectiveCapabilities()
-        val removed = sendDispatcher.serialized { applications.delete(applicationId) }
+        val removed = applications.delete(applicationId)
+        sendDispatcher.removeApplication(applicationId)
         receiver.removeApplication(applicationId)
         completedEvents.removeIf { it.applicationId == applicationId }
         if (removed) logger.info("Removed application $applicationId")
@@ -179,7 +180,7 @@ class DaemonService(
         }
     }
 
-    /** Persist response sends before removing the sole application-level pending reference. */
+    /** Atomically accept response sends before removing the application-level pending reference. */
     fun completeEvent(envelopeId: String, completion: ApplicationEventCompletionRequest) = synchronized(eventLock) {
         requireApplication(completion.applicationId)
         val key = CompletionKey(completion.applicationId, envelopeId)

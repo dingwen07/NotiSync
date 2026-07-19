@@ -12,12 +12,11 @@ import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 
 /**
- * Small durable transactional state store for daemon queues and indexes.
+ * Small durable transactional state store for daemon records and indexes.
  *
- * A single immutable value can contain the application registry, generic outbox, idempotency state,
- * and relay deduplication indexes; [update] serializes read-modify-write operations and commits by
- * atomic rename. The store intentionally does not silently replace corrupt state with defaults,
- * since doing so could replay or discard an accepted send.
+ * A single immutable value can contain application registrations, profile-publication state, and
+ * relay deduplication indexes; [update] serializes read-modify-write operations and commits by atomic
+ * rename. The store intentionally does not silently replace corrupt state with defaults.
  */
 class DurableJsonState<T>(
     val path: Path,

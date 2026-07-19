@@ -31,6 +31,7 @@ import net.extrawdw.notisync.localapi.LocalApiJson
 import net.extrawdw.notisync.localapi.ReceiveRequest
 import net.extrawdw.notisync.localapi.SendRequest
 import net.extrawdw.notisync.daemon.peer.storage.DaemonDatabaseRepository
+import net.extrawdw.notisync.daemon.peer.storage.InMemoryGenericSendOutbox
 import net.extrawdw.notisync.daemon.peer.storage.PersistentApplicationBridgeStore
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.peer.channel.InboundMessage
@@ -226,7 +227,7 @@ class UnixHttpServerIntegrationTest {
 
             val jsonAccepted = client.send(send("nsrun", byteArrayOf(2), submissionId = "single"))
             assertEquals("single", jsonAccepted.submissionId)
-            val firstPending = fixture.bridge.peekConsecutive().single()
+            val firstPending = fixture.outbox.peekConsecutive().single()
             assertEquals(jsonAccepted.messageId, firstPending.messageId)
             assertEquals(Recipients.OwnMesh, firstPending.scope)
             assertEquals(Urgency.NORMAL, firstPending.urgency)
@@ -244,7 +245,7 @@ class UnixHttpServerIntegrationTest {
                 ),
             )
             assertEquals(listOf("batch-1", "batch-2"), ndjsonAccepted.map { it.submissionId })
-            assertEquals(3, fixture.bridge.pendingCount())
+            assertEquals(3, fixture.outbox.pendingCount())
 
             val validLine = LocalApiJson.encodeToString(send("nsrun", byteArrayOf(5)))
             val malformed = "$validLine\n{\"applicationId\":\"nsrun\",\"messageType\":\"DATA_SYNC\"}\n"
@@ -255,7 +256,7 @@ class UnixHttpServerIntegrationTest {
                 contentType = "application/x-ndjson",
             )
             assertError(rejected, 400, "invalid_request")
-            assertEquals(3, fixture.bridge.pendingCount())
+            assertEquals(3, fixture.outbox.pendingCount())
 
             client.deleteApplication("nsrun")
             assertTrue(client.listApplications().applications.isEmpty())
@@ -263,7 +264,7 @@ class UnixHttpServerIntegrationTest {
                 listOf(Capability.FOREGROUND_CONNECTION, Capability.CAPABILITY_ROUTING_V1),
                 client.listApplications().effectiveCapabilities,
             )
-            assertEquals(0, fixture.bridge.pendingCount())
+            assertEquals(0, fixture.outbox.pendingCount())
         }
 
     @Test
@@ -282,7 +283,7 @@ class UnixHttpServerIntegrationTest {
                 contentType = "text/plain",
             )
             assertError(unsupported, 415, "content_type")
-            assertEquals(0, fixture.bridge.pendingCount())
+            assertEquals(0, fixture.outbox.pendingCount())
 
             val tooManyRecords = List(1_025) { oneRecord }.joinToString(separator = "\n", postfix = "\n")
             val overflow = fixture.request(
@@ -292,7 +293,7 @@ class UnixHttpServerIntegrationTest {
                 contentType = "application/x-ndjson",
             )
             assertError(overflow, 413, "too_many_records")
-            assertEquals(0, fixture.bridge.pendingCount())
+            assertEquals(0, fixture.outbox.pendingCount())
 
             val mixedApplications = listOf(
                 LocalApiJson.encodeToString(send("nsrun", byteArrayOf(2))),
@@ -305,7 +306,7 @@ class UnixHttpServerIntegrationTest {
                 contentType = "application/x-ndjson",
             )
             assertError(mixed, 400, "invalid_request")
-            assertEquals(0, fixture.bridge.pendingCount())
+            assertEquals(0, fixture.outbox.pendingCount())
         }
 
     @Test
@@ -343,7 +344,7 @@ class UnixHttpServerIntegrationTest {
                         sends = listOf(send("nsrun", byteArrayOf(10), submissionId = "response")),
                     )
                     assertEquals(0, fixture.receiver.pendingCount("nsrun"))
-                    assertEquals(1, fixture.bridge.pendingCount())
+                    assertEquals(1, fixture.outbox.pendingCount())
 
                     client.unregisterReceive(interest)
                     assertEquals(0, fixture.receiver.interestCount("nsrun"))
@@ -391,7 +392,8 @@ class UnixHttpServerIntegrationTest {
         val paths = DesktopPaths(root)
         private val identityResolver = ProcessIdentityResolver()
         val logs = StringBuilder()
-        val bridge: PersistentApplicationBridgeStore
+        val applications: PersistentApplicationBridgeStore
+        val outbox: InMemoryGenericSendOutbox
         val receiver: ApplicationReceiveRouter
         private val dispatcher: GenericSendDispatcher
         private val service: DaemonService
@@ -401,22 +403,23 @@ class UnixHttpServerIntegrationTest {
 
         init {
             PrivateFiles.ensureDirectory(root)
-            bridge = PersistentApplicationBridgeStore(
+            applications = PersistentApplicationBridgeStore(
                 DaemonDatabaseRepository(DaemonStorageLayout(root)),
             )
+            outbox = InMemoryGenericSendOutbox(applications)
             receiver = ApplicationReceiveRouter(
-                applications = RegisteredApplicationLookup { bridge.find(it) != null },
+                applications = RegisteredApplicationLookup { applications.find(it) != null },
                 identityResolver = identityResolver,
             )
             dispatcher = GenericSendDispatcher(
-                outbox = bridge,
-                sender = GenericBatchSender { _, _ -> Unit },
+                outbox = outbox,
+                sender = GenericBatchSender { _, _ -> 0 },
             )
             service = DaemonService(
                 configStore = NotisyncdConfigStore(paths.daemonConfig),
-                applications = bridge,
+                applications = applications,
                 receiver = receiver,
-                sendResolver = GenericSendResolver(bridge, ActionOriginPolicy { true }),
+                sendResolver = GenericSendResolver(applications, ActionOriginPolicy { true }),
                 sendDispatcher = dispatcher,
             )
             server = UnixHttpServer(

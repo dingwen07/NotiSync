@@ -185,14 +185,17 @@ class SecureChannel(
     }
 
     /**
-     * Strict durable-outbox variant of [sendAll]. The audience and signer are resolved once for the whole
+     * Strict queued-send variant of [sendAll]. The audience and signer are resolved once for the whole
      * batch, and every [OutboundItem.messageId] is used verbatim so retrying an uncheckpointed item produces
-     * the same broker identity. Unlike the mobile-oriented best-effort path, an empty audience, a partially
-     * or wholly failed seal, and a transport rejection all throw and stop the batch immediately.
+     * the same broker identity. Unlike the mobile-oriented best-effort path, a partially or wholly failed
+     * seal and a transport rejection throw and stop the batch immediately. A genuinely empty audience is a
+     * successful no-op so a capability-specific projection cannot block later disjoint projections.
      *
      * [onAccepted] is deliberately synchronous. It runs after, and only after, the transport reports broker
      * acceptance for that item; if checkpointing throws, the suffix is not attempted and the caller can retry
-     * from its still-pending durable record.
+     * from its still-pending durable record. A scope with no eligible peers is a successful empty fan-out and
+     * returns zero without invoking [onAccepted]. Missing recipient keys remain retryable after requesting
+     * key repair.
      */
     suspend fun sendAllStrict(
         typ: MessageType,
@@ -207,8 +210,15 @@ class SecureChannel(
         require(items.all { it.messageId.isNotBlank() }) { "strict outbound messageId must not be blank" }
 
         val recipients = directory.recipients(scope)
-        directory.unsealableRecipients(scope).forEach(onUnresolvedSender)
-        check(recipients.isNotEmpty()) { "no recipients resolved for strict $typ send" }
+        val unsealable = directory.unsealableRecipients(scope)
+        unsealable.forEach(onUnresolvedSender)
+        if (unsealable.isNotEmpty()) {
+            error(
+                "${unsealable.size} intended recipient(s) are not sealable for strict $typ send; " +
+                    "key repair requested",
+            )
+        }
+        if (recipients.isEmpty()) return 0
 
         // Resolve once, before processing the first item, so a rotation cannot split one durable batch
         // across signer epochs. The identity signer is already a stable field.

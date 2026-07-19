@@ -117,7 +117,7 @@ class SecureFileSystem(
      * Durably replaces [path] from a mode-0600 sibling temporary file.
      *
      * Lack of atomic-move support is a hard error. Falling back to a non-atomic replacement would
-     * permit a crash to destroy the only copy of trust, outbox, or deduplication state.
+     * permit a crash to destroy the only copy of trust, application/profile, or deduplication state.
      */
     fun atomicWrite(path: Path, bytes: ByteArray) {
         val absolute = normalized(path)

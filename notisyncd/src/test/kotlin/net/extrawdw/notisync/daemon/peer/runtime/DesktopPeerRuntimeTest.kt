@@ -11,6 +11,7 @@ import net.extrawdw.notisync.daemon.LocalPeer
 import net.extrawdw.notisync.daemon.PendingSend
 import net.extrawdw.notisync.daemon.ProcessIdentityResolver
 import net.extrawdw.notisync.daemon.RegisteredApplicationLookup
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.StorageTestSupport
@@ -33,8 +34,11 @@ import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
@@ -235,6 +239,44 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
     }
 
     @Test
+    fun `decoded data sync log includes its kind when no local interest matches`() {
+        val output = StringBuilder()
+        val receiver = runtimeHarness(
+            directory = "data-sync-log-receiver",
+            name = "Receiver",
+            logger = DaemonLogger("INFO", output),
+        )
+        val sender = runtimeHarness("data-sync-log-sender", "Sender")
+        try {
+            receiver.runtime.acceptPairing(
+                PairingAcceptRequest(sender.runtime.pairingPayload().payload, DeviceClassification.OWN),
+            )
+            val envelope = EnvelopeCrypto.seal(
+                signer = sender.keyMaterial.currentOperationalSigner(),
+                typ = MessageType.DATA_SYNC,
+                bodyPlaintext = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.RUN)),
+                recipients = listOf(
+                    RecipientKey(
+                        ClientId(requireNotNull(receiver.runtime.clientId)),
+                        receiver.keyMaterial.hpkePublicKeyset(1),
+                        recipientEpoch = 1,
+                    ),
+                ),
+                messageId = "run-kind-log",
+                seq = 1,
+                createdAt = 1,
+            )
+
+            assertEquals(DeliveryOutcome.HANDLED, receiver.runtime.secureChannel.deliver(envelope))
+            val logLine = output.lineSequence().single { it.contains("Received DATA_SYNC/RUN run-kind-log") }
+            assertTrue(logLine.endsWith("; no live local interest"))
+        } finally {
+            receiver.close()
+            sender.close()
+        }
+    }
+
+    @Test
     fun `strict daemon sender rejects empty or non-consecutive batches before transport`() {
         val runtime = runtime("strict-validation", "Workstation")
         try {
@@ -354,6 +396,7 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         configProvider: (() -> NotisyncdConfig)? = null,
         capabilitiesProvider: () -> List<Capability> = { EXACT_CAPABILITY_ENUMS },
         profileState: ApplicationProfilePublicationStateStore = MemoryProfileState(),
+        logger: DaemonLogger = DaemonLogger("WARN"),
     ): RuntimeHarness {
         val layout = DaemonStorageLayout(temporaryDirectory.resolve(directory))
         val keys = FileKeyMaterialProvider(layout)
@@ -370,6 +413,7 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
             receiveRouter = router,
             capabilitiesProvider = capabilitiesProvider,
             profileState = profileState,
+            logger = logger,
         )
         return RuntimeHarness(runtime, router, keys)
     }

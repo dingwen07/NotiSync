@@ -186,6 +186,7 @@ open class TrustStore(
     override fun displayName(clientId: ClientId): String? = displayNameFor(clientId, _state.value)
     override fun peerPlatform(clientId: ClientId): String? = platformFor(clientId, _state.value)
     override fun peerCapabilities(clientId: ClientId): List<Capability> = capabilitiesFor(clientId, _state.value)
+    override fun peerOwnDevice(clientId: ClientId): Boolean? = _state.value.entries[clientId]?.ownDevice
     fun statusOf(clientId: ClientId): TrustStatus? = _state.value.entries[clientId]?.status
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----

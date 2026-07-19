@@ -32,7 +32,7 @@ fun interface ActionOriginPolicy {
 }
 
 /**
- * Resolves the optional local-API knobs into an entirely explicit durable outbox record. The
+ * Resolves the optional local-API knobs into an entirely explicit daemon-lifetime outbox record. The
  * SecureChannel remains body-agnostic except for ACTION, whose authenticated protocol body names its
  * only valid destination.
  */
@@ -50,8 +50,8 @@ class GenericSendResolver(
         if (applications.find(applicationId) == null) {
             throw ApplicationNotRegisteredException(applicationId)
         }
-        // Resolve every line before the store sees any of them. Its accept call supplies the second,
-        // durable atomic boundary (idempotency, sequence checks, supersession, and insertion).
+        // Resolve every line before the outbox sees any of them. Its accept call supplies the second,
+        // daemon-lifetime atomic boundary (idempotency, sequence checks, supersession, and insertion).
         return requests.map(::resolve)
     }
 
@@ -138,7 +138,8 @@ class GenericSendResolver(
 
 /** The runtime adapter around SecureChannel.sendAllStrict. */
 fun interface GenericBatchSender {
-    suspend fun send(batch: List<PendingSend>, onAccepted: (PendingSend) -> Unit)
+    /** Returns the resolved recipient count; zero is a successful empty fan-out. */
+    suspend fun send(batch: List<PendingSend>, onAccepted: (PendingSend) -> Unit): Int
 }
 
 /** One globally ordered, failure-stopping daemon outbox pump. */
@@ -179,6 +180,11 @@ class GenericSendDispatcher(
         wake.trySend(Unit)
     }
 
+    /** Clear one application's daemon-lifetime outbound state after its registration is removed. */
+    fun removeApplication(applicationId: String) = serialized {
+        outbox.removeApplication(applicationId)
+    }
+
     fun <T> serialized(operation: () -> T): T {
         dispatchPermit.acquireUninterruptibly()
         return try {
@@ -209,19 +215,33 @@ class GenericSendDispatcher(
             }
             var failed = false
             try {
-                sender.send(batch) { accepted ->
+                val recipientCount = sender.send(batch) { accepted ->
                     check(outbox.checkpoint(accepted.messageId)) {
                         "accepted outbox item ${accepted.messageId} disappeared before checkpoint"
                     }
                     logger.info(
                         "Delivered ${accepted.messageType} ${accepted.messageId} for " +
-                            "application ${accepted.applicationId}",
+                        "application ${accepted.applicationId}",
                     )
+                }
+                if (recipientCount == 0) {
+                    // An empty capability-routed audience is a valid no-op, not a transport outage.
+                    // Completing this group lets disjoint projections (for example nsrun's iOS fallback)
+                    // advance. A matching peer that lacks key material fails before this return and retries.
+                    batch.forEach { skipped ->
+                        check(outbox.checkpoint(skipped.messageId)) {
+                            "empty-audience outbox item ${skipped.messageId} disappeared before checkpoint"
+                        }
+                        logger.info(
+                            "Skipped ${skipped.messageType} ${skipped.messageId} for application " +
+                                "${skipped.applicationId}; no eligible recipients",
+                        )
+                    }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {
-                // Accepted prefix items were checkpointed synchronously; the durable head is the
+                // Accepted prefix items were checkpointed synchronously; the in-memory head is the
                 // actual failed item (or a safe diagnostic fallback if an external store changed).
                 val failedItem = outbox.peekConsecutive().firstOrNull() ?: batch.last()
                 logger.warn(

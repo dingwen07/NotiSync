@@ -14,6 +14,7 @@ import net.extrawdw.notisync.daemon.peer.storage.DaemonDatabaseRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileAuthTokenRepository
 import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
 import net.extrawdw.notisync.daemon.peer.storage.FileTrustPersistence
+import net.extrawdw.notisync.daemon.peer.storage.InMemoryGenericSendOutbox
 import net.extrawdw.notisync.daemon.peer.storage.PersistentApplicationBridgeStore
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.desktop.SecureFileSystem
@@ -24,6 +25,7 @@ data class FileBackedDesktopPeer(
     val runtime: DesktopPeerRuntime,
     val database: DaemonDatabaseRepository,
     val applications: PersistentApplicationBridgeStore,
+    val outbox: InMemoryGenericSendOutbox,
     val receiver: ApplicationReceiveRouter,
 ) {
     val administration: PeerAdministration get() = runtime
@@ -46,6 +48,10 @@ fun createFileBackedDesktopPeer(
     val auth = FileAuthTokenRepository(layout, fileSystem)
     val database = DaemonDatabaseRepository(layout, clock = clock, fileSystem = fileSystem)
     val applications = PersistentApplicationBridgeStore(database, clock)
+    val outbox = InMemoryGenericSendOutbox(
+        applications = applications,
+        clock = clock,
+    )
     val receiver = ApplicationReceiveRouter(
         applications = RegisteredApplicationLookup { applications.find(it) != null },
         identityResolver = identityResolver,
@@ -64,5 +70,5 @@ fun createFileBackedDesktopPeer(
         clock = clock,
         logger = logger,
     )
-    return FileBackedDesktopPeer(runtime, database, applications, receiver)
+    return FileBackedDesktopPeer(runtime, database, applications, outbox, receiver)
 }

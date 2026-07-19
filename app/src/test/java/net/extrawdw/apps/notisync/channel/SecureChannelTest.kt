@@ -454,7 +454,10 @@ class SecureChannelTest {
         val repairRequests = mutableListOf<ClientId>()
         // No sealable peers — the keyless peer is absent from activePeers — but it IS trusted-and-needing a
         // key-epoch (e.g. just upgraded, or its saved epoch went invalid), so it can never be a recipient.
-        val trust = FakeTrustState().apply { peersNeeding = listOf(keyless.clientId) }
+        val trust = FakeTrustState().apply {
+            peersNeeding = listOf(keyless.clientId)
+            peerOwnDevices = mapOf(keyless.clientId to true)
+        }
         // Send-side repair reuses the receive-side onUnresolvedSender handler (the broker key-epoch refetch).
         val channel = testChannel(
             me,
@@ -493,6 +496,10 @@ class SecureChannelTest {
                 androidKeyless.clientId to "android",
                 iosKeyless.clientId to " IOS ",
             )
+            peerOwnDevices = mapOf(
+                androidKeyless.clientId to true,
+                iosKeyless.clientId to true,
+            )
         }
         val channel = testChannel(
             me,
@@ -530,6 +537,10 @@ class SecureChannelTest {
                     Capability.DISPLAY_NOTIFICATION_UPDATES,
                 ),
                 unsupported.clientId to listOf(Capability.CAPABILITY_ROUTING_V1),
+            )
+            peerOwnDevices = mapOf(
+                supported.clientId to true,
+                unsupported.clientId to true,
             )
         }
         val channel = testChannel(

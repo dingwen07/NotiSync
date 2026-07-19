@@ -230,6 +230,7 @@ class GenericSendDispatcherTest {
             calls += batch.map { it.messageId }
             batch.forEach(onAccepted)
             if (outbox.pendingCount() == 0) finished.complete(Unit)
+            1
         }
 
         GenericSendDispatcher(
@@ -255,6 +256,45 @@ class GenericSendDispatcherTest {
     }
 
     @Test
+    fun `empty eligible audience is completed once and does not block the next scope`() = runBlocking {
+        val outbox = MemoryOutbox(
+            pending("native-run"),
+            pending("ios-fallback", MessageType.NOTIFICATION, urgency = Urgency.HIGH),
+        )
+        val calls = mutableListOf<List<String>>()
+        val finished = CompletableDeferred<Unit>()
+        val output = StringBuilder()
+        val sender = GenericBatchSender { batch, onAccepted ->
+            calls += batch.map(PendingSend::messageId)
+            if (batch.first().messageId == "native-run") {
+                0
+            } else {
+                batch.forEach(onAccepted)
+                finished.complete(Unit)
+                1
+            }
+        }
+
+        GenericSendDispatcher(
+            outbox = outbox,
+            sender = sender,
+            logger = DaemonLogger("INFO", output),
+            retryDelayMillis = 1,
+        ).use { dispatcher ->
+            dispatcher.start()
+            dispatcher.wake()
+            withTimeout(5_000) { finished.await() }
+        }
+
+        assertEquals(listOf(listOf("native-run"), listOf("ios-fallback")), calls)
+        assertEquals(listOf("native-run", "ios-fallback"), outbox.checkpoints)
+        assertEquals(0, outbox.pendingCount())
+        assertTrue(output.contains("Skipped DATA_SYNC native-run"))
+        assertFalse(output.contains("retrying"))
+        assertFalse(output.contains(" WARN "))
+    }
+
+    @Test
     fun `a partial strict failure checkpoints accepted prefix and retries only its suffix`() = runBlocking {
         val outbox = MemoryOutbox(pending("first"), pending("second"), pending("third"))
         val calls = mutableListOf<List<String>>()
@@ -268,6 +308,7 @@ class GenericSendDispatcherTest {
             }
             batch.forEach(onAccepted)
             finished.complete(Unit)
+            1
         }
 
         GenericSendDispatcher(
@@ -304,6 +345,7 @@ class GenericSendDispatcherTest {
             }
             batch.forEach(onAccepted)
             finished.complete(Unit)
+            1
         }
 
         GenericSendDispatcher(
@@ -383,6 +425,11 @@ class GenericSendDispatcherTest {
             val removed = queue.removeAll { it.messageId == messageId }
             if (removed) checkpoints += messageId
             return true
+        }
+
+        @Synchronized
+        override fun removeApplication(applicationId: String) {
+            queue.removeAll { it.applicationId == applicationId }
         }
 
         @Synchronized

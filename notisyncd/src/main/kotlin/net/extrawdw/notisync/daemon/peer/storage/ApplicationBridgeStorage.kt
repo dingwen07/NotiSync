@@ -4,6 +4,8 @@ import java.security.MessageDigest
 import java.time.Clock
 import java.util.Base64
 import java.util.UUID
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.daemon.ApplicationNotRegisteredException
 import net.extrawdw.notisync.daemon.ApplicationProfilePublicationState
@@ -28,14 +30,15 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.Urgency
 
 /**
- * The application registry and generic send queue sharing [DaemonDatabaseRepository]'s one atomic file.
- * Callers must share this repository instance with relay deduplication and any other daemon adapters.
+ * Persistent application declarations and profile-publication bookkeeping.
+ *
+ * Generic sends intentionally do not live here: an accepted local send, its submission idempotency
+ * marker, and queue-policy sequence state last only for the current daemon process.
  */
 class PersistentApplicationBridgeStore(
     private val database: DaemonDatabaseRepository,
     private val clock: Clock = Clock.systemUTC(),
-    private val messageIdFactory: () -> String = { UUID.randomUUID().toString() },
-) : ApplicationRegistry, GenericSendOutbox, ApplicationProfilePublicationStateStore {
+) : ApplicationRegistry, ApplicationProfilePublicationStateStore {
     override fun register(
         applicationId: String,
         registration: ApplicationRegistrationRequest,
@@ -95,20 +98,7 @@ class PersistentApplicationBridgeStore(
         var existed = false
         database.update { current ->
             existed = applicationId in current.applications
-            if (!existed &&
-                current.genericOutbox.none { it.applicationId == applicationId } &&
-                applicationId !in current.submissions &&
-                applicationId !in current.streamSequences
-            ) {
-                current
-            } else {
-                current.copy(
-                    applications = current.applications - applicationId,
-                    genericOutbox = current.genericOutbox.filterNot { it.applicationId == applicationId },
-                    submissions = current.submissions - applicationId,
-                    streamSequences = current.streamSequences - applicationId,
-                )
-            }
+            if (existed) current.copy(applications = current.applications - applicationId) else current
         }
         return existed
     }
@@ -129,6 +119,24 @@ class PersistentApplicationBridgeStore(
         }
         return checkNotNull(updated)
     }
+}
+
+/**
+ * One globally ordered generic-send queue whose entire state belongs to this daemon process.
+ *
+ * Pending bodies, submission-id idempotency, and latest stream sequences deliberately disappear
+ * on daemon restart. A batch is prepared against private copies and committed under one lock so a
+ * conflict, stale sequence, invalid record, or message-id failure leaves every structure unchanged.
+ */
+class InMemoryGenericSendOutbox(
+    private val applications: ApplicationRegistry,
+    private val clock: Clock = Clock.systemUTC(),
+    private val messageIdFactory: () -> String = { UUID.randomUUID().toString() },
+) : GenericSendOutbox {
+    private val lock = ReentrantLock()
+    private val pending = mutableListOf<PendingSend>()
+    private val submissions = mutableMapOf<String, MutableMap<String, AcceptedSubmission>>()
+    private val streamSequences = mutableMapOf<String, MutableMap<String, Long>>()
 
     override fun accept(sends: List<ResolvedSend>): List<SendAccepted> {
         require(sends.isNotEmpty()) { "send batch must not be empty" }
@@ -138,18 +146,17 @@ class PersistentApplicationBridgeStore(
             "all records in one send batch must use the same applicationId"
         }
 
-        var result: List<SendAccepted>? = null
-        database.update { current ->
-            if (applicationId !in current.applications) {
+        return lock.withLock {
+            if (applications.find(applicationId) == null) {
                 throw ApplicationNotRegisteredException(applicationId)
             }
 
-            val pending = current.genericOutbox.toMutableList()
-            val applicationSubmissions = current.submissions[applicationId].orEmpty().toMutableMap()
-            val applicationSequences = current.streamSequences[applicationId].orEmpty().toMutableMap()
+            val updatedPending = pending.toMutableList()
+            val applicationSubmissions = submissions[applicationId].orEmpty().toMutableMap()
+            val applicationSequences = streamSequences[applicationId].orEmpty().toMutableMap()
             val usedMessageIds = buildSet {
-                current.genericOutbox.forEach { add(it.messageId) }
-                current.submissions.values.forEach { records ->
+                pending.forEach { add(it.messageId) }
+                submissions.values.forEach { records ->
                     records.values.forEach { add(it.messageId) }
                 }
             }.toMutableSet()
@@ -184,7 +191,7 @@ class PersistentApplicationBridgeStore(
                     send.queuePolicy?.supersedeKeys?.let(::addAll)
                 }
                 if (replaceableKeys.isNotEmpty()) {
-                    pending.removeAll { item ->
+                    updatedPending.removeAll { item ->
                         item.applicationId == applicationId &&
                             item.queuePolicy?.coalesceKey in replaceableKeys
                     }
@@ -204,48 +211,55 @@ class PersistentApplicationBridgeStore(
                     submissionId = send.submissionId,
                     queuePolicy = send.queuePolicy,
                 )
-                pending += item
+                updatedPending += item
                 send.submissionId?.let { submissionId ->
-                    applicationSubmissions[submissionId] = StoredSubmission.from(item)
+                    applicationSubmissions[submissionId] = AcceptedSubmission.from(item)
                 }
                 accepted += SendAccepted(messageId, acceptedAt, send.submissionId)
             }
 
-            result = accepted
-            current.copy(
-                genericOutbox = pending,
-                submissions = current.submissions + (applicationId to applicationSubmissions),
-                streamSequences = if (applicationSequences.isEmpty()) {
-                    current.streamSequences - applicationId
-                } else {
-                    current.streamSequences + (applicationId to applicationSequences)
-                },
-            )
+            pending.clear()
+            pending.addAll(updatedPending)
+            submissions[applicationId] = applicationSubmissions
+            if (applicationSequences.isEmpty()) {
+                streamSequences.remove(applicationId)
+            } else {
+                streamSequences[applicationId] = applicationSequences
+            }
+            accepted
         }
-        return checkNotNull(result)
     }
 
     override fun peekConsecutive(maxItems: Int): List<PendingSend> {
         require(maxItems > 0) { "maxItems must be positive" }
-        val pending = database.load().genericOutbox
-        val first = pending.firstOrNull() ?: return emptyList()
-        return pending.asSequence()
-            .takeWhile { first.belongsToSameDispatchGroup(it) }
-            .take(maxItems)
-            .toList()
+        return lock.withLock {
+            val first = pending.firstOrNull() ?: return@withLock emptyList()
+            pending.asSequence()
+                .takeWhile { first.belongsToSameDispatchGroup(it) }
+                .take(maxItems)
+                .map { it.copy(body = it.body.copyOf()) }
+                .toList()
+        }
     }
 
     override fun checkpoint(messageId: String): Boolean {
         validateMessageId(messageId)
-        database.update { current ->
-            val present = current.genericOutbox.any { it.messageId == messageId }
-            if (!present) current
-            else current.copy(genericOutbox = current.genericOutbox.filterNot { it.messageId == messageId })
+        lock.withLock {
+            pending.removeAll { it.messageId == messageId }
         }
         return true
     }
 
-    override fun pendingCount(): Int = database.load().genericOutbox.size
+    override fun removeApplication(applicationId: String) {
+        validateApplicationId(applicationId)
+        lock.withLock {
+            pending.removeAll { it.applicationId == applicationId }
+            submissions.remove(applicationId)
+            streamSequences.remove(applicationId)
+        }
+    }
+
+    override fun pendingCount(): Int = lock.withLock { pending.size }
 
     private fun nextUniqueMessageId(used: MutableSet<String>): String {
         repeat(MAXIMUM_MESSAGE_ID_ATTEMPTS) {
@@ -288,8 +302,7 @@ data class StoredApplicationRegistration(
     )
 }
 
-@Serializable
-data class StoredSubmission(
+private data class AcceptedSubmission(
     val messageId: String,
     val acceptedAtEpochMillis: Long,
     val messageType: MessageType,
@@ -300,16 +313,6 @@ data class StoredSubmission(
     val signWith: SignerSelection,
     val queuePolicy: QueuePolicy? = null,
 ) {
-    fun validate() {
-        validateMessageId(messageId)
-        require(acceptedAtEpochMillis >= 0) { "invalid submission acceptance time" }
-        require(bodySize in 0..MAXIMUM_SEND_BODY_BYTES) { "invalid submission body size" }
-        require(runCatching { Base64.getDecoder().decode(bodySha256).size == SHA_256_BYTES }.getOrDefault(false)) {
-            "invalid submission body digest"
-        }
-        queuePolicy?.validateStored()
-    }
-
     fun matches(send: ResolvedSend): Boolean =
         messageType == send.messageType &&
             bodySize == send.body.size &&
@@ -320,7 +323,7 @@ data class StoredSubmission(
             queuePolicy == send.queuePolicy
 
     companion object {
-        fun from(item: PendingSend): StoredSubmission = StoredSubmission(
+        fun from(item: PendingSend): AcceptedSubmission = AcceptedSubmission(
             messageId = item.messageId,
             acceptedAtEpochMillis = item.acceptedAtEpochMillis,
             messageType = item.messageType,
@@ -332,15 +335,6 @@ data class StoredSubmission(
             queuePolicy = item.queuePolicy,
         )
     }
-}
-
-internal fun PendingSend.validateStored() {
-    validateMessageId(messageId)
-    validateApplicationId(applicationId)
-    require(acceptedAtEpochMillis >= 0) { "invalid generic-send acceptance time" }
-    require(body.size <= MAXIMUM_SEND_BODY_BYTES) { "generic-send body is too large" }
-    submissionId?.let(::validateSubmissionId)
-    queuePolicy?.validateStored()
 }
 
 internal fun ApplicationProfilePublicationState.validateStored() {
@@ -433,13 +427,9 @@ private fun validateSubmissionId(submissionId: String) {
     }
 }
 
-internal fun validateStoredSubmissionId(submissionId: String) = validateSubmissionId(submissionId)
-
 private fun validateQueueKey(key: String) {
     require(key.isNotBlank() && key.length <= MAXIMUM_QUEUE_KEY_LENGTH) { "invalid queue policy key" }
 }
-
-internal fun validateStoredQueueKey(key: String) = validateQueueKey(key)
 
 private fun validateMessageId(messageId: String) {
     require(messageId.isNotBlank() && messageId.length <= MAXIMUM_MESSAGE_ID_LENGTH) {
@@ -460,4 +450,3 @@ private const val MAXIMUM_MESSAGE_ID_LENGTH = 512
 private const val MAXIMUM_SUPERSEDE_KEYS = 128
 private const val MAXIMUM_SEND_BODY_BYTES = 1024 * 1024
 private const val MAXIMUM_MESSAGE_ID_ATTEMPTS = 16
-private const val SHA_256_BYTES = 32
