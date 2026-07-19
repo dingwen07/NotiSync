@@ -331,6 +331,8 @@
     <string name="device_capability_push_filtering">Push filtering</string>
     <string name="device_capability_notification_updates">Notification updates</string>
     <string name="device_capability_android_group_summaries">Android group summaries</string>
+    <string name="device_capability_publish_runs">Publish NotiSync Run</string>
+    <string name="device_capability_receive_runs">Receive NotiSync Run</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>

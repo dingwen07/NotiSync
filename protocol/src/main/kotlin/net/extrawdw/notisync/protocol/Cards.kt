@@ -8,7 +8,7 @@ import kotlinx.serialization.cbor.ByteString
 /** Capabilities a client advertises, so heterogeneous platforms can participate differently. */
 @Serializable
 enum class Capability {
-    CAPTURE,                // can listen for and forward local notifications
+    CAPTURE,                // can originate/post notifications, from OS capture or a synthetic source
     DISPLAY,                // can render mirrored notifications
     DISMISS_SYNC,           // can sync dismissals
     PROVIDE_ASSETS,         // can supply public app assets on request
@@ -18,6 +18,8 @@ enum class Capability {
     PUSH_FILTERING,         // can inspect and suppress/demote a push before user-visible presentation
     DISPLAY_NOTIFICATION_UPDATES, // can apply stable-id, silent/quiet notification replacements
     DISPLAY_ANDROID_GROUP_SUMMARIES, // can consume Android group-summary render-control captures
+    PUBLISH_RUNS,           // can publish and host Runs, including handling Run controls
+    RECEIVE_RUNS,           // can consume Run state/results and issue Run controls
 }
 
 /** What an operational key in a [ClientKeyEpoch] is authorized for (NS2). */

@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.daemon.storage
 
+import net.extrawdw.notisync.desktop.SecureFileSystem
+
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.util.concurrent.CountDownLatch

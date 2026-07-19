@@ -1,7 +1,7 @@
 package net.extrawdw.notisync.daemon.peer.runtime
 
 import java.time.Clock
-import java.util.UUID
+import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.locks.ReentrantLock
@@ -12,26 +12,21 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import net.extrawdw.notisync.daemon.GenericMeshControl
-import net.extrawdw.notisync.daemon.LocalSessionRegistry
-import net.extrawdw.notisync.daemon.NotificationMeshSender
+import net.extrawdw.notisync.daemon.ActionOriginPolicy
+import net.extrawdw.notisync.daemon.ApplicationProfilePublicationStateStore
+import net.extrawdw.notisync.daemon.ApplicationReceiveRouter
+import net.extrawdw.notisync.daemon.GenericBatchSender
+import net.extrawdw.notisync.daemon.LocalEventQueueFullException
+import net.extrawdw.notisync.daemon.PendingSend
 import net.extrawdw.notisync.daemon.PeerAdministration
-import net.extrawdw.notisync.daemon.PeerUnavailableException
-import net.extrawdw.notisync.daemon.SecureChannelNotificationSender
-import net.extrawdw.notisync.daemon.RunControlDelivery
-import net.extrawdw.notisync.daemon.RunMeshSender
-import net.extrawdw.notisync.daemon.SecureChannelRunSender
-import net.extrawdw.notisync.daemon.InMemoryRunOutbox
-import net.extrawdw.notisync.daemon.PendingRunControlResult
-import net.extrawdw.notisync.daemon.RunResultOutbox
 import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
 import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
-import net.extrawdw.notisync.localapi.ActionSendRequest
 import net.extrawdw.notisync.localapi.DaemonConnectionState
 import net.extrawdw.notisync.localapi.DeviceAction
 import net.extrawdw.notisync.localapi.DeviceActionRequest
@@ -39,7 +34,6 @@ import net.extrawdw.notisync.localapi.DeviceClassification
 import net.extrawdw.notisync.localapi.DeviceListResponse
 import net.extrawdw.notisync.localapi.DeviceTrustStatus
 import net.extrawdw.notisync.localapi.DeviceView
-import net.extrawdw.notisync.localapi.DismissalRequest
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.PairingInspectRequest
@@ -50,7 +44,7 @@ import net.extrawdw.notisync.peer.channel.ChannelLogger
 import net.extrawdw.notisync.peer.channel.DeliveryOutcome
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.MessageDedup
-import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.OutboundItem
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
 import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.notisync.peer.channel.safeToAck
@@ -72,23 +66,16 @@ import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.trust.RosterDevice
 import net.extrawdw.notisync.peer.trust.TrustState
 import net.extrawdw.notisync.peer.trust.TrustStore
-import net.extrawdw.notisync.protocol.ActionEvent
-import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.DismissEvent
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
-import net.extrawdw.notisync.protocol.RunControlResult
-import net.extrawdw.notisync.protocol.RunControlResultStatus
-import net.extrawdw.notisync.protocol.RunSyncKind
 import net.extrawdw.notisync.protocol.TrustStatus
-import net.extrawdw.notisync.protocol.Urgency
 
 /**
  * The desktop NotiSync peer graph.
@@ -97,9 +84,9 @@ import net.extrawdw.notisync.protocol.Urgency
  * and a [configProvider], allowing the initial private-file implementations to be replaced by a system
  * keychain or a different configuration parser without changing the secure-channel composition.
  *
- * The runtime is also the notification sender installed in [net.extrawdw.notisync.daemon.NotificationDispatcher]
- * and the administration surface installed in [net.extrawdw.notisync.daemon.DaemonService]. All of those
- * references lead to this single [SecureChannel], preserving one sender sequence and one durable dedup domain.
+ * The runtime is the daemon's generic strict sender, authenticated inbound bridge, and administration
+ * surface. All references lead to this single [SecureChannel], preserving one sender sequence and one
+ * durable dedup domain without teaching the daemon application-level Run or notification semantics.
  */
 class DesktopPeerRuntime(
     private val configProvider: () -> NotisyncdConfig,
@@ -107,8 +94,9 @@ class DesktopPeerRuntime(
     trustPersistence: TrustPersistence,
     authTokens: AuthTokenRepository,
     deduplication: MessageDedupRepository,
-    private val sessions: LocalSessionRegistry,
-    private val runResultOutbox: RunResultOutbox = InMemoryRunOutbox(),
+    private val receiveRouter: ApplicationReceiveRouter,
+    private val capabilitiesProvider: () -> List<Capability>,
+    private val profileState: ApplicationProfilePublicationStateStore,
     parentScope: CoroutineScope = CoroutineScope(Dispatchers.IO),
     private val clock: Clock = Clock.systemUTC(),
     private val logger: DaemonLogger = DaemonLogger(configProvider().logLevel),
@@ -116,7 +104,7 @@ class DesktopPeerRuntime(
     telemetry: PeerTelemetry = PeerTelemetry.None,
     private val healthPollMillis: Long = DEFAULT_HEALTH_POLL_MILLIS,
     private val antiEntropyMillis: Long = DEFAULT_ANTI_ENTROPY_MILLIS,
-) : PeerAdministration, GenericMeshControl, AutoCloseable {
+) : PeerAdministration, GenericBatchSender, ActionOriginPolicy, AutoCloseable {
     private val lifecycle = SupervisorJob(parentScope.coroutineContext[Job])
     private val scope = CoroutineScope(
         parentScope.coroutineContext + lifecycle + CoroutineName("notisyncd-peer"),
@@ -126,6 +114,7 @@ class DesktopPeerRuntime(
     private val webSocketConnected = AtomicBoolean(false)
     private val connectionMessage = AtomicReference<String?>(null)
     private val trustMessage = AtomicReference<String?>(null)
+    private val profileWake = Channel<Unit>(Channel.CONFLATED)
 
     private val trustMutationLock = ReentrantLock()
     private val trustStore = TrustStore(ClassifiedTrustPersistence(trustPersistence), keyMaterial.identity)
@@ -137,7 +126,10 @@ class DesktopPeerRuntime(
     private val trustState: TrustState = FoundationTrustState(trustStore, trustMutationLock)
     private val directory = TrustPeerDirectory(trustState)
     private val pairing = PairingPayloadCodec(keyMaterial.identity.clientId)
-    private val createdAt = clock.millis()
+    private val createdAt: Long = profileState.updateProfilePublicationState { current ->
+        if (current.cardCreatedAtFloorEpochMillis != null) current
+        else current.copy(cardCreatedAtFloorEpochMillis = clock.millis())
+    }.cardCreatedAtFloorEpochMillis ?: error("profile card creation floor was not initialized")
 
     private val broker = BrokerClient(
         signer = keyMaterial.identity,
@@ -182,10 +174,6 @@ class DesktopPeerRuntime(
         telemetry = telemetry,
     )
 
-    /** Install this adapter in [net.extrawdw.notisync.daemon.NotificationDispatcher]. */
-    val notificationMeshSender: NotificationMeshSender = SecureChannelNotificationSender(secureChannel)
-    val runMeshSender: RunMeshSender = SecureChannelRunSender(secureChannel)
-
     init {
         require(healthPollMillis > 0) { "healthPollMillis must be positive" }
         require(antiEntropyMillis > 0) { "antiEntropyMillis must be positive" }
@@ -206,7 +194,9 @@ class DesktopPeerRuntime(
             onAsset = { _, _ -> Unit },
             onFilter = { _, _ -> Unit },
             onNotificationSync = { _, _ -> Unit },
-            onRunSync = ::onRunSync,
+            onRunSync = { _, _ -> Unit },
+            onDecodedDataSync = ::routeDecodedDataSync,
+            onMalformedDataSync = ::routeInbound,
             incomingTrustPolicy = IncomingTrustPolicy { change ->
                 configProvider().automaticallyApplyTrustedDeviceTables &&
                     change.senderIsTrustedOwnDevice
@@ -216,12 +206,10 @@ class DesktopPeerRuntime(
             now = clock::millis,
         )
         foundation.register()
-
-        // notisyncd has CAPTURE but no DISPLAY. A misrouted notification is consumed and ignored so the
-        // relay does not retry it forever; ACTION and DISMISSAL are the only application messages it handles.
-        secureChannel.onMessage(MessageType.NOTIFICATION, ::onUnsupportedNotification)
-        secureChannel.onMessage(MessageType.ACTION, ::onAction)
-        secureChannel.onMessage(MessageType.DISMISSAL, ::onDismissal)
+        secureChannel.onMessage(MessageType.NOTIFICATION, ::routeInbound)
+        secureChannel.onMessage(MessageType.ACTION, ::routeInbound)
+        secureChannel.onMessage(MessageType.DISMISSAL, ::routeInbound)
+        recordDesiredProfile()
     }
 
     override val clientId: String = keyMaterial.identity.clientId.value
@@ -320,62 +308,46 @@ class DesktopPeerRuntime(
             devices()
         }
 
-    override suspend fun sendDismissal(request: DismissalRequest, sourceKey: String): String {
-        val id = UUID.randomUUID().toString()
-        secureChannel.send(
-            typ = MessageType.DISMISSAL,
-            body = ProtocolCodec.encodeToCbor(
-                DismissEvent(secureChannel.clientId, sourceKey, clock.millis()),
-            ),
-            scope = Recipients.OwnMesh,
-            urgency = Urgency.NORMAL,
-        )
-        return id
+    override suspend fun send(batch: List<PendingSend>, onAccepted: (PendingSend) -> Unit) {
+        require(batch.isNotEmpty()) { "strict send batch must not be empty" }
+        val first = batch.first()
+        require(batch.all { first.belongsToSameDispatchGroup(it) }) {
+            "strict send batch contains different dispatch groups"
+        }
+        val byId = batch.associateBy(PendingSend::messageId)
+        secureChannel.sendAllStrict(
+            typ = first.messageType,
+            items = batch.map { OutboundItem(it.messageId, it.body) },
+            scope = first.scope,
+            urgency = first.urgency,
+            signWith = first.signWith,
+        ) { accepted -> onAccepted(checkNotNull(byId[accepted.messageId])) }
     }
 
-    override suspend fun sendAction(request: ActionSendRequest, sourceKey: String): String {
-        require(sourceKey.isNotBlank()) { "local session source is missing" }
-        require(request.sourceClientId.isNotBlank() && request.sourceClientId.length <= 128) {
-            "sourceClientId must contain 1..128 characters"
+    override fun isTrustedOwnCapturePeer(clientId: ClientId): Boolean = trustMutationLock.withLock {
+        trustStore.roster.value.any { device ->
+            device.clientId == clientId &&
+                device.ownDevice &&
+                device.status == TrustStatus.TRUSTED &&
+                Capability.CAPTURE in device.capabilities
         }
-        require(request.sourceKey.isNotBlank() && request.sourceKey.length <= 512) {
-            "sourceKey must contain 1..512 characters"
+    }
+
+    /** Record a material capability/name change and attempt publication without waiting for maintenance. */
+    fun requestProfilePublication() {
+        recordDesiredProfile()
+        profileWake.trySend(Unit)
+        if (started.get()) scope.launch(CoroutineName("notisyncd-profile")) {
+            runCatching { publishProfileIfNeeded(force = false) }
+                .onFailure { logger.warn("Profile publication failed; retrying: ${it.conciseMessage()}") }
         }
-        require(request.actionTitle.isNotBlank() && request.actionTitle.length <= 80) {
-            "actionTitle must contain 1..80 characters"
-        }
-        require((request.inputText?.length ?: 0) <= 64 * 1024) {
-            "inputText is too long"
-        }
-        val origin = ClientId(request.sourceClientId)
-        require(origin != secureChannel.clientId) { "a local source cannot send a wire action to itself" }
-        val event = ActionEvent(
-            sourceClientId = origin,
-            sourceKey = request.sourceKey,
-            kind = ActionKind.PERFORM,
-            actionIndex = request.actionIndex,
-            actionTitle = request.actionTitle,
-            remoteInputText = request.inputText,
-            actedAt = clock.millis(),
-            actionGeneration = request.actionGeneration,
-            actionToken = request.actionToken,
-        )
-        val recipients = secureChannel.send(
-            typ = MessageType.ACTION,
-            body = ProtocolCodec.encodeToCbor(event),
-            scope = Recipients.Only(origin),
-            urgency = Urgency.HIGH,
-        )
-        if (recipients == 0) {
-            throw PeerUnavailableException("action origin is not a sealable trusted own device")
-        }
-        return UUID.randomUUID().toString()
     }
 
     override fun close() {
         if (state.getAndSet(DaemonConnectionState.STOPPED) == DaemonConnectionState.STOPPED) return
         logger.info("Stopping desktop peer $clientId")
         lifecycle.cancel()
+        profileWake.close()
         broker.close()
     }
 
@@ -398,7 +370,6 @@ class DesktopPeerRuntime(
 
     private suspend fun runMaintenance() {
         var lastAntiEntropyAt = Long.MIN_VALUE
-        var lastProfileFingerprint: String? = null
         while (currentCoroutineContext().isActive) {
             try {
                 val verification = broker.fetchVerificationStatus()
@@ -420,20 +391,19 @@ class DesktopPeerRuntime(
                 }
 
                 val now = clock.millis()
-                if (lastAntiEntropyAt == Long.MIN_VALUE || now - lastAntiEntropyAt >= antiEntropyMillis) {
+                val antiEntropyDue = lastAntiEntropyAt == Long.MIN_VALUE || now - lastAntiEntropyAt >= antiEntropyMillis
+                if (antiEntropyDue) {
                     broker.publishKeyEpoch(keyMaterial.currentKeyEpoch())
                     foundation.convergeKeyEpochs()
                     foundation.broadcastTrust()
                     lastAntiEntropyAt = now
                     logger.debug("Completed broker trust and key convergence")
                 }
-
-                val config = configProvider()
-                val profileFingerprint = profileFingerprint(config)
-                if (profileFingerprint != lastProfileFingerprint) {
-                    foundation.broadcastProfile(buildProfile(config, now))
-                    lastProfileFingerprint = profileFingerprint
-                    logger.info("Published desktop profile for ${config.deviceName}")
+                recordDesiredProfile()
+                publishProfileIfNeeded(force = antiEntropyDue)
+                val expiredInterests = receiveRouter.cleanupDeadProcesses()
+                if (expiredInterests > 0) {
+                    logger.info("Removed $expiredInterests receive interest(s) for exited local processes")
                 }
                 if (webSocketConnected.get()) {
                     state.set(DaemonConnectionState.CONNECTED)
@@ -448,107 +418,36 @@ class DesktopPeerRuntime(
                 val message = "Broker synchronization failed: ${error.conciseMessage()}"
                 setConnectionWarning(message)
             }
-            delay(healthPollMillis)
+            // A capability registration wakes maintenance immediately; timeout remains the health cadence.
+            kotlinx.coroutines.withTimeoutOrNull(healthPollMillis) { profileWake.receiveCatching() }
         }
     }
 
-    private fun onAction(message: InboundMessage) {
-        if (!message.senderOwnDevice) return
-        val event = ProtocolCodec.decodeFromCbor<ActionEvent>(message.body)
-        if (event.sourceClientId != secureChannel.clientId || event.kind != ActionKind.PERFORM) return
+    private fun routeInbound(message: InboundMessage) {
         try {
-            sessions.deliverWireAction(
-                sourceKey = event.sourceKey,
-                actionIndex = event.actionIndex,
-                actionTitle = event.actionTitle,
-                inputText = event.remoteInputText,
-                senderClientId = message.senderId.value,
-                senderIsTrustedOwnDevice = true,
-                actionGeneration = event.actionGeneration,
-                actionToken = event.actionToken,
-                relayMessageId = message.messageId,
+            val matched = receiveRouter.accept(message)
+            logger.info(
+                "Received ${message.typ} ${message.messageId} from ${message.senderId.shortForm()}; " +
+                    if (matched) "fanned out to local applications" else "no live local interest",
             )
-            logger.info("Delivered action ${message.messageId} from ${message.senderId.shortForm()}")
-        } catch (error: Exception) {
-            throw RetryableDeliveryException("could not persist local action event", error)
+        } catch (full: LocalEventQueueFullException) {
+            throw RetryableDeliveryException("local application inbox is full", full)
         }
     }
 
-    private fun onRunSync(message: InboundMessage, sync: net.extrawdw.notisync.protocol.DataSync) {
-        if (!message.senderOwnDevice) return
-        val run = sync.run ?: return
-        if (run.kind != RunSyncKind.CONTROL) return
-        val control = run.control ?: return
-        val delivery = if (control.hostClientId != secureChannel.clientId) {
-            RunControlDelivery.REJECTED
-        } else {
-            try {
-                sessions.deliverRunControl(
-                    control = control,
-                    senderClientId = message.senderId.value,
-                    senderIsTrustedOwnDevice = true,
-                    relayMessageId = message.messageId,
-                )
-            } catch (error: Exception) {
-                throw RetryableDeliveryException("could not persist local Run control event", error)
-            }
-        }
-        logger.info(
-            "Handled Run control ${control.kind} for ${control.runId} from ${message.senderId.shortForm()}: $delivery",
-        )
-        val status = when (delivery) {
-            RunControlDelivery.ENQUEUED -> null
-            RunControlDelivery.DUPLICATE -> RunControlResultStatus.REJECTED
-            RunControlDelivery.NOT_ACTIVE -> RunControlResultStatus.NOT_ACTIVE
-            RunControlDelivery.STALE -> RunControlResultStatus.STALE
-            RunControlDelivery.REJECTED -> RunControlResultStatus.REJECTED
-        } ?: return
+    private fun routeDecodedDataSync(
+        message: InboundMessage,
+        sync: net.extrawdw.notisync.protocol.DataSync,
+    ) {
         try {
-            val now = clock.millis()
-            runResultOutbox.enqueueResult(
-                PendingRunControlResult(
-                    id = UUID.randomUUID().toString(),
-                    recipient = message.senderId,
-                    result = RunControlResult(
-                        requestId = control.requestId,
-                        runId = control.runId,
-                        status = status,
-                        respondedAt = now,
-                        message = when (delivery) {
-                            RunControlDelivery.DUPLICATE -> "duplicate control request"
-                            RunControlDelivery.NOT_ACTIVE -> "Run is not active"
-                            RunControlDelivery.STALE -> "input context is stale"
-                            RunControlDelivery.REJECTED -> "control is not valid for this host"
-                            RunControlDelivery.ENQUEUED -> null
-                        },
-                    ),
-                    acceptedAt = now,
-                ),
+            val matched = receiveRouter.accept(message, sync)
+            logger.info(
+                "Received DATA_SYNC ${message.messageId} from ${message.senderId.shortForm()}; " +
+                    if (matched) "fanned out to local applications" else "no live local interest",
             )
-        } catch (error: Exception) {
-            throw RetryableDeliveryException("could not persist Run control result", error)
+        } catch (full: LocalEventQueueFullException) {
+            throw RetryableDeliveryException("local application inbox is full", full)
         }
-    }
-
-    private fun onDismissal(message: InboundMessage) {
-        if (!message.senderOwnDevice) return
-        val event = ProtocolCodec.decodeFromCbor<DismissEvent>(message.body)
-        if (event.sourceClientId != secureChannel.clientId) return
-        try {
-            sessions.deliverDismissal(
-                sourceKey = event.sourceKey,
-                senderClientId = message.senderId.value,
-                senderIsTrustedOwnDevice = true,
-                relayMessageId = message.messageId,
-            )
-            logger.info("Delivered dismissal from ${message.senderId.shortForm()}")
-        } catch (error: Exception) {
-            throw RetryableDeliveryException("could not persist local dismissal event", error)
-        }
-    }
-
-    private fun onUnsupportedNotification(message: InboundMessage) {
-        logger.warn("Ignored misrouted notification ${message.messageId} from ${message.senderId.shortForm()}")
     }
 
     private fun buildClientCard(): SignedBlob {
@@ -558,7 +457,7 @@ class DesktopPeerRuntime(
             identityPublicKey = keyMaterial.identity.publicKeySpki,
             displayName = config.deviceName,
             platform = NOTISYNCD_PLATFORM_NAME,
-            capabilities = DAEMON_CAPABILITIES,
+            capabilities = capabilitiesProvider(),
             createdAt = createdAt,
         )
         val payload = ProtocolCodec.encodeToCbor(card)
@@ -574,9 +473,48 @@ class DesktopPeerRuntime(
         clientId = keyMaterial.identity.clientId,
         displayName = config.deviceName,
         platform = NOTISYNCD_PLATFORM_NAME,
-        capabilities = DAEMON_CAPABILITIES,
+        capabilities = capabilitiesProvider(),
         updatedAt = updatedAt,
     )
+
+    /** Atomically advance the desired profile only for a material name/capability change. */
+    private fun recordDesiredProfile() {
+        val fingerprint = profileFingerprint(configProvider())
+        profileState.updateProfilePublicationState { current ->
+            if (current.profileFingerprint == fingerprint && current.profileUpdatedAtEpochMillis != null) {
+                current
+            } else {
+                val updatedAt = maxOf(
+                    clock.millis(),
+                    (current.profileUpdatedAtEpochMillis ?: Long.MIN_VALUE).let {
+                        if (it == Long.MAX_VALUE) it else it + 1
+                    },
+                    0,
+                )
+                val revision = current.publicationRevision + 1
+                current.copy(
+                    profileFingerprint = fingerprint,
+                    profileUpdatedAtEpochMillis = updatedAt,
+                    publicationRevision = revision,
+                    pendingPublicationRevision = revision,
+                )
+            }
+        }
+    }
+
+    private suspend fun publishProfileIfNeeded(force: Boolean) {
+        val published = publishDurableProfileIfNeeded(
+            profileState = profileState,
+            force = force,
+            buildProfile = { updatedAt -> buildProfile(configProvider(), updatedAt) },
+            publish = foundation::broadcastProfile,
+        )
+        if (!published) return
+        logger.info(
+            "Published desktop profile for ${configProvider().deviceName}; " +
+                "capabilities=${capabilitiesProvider().joinToString { it.name }}",
+        )
+    }
 
     private fun inspectCandidate(payload: String): PairingCandidate {
         val inspected = pairing.inspect(payload).getOrElse {
@@ -610,9 +548,13 @@ class DesktopPeerRuntime(
         if (connectionMessage.getAndSet(statusMessage) != statusMessage) logger.warn(logMessage)
     }
 
-    private fun profileFingerprint(config: NotisyncdConfig): String = buildString {
-        append(config.deviceName).append('\u0000').append(NOTISYNCD_PLATFORM_NAME)
-        DAEMON_CAPABILITIES.forEach { append('\u0000').append(it.name) }
+    private fun profileFingerprint(config: NotisyncdConfig): String {
+        val material = buildString {
+            append(config.deviceName).append('\u0000').append(NOTISYNCD_PLATFORM_NAME)
+            capabilitiesProvider().forEach { append('\u0000').append(it.name) }
+        }.encodeToByteArray()
+        return MessageDigest.getInstance("SHA-256").digest(material)
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
     }
 
     private fun RosterDevice.toApi(quarantined: Boolean): DeviceView = DeviceView(
@@ -653,16 +595,48 @@ class DesktopPeerRuntime(
     }
 
     companion object {
-        /** Complete declaration: do not add DISPLAY, push, wake, asset, dismissal-sync, or update rendering. */
-        val DAEMON_CAPABILITIES: List<Capability> = listOf(
-            Capability.CAPTURE,
-            Capability.FOREGROUND_CONNECTION,
-            Capability.CAPABILITY_ROUTING_V1,
-        )
-
         private const val DEFAULT_HEALTH_POLL_MILLIS = 15_000L
         private const val DEFAULT_ANTI_ENTROPY_MILLIS = 5 * 60_000L
     }
+}
+
+/**
+ * Publish one desired profile revision while retaining a durable retry marker until the broker send
+ * succeeds. A forced startup/anti-entropy announcement marks the current material revision pending
+ * before attempting I/O, so a transient failure is retried by the next ordinary maintenance pass.
+ */
+internal suspend fun publishDurableProfileIfNeeded(
+    profileState: ApplicationProfilePublicationStateStore,
+    force: Boolean,
+    buildProfile: (updatedAt: Long) -> ProfileUpdate,
+    publish: suspend (ProfileUpdate) -> Unit,
+): Boolean {
+    val snapshot = if (force) {
+        profileState.updateProfilePublicationState { current ->
+            if (
+                current.pendingPublicationRevision == null &&
+                current.publicationRevision > 0 &&
+                current.profileUpdatedAtEpochMillis != null
+            ) {
+                current.copy(pendingPublicationRevision = current.publicationRevision)
+            } else {
+                current
+            }
+        }
+    } else {
+        profileState.profilePublicationState()
+    }
+    val pendingRevision = snapshot.pendingPublicationRevision ?: return false
+    val updatedAt = snapshot.profileUpdatedAtEpochMillis ?: return false
+    publish(buildProfile(updatedAt))
+    profileState.updateProfilePublicationState { current ->
+        if (current.pendingPublicationRevision == pendingRevision) {
+            current.copy(pendingPublicationRevision = null)
+        } else {
+            current
+        }
+    }
+    return true
 }
 
 private class RepositoryAuthTokenStore(

@@ -150,6 +150,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.PUSH_FILTERING,
     Capability.DISPLAY_NOTIFICATION_UPDATES,
     Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+    Capability.RECEIVE_RUNS,
 )
 
 class AppGraph(private val app: Application) {

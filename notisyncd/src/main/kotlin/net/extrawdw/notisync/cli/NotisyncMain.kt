@@ -7,8 +7,8 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import kotlinx.serialization.encodeToString
-import net.extrawdw.notisync.daemon.DesktopProcessTitle
 import net.extrawdw.notisync.daemon.NotisyncdCli
+import net.extrawdw.notisync.desktop.DesktopProcessTitle
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
@@ -48,6 +48,7 @@ class NotisyncCli(
                 "status" -> status(client)
                 "config" -> withDaemon(client) { config(it, arguments.drop(1)) }
                 "devices" -> withDaemon(client) { devices(it, arguments.drop(1)) }
+                "applications", "apps" -> withDaemon(client) { applications(it, arguments.drop(1)) }
                 "quarantine" -> withDaemon(client) { quarantine(it, arguments.drop(1)) }
                 else -> throw CliError("unknown command: ${arguments[0]}")
             }
@@ -187,6 +188,36 @@ class NotisyncCli(
         printDevices(client.quarantine(QuarantineActionRequest(action)))
     }
 
+    private fun applications(client: DaemonAdministration, arguments: List<String>) {
+        when (arguments.firstOrNull() ?: "list") {
+            "list" -> {
+                if (arguments.size > 1) throw CliError("applications list takes no arguments")
+                val response = client.applications()
+                if (response.applications.isEmpty()) {
+                    output.appendLine("No registered applications.")
+                } else {
+                    response.applications.forEach { application ->
+                        output.appendLine(
+                            "${application.applicationId}\t${application.displayName}\t" +
+                                application.capabilities.joinToString(",") { it.name },
+                        )
+                        application.version?.let { output.appendLine("  version: $it") }
+                    }
+                }
+                output.appendLine(
+                    "effective capabilities: " +
+                        response.effectiveCapabilities.joinToString(", ") { it.name },
+                )
+            }
+            "remove", "delete" -> {
+                if (arguments.size != 2) throw CliError("applications remove requires APPLICATION_ID")
+                client.removeApplication(arguments[1])
+                output.appendLine("Removed application ${arguments[1]}.")
+            }
+            else -> throw CliError("applications requires list or remove")
+        }
+    }
+
     private fun pairingInput(arguments: List<String>): String {
         if (arguments.size != 1) throw CliError("pairing command requires one link, payload, or '-' for stdin")
         return if (arguments[0] == "-") {
@@ -244,6 +275,8 @@ class NotisyncCli(
           devices pair accept [--own|--other] LINK|PAYLOAD|-
           devices action approve|reject|revoke|confirm-revoke|decline-revoke|restore|keep|purge DEVICE_ID
           devices action approve --all
+          applications [list]
+          applications remove APPLICATION_ID
           quarantine approve|clear
     """.trimIndent()
 

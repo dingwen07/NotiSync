@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.daemon.storage
 
+import net.extrawdw.notisync.desktop.SecureFileSystem
+
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -12,10 +14,10 @@ import kotlinx.serialization.json.Json
 /**
  * Small durable transactional state store for daemon queues and indexes.
  *
- * A single immutable value can contain the outbox, unacknowledged local events, and deduplication
- * indexes; [update] serializes read-modify-write operations and commits by atomic rename. The store
- * intentionally does not silently replace corrupt state with defaults, since doing so could replay
- * a notification or discard an acknowledgement.
+ * A single immutable value can contain the application registry, generic outbox, idempotency state,
+ * and relay deduplication indexes; [update] serializes read-modify-write operations and commits by
+ * atomic rename. The store intentionally does not silently replace corrupt state with defaults,
+ * since doing so could replay or discard an accepted send.
  */
 class DurableJsonState<T>(
     val path: Path,

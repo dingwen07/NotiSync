@@ -11,33 +11,29 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.attribute.PosixFilePermissions
-import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
-import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import net.extrawdw.notisync.daemon.logging.DaemonLogger
-import net.extrawdw.notisync.localapi.ActionSendRequest
+import net.extrawdw.notisync.localapi.ApplicationEventAckRequest
+import net.extrawdw.notisync.localapi.ApplicationEventCompletionRequest
+import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
 import net.extrawdw.notisync.localapi.ApiError
-import net.extrawdw.notisync.localapi.CloseSessionRequest
-import net.extrawdw.notisync.localapi.CreateSessionRequest
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DeviceActionRequest
-import net.extrawdw.notisync.localapi.DismissalRequest
-import net.extrawdw.notisync.localapi.EventAckRequest
-import net.extrawdw.notisync.localapi.EventCompletionRequest
 import net.extrawdw.notisync.localapi.LocalApiJson
-import net.extrawdw.notisync.localapi.LocalEvent
-import net.extrawdw.notisync.localapi.LocalEventType
-import net.extrawdw.notisync.localapi.NotificationRequest
-import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingInspectRequest
 import net.extrawdw.notisync.localapi.QuarantineActionRequest
+import net.extrawdw.notisync.localapi.ReceiveRecord
+import net.extrawdw.notisync.localapi.ReceiveRecordType
+import net.extrawdw.notisync.localapi.ReceiveRequest
+import net.extrawdw.notisync.localapi.SendAccepted
+import net.extrawdw.notisync.localapi.SendRequest
 import org.newsclub.net.unix.AFUNIXServerSocket
 import org.newsclub.net.unix.AFUNIXSocket
 import org.newsclub.net.unix.AFUNIXSocketAddress
@@ -47,7 +43,7 @@ class UnixHttpServer(
     private val service: DaemonService,
     private val identityResolver: ProcessIdentityResolver = ProcessIdentityResolver(),
     private val maxHeaderBytes: Int = 64 * 1024,
-    private val maxBodyBytes: Int = 1024 * 1024,
+    private val maxBodyBytes: Int = 8 * 1024 * 1024,
     private val requestReadTimeoutMillis: Int = 15_000,
     private val logger: DaemonLogger = DaemonLogger("WARN"),
 ) : AutoCloseable {
@@ -122,6 +118,7 @@ class UnixHttpServer(
             var executable: ProcessExecutable? = null
             var request: HttpRequest? = null
             var responseStatus: Int? = null
+            var accessLogged = false
             try {
                 peer = identityResolver.resolve(it)
                 executable = peer.pid?.let(identityResolver::executable)
@@ -130,12 +127,23 @@ class UnixHttpServer(
                     writeJson(output, 403, ApiError("wrong_uid", "local API access is restricted to the daemon uid"))
                     return
                 }
-                request = readRequest(BufferedInputStream(it.getInputStream()))
-                if (request.path == "/v1/events" && request.method == "GET") {
-                    streamEvents(output, request, peer)
-                    responseStatus = 200
+                val verifiedPeer = checkNotNull(peer)
+                val parsedRequest = readRequest(BufferedInputStream(it.getInputStream()))
+                request = parsedRequest
+                if (parsedRequest.path == "/v1/receive" && parsedRequest.method == "POST") {
+                    streamReceive(output, parsedRequest, verifiedPeer) {
+                        responseStatus = 200
+                        accessLogged = true
+                        logAccess(
+                            parsedRequest,
+                            verifiedPeer,
+                            executable,
+                            200,
+                            System.nanoTime() - startedAt,
+                        )
+                    }
                 } else {
-                    val response = route(request, peer)
+                    val response = route(parsedRequest, verifiedPeer)
                     responseStatus = response.status
                     writeResponse(output, response)
                 }
@@ -155,7 +163,7 @@ class UnixHttpServer(
                 val completedRequest = request
                 val completedPeer = peer
                 val completedStatus = responseStatus
-                if (completedRequest != null && completedPeer != null && completedStatus != null) {
+                if (!accessLogged && completedRequest != null && completedPeer != null && completedStatus != null) {
                     logAccess(
                         completedRequest,
                         completedPeer,
@@ -187,31 +195,30 @@ class UnixHttpServer(
         }
         request.method == "POST" && request.path == "/v1/trust-store/quarantine" ->
             json(200, service.quarantineAction(request.decode<QuarantineActionRequest>()))
-        request.method == "POST" && request.path == "/v1/sessions" ->
-            json(201, service.createSession(peer, request.decode<CreateSessionRequest>()))
-        request.method == "DELETE" && request.path == "/v1/sessions" -> {
-            val close = request.decode<CloseSessionRequest>()
-            service.closeSession(peer, request.bearer, close.sessionId)
+        request.method == "PUT" && APPLICATION.matches(request.path) -> {
+            val applicationId = decodeComponent(APPLICATION.matchEntire(request.path)!!.groupValues[1])
+            json(200, service.registerApplication(applicationId, request.decode<ApplicationRegistrationRequest>()))
+        }
+        request.method == "GET" && request.path == "/v1/applications" -> json(200, service.applications())
+        request.method == "DELETE" && APPLICATION.matches(request.path) -> {
+            val applicationId = decodeComponent(APPLICATION.matchEntire(request.path)!!.groupValues[1])
+            service.removeApplication(applicationId)
             empty(204)
         }
-        request.method == "POST" && request.path == "/v1/notifications" ->
-            json(202, service.postNotification(peer, request.bearer, request.decode<NotificationRequest>()))
-        request.method == "POST" && request.path == "/v1/runs" ->
-            json(202, service.postRunState(peer, request.bearer, request.decode<RunStateRequest>()))
-        request.method == "POST" && request.path == "/v1/dismissals" -> runBlocking {
-            json(202, service.postDismissal(peer, request.bearer, request.decode<DismissalRequest>()))
-        }
-        request.method == "POST" && request.path == "/v1/actions" -> runBlocking {
-            json(202, service.postAction(peer, request.bearer, request.decode<ActionSendRequest>()))
+        request.method == "POST" && request.path == "/v1/send" -> sendResponse(request)
+        request.method == "DELETE" && request.path == "/v1/receive" -> {
+            service.unregisterReceive(peer, request.decode<ReceiveRequest>())
+            empty(204)
         }
         request.method == "POST" && EVENT_ACK.matches(request.path) -> {
             val eventId = decodeComponent(EVENT_ACK.matchEntire(request.path)!!.groupValues[1])
-            service.acknowledgeEvent(peer, request.bearer, eventId, request.decode<EventAckRequest>())
+            val ack = request.decode<ApplicationEventAckRequest>()
+            service.acknowledgeEvent(ack.applicationId, eventId)
             empty(204)
         }
-        request.method == "POST" && EVENT_COMPLETE.matches(request.path) -> runBlocking {
+        request.method == "POST" && EVENT_COMPLETE.matches(request.path) -> {
             val eventId = decodeComponent(EVENT_COMPLETE.matchEntire(request.path)!!.groupValues[1])
-            service.completeEvent(peer, request.bearer, eventId, request.decode<EventCompletionRequest>())
+            service.completeEvent(eventId, request.decode<ApplicationEventCompletionRequest>())
             empty(204)
         }
         request.method == "POST" && request.path == "/v1/shutdown" -> {
@@ -221,44 +228,73 @@ class UnixHttpServer(
         else -> throw HttpFailure(404, "not_found", "unknown local API endpoint")
     }
 
-    private fun streamEvents(output: BufferedOutputStream, request: HttpRequest, peer: LocalPeer) {
-        val sessionId = request.query["sessionId"] ?: throw HttpFailure(400, "missing_session", "sessionId is required")
-        // Authenticate before committing the streaming response status.
-        service.awaitEvent(peer, request.bearer, sessionId, 0)
-        output.write(
-            ("HTTP/1.1 200 OK\r\n" +
-                "Content-Type: application/x-ndjson\r\n" +
-                "Cache-Control: no-store\r\n" +
-                "Connection: close\r\n\r\n").toByteArray(StandardCharsets.US_ASCII),
-        )
-        output.flush()
+    private fun sendResponse(request: HttpRequest): HttpResponse {
+        return if (request.contentType == NDJSON_CONTENT_TYPE) {
+            val lines = request.body.toString(StandardCharsets.UTF_8).split('\n').toMutableList().apply {
+                if (lastOrNull()?.isEmpty() == true) removeLast()
+            }
+            if (lines.isEmpty()) throw HttpFailure(400, "missing_body", "NDJSON send body is empty")
+            if (lines.size > MAXIMUM_NDJSON_RECORDS) {
+                throw HttpFailure(413, "too_many_records", "NDJSON send contains too many records")
+            }
+            if (lines.any(String::isBlank)) {
+                throw HttpFailure(400, "invalid_ndjson", "NDJSON send must contain one JSON record per line")
+            }
+            val records = lines.map { line -> LocalApiJson.decodeFromString<SendRequest>(line) }
+            val accepted = service.acceptSends(records)
+            ndjson(202, accepted)
+        } else {
+            json(202, service.acceptSends(listOf(request.decode<SendRequest>())).single())
+        }
+    }
+
+    private fun streamReceive(
+        output: BufferedOutputStream,
+        request: HttpRequest,
+        peer: LocalPeer,
+        onEstablished: () -> Unit,
+    ) {
+        val receive = request.decode<ReceiveRequest>()
+        // Registration, filter validation, and replay all happen before committing HTTP 200.
+        val handle = service.openReceive(peer, receive)
+        var committed = false
         try {
-            var lastEventId: String? = null
+            output.write(
+                ("HTTP/1.1 200 OK\r\n" +
+                    "Content-Type: application/x-ndjson\r\n" +
+                    "Cache-Control: no-store\r\n" +
+                    "Connection: close\r\n\r\n").toByteArray(StandardCharsets.US_ASCII),
+            )
+            output.flush()
+            committed = true
+            onEstablished()
             var lastHeartbeat = System.currentTimeMillis()
-            while (!closed.get() && !service.isStopping()) {
-                val event = service.awaitEvent(peer, request.bearer, sessionId, 1_000)
-                if (event != null && event.id != lastEventId) {
+            while (!closed.get() && !service.isStopping() && handle.isAttached()) {
+                val event = handle.awaitRecord(1_000)
+                if (event != null) {
                     output.write((LocalApiJson.encodeToString(event) + "\n").toByteArray(StandardCharsets.UTF_8))
                     output.flush()
-                    lastEventId = event.id
+                    lastHeartbeat = System.currentTimeMillis()
                     continue
                 }
                 val now = System.currentTimeMillis()
                 if (now - lastHeartbeat >= 15_000) {
-                    val heartbeat = LocalEvent(
-                        id = "heartbeat-${UUID.randomUUID()}",
-                        type = LocalEventType.HEARTBEAT,
-                        sessionId = sessionId,
-                        createdAtEpochMillis = now,
+                    val heartbeat = ReceiveRecord(
+                        recordType = ReceiveRecordType.HEARTBEAT,
+                        applicationId = receive.applicationId,
+                        receivedAtEpochMillis = now,
                     )
                     output.write((LocalApiJson.encodeToString(heartbeat) + "\n").toByteArray(StandardCharsets.UTF_8))
                     output.flush()
                     lastHeartbeat = now
                 }
             }
-        } catch (_: Exception) {
-            // The response is already committed. EOF, a dead/reused process identity, or a client
-            // disconnect simply terminates this close-delimited stream; never append a second HTTP head.
+        } catch (error: Exception) {
+            // The response is committed. A dead process or client disconnect simply closes the stream.
+            if (!committed) throw error
+        } finally {
+            // Socket disconnect detaches only this view; its process interest survives until exit/unregister.
+            handle.close()
         }
     }
 
@@ -295,15 +331,30 @@ class UnixHttpServer(
             throw HttpFailure(400, "transfer_encoding", "chunked requests are not supported")
         }
         val lengthText = headers["content-length"]
-        val requiresLength = method == "POST" || method == "PATCH" || method == "DELETE"
+        val requiresLength = method == "POST" || method == "PUT" || method == "PATCH"
         if (requiresLength && lengthText == null) {
             throw HttpFailure(411, "length_required", "Content-Length is required")
         }
         val length = lengthText?.toIntOrNull()
             ?: if (lengthText == null) 0 else throw HttpFailure(400, "bad_length", "invalid Content-Length")
         if (length !in 0..maxBodyBytes) throw HttpFailure(413, "body_too_large", "request body is too large")
-        if (length > 0 && headers["content-type"]?.substringBefore(';')?.trim() != "application/json") {
-            throw HttpFailure(415, "content_type", "request body must be application/json")
+        val contentType = headers["content-type"]?.substringBefore(';')?.trim()?.lowercase()
+        val rawPath = rawTarget.substringBefore('?')
+        val allowedContentTypes = if (method == "POST" && rawPath == "/v1/send") {
+            setOf(JSON_CONTENT_TYPE, NDJSON_CONTENT_TYPE)
+        } else {
+            setOf(JSON_CONTENT_TYPE)
+        }
+        if (length > 0 && contentType !in allowedContentTypes) {
+            throw HttpFailure(
+                415,
+                "content_type",
+                if (rawPath == "/v1/send") {
+                    "send body must be application/json or application/x-ndjson"
+                } else {
+                    "request body must be application/json"
+                },
+            )
         }
         val body = input.readNBytes(length)
         if (body.size != length) throw HttpFailure(400, "truncated_body", "request body is truncated")
@@ -312,12 +363,16 @@ class UnixHttpServer(
             val pair = entry.split('=', limit = 2)
             decodeComponent(pair[0]) to decodeComponent(pair.getOrElse(1) { "" })
         }
-        val authorization = headers["authorization"]
-        val bearer = authorization?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substring(7)
-        if (authorization != null && bearer.isNullOrBlank()) {
-            throw HttpFailure(401, "bad_authorization", "expected a Bearer token")
-        }
-        return HttpRequest(method, targetParts[0], query, headers, body, bearer)
+        return HttpRequest(
+            method = method,
+            path = targetParts[0],
+            rawTarget = rawTarget,
+            version = parts[2],
+            query = query,
+            headers = headers,
+            body = body,
+            contentType = contentType,
+        )
     }
 
     private fun readAsciiLine(input: InputStream, limit: Int): String {
@@ -344,6 +399,9 @@ class UnixHttpServer(
                 HttpFailure(408, "request_timeout", "local HTTP request timed out")
             is LocalAuthorizationException -> HttpFailure(401, "unauthorized", message ?: "unauthorized")
             is LocalConflictException -> HttpFailure(409, "conflict", message ?: "conflict")
+            is GenericSendRejection -> HttpFailure(409, "conflict", message ?: "send was rejected")
+            is LocalEventQueueFullException ->
+                HttpFailure(503, "local_inbox_full", message ?: "local inbox is full", true)
             is PeerUnavailableException -> HttpFailure(503, "peer_unavailable", message ?: "peer unavailable", true)
             is SerializationException, is IllegalArgumentException ->
                 HttpFailure(400, "invalid_request", message ?: "invalid request")
@@ -365,12 +423,13 @@ class UnixHttpServer(
         val executablePath = executable?.path?.logValue() ?: "unknown"
         val pid = peer.pid?.toString() ?: "unknown"
         val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(elapsedNanos)
-        val message = "HTTP ${request.method} ${request.path} -> $status in ${elapsedMillis}ms; " +
-            "process=$process executable=$executablePath pid=$pid"
+        val requestLine = "${request.method} ${request.rawTarget} ${request.version}".logQuotedValue()
+        val message = "pid=$pid process=$process executable=$executablePath " +
+            "$requestLine $status ${elapsedMillis}ms"
         when {
             status >= 500 -> logger.error(message)
             status >= 400 -> logger.warn(message)
-            executable?.name == "notisyncd" && request.method == "GET" && request.path == "/v1/status" ->
+            request.method == "GET" && request.path == "/v1/status" && request.query["probe"] == "ready" ->
                 logger.debug(message)
             else -> logger.info(message)
         }
@@ -378,9 +437,13 @@ class UnixHttpServer(
 
     private fun String.logValue(): String {
         if (isNotEmpty() && all { it.isLetterOrDigit() || it in "._/:-+" }) return this
+        return logQuotedValue()
+    }
+
+    private fun String.logQuotedValue(): String {
         return buildString {
             append('"')
-            this@logValue.forEach { character ->
+            this@logQuotedValue.forEach { character ->
                 when (character) {
                     '\\' -> append("\\\\")
                     '"' -> append("\\\"")
@@ -416,6 +479,13 @@ class UnixHttpServer(
         LocalApiJson.encodeToString(value).toByteArray(StandardCharsets.UTF_8),
     )
 
+    private inline fun <reified T> ndjson(status: Int, values: List<T>): HttpResponse = HttpResponse(
+        status,
+        "$NDJSON_CONTENT_TYPE; charset=utf-8",
+        values.joinToString(separator = "\n", postfix = "\n") { LocalApiJson.encodeToString(it) }
+            .toByteArray(StandardCharsets.UTF_8),
+    )
+
     private fun empty(status: Int) = HttpResponse(status, "application/json", ByteArray(0))
 
     private inline fun <reified T> HttpRequest.decode(): T {
@@ -439,10 +509,12 @@ class UnixHttpServer(
     private data class HttpRequest(
         val method: String,
         val path: String,
+        val rawTarget: String,
+        val version: String,
         val query: Map<String, String>,
         val headers: Map<String, String>,
         val body: ByteArray,
-        val bearer: String?,
+        val contentType: String?,
     )
 
     private data class HttpResponse(val status: Int, val contentType: String, val body: ByteArray)
@@ -458,8 +530,12 @@ class UnixHttpServer(
         const val CLIENT_SHUTDOWN_SECONDS = 5L
         const val MAX_REQUEST_LINE = 8 * 1024
         const val MAX_HEADER_LINE = 16 * 1024
-        val ALLOWED_METHODS = setOf("GET", "POST", "PATCH", "DELETE")
+        const val MAXIMUM_NDJSON_RECORDS = 1_024
+        const val JSON_CONTENT_TYPE = "application/json"
+        const val NDJSON_CONTENT_TYPE = "application/x-ndjson"
+        val ALLOWED_METHODS = setOf("GET", "POST", "PUT", "PATCH", "DELETE")
         val DEVICE_ACTION = Regex("^/v1/devices/([^/]+)/actions$")
+        val APPLICATION = Regex("^/v1/applications/([^/]+)$")
         val EVENT_ACK = Regex("^/v1/events/([^/]+)/ack$")
         val EVENT_COMPLETE = Regex("^/v1/events/([^/]+)/complete$")
         val REASONS = mapOf(

@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.daemon.storage
 
+import net.extrawdw.notisync.desktop.SecureFileSystem
+
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -20,7 +22,6 @@ data class DaemonStorageLayout(
     val trustStateFile: Path = stateDirectory.resolve("trust.json")
     val authStateFile: Path = stateDirectory.resolve("auth.json")
     val databaseFile: Path = stateDirectory.resolve("notisyncd.db")
-    val runsDirectory: Path = dataDirectory.resolve("runs")
 
     /** Create the directory skeleton and validate any existing daemon-managed nodes. */
     fun prepare(fileSystem: SecureFileSystem = SecureFileSystem()): DaemonStorageLayout {
@@ -28,7 +29,6 @@ data class DaemonStorageLayout(
         fileSystem.ensurePrivateDirectory(logDirectory)
         fileSystem.ensurePrivateDirectory(privateKeysDirectory)
         fileSystem.ensurePrivateDirectory(stateDirectory)
-        fileSystem.ensurePrivateDirectory(runsDirectory)
 
         listOf(
             lockFile,
@@ -52,12 +52,6 @@ data class DaemonStorageLayout(
     /** Validate and chmod the socket after the UDS listener has bound it. */
     fun secureSocket(fileSystem: SecureFileSystem = SecureFileSystem()) {
         fileSystem.validatePrivateNode(socketFile)
-    }
-
-    fun runDirectory(runId: String, fileSystem: SecureFileSystem = SecureFileSystem()): Path {
-        require(SAFE_COMPONENT.matches(runId)) { "invalid run id" }
-        prepare(fileSystem)
-        return fileSystem.ensurePrivateDirectory(runsDirectory.resolve(runId))
     }
 
     fun privateKeyFile(name: String): Path {

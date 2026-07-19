@@ -1,32 +1,30 @@
 package net.extrawdw.notisync.daemon
 
-import java.time.Clock
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.serialization.encodeToString
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
+import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
 import net.extrawdw.notisync.desktop.config.NotisyncdConfigStore
-import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
-import net.extrawdw.notisync.localapi.AcceptedResponse
-import net.extrawdw.notisync.localapi.ActionSendRequest
-import net.extrawdw.notisync.localapi.CreateSessionRequest
+import net.extrawdw.notisync.localapi.ApplicationEventCompletionRequest
+import net.extrawdw.notisync.localapi.ApplicationListResponse
+import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
+import net.extrawdw.notisync.localapi.ApplicationView
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DaemonConfigView
 import net.extrawdw.notisync.localapi.DaemonConnectionState
 import net.extrawdw.notisync.localapi.DaemonStatus
 import net.extrawdw.notisync.localapi.DeviceActionRequest
 import net.extrawdw.notisync.localapi.DeviceListResponse
-import net.extrawdw.notisync.localapi.DismissalRequest
-import net.extrawdw.notisync.localapi.EventAckRequest
-import net.extrawdw.notisync.localapi.EventCompletionRequest
-import net.extrawdw.notisync.localapi.LocalEvent
-import net.extrawdw.notisync.localapi.NotificationRequest
-import net.extrawdw.notisync.localapi.RunStateRequest
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.PairingInspectRequest
 import net.extrawdw.notisync.localapi.PairingPayloadResponse
 import net.extrawdw.notisync.localapi.QuarantineActionRequest
-import net.extrawdw.notisync.localapi.SessionResponse
+import net.extrawdw.notisync.localapi.ReceiveRequest
+import net.extrawdw.notisync.localapi.SendAccepted
+import net.extrawdw.notisync.localapi.SendRequest
 
 interface PeerAdministration {
     val clientId: String?
@@ -40,11 +38,6 @@ interface PeerAdministration {
     fun devices(): DeviceListResponse
     fun deviceAction(clientId: String, request: DeviceActionRequest): DeviceListResponse
     fun quarantineAction(request: QuarantineActionRequest): DeviceListResponse
-}
-
-interface GenericMeshControl {
-    suspend fun sendDismissal(request: DismissalRequest, sourceKey: String): String
-    suspend fun sendAction(request: ActionSendRequest, sourceKey: String): String
 }
 
 class PeerUnavailableException(message: String) : RuntimeException(message)
@@ -66,19 +59,26 @@ class UnavailablePeerAdministration(
     private fun <T> unavailable(): T = throw PeerUnavailableException(statusMessage)
 }
 
+/** Generic local application bridge plus the existing administrative surface. */
 class DaemonService(
     private val configStore: NotisyncdConfigStore,
-    private val sessions: LocalSessionRegistry,
-    private val dispatcher: NotificationDispatcher,
-    private val runDispatcher: RunDispatcher? = null,
+    private val applications: ApplicationRegistry,
+    private val receiver: ApplicationReceiveRouter,
+    private val sendResolver: GenericSendResolver,
+    private val sendDispatcher: GenericSendDispatcher,
     peerAdministration: PeerAdministration = UnavailablePeerAdministration(),
-    private val genericControl: GenericMeshControl? = null,
-    private val clock: Clock = Clock.systemUTC(),
+    private val logger: DaemonLogger = DaemonLogger("WARN"),
     private val version: String = "0.1.0",
     private val onConfigChanged: (NotisyncdConfig, NotisyncdConfig) -> Unit = { _, _ -> },
+    private val onMaterialProfileChanged: () -> Unit = {},
 ) {
+    private data class CompletionKey(val applicationId: String, val envelopeId: String)
+
     private val peer = AtomicReference(peerAdministration)
     private val stopping = AtomicBoolean(false)
+    /** Serializes app-level ACK with completion and remembers successful completions for this daemon life. */
+    private val eventLock = Any()
+    private val completedEvents = mutableSetOf<CompletionKey>()
 
     fun installPeer(value: PeerAdministration) {
         peer.set(value)
@@ -93,7 +93,7 @@ class DaemonService(
             deviceName = config.deviceName,
             connectionState = if (stopping.get()) DaemonConnectionState.STOPPED else current.connectionState,
             brokerUrl = config.brokerUrl,
-            capabilities = DAEMON_CAPABILITIES,
+            capabilities = applications.effectiveCapabilities().mapTo(linkedSetOf()) { it.name },
             trustStoreQuarantined = current.trustStoreQuarantined,
             message = current.statusMessage,
         )
@@ -113,6 +113,7 @@ class DaemonService(
         ).validate()
         configStore.save(updated)
         onConfigChanged(old, updated)
+        if (old.deviceName != updated.deviceName) onMaterialProfileChanged()
         return updated.view()
     }
 
@@ -125,65 +126,89 @@ class DaemonService(
     fun quarantineAction(request: QuarantineActionRequest): DeviceListResponse =
         peer.get().quarantineAction(request)
 
-    fun createSession(peer: LocalPeer, request: CreateSessionRequest): SessionResponse = sessions.create(peer, request)
-
-    fun closeSession(peer: LocalPeer, bearer: String?, sessionId: String) = sessions.close(sessionId, bearer, peer)
-
-    fun postNotification(peer: LocalPeer, bearer: String?, request: NotificationRequest): AcceptedResponse =
-        dispatcher.accept(request, bearer, peer)
-
-    fun postRunState(peer: LocalPeer, bearer: String?, request: RunStateRequest): AcceptedResponse =
-        (runDispatcher ?: throw PeerUnavailableException("Run transport is not initialized"))
-            .accept(request, bearer, peer)
-
-    suspend fun postDismissal(peer: LocalPeer, bearer: String?, request: DismissalRequest): AcceptedResponse {
-        val session = sessions.authorizeNotificationGeneration(
-            request.sessionId,
-            request.generation,
-            bearer,
-            peer,
+    fun registerApplication(
+        applicationId: String,
+        registration: ApplicationRegistrationRequest,
+    ): ApplicationView = synchronized(eventLock) {
+        val result = applications.register(applicationId, registration)
+        logger.info(
+            "Registered application $applicationId " +
+                "(${result.application.capabilities.joinToString { it.name }})",
         )
-        val control = genericControl ?: throw PeerUnavailableException("mesh control is not initialized")
-        val id = control.sendDismissal(request, session.sourceKey)
-        return AcceptedResponse(id, clock.millis())
+        if (result.capabilitiesChanged) onMaterialProfileChanged()
+        result.application
     }
 
-    suspend fun postAction(peer: LocalPeer, bearer: String?, request: ActionSendRequest): AcceptedResponse {
-        val session = sessions.authorize(request.sessionId, bearer, peer)
-        val control = genericControl ?: throw PeerUnavailableException("mesh control is not initialized")
-        val id = control.sendAction(request, session.sourceKey)
-        return AcceptedResponse(id, clock.millis())
+    fun applications(): ApplicationListResponse = applications.list()
+
+    fun removeApplication(applicationId: String) = synchronized(eventLock) {
+        val before = applications.effectiveCapabilities()
+        val removed = sendDispatcher.serialized { applications.delete(applicationId) }
+        receiver.removeApplication(applicationId)
+        completedEvents.removeIf { it.applicationId == applicationId }
+        if (removed) logger.info("Removed application $applicationId")
+        if (before != applications.effectiveCapabilities()) onMaterialProfileChanged()
     }
 
-    fun awaitEvent(peer: LocalPeer, bearer: String?, sessionId: String, waitMillis: Long): LocalEvent? =
-        sessions.awaitEvent(sessionId, bearer, peer, waitMillis)
-
-    fun acknowledgeEvent(peer: LocalPeer, bearer: String?, eventId: String, request: EventAckRequest) {
-        sessions.acknowledge(request.sessionId, eventId, bearer, peer)
+    fun acceptSends(requests: List<SendRequest>): List<SendAccepted> = synchronized(eventLock) {
+        sendDispatcher.accepted(sendResolver.resolveAll(requests))
     }
 
-    suspend fun completeEvent(
+    fun openReceive(
         peer: LocalPeer,
-        bearer: String?,
-        eventId: String,
-        request: EventCompletionRequest,
-    ) {
-        (runDispatcher ?: throw PeerUnavailableException("Run transport is not initialized"))
-            .complete(eventId, request, bearer, peer)
+        request: ReceiveRequest,
+    ): ApplicationReceiveRouter.ReceiverHandle = synchronized(eventLock) {
+        val handle = receiver.open(peer, request)
+        logger.info(
+            "Registered receive interest for application ${request.applicationId}: " +
+                net.extrawdw.notisync.localapi.LocalApiJson.encodeToString(request),
+        )
+        handle
+    }
+
+    fun unregisterReceive(peer: LocalPeer, request: ReceiveRequest) = synchronized(eventLock) {
+        if (receiver.unregister(peer, request)) {
+            logger.info("Unregistered receive interest for application ${request.applicationId}")
+        }
+    }
+
+    fun acknowledgeEvent(applicationId: String, envelopeId: String) = synchronized(eventLock) {
+        requireApplication(applicationId)
+        if (receiver.ack(applicationId, envelopeId)) {
+            logger.info("Acknowledged $envelopeId for application $applicationId")
+        }
+    }
+
+    /** Persist response sends before removing the sole application-level pending reference. */
+    fun completeEvent(envelopeId: String, completion: ApplicationEventCompletionRequest) = synchronized(eventLock) {
+        requireApplication(completion.applicationId)
+        val key = CompletionKey(completion.applicationId, envelopeId)
+        if (key in completedEvents) return@synchronized
+        if (!receiver.hasPending(completion.applicationId, envelopeId)) {
+            throw LocalConflictException("event is not pending for application ${completion.applicationId}")
+        }
+        require(completion.sends.all { it.applicationId == completion.applicationId }) {
+            "completion sends must use the acknowledging applicationId"
+        }
+        if (completion.sends.isNotEmpty()) acceptSends(completion.sends)
+        check(receiver.ack(completion.applicationId, envelopeId)) {
+            "pending application event disappeared during completion"
+        }
+        completedEvents += key
+        logger.info(
+            "Completed $envelopeId for application ${completion.applicationId} " +
+                "with ${completion.sends.size} response send(s)",
+        )
     }
 
     fun requestShutdown() {
-        if (stopping.compareAndSet(false, true)) sessions.shutdownEvents()
+        stopping.set(true)
     }
 
     fun isStopping(): Boolean = stopping.get()
 
-    companion object {
-        val DAEMON_CAPABILITIES = setOf(
-            "CAPTURE",
-            "FOREGROUND_CONNECTION",
-            "CAPABILITY_ROUTING_V1",
-        )
+    private fun requireApplication(applicationId: String) {
+        if (applications.find(applicationId) == null) throw ApplicationNotRegisteredException(applicationId)
     }
 }
 

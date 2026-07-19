@@ -16,15 +16,11 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
-/**
- * Which key signs an outbound envelope. The caller chooses EXPLICITLY per §2.3 — the body-agnostic
- * channel never infers it from the message type:
- *  - [OPERATIONAL]: the rotatable TEE key (`signerEpoch` ≥1) — the hot path (notifications, dismissals,
- *    asset sync, profile, standalone card pushes).
- *  - [IDENTITY]: the cold StrongBox root (`signerEpoch` = 0) — for a `TrustTable` (a roster assertion must
- *    bind to the immutable root and verify without epoch convergence) and any identity-anchored control body.
- */
-enum class SignerSelection { OPERATIONAL, IDENTITY }
+/** One durable outbound item whose caller-assigned [messageId] remains stable across transport retries. */
+class OutboundItem(
+    val messageId: String,
+    val body: ByteArray,
+)
 
 /**
  * A generic, feature-agnostic end-to-end secure group-messaging substrate over a [Transport].
@@ -141,15 +137,7 @@ class SecureChannel(
         urgency: Urgency,
         signWith: SignerSelection = SignerSelection.OPERATIONAL,
     ): Int {
-        if (typ == MessageType.DATA_SYNC && urgency == Urgency.HIGH) {
-            val filtered = scope as? Recipients.OwnMeshFiltered
-            require(
-                filtered?.requireCapabilityRoutingV1 == true &&
-                    filtered.requiredCapabilities.containsAll(HIGH_DATA_SYNC_CAPABILITIES),
-            ) {
-                "HIGH DATA_SYNC requires a capability-routed OwnMeshFiltered audience with DISPLAY, BACKGROUND_WAKE, and PUSH_FILTERING"
-            }
-        }
+        validateOutboundPolicy(typ, scope, urgency)
         val recipients = directory.recipients(scope)
         // Send-initiated key-epoch repair (same handler as the receive-side unresolved-sender path): a trusted
         // peer this scope targets but that we can't currently seal to was filtered out of `recipients`, so
@@ -194,6 +182,62 @@ class SecureChannel(
             sentAny = true
         }
         return if (sentAny) recipients.size else 0
+    }
+
+    /**
+     * Strict durable-outbox variant of [sendAll]. The audience and signer are resolved once for the whole
+     * batch, and every [OutboundItem.messageId] is used verbatim so retrying an uncheckpointed item produces
+     * the same broker identity. Unlike the mobile-oriented best-effort path, an empty audience, a partially
+     * or wholly failed seal, and a transport rejection all throw and stop the batch immediately.
+     *
+     * [onAccepted] is deliberately synchronous. It runs after, and only after, the transport reports broker
+     * acceptance for that item; if checkpointing throws, the suffix is not attempted and the caller can retry
+     * from its still-pending durable record.
+     */
+    suspend fun sendAllStrict(
+        typ: MessageType,
+        items: List<OutboundItem>,
+        scope: Recipients,
+        urgency: Urgency,
+        signWith: SignerSelection = SignerSelection.OPERATIONAL,
+        onAccepted: (OutboundItem) -> Unit,
+    ): Int {
+        validateOutboundPolicy(typ, scope, urgency)
+        if (items.isEmpty()) return 0
+        require(items.all { it.messageId.isNotBlank() }) { "strict outbound messageId must not be blank" }
+
+        val recipients = directory.recipients(scope)
+        directory.unsealableRecipients(scope).forEach(onUnresolvedSender)
+        check(recipients.isNotEmpty()) { "no recipients resolved for strict $typ send" }
+
+        // Resolve once, before processing the first item, so a rotation cannot split one durable batch
+        // across signer epochs. The identity signer is already a stable field.
+        val op = if (signWith == SignerSelection.OPERATIONAL) operationalSigner() else null
+        for (item in items) {
+            val seqN = seq.incrementAndGet()
+            val createdAt = now()
+            val envelope = try {
+                telemetry.trace("envelope_seal") { span ->
+                    span.attr("signer", if (op != null) "operational" else "identity")
+                    span.metric("recipient_count", recipients.size.toLong())
+                    if (op != null) {
+                        EnvelopeCrypto.seal(op, typ, item.body, recipients, item.messageId, seqN, createdAt)
+                    } else {
+                        EnvelopeCrypto.seal(signer, typ, item.body, recipients, item.messageId, seqN, createdAt)
+                    }
+                }
+            } catch (e: Exception) {
+                throw IllegalStateException("seal failed for strict $typ (${item.messageId})", e)
+            }
+            check(envelope.recipients.size == recipients.size) {
+                "seal failed for ${recipients.size - envelope.recipients.size}/${recipients.size} strict $typ recipient(s) (${item.messageId})"
+            }
+
+            val result = transport.send(envelope, urgency)
+            check(result.accepted) { "transport rejected strict $typ envelope ${item.messageId}" }
+            onAccepted(item)
+        }
+        return recipients.size
     }
 
     /**
@@ -326,6 +370,17 @@ class SecureChannel(
 
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */
     val clientId: ClientId get() = signer.clientId
+
+    private fun validateOutboundPolicy(typ: MessageType, scope: Recipients, urgency: Urgency) {
+        if (typ != MessageType.DATA_SYNC || urgency != Urgency.HIGH) return
+        val filtered = scope as? Recipients.OwnMeshFiltered
+        require(
+            filtered?.requireCapabilityRoutingV1 == true &&
+                filtered.requiredCapabilities.containsAll(HIGH_DATA_SYNC_CAPABILITIES),
+        ) {
+            "HIGH DATA_SYNC requires a capability-routed OwnMeshFiltered audience with DISPLAY, BACKGROUND_WAKE, and PUSH_FILTERING"
+        }
+    }
 
     private companion object {
         val HIGH_DATA_SYNC_CAPABILITIES = setOf(

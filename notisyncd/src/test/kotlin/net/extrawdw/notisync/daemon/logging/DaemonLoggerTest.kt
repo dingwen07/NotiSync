@@ -41,4 +41,42 @@ class DaemonLoggerTest {
             output.toString(),
         )
     }
+
+    @Test
+    fun `blank thread names use an explicit fallback`() {
+        val output = StringBuilder()
+        val logger = DaemonLogger("INFO", output, clock) { " \t" }
+
+        logger.info("ready")
+
+        assertEquals(
+            "2026-07-20T08:09:10.123Z INFO  [unnamed] ready\n",
+            output.toString(),
+        )
+    }
+
+    @Test
+    fun `timestamps always contain exactly three UTC fractional digits`() {
+        val wholeSecond = StringBuilder()
+        DaemonLogger(
+            "INFO",
+            wholeSecond,
+            Clock.fixed(Instant.parse("2026-07-20T08:09:10Z"), ZoneOffset.UTC),
+        ) { "main" }.info("whole")
+        assertEquals(
+            "2026-07-20T08:09:10.000Z INFO  [main] whole\n",
+            wholeSecond.toString(),
+        )
+
+        val subMillisecond = StringBuilder()
+        DaemonLogger(
+            "INFO",
+            subMillisecond,
+            Clock.fixed(Instant.parse("2026-07-20T08:09:10.123999999Z"), ZoneOffset.UTC),
+        ) { "main" }.info("precise")
+        assertEquals(
+            "2026-07-20T08:09:10.123Z INFO  [main] precise\n",
+            subMillisecond.toString(),
+        )
+    }
 }

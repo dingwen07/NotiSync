@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.daemon.storage
 
+import net.extrawdw.notisync.desktop.SecureFileSystem
+
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
 import java.nio.channels.OverlappingFileLockException

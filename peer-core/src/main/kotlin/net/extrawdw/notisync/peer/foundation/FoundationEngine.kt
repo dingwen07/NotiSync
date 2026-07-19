@@ -50,6 +50,12 @@ open class FoundationEngine(
     /** Hands an authenticated own-mesh DATA_SYNC `RUN` sub-body to the platform Run feature. The foundation
      *  remains the single decoder; state persistence and control validation stay with that feature. */
     private val onRunSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Observes every successfully decoded DATA_SYNC before its sub-kind handler. Generic local bridges can
+     *  reuse the exact decoded object without becoming a second decoder. */
+    private val onDecodedDataSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Observes authenticated DATA_SYNC bytes that do not decode. A generic type-only bridge may still
+     *  deliver the opaque body; semantic Foundation handlers continue to ignore it. */
+    private val onMalformedDataSync: (InboundMessage) -> Unit = {},
     private val eventSink: FoundationEventSink = FoundationEventSink.None,
     private val incomingTrustPolicy: IncomingTrustPolicy = IncomingTrustPolicy.MANUAL,
     /** Our own current key-epoch [SignedBlob], announced E2E in each trust broadcast so own-mesh peers
@@ -221,8 +227,9 @@ open class FoundationEngine(
 
     /** Sole DATA_SYNC handler: decode once, sub-dispatch by kind. ASSET is forwarded to the app. */
     private fun onDataSync(msg: InboundMessage) {
-        val sync =
-            runCatching { ProtocolCodec.decodeFromCbor<DataSync>(msg.body) }.getOrNull() ?: return
+        val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(msg.body) }.getOrNull()
+            ?: return onMalformedDataSync(msg)
+        onDecodedDataSync(msg, sync)
         when (sync.kind) {
             // The notification app owns asset repair; forward unconditionally and let it apply its own gate.
             DataSyncKind.ASSET -> onAsset(msg, sync)

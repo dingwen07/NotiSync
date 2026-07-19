@@ -62,6 +62,33 @@ class SecureChannelPolicyTest {
             Urgency.HIGH,
         )
         assertEquals(0, count)
+
+        try {
+            channel.sendAllStrict(
+                MessageType.DATA_SYNC,
+                listOf(OutboundItem("high-data-sync", byteArrayOf(1))),
+                Recipients.OwnMesh,
+                Urgency.HIGH,
+            ) { }
+            fail("strict HIGH DATA_SYNC must enforce the same audience policy")
+        } catch (_: IllegalArgumentException) {
+            // expected
+        }
+
+        val emptyStrictBatch = channel.sendAllStrict(
+            MessageType.DATA_SYNC,
+            emptyList(),
+            Recipients.OwnMeshFiltered(
+                requiredCapabilities = setOf(
+                    Capability.DISPLAY,
+                    Capability.BACKGROUND_WAKE,
+                    Capability.PUSH_FILTERING,
+                ),
+                requireCapabilityRoutingV1 = true,
+            ),
+            Urgency.HIGH,
+        ) { }
+        assertEquals(0, emptyStrictBatch)
     }
 
     private fun channel(): SecureChannel {

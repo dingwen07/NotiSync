@@ -28,7 +28,9 @@ rootProject.name = "NotiSync"
 include(":protocol")
 include(":protocol-crypto")
 include(":peer-core")
-include(":notisync-local-api")
+include(":protocol-local")
+include(":local-client")
+include(":nsrun")
 include(":notisyncd")
 include(":server")
 

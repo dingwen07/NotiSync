@@ -7,6 +7,7 @@ import java.nio.file.attribute.PosixFilePermissions
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
 import java.nio.channels.ServerSocketChannel
+import net.extrawdw.notisync.desktop.SecureFileSystem
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,7 +32,6 @@ class SecureFileSystemTest : StorageTestSupport() {
             layout.daemonConfigFile,
             layout.privateKeysDirectory,
             layout.stateDirectory,
-            layout.runsDirectory,
         ).forEach { path -> assertTrue(path.startsWith(data)) }
     }
 
@@ -49,7 +49,6 @@ class SecureFileSystemTest : StorageTestSupport() {
             layout.logDirectory,
             layout.privateKeysDirectory,
             layout.stateDirectory,
-            layout.runsDirectory,
         ).forEach { directory ->
             assertTrue(Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS))
             assertEquals(
@@ -180,14 +179,4 @@ class SecureFileSystemTest : StorageTestSupport() {
         assertEquals("unchanged", Files.readString(outside))
     }
 
-    @Test
-    fun `run ids cannot escape the private runs directory`() {
-        val layout = DaemonStorageLayout(temporaryDirectory.resolve("data")).prepare(fileSystem)
-
-        assertThrows(IllegalArgumentException::class.java) {
-            layout.runDirectory("../elsewhere", fileSystem)
-        }
-        val run = layout.runDirectory("1234-abc", fileSystem)
-        assertEquals(layout.runsDirectory.resolve("1234-abc").toAbsolutePath(), run)
-    }
 }

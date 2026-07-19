@@ -1,9 +1,16 @@
 package net.extrawdw.notisync.daemon.peer.runtime
 
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
-import net.extrawdw.notisync.daemon.LocalSessionRegistry
+import kotlinx.coroutines.runBlocking
+import net.extrawdw.notisync.daemon.ApplicationProfilePublicationState
+import net.extrawdw.notisync.daemon.ApplicationProfilePublicationStateStore
+import net.extrawdw.notisync.daemon.ApplicationReceiveRouter
+import net.extrawdw.notisync.daemon.LocalPeer
+import net.extrawdw.notisync.daemon.PendingSend
 import net.extrawdw.notisync.daemon.ProcessIdentityResolver
+import net.extrawdw.notisync.daemon.RegisteredApplicationLookup
 import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.StorageTestSupport
@@ -16,12 +23,21 @@ import net.extrawdw.notisync.localapi.DeviceListResponse
 import net.extrawdw.notisync.localapi.DeviceTrustStatus
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingInspectRequest
+import net.extrawdw.notisync.localapi.ReceiveRequest
+import net.extrawdw.notisync.peer.channel.DeliveryOutcome
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.SignerSelection
 import net.extrawdw.notisync.peer.ports.AuthTokenRepository
 import net.extrawdw.notisync.peer.ports.MessageDedupRepository
 import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
+import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.Urgency
+import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
+import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
@@ -49,6 +65,189 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         } finally {
             changing.close()
             inspector.close()
+        }
+    }
+
+    @Test
+    fun `pairing cards read the current generic application capability union`() {
+        val advertised = mutableListOf(
+            Capability.FOREGROUND_CONNECTION,
+            Capability.CAPABILITY_ROUTING_V1,
+        )
+        val profileState = MemoryProfileState()
+        val changing = runtimeHarness(
+            directory = "changing-capabilities",
+            name = "Workstation",
+            capabilitiesProvider = { advertised.toList() },
+            profileState = profileState,
+        )
+        val inspector = runtime("capability-inspector", "Inspector")
+        try {
+            assertEquals(
+                setOf("FOREGROUND_CONNECTION", "CAPABILITY_ROUTING_V1"),
+                inspector.inspectPairing(
+                    PairingInspectRequest(changing.runtime.pairingPayload().payload),
+                ).capabilities,
+            )
+            val initial = profileState.profilePublicationState()
+
+            advertised.add(0, Capability.CAPTURE)
+            advertised += Capability.PUBLISH_RUNS
+            changing.runtime.requestProfilePublication()
+
+            assertEquals(
+                setOf("CAPTURE", "FOREGROUND_CONNECTION", "CAPABILITY_ROUTING_V1", "PUBLISH_RUNS"),
+                inspector.inspectPairing(
+                    PairingInspectRequest(changing.runtime.pairingPayload().payload),
+                ).capabilities,
+            )
+            val changed = profileState.profilePublicationState()
+            assertEquals(initial.publicationRevision + 1, changed.publicationRevision)
+            assertTrue(changed.profileUpdatedAtEpochMillis!! > initial.profileUpdatedAtEpochMillis!!)
+            assertEquals(changed.publicationRevision, changed.pendingPublicationRevision)
+        } finally {
+            changing.close()
+            inspector.close()
+        }
+    }
+
+    @Test
+    fun `failed forced profile reannouncement remains pending for the next maintenance retry`() = runBlocking {
+        val profileState = MemoryProfileState()
+        profileState.updateProfilePublicationState {
+            ApplicationProfilePublicationState(
+                cardCreatedAtFloorEpochMillis = 10,
+                profileFingerprint = "profile-a",
+                profileUpdatedAtEpochMillis = 20,
+                publicationRevision = 4,
+            )
+        }
+        var attempts = 0
+
+        val failure = runCatching {
+            publishDurableProfileIfNeeded(
+                profileState = profileState,
+                force = true,
+                buildProfile = ::testProfile,
+                publish = {
+                    attempts++
+                    assertEquals(4L, profileState.profilePublicationState().pendingPublicationRevision)
+                    throw IllegalStateException("broker unavailable")
+                },
+            )
+        }
+
+        assertTrue(failure.exceptionOrNull() is IllegalStateException)
+        assertEquals(1, attempts)
+        assertEquals(4L, profileState.profilePublicationState().pendingPublicationRevision)
+
+        assertTrue(
+            publishDurableProfileIfNeeded(
+                profileState = profileState,
+                force = false,
+                buildProfile = ::testProfile,
+                publish = { attempts++ },
+            ),
+        )
+        assertEquals(2, attempts)
+        assertEquals(null, profileState.profilePublicationState().pendingPublicationRevision)
+    }
+
+    @Test
+    fun `profile success clears only the revision that was actually published`() = runBlocking {
+        val profileState = MemoryProfileState()
+        profileState.updateProfilePublicationState {
+            ApplicationProfilePublicationState(
+                cardCreatedAtFloorEpochMillis = 10,
+                profileFingerprint = "profile-a",
+                profileUpdatedAtEpochMillis = 20,
+                publicationRevision = 4,
+                pendingPublicationRevision = 4,
+            )
+        }
+
+        assertTrue(
+            publishDurableProfileIfNeeded(
+                profileState = profileState,
+                force = false,
+                buildProfile = ::testProfile,
+                publish = {
+                    profileState.updateProfilePublicationState { current ->
+                        current.copy(
+                            profileFingerprint = "profile-b",
+                            profileUpdatedAtEpochMillis = 21,
+                            publicationRevision = 5,
+                            pendingPublicationRevision = 5,
+                        )
+                    }
+                },
+            ),
+        )
+
+        assertEquals(5L, profileState.profilePublicationState().pendingPublicationRevision)
+    }
+
+    @Test
+    fun `authenticated inbound payload is bridged unchanged to a generic receiver`() {
+        val receiver = runtimeHarness("generic-receiver", "Receiver")
+        val sender = runtimeHarness("generic-sender", "Sender")
+        try {
+            receiver.runtime.acceptPairing(
+                PairingAcceptRequest(sender.runtime.pairingPayload().payload, DeviceClassification.OWN),
+            )
+            val identityResolver = ProcessIdentityResolver()
+            val pid = ProcessHandle.current().pid()
+            val handle = receiver.router.open(
+                LocalPeer(
+                    uid = identityResolver.currentUid(temporaryDirectory),
+                    pid = pid,
+                    startTime = requireNotNull(identityResolver.startTime(pid)),
+                ),
+                ReceiveRequest("app", messageTypes = listOf(MessageType.NOTIFICATION)),
+            )
+            val opaqueBody = byteArrayOf(0x01, 0x02, 0x7f)
+            val envelope = EnvelopeCrypto.seal(
+                signer = sender.keyMaterial.currentOperationalSigner(),
+                typ = MessageType.NOTIFICATION,
+                bodyPlaintext = opaqueBody,
+                recipients = listOf(
+                    RecipientKey(
+                        ClientId(requireNotNull(receiver.runtime.clientId)),
+                        receiver.keyMaterial.hpkePublicKeyset(1),
+                        recipientEpoch = 1,
+                    ),
+                ),
+                messageId = "generic-inbound",
+                seq = 1,
+                createdAt = 1,
+            )
+
+            assertEquals(DeliveryOutcome.HANDLED, receiver.runtime.secureChannel.deliver(envelope))
+            val record = requireNotNull(handle.pollRecord())
+            assertEquals("generic-inbound", record.envelopeId)
+            assertEquals(MessageType.NOTIFICATION, record.messageType)
+            assertTrue(record.senderOwnDevice == true)
+            assertTrue(Base64.getDecoder().decode(requireNotNull(record.body)).contentEquals(opaqueBody))
+        } finally {
+            receiver.close()
+            sender.close()
+        }
+    }
+
+    @Test
+    fun `strict daemon sender rejects empty or non-consecutive batches before transport`() {
+        val runtime = runtime("strict-validation", "Workstation")
+        try {
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { runtime.send(emptyList()) { } }
+            }
+            val first = pending("one", MessageType.DATA_SYNC, Urgency.NORMAL)
+            val second = pending("two", MessageType.NOTIFICATION, Urgency.HIGH)
+            assertThrows(IllegalArgumentException::class.java) {
+                runBlocking { runtime.send(listOf(first, second)) { } }
+            }
+        } finally {
+            runtime.close()
         }
     }
 
@@ -146,20 +345,57 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
     }
 
     private fun runtime(directory: String, configProvider: () -> NotisyncdConfig): DesktopPeerRuntime {
+        return runtimeHarness(directory, configProvider = configProvider).runtime
+    }
+
+    private fun runtimeHarness(
+        directory: String,
+        name: String? = null,
+        configProvider: (() -> NotisyncdConfig)? = null,
+        capabilitiesProvider: () -> List<Capability> = { EXACT_CAPABILITY_ENUMS },
+        profileState: ApplicationProfilePublicationStateStore = MemoryProfileState(),
+    ): RuntimeHarness {
         val layout = DaemonStorageLayout(temporaryDirectory.resolve(directory))
-        return DesktopPeerRuntime(
-            configProvider = configProvider,
-            keyMaterial = FileKeyMaterialProvider(layout),
+        val keys = FileKeyMaterialProvider(layout)
+        val router = ApplicationReceiveRouter(
+            applications = RegisteredApplicationLookup { it == "app" },
+            identityResolver = ProcessIdentityResolver(),
+        )
+        val runtime = DesktopPeerRuntime(
+            configProvider = configProvider ?: { testConfig(requireNotNull(name)) },
+            keyMaterial = keys,
             trustPersistence = MemoryTrustPersistence(),
             authTokens = MemoryAuthTokens(),
             deduplication = MemoryDeduplication(),
-            sessions = LocalSessionRegistry(ProcessIdentityResolver()),
+            receiveRouter = router,
+            capabilitiesProvider = capabilitiesProvider,
+            profileState = profileState,
         )
+        return RuntimeHarness(runtime, router, keys)
     }
+
+    private fun pending(id: String, type: MessageType, urgency: Urgency) = PendingSend(
+        messageId = id,
+        acceptedAtEpochMillis = 1,
+        applicationId = "app",
+        messageType = type,
+        body = byteArrayOf(1),
+        scope = Recipients.OwnMesh,
+        urgency = urgency,
+        signWith = SignerSelection.OPERATIONAL,
+    )
 
     private fun testConfig(name: String) = NotisyncdConfig(
         brokerUrl = "ws://127.0.0.1:1",
         deviceName = name,
+    )
+
+    private fun testProfile(updatedAt: Long) = net.extrawdw.notisync.protocol.ProfileUpdate(
+        clientId = ClientId("desktop"),
+        displayName = "Desktop",
+        platform = NOTISYNCD_PLATFORM_NAME,
+        capabilities = EXACT_CAPABILITY_ENUMS,
+        updatedAt = updatedAt,
     )
 
     private class MemoryTrustPersistence : TrustPersistence {
@@ -187,11 +423,31 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         override fun record(messageId: String) { values += messageId }
     }
 
+    private class MemoryProfileState : ApplicationProfilePublicationStateStore {
+        private var value = ApplicationProfilePublicationState()
+
+        override fun profilePublicationState(): ApplicationProfilePublicationState = synchronized(this) { value }
+
+        override fun updateProfilePublicationState(
+            transform: (ApplicationProfilePublicationState) -> ApplicationProfilePublicationState,
+        ): ApplicationProfilePublicationState = synchronized(this) {
+            transform(value).also { value = it }
+        }
+    }
+
+    private data class RuntimeHarness(
+        val runtime: DesktopPeerRuntime,
+        val router: ApplicationReceiveRouter,
+        val keyMaterial: FileKeyMaterialProvider,
+    ) : AutoCloseable {
+        override fun close() = runtime.close()
+    }
+
     private companion object {
-        val EXACT_CAPABILITIES = setOf(
-            "CAPTURE",
-            "FOREGROUND_CONNECTION",
-            "CAPABILITY_ROUTING_V1",
+        val EXACT_CAPABILITY_ENUMS = listOf(
+            Capability.FOREGROUND_CONNECTION,
+            Capability.CAPABILITY_ROUTING_V1,
         )
+        val EXACT_CAPABILITIES = EXACT_CAPABILITY_ENUMS.mapTo(linkedSetOf()) { it.name }
     }
 }

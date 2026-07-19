@@ -18,6 +18,7 @@ import java.time.Duration
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import net.extrawdw.notisync.localapi.ApiError
+import net.extrawdw.notisync.localapi.ApplicationListResponse
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DaemonConfigView
 import net.extrawdw.notisync.localapi.DaemonStatus
@@ -56,6 +57,8 @@ interface DaemonAdministration {
     fun devices(): DeviceListResponse
     fun deviceAction(clientId: String, action: DeviceActionRequest): DeviceListResponse
     fun quarantine(request: QuarantineActionRequest): DeviceListResponse
+    fun applications(): ApplicationListResponse
+    fun removeApplication(applicationId: String)
     fun shutdown()
 }
 
@@ -66,6 +69,7 @@ class DaemonAdminClient(
     private val requestTimeout: Duration = Duration.ofSeconds(3),
 ) : DaemonAdministration {
     override fun status(): DaemonStatus = request("GET", "/v1/status")
+    internal fun readinessStatus(): DaemonStatus = request("GET", "/v1/status?probe=ready")
     override fun config(): DaemonConfigView = request("GET", "/v1/config")
     override fun patchConfig(patch: DaemonConfigPatch): DaemonConfigView =
         request("PATCH", "/v1/config", LocalApiJson.encodeToString(patch))
@@ -85,6 +89,10 @@ class DaemonAdminClient(
         "/v1/trust-store/quarantine",
         LocalApiJson.encodeToString(request),
     )
+    override fun applications(): ApplicationListResponse = request("GET", "/v1/applications")
+    override fun removeApplication(applicationId: String) {
+        requestNoContent("DELETE", "/v1/applications/${encodePath(applicationId)}", "{}")
+    }
     override fun shutdown() {
         requestNoContent("POST", "/v1/shutdown", "{}")
     }

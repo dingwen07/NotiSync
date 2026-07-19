@@ -19,6 +19,7 @@ class AppCapabilityAnnouncementTest {
                 Capability.PUSH_FILTERING,
                 Capability.DISPLAY_NOTIFICATION_UPDATES,
                 Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+                Capability.RECEIVE_RUNS,
             ),
             ANDROID_SELF_CAPABILITIES,
         )

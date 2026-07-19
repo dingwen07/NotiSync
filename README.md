@@ -20,10 +20,14 @@ Kotlin/Ktor broker, so the wire format and signature verification can never drif
                   derivation. Shared verbatim by client and server.
 :peer-core        Shared JVM peer engine: secure channel, signed trust store and convergence,
                   pairing, key rotation, broker HTTP/WebSocket client, and platform ports.
-:notisync-local-api
-                  Versioned JSON DTOs for the process-scoped local Unix-socket API.
-:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon,
-                  the `notisync` peer-management CLI, and the `nsrun` command wrapper.
+:protocol-local   JVM-only JSON DTOs for the local Unix-socket API.
+:local-client     Reusable Unix-socket client, streaming, autostart, platform paths, and private
+                  file helpers for desktop applications.
+:nsrun            Standalone NotiSync Run client: command supervision, terminal integration,
+                  private Run configuration/logs, and daemon reporting.
+:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon
+                  and the `notisync` peer-management CLI; its runtime distribution also composes
+                  the standalone `:nsrun` launcher.
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
@@ -123,6 +127,7 @@ needed:
 ```bash
 notisync config set device-name "Workstation"
 notisync status
+notisync applications list
 ```
 
 Use `notisync daemon start|stop|restart` for explicit lifecycle control. `notisync daemon` and
@@ -174,12 +179,16 @@ nsrun config get
 nsrun config set updateInterval 30s
 nsrun config set stuckAfter 5m       # or: off
 nsrun config set pty auto            # auto, always, or never
+notisync applications remove nsrun   # remove a stale local-app registration
 notisync daemon stop
 ```
 
 Configuration and private daemon data live in `~/.notisync/`. Daemon logs use the platform's user log
-location: `$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
-`~/.local/state/notisync/log/notisyncd.log`. Log lines include an ISO-8601
+location: `~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
+`$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
+`~/.local/state/notisync/log/notisyncd.log`. Use `notisync applications list` to inspect persistent
+local-application registrations and `notisync applications remove APPLICATION_ID` to clean up one
+that is no longer used. Log lines include an ISO-8601
 timestamp, severity, and thread name; the default level is `WARN` and can be changed with
 `notisyncd config set log-level info`. Rerun `./scripts/install-desktop.sh` to update the installed
 commands; if the daemon is running, the installer stops it before replacing the installation and starts

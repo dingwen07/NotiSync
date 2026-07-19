@@ -318,6 +318,8 @@
     <string name="device_capability_push_filtering">推送过滤</string>
     <string name="device_capability_notification_updates">通知更新</string>
     <string name="device_capability_android_group_summaries">Android 分组摘要</string>
+    <string name="device_capability_publish_runs">发布 NotiSync Run</string>
+    <string name="device_capability_receive_runs">接收 NotiSync Run</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>

@@ -10,6 +10,7 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.Path
 import java.time.Duration
+import java.util.Base64
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
@@ -21,25 +22,28 @@ import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.PrivateFiles
 import net.extrawdw.notisync.desktop.api.LocalApiException
 import net.extrawdw.notisync.desktop.api.UnixDaemonClient
-import net.extrawdw.notisync.desktop.config.LlmConfig
-import net.extrawdw.notisync.desktop.config.NSRunConfig
-import net.extrawdw.notisync.desktop.config.NSRunConfigStore
 import net.extrawdw.notisync.desktop.config.NotisyncdConfigStore
 import net.extrawdw.notisync.localapi.ApiError
-import net.extrawdw.notisync.localapi.CreateSessionRequest
+import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DaemonConfigView
 import net.extrawdw.notisync.localapi.LocalApiJson
-import net.extrawdw.notisync.localapi.LocalEventType
-import net.extrawdw.notisync.localapi.LocalNotificationAction
-import net.extrawdw.notisync.localapi.NotificationActionKind
-import net.extrawdw.notisync.localapi.NotificationPhase
-import net.extrawdw.notisync.localapi.NotificationRequest
+import net.extrawdw.notisync.localapi.ReceiveRequest
+import net.extrawdw.notisync.localapi.SendRequest
+import net.extrawdw.notisync.daemon.peer.storage.DaemonDatabaseRepository
+import net.extrawdw.notisync.daemon.peer.storage.PersistentApplicationBridgeStore
+import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
+import net.extrawdw.notisync.peer.channel.InboundMessage
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.SignerSelection
+import net.extrawdw.notisync.peer.transport.DeliveryMode
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -48,8 +52,10 @@ class UnixHttpServerIntegrationTest {
     @Test
     fun `notisync config changes the daemon device name over the local API`() =
         ServerFixture().use { fixture ->
-            val runStore = NSRunConfigStore(fixture.paths.nsrunConfig)
-            runStore.save(NSRunConfig(updateIntervalSeconds = 45))
+            PrivateFiles.atomicWrite(
+                fixture.paths.nsrunConfig,
+                "# NotiSync Run configuration\nupdate-interval-seconds 45\n".encodeToByteArray(),
+            )
             val originalRunConfig = Files.readAllBytes(fixture.paths.nsrunConfig)
             fixture.start()
 
@@ -65,31 +71,52 @@ class UnixHttpServerIntegrationTest {
             assertEquals(0, cli.run(arrayOf("config", "get")))
             val view = LocalApiJson.decodeFromString<DaemonConfigView>(output.toString().trim())
             assertEquals("Build Host", view.deviceName)
-            assertTrue(fixture.logs.toString().contains("HTTP PATCH /v1/config -> 200"))
-            assertTrue(fixture.logs.toString().contains("HTTP GET /v1/config -> 200"))
+            val status = fixture.raw("GET /v1/status?view=full HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            assertEquals(200, status.status)
+
+            val accessLines = fixture.logs.lines()
+            val patchAccess = accessLines.single { it.contains("\"PATCH /v1/config HTTP/1.1\"") }
+            assertTrue(patchAccess.contains("INFO  [notisyncd-http-"))
             assertTrue(
-                fixture.logs.toString().contains(
-                    "pid=${ProcessHandle.current().pid()}",
+                patchAccess.contains(
+                    "pid=${ProcessHandle.current().pid()} process=",
                 ),
             )
-            assertTrue(fixture.logs.toString().contains("process="))
-            assertTrue(fixture.logs.toString().contains("executable="))
-            assertTrue(fixture.logs.toString().contains("[notisyncd-http-"))
+            assertTrue(patchAccess.contains(" executable="))
+            assertTrue(Regex(".* \\\"PATCH /v1/config HTTP/1\\.1\\\" 200 \\d+ms$").matches(patchAccess))
+            assertFalse(patchAccess.contains("->"))
+
+            assertTrue(accessLines.any { it.contains("\"GET /v1/config HTTP/1.1\" 200 ") })
+            assertTrue(accessLines.any { it.contains("\"GET /v1/status?view=full HTTP/1.1\" 200 ") })
+        }
+
+    @Test
+    fun `only the explicit daemon readiness probe is reduced to debug`() =
+        ServerFixture().use { fixture ->
+            fixture.start()
+
+            assertEquals(200, fixture.raw("GET /v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n").status)
+            assertTrue(fixture.logs.contains("\"GET /v1/status HTTP/1.1\" 200 "))
+
+            assertEquals(
+                200,
+                fixture.raw("GET /v1/status?probe=ready HTTP/1.1\r\nHost: localhost\r\n\r\n").status,
+            )
+            assertFalse(fixture.logs.contains("\"GET /v1/status?probe=ready HTTP/1.1\""))
         }
 
     @Test
     fun `real socket status and config patch remain strictly separated from nsrun config`() =
         ServerFixture().use { fixture ->
             val secret = "local-run-key-that-must-not-leave-nsrun-conf"
-            val runStore = NSRunConfigStore(fixture.paths.nsrunConfig)
-            runStore.save(
-                NSRunConfig(
-                    llm = LlmConfig(
-                        baseUrl = "https://llm.invalid/v1",
-                        model = "test-model",
-                        apiKey = secret,
-                    ),
-                ),
+            PrivateFiles.atomicWrite(
+                fixture.paths.nsrunConfig,
+                (
+                    "# NotiSync Run configuration\n" +
+                        "llm-base-url \"https://llm.invalid/v1\"\n" +
+                        "llm-model \"test-model\"\n" +
+                        "llm-api-key \"$secret\"\n"
+                    ).encodeToByteArray(),
             )
             val originalRunConfig = Files.readAllBytes(fixture.paths.nsrunConfig)
 
@@ -97,7 +124,7 @@ class UnixHttpServerIntegrationTest {
             val statusResponse = fixture.raw("GET /v1/status HTTP/1.1\r\nHost: localhost\r\n\r\n")
             assertEquals(200, statusResponse.status)
             assertEquals(
-                setOf("CAPTURE", "FOREGROUND_CONNECTION", "CAPABILITY_ROUTING_V1"),
+                setOf("FOREGROUND_CONNECTION", "CAPABILITY_ROUTING_V1"),
                 LocalApiJson.decodeFromString<net.extrawdw.notisync.localapi.DaemonStatus>(statusResponse.body)
                     .capabilities,
             )
@@ -127,24 +154,24 @@ class UnixHttpServerIntegrationTest {
             fixture.start()
 
             val missingLength = fixture.raw(
-                "POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n",
+                "POST /v1/send HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n\r\n",
             )
             assertError(missingLength, 411, "length_required")
 
             val chunked = fixture.raw(
-                "POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\n" +
+                "POST /v1/send HTTP/1.1\r\nHost: localhost\r\n" +
                     "Transfer-Encoding: chunked\r\nContent-Type: application/json\r\n\r\n0\r\n\r\n",
             )
             assertError(chunked, 400, "transfer_encoding")
 
             val oversized = fixture.raw(
-                "POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\n" +
+                "POST /v1/send HTTP/1.1\r\nHost: localhost\r\n" +
                     "Content-Type: application/json\r\nContent-Length: 129\r\n\r\n",
             )
             assertError(oversized, 413, "body_too_large")
 
             val duplicateLength = fixture.raw(
-                "POST /v1/sessions HTTP/1.1\r\nHost: localhost\r\n" +
+                "POST /v1/send HTTP/1.1\r\nHost: localhost\r\n" +
                     "Content-Length: 0\r\nContent-Length: 0\r\n\r\n",
             )
             assertError(duplicateLength, 400, "duplicate_header")
@@ -163,79 +190,167 @@ class UnixHttpServerIntegrationTest {
         }
 
     @Test
-    fun `session bearer isolates socket requests and NDJSON events require explicit acknowledgement`() =
+    fun `applications and generic JSON plus NDJSON sends use one atomic bridge`() =
         ServerFixture().use { fixture ->
             fixture.start()
             val client = UnixDaemonClient(fixture.paths.socket)
-            val first = client.createSession(CreateSessionRequest("first-client"))
-            val second = client.createSession(CreateSessionRequest("second-client"))
-            assertTrue(first.sourceKey.startsWith("local:"))
-            assertFalse(first.sourceKey == second.sourceKey)
+            val beforeRegistration = assertThrows(LocalApiException::class.java) {
+                client.send(send("nsrun", byteArrayOf(1)))
+            }
+            assertEquals(409, beforeRegistration.status)
 
-            val generation = 7L
-            val notification = NotificationRequest(
-                sessionId = first.sessionId,
-                generation = generation,
-                phase = NotificationPhase.BLOCKED,
-                title = "Input required",
-                text = "Continue?",
-                silent = false,
-                ongoing = true,
-                clearable = false,
-                actions = listOf(
-                    LocalNotificationAction(
-                        id = "input",
-                        title = "Input",
-                        kind = NotificationActionKind.REMOTE_INPUT,
-                        generation = generation,
-                        remoteInputLabel = "Reply",
+            val registered = client.putApplication(
+                "nsrun",
+                ApplicationRegistrationRequest(
+                    displayName = "NotiSync Run",
+                    version = "1.0",
+                    capabilities = setOf(Capability.PUBLISH_RUNS, Capability.CAPTURE),
+                ),
+            )
+            assertEquals("nsrun", registered.applicationId)
+            assertEquals(
+                listOf(Capability.CAPTURE, Capability.PUBLISH_RUNS),
+                registered.capabilities,
+            )
+            val applications = client.listApplications()
+            assertEquals(listOf("nsrun"), applications.applications.map { it.applicationId })
+            assertEquals(
+                listOf(
+                    Capability.CAPTURE,
+                    Capability.FOREGROUND_CONNECTION,
+                    Capability.CAPABILITY_ROUTING_V1,
+                    Capability.PUBLISH_RUNS,
+                ),
+                applications.effectiveCapabilities,
+            )
+
+            val jsonAccepted = client.send(send("nsrun", byteArrayOf(2), submissionId = "single"))
+            assertEquals("single", jsonAccepted.submissionId)
+            val firstPending = fixture.bridge.peekConsecutive().single()
+            assertEquals(jsonAccepted.messageId, firstPending.messageId)
+            assertEquals(Recipients.OwnMesh, firstPending.scope)
+            assertEquals(Urgency.NORMAL, firstPending.urgency)
+            assertEquals(SignerSelection.OPERATIONAL, firstPending.signWith)
+
+            val ndjsonAccepted = client.sendAll(
+                listOf(
+                    send("nsrun", byteArrayOf(3), submissionId = "batch-1"),
+                    send(
+                        "nsrun",
+                        byteArrayOf(4),
+                        messageType = MessageType.NOTIFICATION,
+                        submissionId = "batch-2",
                     ),
                 ),
             )
-            assertTrue(client.postNotification(first, notification).id.isNotBlank())
+            assertEquals(listOf("batch-1", "batch-2"), ndjsonAccepted.map { it.submissionId })
+            assertEquals(3, fixture.bridge.pendingCount())
 
-            val crossSession = assertThrows(LocalApiException::class.java) {
-                client.postNotification(
-                    second.copy(bearerToken = first.bearerToken),
-                    notification.copy(sessionId = second.sessionId),
-                )
-            }
-            assertEquals(401, crossSession.status)
-            assertEquals("unauthorized", crossSession.apiError?.code)
-
-            val wireAction = fixture.sessions.registeredActions(first.sessionId).single()
-            assertTrue(
-                fixture.sessions.deliverWireAction(
-                    sourceKey = first.sourceKey,
-                    actionIndex = wireAction.index,
-                    actionTitle = wireAction.title,
-                    inputText = "continue",
-                    senderClientId = "trusted-phone",
-                    senderIsTrustedOwnDevice = true,
-                    actionGeneration = wireAction.generation,
-                    actionToken = wireAction.actionToken,
-                    relayMessageId = "socket-integration-action",
-                ),
+            val validLine = LocalApiJson.encodeToString(send("nsrun", byteArrayOf(5)))
+            val malformed = "$validLine\n{\"applicationId\":\"nsrun\",\"messageType\":\"DATA_SYNC\"}\n"
+            val rejected = fixture.request(
+                method = "POST",
+                target = "/v1/send",
+                body = malformed,
+                contentType = "application/x-ndjson",
             )
+            assertError(rejected, 400, "invalid_request")
+            assertEquals(3, fixture.bridge.pendingCount())
 
-            client.openEvents(first).use { stream ->
-                val event = stream.next()
-                requireNotNull(event)
-                assertEquals(LocalEventType.ACTION, event.type)
-                assertEquals(first.sessionId, event.sessionId)
-                assertEquals(generation, event.generation)
-                assertEquals("input", event.actionId)
-                assertEquals("continue", event.inputText)
-                client.acknowledgeEvent(first, event.id)
+            client.deleteApplication("nsrun")
+            assertTrue(client.listApplications().applications.isEmpty())
+            assertEquals(
+                listOf(Capability.FOREGROUND_CONNECTION, Capability.CAPABILITY_ROUTING_V1),
+                client.listApplications().effectiveCapabilities,
+            )
+            assertEquals(0, fixture.bridge.pendingCount())
+        }
+
+    @Test
+    fun `send rejects unsupported content type record overflow and mixed applications atomically`() =
+        ServerFixture().use { fixture ->
+            fixture.start()
+            val client = UnixDaemonClient(fixture.paths.socket)
+            client.putApplication("nsrun", ApplicationRegistrationRequest("NotiSync Run"))
+            client.putApplication("other", ApplicationRegistrationRequest("Other"))
+
+            val oneRecord = LocalApiJson.encodeToString(send("nsrun", byteArrayOf(1)))
+            val unsupported = fixture.request(
+                method = "POST",
+                target = "/v1/send",
+                body = oneRecord,
+                contentType = "text/plain",
+            )
+            assertError(unsupported, 415, "content_type")
+            assertEquals(0, fixture.bridge.pendingCount())
+
+            val tooManyRecords = List(1_025) { oneRecord }.joinToString(separator = "\n", postfix = "\n")
+            val overflow = fixture.request(
+                method = "POST",
+                target = "/v1/send",
+                body = tooManyRecords,
+                contentType = "application/x-ndjson",
+            )
+            assertError(overflow, 413, "too_many_records")
+            assertEquals(0, fixture.bridge.pendingCount())
+
+            val mixedApplications = listOf(
+                LocalApiJson.encodeToString(send("nsrun", byteArrayOf(2))),
+                LocalApiJson.encodeToString(send("other", byteArrayOf(3))),
+            ).joinToString(separator = "\n", postfix = "\n")
+            val mixed = fixture.request(
+                method = "POST",
+                target = "/v1/send",
+                body = mixedApplications,
+                contentType = "application/x-ndjson",
+            )
+            assertError(mixed, 400, "invalid_request")
+            assertEquals(0, fixture.bridge.pendingCount())
+        }
+
+    @Test
+    fun `receive sockets fan out while ack completion and interest deletion are application scoped`() =
+        ServerFixture().use { fixture ->
+            fixture.start()
+            val client = UnixDaemonClient(fixture.paths.socket)
+            client.putApplication("nsrun", ApplicationRegistrationRequest("NotiSync Run"))
+            val interest = ReceiveRequest("nsrun", messageTypes = listOf(MessageType.NOTIFICATION))
+
+            client.openReceive(interest).use { first ->
+                client.openReceive(interest).use { second ->
+                    fixture.awaitAccessCount("\"POST /v1/receive HTTP/1.1\" 200 ", 2)
+                    assertEquals(1, fixture.receiver.interestCount("nsrun"))
+                    assertTrue(fixture.receiver.accept(fixture.inbound("fanout", byteArrayOf(7, 8))))
+                    assertEquals("fanout", first.next()?.envelopeId)
+                    assertEquals("fanout", second.next()?.envelopeId)
+                    assertEquals(1, fixture.receiver.pendingCount("nsrun"))
+
+                    client.ack("nsrun", "fanout")
+                    client.ack("nsrun", "fanout")
+                    assertEquals(0, fixture.receiver.pendingCount("nsrun"))
+
+                    assertTrue(fixture.receiver.accept(fixture.inbound("complete", byteArrayOf(9))))
+                    assertEquals("complete", first.next()?.envelopeId)
+                    assertEquals("complete", second.next()?.envelopeId)
+                    client.complete(
+                        applicationId = "nsrun",
+                        envelopeId = "complete",
+                        sends = listOf(send("nsrun", byteArrayOf(10), submissionId = "response")),
+                    )
+                    client.complete(
+                        applicationId = "nsrun",
+                        envelopeId = "complete",
+                        sends = listOf(send("nsrun", byteArrayOf(10), submissionId = "response")),
+                    )
+                    assertEquals(0, fixture.receiver.pendingCount("nsrun"))
+                    assertEquals(1, fixture.bridge.pendingCount())
+
+                    client.unregisterReceive(interest)
+                    assertEquals(0, fixture.receiver.interestCount("nsrun"))
+                    assertFalse(fixture.receiver.accept(fixture.inbound("ignored", byteArrayOf(11))))
+                    assertEquals(0, fixture.receiver.pendingCount("nsrun"))
+                }
             }
-
-            val peer = fixture.localPeer(first.peerIdentityVerified)
-            assertNull(fixture.sessions.awaitEvent(first.sessionId, first.bearerToken, peer, 0))
-
-            val badBearer = assertThrows(LocalApiException::class.java) {
-                client.openEvents(first.copy(bearerToken = "not-the-session-bearer"))
-            }
-            assertEquals(401, badBearer.status)
         }
 
     @Test
@@ -249,6 +364,18 @@ class UnixHttpServerIntegrationTest {
             fixture.awaitStopped()
             assertFalse(Files.exists(fixture.paths.socket))
         }
+
+    private fun send(
+        applicationId: String,
+        body: ByteArray,
+        messageType: MessageType = MessageType.DATA_SYNC,
+        submissionId: String? = null,
+    ) = SendRequest(
+        applicationId = applicationId,
+        messageType = messageType,
+        body = Base64.getEncoder().encodeToString(body),
+        submissionId = submissionId,
+    )
 
     private fun assertError(response: RawResponse, status: Int, code: String) {
         assertEquals(status, response.status)
@@ -264,8 +391,9 @@ class UnixHttpServerIntegrationTest {
         val paths = DesktopPaths(root)
         private val identityResolver = ProcessIdentityResolver()
         val logs = StringBuilder()
-        val sessions: LocalSessionRegistry
-        private val dispatcher: NotificationDispatcher
+        val bridge: PersistentApplicationBridgeStore
+        val receiver: ApplicationReceiveRouter
+        private val dispatcher: GenericSendDispatcher
         private val service: DaemonService
         private val server: UnixHttpServer
         private val executor = Executors.newSingleThreadExecutor()
@@ -273,16 +401,24 @@ class UnixHttpServerIntegrationTest {
 
         init {
             PrivateFiles.ensureDirectory(root)
-            sessions = LocalSessionRegistry(identityResolver)
-            dispatcher = NotificationDispatcher(
-                sessions = sessions,
-                outbox = InMemoryNotificationOutbox(),
-                sender = object : NotificationMeshSender {
-                    override val clientId = ClientId("local-test-daemon")
-                    override suspend fun send(item: PendingNotification) = Unit
-                },
+            bridge = PersistentApplicationBridgeStore(
+                DaemonDatabaseRepository(DaemonStorageLayout(root)),
             )
-            service = DaemonService(NotisyncdConfigStore(paths.daemonConfig), sessions, dispatcher)
+            receiver = ApplicationReceiveRouter(
+                applications = RegisteredApplicationLookup { bridge.find(it) != null },
+                identityResolver = identityResolver,
+            )
+            dispatcher = GenericSendDispatcher(
+                outbox = bridge,
+                sender = GenericBatchSender { _, _ -> Unit },
+            )
+            service = DaemonService(
+                configStore = NotisyncdConfigStore(paths.daemonConfig),
+                applications = bridge,
+                receiver = receiver,
+                sendResolver = GenericSendResolver(bridge, ActionOriginPolicy { true }),
+                sendDispatcher = dispatcher,
+            )
             server = UnixHttpServer(
                 socketPath = paths.socket,
                 service = service,
@@ -314,10 +450,14 @@ class UnixHttpServerIntegrationTest {
         }
 
         fun jsonRequest(method: String, target: String, body: String): RawResponse {
+            return request(method, target, body, "application/json")
+        }
+
+        fun request(method: String, target: String, body: String, contentType: String): RawResponse {
             val bytes = body.toByteArray(StandardCharsets.UTF_8)
             return raw(
                 "$method $target HTTP/1.1\r\nHost: localhost\r\n" +
-                    "Content-Type: application/json\r\nContent-Length: ${bytes.size}\r\n\r\n$body",
+                    "Content-Type: $contentType\r\nContent-Length: ${bytes.size}\r\n\r\n$body",
             )
         }
 
@@ -333,11 +473,24 @@ class UnixHttpServerIntegrationTest {
             }
         }
 
-        fun localPeer(verified: Boolean): LocalPeer {
-            val uid = identityResolver.currentUid(root)
-            if (!verified) return LocalPeer(uid, null, null)
-            val pid = ProcessHandle.current().pid()
-            return LocalPeer(uid, pid, requireNotNull(identityResolver.startTime(pid)))
+        fun inbound(id: String, body: ByteArray) = InboundMessage(
+            senderId = ClientId("trusted-phone"),
+            senderOwnDevice = true,
+            typ = MessageType.NOTIFICATION,
+            body = body,
+            signerEpoch = 4,
+            messageId = id,
+            deliveryMode = DeliveryMode.WEBSOCKET,
+        )
+
+        fun awaitAccessCount(marker: String, expected: Int) {
+            val deadline = System.nanoTime() + Duration.ofSeconds(2).toNanos()
+            while (logs.lines().count { marker in it } < expected) {
+                check(System.nanoTime() < deadline) {
+                    "expected $expected access records containing '$marker'; logs were:\n$logs"
+                }
+                Thread.onSpinWait()
+            }
         }
 
         fun awaitStopped() {

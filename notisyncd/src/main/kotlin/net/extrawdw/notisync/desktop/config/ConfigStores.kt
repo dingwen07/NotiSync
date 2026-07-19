@@ -36,55 +36,6 @@ data class NotisyncdConfig(
     }
 }
 
-@Serializable
-enum class PtyMode { AUTO, ALWAYS, NEVER }
-
-@Serializable
-data class LlmConfig(
-    val baseUrl: String,
-    val model: String,
-    val apiKey: String,
-    val timeoutSeconds: Int = 8,
-    val treeDepth: Int = 2,
-    val treeEntries: Int = 200,
-    val treeBytes: Int = 32 * 1024,
-    val outputBytes: Int = 16 * 1024,
-) {
-    fun validate(): LlmConfig = apply {
-        require(baseUrl.startsWith("http://") || baseUrl.startsWith("https://")) {
-            "llm-base-url must use http:// or https://"
-        }
-        require(model.isNotBlank()) { "llm-model must not be blank" }
-        require(apiKey.isNotBlank()) { "llm-api-key must not be blank" }
-        require(timeoutSeconds in 1..120) { "llm-timeout-seconds must be between 1 and 120" }
-        require(treeDepth in 0..2) { "llm-tree-depth must be between 0 and 2" }
-        require(treeEntries in 0..200) { "llm-tree-entries must be between 0 and 200" }
-        require(treeBytes in 0..32 * 1024) { "llm-tree-bytes must be at most 32768" }
-        require(outputBytes in 0..16 * 1024) { "llm-output-bytes must be at most 16384" }
-    }
-}
-
-@Serializable
-data class NSRunConfig(
-    val updateIntervalSeconds: Long = 30,
-    /** Null disables silence-only stuck detection; direct terminal waits are still detected. */
-    val stuckAfterSeconds: Long? = 5 * 60,
-    val pty: PtyMode = PtyMode.AUTO,
-    val logRetentionDays: Int = 30,
-    val logMaxBytes: Long = 100L * 1024 * 1024,
-    val llm: LlmConfig? = null,
-) {
-    fun validate(): NSRunConfig = apply {
-        require(updateIntervalSeconds in 5..86_400) { "update-interval-seconds must be between 5 and 86400" }
-        require(stuckAfterSeconds == null || stuckAfterSeconds in 10..604_800) {
-            "stuck-after-seconds must be off or between 10 and 604800"
-        }
-        require(logRetentionDays in 0..3650) { "log-retention-days must be between 0 and 3650" }
-        require(logMaxBytes in 0..10L * 1024 * 1024 * 1024) { "log-max-bytes is out of range" }
-        llm?.validate()
-    }
-}
-
 interface ConfigStore<T> {
     val path: Path
     fun load(): T
@@ -104,28 +55,6 @@ class NotisyncdConfigStore(
         load()
     } catch (original: Exception) {
         recoverMalformed(path, ::NotisyncdConfig, ::save, original, onRecovery)
-    }
-}
-
-class NSRunConfigStore(
-    override val path: Path = DesktopPaths.default().nsrunConfig,
-) : ConfigStore<NSRunConfig> {
-    override fun load(): NSRunConfig = readConfig(path, ::NSRunConfig, NSRunConfigCodec::decode).validate()
-
-    override fun save(value: NSRunConfig) {
-        PrivateFiles.atomicWrite(path, NSRunConfigCodec.encode(value.validate()).encodeToByteArray())
-    }
-
-    fun render(value: NSRunConfig = load()): String = NSRunConfigCodec.encode(value.validate())
-
-    /**
-     * Runtime-only recovery path. [load] remains strict for config management and tests, while an
-     * unrelated malformed Run configuration must not prevent the requested child from starting.
-     */
-    fun loadRecovering(onRecovery: (String) -> Unit = {}): NSRunConfig = try {
-        load()
-    } catch (original: Exception) {
-        recoverMalformed(path, ::NSRunConfig, ::save, original, onRecovery)
     }
 }
 
@@ -204,85 +133,6 @@ internal object NotisyncdConfigCodec {
         option("auto-apply-trusted-device-tables", if (value.automaticallyApplyTrustedDeviceTables) "yes" else "no", false)
         option("log-level", value.logLevel)
         option("websocket-ping-seconds", value.websocketPingSeconds.toString(), false)
-    }
-}
-
-internal object NSRunConfigCodec {
-    private val options = setOf(
-        "update-interval-seconds",
-        "stuck-after-seconds",
-        "pty",
-        "log-retention-days",
-        "log-max-bytes",
-        "llm-base-url",
-        "llm-model",
-        "llm-api-key",
-        "llm-timeout-seconds",
-        "llm-tree-depth",
-        "llm-tree-entries",
-        "llm-tree-bytes",
-        "llm-output-bytes",
-    )
-    private val llmOptions = options.filterTo(linkedSetOf()) { it.startsWith("llm-") }
-
-    fun decode(text: String, path: Path): NSRunConfig {
-        val values = LineConfig.parse(text, path, options)
-        val defaults = NSRunConfig()
-        val presentLlm = values.keys.intersect(llmOptions)
-        val llm = if (presentLlm.isEmpty()) null else {
-            val required = setOf("llm-base-url", "llm-model", "llm-api-key")
-            val missing = required - values.keys
-            require(missing.isEmpty()) {
-                "$path: incomplete LLM configuration; missing ${missing.sorted().joinToString()}"
-            }
-            LlmConfig(
-                baseUrl = requireNotNull(values.string("llm-base-url")),
-                model = requireNotNull(values.string("llm-model")),
-                apiKey = requireNotNull(values.string("llm-api-key")),
-                timeoutSeconds = values.int("llm-timeout-seconds") ?: 8,
-                treeDepth = values.int("llm-tree-depth") ?: 2,
-                treeEntries = values.int("llm-tree-entries") ?: 200,
-                treeBytes = values.int("llm-tree-bytes") ?: 32 * 1024,
-                outputBytes = values.int("llm-output-bytes") ?: 16 * 1024,
-            ).validate()
-        }
-        return NSRunConfig(
-            updateIntervalSeconds = values.long("update-interval-seconds") ?: defaults.updateIntervalSeconds,
-            stuckAfterSeconds = when (val entry = values.entry("stuck-after-seconds")) {
-                null -> defaults.stuckAfterSeconds
-                else -> if (entry.value.equals("off", true)) null else entry.long("stuck-after-seconds")
-            },
-            pty = values.entry("pty")?.let { entry ->
-                runCatching { PtyMode.valueOf(entry.value.uppercase()) }.getOrElse {
-                    throw entry.error("pty must be auto, always, or never")
-                }
-            } ?: defaults.pty,
-            logRetentionDays = values.int("log-retention-days") ?: defaults.logRetentionDays,
-            logMaxBytes = values.long("log-max-bytes") ?: defaults.logMaxBytes,
-            llm = llm,
-        ).validate()
-    }
-
-    fun encode(value: NSRunConfig): String = buildString {
-        appendLine("# NotiSync Run configuration")
-        appendLine("# This file is never read or exposed by notisyncd.")
-        option("update-interval-seconds", value.updateIntervalSeconds.toString(), false)
-        option("stuck-after-seconds", value.stuckAfterSeconds?.toString() ?: "off", false)
-        option("pty", value.pty.name.lowercase(), false)
-        option("log-retention-days", value.logRetentionDays.toString(), false)
-        option("log-max-bytes", value.logMaxBytes.toString(), false)
-        value.llm?.let { llm ->
-            appendLine()
-            appendLine("# OpenAI-compatible content generation (used only with nsrun --llm)")
-            option("llm-base-url", llm.baseUrl)
-            option("llm-model", llm.model)
-            option("llm-api-key", llm.apiKey)
-            option("llm-timeout-seconds", llm.timeoutSeconds.toString(), false)
-            option("llm-tree-depth", llm.treeDepth.toString(), false)
-            option("llm-tree-entries", llm.treeEntries.toString(), false)
-            option("llm-tree-bytes", llm.treeBytes.toString(), false)
-            option("llm-output-bytes", llm.outputBytes.toString(), false)
-        }
     }
 }
 

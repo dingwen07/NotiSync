@@ -2,6 +2,7 @@ package net.extrawdw.notisync.daemon.logging
 
 import java.time.Clock
 import java.time.format.DateTimeFormatter
+import java.time.format.DateTimeFormatterBuilder
 import java.util.concurrent.atomic.AtomicReference
 
 enum class DaemonLogLevel {
@@ -42,8 +43,12 @@ class DaemonLogger(
 
     private fun write(level: DaemonLogLevel, message: String) {
         if (level.ordinal < threshold.get().ordinal) return
-        val timestamp = DateTimeFormatter.ISO_INSTANT.format(clock.instant())
-        val prefix = "$timestamp ${level.name.padEnd(5)} [${threadName()}] "
+        val timestamp = TIMESTAMP_FORMATTER.format(clock.instant())
+        val currentThreadName = runCatching { threadName().trim() }
+            .getOrNull()
+            ?.takeIf(String::isNotEmpty)
+            ?: "unnamed"
+        val prefix = "$timestamp ${level.name.padEnd(5)} [$currentThreadName] "
         val lines = message.lineSequence().toList().ifEmpty { listOf("") }
         // Logging must never take down the daemon because a redirected stream became unavailable.
         runCatching {
@@ -51,5 +56,12 @@ class DaemonLogger(
                 lines.forEach { line -> output.append(prefix).append(line).append('\n') }
             }
         }
+    }
+
+    private companion object {
+        /** UTC ISO-8601 with an exact millisecond field, including for whole-second instants. */
+        val TIMESTAMP_FORMATTER: DateTimeFormatter = DateTimeFormatterBuilder()
+            .appendInstant(3)
+            .toFormatter()
     }
 }

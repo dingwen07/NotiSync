@@ -3,6 +3,8 @@ package net.extrawdw.notisync.cli
 import java.io.IOException
 import java.nio.file.Path
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.localapi.ApplicationListResponse
+import net.extrawdw.notisync.localapi.ApplicationView
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DaemonConfigView
 import net.extrawdw.notisync.localapi.DaemonConnectionState
@@ -17,6 +19,7 @@ import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.PairingPayloadResponse
 import net.extrawdw.notisync.localapi.QuarantineActionRequest
+import net.extrawdw.notisync.protocol.Capability
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -158,6 +161,49 @@ class NotisyncCliTest {
         assertTrue(fixture.error.toString().contains("unknown command: pair"))
     }
 
+    @Test
+    fun `applications list prints registrations and deterministic effective capabilities`() {
+        val administration = FakeAdministration(
+            mutableListOf(),
+            applicationState = mutableListOf(
+                ApplicationView(
+                    applicationId = "nsrun",
+                    displayName = "NotiSync Run",
+                    version = "1.2.3",
+                    capabilities = listOf(Capability.CAPTURE, Capability.PUBLISH_RUNS),
+                    updatedAtEpochMillis = 123,
+                ),
+            ),
+        )
+        val fixture = CliFixture(administration)
+
+        assertEquals(0, fixture.cli.run(arrayOf("applications", "list")))
+        assertTrue(fixture.output.toString().contains("nsrun\tNotiSync Run\tCAPTURE,PUBLISH_RUNS"))
+        assertTrue(fixture.output.toString().contains("  version: 1.2.3"))
+        assertTrue(
+            fixture.output.toString().contains(
+                "effective capabilities: CAPTURE, FOREGROUND_CONNECTION, CAPABILITY_ROUTING_V1, PUBLISH_RUNS",
+            ),
+        )
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
+    fun `applications remove delegates the exact application id`() {
+        val administration = FakeAdministration(
+            mutableListOf(),
+            applicationState = mutableListOf(
+                ApplicationView("nsrun", "NotiSync Run", capabilities = emptyList(), updatedAtEpochMillis = 1),
+            ),
+        )
+        val fixture = CliFixture(administration)
+
+        assertEquals(0, fixture.cli.run(arrayOf("apps", "remove", "nsrun")))
+        assertEquals(listOf("nsrun"), administration.removedApplications)
+        assertTrue(fixture.output.toString().contains("Removed application nsrun."))
+        assertEquals("", fixture.error.toString())
+    }
+
     private class CliFixture(
         administration: FakeAdministration = FakeAdministration(mutableListOf()),
         autostart: () -> Unit = {},
@@ -178,9 +224,11 @@ class NotisyncCliTest {
     private class FakeAdministration(
         private val deviceState: MutableList<DeviceView>,
         private var statusFailures: Int = 0,
+        private val applicationState: MutableList<ApplicationView> = mutableListOf(),
     ) : DaemonAdministration {
         val actions = mutableListOf<Pair<String, DeviceAction>>()
         val inspectedPairings = mutableListOf<String>()
+        val removedApplications = mutableListOf<String>()
 
         override fun status(): DaemonStatus {
             if (statusFailures > 0) {
@@ -232,6 +280,21 @@ class NotisyncCliTest {
         }
 
         override fun quarantine(request: QuarantineActionRequest): DeviceListResponse = devices()
+
+        override fun applications() = ApplicationListResponse(
+            applications = applicationState.toList(),
+            effectiveCapabilities = listOf(
+                Capability.CAPTURE,
+                Capability.FOREGROUND_CONNECTION,
+                Capability.CAPABILITY_ROUTING_V1,
+                Capability.PUBLISH_RUNS,
+            ),
+        )
+
+        override fun removeApplication(applicationId: String) {
+            removedApplications += applicationId
+            applicationState.removeIf { it.applicationId == applicationId }
+        }
 
         override fun shutdown() = Unit
 

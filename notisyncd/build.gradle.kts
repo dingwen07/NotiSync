@@ -11,7 +11,8 @@ kotlin {
 }
 
 dependencies {
-    implementation(project(":notisync-local-api"))
+    implementation(project(":protocol-local"))
+    implementation(project(":local-client"))
     implementation(project(":protocol"))
     implementation(project(":peer-core"))
     implementation(libs.kotlinx.serialization.json)
@@ -20,10 +21,8 @@ dependencies {
     implementation(libs.tink)
     implementation(libs.zxing.core)
 
-    // PTY4J ships native helpers for Linux and macOS. NSRun falls back to ProcessBuilder when unavailable.
-    implementation(libs.pty4j)
     implementation(libs.jna)
-    runtimeOnly(libs.slf4j.nop)
+    runtimeOnly(project(":nsrun"))
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)

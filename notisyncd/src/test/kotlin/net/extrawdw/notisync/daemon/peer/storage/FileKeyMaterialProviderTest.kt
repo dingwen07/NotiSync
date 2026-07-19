@@ -3,7 +3,7 @@ package net.extrawdw.notisync.daemon.peer.storage
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
-import net.extrawdw.notisync.daemon.storage.SecureFileSystem
+import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.daemon.storage.StorageTestSupport
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.IdentityVerifier

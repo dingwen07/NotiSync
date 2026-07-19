@@ -1,6 +1,5 @@
 package net.extrawdw.notisync.peer.channel
 
-import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 
@@ -17,37 +16,6 @@ class SenderKey(
     val verifySpki: ByteArray,
     val ownDevice: Boolean,
 )
-
-/** Audience selector the directory resolves into a concrete recipient set. */
-sealed interface Recipients {
-    /** This user's own devices only (notifications, dismissals, trust, cards, asset repair). */
-    data object OwnMesh : Recipients
-
-    /** Every trusted device — own AND "other" (used only by profile updates). */
-    data object AllTrusted : Recipients
-
-    /** This user's own devices except specific peers and (optionally) platform families. [excludedPlatforms]
-     *  is an unconditional policy/user gate. [legacyExcludedPlatforms] is only the compatibility fallback for
-     *  peers without CAPABILITY_ROUTING_V1; a routed peer uses [requiredCapabilities] instead. */
-    data class OwnMeshFiltered(
-        val excluded: Set<ClientId> = emptySet(),
-        val excludedPlatforms: Set<String> = emptySet(),
-        val legacyExcludedPlatforms: Set<String> = emptySet(),
-        /** Existing requirements (for example DISPLAY) apply to every peer. New requirements apply once a
-         *  peer advertises CAPABILITY_ROUTING_V1; legacy peers use [legacyExcludedPlatforms] as fallback. */
-        val requiredCapabilities: Set<Capability> = emptySet(),
-        /** Capabilities which disqualify a peer even when every required capability is present. This is an
-         *  unconditional negative requirement, so callers can describe audiences such as the compatibility
-         *  display path (`DISPLAY` + `BACKGROUND_WAKE`, but not `PUSH_FILTERING`) without platform checks. */
-        val forbiddenCapabilities: Set<Capability> = emptySet(),
-        /** Reject legacy peers that do not advertise capability-routing support. Default false keeps
-         * existing Android routing source-compatible; callers such as nsrun periodic updates set true. */
-        val requireCapabilityRoutingV1: Boolean = false,
-    ) : Recipients
-
-    /** A single device by id (unicast: card / asset repair). */
-    data class Only(val id: ClientId) : Recipients
-}
 
 /**
  * The read-only port [SecureChannel] depends on for its only two directory needs: authenticate a

@@ -15,8 +15,9 @@ import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.daemon.storage.DaemonAlreadyRunningException
 import net.extrawdw.notisync.daemon.storage.DaemonInstanceLock
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
-import net.extrawdw.notisync.daemon.storage.SecureFileSystem
+import net.extrawdw.notisync.desktop.DesktopProcessTitle
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.config.NotisyncdConfigStore
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.LocalApiJson
@@ -83,35 +84,25 @@ class NotisyncdCli(
             val peer = createFileBackedDesktopPeer(
                 layout = layout,
                 configStore = configStore,
-                sessionFactory = { database ->
-                    LocalSessionRegistry(identityResolver, database = database)
-                },
+                identityResolver = identityResolver,
                 fileSystem = fileSystem,
                 logger = daemonLogger,
             )
-            val registry = peer.sessions
-            val dispatcher = NotificationDispatcher(
-                sessions = registry,
-                outbox = peer.notificationOutbox,
-                sender = peer.notificationSender,
-                logger = daemonLogger,
-            )
-            val runDispatcher = RunDispatcher(
-                sessions = registry,
-                runOutbox = peer.runOutbox,
-                resultOutbox = peer.runResultOutbox,
-                iosOutbox = peer.runIosOutbox,
-                iosSender = peer.notificationSender,
-                sender = peer.runSender,
+            val sendResolver = GenericSendResolver(peer.applications, peer.actionOrigins)
+            val sendDispatcher = GenericSendDispatcher(
+                outbox = peer.applications,
+                sender = peer.sender,
                 logger = daemonLogger,
             )
             val service = DaemonService(
                 configStore = configStore,
-                sessions = registry,
-                dispatcher = dispatcher,
-                runDispatcher = runDispatcher,
+                applications = peer.applications,
+                receiver = peer.receiver,
+                sendResolver = sendResolver,
+                sendDispatcher = sendDispatcher,
                 peerAdministration = peer.administration,
-                genericControl = peer.meshControl,
+                logger = daemonLogger,
+                onMaterialProfileChanged = peer.runtime::requestProfilePublication,
                 onConfigChanged = { old, updated ->
                     daemonLogger.updateLevel(updated.logLevel)
                     daemonLogger.info(
@@ -126,21 +117,18 @@ class NotisyncdCli(
                     daemonLogger.info("Shutdown requested")
                     service.requestShutdown()
                     runCatching { server.close() }
-                    runCatching { dispatcher.close() }
-                    runCatching { runDispatcher.close() }
+                    runCatching { sendDispatcher.close() }
                     runCatching { peer.runtime.close() }
                 }, "notisyncd-shutdown"),
             )
-            dispatcher.start()
-            runDispatcher.start()
             peer.runtime.start()
+            sendDispatcher.start()
             daemonLogger.info("Daemon ready on ${paths.socket}")
             try {
                 server.run()
             } finally {
                 service.requestShutdown()
-                dispatcher.close()
-                runDispatcher.close()
+                sendDispatcher.close()
                 peer.runtime.close()
                 daemonLogger.info("notisyncd stopped")
             }
@@ -262,7 +250,8 @@ class NotisyncdCli(
         return 0
     }
 
-    private fun daemonResponds(): Boolean = runCatching { DaemonAdminClient(paths.socket).status() }.isSuccess
+    private fun daemonResponds(): Boolean =
+        runCatching { DaemonAdminClient(paths.socket).readinessStatus() }.isSuccess
 
     private fun removeStaleSocket() {
         if (!Files.exists(paths.socket, LinkOption.NOFOLLOW_LINKS)) return

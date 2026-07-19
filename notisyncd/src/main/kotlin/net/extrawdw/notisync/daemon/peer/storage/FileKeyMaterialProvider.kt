@@ -13,7 +13,7 @@ import java.security.spec.X509EncodedKeySpec
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.DurableJsonState
-import net.extrawdw.notisync.daemon.storage.SecureFileSystem
+import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.peer.ports.KeyMaterialProvider
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
