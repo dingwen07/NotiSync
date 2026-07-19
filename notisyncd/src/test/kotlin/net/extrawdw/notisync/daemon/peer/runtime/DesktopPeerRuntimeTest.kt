@@ -75,6 +75,7 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
             assertEquals(inspected.clientId, trusted.clientId)
             assertEquals(DeviceClassification.OWN, trusted.classification)
             assertEquals(DeviceTrustStatus.TRUSTED, trusted.trustStatus)
+            assertEquals(NOTISYNCD_PLATFORM_NAME, trusted.platform)
             assertEquals(EXACT_CAPABILITIES, trusted.capabilities)
             assertTrue(trusted.keyAvailable)
             assertTrue(trusted.verified)

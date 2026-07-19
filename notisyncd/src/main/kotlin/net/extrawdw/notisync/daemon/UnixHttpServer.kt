@@ -20,6 +20,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.localapi.ActionSendRequest
 import net.extrawdw.notisync.localapi.ApiError
 import net.extrawdw.notisync.localapi.CloseSessionRequest
@@ -48,10 +49,13 @@ class UnixHttpServer(
     private val maxHeaderBytes: Int = 64 * 1024,
     private val maxBodyBytes: Int = 1024 * 1024,
     private val requestReadTimeoutMillis: Int = 15_000,
+    private val logger: DaemonLogger = DaemonLogger("WARN"),
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
     private val listenerClosed = AtomicBoolean(false)
-    private val clients = Executors.newVirtualThreadPerTaskExecutor()
+    private val clients = Executors.newThreadPerTaskExecutor(
+        Thread.ofVirtual().name("notisyncd-http-", 0).factory(),
+    )
     private val activeSockets = ConcurrentHashMap.newKeySet<AFUNIXSocket>()
     private lateinit var server: AFUNIXServerSocket
     private var daemonUid: Long = -1
@@ -113,28 +117,53 @@ class UnixHttpServer(
         socket.use {
             it.soTimeout = requestReadTimeoutMillis
             val output = BufferedOutputStream(it.getOutputStream())
+            val startedAt = System.nanoTime()
+            var peer: LocalPeer? = null
+            var executable: ProcessExecutable? = null
+            var request: HttpRequest? = null
+            var responseStatus: Int? = null
             try {
-                val peer = identityResolver.resolve(it)
+                peer = identityResolver.resolve(it)
+                executable = peer.pid?.let(identityResolver::executable)
                 if (peer.uid != daemonUid) {
+                    responseStatus = 403
                     writeJson(output, 403, ApiError("wrong_uid", "local API access is restricted to the daemon uid"))
                     return
                 }
-                val request = readRequest(BufferedInputStream(it.getInputStream()))
+                request = readRequest(BufferedInputStream(it.getInputStream()))
                 if (request.path == "/v1/events" && request.method == "GET") {
                     streamEvents(output, request, peer)
+                    responseStatus = 200
                 } else {
                     val response = route(request, peer)
+                    responseStatus = response.status
                     writeResponse(output, response)
                 }
             } catch (error: Throwable) {
                 if (error is java.net.SocketTimeoutException) {
-                    runCatching { writeError(output, error) }
+                    val failure = error.toHttpFailure()
+                    responseStatus = failure.status
+                    runCatching { writeError(output, failure) }
                     return
                 }
                 if (error is java.net.SocketException || error is java.io.IOException && closed.get()) return
-                runCatching { writeError(output, error) }
+                val failure = error.toHttpFailure()
+                responseStatus = failure.status
+                runCatching { writeError(output, failure) }
             } finally {
                 runCatching { output.flush() }
+                val completedRequest = request
+                val completedPeer = peer
+                val completedStatus = responseStatus
+                if (completedRequest != null && completedPeer != null && completedStatus != null) {
+                    logAccess(
+                        completedRequest,
+                        completedPeer,
+                        executable,
+                        completedStatus,
+                        System.nanoTime() - startedAt,
+                    )
+                }
                 activeSockets -= it
                 if (service.isStopping()) closeListener()
             }
@@ -308,19 +337,61 @@ class UnixHttpServer(
         throw HttpFailure(431, "line_too_long", "HTTP header line is too long")
     }
 
-    private fun writeError(output: OutputStream, error: Throwable) {
-        val failure = when (error) {
-            is HttpFailure -> error
+    private fun Throwable.toHttpFailure(): HttpFailure =
+        when (this) {
+            is HttpFailure -> this
             is java.net.SocketTimeoutException ->
                 HttpFailure(408, "request_timeout", "local HTTP request timed out")
-            is LocalAuthorizationException -> HttpFailure(401, "unauthorized", error.message ?: "unauthorized")
-            is LocalConflictException -> HttpFailure(409, "conflict", error.message ?: "conflict")
-            is PeerUnavailableException -> HttpFailure(503, "peer_unavailable", error.message ?: "peer unavailable", true)
+            is LocalAuthorizationException -> HttpFailure(401, "unauthorized", message ?: "unauthorized")
+            is LocalConflictException -> HttpFailure(409, "conflict", message ?: "conflict")
+            is PeerUnavailableException -> HttpFailure(503, "peer_unavailable", message ?: "peer unavailable", true)
             is SerializationException, is IllegalArgumentException ->
-                HttpFailure(400, "invalid_request", error.message ?: "invalid request")
+                HttpFailure(400, "invalid_request", message ?: "invalid request")
             else -> HttpFailure(500, "internal_error", "local daemon request failed")
         }
+
+    private fun writeError(output: OutputStream, failure: HttpFailure) {
         writeJson(output, failure.status, ApiError(failure.code, failure.message, failure.retryable))
+    }
+
+    private fun logAccess(
+        request: HttpRequest,
+        peer: LocalPeer,
+        executable: ProcessExecutable?,
+        status: Int,
+        elapsedNanos: Long,
+    ) {
+        val process = executable?.name?.logValue() ?: "unknown"
+        val executablePath = executable?.path?.logValue() ?: "unknown"
+        val pid = peer.pid?.toString() ?: "unknown"
+        val elapsedMillis = TimeUnit.NANOSECONDS.toMillis(elapsedNanos)
+        val message = "HTTP ${request.method} ${request.path} -> $status in ${elapsedMillis}ms; " +
+            "process=$process executable=$executablePath pid=$pid"
+        when {
+            status >= 500 -> logger.error(message)
+            status >= 400 -> logger.warn(message)
+            executable?.name == "notisyncd" && request.method == "GET" && request.path == "/v1/status" ->
+                logger.debug(message)
+            else -> logger.info(message)
+        }
+    }
+
+    private fun String.logValue(): String {
+        if (isNotEmpty() && all { it.isLetterOrDigit() || it in "._/:-+" }) return this
+        return buildString {
+            append('"')
+            this@logValue.forEach { character ->
+                when (character) {
+                    '\\' -> append("\\\\")
+                    '"' -> append("\\\"")
+                    '\n' -> append("\\n")
+                    '\r' -> append("\\r")
+                    '\t' -> append("\\t")
+                    else -> if (character.isISOControl()) append('?') else append(character)
+                }
+            }
+            append('"')
+        }
     }
 
     private fun writeResponse(output: OutputStream, response: HttpResponse) {

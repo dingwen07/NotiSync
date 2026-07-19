@@ -16,6 +16,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import net.extrawdw.notisync.cli.NotisyncCli
+import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.PrivateFiles
 import net.extrawdw.notisync.desktop.api.LocalApiException
@@ -64,6 +65,16 @@ class UnixHttpServerIntegrationTest {
             assertEquals(0, cli.run(arrayOf("config", "get")))
             val view = LocalApiJson.decodeFromString<DaemonConfigView>(output.toString().trim())
             assertEquals("Build Host", view.deviceName)
+            assertTrue(fixture.logs.toString().contains("HTTP PATCH /v1/config -> 200"))
+            assertTrue(fixture.logs.toString().contains("HTTP GET /v1/config -> 200"))
+            assertTrue(
+                fixture.logs.toString().contains(
+                    "pid=${ProcessHandle.current().pid()}",
+                ),
+            )
+            assertTrue(fixture.logs.toString().contains("process="))
+            assertTrue(fixture.logs.toString().contains("executable="))
+            assertTrue(fixture.logs.toString().contains("[notisyncd-http-"))
         }
 
     @Test
@@ -252,6 +263,7 @@ class UnixHttpServerIntegrationTest {
     ) : AutoCloseable {
         val paths = DesktopPaths(root)
         private val identityResolver = ProcessIdentityResolver()
+        val logs = StringBuilder()
         val sessions: LocalSessionRegistry
         private val dispatcher: NotificationDispatcher
         private val service: DaemonService
@@ -277,6 +289,7 @@ class UnixHttpServerIntegrationTest {
                 identityResolver = identityResolver,
                 maxHeaderBytes = maxHeaderBytes,
                 maxBodyBytes = maxBodyBytes,
+                logger = DaemonLogger("INFO", logs),
             )
         }
 

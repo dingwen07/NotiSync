@@ -214,6 +214,10 @@ class NotisyncCli(
                 "${device.clientId}\t${device.name}\t${device.classification.name.lowercase()}\t" +
                     device.trustStatus.name.lowercase(),
             )
+            output.appendLine("  platform: ${device.platform?.takeIf(String::isNotBlank) ?: "unavailable"}")
+            output.appendLine(
+                "  capabilities: ${device.capabilities.sorted().joinToString(", ").ifEmpty { "none" }}",
+            )
             output.appendLine("  identity fingerprint: ${device.identityFingerprint}")
             output.appendLine("  key available: ${device.keyAvailable}")
             output.appendLine("  verified: ${device.verified}")

@@ -120,7 +120,7 @@ class NotisyncdCli(
                     )
                 },
             )
-            val server = UnixHttpServer(paths.socket, service, identityResolver)
+            val server = UnixHttpServer(paths.socket, service, identityResolver, logger = daemonLogger)
             Runtime.getRuntime().addShutdownHook(
                 Thread({
                     daemonLogger.info("Shutdown requested")

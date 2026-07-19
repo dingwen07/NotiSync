@@ -130,6 +130,23 @@ class NotisyncCliTest {
     }
 
     @Test
+    fun `devices list prints platform and sorted capabilities`() {
+        val device = trusted("trusted-a").copy(
+            platform = "android",
+            capabilities = setOf("PUSH_FILTERING", "DISPLAY"),
+        )
+        val fixture = CliFixture(FakeAdministration(mutableListOf(device)))
+
+        assertEquals(0, fixture.cli.run(arrayOf("devices", "list")))
+        assertTrue(
+            fixture.output.toString().contains(
+                "  platform: android\n  capabilities: DISPLAY, PUSH_FILTERING\n",
+            ),
+        )
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
     fun `pairing is nested under devices and unavailable at the root`() {
         val administration = FakeAdministration(mutableListOf())
         val fixture = CliFixture(administration)

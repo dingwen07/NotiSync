@@ -64,6 +64,7 @@ data class DeviceView(
     val name: String,
     val classification: DeviceClassification,
     val trustStatus: DeviceTrustStatus,
+    val platform: String? = null,
     val capabilities: Set<String> = emptySet(),
     val identityFingerprint: String,
     /** Whether a verified immutable identity card is currently pinned for this device. */

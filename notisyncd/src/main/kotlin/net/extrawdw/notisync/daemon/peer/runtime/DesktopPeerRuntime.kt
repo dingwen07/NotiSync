@@ -620,6 +620,7 @@ class DesktopPeerRuntime(
         name = displayName ?: clientId.shortForm(),
         classification = if (ownDevice) DeviceClassification.OWN else DeviceClassification.OTHER,
         trustStatus = if (quarantined) DeviceTrustStatus.QUARANTINED else status.toApi(),
+        platform = platform,
         capabilities = capabilities.mapTo(linkedSetOf()) { it.name },
         identityFingerprint = identityKeyFingerprint ?: "unavailable",
         keyAvailable = keyAvailable,
