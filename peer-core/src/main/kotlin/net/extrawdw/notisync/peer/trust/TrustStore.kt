@@ -111,7 +111,7 @@ data class RosterKeyEpoch(
 /** What [TrustStore.applyIncomingTable] surfaces back to the caller. */
 data class IncomingTrustResult(
     val prompts: List<Pair<ClientId, TrustPrompt>>,
-    /** Cards the sender advertised it lacks that we hold (and trust) — to repair it over DataSyncKind.CARD. */
+    /** Cards the sender advertised it lacks that we hold for a trusted or pending-trust subject. */
     val cardsToOffer: List<SignedBlob>,
     /** True if we just created a keyless entry — re-broadcast our table so a holder can repair us. */
     val needsBroadcast: Boolean = false,
@@ -371,13 +371,14 @@ open class TrustStore(
                     r.prompt?.let { prompts += wire.clientId to it }
                 }
                 // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender
-                // lacks it — for own AND other trusted devices, since both now propagate within the mesh.
-                val mine =
-                    entries[wire.clientId] // running accumulator, consistent with the fold above
-                if (mine?.status == TrustStatus.TRUSTED) {
+                // lacks it and our local subject is trusted or pending trust.
+                val mine = entries[wire.clientId] // running accumulator, consistent with the fold above
+                // CARD material self-authenticates, so a pending introduction or re-introduction may relay
+                // what it holds without approving C. Entries that remain revoked/pending-revoke are excluded.
+                if (mine?.status == TrustStatus.TRUSTED || mine?.status == TrustStatus.PENDING_TRUST) {
                     if (!wire.keyAvailable) st.cards[wire.clientId]?.let { offers += it }
-                    // NS2 key-epoch repair: if the sender's advertised epoch for this trusted device is BEHIND
-                    // what we hold (incl. epoch 0 = none), relay our current key-epoch so it becomes reachable.
+                    // NS2 key-epoch repair: if the sender's advertised epoch for this subject is BEHIND what
+                    // we hold (incl. epoch 0 = none), relay our current key epoch so it becomes reachable.
                     if (wire.epoch < peerEpochOf(
                             wire.clientId,
                             st
@@ -392,7 +393,7 @@ open class TrustStore(
 
     /**
      * Store a delivered card. Self-verifying (clientId == fingerprint + self-sig) and first-verified-wins,
-     * so it is safe to accept even before a trust entry exists — that's what lets a card pushed alongside
+     * so it is safe to accept even before a trust entry exists — that's what lets a targeted repair after
      * an introduction resolve a still-pending device's name instead of leaving it "Unknown".
      */
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
@@ -402,13 +403,6 @@ open class TrustStore(
         if (_state.value.cards.containsKey(clientId)) return false // already pinned (immutable) — see putCard
         mutate { it.copy(cards = putCard(it.cards, clientId, cardBlob)) }
         return true
-    }
-
-    /** Cards we hold for every trusted device (own + other) — pushed alongside the roster (to our own
-     *  devices only) so a peer can name a still-pending device or repair a keyless one. */
-    override fun trustedCards(): List<SignedBlob> = _state.value.let { st ->
-        st.entries.values.filter { it.status == TrustStatus.TRUSTED }
-            .mapNotNull { st.cards[it.clientId] }
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */

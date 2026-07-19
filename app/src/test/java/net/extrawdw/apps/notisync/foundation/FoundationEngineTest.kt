@@ -59,6 +59,7 @@ class FoundationEngineTest {
 
     private fun harness(
         trust: FakeTrustState = FakeTrustState(),
+        selfKeyEpoch: () -> SignedBlob? = { null },
         fetchKeyEpoch: suspend (ClientId, Int?) -> SignedBlob? = { _, _ -> null },
     ): Harness {
         val me = newSigner();
@@ -77,6 +78,7 @@ class FoundationEngineTest {
             onAsset = { msg, sync -> forwarded.add(msg to sync) },
             activityText = TestActivityText,
             fetchKeyEpoch = fetchKeyEpoch,
+            selfKeyEpoch = selfKeyEpoch,
         )
         foundation.register()
         return Harness(
@@ -135,31 +137,37 @@ class FoundationEngineTest {
     }
 
     @Test
-    fun broadcastTrust_pushesOwnCardsAlongsideTable() = runBlocking {
+    fun broadcastTrust_includesOnlyRosterAndOwnKeyEpoch() = runBlocking {
         val peerSigner = newSigner();
         val peerHpke = newHpke()
-        val card = SignedBlob(
-            SignedType.CLIENT_CARD,
-            signerId = ClientId("x"),
-            payload = byteArrayOf(1),
-            sig = byteArrayOf(2)
-        )
         val trust = FakeTrustState().apply {
             peers.value = listOf(peerOf(peerSigner, peerHpke.publicKeyset))
             table = TrustTable(emptyList())
-            cards = listOf(card)
         }
-        val h = harness(trust)
+        lateinit var h: Harness
+        h = harness(
+            trust,
+            selfKeyEpoch = {
+                SignedBlob(
+                    SignedType.KEY_EPOCH,
+                    signerId = h.me.clientId,
+                    payload = byteArrayOf(3),
+                    sig = byteArrayOf(4),
+                )
+            },
+        )
 
         h.foundation.broadcastTrust()
 
-        assertEquals(2, h.transport.sent.size) // a TRUST table + a CARD push
+        // Routine anti-entropy keeps this device's own material, but no longer appends every trusted
+        // third-party card. Both envelopes share the same own-mesh audience and identity signer.
+        assertEquals(2, h.transport.sent.size)
         val kinds = h.transport.envelopes.map { openAs(it, peerSigner, peerHpke).kind }
         assertEquals(listOf(DataSyncKind.TRUST, DataSyncKind.CARD), kinds)
-        assertEquals(
-            ClientId("x"),
-            openAs(h.transport.envelopes[1], peerSigner, peerHpke).card?.clientId
-        )
+        assertTrue(h.transport.envelopes.all { it.signerEpoch == 0 })
+        val ownMaterial = openAs(h.transport.envelopes[1], peerSigner, peerHpke).card
+        assertEquals(h.me.clientId, ownMaterial?.clientId)
+        assertEquals(h.me.clientId, ownMaterial?.epochBlob?.signerId)
     }
 
     @Test
@@ -228,19 +236,33 @@ class FoundationEngineTest {
     // ---- inbound ----
 
     @Test
-    fun receivingTrustTable_foldsAndOffersCardsBackToSender() {
+    fun receivingTrustTable_offersMissingThirdPeerMaterialOnlyToSender() {
         val sender = newSigner();
         val senderHpke = newHpke()
+        val bystander = newSigner()
+        val bystanderHpke = newHpke()
         val offered = SignedBlob(
             SignedType.CLIENT_CARD,
             signerId = ClientId("x"),
             payload = byteArrayOf(1),
             sig = byteArrayOf(2)
         )
+        val offeredEpoch = SignedBlob(
+            SignedType.KEY_EPOCH,
+            signerId = ClientId("x"),
+            payload = byteArrayOf(3),
+            sig = byteArrayOf(4),
+        )
         val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, name = "S"))
-            incomingResult =
-                IncomingTrustResult(listOf(ClientId("x") to TrustPrompt.NEW_TRUST), listOf(offered))
+            peers.value = listOf(
+                peerOf(sender, senderHpke.publicKeyset, name = "S"),
+                peerOf(bystander, bystanderHpke.publicKeyset, name = "Bystander"),
+            )
+            incomingResult = IncomingTrustResult(
+                prompts = listOf(ClientId("x") to TrustPrompt.NEW_TRUST),
+                cardsToOffer = listOf(offered),
+                keyEpochsToOffer = listOf(offeredEpoch),
+            )
         }
         val h = harness(trust)
 
@@ -250,7 +272,8 @@ class FoundationEngineTest {
                     ClientId("x"),
                     TrustStatus.TRUSTED,
                     5L,
-                    keyAvailable = false
+                    keyAvailable = false,
+                    epoch = 0,
                 )
             )
         )
@@ -271,10 +294,15 @@ class FoundationEngineTest {
         assertEquals(listOf(TrustPrompt.NEW_TRUST), h.prompts.map { it.second })
         assertEquals("S", h.prompts.single().third)
         assertEquals(DeliveryMode.WEBSOCKET, h.activityLog.events.value.single().deliveryMode)
-        // The offered card was sealed back to the sender as a CARD delivery.
-        val sync = openAs(h.transport.envelopes.single(), sender, senderHpke)
+        // Combine C's card and epoch into one CARD sent only to B, whose TRUST row declared them missing.
+        // The other own-mesh peer receives neither that repair nor a broad third-party CARD broadcast.
+        val envelope = h.transport.envelopes.single()
+        assertEquals(listOf(sender.clientId), envelope.recipientIds())
+        val sync = openAs(envelope, sender, senderHpke)
         assertEquals(DataSyncKind.CARD, sync.kind)
         assertEquals(ClientId("x"), sync.card?.clientId)
+        assertEquals(SignedType.CLIENT_CARD, sync.card?.card?.typ)
+        assertEquals(SignedType.KEY_EPOCH, sync.card?.epochBlob?.typ)
     }
 
     @Test
@@ -500,9 +528,11 @@ class FoundationEngineTest {
     }
 
     @Test
-    fun receivingTrustTable_relaysHeldKeyEpochWhenSenderIsBehind() {
+    fun receivingTrustTable_relaysHeldKeyEpochWhenSenderAdvertisesItMissing() {
         val sender = newSigner();
         val senderHpke = newHpke()
+        val bystander = newSigner()
+        val bystanderHpke = newHpke()
         val subject = newSigner();
         val subjectHpke = newHpke()
         val offered = keyEpochBlob(
@@ -511,9 +541,12 @@ class FoundationEngineTest {
             subjectHpke.publicKeyset,
             epoch = 2
         )
-        // We hold subject@2 and the fold reports the sender is behind on it → relay it as a CardDelivery.
+        // We hold subject@2 and the fold reports the sender has no epoch for it → relay it as a CardDelivery.
         val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset))
+            peers.value = listOf(
+                peerOf(sender, senderHpke.publicKeyset),
+                peerOf(bystander, bystanderHpke.publicKeyset),
+            )
             incomingResult =
                 IncomingTrustResult(emptyList(), emptyList(), keyEpochsToOffer = listOf(offered))
         }
@@ -526,7 +559,7 @@ class FoundationEngineTest {
                     TrustStatus.TRUSTED,
                     5L,
                     keyAvailable = true,
-                    epoch = 1
+                    epoch = 0
                 )
             )
         )
@@ -541,7 +574,11 @@ class FoundationEngineTest {
             )
         )
 
-        val sync = openAs(h.transport.envelopes.single(), sender, senderHpke)
+        // Exactly one epoch repair goes back to the advertising peer; do not expose it to the bystander
+        // and do not turn this targeted repair into a mesh-wide TRUST/CARD broadcast.
+        val envelope = h.transport.envelopes.single()
+        assertEquals(listOf(sender.clientId), envelope.recipientIds())
+        val sync = openAs(envelope, sender, senderHpke)
         assertEquals(DataSyncKind.CARD, sync.kind)
         assertEquals(
             "relays the subject's current key-epoch to the sender",

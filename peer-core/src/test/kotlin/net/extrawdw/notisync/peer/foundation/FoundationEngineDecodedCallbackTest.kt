@@ -143,7 +143,6 @@ class FoundationEngineDecodedCallbackTest {
         override val activePeers = MutableStateFlow(emptyList<Peer>())
         override fun displayName(clientId: ClientId): String? = null
         override fun buildTrustTable() = TrustTable(emptyList())
-        override fun trustedCards(): List<SignedBlob> = emptyList()
         override fun applyProfile(update: ProfileUpdate) = false
         override fun applyIncomingTable(sender: ClientId, table: TrustTable) =
             IncomingTrustResult(emptyList(), emptyList())

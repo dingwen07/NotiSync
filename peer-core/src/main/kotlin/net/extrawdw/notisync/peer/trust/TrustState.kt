@@ -35,9 +35,6 @@ interface TrustState {
     /** This device's broadcast roster (its TRUSTED + REVOKED decisions), for anti-entropy. */
     fun buildTrustTable(): TrustTable
 
-    /** Cards we hold for every trusted device (own + other), pushed alongside the roster. */
-    fun trustedCards(): List<SignedBlob>
-
     /** Apply a peer's announced profile (last-writer-wins). Returns true if anything changed. */
     fun applyProfile(update: ProfileUpdate): Boolean
 

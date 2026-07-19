@@ -127,8 +127,8 @@ class SecureChannel(
     /**
      * Seal each of [bodies] to a SINGLE audience resolved ONCE for [scope] and send them in order at
      * [urgency], signed with [signWith]; returns the recipient count. Resolving the audience once keeps a
-     * multi-message broadcast (e.g. a trust table plus its cards) atomic against a roster change that lands
-     * mid-broadcast — every message goes to the same device set, as the original did.
+     * multi-message broadcast (e.g. a trust table plus the sender's own key epoch) atomic against a roster
+     * change that lands mid-broadcast — every message goes to the same device set, as the original did.
      */
     suspend fun sendAll(
         typ: MessageType,

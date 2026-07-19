@@ -451,8 +451,8 @@ class AppGraph(private val app: Application) {
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
             activityText = activityText,
-            // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
-            // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.
+            // Continue announcing our own epoch with the roster; material held for a third peer is returned
+            // directly when the receiving peer advertises that gap.
             selfKeyEpoch = { runCatching { buildClientKeyEpochBlob() }.getOrNull() },
             fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
@@ -486,7 +486,8 @@ class AppGraph(private val app: Application) {
                     trust.advanceSelfEpoch(epoch)
                     // Restart the epoch-age clock so the NEXT scheduled rotation is measured from this activation.
                     scope.launch { runCatching { settings.setSelfEpochActivatedAt(System.currentTimeMillis()) } }
-                    scope.launch { runCatching { foundationEngine?.broadcastTrust() } } // E2E-announce the new active epoch to own-mesh
+                    // E2E-announce the new active epoch to the own mesh.
+                    scope.launch { runCatching { foundationEngine?.broadcastTrust() } }
                 },
                 onRetire = { retired, keep ->
                     AndroidOperationalSigner.destroy(retired)
@@ -607,7 +608,8 @@ class AppGraph(private val app: Application) {
             // Converge peer key-epochs BEFORE the live loop blocks, so a just-upgraded peer is sealable and
             // our broadcast actually reaches it (the pull is the bootstrap; the broadcast is anti-entropy).
             runCatching { foundationEngine?.convergeKeyEpochs() }
-            runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster + key-epoch
+            // Anti-entropy includes our own epoch; material for third peers is returned by targeted CARD.
+            runCatching { foundationEngine?.broadcastTrust() }
             transport.runLiveDelivery {
                 when (secureChannel?.deliver(it, DeliveryMode.WEBSOCKET)) {
                     DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> LiveDeliveryDisposition.ACK

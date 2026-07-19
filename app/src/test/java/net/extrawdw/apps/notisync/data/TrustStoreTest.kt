@@ -412,6 +412,75 @@ class TrustStoreTest {
     }
 
     @Test
+    fun applyIncomingTable_offersHeldCard_onlyWhenSenderAdvertisesItMissing() {
+        val self = SoftwareIdentitySigner.generate()
+        val sender = SoftwareIdentitySigner.generate()
+        val subject = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(subject), now = 10L, ownDevice = true))
+
+        val missingCard = TrustTable(
+            listOf(
+                TrustTableEntry(
+                    subject.clientId,
+                    TrustStatus.TRUSTED,
+                    5L,
+                    keyAvailable = false,
+                )
+            )
+        )
+        val repair = store.applyIncomingTable(sender.clientId, missingCard)
+
+        assertEquals(listOf(subject.clientId), repair.cardsToOffer.map { it.signerId })
+
+        val alreadyHasCard = TrustTable(
+            listOf(
+                TrustTableEntry(
+                    subject.clientId,
+                    TrustStatus.TRUSTED,
+                    5L,
+                    keyAvailable = true,
+                )
+            )
+        )
+        val unnecessaryRepair = store.applyIncomingTable(sender.clientId, alreadyHasCard)
+
+        assertTrue(unnecessaryRepair.cardsToOffer.isEmpty())
+    }
+
+    @Test
+    fun applyIncomingTable_offersHeldMaterialForPendingTrustSubject() {
+        val self = SoftwareIdentitySigner.generate()
+        val sender = SoftwareIdentitySigner.generate()
+        val subject = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        val card = signedCard(subject)
+        val epoch = keyEpochBlobFor(subject, epoch = 2, minEpoch = 2)
+
+        // Self-authenticating material may arrive before the user approves the introduced subject.
+        assertTrue(store.applyCard(subject.clientId, card))
+        assertTrue(store.applyKeyEpoch(subject.clientId, epoch))
+        val result = store.applyIncomingTable(
+            sender.clientId,
+            TrustTable(
+                listOf(
+                    TrustTableEntry(
+                        subject.clientId,
+                        TrustStatus.TRUSTED,
+                        5L,
+                        keyAvailable = false,
+                        epoch = 0,
+                    )
+                )
+            ),
+        )
+
+        assertEquals(TrustStatus.PENDING_TRUST, store.statusOf(subject.clientId))
+        assertEquals(listOf(subject.clientId), result.cardsToOffer.map { it.signerId })
+        assertEquals(listOf(subject.clientId), result.keyEpochsToOffer.map { it.signerId })
+    }
+
+    @Test
     fun applyIncomingTable_offersHeldKeyEpoch_whenSenderAdvertisesLowerEpoch() {
         val self = SoftwareIdentitySigner.generate()
         val sender = SoftwareIdentitySigner.generate()

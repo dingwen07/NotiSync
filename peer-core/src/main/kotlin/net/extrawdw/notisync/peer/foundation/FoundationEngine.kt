@@ -58,8 +58,8 @@ open class FoundationEngine(
     private val onMalformedDataSync: (InboundMessage) -> Unit = {},
     private val eventSink: FoundationEventSink = FoundationEventSink.None,
     private val incomingTrustPolicy: IncomingTrustPolicy = IncomingTrustPolicy.MANUAL,
-    /** Our own current key-epoch [SignedBlob], announced E2E in each trust broadcast so own-mesh peers
-     *  converge it without polling the broker. Null when the NS2 operational layer isn't available. */
+    /** Our own current key-epoch [SignedBlob], announced with each trust broadcast so peers can converge
+     *  this device without a request. Material for every other trusted peer is sent only on targeted repair. */
     private val selfKeyEpoch: () -> SignedBlob? = { null },
     /** Pull a peer's [SignedBlob] key-epoch from the broker (`GET /v2/keyepoch`) when a roster advertises a
      *  higher epoch than we hold — the §5 convergence trigger. */
@@ -111,15 +111,20 @@ open class FoundationEngine(
         if (id in trust.trustedClientIds()) refetchKeyEpoch(id, broadcastOnFailure = true)
     }
 
-    /** Relay a peer's self-authenticating key-epoch to one recipient (repair: it trusts the subject but lacks
-     *  its current key). The receiver verifies the key-epoch independently — we are only the relay. */
-    private suspend fun offerKeyEpoch(recipientId: ClientId, keyEpoch: SignedBlob) {
+    /** Relay material for one trusted or pending-trust subject to the peer that advertised it missing. */
+    private suspend fun offerCardMaterial(
+        recipientId: ClientId,
+        subjectId: ClientId,
+        card: SignedBlob?,
+        keyEpoch: SignedBlob?,
+    ) {
+        if (card == null && keyEpoch == null) return
         channel.send(
             MessageType.DATA_SYNC,
             ProtocolCodec.encodeToCbor(
                 DataSync(
                     DataSyncKind.CARD,
-                    card = CardDelivery(keyEpoch.signerId, epochBlob = keyEpoch)
+                    card = CardDelivery(subjectId, card = card, epochBlob = keyEpoch)
                 )
             ),
             Recipients.Only(recipientId), Urgency.NORMAL,
@@ -127,16 +132,14 @@ open class FoundationEngine(
     }
 
     /**
-     * Broadcast this device's trust roster to its own peers (anti-entropy + immediate propagation),
-     * then push our trusted devices' cards alongside so a peer can name a newly-introduced (pending)
-     * device or repair a keyless one. Other-device rows ride along but never leave our own mesh.
+     * Broadcast this device's trust roster and own key epoch to its own peers. Material held for any third
+     * peer is not appended: a receiver advertises those gaps in its TRUST table and gets a targeted CARD
+     * reply from a holder. This keeps routine anti-entropy constant-size instead of O(trusted devices).
      */
     suspend fun broadcastTrust() {
-        // The table and its cards/key-epoch are sealed to ONE resolved own-mesh set (sendAll), so a roster
-        // change mid-broadcast can't split them across different device sets. Signed with the IDENTITY root:
-        // a TrustTable is a roster assertion that must bind to the immutable root and verify without epoch
-        // convergence (§2.3); the card/key-epoch payloads ride along (CARD accepts any signer) and each
-        // self-authenticates independently of the relaying envelope.
+        // Resolve one own-mesh audience for the roster and our own epoch. Both use the immutable identity
+        // root: the roster is an identity assertion, and a peer missing our current operational epoch must
+        // still be able to authenticate the CARD that repairs it.
         val bodies = buildList {
             add(
                 ProtocolCodec.encodeToCbor(
@@ -146,23 +149,12 @@ open class FoundationEngine(
                     )
                 )
             )
-            // Announce our own current key-epoch so own-mesh peers converge it E2E (no poll), per §5.
-            selfKeyEpoch()?.let {
+            selfKeyEpoch()?.let { epoch ->
                 add(
                     ProtocolCodec.encodeToCbor(
                         DataSync(
                             DataSyncKind.CARD,
-                            card = CardDelivery(channel.clientId, epochBlob = it)
-                        )
-                    )
-                )
-            }
-            trust.trustedCards().forEach { card ->
-                add(
-                    ProtocolCodec.encodeToCbor(
-                        DataSync(
-                            DataSyncKind.CARD,
-                            card = CardDelivery(card.signerId, card = card)
+                            card = CardDelivery(channel.clientId, epochBlob = epoch),
                         )
                     )
                 )
@@ -207,21 +199,6 @@ open class FoundationEngine(
                 )
             ),
             Recipients.OwnMesh, Urgency.NORMAL, SignerSelection.IDENTITY,
-        )
-    }
-
-    /** Deliver a signed card to one own-mesh peer (keyless repair / card announce). */
-    private suspend fun sendCard(recipientId: ClientId, clientId: ClientId, card: SignedBlob) {
-        channel.send(
-            MessageType.DATA_SYNC,
-            ProtocolCodec.encodeToCbor(
-                DataSync(
-                    DataSyncKind.CARD,
-                    card = CardDelivery(clientId, card)
-                )
-            ),
-            Recipients.Only(recipientId),
-            Urgency.NORMAL,
         )
     }
 
@@ -285,34 +262,21 @@ open class FoundationEngine(
                         automaticallyApplied = applied,
                     )
                 }
-                // Repair any device the sender trusts but lacks a card for, that we can vouch for.
-                // This and the two launches below are best-effort sends, guarded so a broker failure
-                // (socket timeout, attestation cooldown) drops just that repair round instead of escaping
-                // the launch — anti-entropy re-runs it on the next trust exchange. Whole-batch guards: the
-                // first failure means the broker is unreachable for the rest of the batch too.
-                if (result.cardsToOffer.isNotEmpty()) {
+                // For every third peer C that B advertises as cardless or behind, relay material we hold for
+                // a trusted or pending-trust C. It self-authenticates, so this does not approve pending C.
+                // All repairs are unicast to B; combine C's card + epoch when B lacks both.
+                val cardsBySubject = result.cardsToOffer.associateBy { it.signerId }
+                val epochsBySubject = result.keyEpochsToOffer.associateBy { it.signerId }
+                val repairSubjects = cardsBySubject.keys + epochsBySubject.keys
+                if (repairSubjects.isNotEmpty()) {
                     scope.launch {
                         runCatching {
-                            result.cardsToOffer.forEach {
-                                sendCard(
-                                    msg.senderId,
-                                    it.signerId,
-                                    it
-                                )
-                            }
-                        }
-                    }
-                }
-                // NS2 key-epoch repair: the sender advertised a device at an epoch BEHIND what we hold (incl.
-                // none) — relay our current key-epoch for it so the sender can reach it (e.g. A relays C's
-                // key-epoch to B when B trusts C but lacks its key). Self-authenticating, so B verifies it itself.
-                if (result.keyEpochsToOffer.isNotEmpty()) {
-                    scope.launch {
-                        runCatching {
-                            result.keyEpochsToOffer.forEach {
-                                offerKeyEpoch(
-                                    msg.senderId,
-                                    it
+                            repairSubjects.forEach { subjectId ->
+                                offerCardMaterial(
+                                    recipientId = msg.senderId,
+                                    subjectId = subjectId,
+                                    card = cardsBySubject[subjectId],
+                                    keyEpoch = epochsBySubject[subjectId],
                                 )
                             }
                         }

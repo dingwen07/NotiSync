@@ -83,7 +83,6 @@ class FakeTrustState : TrustState {
     override val activePeers: StateFlow<List<Peer>> = peers
 
     var table: TrustTable = TrustTable(emptyList())
-    var cards: List<SignedBlob> = emptyList()
     var incomingResult: IncomingTrustResult = IncomingTrustResult(emptyList(), emptyList())
     var profileApplies: Boolean = true
     var selfEpochValue: Int = 1
@@ -130,7 +129,6 @@ class FakeTrustState : TrustState {
         peers.value.firstOrNull { it.clientId == clientId }?.ownDevice ?: peerOwnDevices[clientId]
 
     override fun buildTrustTable(): TrustTable = table
-    override fun trustedCards(): List<SignedBlob> = cards
     override fun applyProfile(update: ProfileUpdate): Boolean {
         appliedProfiles.add(update)
         // Mutate the roster name like the real store, so a row built from displayName AFTER apply
