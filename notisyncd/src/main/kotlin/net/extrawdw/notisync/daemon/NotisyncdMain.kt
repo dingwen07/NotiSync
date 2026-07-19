@@ -37,9 +37,11 @@ class NotisyncdCli(
             "foreground", "run" -> foreground()
             "start" -> start()
             "stop" -> stop()
+            "restart" -> restart()
             "status" -> status()
             "config" -> config(arguments.drop(1))
-            "pair", "pairing" -> NotisyncCli(paths, output, error).run(arrayOf("pair") + arguments.drop(1))
+            "pair", "pairing" ->
+                NotisyncCli(paths, output, error).run(arrayOf("devices", "pair") + arguments.drop(1))
             "devices", "peers" -> NotisyncCli(paths, output, error).run(arrayOf("devices") + arguments.drop(1))
             "help", "--help", "-h" -> output.appendLine(usage()).let { 0 }
             else -> throw IllegalArgumentException("unknown command: ${arguments[0]}")
@@ -127,12 +129,17 @@ class NotisyncdCli(
         rotateDaemonLogIfNeeded()
         fileSystem.ensurePrivateFile(layout.daemonLogFile)
         val currentExecutable = ProcessHandle.current().info().command().orElse(null)?.let(Path::of)
-        val nativeLauncher = currentExecutable?.takeIf { it.fileName.toString() == "notisyncd" }
+        val nativeLauncher = currentExecutable?.let { executable ->
+            when (executable.fileName.toString()) {
+                "notisyncd" -> executable
+                "notisync" -> executable.resolveSibling("notisyncd").takeIf(Files::isExecutable)
+                else -> null
+            }
+        }
         val command = if (nativeLauncher != null) {
             mutableListOf(nativeLauncher.toString(), "foreground")
         } else {
-            val java = currentExecutable?.toString()
-                ?: Path.of(System.getProperty("java.home"), "bin", "java").toString()
+            val java = Path.of(System.getProperty("java.home"), "bin", "java").toString()
             mutableListOf(
                 java,
                 "-Dnotisync.dataDir=${paths.dataDirectory.toAbsolutePath().normalize()}",
@@ -171,8 +178,14 @@ class NotisyncdCli(
         client.shutdown()
         val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10)
         while (System.nanoTime() < deadline && daemonResponds()) Thread.sleep(50)
+        check(!daemonResponds()) { "notisyncd did not stop within 10 seconds" }
         output.appendLine("stopped notisyncd")
         return 0
+    }
+
+    private fun restart(): Int {
+        if (daemonResponds()) stop()
+        return start()
     }
 
     private fun status(): Int {
@@ -191,7 +204,6 @@ class NotisyncdCli(
                 val patch = when (arguments[1]) {
                     "broker-url" -> DaemonConfigPatch(brokerUrl = value)
                     "device-name" -> DaemonConfigPatch(deviceName = value)
-                    "platform-name" -> DaemonConfigPatch(platformName = value)
                     "auto-apply-trusted-device-tables" -> DaemonConfigPatch(
                         automaticallyApplyTrustedDeviceTables = parseBoolean(value),
                     )
@@ -254,7 +266,7 @@ class NotisyncdCli(
     }
 
     private fun usage(): String = """
-        Usage: notisyncd [foreground|start|stop|status]
+        Usage: notisyncd [foreground|start|stop|restart|status]
                notisyncd config get
                notisyncd config set OPTION VALUE
                notisyncd pair ...

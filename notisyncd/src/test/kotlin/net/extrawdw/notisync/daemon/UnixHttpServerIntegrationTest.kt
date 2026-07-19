@@ -101,6 +101,7 @@ class UnixHttpServerIntegrationTest {
             assertEquals(200, configResponse.status)
             val view = LocalApiJson.decodeFromString<DaemonConfigView>(configResponse.body)
             assertEquals("Socket Test Desktop", view.deviceName)
+            assertEquals("desktop", view.platformName)
             assertTrue(view.automaticallyApplyTrustedDeviceTables)
 
             assertArrayEquals(originalRunConfig, Files.readAllBytes(fixture.paths.nsrunConfig))

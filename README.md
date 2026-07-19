@@ -117,13 +117,15 @@ export PATH="$HOME/.local/bin:$PATH"
 ```
 
 The default installation is under `~/.local/share/notisync`. Add the `PATH` export to the shell's
-startup file, then start the daemon:
+startup file. The `notisync` and `nsrun` commands start the daemon automatically when needed:
 
 ```bash
-notisyncd start
 notisync config set device-name "Workstation"
-notisync status
+notisync daemon status
 ```
+
+Use `notisync daemon stop` and `notisync daemon restart` for lifecycle control. The daemon executable
+itself provides the lower-level `notisyncd start|stop|restart|status` commands.
 
 The desktop defaults to `wss://notisync-api.extrawdw.net`. For a custom broker, configure the same
 WebSocket URL in the Android app and on the desktop:
@@ -132,14 +134,22 @@ WebSocket URL in the Android app and on the desktop:
 notisyncd config set broker-url "wss://notisync.example.com"
 ```
 
-Pairing is mutual. Run `notisync pair show`, then scan the terminal QR code from **Devices → Pair a
-device** on Android. Copy the Android pairing link or payload back to the desktop and accept it as
-an own device:
+Pairing is mutual. Run `notisync devices pair show`, then scan the terminal QR code from **Devices →
+Pair a device** on Android. Copy the Android pairing link or payload back to the desktop and accept
+it as an own device:
 
 ```bash
-notisync pair inspect 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
-notisync pair accept --own 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices pair inspect 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices pair accept --own 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
 notisync devices list
+```
+
+Device trust actions take the action first and the device ID second. To approve every currently
+pending device, use the explicit `--all` form:
+
+```bash
+notisync devices action approve DEVICE_ID
+notisync devices action approve --all
 ```
 
 Run traffic is restricted to trusted own devices. Prefix a command with `nsrun --` to send encrypted
@@ -160,12 +170,13 @@ nsrun config get
 nsrun config set updateInterval 30s
 nsrun config set stuckAfter 5m       # or: off
 nsrun config set pty auto            # auto, always, or never
-notisyncd stop
+notisync daemon stop
 ```
 
 Configuration and daemon logs live in `~/.notisync/`. Rerun `./scripts/install-desktop.sh` to update
-the installed commands. The current desktop key provider stores unencrypted key material in the
-private `~/.notisync/private-keys-v1/` directory.
+the installed commands; the installer stops a running daemon before replacing the installation.
+The current desktop key provider stores unencrypted key material in the private
+`~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 

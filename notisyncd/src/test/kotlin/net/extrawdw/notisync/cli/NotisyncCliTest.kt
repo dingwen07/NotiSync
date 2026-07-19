@@ -1,0 +1,226 @@
+package net.extrawdw.notisync.cli
+
+import java.nio.file.Path
+import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.localapi.DaemonConfigPatch
+import net.extrawdw.notisync.localapi.DaemonConfigView
+import net.extrawdw.notisync.localapi.DaemonConnectionState
+import net.extrawdw.notisync.localapi.DaemonStatus
+import net.extrawdw.notisync.localapi.DeviceAction
+import net.extrawdw.notisync.localapi.DeviceActionRequest
+import net.extrawdw.notisync.localapi.DeviceClassification
+import net.extrawdw.notisync.localapi.DeviceListResponse
+import net.extrawdw.notisync.localapi.DeviceTrustStatus
+import net.extrawdw.notisync.localapi.DeviceView
+import net.extrawdw.notisync.localapi.PairingAcceptRequest
+import net.extrawdw.notisync.localapi.PairingCandidate
+import net.extrawdw.notisync.localapi.PairingPayloadResponse
+import net.extrawdw.notisync.localapi.QuarantineActionRequest
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
+import org.junit.Test
+
+class NotisyncCliTest {
+    @Test
+    fun `daemon restart delegates without autostarting first`() {
+        val daemonCommands = mutableListOf<List<String>>()
+        var autostarts = 0
+        val fixture = CliFixture(
+            autostart = { autostarts += 1 },
+            daemonRunner = {
+                daemonCommands += it.toList()
+                0
+            },
+        )
+
+        assertEquals(0, fixture.cli.run(arrayOf("daemon", "restart")))
+        assertEquals(listOf(listOf("restart")), daemonCommands)
+        assertEquals(0, autostarts)
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
+    fun `daemon status is nested and root status is rejected`() {
+        val fixture = CliFixture()
+
+        assertEquals(0, fixture.cli.run(arrayOf("daemon", "status")))
+        assertTrue(fixture.output.toString().contains("notisyncd 1.2.3: connected"))
+        fixture.output.clear()
+
+        assertEquals(1, fixture.cli.run(arrayOf("status")))
+        assertTrue(fixture.error.toString().contains("unknown command: status"))
+    }
+
+    @Test
+    fun `daemon status autostarts but daemon start is not exposed`() {
+        val administration = FakeAdministration(mutableListOf(), statusFailures = 1)
+        var autostarts = 0
+        val fixture = CliFixture(administration, autostart = { autostarts += 1 })
+
+        assertEquals(0, fixture.cli.run(arrayOf("daemon", "status")))
+        assertEquals(1, autostarts)
+        assertTrue(fixture.output.toString().contains("notisyncd 1.2.3: connected"))
+
+        assertEquals(1, fixture.cli.run(arrayOf("daemon", "start")))
+        assertTrue(fixture.error.toString().contains("daemon requires status, stop, or restart"))
+    }
+
+    @Test
+    fun `device action accepts action followed by device id`() {
+        val administration = FakeAdministration(mutableListOf(pending("pending-a"), pending("pending-b")))
+        val fixture = CliFixture(administration)
+
+        assertEquals(0, fixture.cli.run(arrayOf("devices", "action", "reject", "pending-a")))
+        assertEquals("pending-a" to DeviceAction.REJECT, administration.actions[0])
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
+    fun `device action rejects device id before action`() {
+        val administration = FakeAdministration(mutableListOf(pending("pending-a")))
+        val fixture = CliFixture(administration)
+
+        assertEquals(1, fixture.cli.run(arrayOf("devices", "action", "pending-a", "approve")))
+        assertTrue(fixture.error.toString().contains("unknown device action: pending-a"))
+        assertTrue(administration.actions.isEmpty())
+    }
+
+    @Test
+    fun `approve all acts on every pending device and no trusted devices`() {
+        val administration = FakeAdministration(
+            mutableListOf(
+                pending("pending-a"),
+                trusted("trusted-a"),
+                pending("pending-b"),
+            ),
+        )
+        val fixture = CliFixture(administration)
+
+        assertEquals(0, fixture.cli.run(arrayOf("devices", "action", "approve", "--all")))
+        assertEquals(
+            listOf(
+                "pending-a" to DeviceAction.APPROVE,
+                "pending-b" to DeviceAction.APPROVE,
+            ),
+            administration.actions,
+        )
+        assertTrue(fixture.output.toString().contains("Approved 2 pending devices."))
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
+    fun `pairing is nested under devices and unavailable at the root`() {
+        val administration = FakeAdministration(mutableListOf())
+        val fixture = CliFixture(administration)
+
+        assertEquals(0, fixture.cli.run(arrayOf("devices", "pair", "inspect", "nested-payload")))
+        assertEquals(listOf("nested-payload"), administration.inspectedPairings)
+
+        assertEquals(1, fixture.cli.run(arrayOf("pair", "inspect", "root-payload")))
+        assertTrue(fixture.error.toString().contains("unknown command: pair"))
+    }
+
+    private class CliFixture(
+        administration: FakeAdministration = FakeAdministration(mutableListOf()),
+        autostart: () -> Unit = {},
+        daemonRunner: (Array<String>) -> Int = { 0 },
+    ) {
+        val output = StringBuilder()
+        val error = StringBuilder()
+        val cli = NotisyncCli(
+            paths = DesktopPaths(Path.of("/private/tmp/notisync-cli-test")),
+            output = output,
+            error = error,
+            clientFactory = { administration },
+            autostart = autostart,
+            daemonRunner = daemonRunner,
+        )
+    }
+
+    private class FakeAdministration(
+        private val deviceState: MutableList<DeviceView>,
+        private var statusFailures: Int = 0,
+    ) : DaemonAdministration {
+        val actions = mutableListOf<Pair<String, DeviceAction>>()
+        val inspectedPairings = mutableListOf<String>()
+
+        override fun status(): DaemonStatus {
+            if (statusFailures > 0) {
+                statusFailures -= 1
+                error("daemon is unavailable")
+            }
+            return DaemonStatus(
+                version = "1.2.3",
+                clientId = "desktop",
+                deviceName = "Desktop",
+                connectionState = DaemonConnectionState.CONNECTED,
+                brokerUrl = "wss://notisync.invalid",
+            )
+        }
+
+        override fun config() = DaemonConfigView(
+            brokerUrl = "wss://notisync.invalid",
+            deviceName = "Desktop",
+            platformName = "desktop",
+            automaticallyApplyTrustedDeviceTables = false,
+            logLevel = "info",
+            websocketPingSeconds = 30,
+        )
+
+        override fun patchConfig(patch: DaemonConfigPatch): DaemonConfigView = config()
+
+        override fun pairing() = PairingPayloadResponse("payload", "https://notisync.invalid/pair")
+
+        override fun inspectPairing(payload: String): PairingCandidate {
+            inspectedPairings += payload
+            return candidate()
+        }
+
+        override fun acceptPairing(request: PairingAcceptRequest): PairingCandidate = candidate()
+
+        override fun devices() = DeviceListResponse(deviceState.toList())
+
+        override fun deviceAction(clientId: String, action: DeviceActionRequest): DeviceListResponse {
+            actions += clientId to action.action
+            val index = deviceState.indexOfFirst { it.clientId == clientId }
+            check(index >= 0) { "unknown device $clientId" }
+            val status = when (action.action) {
+                DeviceAction.APPROVE -> DeviceTrustStatus.TRUSTED
+                DeviceAction.REJECT -> DeviceTrustStatus.REVOKED
+                else -> deviceState[index].trustStatus
+            }
+            deviceState[index] = deviceState[index].copy(trustStatus = status, allowedActions = emptySet())
+            return devices()
+        }
+
+        override fun quarantine(request: QuarantineActionRequest): DeviceListResponse = devices()
+
+        override fun shutdown() = Unit
+
+        private fun candidate() = PairingCandidate(
+            clientId = "phone",
+            name = "Phone",
+            identityFingerprint = "fingerprint",
+        )
+    }
+
+    private companion object {
+        fun pending(clientId: String) = DeviceView(
+            clientId = clientId,
+            name = clientId,
+            classification = DeviceClassification.OWN,
+            trustStatus = DeviceTrustStatus.PENDING,
+            identityFingerprint = "fingerprint-$clientId",
+            allowedActions = setOf(DeviceAction.APPROVE, DeviceAction.REJECT),
+        )
+
+        fun trusted(clientId: String) = DeviceView(
+            clientId = clientId,
+            name = clientId,
+            classification = DeviceClassification.OWN,
+            trustStatus = DeviceTrustStatus.TRUSTED,
+            identityFingerprint = "fingerprint-$clientId",
+            allowedActions = setOf(DeviceAction.REVOKE),
+        )
+    }
+}

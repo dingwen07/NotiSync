@@ -17,11 +17,11 @@ import net.extrawdw.notisync.protocol.RunUpdateReason
 
 class RunPresentationPolicyTest {
     @Test
-    fun initialLifecycleStateAlertsAndOffersTwoSignals() {
+    fun initialLifecycleStateIsSilentAndOffersTwoSignals() {
         val state = running()
 
         assertTrue(RunPresentationPolicy.active(state))
-        assertFalse(RunPresentationPolicy.silent(state))
+        assertTrue(RunPresentationPolicy.silent(state))
         assertEquals(
             listOf(RunShadeAction.INTERRUPT, RunShadeAction.TERMINATE),
             RunPresentationPolicy.shadeActions(state),
@@ -29,7 +29,8 @@ class RunPresentationPolicyTest {
     }
 
     @Test
-    fun onlyBackgroundRefreshKindsAreSilent() {
+    fun initialAndBackgroundRefreshKindsAreSilent() {
+        assertTrue(RunPresentationPolicy.silent(running()))
         assertTrue(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.PERIODIC)))
         assertTrue(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.LLM_SUMMARY)))
         assertTrue(RunPresentationPolicy.silent(running().copy(updateReason = RunUpdateReason.REFRESH)))

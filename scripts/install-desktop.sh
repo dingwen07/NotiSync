@@ -60,6 +60,11 @@ trap cleanup EXIT HUP INT TERM
 
 cp -R "$distribution_dir/." "$stage_dir/"
 
+if "$distribution_dir/bin/notisyncd" status >/dev/null 2>&1; then
+    echo "Stopping the running NotiSync daemon..."
+    "$distribution_dir/bin/notisyncd" stop
+fi
+
 if [[ -e "$install_dir" || -L "$install_dir" ]]; then
     backup_dir="$(dirname -- "$install_dir")/.notisync-backup.$$"
     mv -- "$install_dir" "$backup_dir"

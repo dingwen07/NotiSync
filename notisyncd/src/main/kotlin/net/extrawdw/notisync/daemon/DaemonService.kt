@@ -5,6 +5,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
 import net.extrawdw.notisync.desktop.config.NotisyncdConfigStore
+import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
 import net.extrawdw.notisync.localapi.AcceptedResponse
 import net.extrawdw.notisync.localapi.ActionSendRequest
 import net.extrawdw.notisync.localapi.CreateSessionRequest
@@ -104,7 +105,6 @@ class DaemonService(
         val updated = old.copy(
             brokerUrl = patch.brokerUrl ?: old.brokerUrl,
             deviceName = patch.deviceName ?: old.deviceName,
-            platformName = patch.platformName ?: old.platformName,
             automaticallyApplyTrustedDeviceTables = patch.automaticallyApplyTrustedDeviceTables
                 ?: old.automaticallyApplyTrustedDeviceTables,
             logLevel = patch.logLevel ?: old.logLevel,
@@ -188,7 +188,7 @@ class DaemonService(
 private fun NotisyncdConfig.view() = DaemonConfigView(
     brokerUrl = brokerUrl,
     deviceName = deviceName,
-    platformName = platformName,
+    platformName = NOTISYNCD_PLATFORM_NAME,
     automaticallyApplyTrustedDeviceTables = automaticallyApplyTrustedDeviceTables,
     logLevel = logLevel,
     websocketPingSeconds = websocketPingSeconds,

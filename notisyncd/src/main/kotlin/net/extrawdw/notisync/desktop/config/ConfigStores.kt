@@ -14,12 +14,12 @@ private const val DEFAULT_BROKER_URL = "wss://notisync-api.extrawdw.net"
 private const val DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES = false
 private const val DEFAULT_LOG_LEVEL = "INFO"
 private const val DEFAULT_WEBSOCKET_PING_SECONDS = 30
+const val NOTISYNCD_PLATFORM_NAME = "desktop"
 
 @Serializable
 data class NotisyncdConfig(
     val brokerUrl: String = DEFAULT_BROKER_URL,
     val deviceName: String = defaultDeviceName(),
-    val platformName: String = defaultPlatformName(),
     val automaticallyApplyTrustedDeviceTables: Boolean = DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
     val logLevel: String = DEFAULT_LOG_LEVEL,
     val websocketPingSeconds: Int = DEFAULT_WEBSOCKET_PING_SECONDS,
@@ -29,7 +29,6 @@ data class NotisyncdConfig(
             "broker-url must use ws:// or wss://"
         }
         require(deviceName.isNotBlank()) { "device-name must not be blank" }
-        require(platformName.isNotBlank()) { "platform-name must not be blank" }
         require(websocketPingSeconds in 5..300) { "websocket-ping-seconds must be between 5 and 300" }
     }
 }
@@ -167,7 +166,6 @@ internal object NotisyncdConfigCodec {
     private val options = setOf(
         "broker-url",
         "device-name",
-        "platform-name",
         "auto-apply-trusted-device-tables",
         "log-level",
         "websocket-ping-seconds",
@@ -177,20 +175,17 @@ internal object NotisyncdConfigCodec {
         text,
         path,
         deviceNameDefault = ::defaultDeviceName,
-        platformNameDefault = ::defaultPlatformName,
     )
 
     internal fun decodeWithDefaults(
         text: String,
         path: Path,
         deviceNameDefault: () -> String,
-        platformNameDefault: () -> String,
     ): NotisyncdConfig {
         val values = LineConfig.parse(text, path, options)
         return NotisyncdConfig(
             brokerUrl = values.string("broker-url") ?: DEFAULT_BROKER_URL,
             deviceName = values.string("device-name") ?: deviceNameDefault(),
-            platformName = values.string("platform-name") ?: platformNameDefault(),
             automaticallyApplyTrustedDeviceTables = values.boolean("auto-apply-trusted-device-tables")
                 ?: DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
             logLevel = values.string("log-level") ?: DEFAULT_LOG_LEVEL,
@@ -203,7 +198,6 @@ internal object NotisyncdConfigCodec {
         appendLine("# Managed by notisyncd config; permissions must remain 0600.")
         option("broker-url", value.brokerUrl)
         option("device-name", value.deviceName)
-        option("platform-name", value.platformName)
         option("auto-apply-trusted-device-tables", if (value.automaticallyApplyTrustedDeviceTables) "yes" else "no", false)
         option("log-level", value.logLevel)
         option("websocket-ping-seconds", value.websocketPingSeconds.toString(), false)
@@ -415,6 +409,3 @@ internal fun defaultDeviceName(
         ?: "NotiSync Desktop"
 
 private fun String?.normalizedHostname(): String? = this?.trim()?.takeIf(String::isNotEmpty)
-
-private fun defaultPlatformName(): String =
-    listOfNotNull(System.getProperty("os.name"), System.getProperty("os.arch")).joinToString(" ")

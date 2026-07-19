@@ -35,6 +35,9 @@ internal object RunPresentationPolicy {
     }
 
     private val SILENT_REASONS = setOf(
+        // Keep the first Run post quiet without lowering the per-peer channel's HIGH importance. Later
+        // lifecycle transitions can still alert on that same channel.
+        RunUpdateReason.INITIAL,
         RunUpdateReason.PERIODIC,
         RunUpdateReason.LLM_SUMMARY,
         RunUpdateReason.REFRESH,

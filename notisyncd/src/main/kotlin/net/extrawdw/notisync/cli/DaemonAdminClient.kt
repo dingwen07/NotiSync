@@ -32,33 +32,46 @@ class DaemonAdminException(
     val error: ApiError?,
 ) : RuntimeException(error?.message ?: "notisyncd returned HTTP $status")
 
+interface DaemonAdministration {
+    fun status(): DaemonStatus
+    fun config(): DaemonConfigView
+    fun patchConfig(patch: DaemonConfigPatch): DaemonConfigView
+    fun pairing(): PairingPayloadResponse
+    fun inspectPairing(payload: String): PairingCandidate
+    fun acceptPairing(request: PairingAcceptRequest): PairingCandidate
+    fun devices(): DeviceListResponse
+    fun deviceAction(clientId: String, action: DeviceActionRequest): DeviceListResponse
+    fun quarantine(request: QuarantineActionRequest): DeviceListResponse
+    fun shutdown()
+}
+
 /** One-request-per-connection client for the administrative portion of the local UDS API. */
 class DaemonAdminClient(
     private val socketPath: Path,
     private val maximumResponseBytes: Int = 2 * 1024 * 1024,
     private val requestTimeout: Duration = Duration.ofSeconds(3),
-) {
-    fun status(): DaemonStatus = request("GET", "/v1/status")
-    fun config(): DaemonConfigView = request("GET", "/v1/config")
-    fun patchConfig(patch: DaemonConfigPatch): DaemonConfigView =
+) : DaemonAdministration {
+    override fun status(): DaemonStatus = request("GET", "/v1/status")
+    override fun config(): DaemonConfigView = request("GET", "/v1/config")
+    override fun patchConfig(patch: DaemonConfigPatch): DaemonConfigView =
         request("PATCH", "/v1/config", LocalApiJson.encodeToString(patch))
-    fun pairing(): PairingPayloadResponse = request("GET", "/v1/pairing")
-    fun inspectPairing(payload: String): PairingCandidate =
+    override fun pairing(): PairingPayloadResponse = request("GET", "/v1/pairing")
+    override fun inspectPairing(payload: String): PairingCandidate =
         request("POST", "/v1/pairing/inspect", LocalApiJson.encodeToString(PairingInspectRequest(payload)))
-    fun acceptPairing(request: PairingAcceptRequest): PairingCandidate =
+    override fun acceptPairing(request: PairingAcceptRequest): PairingCandidate =
         request("POST", "/v1/pairing/accept", LocalApiJson.encodeToString(request))
-    fun devices(): DeviceListResponse = request("GET", "/v1/devices")
-    fun deviceAction(clientId: String, action: DeviceActionRequest): DeviceListResponse = request(
+    override fun devices(): DeviceListResponse = request("GET", "/v1/devices")
+    override fun deviceAction(clientId: String, action: DeviceActionRequest): DeviceListResponse = request(
         "POST",
         "/v1/devices/${encodePath(clientId)}/actions",
         LocalApiJson.encodeToString(action),
     )
-    fun quarantine(request: QuarantineActionRequest): DeviceListResponse = request(
+    override fun quarantine(request: QuarantineActionRequest): DeviceListResponse = request(
         "POST",
         "/v1/trust-store/quarantine",
         LocalApiJson.encodeToString(request),
     )
-    fun shutdown() {
+    override fun shutdown() {
         requestNoContent("POST", "/v1/shutdown", "{}")
     }
 

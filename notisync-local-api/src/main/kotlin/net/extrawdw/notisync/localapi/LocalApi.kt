@@ -47,7 +47,6 @@ data class DaemonConfigView(
 data class DaemonConfigPatch(
     val brokerUrl: String? = null,
     val deviceName: String? = null,
-    val platformName: String? = null,
     val automaticallyApplyTrustedDeviceTables: Boolean? = null,
     val logLevel: String? = null,
     val websocketPingSeconds: Int? = null,

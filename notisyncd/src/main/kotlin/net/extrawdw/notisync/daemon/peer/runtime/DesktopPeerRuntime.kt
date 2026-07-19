@@ -29,6 +29,7 @@ import net.extrawdw.notisync.daemon.InMemoryRunOutbox
 import net.extrawdw.notisync.daemon.PendingRunControlResult
 import net.extrawdw.notisync.daemon.RunResultOutbox
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
+import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
 import net.extrawdw.notisync.localapi.ActionSendRequest
 import net.extrawdw.notisync.localapi.DaemonConnectionState
 import net.extrawdw.notisync.localapi.DeviceAction
@@ -539,7 +540,7 @@ class DesktopPeerRuntime(
             clientId = keyMaterial.identity.clientId,
             identityPublicKey = keyMaterial.identity.publicKeySpki,
             displayName = config.deviceName,
-            platform = config.platformName,
+            platform = NOTISYNCD_PLATFORM_NAME,
             capabilities = DAEMON_CAPABILITIES,
             createdAt = createdAt,
         )
@@ -555,7 +556,7 @@ class DesktopPeerRuntime(
     private fun buildProfile(config: NotisyncdConfig, updatedAt: Long) = ProfileUpdate(
         clientId = keyMaterial.identity.clientId,
         displayName = config.deviceName,
-        platform = config.platformName,
+        platform = NOTISYNCD_PLATFORM_NAME,
         capabilities = DAEMON_CAPABILITIES,
         updatedAt = updatedAt,
     )
@@ -588,7 +589,7 @@ class DesktopPeerRuntime(
     }
 
     private fun profileFingerprint(config: NotisyncdConfig): String = buildString {
-        append(config.deviceName).append('\u0000').append(config.platformName)
+        append(config.deviceName).append('\u0000').append(NOTISYNCD_PLATFORM_NAME)
         DAEMON_CAPABILITIES.forEach { append('\u0000').append(it.name) }
     }
 

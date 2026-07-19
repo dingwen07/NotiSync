@@ -26,18 +26,15 @@ class ConfigStoresTest {
             text = """
                 broker-url wss://example.test
                 device-name Configured Desktop
-                platform-name Configured Platform
                 auto-apply-trusted-device-tables yes
                 log-level DEBUG
                 websocket-ping-seconds 45
             """.trimIndent(),
             path = path,
             deviceNameDefault = { error("device-name default must remain lazy") },
-            platformNameDefault = { error("platform-name default must remain lazy") },
         )
 
         assertEquals("Configured Desktop", config.deviceName)
-        assertEquals("Configured Platform", config.platformName)
         assertEquals(45, config.websocketPingSeconds)
     }
 
@@ -86,14 +83,12 @@ class ConfigStoresTest {
                 # hand-written configuration
                 broker-url "wss://example.test/socket#fragment"
                 device-name "Workstation \"A\""
-                platform-name "macOS\narm64"
                 auto-apply-trusted-device-tables no # secure default
             """.trimIndent(),
         )
         val config = NotisyncdConfigStore(path).load()
         assertEquals("wss://example.test/socket#fragment", config.brokerUrl)
         assertEquals("Workstation \"A\"", config.deviceName)
-        assertEquals("macOS\narm64", config.platformName)
     }
 
     @Test

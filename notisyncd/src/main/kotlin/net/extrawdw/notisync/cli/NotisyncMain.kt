@@ -7,14 +7,16 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import kotlinx.serialization.encodeToString
-import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.daemon.DesktopProcessTitle
+import net.extrawdw.notisync.daemon.NotisyncdCli
+import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
 import net.extrawdw.notisync.localapi.DeviceAction
 import net.extrawdw.notisync.localapi.DeviceActionRequest
 import net.extrawdw.notisync.localapi.DeviceClassification
 import net.extrawdw.notisync.localapi.DeviceListResponse
+import net.extrawdw.notisync.localapi.DeviceTrustStatus
 import net.extrawdw.notisync.localapi.PairingAcceptRequest
 import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.QuarantineAction
@@ -30,37 +32,52 @@ class NotisyncCli(
     private val paths: DesktopPaths = DesktopPaths.default(),
     private val output: Appendable = System.out,
     private val error: Appendable = System.err,
+    private val clientFactory: (Path) -> DaemonAdministration = ::DaemonAdminClient,
+    private val autostart: () -> Unit = { DaemonAutostarter(paths).connect() },
+    private val daemonRunner: (Array<String>) -> Int = { NotisyncdCli(paths, output, error).run(it) },
 ) {
-    fun run(arguments: Array<String>): Int {
-        return try {
+    fun run(arguments: Array<String>): Int = try {
         if (arguments.isEmpty() || arguments[0] in setOf("-h", "--help", "help")) {
             output.appendLine(usage())
-            return 0
+            0
+        } else if (arguments[0] == "daemon") {
+            daemon(arguments.drop(1))
+        } else {
+            val client = clientFactory(paths.socket)
+            when (arguments[0]) {
+                "config" -> withDaemon(client) { config(it, arguments.drop(1)) }
+                "devices" -> withDaemon(client) { devices(it, arguments.drop(1)) }
+                "quarantine" -> withDaemon(client) { quarantine(it, arguments.drop(1)) }
+                else -> throw CliError("unknown command: ${arguments[0]}")
+            }
+            0
         }
-        ensureDaemon()
-        val client = DaemonAdminClient(paths.socket)
-        when (arguments[0]) {
-            "status" -> status(client)
-            "config" -> config(client, arguments.drop(1))
-            "pair", "pairing" -> pairing(client, arguments.drop(1))
-            "devices", "peers" -> devices(client, arguments.drop(1))
-            "quarantine" -> quarantine(client, arguments.drop(1))
-            else -> throw CliError("unknown command: ${arguments[0]}")
-        }
-        0
-        } catch (failure: Throwable) {
-            error.appendLine("notisync: ${failure.message ?: failure.javaClass.simpleName}")
-            1
+    } catch (failure: Throwable) {
+        error.appendLine("notisync: ${failure.message ?: failure.javaClass.simpleName}")
+        1
+    }
+
+    private fun withDaemon(client: DaemonAdministration, block: (DaemonAdministration) -> Unit) {
+        if (runCatching { client.status() }.isFailure) autostart()
+        block(client)
+    }
+
+    private fun daemon(arguments: List<String>): Int {
+        val command = arguments.firstOrNull() ?: "status"
+        if (arguments.size > 1) throw CliError("daemon $command takes no arguments")
+        return when (command) {
+            "status" -> {
+                val client = clientFactory(paths.socket)
+                withDaemon(client) { status(it) }
+                0
+            }
+            "stop", "restart" -> daemonRunner(arrayOf(command))
+            "help", "--help", "-h" -> output.appendLine(daemonUsage()).let { 0 }
+            else -> throw CliError("daemon requires status, stop, or restart")
         }
     }
 
-    private fun ensureDaemon() {
-        val client = DaemonAdminClient(paths.socket)
-        if (runCatching { client.status() }.isSuccess) return
-        DaemonAutostarter(paths).connect()
-    }
-
-    private fun status(client: DaemonAdminClient) {
+    private fun status(client: DaemonAdministration) {
         val status = client.status()
         output.appendLine("notisyncd ${status.version}: ${status.connectionState.name.lowercase()}")
         output.appendLine("device: ${status.deviceName ?: "unknown"}")
@@ -71,7 +88,7 @@ class NotisyncCli(
         status.message?.let { output.appendLine("detail: $it") }
     }
 
-    private fun config(client: DaemonAdminClient, arguments: List<String>) {
+    private fun config(client: DaemonAdministration, arguments: List<String>) {
         when (arguments.firstOrNull() ?: "get") {
             "get" -> {
                 if (arguments.size != 1 && arguments.isNotEmpty()) {
@@ -93,7 +110,7 @@ class NotisyncCli(
         }
     }
 
-    private fun pairing(client: DaemonAdminClient, arguments: List<String>) {
+    private fun pairing(client: DaemonAdministration, arguments: List<String>) {
         when (arguments.firstOrNull() ?: "show") {
             "show", "qr" -> {
                 val pairing = client.pairing()
@@ -115,21 +132,47 @@ class NotisyncCli(
         }
     }
 
-    private fun devices(client: DaemonAdminClient, arguments: List<String>) {
+    private fun devices(client: DaemonAdministration, arguments: List<String>) {
         when (arguments.firstOrNull() ?: "list") {
             "list" -> printDevices(client.devices())
-            "action" -> {
-                if (arguments.size != 3) throw CliError("devices action requires CLIENT_ID and ACTION")
-                val action = runCatching {
-                    DeviceAction.valueOf(arguments[2].replace('-', '_').uppercase())
-                }.getOrElse { throw CliError("unknown device action: ${arguments[2]}") }
-                printDevices(client.deviceAction(arguments[1], DeviceActionRequest(action)))
-            }
-            else -> throw CliError("devices requires list or action")
+            "action" -> deviceAction(client, arguments.drop(1))
+            "pair" -> pairing(client, arguments.drop(1))
+            else -> throw CliError("devices requires list, action, or pair")
         }
     }
 
-    private fun quarantine(client: DaemonAdminClient, arguments: List<String>) {
+    private fun deviceAction(client: DaemonAdministration, arguments: List<String>) {
+        val approveAll = "--all" in arguments
+        if (arguments.count { it == "--all" } > 1) throw CliError("--all may only be specified once")
+        val values = arguments.filterNot { it == "--all" }
+        if (approveAll) {
+            if (values.singleOrNull()?.toDeviceActionOrNull() != DeviceAction.APPROVE) {
+                throw CliError("--all is only valid with devices action approve")
+            }
+            val initial = client.devices()
+            val pending = initial.devices.filter {
+                it.trustStatus == DeviceTrustStatus.PENDING && DeviceAction.APPROVE in it.allowedActions
+            }
+            if (pending.isEmpty()) {
+                output.appendLine("No pending devices.")
+                return
+            }
+            var response = initial
+            for (device in pending) {
+                response = client.deviceAction(device.clientId, DeviceActionRequest(DeviceAction.APPROVE))
+            }
+            output.appendLine("Approved ${pending.size} pending ${if (pending.size == 1) "device" else "devices"}.")
+            printDevices(response)
+            return
+        }
+
+        if (values.size != 2) throw CliError("devices action requires ACTION and DEVICE_ID, or approve --all")
+        val action = values[0].toDeviceActionOrNull()
+            ?: throw CliError("unknown device action: ${values[0]}")
+        printDevices(client.deviceAction(values[1], DeviceActionRequest(action)))
+    }
+
+    private fun quarantine(client: DaemonAdministration, arguments: List<String>) {
         val action = when (arguments.singleOrNull()) {
             "approve", "approve-and-resign" -> QuarantineAction.APPROVE_AND_RESIGN
             "clear" -> QuarantineAction.CLEAR
@@ -180,17 +223,29 @@ class NotisyncCli(
     private fun usage(): String = """
         Usage: notisync COMMAND
 
-          status
+          daemon [status]
+          daemon stop|restart
           config get
           config set device-name NAME
-          pair show [--payload]
-          pair inspect LINK|PAYLOAD|-
-          pair accept [--own|--other] LINK|PAYLOAD|-
           devices [list]
-          devices action CLIENT_ID approve|reject|revoke|confirm-revoke|decline-revoke|restore|keep|purge
+          devices pair show [--payload]
+          devices pair inspect LINK|PAYLOAD|-
+          devices pair accept [--own|--other] LINK|PAYLOAD|-
+          devices action ACTION DEVICE_ID
+          devices action approve --all
           quarantine approve|clear
+
+        ACTION is approve, reject, revoke, confirm-revoke, decline-revoke, restore, keep, or purge.
+    """.trimIndent()
+
+    private fun daemonUsage(): String = """
+        Usage: notisync daemon [status|stop|restart]
     """.trimIndent()
 }
+
+private fun String.toDeviceActionOrNull(): DeviceAction? = runCatching {
+    DeviceAction.valueOf(replace('-', '_').uppercase())
+}.getOrNull()
 
 private object TerminalQr {
     fun render(value: String): String {

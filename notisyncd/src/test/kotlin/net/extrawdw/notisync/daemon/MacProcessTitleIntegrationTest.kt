@@ -38,6 +38,20 @@ class MacProcessTitleIntegrationTest {
                 posix.getsid(daemonPid.toInt()).toLong(),
             )
 
+            val originalPid = daemonPid
+            val restarted = command(notisyncd, dataDirectory, "restart")
+            assertEquals(restarted.output, 0, restarted.exitCode)
+            val restartedRecord = DaemonInstanceLock.readPidRecord(dataDirectory.resolve("notisyncd.pid"))
+            assertNotNull("restarted daemon did not write its PID record: ${restarted.output}", restartedRecord)
+            daemonPid = restartedRecord!!.pid
+            assertTrue("restart reused the previous daemon process", daemonPid != originalPid)
+            assertTrue("previous daemon remained alive after restart", awaitProcessExit(originalPid))
+            assertEquals(
+                "restarted daemon did not lead a detached session",
+                daemonPid,
+                posix.getsid(daemonPid.toInt()).toLong(),
+            )
+
             val stopped = command(notisyncd, dataDirectory, "stop")
             assertEquals(stopped.output, 0, stopped.exitCode)
             assertTrue("JVM-launched daemon remained alive after stop", awaitProcessExit(daemonPid))
@@ -96,12 +110,15 @@ class MacProcessTitleIntegrationTest {
         val dataDirectory = Files.createDirectory(temporaryRoot.resolve("data"))
         val commandDirectory = Files.createDirectory(temporaryRoot.resolve("commands"))
         val installedNotisyncd = installation.resolve("bin/notisyncd")
+        val installedNotisync = installation.resolve("bin/notisync")
         val installedNsrun = installation.resolve("bin/nsrun")
         assertTrue(Files.isExecutable(installedNotisyncd))
+        assertTrue(Files.isExecutable(installedNotisync))
         assertTrue(Files.isExecutable(installedNsrun))
         // Match install-desktop.sh: commands on PATH are symlinks to physical, correctly named
         // launchers inside the distribution.
         val notisyncd = Files.createSymbolicLink(commandDirectory.resolve("notisyncd"), installedNotisyncd)
+        val notisync = Files.createSymbolicLink(commandDirectory.resolve("notisync"), installedNotisync)
         val nsrun = Files.createSymbolicLink(commandDirectory.resolve("nsrun"), installedNsrun)
         var daemonPid: Long? = null
         var runProcess: Process? = null
@@ -122,6 +139,16 @@ class MacProcessTitleIntegrationTest {
                 daemonPid,
                 posix.getsid(daemonPid.toInt()).toLong(),
             )
+
+            val originalPid = daemonPid
+            val restarted = command(notisync, dataDirectory, "daemon", "restart")
+            assertEquals(restarted.output, 0, restarted.exitCode)
+            val restartedRecord = DaemonInstanceLock.readPidRecord(dataDirectory.resolve("notisyncd.pid"))
+            assertNotNull("notisync daemon restart did not create a daemon: ${restarted.output}", restartedRecord)
+            daemonPid = restartedRecord!!.pid
+            assertTrue("notisync daemon restart reused the previous process", daemonPid != originalPid)
+            assertTrue("previous daemon remained alive after notisync restart", awaitProcessExit(originalPid))
+            assertEquals("notisyncd", awaitKernelName(daemonPid, "notisyncd"))
 
             runProcess = process(nsrun, dataDirectory, "--pty", "never", "--", "/bin/sleep", "2").start()
             assertEquals("nsrun", awaitKernelName(runProcess.pid(), "nsrun"))

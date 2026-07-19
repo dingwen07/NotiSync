@@ -8,6 +8,7 @@ import net.extrawdw.notisync.daemon.peer.storage.FileKeyMaterialProvider
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.daemon.storage.StorageTestSupport
 import net.extrawdw.notisync.desktop.config.NotisyncdConfig
+import net.extrawdw.notisync.desktop.config.NOTISYNCD_PLATFORM_NAME
 import net.extrawdw.notisync.localapi.DeviceAction
 import net.extrawdw.notisync.localapi.DeviceActionRequest
 import net.extrawdw.notisync.localapi.DeviceClassification
@@ -18,6 +19,8 @@ import net.extrawdw.notisync.localapi.PairingInspectRequest
 import net.extrawdw.notisync.peer.ports.AuthTokenRepository
 import net.extrawdw.notisync.peer.ports.MessageDedupRepository
 import net.extrawdw.notisync.peer.ports.TrustPersistence
+import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
@@ -56,6 +59,9 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         try {
             val payload = second.pairingPayload()
             assertTrue(payload.deepLink.startsWith("https://notisync.apps.extrawdw.net/pair?payload="))
+            val announcedCard = PairingPayloadCodec(ClientId(requireNotNull(first.clientId)))
+                .decode(payload.payload).getOrThrow().card
+            assertEquals(NOTISYNCD_PLATFORM_NAME, announcedCard.platform)
 
             val inspected = first.inspectPairing(PairingInspectRequest(payload.payload))
             assertEquals("Laptop", inspected.name)
@@ -153,7 +159,6 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
     private fun testConfig(name: String) = NotisyncdConfig(
         brokerUrl = "ws://127.0.0.1:1",
         deviceName = name,
-        platformName = "test-desktop",
     )
 
     private class MemoryTrustPersistence : TrustPersistence {
