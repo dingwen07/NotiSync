@@ -106,64 +106,66 @@ In **Settings → Broker URL**, point the app at your broker. From the Android e
 
 ### Desktop daemon and NotiSync Run
 
-Build the Linux/macOS distribution and put its three launchers on `PATH`:
+NotiSync Desktop supports Linux and macOS and requires JDK 21. On macOS, install Xcode Command Line
+Tools as well. Install the `notisyncd`, `notisync`, and `nsrun` commands for the current user:
 
 ```bash
-./gradlew :notisyncd:installDist
-export PATH="$PWD/notisyncd/build/install/notisyncd/bin:$PATH"
+git clone https://github.com/dingwen07/NotiSync.git
+cd NotiSync
+./scripts/install-desktop.sh
+export PATH="$HOME/.local/bin:$PATH"
+```
 
-notisyncd start                 # detached; plain `notisyncd` stays in the foreground
-notisync status
+The default installation is under `~/.local/share/notisync`. Add the `PATH` export to the shell's
+startup file, then start the daemon:
+
+```bash
+notisyncd start
 notisync config set device-name "Workstation"
-notisync pair show              # pairing link plus a terminal QR code
-notisync pair accept LINK       # add an own device; use --other for another user
-notisync devices list
+notisync status
+```
 
-nsrun -- git commit             # preserves interactive terminal/PTY behavior
+The desktop defaults to `wss://notisync-api.extrawdw.net`. For a custom broker, configure the same
+WebSocket URL in the Android app and on the desktop:
+
+```bash
+notisyncd config set broker-url "wss://notisync.example.com"
+```
+
+Pairing is mutual. Run `notisync pair show`, then scan the terminal QR code from **Devices → Pair a
+device** on Android. Copy the Android pairing link or payload back to the desktop and accept it as
+an own device:
+
+```bash
+notisync pair inspect 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync pair accept --own 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices list
+```
+
+Run traffic is restricted to trusted own devices. Prefix a command with `nsrun --` to send encrypted
+progress, input-wait, and completion updates to Android while the command runs normally:
+
+```bash
+nsrun -- git commit
 nsrun --update-interval 15s -- ./long-build
 ```
 
-On-demand startup is persistent: when `notisync` or `nsrun` launches `notisyncd`, closing that
-client does not stop the daemon or its WebSocket receive/reconnect loop. Use `notisyncd stop`
-explicitly. Desktop process-title tools show the long-lived peer as `notisyncd` and the wrapper as
-`nsrun`. On macOS the distribution uses universal native launchers that host the configured Java
-21 runtime in-process, so Activity Monitor and `ps -o ucomm` no longer report them as `java`.
+The Android **Run** tab and ongoing notification show the terminal tail and offer prompt input,
+Interrupt, Terminate, Kill, and signal controls. Dismissing a notification does not signal the
+process. `nsrun` preserves interactive terminal behavior, starts the daemon on demand, and still
+runs the child if reporting is unavailable. Private Run logs are stored under `~/.notisync/runs/`.
 
-`nsrun` starts `notisyncd` on demand but always starts the child command even if reporting is
-unavailable. It records a private, sequence-preserving NDJSON terminal log under
-`~/.notisync/runs/`, detects progress and likely input waits, and sends completion status back to
-trusted display-capable devices. Incoming notification dismissals do not signal the child; explicit
-Interrupt and Terminate actions do.
-
-Desktop configuration uses GnuPG-style, one-option-per-line files rather than JSON. The daemon reads
-only `~/.notisync/notisyncd.conf`; `nsrun` reads only `~/.notisync/nsrun.conf`:
-
-```text
-# ~/.notisync/notisyncd.conf
-broker-url "wss://notisync-api.extrawdw.net"
-device-name "Workstation"
-platform-name "Linux x86_64"
-auto-apply-trusted-device-tables no
-websocket-ping-seconds 30
+```bash
+nsrun config get
+nsrun config set updateInterval 30s
+nsrun config set stuckAfter 5m       # or: off
+nsrun config set pty auto            # auto, always, or never
+notisyncd stop
 ```
 
-```text
-# ~/.notisync/nsrun.conf
-update-interval-seconds 30
-stuck-after-seconds 300
-pty auto
-log-retention-days 30
-log-max-bytes 104857600
-```
-
-The daemon defaults `device-name` to the operating-system hostname. Use `notisync config get` and
-`notisync config set device-name NAME` (or the broader `notisyncd config get/set` interface) for
-daemon settings, and `nsrun config get/set` for Run settings.
-`nsrun config` never contacts or starts the daemon. Optional OpenAI-compatible LLM settings, including
-the literal API key, live only in `nsrun.conf` and are used only when `--llm` is passed. The initial
-desktop key provider deliberately stores unencrypted key material under
-`~/.notisync/private-keys-v1/`; key operations are behind a provider boundary for future OS-keychain
-or GnuPG-backed implementations.
+Configuration and daemon logs live in `~/.notisync/`. Rerun `./scripts/install-desktop.sh` to update
+the installed commands. The current desktop key provider stores unencrypted key material in the
+private `~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 
