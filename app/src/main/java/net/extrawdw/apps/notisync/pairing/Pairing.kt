@@ -51,19 +51,25 @@ class PairingManager(private val graph: AppGraph) {
     /**
      * This device's pairing payload (base64url of CBOR([CardDelivery])) for display as a QR. The optical
      * channel carries BOTH self-authenticating blobs at once — the client card (identity anchor + current
-     * HPKE keyset + profile, for the trust prompt) and the [ClientKeyEpoch] key-epoch (operational keys) —
+     * profile, for the trust prompt) and the [ClientKeyEpoch] key-epoch (operational keys) —
      * so a freshly paired peer is immediately sealable with no broker round-trip.
      */
-    fun myPayload(): String = payloadCodec.encode(
-                card = graph.buildClientCardBlob(),
-                // Strip the key-epoch's identity anchor for the QR only: the card alongside carries it, so the
-                // scanner verifies the key-epoch against the card's identity. Shrinks the code; the full
-                // self-contained key-epoch is pulled from the broker afterward (so it stays relayable).
-                epochBlob = graph.buildClientKeyEpochBlob(stripIdentity = true),
-    )
-
-    /** This device's pairing deep link for display as a QR. */
-    fun myLink(): String = PairingDeepLinks.create(myPayload())
+    internal fun myLink(): PairingLink {
+        val generatedCard = graph.generateClientCard()
+        val payload = payloadCodec.encode(
+            card = generatedCard.blob,
+            // Strip the key-epoch's identity anchor for the QR only: the card alongside carries it, so the
+            // scanner verifies the key-epoch against the card's identity. Shrinks the code; the full
+            // self-contained key-epoch is pulled from the broker afterward (so it stays relayable).
+            epochBlob = graph.buildClientKeyEpochBlob(stripIdentity = true),
+        )
+        return PairingLink(
+            url = PairingDeepLinks.create(payload),
+            automaticTimeEnabled = generatedCard.automaticTimeEnabled,
+            createdAt = generatedCard.createdAt,
+            timeZoneId = generatedCard.timeZoneId,
+        )
+    }
 
     /** Verify a scanned peer payload/link and return displayable details before the user trusts it. */
     fun inspect(scanned: String): Result<PairingCandidate> = payloadCodec.inspect(scanned)
@@ -99,3 +105,11 @@ class PairingManager(private val graph: AppGraph) {
     }
 
 }
+
+/** Pairing URL and the exact system-clock context of the self card embedded in it. */
+internal data class PairingLink(
+    val url: String,
+    val automaticTimeEnabled: Boolean?,
+    val createdAt: Long,
+    val timeZoneId: String,
+)

@@ -351,6 +351,9 @@
     <string name="pair_scanning">Scanning…</string>
     <string name="pair_checking">Checking device…</string>
     <string name="pair_scan_button">Scan the other device\'s code</string>
+    <string name="pair_auto_time_warning_title">Automatic date and time is off</string>
+    <string name="pair_auto_time_warning_body">Pairing cards include the current time. If this clock is incorrect, another device may reject this card.\n\nCurrent system time: %1$s</string>
+    <string name="pair_auto_time_open_settings">Settings</string>
     <string name="pair_trust_title">Trust this device?</string>
     <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>
     <string name="pair_field_name">Name</string>

@@ -91,6 +91,7 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorChannels
 import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
+import net.extrawdw.apps.notisync.pairing.automaticTimeEnabled
 import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
@@ -120,6 +121,7 @@ import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
+import java.time.ZonedDateTime
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
 
@@ -136,6 +138,14 @@ data class RotationKeyInfo(
     val pendingTargetEpoch: Int?,
     val pendingActivated: Boolean,
     val nextEventAtMillis: Long,
+)
+
+/** A self card plus the wall-clock state captured at the same generation boundary. */
+internal data class GeneratedClientCard(
+    val blob: SignedBlob,
+    val automaticTimeEnabled: Boolean?,
+    val createdAt: Long,
+    val timeZoneId: String,
 )
 
 /** Complete Android declaration. Card and profile builders must both use this exact list. */
@@ -955,24 +965,35 @@ class AppGraph(private val app: Application) {
 
     /**
      * Build this device's self-signed client card — the QR/E2E-only pairing bundle (identity anchor +
-     * current HPKE keyset + human profile). NEVER uploaded to the broker in NS2; it travels in the pairing
+     * human profile). NEVER uploaded to the broker in NS2; it travels in the pairing
      * [net.extrawdw.notisync.protocol.CardDelivery] alongside the key-epoch.
      */
-    fun buildClientCardBlob(): SignedBlob {
+    internal fun generateClientCard(): GeneratedClientCard {
+        // Read AUTO_TIME immediately before the signed timestamp. A missing/unreadable setting is unknown,
+        // not "off", so callers warn only when Android explicitly reports 0.
+        val autoTimeEnabled = automaticTimeEnabled(app.contentResolver)
+        val systemTime = ZonedDateTime.now()
+        val createdAt = systemTime.toInstant().toEpochMilli()
+        val timeZoneId = systemTime.zone.id
         val card = ClientCard(
             clientId = identity.clientId,
             identityPublicKey = identity.publicKeySpki,
             displayName = settings.deviceName.value,
             platform = "android",
             capabilities = selfCapabilities(),
-            createdAt = System.currentTimeMillis(),
+            createdAt = createdAt,
         )
         val payload = ProtocolCodec.encodeToCbor(card)
-        return SignedBlob(
-            SignedType.CLIENT_CARD,
-            signerId = identity.clientId,
-            payload = payload,
-            sig = identity.sign(payload)
+        return GeneratedClientCard(
+            blob = SignedBlob(
+                SignedType.CLIENT_CARD,
+                signerId = identity.clientId,
+                payload = payload,
+                sig = identity.sign(payload),
+            ),
+            automaticTimeEnabled = autoTimeEnabled,
+            createdAt = createdAt,
+            timeZoneId = timeZoneId,
         )
     }
 
