@@ -373,6 +373,9 @@ class AppGraph(private val app: Application) {
                 )
             },
             telemetry = peerTelemetry,
+            // Envelope signing and authenticated-request signing synchronously cross Android Keystore.
+            // Compose and lifecycle callers may enter on main; suspend them while the whole send runs on I/O.
+            outboundDispatcher = Dispatchers.IO,
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
             onUnresolvedSender = { id ->
@@ -1212,7 +1215,7 @@ class NotiSyncApp : Application() {
         private set
 
     private val initScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("NotiSyncApp.initScope"))
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard("NotiSyncApp.initScope"))
     private val graphDeferred = CompletableDeferred<AppGraph>()
     private val _graphReady = MutableStateFlow(false)
     val graphReady: StateFlow<Boolean> = _graphReady

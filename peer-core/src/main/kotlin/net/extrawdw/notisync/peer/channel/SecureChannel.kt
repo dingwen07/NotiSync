@@ -15,6 +15,8 @@ import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.withContext
 
 /** One durable outbound item whose caller-assigned [messageId] remains stable across transport retries. */
 class OutboundItem(
@@ -78,6 +80,12 @@ class SecureChannel(
     private val dedup: MessageDedup? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
     private val telemetry: PeerTelemetry = PeerTelemetry.None,
+    /**
+     * Optional host dispatcher for outbound sealing and request signing. Android supplies an I/O dispatcher
+     * because this path crosses its synchronous hardware-backed Keystore; null preserves the caller context
+     * for hosts whose signers are non-blocking and for existing deterministic tests.
+     */
+    private val outboundDispatcher: CoroutineDispatcher? = null,
 ) {
     private val seq = AtomicLong(now())
 
@@ -136,6 +144,16 @@ class SecureChannel(
         scope: Recipients,
         urgency: Urgency,
         signWith: SignerSelection = SignerSelection.OPERATIONAL,
+    ): Int = outboundDispatcher?.let { dispatcher ->
+        withContext(dispatcher) { sendAllOnDispatcher(typ, bodies, scope, urgency, signWith) }
+    } ?: sendAllOnDispatcher(typ, bodies, scope, urgency, signWith)
+
+    private suspend fun sendAllOnDispatcher(
+        typ: MessageType,
+        bodies: List<ByteArray>,
+        scope: Recipients,
+        urgency: Urgency,
+        signWith: SignerSelection,
     ): Int {
         validateOutboundPolicy(typ, scope, urgency)
         val recipients = directory.recipients(scope)
@@ -203,6 +221,19 @@ class SecureChannel(
         scope: Recipients,
         urgency: Urgency,
         signWith: SignerSelection = SignerSelection.OPERATIONAL,
+        onAccepted: (OutboundItem) -> Unit,
+    ): Int = outboundDispatcher?.let { dispatcher ->
+        withContext(dispatcher) {
+            sendAllStrictOnDispatcher(typ, items, scope, urgency, signWith, onAccepted)
+        }
+    } ?: sendAllStrictOnDispatcher(typ, items, scope, urgency, signWith, onAccepted)
+
+    private suspend fun sendAllStrictOnDispatcher(
+        typ: MessageType,
+        items: List<OutboundItem>,
+        scope: Recipients,
+        urgency: Urgency,
+        signWith: SignerSelection,
         onAccepted: (OutboundItem) -> Unit,
     ): Int {
         validateOutboundPolicy(typ, scope, urgency)

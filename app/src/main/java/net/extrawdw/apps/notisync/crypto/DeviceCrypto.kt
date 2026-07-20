@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.crypto
 
 import android.content.Context
+import android.os.Looper
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
@@ -28,6 +29,17 @@ import javax.crypto.spec.GCMParameterSpec
 
 private const val ANDROID_KEYSTORE = "AndroidKeyStore"
 private const val TAG = "DeviceCrypto"
+
+/**
+ * Android Keystore calls are synchronous Binder/secure-hardware round trips and can occasionally take
+ * seconds. Failing fast on the main thread makes the threading contract executable: a future caller cannot
+ * accidentally turn a slow key load, generation, signature, or cipher operation into an ANR.
+ */
+private fun requireKeystoreWorkerThread(operation: String) {
+    check(Looper.myLooper() != Looper.getMainLooper()) {
+        "$operation must run off the Android main thread"
+    }
+}
 
 /** Backing level of the identity key, surfaced in advanced diagnostics. */
 enum class KeyBacking { UNKNOWN, UNKNOWN_SECURE, SOFTWARE, TEE, STRONGBOX }
@@ -64,17 +76,20 @@ class AndroidIdentitySigner private constructor(
     private val privateKey: PrivateKey,
 ) : IdentitySigner {
 
-    override fun sign(data: ByteArray): ByteArray =
-        Signature.getInstance("SHA256withECDSA").run {
+    override fun sign(data: ByteArray): ByteArray {
+        requireKeystoreWorkerThread("Identity signing")
+        return Signature.getInstance("SHA256withECDSA").run {
             initSign(privateKey)
             update(data)
             sign()
         }
+    }
 
     companion object {
         private const val ALIAS = "notisync.identity.v1"
 
         fun loadOrCreate(): AndroidIdentitySigner {
+            requireKeystoreWorkerThread("Identity key load/generation")
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             (ks.getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
                 val spki = entry.certificate.publicKey.encoded
@@ -161,12 +176,14 @@ class AndroidOperationalSigner private constructor(
     private val privateKey: PrivateKey,
 ) : OperationalSigner {
 
-    override fun sign(data: ByteArray): ByteArray =
-        Signature.getInstance("SHA256withECDSA").run {
+    override fun sign(data: ByteArray): ByteArray {
+        requireKeystoreWorkerThread("Operational signing")
+        return Signature.getInstance("SHA256withECDSA").run {
             initSign(privateKey)
             update(data)
             sign()
         }
+    }
 
     companion object {
         private const val ALIAS_PREFIX = "notisync.operational.v1.epoch"
@@ -183,6 +200,7 @@ class AndroidOperationalSigner private constructor(
             epoch: Int,
             attestationChallenge: ByteArray? = null
         ): AndroidOperationalSigner {
+            requireKeystoreWorkerThread("Operational key load/generation")
             val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val alias = aliasFor(epoch)
             (ks.getEntry(alias, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
@@ -195,6 +213,7 @@ class AndroidOperationalSigner private constructor(
 
         /** Destroy the operational key for [epoch] after its retirement window (rotation cleanup). */
         fun destroy(epoch: Int) {
+            requireKeystoreWorkerThread("Operational key deletion")
             runCatching {
                 KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
                     .deleteEntry(aliasFor(epoch))
@@ -203,12 +222,15 @@ class AndroidOperationalSigner private constructor(
 
         /** Epochs that still have an operational key in the Keystore (highest is current). Used by the
          *  rotation GC to find retired keys whose [destroy] was skipped/failed (forward-secrecy backstop). */
-        fun retainedEpochs(): List<Int> = runCatching {
-            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            ks.aliases().toList().mapNotNull { a ->
-                if (a.startsWith(ALIAS_PREFIX)) a.removePrefix(ALIAS_PREFIX).toIntOrNull() else null
-            }.sorted()
-        }.getOrDefault(emptyList())
+        fun retainedEpochs(): List<Int> {
+            requireKeystoreWorkerThread("Operational key enumeration")
+            return runCatching {
+                val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+                ks.aliases().toList().mapNotNull { a ->
+                    if (a.startsWith(ALIAS_PREFIX)) a.removePrefix(ALIAS_PREFIX).toIntOrNull() else null
+                }.sorted()
+            }.getOrDefault(emptyList())
+        }
 
         private fun fromEntry(
             ks: KeyStore,
@@ -294,6 +316,7 @@ class KeyVault {
     }
 
     fun wrap(plain: ByteArray): ByteArray {
+        requireKeystoreWorkerThread("Vault encryption")
         val cipher =
             Cipher.getInstance("AES/GCM/NoPadding").apply { init(Cipher.ENCRYPT_MODE, key) }
         val iv = cipher.iv
@@ -301,6 +324,7 @@ class KeyVault {
     }
 
     fun unwrap(blob: ByteArray): ByteArray {
+        requireKeystoreWorkerThread("Vault decryption")
         val ivLen = blob[0].toInt()
         val iv = blob.copyOfRange(1, 1 + ivLen)
         val ct = blob.copyOfRange(1 + ivLen, blob.size)
