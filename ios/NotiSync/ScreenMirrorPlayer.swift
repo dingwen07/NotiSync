@@ -1,4 +1,5 @@
 import AVFoundation
+import AVKit
 import Combine
 import CoreMedia
 import Foundation
@@ -263,15 +264,176 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         guard status == noErr, let sample else {
             throw IOSScreenTransportError.unsupportedStream("iOS could not create a video sample.")
         }
-        CMSetAttachment(
-            sample,
-            key: kCMSampleAttachmentKey_DisplayImmediately,
-            value: kCFBooleanTrue,
-            attachmentMode: kCMAttachmentMode_ShouldNotPropagate
-        )
+        // DisplayImmediately is a per-sample attachment. Using CMSetAttachment here leaves the
+        // remote presentation timestamp in control, which can make the renderer hold every frame
+        // after the first when the two devices' clocks don't share an epoch.
+        if let attachments = CMSampleBufferGetSampleAttachmentsArray(sample, createIfNecessary: true),
+           CFArrayGetCount(attachments) > 0 {
+            let dictionary = unsafeBitCast(
+                CFArrayGetValueAtIndex(attachments, 0),
+                to: CFMutableDictionary.self
+            )
+            CFDictionarySetValue(
+                dictionary,
+                Unmanaged.passUnretained(kCMSampleAttachmentKey_DisplayImmediately).toOpaque(),
+                Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
+            )
+        }
         let renderer = displayLayer.sampleBufferRenderer
         if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
         renderer.enqueue(sample)
+    }
+}
+
+@MainActor
+private final class IOSScreenPictureInPictureCoordinator: NSObject,
+    AVPictureInPictureControllerDelegate,
+    AVPictureInPictureSampleBufferPlaybackDelegate
+{
+    var onPossibleChange: ((Bool) -> Void)?
+    var onActiveChange: ((Bool) -> Void)?
+    var onFailure: ((Error) -> Void)?
+
+    private var controller: AVPictureInPictureController!
+    private var possibleObservation: NSKeyValueObservation?
+    private var audioSessionIsActive = false
+    private var shuttingDown = false
+
+    var isPossible: Bool { controller.isPictureInPicturePossible }
+    var isActive: Bool { controller.isPictureInPictureActive }
+
+    init(displayLayer: AVSampleBufferDisplayLayer) {
+        super.init()
+
+        // The content source holds its playback delegate weakly, while the model retains this coordinator.
+        let contentSource = AVPictureInPictureController.ContentSource(
+            sampleBufferDisplayLayer: displayLayer,
+            playbackDelegate: self
+        )
+        controller = AVPictureInPictureController(contentSource: contentSource)
+        controller.delegate = self
+        controller.requiresLinearPlayback = true
+        controller.canStartPictureInPictureAutomaticallyFromInline = true
+        possibleObservation = controller.observe(\.isPictureInPicturePossible, options: [.initial, .new]) {
+            [weak self] controller, _ in
+            let possible = controller.isPictureInPicturePossible
+            Task { @MainActor [weak self] in
+                self?.onPossibleChange?(possible)
+            }
+        }
+    }
+
+    func prepareForAutomaticStart() {
+        shuttingDown = false
+        try? activateAudioSession()
+    }
+
+    func start() {
+        guard controller.isPictureInPicturePossible else { return }
+        shuttingDown = false
+        do {
+            try activateAudioSession()
+            controller.startPictureInPicture()
+        } catch {
+            onFailure?(error)
+        }
+    }
+
+    func stop() {
+        if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
+    }
+
+    func shutdown() {
+        shuttingDown = true
+        if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
+        else { deactivateAudioSession() }
+    }
+
+    private func deactivateAudioSession() {
+        guard audioSessionIsActive else { return }
+        audioSessionIsActive = false
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
+
+    private func activateAudioSession() throws {
+        guard !audioSessionIsActive else { return }
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+        try audioSession.setActive(true)
+        audioSessionIsActive = true
+    }
+
+    func pictureInPictureControllerWillStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        guard !shuttingDown else { return }
+        onActiveChange?(true)
+    }
+
+    func pictureInPictureControllerDidStartPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        guard !shuttingDown else {
+            pictureInPictureController.stopPictureInPicture()
+            return
+        }
+        onActiveChange?(true)
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        failedToStartPictureInPictureWithError error: Error
+    ) {
+        onActiveChange?(false)
+        if shuttingDown { deactivateAudioSession() }
+        onFailure?(error)
+    }
+
+    func pictureInPictureControllerDidStopPictureInPicture(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) {
+        onActiveChange?(false)
+        if shuttingDown { deactivateAudioSession() }
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        restoreUserInterfaceForPictureInPictureStopWithCompletionHandler completionHandler: @escaping (Bool) -> Void
+    ) {
+        completionHandler(true)
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        setPlaying playing: Bool
+    ) {
+        // Screen sharing is a live stream. Keep it playing and update the system transport controls.
+        pictureInPictureController.invalidatePlaybackState()
+    }
+
+    func pictureInPictureControllerTimeRangeForPlayback(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> CMTimeRange {
+        CMTimeRange(start: .zero, duration: .positiveInfinity)
+    }
+
+    func pictureInPictureControllerIsPlaybackPaused(
+        _ pictureInPictureController: AVPictureInPictureController
+    ) -> Bool {
+        false
+    }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        didTransitionToRenderSize newRenderSize: CMVideoDimensions
+    ) { }
+
+    func pictureInPictureController(
+        _ pictureInPictureController: AVPictureInPictureController,
+        skipByInterval skipInterval: CMTime,
+        completion: @escaping () -> Void
+    ) {
+        completion()
     }
 }
 
@@ -285,8 +447,13 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     @Published var showsInputText = false
     @Published var inputText = ""
     @Published var zoomedOut = false
+    @Published private(set) var pictureInPictureSupported = AVPictureInPictureController.isPictureInPictureSupported()
+    @Published private(set) var pictureInPicturePossible = false
+    @Published private(set) var pictureInPictureActive = false
+    @Published var pictureInPictureErrorMessage: String?
 
     let displayLayer = AVSampleBufferDisplayLayer()
+    private var pictureInPicture: IOSScreenPictureInPictureCoordinator?
     private var session: IOSScreenMirrorSession?
     private var decoder: IOSScreenVideoDecoder?
     private var control: IOSScreenControlWriter?
@@ -295,11 +462,27 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var touchSendTask: Task<Void, Never>?
     private var videoVisibilityTask: Task<Void, Never>?
     private var playbackSuspended = false
+    private var appIsActive = true
     private var stopped = false
 
     init() {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = UIColor.black.cgColor
+        guard pictureInPictureSupported else { return }
+        let pictureInPicture = IOSScreenPictureInPictureCoordinator(displayLayer: displayLayer)
+        pictureInPicture.onPossibleChange = { [weak self] possible in
+            self?.pictureInPicturePossible = possible
+        }
+        pictureInPicture.onActiveChange = { [weak self] active in
+            guard let self else { return }
+            self.pictureInPictureActive = active
+            self.reconcilePlaybackActivity()
+        }
+        pictureInPicture.onFailure = { [weak self] error in
+            self?.pictureInPictureErrorMessage = error.localizedDescription
+        }
+        self.pictureInPicture = pictureInPicture
+        pictureInPicturePossible = pictureInPicture.isPossible
     }
 
     func start(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
@@ -318,6 +501,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             self.session = session
             control = IOSScreenControlWriter(connection: session.channels.control)
             connected = true
+            pictureInPicture?.prepareForAutomaticStart()
             if playbackSuspended { queueVideoVisibility(false) }
             status = "Connected over local network"
             let decoder = IOSScreenVideoDecoder(
@@ -349,6 +533,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     func stop(runtime: NotiSyncRuntime) async {
         guard !stopped else { return }
         stopped = true
+        pictureInPicture?.shutdown()
+        pictureInPictureActive = false
         decoder?.cancel()
         decoder = nil
         touchSendTask?.cancel()
@@ -365,7 +551,13 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     func updatePlaybackActivity(isActive: Bool) {
-        if isActive {
+        appIsActive = isActive
+        reconcilePlaybackActivity()
+    }
+
+    private func reconcilePlaybackActivity() {
+        let shouldPlay = appIsActive || pictureInPictureActive
+        if shouldPlay {
             guard playbackSuspended else { return }
             playbackSuspended = false
             guard connected else { return }
@@ -373,14 +565,15 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             // then make the source emit a fresh session boundary/config/IDR instead of resuming interframes.
             displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
             queueVideoRestart()
-        } else {
-            guard !playbackSuspended else { return }
-            playbackSuspended = true
-            activeTouchIds.removeAll()
-            lastTouchLocations.removeAll()
-            guard connected else { return }
-            queueVideoVisibility(false)
+            return
         }
+
+        guard !playbackSuspended else { return }
+        playbackSuspended = true
+        activeTouchIds.removeAll()
+        lastTouchLocations.removeAll()
+        guard connected else { return }
+        queueVideoVisibility(false)
     }
 
     private func queueVideoVisibility(_ visible: Bool) {
@@ -443,6 +636,15 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 
     func toggleDisplayZoom() {
         zoomedOut.toggle()
+    }
+
+    func togglePictureInPicture() {
+        pictureInPictureErrorMessage = nil
+        if pictureInPictureActive {
+            pictureInPicture?.stop()
+        } else {
+            pictureInPicture?.start()
+        }
     }
 
     fileprivate func handleTouches(_ samples: [IOSScreenTouchSample], in viewSize: CGSize) {
@@ -593,12 +795,23 @@ struct ScreenMirrorPlayerView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onAppear { model.updatePlaybackActivity(isActive: scenePhase == .active) }
+        .onAppear { model.updatePlaybackActivity(isActive: scenePhase != .background) }
         .onChange(of: scenePhase) { _, phase in
-            model.updatePlaybackActivity(isActive: phase == .active)
+            model.updatePlaybackActivity(isActive: phase != .background)
         }
         .task { await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName) }
         .onDisappear { Task { await model.stop(runtime: runtime) } }
+        .alert(
+            "Picture in Picture",
+            isPresented: Binding(
+                get: { model.pictureInPictureErrorMessage != nil },
+                set: { if !$0 { model.pictureInPictureErrorMessage = nil } }
+            )
+        ) {
+            Button("OK") { model.pictureInPictureErrorMessage = nil }
+        } message: {
+            Text(model.pictureInPictureErrorMessage ?? "Picture in Picture could not start.")
+        }
         .sheet(isPresented: $model.showsTextInput) {
             NavigationStack {
                 Form {
@@ -663,6 +876,8 @@ struct ScreenMirrorPlayerView: View {
     private var viewerHeaderContent: some View {
         ZStack {
             viewerTitle
+                // Keep the wider title capsule clear of the matching outer controls.
+                .padding(.horizontal, 52)
 
             HStack {
                 viewerControl("Close screen viewer", systemImage: "xmark") { dismiss() }
@@ -682,23 +897,45 @@ struct ScreenMirrorPlayerView: View {
     @ViewBuilder
     private var viewerTitle: some View {
         if #available(iOS 26.0, *) {
-            Text(sourceName)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 14)
-                .frame(maxWidth: 240)
-                .frame(height: 40)
+            viewerTitleContent
                 .glassEffect(.regular, in: .capsule)
         } else {
-            Text(sourceName)
-                .font(.subheadline.weight(.semibold))
-                .lineLimit(1)
-                .padding(.horizontal, 14)
-                .frame(maxWidth: 240)
-                .frame(height: 40)
+            viewerTitleContent
                 .background(.black.opacity(0.62), in: Capsule())
                 .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
         }
+    }
+
+    private var viewerTitleContent: some View {
+        ZStack {
+            Text(sourceName)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, model.connected && model.pictureInPictureSupported ? 42 : 14)
+
+            if model.connected && model.pictureInPictureSupported {
+                HStack {
+                    Spacer()
+                    Button { model.togglePictureInPicture() } label: {
+                        Image(systemName: model.pictureInPictureActive ? "pip.exit" : "pip.enter")
+                            .font(.subheadline.weight(.semibold))
+                            .frame(width: 28, height: 28)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(!model.pictureInPicturePossible && !model.pictureInPictureActive)
+                    .opacity(model.pictureInPicturePossible || model.pictureInPictureActive ? 1 : 0.45)
+                    .accessibilityLabel(
+                        model.pictureInPictureActive
+                            ? "Stop Picture in Picture"
+                            : "Start Picture in Picture"
+                    )
+                }
+                .padding(.trailing, 6)
+            }
+        }
+        .frame(maxWidth: 280)
+        .frame(height: 40)
     }
 
     private var viewerControls: some View {
