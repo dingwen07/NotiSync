@@ -262,6 +262,31 @@ open class TrustStore(
         return false // purely local — nothing to propagate
     }
 
+    /**
+     * One-time upgrade hygiene: forget every roster row whose held card/identity/epoch material no longer
+     * verifies. This is deliberately a wholesale, local deletion (entry, card, profile, and epoch floor),
+     * not a revocation to propagate: these rows cannot participate in the compact-NS2 trust relationship and
+     * must be paired again. Returns null while the signed store is quarantined so the caller leaves its
+     * versioned completion marker unset and retries after the user resolves quarantine.
+     */
+    @Synchronized
+    fun removeUnverifiedDevices(): Set<ClientId>? {
+        if (_quarantined.value) return null
+        val ids = computeRoster(_state.value)
+            .filterNot(RosterDevice::verified)
+            .mapTo(linkedSetOf(), RosterDevice::clientId)
+        if (ids.isEmpty()) return emptySet()
+        mutate { state ->
+            state.copy(
+                entries = state.entries - ids,
+                cards = state.cards - ids,
+                overlays = state.overlays - ids,
+                epochs = state.epochs.copy(peers = state.epochs.peers - ids.map(ClientId::value).toSet()),
+            )
+        }
+        return ids
+    }
+
     /** Approve a PENDING_TRUST. Silent (anti-entropy carries it). */
     @Synchronized
     fun approveTrust(clientId: ClientId, now: Long): Boolean =

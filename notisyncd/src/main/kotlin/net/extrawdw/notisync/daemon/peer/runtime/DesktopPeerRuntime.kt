@@ -102,6 +102,7 @@ class DesktopPeerRuntime(
     private val logger: DaemonLogger = DaemonLogger(configProvider().logLevel),
     private val channelLogger: ChannelLogger = ChannelLogger(logger::warn),
     telemetry: PeerTelemetry = PeerTelemetry.None,
+    private val onUnverifiedDeviceCleanupV1Completed: () -> Unit = {},
     private val healthPollMillis: Long = DEFAULT_HEALTH_POLL_MILLIS,
     private val antiEntropyMillis: Long = DEFAULT_ANTI_ENTROPY_MILLIS,
 ) : PeerAdministration, GenericBatchSender, ActionOriginPolicy, AutoCloseable {
@@ -177,6 +178,16 @@ class DesktopPeerRuntime(
     init {
         require(healthPollMillis > 0) { "healthPollMillis must be positive" }
         require(antiEntropyMillis > 0) { "antiEntropyMillis must be positive" }
+
+        if (!configProvider().unverifiedDeviceCleanupV1Completed) {
+            val removed = trustMutationLock.withLock { trustStore.removeUnverifiedDevices() }
+            if (removed != null) {
+                onUnverifiedDeviceCleanupV1Completed()
+                if (removed.isNotEmpty()) {
+                    logger.info("Removed ${removed.size} unverified device(s) during NS2 upgrade")
+                }
+            }
+        }
 
         // The signed trust section owns the monotonic self floor. Reconcile it with the durable active key
         // before either the broker or a peer sees an envelope from this process.

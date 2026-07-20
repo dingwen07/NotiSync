@@ -161,6 +161,26 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         case .success(let engine):
             self.engine = engine
             self.clientId = engine.selfClientId
+            let needsCleanup = await Task.detached {
+                NotiSyncConfig.needsUnverifiedDeviceCleanupV1
+            }.value
+            if needsCleanup,
+               let removed = await Task.detached(priority: .utility, operation: {
+                   engine.cleanupUnverifiedPeersV1()
+               }).value {
+                if let modelContext {
+                    for id in removed {
+                        if let row = fetchDevice(clientId: id) { modelContext.delete(row) }
+                    }
+                    saveModelContext(modelContext)
+                }
+                let marked = await Task.detached {
+                    NotiSyncConfig.markUnverifiedDeviceCleanupV1Completed()
+                }.value
+                if marked, !removed.isEmpty {
+                    log.info("removed \(removed.count, privacy: .public) unverified device(s) during NS2 upgrade")
+                }
+            }
             self.broker = BrokerClient(
                 baseURL: { NotiSyncConfig.brokerURL },
                 identitySigner: engine.identitySigner,

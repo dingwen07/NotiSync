@@ -69,6 +69,7 @@ fun createFileBackedDesktopPeer(
         parentScope = parentScope,
         clock = clock,
         logger = logger,
+        onUnverifiedDeviceCleanupV1Completed = configStore::markUnverifiedDeviceCleanupV1Completed,
     )
     return FileBackedDesktopPeer(runtime, database, applications, outbox, receiver)
 }

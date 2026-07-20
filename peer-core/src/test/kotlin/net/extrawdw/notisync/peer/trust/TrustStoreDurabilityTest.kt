@@ -158,6 +158,38 @@ class TrustStoreDurabilityTest {
         assertEquals(writesAfterChange + 1, persistence.successfulWrites)
     }
 
+    @Test
+    fun `one-time cleanup removes only unverified devices and persists the result`() {
+        val persistence = FailingPersistence()
+        val identity = SoftwareIdentitySigner.generate()
+        val store = TrustStore(persistence, identity)
+        val verified = SoftwareIdentitySigner.generate()
+        val keyless = SoftwareIdentitySigner.generate()
+        assertTrue(store.addLocal(signedCard(verified), now = 10L))
+        store.applyIncomingTable(
+            sender = verified.clientId,
+            table = TrustTable(
+                listOf(
+                    TrustTableEntry(
+                        clientId = keyless.clientId,
+                        status = TrustStatus.TRUSTED,
+                        updatedAt = 20L,
+                        keyAvailable = false,
+                    )
+                )
+            ),
+        )
+
+        assertEquals(setOf(keyless.clientId), store.removeUnverifiedDevices())
+        assertEquals(TrustStatus.TRUSTED, store.statusOf(verified.clientId))
+        assertNull(store.statusOf(keyless.clientId))
+
+        val reloaded = TrustStore(persistence, identity)
+        assertEquals(TrustStatus.TRUSTED, reloaded.statusOf(verified.clientId))
+        assertTrue(reloaded.roster.value.single().verified)
+        assertNull(reloaded.statusOf(keyless.clientId))
+    }
+
     private fun signedCard(signer: IdentitySigner): SignedBlob {
         val card = ClientCard(
             clientId = signer.clientId,

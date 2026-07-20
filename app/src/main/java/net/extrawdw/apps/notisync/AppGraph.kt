@@ -275,6 +275,16 @@ class AppGraph(private val app: Application) {
         appSelection = AppSelectionRepository(ds, scope)
         appConfig = AppConfigRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
+        if (settings.needsUnverifiedDeviceCleanupV1()) {
+            val removed = trust.removeUnverifiedDevices()
+            if (removed != null) {
+                removed.forEach(notificationFilters::remove)
+                settings.markUnverifiedDeviceCleanupV1Completed()
+                if (removed.isNotEmpty()) {
+                    Log.i("NotiSync", "Removed ${removed.size} unverified device(s) during NS2 upgrade")
+                }
+            }
+        }
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
         // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
         // epoch's TEE operational signing key + HPKE keyset. Rotation (Phase 6) advances the epoch + swaps

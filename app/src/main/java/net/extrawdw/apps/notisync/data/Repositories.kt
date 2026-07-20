@@ -46,6 +46,8 @@ class SettingsRepository(
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
+    private val unverifiedDeviceCleanupV1CompletedKey =
+        booleanPreferencesKey("unverified_device_cleanup_v1_completed")
 
     private val initialBrokerUrl: String = runBlocking {
         val stored = store.data.first()[brokerUrlKey]
@@ -141,6 +143,17 @@ class SettingsRepository(
     suspend fun setBrokerUrl(url: String) = store.edit {
         it[brokerUrlKey] = upgradeLegacyDefaultBrokerUrl(url)
     }
+
+    /** Independent, versioned upgrade marker. Broker URL changes never arm or reset this cleanup. */
+    fun needsUnverifiedDeviceCleanupV1(): Boolean = runBlocking {
+        store.data.first()[unverifiedDeviceCleanupV1CompletedKey] != true
+    }
+
+    /** Written only after the signed trust-store cleanup has durably completed. */
+    fun markUnverifiedDeviceCleanupV1Completed() = runBlocking {
+        store.edit { it[unverifiedDeviceCleanupV1CompletedKey] = true }
+    }
+
     suspend fun setDeviceName(name: String) = store.edit {
         it[deviceNameKey] = name
         it[deviceNameUpdatedKey] = System.currentTimeMillis()

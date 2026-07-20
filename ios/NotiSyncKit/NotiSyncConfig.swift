@@ -2,6 +2,8 @@ import Foundation
 
 private nonisolated struct SharedBrokerConfig: Codable, Sendable {
     var brokerURL: String
+    /// Independent versioned marker; absent in older files and therefore false/pending.
+    var unverifiedDeviceCleanupV1Completed: Bool? = nil
 }
 
 /// Build-wide constants shared by the app and the Notification Service Extension.
@@ -82,22 +84,44 @@ nonisolated enum NotiSyncConfig {
     /// touching the app's SwiftData store.
     static var brokerURL: String {
         get {
-            guard let stored = AppGroupStore.read(
+            guard var config = AppGroupStore.read(
                 SharedBrokerConfig.self,
                 AppGroupStore.Files.brokerConfig
-            )?.brokerURL else { return defaultBrokerURL }
+            ) else { return defaultBrokerURL }
+            let stored = config.brokerURL
             let upgraded = upgradeLegacyDefaultBrokerURL(stored)
             if upgraded != stored {
-                AppGroupStore.write(SharedBrokerConfig(brokerURL: upgraded), AppGroupStore.Files.brokerConfig)
+                config.brokerURL = upgraded
+                AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
             }
             return upgraded
         }
         set {
-            AppGroupStore.write(
-                SharedBrokerConfig(brokerURL: upgradeLegacyDefaultBrokerURL(newValue)),
+            var config = AppGroupStore.read(
+                SharedBrokerConfig.self,
                 AppGroupStore.Files.brokerConfig
-            )
+            ) ?? SharedBrokerConfig(brokerURL: defaultBrokerURL)
+            config.brokerURL = upgradeLegacyDefaultBrokerURL(newValue)
+            AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
         }
+    }
+
+    /// A separate app-upgrade gate: custom broker users run it too, and broker edits never reset it.
+    static var needsUnverifiedDeviceCleanupV1: Bool {
+        AppGroupStore.read(
+            SharedBrokerConfig.self,
+            AppGroupStore.Files.brokerConfig
+        )?.unverifiedDeviceCleanupV1Completed != true
+    }
+
+    @discardableResult
+    static func markUnverifiedDeviceCleanupV1Completed() -> Bool {
+        var config = AppGroupStore.read(
+            SharedBrokerConfig.self,
+            AppGroupStore.Files.brokerConfig
+        ) ?? SharedBrokerConfig(brokerURL: defaultBrokerURL)
+        config.unverifiedDeviceCleanupV1Completed = true
+        return AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
     }
 }
 

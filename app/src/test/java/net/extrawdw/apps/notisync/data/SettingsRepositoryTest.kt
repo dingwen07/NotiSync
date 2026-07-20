@@ -9,7 +9,9 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
 
@@ -42,6 +44,18 @@ class SettingsRepositoryTest {
         assertEquals("https://broker.example.test", settings.brokerUrl.value)
         settings.setBrokerUrl("https://notisync-api.extrawdw.net.evil.example")
         assertEquals("https://notisync-api.extrawdw.net.evil.example", settings.brokerUrl.value)
+    }
+
+    @Test
+    fun unverifiedDeviceCleanup_usesAnIndependentOneTimeMarker() = runBlocking {
+        val settings = newRepository("https://broker.example.test")
+
+        assertTrue(settings.needsUnverifiedDeviceCleanupV1())
+        settings.markUnverifiedDeviceCleanupV1Completed()
+        assertFalse(settings.needsUnverifiedDeviceCleanupV1())
+
+        settings.setBrokerUrl("https://notisync-api.extrawdw.net")
+        assertFalse(settings.needsUnverifiedDeviceCleanupV1())
     }
 
     @Test

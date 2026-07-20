@@ -564,6 +564,18 @@ nonisolated final class NotiSyncEngine: Sendable {
         return removed
     }
 
+    /// Run the versioned local cleanup and durably replace even an unreadable/quarantined legacy trust file
+    /// with the verified remainder. Nil means persistence failed, so the caller must leave its marker unset.
+    func cleanupUnverifiedPeersV1() -> [String]? {
+        AppGroupStore.withLock(AppGroupStore.Files.trust) {
+            let store = trust()
+            let removed = store.removeUnverifiedPeers()
+            guard save(store) else { return nil }
+            for id in removed { CardStore.remove(id) }
+            return removed
+        }
+    }
+
     /// Approve a PENDING_TRUST device → TRUSTED (the user accepts a mesh introduction). (#3)
     @discardableResult func approveTrust(_ clientId: String) -> Bool { mutateTrust { $0.approveTrust(clientId, at: Self.nowMillis()) } }
     /// Reject a PENDING_TRUST device → REVOKED (overturn — propagates). (#3)

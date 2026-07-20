@@ -24,6 +24,7 @@ data class NotisyncdConfig(
     val automaticallyApplyTrustedDeviceTables: Boolean = DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
     val logLevel: String = DEFAULT_LOG_LEVEL,
     val websocketPingSeconds: Int = DEFAULT_WEBSOCKET_PING_SECONDS,
+    val unverifiedDeviceCleanupV1Completed: Boolean = false,
 ) {
     fun validate(): NotisyncdConfig = apply {
         require(
@@ -59,6 +60,14 @@ class NotisyncdConfigStore(
     override fun save(value: NotisyncdConfig) {
         val upgraded = value.copy(brokerUrl = upgradeLegacyDefaultBrokerUrl(value.brokerUrl)).validate()
         PrivateFiles.atomicWrite(path, NotisyncdConfigCodec.encode(upgraded).encodeToByteArray())
+    }
+
+    /** Independent from broker migration: changing broker-url cannot re-arm this versioned cleanup. */
+    fun markUnverifiedDeviceCleanupV1Completed() {
+        val current = load()
+        if (!current.unverifiedDeviceCleanupV1Completed) {
+            save(current.copy(unverifiedDeviceCleanupV1Completed = true))
+        }
     }
 
     fun loadRecovering(onRecovery: (String) -> Unit = {}): NotisyncdConfig = try {
@@ -121,6 +130,7 @@ internal object NotisyncdConfigCodec {
         "auto-apply-trusted-device-tables",
         "log-level",
         "websocket-ping-seconds",
+        "unverified-device-cleanup-v1-completed",
     )
 
     fun decode(text: String, path: Path): NotisyncdConfig = decodeWithDefaults(
@@ -142,6 +152,8 @@ internal object NotisyncdConfigCodec {
                 ?: DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
             logLevel = values.string("log-level") ?: DEFAULT_LOG_LEVEL,
             websocketPingSeconds = values.int("websocket-ping-seconds") ?: DEFAULT_WEBSOCKET_PING_SECONDS,
+            unverifiedDeviceCleanupV1Completed =
+                values.boolean("unverified-device-cleanup-v1-completed") ?: false,
         ).validate()
     }
 
@@ -153,6 +165,11 @@ internal object NotisyncdConfigCodec {
         option("auto-apply-trusted-device-tables", if (value.automaticallyApplyTrustedDeviceTables) "yes" else "no", false)
         option("log-level", value.logLevel)
         option("websocket-ping-seconds", value.websocketPingSeconds.toString(), false)
+        option(
+            "unverified-device-cleanup-v1-completed",
+            if (value.unverifiedDeviceCleanupV1Completed) "yes" else "no",
+            false,
+        )
     }
 }
 
