@@ -307,16 +307,8 @@ extension NotiSyncRuntime {
     }
 
     private func applyPeerRows(_ peers: [TrustedPeerRecord]) {
-        let screenRequired: Set<Capability> = [
-            .CAPABILITY_ROUTING_V1,
-            .SCREEN_MIRROR_SOURCE_V1,
-            .SCREEN_MIRROR_CONTROL_V1,
-            .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
-            .SCREEN_MIRROR_ENCODER_H264_HW,
-        ]
         replaceScreenMirrorSourceIds(Set(peers.compactMap { peer in
-            guard peer.isTrusted, peer.ownDevice,
-                  screenRequired.isSubset(of: Set(peer.announcedCapabilities)) else { return nil }
+            guard ScreenMirrorSourceRecord.supports(peer) else { return nil }
             return peer.clientId
         }))
         for peer in peers where peer.clientId != clientId {

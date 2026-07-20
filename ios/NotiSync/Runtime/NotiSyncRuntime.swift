@@ -14,6 +14,12 @@ private nonisolated struct RoutePublishSnapshot: Sendable {
     var routeEpoch: Int
 }
 
+nonisolated struct IOSScreenMirrorPresentation: Identifiable, Sendable {
+    var id: String { sourceId }
+    var sourceId: String
+    var sourceName: String
+}
+
 /// App-process orchestration: owns the protocol engine + broker client and drives identity/auth, route
 /// publishing, inbound delivery (foreground WS / relay drain / silent push), dismissal sync + two-poll
 /// reconciliation, and pairing. The NSE handles the alert-push fast path independently (see the extension).
@@ -41,6 +47,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// Trusted own Android peers that advertise the complete screen-v1 source stack and H.264 hardware.
     @Published private(set) var screenMirrorSourceIds: Set<String> = []
     @Published private(set) var screenMirrorPhase: String?
+    @Published var screenMirrorPresentation: IOSScreenMirrorPresentation?
 
     func replaceScreenMirrorSourceIds(_ sourceIds: Set<String>) {
         screenMirrorSourceIds = sourceIds
@@ -48,6 +55,23 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func updateScreenMirrorPhase(_ phase: String?) {
         screenMirrorPhase = phase
+    }
+
+    /// Route both explicit Devices-page requests and foreground notification actions through one viewer.
+    @discardableResult
+    func presentScreenMirror(sourceId: String, fallbackName: String = "Screen Source") -> Bool {
+        guard activeScreenMirror == nil,
+              screenMirrorPresentation == nil,
+              let source = engine?.screenMirrorSources().first(where: { $0.clientId == sourceId }) else {
+            return false
+        }
+        let sourceName = source.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = fallbackName.trimmingCharacters(in: .whitespacesAndNewlines)
+        screenMirrorPresentation = IOSScreenMirrorPresentation(
+            sourceId: source.clientId,
+            sourceName: sourceName.isEmpty ? (fallback.isEmpty ? "Screen Source" : fallback) : sourceName
+        )
+        return true
     }
 
     var modelContext: ModelContext?
@@ -422,6 +446,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             await bringUpCore()
             await sendMirrorAction(
                 ActionEvent(sourceClientId: scid, sourceKey: sk, kind: .TAP, actedAt: NotiSyncEngine.nowMillis()))
+            _ = presentScreenMirror(sourceId: scid)
             return
         }
         // A mirrored action button ("notisync.act.<index>"): unicast a PERFORM to the origin, echoing the

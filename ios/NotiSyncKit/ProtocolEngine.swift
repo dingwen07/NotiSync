@@ -99,10 +99,24 @@ nonisolated struct PairingCandidate: Identifiable, Sendable {
 }
 
 nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
+    static let requiredCapabilities: Set<Capability> = [
+        .CAPABILITY_ROUTING_V1,
+        .SCREEN_MIRROR_SOURCE_V1,
+        .SCREEN_MIRROR_CONTROL_V1,
+        .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
+        .SCREEN_MIRROR_ENCODER_H264_HW,
+    ]
+
     var id: String { clientId }
     var clientId: String
     var displayName: String
     var capabilities: Set<Capability>
+
+    static func supports(_ peer: TrustedPeerRecord) -> Bool {
+        peer.isTrusted
+            && peer.ownDevice
+            && requiredCapabilities.isSubset(of: Set(peer.announcedCapabilities))
+    }
 }
 
 nonisolated enum KeyFingerprint {
@@ -774,16 +788,9 @@ nonisolated final class NotiSyncEngine: Sendable {
     func trustedPeers() -> [TrustedPeerRecord] { Array(trust().peers.values) }
 
     func screenMirrorSources() -> [ScreenMirrorSourceRecord] {
-        let required: Set<Capability> = [
-            .CAPABILITY_ROUTING_V1,
-            .SCREEN_MIRROR_SOURCE_V1,
-            .SCREEN_MIRROR_CONTROL_V1,
-            .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
-            .SCREEN_MIRROR_ENCODER_H264_HW,
-        ]
         return trust().peers.values.compactMap { peer in
             let capabilities = Set(peer.announcedCapabilities)
-            guard peer.isTrusted, peer.ownDevice, required.isSubset(of: capabilities) else { return nil }
+            guard ScreenMirrorSourceRecord.supports(peer) else { return nil }
             return ScreenMirrorSourceRecord(
                 clientId: peer.clientId,
                 displayName: peer.displayName,

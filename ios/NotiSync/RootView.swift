@@ -58,6 +58,10 @@ struct RootView: View {
                 runtime.incomingPairing = nil
             }
         }
+        .fullScreenCover(item: $runtime.screenMirrorPresentation) { source in
+            ScreenMirrorPlayerView(sourceId: source.sourceId, sourceName: source.sourceName)
+                .environmentObject(runtime)
+        }
     }
 }
 
@@ -553,7 +557,6 @@ struct DevicesView: View {
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
-    @State private var selectedScreenSource: ScreenMirrorSelection?
     /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
     /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
     /// was up. Loaded on page entry / pull-to-refresh, and re-derived when the user edits a filter (so a
@@ -596,9 +599,9 @@ struct DevicesView: View {
                             canMirrorScreen: runtime.screenMirrorSourceIds.contains(device.clientId),
                             openFilters: { selectedFilterDevice = .android(device) },
                             mirrorScreen: {
-                                selectedScreenSource = ScreenMirrorSelection(
-                                    id: device.clientId,
-                                    name: device.displayName.isEmpty ? "Screen Source" : device.displayName
+                                _ = runtime.presentScreenMirror(
+                                    sourceId: device.clientId,
+                                    fallbackName: device.displayName
                                 )
                             }
                         )
@@ -643,10 +646,6 @@ struct DevicesView: View {
                 AppFilterSheet(
                     title: selection.title(peerName: peerName),
                     selection: selection)
-                    .environmentObject(runtime)
-            }
-            .fullScreenCover(item: $selectedScreenSource) { source in
-                ScreenMirrorPlayerView(sourceId: source.id, sourceName: source.name)
                     .environmentObject(runtime)
             }
         }
@@ -742,11 +741,6 @@ private struct TrustedPeerRow: View {
             }
         }
     }
-}
-
-private struct ScreenMirrorSelection: Identifiable {
-    let id: String
-    let name: String
 }
 
 private enum FilterDeviceSelection: Identifiable {

@@ -45,6 +45,16 @@ actor IOSScreenControlWriter {
 
     func togglePower() async throws { try await connection.send(Data([64])) }
 
+    func setVideoVisible(_ visible: Bool) async throws {
+        try await connection.send(Data([65, visible ? 1 : 0]))
+    }
+
+    /// A rapid hidden→visible transition forces the source to begin a fresh codec session while keeping
+    /// both authenticated channels alive. The new session includes codec config and an IDR frame.
+    func restartVideo() async throws {
+        try await connection.send(Data([65, 0, 65, 1]))
+    }
+
     fileprivate func sendTouches(_ touches: [IOSScreenTouchCommand]) async throws {
         var frames = Data()
         for touch in touches {
@@ -260,7 +270,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
             attachmentMode: kCMAttachmentMode_ShouldNotPropagate
         )
         let renderer = displayLayer.sampleBufferRenderer
-        if renderer.status == .failed { renderer.flush() }
+        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
         renderer.enqueue(sample)
     }
 }
@@ -283,6 +293,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var activeTouchIds: Set<UInt64> = []
     private var lastTouchLocations: [UInt64: CGPoint] = [:]
     private var touchSendTask: Task<Void, Never>?
+    private var videoVisibilityTask: Task<Void, Never>?
+    private var playbackSuspended = false
     private var stopped = false
 
     init() {
@@ -306,6 +318,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             self.session = session
             control = IOSScreenControlWriter(connection: session.channels.control)
             connected = true
+            if playbackSuspended { queueVideoVisibility(false) }
             status = "Connected over local network"
             let decoder = IOSScreenVideoDecoder(
                 connection: session.channels.video,
@@ -340,6 +353,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         decoder = nil
         touchSendTask?.cancel()
         touchSendTask = nil
+        videoVisibilityTask?.cancel()
+        videoVisibilityTask = nil
         session?.cancelTransport()
         await runtime.endScreenMirror(sessionId: session?.sessionId)
         session = nil
@@ -347,6 +362,45 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         activeTouchIds.removeAll()
         lastTouchLocations.removeAll()
         connected = false
+    }
+
+    func updatePlaybackActivity(isActive: Bool) {
+        if isActive {
+            guard playbackSuspended else { return }
+            playbackSuspended = false
+            guard connected else { return }
+            // A suspended AVSampleBufferDisplayLayer may explicitly require a flush. Always flush here,
+            // then make the source emit a fresh session boundary/config/IDR instead of resuming interframes.
+            displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
+            queueVideoRestart()
+        } else {
+            guard !playbackSuspended else { return }
+            playbackSuspended = true
+            activeTouchIds.removeAll()
+            lastTouchLocations.removeAll()
+            guard connected else { return }
+            queueVideoVisibility(false)
+        }
+    }
+
+    private func queueVideoVisibility(_ visible: Bool) {
+        guard let control else { return }
+        let preceding = videoVisibilityTask
+        videoVisibilityTask = Task {
+            await preceding?.value
+            guard !Task.isCancelled else { return }
+            try? await control.setVideoVisible(visible)
+        }
+    }
+
+    private func queueVideoRestart() {
+        guard let control else { return }
+        let preceding = videoVisibilityTask
+        videoVisibilityTask = Task {
+            await preceding?.value
+            guard !Task.isCancelled else { return }
+            try? await control.restartVideo()
+        }
     }
 
     func sendKey(_ keyCode: Int32) {
@@ -388,7 +442,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     func toggleDisplayZoom() {
-        withAnimation(.easeInOut(duration: 0.2)) { zoomedOut.toggle() }
+        zoomedOut.toggle()
     }
 
     fileprivate func handleTouches(_ samples: [IOSScreenTouchSample], in viewSize: CGSize) {
@@ -476,6 +530,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 struct ScreenMirrorPlayerView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = IOSScreenMirrorPlayerModel()
     @FocusState private var inputIsFocused: Bool
     let sourceId: String
@@ -484,18 +539,14 @@ struct ScreenMirrorPlayerView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            GeometryReader { geometry in
-                let viewport = videoViewport(in: geometry)
-                ScreenMirrorVideoSurface(
-                    layer: model.displayLayer,
-                    onTouches: { samples, size in model.handleTouches(samples, in: size) }
-                )
-                .frame(width: viewport.width, height: viewport.height)
-                .position(x: viewport.midX, y: viewport.midY)
+            ScreenMirrorVideoSurface(
+                layer: model.displayLayer,
+                sourceSize: model.dimensions,
+                zoomedOut: model.zoomedOut,
+                onTouches: { samples, size in model.handleTouches(samples, in: size) }
+            )
                 .allowsHitTesting(model.connected)
-                .animation(.easeInOut(duration: 0.2), value: model.zoomedOut)
-            }
-            .ignoresSafeArea()
+                .ignoresSafeArea()
             if !model.connected {
                 VStack(spacing: 14) {
                     if let error = model.errorMessage {
@@ -542,6 +593,10 @@ struct ScreenMirrorPlayerView: View {
         }
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
+        .onAppear { model.updatePlaybackActivity(isActive: scenePhase == .active) }
+        .onChange(of: scenePhase) { _, phase in
+            model.updatePlaybackActivity(isActive: phase == .active)
+        }
         .task { await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName) }
         .onDisappear { Task { await model.stop(runtime: runtime) } }
         .sheet(isPresented: $model.showsTextInput) {
@@ -595,7 +650,46 @@ struct ScreenMirrorPlayerView: View {
     }
 
     private var viewerHeader: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 10) { viewerHeaderContent }
+            } else {
+                viewerHeaderContent
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var viewerHeaderContent: some View {
         ZStack {
+            viewerTitle
+
+            HStack {
+                viewerControl("Close screen viewer", systemImage: "xmark") { dismiss() }
+                Spacer()
+                if model.connected {
+                    viewerControl(
+                        model.zoomedOut ? "Fill Screen" : "Zoom Out",
+                        systemImage: model.zoomedOut
+                            ? "arrow.up.left.and.arrow.down.right"
+                            : "minus.magnifyingglass"
+                    ) { model.toggleDisplayZoom() }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var viewerTitle: some View {
+        if #available(iOS 26.0, *) {
+            Text(sourceName)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: 240)
+                .frame(height: 40)
+                .glassEffect(.regular, in: .capsule)
+        } else {
             Text(sourceName)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
@@ -604,20 +698,7 @@ struct ScreenMirrorPlayerView: View {
                 .frame(height: 40)
                 .background(.black.opacity(0.62), in: Capsule())
                 .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
-
-            HStack {
-                Button { dismiss() } label: {
-                    Image(systemName: "xmark")
-                        .font(.body.weight(.semibold))
-                        .frame(width: 28, height: 28)
-                }
-                .screenMirrorNativeButton()
-                .buttonBorderShape(.circle)
-                .accessibilityLabel("Close screen viewer")
-                Spacer()
-            }
         }
-        .foregroundStyle(.white)
     }
 
     private var viewerControls: some View {
@@ -635,10 +716,6 @@ struct ScreenMirrorPlayerView: View {
             viewerControl("Back", systemImage: "chevron.backward") { model.sendKey(4) }
             viewerControl("Home", systemImage: "circle") { model.sendKey(3) }
             viewerControl("Recent Apps", systemImage: "square.on.square") { model.sendKey(187) }
-            viewerControl(
-                model.zoomedOut ? "Fill Screen" : "Zoom Out",
-                systemImage: model.zoomedOut ? "arrow.up.left.and.arrow.down.right" : "minus.magnifyingglass"
-            ) { model.toggleDisplayZoom() }
             viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
             viewerControl("Power", systemImage: "power") { model.togglePower() }
         }
@@ -662,20 +739,6 @@ struct ScreenMirrorPlayerView: View {
         .accessibilityLabel(title)
     }
 
-    private func videoViewport(in geometry: GeometryProxy) -> CGRect {
-        guard model.zoomedOut else { return CGRect(origin: .zero, size: geometry.size) }
-        let safe = geometry.safeAreaInsets
-        let leading = safe.leading + 12
-        let trailing = safe.trailing + 12
-        let top = safe.top + 58
-        let bottom = safe.bottom + 68
-        return CGRect(
-            x: leading,
-            y: top,
-            width: max(1, geometry.size.width - leading - trailing),
-            height: max(1, geometry.size.height - top - bottom)
-        )
-    }
 }
 
 extension View {
@@ -697,26 +760,35 @@ extension View {
 
 private struct ScreenMirrorVideoSurface: UIViewRepresentable {
     let layer: AVSampleBufferDisplayLayer
+    let sourceSize: CGSize
+    let zoomedOut: Bool
     let onTouches: ([IOSScreenTouchSample], CGSize) -> Void
 
     func makeUIView(context: Context) -> ScreenMirrorLayerHostView {
         let view = ScreenMirrorLayerHostView()
         view.backgroundColor = .black
         view.hostedLayer = layer
+        view.configure(sourceSize: sourceSize, zoomedOut: zoomedOut, animated: false)
         view.onTouches = onTouches
         return view
     }
 
     func updateUIView(_ uiView: ScreenMirrorLayerHostView, context: Context) {
         uiView.hostedLayer = layer
+        uiView.configure(sourceSize: sourceSize, zoomedOut: zoomedOut, animated: true)
         uiView.onTouches = onTouches
     }
 }
 
 private final class ScreenMirrorLayerHostView: UIView {
+    private static let zoomedOutScale: CGFloat = 0.76
+    private static let zoomDuration: CFTimeInterval = 0.32
+
     var onTouches: (([IOSScreenTouchSample], CGSize) -> Void)?
     private var pointerIds: [ObjectIdentifier: UInt64] = [:]
     private var nextPointerId: UInt64 = 0
+    private var sourceSize = CGSize.zero
+    private var zoomedOut = false
 
     var hostedLayer: AVSampleBufferDisplayLayer? {
         didSet {
@@ -740,7 +812,47 @@ private final class ScreenMirrorLayerHostView: UIView {
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        hostedLayer?.frame = bounds
+        guard let hostedLayer else { return }
+        let size = aspectFitSourceSize()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        hostedLayer.bounds = CGRect(origin: .zero, size: size)
+        hostedLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
+        applyZoomState(to: hostedLayer)
+        CATransaction.commit()
+    }
+
+    func configure(sourceSize: CGSize, zoomedOut: Bool, animated: Bool) {
+        let sourceChanged = self.sourceSize != sourceSize
+        if sourceChanged {
+            self.sourceSize = sourceSize
+            setNeedsLayout()
+            layoutIfNeeded()
+        }
+        guard self.zoomedOut != zoomedOut else { return }
+        self.zoomedOut = zoomedOut
+        guard let hostedLayer else { return }
+        CATransaction.begin()
+        CATransaction.setAnimationDuration(animated ? Self.zoomDuration : 0)
+        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
+        applyZoomState(to: hostedLayer)
+        CATransaction.commit()
+    }
+
+    private func aspectFitSourceSize() -> CGSize {
+        guard bounds.width > 0, bounds.height > 0 else { return .zero }
+        guard sourceSize.width > 0, sourceSize.height > 0 else { return bounds.size }
+        let scale = min(bounds.width / sourceSize.width, bounds.height / sourceSize.height)
+        return CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
+    }
+
+    private func applyZoomState(to hostedLayer: AVSampleBufferDisplayLayer) {
+        let scale = zoomedOut ? Self.zoomedOutScale : 1
+        hostedLayer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        hostedLayer.cornerRadius = zoomedOut ? 18 / scale : 0
+        hostedLayer.borderWidth = zoomedOut ? 1.25 / scale : 0
+        hostedLayer.borderColor = UIColor.white.withAlphaComponent(0.52).cgColor
+        hostedLayer.masksToBounds = zoomedOut
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -762,7 +874,7 @@ private final class ScreenMirrorLayerHostView: UIView {
         onTouches?([IOSScreenTouchSample(
             action: 3,
             pointerId: pointerId,
-            location: touch.location(in: self),
+            location: unscaledLocation(touch.location(in: self)),
             pressure: 0
         )], bounds.size)
     }
@@ -789,7 +901,7 @@ private final class ScreenMirrorLayerHostView: UIView {
             samples.append(IOSScreenTouchSample(
                 action: action,
                 pointerId: pointerId,
-                location: touch.location(in: self),
+                location: unscaledLocation(touch.location(in: self)),
                 pressure: action == 1 ? 0 : normalizedPressure(touch)
             ))
             if removesPointers { pointerIds.removeValue(forKey: key) }
@@ -800,6 +912,15 @@ private final class ScreenMirrorLayerHostView: UIView {
     private func normalizedPressure(_ touch: UITouch) -> Double {
         guard touch.maximumPossibleForce > 0, touch.force > 0 else { return 1 }
         return min(1, max(0, Double(touch.force / touch.maximumPossibleForce)))
+    }
+
+    private func unscaledLocation(_ point: CGPoint) -> CGPoint {
+        guard zoomedOut else { return point }
+        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        return CGPoint(
+            x: center.x + (point.x - center.x) / Self.zoomedOutScale,
+            y: center.y + (point.y - center.y) / Self.zoomedOutScale
+        )
     }
 }
 
