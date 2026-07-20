@@ -187,7 +187,7 @@
 
     <!-- Settings screen -->
     <string name="settings_device_name">Device name</string>
-    <string name="settings_broker_url">Broker URL (ws://…)</string>
+    <string name="settings_broker_url">Broker URL (https://…)</string>
     <string name="settings_call_ringer">Ring for mirrored calls</string>
     <string name="settings_call_ringer_fsi_blocked">Full-screen call alerts are blocked</string>
     <string name="settings_call_ringer_fsi_blocked_hint">Allow full-screen notifications so mirrored calls can show the incoming-call screen while this phone is locked. Tap to open system settings.</string>

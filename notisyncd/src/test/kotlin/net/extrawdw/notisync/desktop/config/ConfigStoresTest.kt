@@ -9,6 +9,29 @@ import org.junit.Test
 
 class ConfigStoresTest {
     @Test
+    fun `legacy production broker is upgraded and persisted once`() {
+        val path = Files.createTempDirectory("notisyncd-broker-migration-test").toRealPath().resolve("notisyncd.conf")
+        Files.writeString(path, "broker-url wss://notisync-api.extrawdw.net\n")
+
+        val config = NotisyncdConfigStore(path).load()
+
+        assertEquals("https://notisync-api-v2.extrawdw.net", config.brokerUrl)
+        val persisted = Files.readString(path)
+        assertTrue(persisted.contains("https://notisync-api-v2.extrawdw.net"))
+        assertFalse(persisted.contains("notisync-api.extrawdw.net"))
+    }
+
+    @Test
+    fun `custom broker is not changed by default migration`() {
+        val path = Files.createTempDirectory("notisyncd-custom-broker-test").toRealPath().resolve("notisyncd.conf")
+        Files.writeString(path, "broker-url https://notisync-api.extrawdw.net.evil.example\n")
+
+        val config = NotisyncdConfigStore(path).load()
+
+        assertEquals("https://notisync-api.extrawdw.net.evil.example", config.brokerUrl)
+    }
+
+    @Test
     fun `daemon device name defaults to the operating system hostname`() {
         assertEquals(
             "build-host",

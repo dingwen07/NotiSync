@@ -416,6 +416,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func saveSettings(brokerURL: String, deviceName: String, environment: RouteEnvironment) {
         let s = settings()
+        let brokerURL = NotiSyncConfig.upgradeLegacyDefaultBrokerURL(brokerURL)
         let effectiveEnvironment = NotiSyncConfig.effectiveAPNSEnvironment(environment)
         let brokerChanged = s.brokerURL != brokerURL
         let renamed = s.deviceName != deviceName

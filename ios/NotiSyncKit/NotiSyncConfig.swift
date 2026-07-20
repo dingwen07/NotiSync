@@ -37,6 +37,21 @@ nonisolated enum NotiSyncConfig {
     /// Dedicated compact-CBOR NS2 broker. Pre-release field-name-CBOR brokers are intentionally isolated.
     static let defaultBrokerURL = "https://notisync-api-v2.extrawdw.net"
 
+    /// Migrate only NotiSync's former production default. Test, local, and user-provided brokers are kept.
+    static func upgradeLegacyDefaultBrokerURL(_ value: String) -> String {
+        guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https", "ws", "wss"].contains(scheme),
+              components.host?.lowercased() == "notisync-api.extrawdw.net",
+              components.port == nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else { return value }
+        return defaultBrokerURL
+    }
+
     /// Largest inline APNs payload we advertise in our route claim (base64 envelope chars).
     static let inlinePayloadLimitBytes = 3500
 
@@ -67,11 +82,21 @@ nonisolated enum NotiSyncConfig {
     /// touching the app's SwiftData store.
     static var brokerURL: String {
         get {
-            AppGroupStore.read(SharedBrokerConfig.self, AppGroupStore.Files.brokerConfig)?.brokerURL
-                ?? defaultBrokerURL
+            guard let stored = AppGroupStore.read(
+                SharedBrokerConfig.self,
+                AppGroupStore.Files.brokerConfig
+            )?.brokerURL else { return defaultBrokerURL }
+            let upgraded = upgradeLegacyDefaultBrokerURL(stored)
+            if upgraded != stored {
+                AppGroupStore.write(SharedBrokerConfig(brokerURL: upgraded), AppGroupStore.Files.brokerConfig)
+            }
+            return upgraded
         }
         set {
-            AppGroupStore.write(SharedBrokerConfig(brokerURL: newValue), AppGroupStore.Files.brokerConfig)
+            AppGroupStore.write(
+                SharedBrokerConfig(brokerURL: upgradeLegacyDefaultBrokerURL(newValue)),
+                AppGroupStore.Files.brokerConfig
+            )
         }
     }
 }

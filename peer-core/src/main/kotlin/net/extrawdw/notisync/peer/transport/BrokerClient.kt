@@ -129,9 +129,8 @@ class BrokerClient(
             runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
     }
 
-    private fun wsBase(): String = baseUrlProvider().trimEnd('/')
-    private fun httpBase(): String =
-        wsBase().replaceFirst("ws://", "http://").replaceFirst("wss://", "https://")
+    private fun wsBase(): String = brokerWebSocketBase(baseUrlProvider())
+    private fun httpBase(): String = brokerHttpBase(baseUrlProvider())
 
     override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) {
         // Identity-signed request (signerEpoch 0): the broker pins our identity from the first key-epoch and
@@ -698,4 +697,26 @@ class BrokerClient(
     )
 
     private class IntegrityException(message: String, val retryable: Boolean) : Exception(message)
+}
+
+/**
+ * A configured broker address is an HTTP base URL because most broker traffic is signed HTTP. Accept the
+ * older ws/wss spelling as input, but canonicalize the scheme at the point where each transport is used.
+ */
+internal fun brokerHttpBase(value: String): String {
+    val normalized = value.trim().trimEnd('/')
+    return when {
+        normalized.startsWith("wss://") -> "https://${normalized.removePrefix("wss://")}"
+        normalized.startsWith("ws://") -> "http://${normalized.removePrefix("ws://")}"
+        else -> normalized
+    }
+}
+
+internal fun brokerWebSocketBase(value: String): String {
+    val normalized = value.trim().trimEnd('/')
+    return when {
+        normalized.startsWith("https://") -> "wss://${normalized.removePrefix("https://")}"
+        normalized.startsWith("http://") -> "ws://${normalized.removePrefix("http://")}"
+        else -> normalized
+    }
 }

@@ -178,7 +178,7 @@
 
     <!-- Settings screen -->
     <string name="settings_device_name">设备名称</string>
-    <string name="settings_broker_url">Broker 地址 (ws://…)</string>
+    <string name="settings_broker_url">Broker 地址 (https://…)</string>
     <string name="settings_call_ringer">为镜像来电响铃</string>
     <string name="settings_call_ringer_fsi_blocked">全屏来电提醒已被阻止</string>
     <string name="settings_call_ringer_fsi_blocked_hint">请允许全屏通知，镜像来电才能在锁屏时显示来电界面。点按打开系统设置。</string>

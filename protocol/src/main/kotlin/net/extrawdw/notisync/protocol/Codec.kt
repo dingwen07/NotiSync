@@ -25,10 +25,11 @@ object ProtocolCodec {
         // A definite-length map/array saves the trailing break byte and gives one deterministic shape.
         useDefiniteLengthEncoding = true
         // Omit fields equal to their default, shrinking the wire and the inline-push budget (FCM/APNs).
-        // Safe across versions: every field has a default, so a missing key decodes back to it, and
-        // ignoreUnknownKeys absorbs the reverse — old and new peers interoperate (mixed fleet). The two
-        // structs re-encoded on both ends for crypto ([EnvelopeAuth], [AssetAad]) carry NO defaults, so
-        // their signature/AAD bytes are identical regardless of this flag.
+        // Within this compact NS2 representation, a missing key decodes to its declared default and
+        // ignoreUnknownKeys lets an older reader skip future numeric labels. Named-key CBOR from the
+        // pre-release representation is intentionally outside this compatibility contract. The two structs
+        // re-encoded on both ends for crypto ([EnvelopeAuth], [AssetAad]) carry NO defaults, so their
+        // signature/AAD bytes are identical regardless of this flag.
         // INVARIANT: never give a nullable field a non-null default (an absent key would be ambiguous).
         // Version/suite discriminators that must outlive a suite bump are pinned with @EncodeDefault(ALWAYS).
         encodeDefaults = false

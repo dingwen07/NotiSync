@@ -3,6 +3,8 @@ package net.extrawdw.apps.notisync.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
@@ -13,12 +15,33 @@ import java.io.File
 
 class SettingsRepositoryTest {
 
-    private fun newRepository(): SettingsRepository {
+    private fun newRepository(initialBrokerUrl: String? = null): SettingsRepository {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         val file = File.createTempFile("settings-${System.nanoTime()}", ".preferences_pb")
             .also { it.delete() }
         val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
+        if (initialBrokerUrl != null) runBlocking {
+            ds.edit { it[stringPreferencesKey("broker_url")] = initialBrokerUrl }
+        }
         return SettingsRepository(ds, scope)
+    }
+
+    @Test
+    fun legacyProductionBroker_isAutomaticallyUpgradedToV2() = runBlocking {
+        val settings = newRepository("wss://notisync-api.extrawdw.net")
+
+        assertEquals(SettingsRepository.DEFAULT_BROKER, settings.brokerUrl.value)
+        settings.setBrokerUrl("https://notisync-api.extrawdw.net/")
+        assertEquals(SettingsRepository.DEFAULT_BROKER, settings.brokerUrl.value)
+    }
+
+    @Test
+    fun customBroker_isNotChangedByDefaultMigration() = runBlocking {
+        val settings = newRepository("https://broker.example.test")
+
+        assertEquals("https://broker.example.test", settings.brokerUrl.value)
+        settings.setBrokerUrl("https://notisync-api.extrawdw.net.evil.example")
+        assertEquals("https://notisync-api.extrawdw.net.evil.example", settings.brokerUrl.value)
     }
 
     @Test

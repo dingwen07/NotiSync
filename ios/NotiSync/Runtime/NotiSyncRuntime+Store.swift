@@ -243,6 +243,8 @@ extension NotiSyncRuntime {
         // intentionally dropped, and caching would shadow the persistent row once the context arrives.
         guard let modelContext else { return AppSettings() }
         if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first {
+            let upgradedBrokerURL = NotiSyncConfig.upgradeLegacyDefaultBrokerURL(existing.brokerURL)
+            if upgradedBrokerURL != existing.brokerURL { existing.brokerURL = upgradedBrokerURL }
             cachedSettings = existing
             return existing
         }

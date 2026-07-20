@@ -106,7 +106,7 @@ To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file 
 
 `app/google-services.json` (for the `extrawdw-notifly` Firebase project) is already in place.
 In **Settings → Broker URL**, point the app at your broker. From the Android emulator, use
-`ws://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
+`http://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
 
 ### Desktop daemon and NotiSync Run
 
@@ -136,11 +136,11 @@ the same behavior. The daemon executable itself provides the lower-level
 `notisyncd start|stop|restart|status` commands. Its `status` command writes JSON to stdout when the
 daemon is running and a concise error to stderr when it is not.
 
-The desktop defaults to `wss://notisync-api-v2.extrawdw.net`. For a custom broker, configure the same
-WebSocket URL in the Android app and on the desktop:
+The desktop defaults to `https://notisync-api-v2.extrawdw.net`. For a custom broker, configure the same
+HTTP(S) base URL in the Android app and on the desktop; live delivery derives `ws://`/`wss://` automatically:
 
 ```bash
-notisyncd config set broker-url "wss://notisync.example.com"
+notisyncd config set broker-url "https://notisync.example.com"
 ```
 
 Pairing is mutual. Run `notisync devices pair show`, then scan the terminal QR code from **Devices →
