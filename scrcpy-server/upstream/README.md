@@ -19,9 +19,11 @@ discovery, authentication, TLS, authorization, and foreground-service state stay
 process. The privileged module never receives LAN sockets or session keys.
 
 The generic scrcpy CLI/options surface and the source paths for audio, camera, new displays, UHID,
-app launch/listing, panels, display-power mutation, file scanning, settings/content-provider access,
-codec option injection, VP8/VP9, adb/localabstract transport, and process/shell command execution are
-deleted. SurfaceControl fallback displays are always non-secure so Android continues to blank
+app launch/listing, panels, arbitrary display mutation, file scanning, settings/content-provider
+access, codec option injection, VP8/VP9, adb/localabstract transport, and process/shell command
+execution are deleted. The sole power operation is NotiSync's authenticated, no-payload
+primary-display toggle; it uses the shell-authorized power binder and cannot bypass keyguard.
+SurfaceControl fallback displays are always non-secure so Android continues to blank
 `FLAG_SECURE` content. The remaining OpenGL-free capture path scales the primary display directly
 to the encoder surface and resets on display configuration changes.
 

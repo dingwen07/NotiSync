@@ -15,6 +15,9 @@ public final class ControlMessage {
     public static final int TYPE_GET_CLIPBOARD = 8;
     public static final int TYPE_SET_CLIPBOARD = 9;
 
+    /** NotiSync screen protocol v1 extension: toggle the primary display power state. */
+    public static final int TYPE_TOGGLE_POWER = 64;
+
     public static final long SEQUENCE_INVALID = 0;
 
     public static final int COPY_KEY_NONE = 0;
@@ -101,6 +104,12 @@ public final class ControlMessage {
         msg.sequence = sequence;
         msg.text = text;
         msg.paste = paste;
+        return msg;
+    }
+
+    public static ControlMessage createTogglePower() {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_TOGGLE_POWER;
         return msg;
     }
 

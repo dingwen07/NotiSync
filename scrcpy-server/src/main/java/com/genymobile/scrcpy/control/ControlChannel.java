@@ -69,6 +69,7 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_INJECT_TOUCH_EVENT:
             case ControlMessage.TYPE_INJECT_SCROLL_EVENT:
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
+            case ControlMessage.TYPE_TOGGLE_POWER:
                 return allowControl;
             case ControlMessage.TYPE_GET_CLIPBOARD:
             case ControlMessage.TYPE_SET_CLIPBOARD:
@@ -98,6 +99,8 @@ public final class ControlChannel implements java.io.Closeable {
                         && (message.getButtons() & ~ALLOWED_BUTTON_MASK) == 0;
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
                 return isAction(message.getAction());
+            case ControlMessage.TYPE_TOGGLE_POWER:
+                return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:
                 // COPY/CUT inject keys and must not bypass a view/clipboard-only session.
                 return message.getCopyKey() == ControlMessage.COPY_KEY_NONE;

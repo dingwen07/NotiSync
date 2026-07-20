@@ -27,7 +27,7 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * NotiSync's deliberately small scrcpy control loop.
  *
- * <p>Only direct input, remote wake/back, and text clipboard synchronization are compiled into
+ * <p>Only direct input, primary-display power control, and text clipboard synchronization are compiled into
  * the privileged process. Generic scrcpy actions (UHID, app launch, panels, display mutation,
  * camera, file scan, and arbitrary commands) have no handler here.</p>
  */
@@ -244,6 +244,11 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
                 if (supportsInputEvents) {
                     pressBackOrTurnScreenOn(msg.getAction());
+                }
+                return true;
+            case ControlMessage.TYPE_TOGGLE_POWER:
+                if (!Device.togglePrimaryDisplayPower()) {
+                    Ln.w("Could not toggle primary display power");
                 }
                 return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:

@@ -323,7 +323,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
-        const val USER_SERVICE_REVISION = 3
+        const val USER_SERVICE_REVISION = 6
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920

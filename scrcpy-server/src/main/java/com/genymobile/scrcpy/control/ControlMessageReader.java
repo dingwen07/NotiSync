@@ -47,6 +47,8 @@ public class ControlMessageReader {
                 return parseGetClipboard();
             case ControlMessage.TYPE_SET_CLIPBOARD:
                 return parseSetClipboard();
+            case ControlMessage.TYPE_TOGGLE_POWER:
+                return ControlMessage.createTogglePower();
             default:
                 throw new ControlProtocolException("Unsupported NotiSync control message type: " + type);
         }

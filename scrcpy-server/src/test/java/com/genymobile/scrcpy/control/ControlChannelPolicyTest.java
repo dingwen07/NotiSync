@@ -21,10 +21,24 @@ public final class ControlChannelPolicyTest {
     }
 
     @Test
-    public void acceptsWakeControlWhenControlEnabled() throws Exception {
+    public void acceptsBackOrScreenOnWhenControlEnabled() throws Exception {
         ControlChannel channel = channel(new byte[]{ControlMessage.TYPE_BACK_OR_SCREEN_ON, 1}, true, false);
 
         assertEquals(ControlMessage.TYPE_BACK_OR_SCREEN_ON, channel.recv().getType());
+    }
+
+    @Test
+    public void acceptsPowerToggleWhenControlEnabled() throws Exception {
+        ControlChannel channel = channel(new byte[]{ControlMessage.TYPE_TOGGLE_POWER}, true, false);
+
+        assertEquals(ControlMessage.TYPE_TOGGLE_POWER, channel.recv().getType());
+    }
+
+    @Test
+    public void rejectsPowerToggleWhenControlDisabled() {
+        ControlChannel channel = channel(new byte[]{ControlMessage.TYPE_TOGGLE_POWER}, false, true);
+
+        assertThrows(ControlProtocolException.class, channel::recv);
     }
 
     @Test
@@ -114,8 +128,8 @@ public final class ControlChannelPolicyTest {
 
     @Test
     public void rejectsKeycodesOutsideMvpAllowlist() throws Exception {
-        // Power state is available only through the bounded BACK_OR_SCREEN_ON operation. Generic
-        // key injection must expose neither the toggle-prone POWER key nor one-way WAKEUP.
+        // Power state is available only through bounded dedicated operations. Generic key
+        // injection must expose neither the toggle-prone POWER key nor one-way WAKEUP.
         assertThrows(ControlProtocolException.class, channel(keyMessage(26), true, false)::recv);
         assertThrows(ControlProtocolException.class, channel(keyMessage(224), true, false)::recv);
     }

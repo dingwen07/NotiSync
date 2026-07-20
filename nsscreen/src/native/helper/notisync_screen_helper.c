@@ -116,6 +116,10 @@
 #define NS_PACKET_FLAG_CONFIG (UINT64_C(1) << 62)
 #define NS_PACKET_FLAG_KEY_FRAME (UINT64_C(1) << 61)
 #define NS_PACKET_PTS_MASK (NS_PACKET_FLAG_KEY_FRAME - 1)
+#define NS_FUNCTION_BAR_HEIGHT 64.0f
+#define NS_FUNCTION_BUTTON_COUNT 4
+#define NS_KEYCODE_BACK_OR_SCREEN_ON (-2)
+#define NS_KEYCODE_TOGGLE_POWER (-3)
 
 enum ns_control_type {
     NS_CONTROL_INJECT_KEYCODE = 0,
@@ -124,6 +128,15 @@ enum ns_control_type {
     NS_CONTROL_INJECT_SCROLL = 3,
     NS_CONTROL_BACK_OR_SCREEN_ON = 4,
     NS_CONTROL_SET_CLIPBOARD = 9,
+    NS_CONTROL_TOGGLE_POWER = 64,
+};
+
+enum ns_function_button {
+    NS_FUNCTION_NONE = -1,
+    NS_FUNCTION_BACK = 0,
+    NS_FUNCTION_HOME = 1,
+    NS_FUNCTION_RECENTS = 2,
+    NS_FUNCTION_POWER = 3,
 };
 
 enum ns_android_action {
@@ -178,6 +191,13 @@ struct ns_input_state {
     size_t touch_count;
 };
 
+struct ns_view_layout {
+    SDL_FRect video_bounds;
+    SDL_FRect video_destination;
+    SDL_FRect function_bar;
+    SDL_FRect function_buttons[NS_FUNCTION_BUTTON_COUNT];
+};
+
 struct ns_app {
     int video_fd;
     int control_fd;
@@ -215,6 +235,7 @@ struct ns_app {
     uint64_t applied_video_generation;
     bool pointer_input_ready;
     struct ns_input_state input_state;
+    enum ns_function_button pressed_function_button;
     uint64_t clipboard_sequence;
     uint64_t pending_local_clipboard_sequence;
     char *pending_local_clipboard;
@@ -1047,6 +1068,98 @@ ns_decoder_packet_size_valid(size_t config_size, size_t media_size) {
         && config_size <= NS_MAX_PACKET_SIZE - media_size;
 }
 
+enum ns_decoder_packet_action {
+    NS_DECODER_PACKET_ERROR = -1,
+    NS_DECODER_PACKET_DROP = 0,
+    NS_DECODER_PACKET_SEND = 1,
+};
+
+/* scrcpy's decoder never submits codec-config-only packets to FFmpeg. For
+ * H.264/H.265, keep the config and prepend it to the next media packet so the
+ * first access unit contains the parameter sets expected by the decoder. */
+static enum ns_decoder_packet_action
+ns_prepare_decoder_packet(bool h26x, bool is_config, AVPacket *packet,
+                          uint8_t **config, size_t *config_size) {
+    if (is_config) {
+        if (h26x) {
+            uint8_t *replacement = malloc((size_t) packet->size);
+            if (!replacement) return NS_DECODER_PACKET_ERROR;
+            memcpy(replacement, packet->data, (size_t) packet->size);
+            free(*config);
+            *config = replacement;
+            *config_size = (size_t) packet->size;
+        }
+        return NS_DECODER_PACKET_DROP;
+    }
+
+    if (h26x && *config) {
+        size_t media_size = (size_t) packet->size;
+        if (!ns_decoder_packet_size_valid(*config_size, media_size)
+                || *config_size > INT_MAX
+                || av_grow_packet(packet, (int) *config_size) < 0) {
+            return NS_DECODER_PACKET_ERROR;
+        }
+        memmove(packet->data + *config_size, packet->data, media_size);
+        memcpy(packet->data, *config, *config_size);
+        free(*config);
+        *config = NULL;
+        *config_size = 0;
+    }
+
+    return NS_DECODER_PACKET_SEND;
+}
+
+static bool
+ns_self_test_decoder_packet_preparation(void) {
+    static const uint8_t h264_config[] = { 0x00, 0x00, 0x00, 0x01, 0x67 };
+    static const uint8_t h264_media[] = { 0x00, 0x00, 0x00, 0x01, 0x65, 0xaa };
+    AVPacket *packet = av_packet_alloc();
+    uint8_t *config = NULL;
+    size_t config_size = 0;
+    bool success = false;
+    if (!packet) return false;
+
+    if (av_new_packet(packet, (int) sizeof(h264_config)) < 0) goto cleanup;
+    memcpy(packet->data, h264_config, sizeof(h264_config));
+    if (ns_prepare_decoder_packet(true, true, packet, &config, &config_size)
+            != NS_DECODER_PACKET_DROP
+            || config_size != sizeof(h264_config)
+            || memcmp(config, h264_config, sizeof(h264_config))) {
+        goto cleanup;
+    }
+    av_packet_unref(packet);
+
+    if (av_new_packet(packet, (int) sizeof(h264_media)) < 0) goto cleanup;
+    memcpy(packet->data, h264_media, sizeof(h264_media));
+    if (ns_prepare_decoder_packet(true, false, packet, &config, &config_size)
+            != NS_DECODER_PACKET_SEND
+            || config || config_size
+            || packet->size != (int) (sizeof(h264_config) + sizeof(h264_media))
+            || memcmp(packet->data, h264_config, sizeof(h264_config))
+            || memcmp(packet->data + sizeof(h264_config), h264_media,
+                      sizeof(h264_media))) {
+        goto cleanup;
+    }
+    av_packet_unref(packet);
+
+    /* Non-H.26x config packets are also metadata-only and must not be sent to
+     * the decoder, but they are not merged into the next access unit. */
+    if (av_new_packet(packet, 1) < 0) goto cleanup;
+    packet->data[0] = 0x12;
+    if (ns_prepare_decoder_packet(false, true, packet, &config, &config_size)
+            != NS_DECODER_PACKET_DROP
+            || config || config_size) {
+        goto cleanup;
+    }
+
+    success = true;
+
+cleanup:
+    free(config);
+    av_packet_free(&packet);
+    return success;
+}
+
 static bool
 ns_decode_available(struct ns_app *app, AVCodecContext *codec_context,
                     AVFrame *decoded, struct SwsContext **scaler,
@@ -1208,35 +1321,26 @@ ns_video_main(void *userdata) {
         }
 
         bool h26x = wire_codec == NS_CODEC_H264 || wire_codec == NS_CODEC_H265;
-        if (h26x && is_config) {
-            uint8_t *replacement = malloc(packet_size);
-            if (!replacement) {
-                av_packet_unref(packet);
-                break;
-            }
-            memcpy(replacement, packet->data, packet_size);
-            free(config);
-            config = replacement;
-            config_size = packet_size;
-        } else if (h26x && config) {
-            size_t media_size = (size_t) packet->size;
-            if (!ns_decoder_packet_size_valid(config_size, media_size)
-                    || config_size > INT_MAX
-                    || av_grow_packet(packet, (int) config_size) < 0) {
-                av_packet_unref(packet);
-                break;
-            }
-            memmove(packet->data + config_size, packet->data, media_size);
-            memcpy(packet->data, config, config_size);
-            free(config);
-            config = NULL;
-            config_size = 0;
+        enum ns_decoder_packet_action packet_action =
+            ns_prepare_decoder_packet(h26x, is_config, packet, &config,
+                                      &config_size);
+        if (packet_action != NS_DECODER_PACKET_SEND) {
+            av_packet_unref(packet);
+            if (packet_action == NS_DECODER_PACKET_ERROR) break;
+            continue;
         }
 
         int sent = avcodec_send_packet(codec_context, packet);
         av_packet_unref(packet);
-        if (sent < 0 || !ns_decode_available(app, codec_context, decoded, &scaler,
-                                             video_generation)) {
+        if (sent < 0) {
+            char error_text[AV_ERROR_MAX_STRING_SIZE];
+            av_strerror(sent, error_text, sizeof(error_text));
+            fprintf(stderr, "Could not submit video packet to FFmpeg: %s\n",
+                    error_text);
+            break;
+        }
+        if (!ns_decode_available(app, codec_context, decoded, &scaler,
+                                 video_generation)) {
             break;
         }
     }
@@ -1353,7 +1457,7 @@ ns_android_keycode(SDL_Keycode key, uint32_t modifiers) {
         case SDLK_RIGHT: return 22;
         case SDLK_UP: return 19;
         case SDLK_DOWN: return 20;
-        case SDLK_F12: return -2; /* Explicit remote wake/back-or-screen-on. */
+        case SDLK_F12: return NS_KEYCODE_TOGGLE_POWER;
         default: break;
     }
     if (modifiers & (SDL_KMOD_CTRL | SDL_KMOD_GUI | SDL_KMOD_ALT)) {
@@ -1369,7 +1473,7 @@ static bool
 ns_send_key(struct ns_app *app, bool down, int keycode, bool repeat,
             uint32_t modifiers) {
     if (!app->allow_control) return false;
-    if (keycode == -2) {
+    if (keycode == NS_KEYCODE_BACK_OR_SCREEN_ON) {
         uint8_t message[] = {
             NS_CONTROL_BACK_OR_SCREEN_ON,
             down ? NS_ACTION_DOWN : NS_ACTION_UP,
@@ -1384,6 +1488,30 @@ ns_send_key(struct ns_app *app, bool down, int keycode, bool repeat,
     ns_write32be(message + 10, ns_android_meta(modifiers));
     return ns_control_enqueue_copy(app, message, sizeof(message), true,
                                    NS_COALESCE_NONE, 0);
+}
+
+static bool
+ns_send_power_toggle(struct ns_app *app) {
+    if (!app->allow_control) return false;
+    const uint8_t message[] = { NS_CONTROL_TOGGLE_POWER };
+    return ns_control_enqueue_copy(app, message, sizeof(message), true,
+                                   NS_COALESCE_NONE, 0);
+}
+
+static bool
+ns_activate_function_button(struct ns_app *app,
+                            enum ns_function_button button) {
+    int keycode;
+    switch (button) {
+        case NS_FUNCTION_BACK: keycode = 4; break;
+        case NS_FUNCTION_HOME: keycode = 3; break;
+        case NS_FUNCTION_RECENTS: keycode = 187; break;
+        case NS_FUNCTION_POWER: return ns_send_power_toggle(app);
+        case NS_FUNCTION_NONE: return false;
+    }
+    bool down = ns_send_key(app, true, keycode, false, 0);
+    bool up = ns_send_key(app, false, keycode, false, 0);
+    return down && up;
 }
 
 static bool
@@ -1523,36 +1651,100 @@ ns_send_clipboard(struct ns_app *app, const char *text, uint64_t *sequence_out) 
 }
 
 static SDL_FRect
-ns_destination_rect(int output_width, int output_height,
-                    uint16_t source_width, uint16_t source_height) {
-    SDL_FRect result = { 0, 0, (float) output_width, (float) output_height };
-    if (!source_width || !source_height || !output_width || !output_height) {
+ns_destination_rect_in_bounds(SDL_FRect bounds, uint16_t source_width,
+                              uint16_t source_height) {
+    SDL_FRect result = bounds;
+    if (!source_width || !source_height || bounds.w <= 0 || bounds.h <= 0) {
         return result;
     }
     float source_aspect = (float) source_width / source_height;
-    float output_aspect = (float) output_width / output_height;
+    float output_aspect = bounds.w / bounds.h;
     if (output_aspect > source_aspect) {
-        result.w = output_height * source_aspect;
-        result.x = (output_width - result.w) / 2;
+        result.w = bounds.h * source_aspect;
+        result.x = bounds.x + (bounds.w - result.w) / 2;
     } else {
-        result.h = output_width / source_aspect;
-        result.y = (output_height - result.h) / 2;
+        result.h = bounds.w / source_aspect;
+        result.y = bounds.y + (bounds.h - result.h) / 2;
+    }
+    return result;
+}
+
+static SDL_FRect
+ns_destination_rect(int output_width, int output_height,
+                    uint16_t source_width, uint16_t source_height) {
+    SDL_FRect bounds = { 0, 0, (float) output_width, (float) output_height };
+    return ns_destination_rect_in_bounds(bounds, source_width, source_height);
+}
+
+static struct ns_view_layout
+ns_view_layout(float width, float height, float function_bar_height,
+               uint16_t source_width, uint16_t source_height) {
+    struct ns_view_layout result;
+    memset(&result, 0, sizeof(result));
+    if (width < 0) width = 0;
+    if (height < 0) height = 0;
+    if (function_bar_height < 0) function_bar_height = 0;
+    if (function_bar_height > height) function_bar_height = height;
+
+    result.video_bounds = (SDL_FRect) {
+        0, 0, width, height - function_bar_height,
+    };
+    result.video_destination = ns_destination_rect_in_bounds(
+        result.video_bounds, source_width, source_height);
+    result.function_bar = (SDL_FRect) {
+        0, height - function_bar_height, width, function_bar_height,
+    };
+
+    float horizontal_padding = fminf(12.0f, width / 32.0f);
+    float gap = fminf(10.0f, width / 40.0f);
+    float vertical_padding = fminf(8.0f, function_bar_height / 8.0f);
+    float button_width = (width - 2 * horizontal_padding
+                          - (NS_FUNCTION_BUTTON_COUNT - 1) * gap)
+                         / NS_FUNCTION_BUTTON_COUNT;
+    if (button_width < 0) button_width = 0;
+    float button_height = function_bar_height - 2 * vertical_padding;
+    if (button_height < 0) button_height = 0;
+    for (int i = 0; i < NS_FUNCTION_BUTTON_COUNT; ++i) {
+        result.function_buttons[i] = (SDL_FRect) {
+            horizontal_padding + i * (button_width + gap),
+            result.function_bar.y + vertical_padding,
+            button_width,
+            button_height,
+        };
     }
     return result;
 }
 
 static bool
-ns_window_to_device_internal(SDL_Window *window, struct ns_app *app,
-                             float window_x, float window_y, bool clamp,
-                             uint16_t *device_x, uint16_t *device_y) {
-    if (!app->source_width || !app->source_height) return false;
-    int width = 0;
-    int height = 0;
-    SDL_GetWindowSize(window, &width, &height);
-    if (width <= 0 || height <= 0) return false;
-    SDL_FRect destination = ns_destination_rect(width, height,
-                                                 app->source_width,
-                                                 app->source_height);
+ns_point_in_rect(const SDL_FRect *rect, float x, float y) {
+    return rect->w > 0 && rect->h > 0
+        && x >= rect->x && y >= rect->y
+        && x < rect->x + rect->w && y < rect->y + rect->h;
+}
+
+static enum ns_function_button
+ns_function_button_at(const struct ns_view_layout *layout, float x, float y) {
+    if (!ns_point_in_rect(&layout->function_bar, x, y)) {
+        return NS_FUNCTION_NONE;
+    }
+    for (int i = 0; i < NS_FUNCTION_BUTTON_COUNT; ++i) {
+        if (ns_point_in_rect(&layout->function_buttons[i], x, y)) {
+            return (enum ns_function_button) i;
+        }
+    }
+    return NS_FUNCTION_NONE;
+}
+
+static bool
+ns_view_to_device(int width, int height, uint16_t source_width,
+                  uint16_t source_height, float window_x, float window_y,
+                  bool clamp, uint16_t *device_x, uint16_t *device_y) {
+    if (!source_width || !source_height || width <= 0 || height <= 0) {
+        return false;
+    }
+    struct ns_view_layout layout = ns_view_layout(
+        width, height, NS_FUNCTION_BAR_HEIGHT, source_width, source_height);
+    SDL_FRect destination = layout.video_destination;
     if (!destination.w || !destination.h) {
         return false;
     }
@@ -1568,15 +1760,27 @@ ns_window_to_device_internal(SDL_Window *window, struct ns_app *app,
     if (window_y >= destination.y + destination.h) {
         window_y = destination.y + destination.h - 1;
     }
-    float x = (window_x - destination.x) * app->source_width / destination.w;
-    float y = (window_y - destination.y) * app->source_height / destination.h;
+    float x = (window_x - destination.x) * source_width / destination.w;
+    float y = (window_y - destination.y) * source_height / destination.h;
     if (x < 0) x = 0;
     if (y < 0) y = 0;
-    if (x >= app->source_width) x = app->source_width - 1;
-    if (y >= app->source_height) y = app->source_height - 1;
+    if (x >= source_width) x = source_width - 1;
+    if (y >= source_height) y = source_height - 1;
     *device_x = (uint16_t) x;
     *device_y = (uint16_t) y;
     return true;
+}
+
+static bool
+ns_window_to_device_internal(SDL_Window *window, struct ns_app *app,
+                             float window_x, float window_y, bool clamp,
+                             uint16_t *device_x, uint16_t *device_y) {
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    return ns_view_to_device(width, height, app->source_width,
+                             app->source_height, window_x, window_y, clamp,
+                             device_x, device_y);
 }
 
 static bool
@@ -1592,6 +1796,205 @@ ns_window_to_device_clamped(SDL_Window *window, struct ns_app *app,
                             uint16_t *device_x, uint16_t *device_y) {
     return ns_window_to_device_internal(window, app, window_x, window_y, true,
                                         device_x, device_y);
+}
+
+static struct ns_view_layout
+ns_window_layout(SDL_Window *window, struct ns_app *app) {
+    int width = 0;
+    int height = 0;
+    SDL_GetWindowSize(window, &width, &height);
+    return ns_view_layout(width, height, NS_FUNCTION_BAR_HEIGHT,
+                          app->source_width, app->source_height);
+}
+
+static void
+ns_render_line(SDL_Renderer *renderer, float x1, float y1,
+               float x2, float y2) {
+#if NS_SDL3
+    SDL_RenderLine(renderer, x1, y1, x2, y2);
+#else
+    SDL_RenderDrawLine(renderer, (int) lroundf(x1), (int) lroundf(y1),
+                      (int) lroundf(x2), (int) lroundf(y2));
+#endif
+}
+
+static void
+ns_render_thick_line(SDL_Renderer *renderer, float x1, float y1,
+                     float x2, float y2, float thickness) {
+    float dx = x2 - x1;
+    float dy = y2 - y1;
+    float length = sqrtf(dx * dx + dy * dy);
+    if (length <= 0) return;
+    int lines = (int) ceilf(fmaxf(1.0f, thickness));
+    float normal_x = -dy / length;
+    float normal_y = dx / length;
+    for (int i = 0; i < lines; ++i) {
+        float offset = i - (lines - 1) / 2.0f;
+        ns_render_line(renderer,
+                       x1 + normal_x * offset, y1 + normal_y * offset,
+                       x2 + normal_x * offset, y2 + normal_y * offset);
+    }
+}
+
+static void
+ns_render_fill_rect(SDL_Renderer *renderer, const SDL_FRect *rect) {
+#if NS_SDL3
+    SDL_RenderFillRect(renderer, rect);
+#else
+    SDL_Rect integer_rect = {
+        (int) floorf(rect->x), (int) floorf(rect->y),
+        (int) ceilf(rect->w), (int) ceilf(rect->h),
+    };
+    SDL_RenderFillRect(renderer, &integer_rect);
+#endif
+}
+
+static void
+ns_render_rect_outline(SDL_Renderer *renderer, const SDL_FRect *rect,
+                       float thickness) {
+    float right = rect->x + rect->w;
+    float bottom = rect->y + rect->h;
+    ns_render_thick_line(renderer, rect->x, rect->y, right, rect->y,
+                         thickness);
+    ns_render_thick_line(renderer, right, rect->y, right, bottom, thickness);
+    ns_render_thick_line(renderer, right, bottom, rect->x, bottom, thickness);
+    ns_render_thick_line(renderer, rect->x, bottom, rect->x, rect->y,
+                         thickness);
+}
+
+static void
+ns_render_arc(SDL_Renderer *renderer, float center_x, float center_y,
+              float radius, float start, float end, int segments,
+              float thickness) {
+    float previous_x = center_x + sinf(start) * radius;
+    float previous_y = center_y - cosf(start) * radius;
+    for (int i = 1; i <= segments; ++i) {
+        float angle = start + (end - start) * i / segments;
+        float x = center_x + sinf(angle) * radius;
+        float y = center_y - cosf(angle) * radius;
+        ns_render_thick_line(renderer, previous_x, previous_y, x, y,
+                             thickness);
+        previous_x = x;
+        previous_y = y;
+    }
+}
+
+static void
+ns_render_function_icon(SDL_Renderer *renderer,
+                        enum ns_function_button button,
+                        const SDL_FRect *bounds, float thickness) {
+    float center_x = bounds->x + bounds->w / 2;
+    float center_y = bounds->y + bounds->h / 2;
+    float radius = fminf(bounds->w, bounds->h) * 0.22f;
+    switch (button) {
+        case NS_FUNCTION_BACK:
+            ns_render_thick_line(renderer, center_x - radius, center_y,
+                                 center_x + radius * 0.65f,
+                                 center_y - radius, thickness);
+            ns_render_thick_line(renderer, center_x + radius * 0.65f,
+                                 center_y - radius,
+                                 center_x + radius * 0.65f,
+                                 center_y + radius, thickness);
+            ns_render_thick_line(renderer, center_x + radius * 0.65f,
+                                 center_y + radius,
+                                 center_x - radius, center_y, thickness);
+            break;
+        case NS_FUNCTION_HOME:
+            ns_render_arc(renderer, center_x, center_y, radius, 0,
+                          6.28318530718f, 28, thickness);
+            break;
+        case NS_FUNCTION_RECENTS: {
+            SDL_FRect square = {
+                center_x - radius, center_y - radius,
+                radius * 2, radius * 2,
+            };
+            ns_render_rect_outline(renderer, &square, thickness);
+            break;
+        }
+        case NS_FUNCTION_POWER:
+            ns_render_arc(renderer, center_x, center_y + radius * 0.12f,
+                          radius, 0.72f, 6.28318530718f - 0.72f,
+                          24, thickness);
+            ns_render_thick_line(renderer, center_x,
+                                 center_y - radius * 1.15f,
+                                 center_x, center_y + radius * 0.12f,
+                                 thickness);
+            break;
+        case NS_FUNCTION_NONE:
+            break;
+    }
+}
+
+static void
+ns_render_viewer(SDL_Window *window, SDL_Renderer *renderer,
+                 SDL_Texture *texture, struct ns_app *app) {
+    int output_width = 0;
+    int output_height = 0;
+#if NS_SDL3
+    SDL_GetRenderOutputSize(renderer, &output_width, &output_height);
+#else
+    SDL_GetRendererOutputSize(renderer, &output_width, &output_height);
+#endif
+    if (output_width <= 0 || output_height <= 0) return;
+
+    int window_width = 0;
+    int window_height = 0;
+    SDL_GetWindowSize(window, &window_width, &window_height);
+    float scale_y = window_height > 0
+                  ? (float) output_height / window_height : 1.0f;
+    struct ns_view_layout layout = ns_view_layout(
+        output_width, output_height, NS_FUNCTION_BAR_HEIGHT * scale_y,
+        app->source_width, app->source_height);
+
+    SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
+    SDL_RenderClear(renderer);
+    if (texture && app->source_width && app->source_height) {
+#if NS_SDL3
+        SDL_RenderTexture(renderer, texture, NULL, &layout.video_destination);
+#else
+        SDL_Rect destination = {
+            (int) lroundf(layout.video_destination.x),
+            (int) lroundf(layout.video_destination.y),
+            (int) lroundf(layout.video_destination.w),
+            (int) lroundf(layout.video_destination.h),
+        };
+        SDL_RenderCopy(renderer, texture, NULL, &destination);
+#endif
+    }
+
+    SDL_SetRenderDrawColor(renderer, 22, 24, 30, 255);
+    ns_render_fill_rect(renderer, &layout.function_bar);
+    SDL_SetRenderDrawColor(renderer, 72, 78, 92, 255);
+    ns_render_line(renderer, 0, layout.function_bar.y,
+                   (float) output_width, layout.function_bar.y);
+
+    for (int i = 0; i < NS_FUNCTION_BUTTON_COUNT; ++i) {
+        bool pressed = app->pressed_function_button
+                    == (enum ns_function_button) i;
+        if (!app->allow_control) {
+            SDL_SetRenderDrawColor(renderer, 29, 31, 37, 255);
+        } else if (pressed) {
+            SDL_SetRenderDrawColor(renderer, 67, 76, 94, 255);
+        } else {
+            SDL_SetRenderDrawColor(renderer, 37, 41, 50, 255);
+        }
+        ns_render_fill_rect(renderer, &layout.function_buttons[i]);
+        SDL_SetRenderDrawColor(renderer,
+                               app->allow_control ? 91 : 54,
+                               app->allow_control ? 99 : 58,
+                               app->allow_control ? 116 : 67, 255);
+        ns_render_rect_outline(renderer, &layout.function_buttons[i],
+                               fmaxf(1.0f, layout.function_bar.h / 64.0f));
+        SDL_SetRenderDrawColor(renderer,
+                               app->allow_control ? 231 : 112,
+                               app->allow_control ? 234 : 116,
+                               app->allow_control ? 240 : 126, 255);
+        ns_render_function_icon(
+            renderer, (enum ns_function_button) i,
+            &layout.function_buttons[i],
+            fmaxf(2.0f, layout.function_bar.h / 30.0f));
+    }
+    SDL_RenderPresent(renderer);
 }
 
 static void
@@ -1770,6 +2173,7 @@ ns_run_viewer(const struct ns_options *options) {
     atomic_init(&app.video_generation, 1);
     app.applied_video_generation = 0;
     app.pointer_input_ready = false;
+    app.pressed_function_button = NS_FUNCTION_NONE;
     pthread_mutex_init(&app.frame_mutex, NULL);
     pthread_mutex_init(&app.control_queue_mutex, NULL);
     pthread_cond_init(&app.control_queue_cond, NULL);
@@ -1824,6 +2228,9 @@ ns_run_viewer(const struct ns_options *options) {
         fprintf(stderr, "Could not create SDL renderer: %s\n", SDL_GetError());
         goto cleanup;
     }
+    // The power/navigation controls must be available while the remote display
+    // is asleep, before a decoder frame exists, and while a still frame remains.
+    ns_render_viewer(window, renderer, NULL, &app);
 
     app.video_fd = ns_connect_unix(options->video_socket, helper_challenge,
                                    NS_HELPER_VIDEO_CHANNEL);
@@ -1919,42 +2326,23 @@ ns_run_viewer(const struct ns_options *options) {
                 }
                 app.source_width = (uint16_t) frame->width;
                 app.source_height = (uint16_t) frame->height;
-                int requested_height = 900;
-                int requested_width = (int) lround((double) requested_height
-                                                   * frame->width / frame->height);
+                int requested_video_height = 900;
+                int requested_width = (int) lround(
+                    (double) requested_video_height
+                    * frame->width / frame->height);
                 if (requested_width > 1200) {
                     requested_width = 1200;
-                    requested_height = (int) lround((double) requested_width
-                                                    * frame->height / frame->width);
+                    requested_video_height = (int) lround(
+                        (double) requested_width * frame->height / frame->width);
                 }
-                SDL_SetWindowSize(window, requested_width, requested_height);
+                SDL_SetWindowSize(
+                    window, requested_width,
+                    requested_video_height + (int) NS_FUNCTION_BAR_HEIGHT);
             }
             app.pointer_input_ready =
                 frame->video_generation == atomic_load(&app.video_generation);
             SDL_UpdateTexture(texture, NULL, frame->rgba, frame->pitch);
             ns_free_frame(frame);
-            int output_width = 0;
-            int output_height = 0;
-#if NS_SDL3
-            SDL_GetRenderOutputSize(renderer, &output_width, &output_height);
-#else
-            SDL_GetRendererOutputSize(renderer, &output_width, &output_height);
-#endif
-            SDL_FRect destination = ns_destination_rect(output_width, output_height,
-                                                         app.source_width,
-                                                         app.source_height);
-            SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
-            SDL_RenderClear(renderer);
-#if NS_SDL3
-            SDL_RenderTexture(renderer, texture, NULL, &destination);
-#else
-            SDL_Rect integer_destination = {
-                (int) destination.x, (int) destination.y,
-                (int) destination.w, (int) destination.h,
-            };
-            SDL_RenderCopy(renderer, texture, NULL, &integer_destination);
-#endif
-            SDL_RenderPresent(renderer);
         } else if (app.allow_clipboard
                 && event.type == app.remote_clipboard_event) {
             char *text = ns_take_remote_clipboard(&app);
@@ -1978,7 +2366,13 @@ ns_run_viewer(const struct ns_options *options) {
             bool repeat = event.key.repeat;
 #endif
             int keycode = ns_android_keycode(key, modifiers);
-            if (keycode >= 0 || keycode == -2) {
+            bool down = event.type == SDL_EVENT_KEY_DOWN;
+            if (keycode == NS_KEYCODE_TOGGLE_POWER) {
+                // Power is a one-byte edge-triggered NotiSync command, not an
+                // Android key lifecycle. Ignore key-up and keyboard repeat.
+                if (down && !repeat) ns_send_power_toggle(&app);
+            } else if (keycode >= 0
+                    || keycode == NS_KEYCODE_BACK_OR_SCREEN_ON) {
                 ns_send_key(&app, event.type == SDL_EVENT_KEY_DOWN,
                             keycode, repeat, modifiers);
             }
@@ -1988,27 +2382,64 @@ ns_run_viewer(const struct ns_options *options) {
                 && (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN
                     || event.type == SDL_EVENT_MOUSE_BUTTON_UP)
                 && event.button.which != SDL_TOUCH_MOUSEID) {
-            if (!ns_pointer_input_ready(&app)) continue;
             bool down = event.type == SDL_EVENT_MOUSE_BUTTON_DOWN;
-            if ((down && app.input_state.mouse_active)
-                    || (!down && !app.input_state.mouse_active)) {
-                continue;
-            }
-            uint16_t x, y;
-            bool mapped = down
-                ? ns_window_to_device(window, &app, event.button.x, event.button.y, &x, &y)
-                : ns_window_to_device_clamped(window, &app, event.button.x, event.button.y, &x, &y);
-            if (mapped) {
-                uint32_t state = SDL_GetMouseState(NULL, NULL);
-                bool sent = ns_send_touch(
-                    &app, down ? NS_ACTION_DOWN : NS_ACTION_UP,
-                    NS_POINTER_ID_MOUSE, x, y, down ? 1 : 0,
-                    ns_android_button(event.button.button),
-                    ns_android_buttons(state));
-                if (down) {
-                    app.input_state.mouse_active = sent;
-                } else {
-                    app.input_state.mouse_active = false;
+            if (event.button.button == SDL_BUTTON_RIGHT) {
+                // Preserve the desktop Back shortcut without injecting a
+                // secondary-button touch into Android.
+                ns_send_key(&app, down, 4, false, 0);
+            } else {
+                struct ns_view_layout layout = ns_window_layout(window, &app);
+                enum ns_function_button hit = ns_function_button_at(
+                    &layout, event.button.x, event.button.y);
+                bool in_function_bar = ns_point_in_rect(
+                    &layout.function_bar, event.button.x, event.button.y);
+                bool consumed = false;
+                if (down && in_function_bar) {
+                    if (event.button.button == SDL_BUTTON_LEFT
+                            && !app.input_state.mouse_active) {
+                        app.pressed_function_button = hit;
+                    }
+                    consumed = true;
+                } else if (!down
+                        && app.pressed_function_button != NS_FUNCTION_NONE) {
+                    enum ns_function_button pressed =
+                        app.pressed_function_button;
+                    app.pressed_function_button = NS_FUNCTION_NONE;
+                    if (event.button.button == SDL_BUTTON_LEFT
+                            && hit == pressed) {
+                        ns_activate_function_button(&app, pressed);
+                    }
+                    consumed = true;
+                } else if (!down && in_function_bar
+                        && !app.input_state.mouse_active) {
+                    consumed = true;
+                }
+
+                if (!consumed && ns_pointer_input_ready(&app)) {
+                    bool valid_transition =
+                        !((down && app.input_state.mouse_active)
+                          || (!down && !app.input_state.mouse_active));
+                    uint16_t x, y;
+                    bool mapped = valid_transition && (down
+                        ? ns_window_to_device(window, &app,
+                                              event.button.x, event.button.y,
+                                              &x, &y)
+                        : ns_window_to_device_clamped(
+                              window, &app, event.button.x, event.button.y,
+                              &x, &y));
+                    if (mapped) {
+                        uint32_t state = SDL_GetMouseState(NULL, NULL);
+                        bool sent = ns_send_touch(
+                            &app, down ? NS_ACTION_DOWN : NS_ACTION_UP,
+                            NS_POINTER_ID_MOUSE, x, y, down ? 1 : 0,
+                            ns_android_button(event.button.button),
+                            ns_android_buttons(state));
+                        if (down) {
+                            app.input_state.mouse_active = sent;
+                        } else {
+                            app.input_state.mouse_active = false;
+                        }
+                    }
                 }
             }
         } else if (app.allow_control
@@ -2113,6 +2544,9 @@ ns_run_viewer(const struct ns_options *options) {
                 }
             }
         }
+        // SDL does not guarantee a fresh frame when a retained/black screen is
+        // resized or exposed. Redraw after every event so the bar is persistent.
+        ns_render_viewer(window, renderer, texture, &app);
     }
 
 cleanup:
@@ -2261,6 +2695,37 @@ ns_self_test_control_queue(void) {
         goto cleanup;
     }
 
+    if (!ns_activate_function_button(&app, NS_FUNCTION_BACK)
+            || !ns_activate_function_button(&app, NS_FUNCTION_HOME)
+            || !ns_activate_function_button(&app, NS_FUNCTION_RECENTS)
+            || !ns_activate_function_button(&app, NS_FUNCTION_POWER)) {
+        goto cleanup;
+    }
+    uint8_t functions[6 * 14 + 1];
+    if (!ns_recv_all(sockets[1], functions, sizeof(functions))) goto cleanup;
+    const uint32_t expected_keycodes[] = { 4, 3, 187 };
+    size_t offset = 0;
+    for (size_t key = 0;
+         key < sizeof(expected_keycodes) / sizeof(expected_keycodes[0]);
+         ++key) {
+        for (uint8_t action = NS_ACTION_DOWN; action <= NS_ACTION_UP;
+             ++action) {
+            if (functions[offset] != NS_CONTROL_INJECT_KEYCODE
+                    || functions[offset + 1] != action
+                    || ns_read32be(functions + offset + 2)
+                        != expected_keycodes[key]
+                    || ns_read32be(functions + offset + 6) != 0
+                    || ns_read32be(functions + offset + 10) != 0) {
+                goto cleanup;
+            }
+            offset += 14;
+        }
+    }
+    if (offset != sizeof(functions) - 1
+            || functions[offset] != NS_CONTROL_TOGGLE_POWER) {
+        goto cleanup;
+    }
+
     success = atomic_load(&app.worker_failure) == 0;
 
 cleanup:
@@ -2292,6 +2757,58 @@ ns_self_test(void) {
     SDL_FRect portrait = ns_destination_rect(1000, 500, 1080, 2400);
     if (portrait.h != 500 || portrait.w < 224 || portrait.w > 226) return 1;
 
+    struct ns_view_layout layout = ns_view_layout(
+        1000, 500, NS_FUNCTION_BAR_HEIGHT, 1080, 2400);
+    if (layout.video_bounds.h != 436
+            || layout.function_bar.y != 436
+            || layout.function_bar.h != NS_FUNCTION_BAR_HEIGHT
+            || fabsf(layout.video_destination.w
+                      / layout.video_destination.h - 1080.0f / 2400.0f)
+                > 0.0001f) {
+        return 1;
+    }
+    for (int i = 0; i < NS_FUNCTION_BUTTON_COUNT; ++i) {
+        SDL_FRect button = layout.function_buttons[i];
+        if (ns_function_button_at(&layout, button.x + button.w / 2,
+                                  button.y + button.h / 2)
+                != (enum ns_function_button) i) {
+            return 1;
+        }
+    }
+    float button_gap = (layout.function_buttons[0].x
+                        + layout.function_buttons[0].w
+                        + layout.function_buttons[1].x) / 2;
+    if (ns_function_button_at(
+            &layout, button_gap,
+            layout.function_buttons[0].y
+                + layout.function_buttons[0].h / 2) != NS_FUNCTION_NONE
+            || ns_function_button_at(&layout, 500, 100) != NS_FUNCTION_NONE
+            || ns_function_button_at(&layout, 500, 500) != NS_FUNCTION_NONE) {
+        return 1;
+    }
+    uint16_t mapped_x = 0;
+    uint16_t mapped_y = 0;
+    float video_center_x = layout.video_destination.x
+                         + layout.video_destination.w / 2;
+    float video_center_y = layout.video_destination.y
+                         + layout.video_destination.h / 2;
+    if (!ns_view_to_device(1000, 500, 1080, 2400,
+                           video_center_x, video_center_y, false,
+                           &mapped_x, &mapped_y)
+            || mapped_x < 539 || mapped_x > 540
+            || mapped_y < 1199 || mapped_y > 1200
+            || ns_view_to_device(1000, 500, 1080, 2400, 500, 450, false,
+                                 &mapped_x, &mapped_y)
+            || !ns_view_to_device(1000, 500, 1080, 2400, 500, 450, true,
+                                  &mapped_x, &mapped_y)
+            || mapped_y < 2390 || mapped_y >= 2400) {
+        return 1;
+    }
+    if (ns_android_keycode(SDLK_F12, 0) != NS_KEYCODE_TOGGLE_POWER
+            || ns_android_keycode(SDLK_ESCAPE, 0) != 4) {
+        return 1;
+    }
+
     uint8_t touch[32] = { NS_CONTROL_INJECT_TOUCH, NS_ACTION_DOWN };
     ns_write64be(touch + 2, NS_POINTER_ID_MOUSE);
     ns_write32be(touch + 10, 12);
@@ -2313,6 +2830,7 @@ ns_self_test(void) {
             || ns_decoder_packet_size_valid(NS_MAX_PACKET_SIZE + 1U, 0)) {
         return 1;
     }
+    if (!ns_self_test_decoder_packet_preparation()) return 1;
     struct ns_app input_app;
     memset(&input_app, 0, sizeof(input_app));
     input_app.allow_control = true;

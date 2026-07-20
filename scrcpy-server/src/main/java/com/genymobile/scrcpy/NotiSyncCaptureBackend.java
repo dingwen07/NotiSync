@@ -256,7 +256,6 @@ public final class NotiSyncCaptureBackend {
         private final ParcelFileDescriptor controlFd;
         private final java.util.function.Consumer<Session> finished;
         private final AtomicBoolean stopping = new AtomicBoolean();
-        private final AtomicBoolean wakeAttempted = new AtomicBoolean();
         private final Object lifecycleLock = new Object();
         private final List<AsyncProcessor> processors = new ArrayList<>();
         private ControlChannel controlChannel;
@@ -300,8 +299,6 @@ public final class NotiSyncCaptureBackend {
                     }
                     Workarounds.apply();
                     Ln.initLogLevel(Ln.Level.INFO);
-                    wakePrimaryDisplayOnce();
-
                     Options options = Options.forScreenMirror(maxDimension, maxFps, bitrateBps, encoderName, allowClipboard);
 
                     Controller controller = null;
@@ -343,23 +340,6 @@ public final class NotiSyncCaptureBackend {
             } catch (Throwable error) {
                 Ln.e("NotiSync capture initialization failed", error);
                 finishAsync();
-            }
-        }
-
-        private void wakePrimaryDisplayOnce() {
-            if (!wakeAttempted.compareAndSet(false, true)) {
-                return;
-            }
-            try {
-                // KEYCODE_WAKEUP is intentionally one-way: it wakes off/AOD displays but has no
-                // effect if already interactive. It never dismisses keyguard or bypasses credentials.
-                if (!Device.wakeUp(0)) {
-                    Ln.w("Could not wake the primary display for the screen session");
-                }
-            } catch (Throwable error) {
-                // Waking is convenience-only. A vendor input-policy quirk must not abort an
-                // otherwise valid capture session, and the once-only guard still prevents retry.
-                Ln.w("Could not wake the primary display", error);
             }
         }
 

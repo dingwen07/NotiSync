@@ -349,7 +349,7 @@
     <string name="screen_mirror_request_title">屏幕控制请求</string>
     <string name="screen_mirror_request_body">点按以开始与 %1$s 共享。</string>
     <string name="screen_mirror_start">开始</string>
-    <string name="screen_mirror_service_channel">正在共享屏幕</string>
+    <string name="screen_mirror_service_channel">屏幕共享</string>
     <string name="screen_mirror_service_title">屏幕共享已开启</string>
     <string name="screen_mirror_service_body">正在通过本地网络与 %1$s 共享。</string>
     <string name="screen_mirror_stop">停止</string>
