@@ -14,6 +14,7 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Build;
+import android.os.Bundle;
 import android.os.Looper;
 import android.view.Surface;
 
@@ -34,21 +35,27 @@ public final class SurfaceEncoder implements AsyncProcessor {
     private final int videoBitRate;
     private final int maxSize;
     private final float maxFps;
-    private final CaptureControl captureControl = new CaptureControl();
+    private final CaptureControl captureControl;
     private final AtomicBoolean stopped = new AtomicBoolean();
 
     private Thread thread;
 
     public SurfaceEncoder(SurfaceCapture capture, Streamer streamer, Options options) {
+        this(capture, streamer, options, new CaptureControl());
+    }
+
+    /** NotiSync constructor sharing authenticated viewer visibility with the control loop. */
+    public SurfaceEncoder(SurfaceCapture capture, Streamer streamer, Options options, CaptureControl captureControl) {
         this.capture = capture;
         this.streamer = streamer;
         this.videoBitRate = options.getVideoBitRate();
         this.maxSize = options.getMaxSize();
         this.maxFps = options.getMaxFps();
         this.encoderName = options.getVideoEncoder();
+        this.captureControl = captureControl;
     }
 
-    private void streamCapture() throws IOException, ConfigurationException {
+    private void streamCapture() throws IOException, ConfigurationException, InterruptedException {
         Codec codec = streamer.getCodec();
         MediaCodec mediaCodec = createHardwareMediaCodec(codec, encoderName);
         MediaFormat format = createFormat(codec.getMimeType(), videoBitRate, maxFps);
@@ -66,6 +73,12 @@ public final class SurfaceEncoder implements AsyncProcessor {
             do {
                 int resetReasons = captureControl.consumeReset();
                 if ((resetReasons & CaptureControl.RESET_REASON_TERMINATED) != 0) {
+                    break;
+                }
+                // While the player has no video surface, release capture and codec resources but
+                // leave both authenticated descriptors open. Resume always starts a new codec
+                // session rather than forwarding undecodable inter frames from the old one.
+                if (!captureControl.awaitVideoVisible()) {
                     break;
                 }
 
@@ -91,7 +104,8 @@ public final class SurfaceEncoder implements AsyncProcessor {
                     } else {
                         if (!captureControl.isResetRequested()) {
                             streamer.writeSessionMeta(size.getWidth(), size.getHeight(), false);
-                            encode(mediaCodec, streamer);
+                            requestSyncFrame(mediaCodec);
+                            encode(mediaCodec, streamer, captureControl);
                         }
                         alive = !stopped.get() && !capture.isClosed();
                     }
@@ -172,7 +186,19 @@ public final class SurfaceEncoder implements AsyncProcessor {
         return format;
     }
 
-    private static void encode(MediaCodec codec, Streamer streamer) throws IOException {
+    private static void requestSyncFrame(MediaCodec codec) {
+        Bundle parameters = new Bundle();
+        parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+        try {
+            codec.setParameters(parameters);
+        } catch (RuntimeException error) {
+            // A newly started encoder is already required to begin at a random-access frame. This
+            // request makes resume immediate on implementations that support the standard key.
+            Ln.w("Video encoder rejected sync-frame request: " + error.getMessage());
+        }
+    }
+
+    private static void encode(MediaCodec codec, Streamer streamer, CaptureControl captureControl) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
         boolean eos;
         do {
@@ -181,7 +207,12 @@ public final class SurfaceEncoder implements AsyncProcessor {
                 eos = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_END_OF_STREAM) != 0;
                 if (outputBufferId >= 0 && bufferInfo.size > 0) {
                     ByteBuffer codecBuffer = codec.getOutputBuffer(outputBufferId);
-                    streamer.writePacket(codecBuffer, bufferInfo);
+                    // A hide/reset may race with buffers already queued by MediaCodec. Never write
+                    // those stale frames, even if a rapid hide/show has made visibility true again;
+                    // isResetRequested() remains true until the fresh encoder iteration begins.
+                    if (captureControl.isVideoVisible() && !captureControl.isResetRequested()) {
+                        streamer.writePacket(codecBuffer, bufferInfo);
+                    }
                 }
             } finally {
                 if (outputBufferId >= 0) {
@@ -205,6 +236,11 @@ public final class SurfaceEncoder implements AsyncProcessor {
                 }
             } catch (RuntimeException error) {
                 Ln.e("Video encoder failed", error);
+            } catch (InterruptedException error) {
+                Thread.currentThread().interrupt();
+                if (!stopped.get()) {
+                    Ln.w("Video encoder interrupted");
+                }
             } finally {
                 listener.onTerminated(true);
             }

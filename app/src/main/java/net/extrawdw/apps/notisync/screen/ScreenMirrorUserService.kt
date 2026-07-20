@@ -13,7 +13,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Configuration passed to the scrcpy-derived privileged backend. */
 data class PrivilegedCaptureConfig(
-    val sessionId: String,
+    val ownerToken: String,
     val codecId: Int,
     val maxDimension: Int,
     val maxFps: Int,
@@ -36,7 +36,8 @@ interface PrivilegedCaptureBackend : Closeable {
         videoWriteFd: ParcelFileDescriptor,
         controlFd: ParcelFileDescriptor,
     ): Int
-    fun stop(sessionId: String)
+    /** Returns only after the exact owner's capture workers and descriptors have been cleaned up. */
+    fun stop(ownerToken: String): Boolean
     override fun close()
 }
 
@@ -52,7 +53,7 @@ private class ScrcpyCaptureBackend : PrivilegedCaptureBackend {
         controlFd: ParcelFileDescriptor,
     ): Int {
         val result = delegate.startSession(
-            config.sessionId,
+            config.ownerToken,
             config.codecId,
             config.maxDimension,
             config.maxFps,
@@ -77,7 +78,7 @@ private class ScrcpyCaptureBackend : PrivilegedCaptureBackend {
             else -> ScreenMirrorBackendStatus.START_FAILED
         }
     }
-    override fun stop(sessionId: String) = delegate.stopSession(sessionId)
+    override fun stop(ownerToken: String): Boolean = delegate.stopSession(ownerToken)
     override fun close() = delegate.destroy()
 }
 
@@ -112,7 +113,7 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         if (destroyed.get() || Os.getuid() != Process.SHELL_UID) 0 else backend.get().probeCapabilities()
 
     override fun startSession(
-        sessionId: String,
+        ownerToken: String,
         codecId: Int,
         maxDimension: Int,
         maxFps: Int,
@@ -136,7 +137,7 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
                 ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
             }
         }
-        if (!validSessionId(sessionId)) {
+        if (!validOwnerToken(ownerToken)) {
             videoWriteFd.closeQuietly()
             controlFd.closeQuietly()
             return ScreenMirrorBackendStatus.INVALID_ARGUMENT
@@ -144,7 +145,7 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         return runCatching {
             backend.get().start(
                 PrivilegedCaptureConfig(
-                    sessionId = sessionId,
+                    ownerToken = ownerToken,
                     codecId = codecId,
                     maxDimension = maxDimension.coerceIn(240, 8192),
                     maxFps = maxFps.coerceIn(1, 240),
@@ -163,21 +164,20 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         }
     }
 
-    override fun stopSession(sessionId: String) {
-        if (validSessionId(sessionId)) runCatching { backend.get().stop(sessionId) }
-    }
+    override fun stopSession(ownerToken: String): Boolean =
+        validOwnerToken(ownerToken) && runCatching { backend.get().stop(ownerToken) }.getOrDefault(false)
 
     /** Reserved Shizuku destroy transaction. Shizuku owns process teardown after unbind. */
     override fun destroy() {
         if (destroyed.compareAndSet(false, true)) runCatching { backend.get().close() }
     }
 
-    private fun validSessionId(value: String): Boolean =
-        value.isNotBlank() && value.length <= MAX_SESSION_ID_CHARS && value.none(Char::isISOControl)
+    private fun validOwnerToken(value: String): Boolean =
+        value.isNotBlank() && value.length <= MAX_OWNER_TOKEN_CHARS && value.none(Char::isISOControl)
 
     private companion object {
         const val TAG = "ScreenMirrorUserSvc"
-        const val MAX_SESSION_ID_CHARS = 128
+        const val MAX_OWNER_TOKEN_CHARS = 128
     }
 }
 

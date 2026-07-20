@@ -71,6 +71,10 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
             case ControlMessage.TYPE_TOGGLE_POWER:
                 return allowControl;
+            case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
+                // Flow control changes only this session's encoder resource use. It is available
+                // to an authenticated view-only client and grants no Android input authority.
+                return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:
             case ControlMessage.TYPE_SET_CLIPBOARD:
                 return allowClipboard;
@@ -100,6 +104,7 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
                 return isAction(message.getAction());
             case ControlMessage.TYPE_TOGGLE_POWER:
+            case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
                 return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:
                 // COPY/CUT inject keys and must not bypass a view/clipboard-only session.

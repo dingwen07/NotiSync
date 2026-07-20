@@ -5,6 +5,7 @@ import com.genymobile.scrcpy.control.Controller;
 import com.genymobile.scrcpy.device.Device;
 import com.genymobile.scrcpy.device.Streamer;
 import com.genymobile.scrcpy.util.Ln;
+import com.genymobile.scrcpy.video.CaptureControl;
 import com.genymobile.scrcpy.video.ScreenCapture;
 import com.genymobile.scrcpy.video.SurfaceCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
@@ -20,6 +21,8 @@ import android.view.KeyEvent;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -100,14 +103,14 @@ public final class NotiSyncCaptureBackend {
         return ScreenCapture.probePrimaryDisplayCapture();
     }
 
-    public synchronized int startSession(String sessionId, int codecId, int maxDimension, int maxFps, int bitrateBps,
+    public synchronized int startSession(String ownerToken, int codecId, int maxDimension, int maxFps, int bitrateBps,
             boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoWriteFd, ParcelFileDescriptor controlFd) {
         if (session != null) {
             closeQuietly(videoWriteFd);
             closeQuietly(controlFd);
             return BUSY;
         }
-        if (!isValidSessionId(sessionId) || videoWriteFd == null || controlFd == null
+        if (!isValidOwnerToken(ownerToken) || videoWriteFd == null || controlFd == null
                 || !videoWriteFd.getFileDescriptor().valid() || !controlFd.getFileDescriptor().valid()
                 || maxDimension <= 0 || maxDimension > 8192
                 || maxFps <= 0 || maxFps > 240
@@ -147,7 +150,7 @@ public final class NotiSyncCaptureBackend {
 
         try {
             Session next = new Session(
-                    sessionId,
+                    ownerToken,
                     codec,
                     encoderName,
                     maxDimension,
@@ -171,17 +174,40 @@ public final class NotiSyncCaptureBackend {
         }
     }
 
-    public synchronized void stopSession(String sessionId) {
-        Session current = session;
-        if (current != null && (sessionId == null || current.sessionId.equals(sessionId))) {
-            current.stop();
+    /**
+     * Stops only the exact process-local owner and waits until processors, descriptors, and the active
+     * slot have all been released. Never wait while holding this backend's monitor: completion clears
+     * the active slot through {@link #onSessionFinished(Session)}.
+     */
+    public boolean stopSession(String ownerToken) {
+        Session current;
+        synchronized (this) {
+            current = session;
+            if (current == null) {
+                return true;
+            }
+            if (!current.ownerToken.equals(ownerToken)) {
+                return false;
+            }
         }
+        current.stop();
+        boolean stopped = current.awaitStopped(STOP_TIMEOUT_MILLIS);
+        if (!stopped) {
+            Ln.w("Timed out stopping exact NotiSync capture owner");
+        }
+        return stopped;
     }
 
-    public synchronized void destroy() {
-        Session current = session;
+    public void destroy() {
+        Session current;
+        synchronized (this) {
+            current = session;
+        }
         if (current != null) {
             current.stop();
+            if (!current.awaitStopped(STOP_TIMEOUT_MILLIS)) {
+                Ln.w("Timed out cleaning up NotiSync capture backend");
+            }
         }
     }
 
@@ -204,12 +230,12 @@ public final class NotiSyncCaptureBackend {
         }
     }
 
-    private static boolean isValidSessionId(String sessionId) {
-        if (sessionId == null || sessionId.isEmpty() || sessionId.length() > 128) {
+    private static boolean isValidOwnerToken(String ownerToken) {
+        if (ownerToken == null || ownerToken.isEmpty() || ownerToken.length() > 128) {
             return false;
         }
-        for (int i = 0; i < sessionId.length(); ++i) {
-            char c = sessionId.charAt(i);
+        for (int i = 0; i < ownerToken.length(); ++i) {
+            char c = ownerToken.charAt(i);
             if (c < 0x20 || c == 0x7f) {
                 return false;
             }
@@ -244,7 +270,7 @@ public final class NotiSyncCaptureBackend {
     }
 
     private static final class Session {
-        private final String sessionId;
+        private final String ownerToken;
         private final VideoCodec codec;
         private final String encoderName;
         private final int maxDimension;
@@ -256,14 +282,15 @@ public final class NotiSyncCaptureBackend {
         private final ParcelFileDescriptor controlFd;
         private final java.util.function.Consumer<Session> finished;
         private final AtomicBoolean stopping = new AtomicBoolean();
+        private final CountDownLatch stopped = new CountDownLatch(1);
         private final Object lifecycleLock = new Object();
         private final List<AsyncProcessor> processors = new ArrayList<>();
         private ControlChannel controlChannel;
 
-        Session(String sessionId, VideoCodec codec, String encoderName, int maxDimension, int maxFps, int bitrateBps,
+        Session(String ownerToken, VideoCodec codec, String encoderName, int maxDimension, int maxFps, int bitrateBps,
                 boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoFd, ParcelFileDescriptor controlFd,
                 java.util.function.Consumer<Session> finished) {
-            this.sessionId = sessionId;
+            this.ownerToken = ownerToken;
             this.codec = codec;
             this.encoderName = encoderName;
             this.maxDimension = maxDimension;
@@ -301,32 +328,32 @@ public final class NotiSyncCaptureBackend {
                     Ln.initLogLevel(Ln.Level.INFO);
                     Options options = Options.forScreenMirror(maxDimension, maxFps, bitrateBps, encoderName, allowClipboard);
 
-                    Controller controller = null;
-                    if (allowControl || allowClipboard) {
-                        ParcelFileDescriptor readFd = null;
-                        ParcelFileDescriptor writeFd = null;
-                        try {
-                            readFd = ParcelFileDescriptor.dup(controlFd.getFileDescriptor());
-                            writeFd = ParcelFileDescriptor.dup(controlFd.getFileDescriptor());
-                            controlChannel = new ControlChannel(
-                                    new ParcelFileDescriptor.AutoCloseInputStream(readFd),
-                                    new ParcelFileDescriptor.AutoCloseOutputStream(writeFd),
-                                    allowControl,
-                                    allowClipboard
-                            );
-                            readFd = null;
-                            writeFd = null;
-                        } finally {
-                            closeQuietly(readFd);
-                            closeQuietly(writeFd);
-                        }
-                        controller = new Controller(controlChannel, options);
-                        processors.add(controller);
+                    CaptureControl captureControl = new CaptureControl();
+                    ParcelFileDescriptor readFd = null;
+                    ParcelFileDescriptor writeFd = null;
+                    try {
+                        readFd = ParcelFileDescriptor.dup(controlFd.getFileDescriptor());
+                        writeFd = ParcelFileDescriptor.dup(controlFd.getFileDescriptor());
+                        controlChannel = new ControlChannel(
+                                new ParcelFileDescriptor.AutoCloseInputStream(readFd),
+                                new ParcelFileDescriptor.AutoCloseOutputStream(writeFd),
+                                allowControl,
+                                allowClipboard
+                        );
+                        readFd = null;
+                        writeFd = null;
+                    } finally {
+                        closeQuietly(readFd);
+                        closeQuietly(writeFd);
                     }
+                    // The controller always exists because video visibility is session flow
+                    // control, independent from Android input and clipboard authorization.
+                    Controller controller = new Controller(controlChannel, options, captureControl);
+                    processors.add(controller);
 
                     Streamer streamer = new Streamer(videoFd.getFileDescriptor(), codec);
                     SurfaceCapture capture = new ScreenCapture(controller, options);
-                    SurfaceEncoder encoder = new SurfaceEncoder(capture, streamer, options);
+                    SurfaceEncoder encoder = new SurfaceEncoder(capture, streamer, options, captureControl);
                     processors.add(encoder);
 
                     if (stopping.get()) {
@@ -347,40 +374,58 @@ public final class NotiSyncCaptureBackend {
             finishAsync();
         }
 
+        boolean awaitStopped(long timeoutMillis) {
+            try {
+                return stopped.await(timeoutMillis, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        }
+
         private void finishAsync() {
             if (!stopping.compareAndSet(false, true)) {
                 return;
             }
             Thread cleanup = new Thread(() -> {
-                List<AsyncProcessor> ownedProcessors;
-                synchronized (lifecycleLock) {
-                    ownedProcessors = new ArrayList<>(processors);
-                }
-                for (AsyncProcessor processor : ownedProcessors) {
+                try {
+                    List<AsyncProcessor> ownedProcessors;
+                    synchronized (lifecycleLock) {
+                        ownedProcessors = new ArrayList<>(processors);
+                    }
+                    for (AsyncProcessor processor : ownedProcessors) {
+                        try {
+                            processor.stop();
+                        } catch (Throwable error) {
+                            Ln.w("Could not stop capture processor: " + error.getMessage());
+                        }
+                    }
+                    if (controlChannel != null) {
+                        controlChannel.close();
+                    }
+                    closeQuietly(controlFd);
+                    closeQuietly(videoFd);
+                    for (AsyncProcessor processor : ownedProcessors) {
+                        try {
+                            processor.join();
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        } catch (Throwable error) {
+                            Ln.w("Could not join capture processor: " + error.getMessage());
+                        }
+                    }
+                } finally {
                     try {
-                        processor.stop();
-                    } catch (Throwable error) {
-                        Ln.w("Could not stop capture processor: " + error.getMessage());
+                        finished.accept(this);
+                    } finally {
+                        stopped.countDown();
                     }
                 }
-                if (controlChannel != null) {
-                    controlChannel.close();
-                }
-                closeQuietly(controlFd);
-                closeQuietly(videoFd);
-                for (AsyncProcessor processor : ownedProcessors) {
-                    try {
-                        processor.join();
-                    } catch (InterruptedException e) {
-                        Thread.currentThread().interrupt();
-                        break;
-                    } catch (Throwable error) {
-                        Ln.w("Could not join capture processor: " + error.getMessage());
-                    }
-                }
-                finished.accept(this);
             }, "notisync-scrcpy-cleanup");
             cleanup.start();
         }
     }
+
+    private static final long STOP_TIMEOUT_MILLIS = 10_000;
 }

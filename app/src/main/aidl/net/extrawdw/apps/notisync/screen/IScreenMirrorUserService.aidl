@@ -21,7 +21,7 @@ interface IScreenMirrorUserService {
      * videoWriteFd is write-only by convention; controlFd carries scrcpy control and device messages.
      */
     int startSession(
-        String sessionId,
+        String ownerToken,
         int codecId,
         int maxDimension,
         int maxFps,
@@ -32,6 +32,9 @@ interface IScreenMirrorUserService {
         in ParcelFileDescriptor controlFd
     ) = 3;
 
-    /** Idempotently stops the named active session and closes all owned descriptors. */
-    void stopSession(String sessionId) = 4;
+    /**
+     * Stops only the session with this process-local owner token and waits for capture cleanup.
+     * Returns false when another owner is active or cleanup could not be acknowledged in time.
+     */
+    boolean stopSession(String ownerToken) = 4;
 }

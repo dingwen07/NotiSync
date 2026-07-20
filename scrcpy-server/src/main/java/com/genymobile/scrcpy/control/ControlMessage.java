@@ -17,6 +17,8 @@ public final class ControlMessage {
 
     /** NotiSync screen protocol v1 extension: toggle the primary display power state. */
     public static final int TYPE_TOGGLE_POWER = 64;
+    /** NotiSync screen protocol v1 extension: pause/resume video while keeping control alive. */
+    public static final int TYPE_SET_VIDEO_VISIBILITY = 65;
 
     public static final long SEQUENCE_INVALID = 0;
 
@@ -40,6 +42,7 @@ public final class ControlMessage {
     private boolean paste;
     private int repeat;
     private long sequence;
+    private boolean videoVisible;
 
     private ControlMessage() {
     }
@@ -113,6 +116,12 @@ public final class ControlMessage {
         return msg;
     }
 
+    public static ControlMessage createSetVideoVisibility(boolean visible) {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_SET_VIDEO_VISIBILITY;
+        msg.videoVisible = visible;
+        return msg;
+    }
 
     public int getType() {
         return type;
@@ -176,6 +185,10 @@ public final class ControlMessage {
 
     public long getSequence() {
         return sequence;
+    }
+
+    public boolean isVideoVisible() {
+        return videoVisible;
     }
 
 }

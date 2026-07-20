@@ -1,5 +1,7 @@
 package net.extrawdw.notisync.screen
 
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -19,6 +21,30 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PskTlsTransportTest {
+    @Test
+    fun `channel close releases socket before protocol and is idempotent`() {
+        val fixture = Fixture()
+        val closeOrder = mutableListOf<String>()
+        val socket = object : Socket() {
+            override fun close() {
+                closeOrder += "socket"
+            }
+        }
+        val channel = SecureSessionChannel(
+            descriptor = fixture.descriptor,
+            channel = ScreenChannel.VIDEO,
+            input = ByteArrayInputStream(byteArrayOf()),
+            output = ByteArrayOutputStream(),
+            closeProtocol = { closeOrder += "protocol" },
+            socket = socket,
+        )
+
+        channel.close()
+        channel.close()
+
+        assertEquals(listOf("socket", "protocol"), closeOrder)
+    }
+
     @Test
     fun `TLS 1_3 external PSK connects and binds independent channels`() {
         val fixture = Fixture()

@@ -1,17 +1,16 @@
 package net.extrawdw.apps.notisync.screen
 
 import android.Manifest
+import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.PixelFormat
 import android.os.Build
 import android.os.Bundle
-import android.os.Handler
-import android.os.Looper
 import android.os.SystemClock
 import android.text.InputType
-import android.util.Log
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.Surface
@@ -96,6 +95,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -115,30 +115,26 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
 import java.util.UUID
-import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.roundToInt
-import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.ClientId
 
-private const val LOG_TAG = "AndroidScreenViewer"
-
-/** Foreground-only Android viewer. Leaving the Activity ends the authenticated LAN session. */
+/** Replaceable full-screen/PiP client of the requester foreground service's authenticated session. */
 class AndroidScreenMirrorActivity : ComponentActivity() {
-    private data class ActiveAttempt(
-        val ownerToken: String,
-        var decoder: AndroidScreenVideoDecoder? = null,
-    )
-
-    private val attemptLock = Any()
-    private var activeAttempt: ActiveAttempt? = null
+    internal val viewerToken: String = UUID.randomUUID().toString()
+    internal val pictureInPictureChromeHidden = mutableStateOf(false)
+    internal val renderingAllowed = mutableStateOf(true)
+    private lateinit var sourceId: ClientId
+    private lateinit var requesterLeaseId: String
+    private var pictureInPictureEligible = false
+    private var enteringPictureInPicture = false
+    private var explicitlyClosing = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -149,6 +145,10 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             finish()
             return
         }
+        sourceId = ClientId(rawSourceId)
+        requesterLeaseId = savedInstanceState?.getString(STATE_REQUESTER_LEASE_ID)
+            ?.takeIf { it.isNotBlank() && it.length <= MAX_REQUESTER_LEASE_ID_LENGTH }
+            ?: UUID.randomUUID().toString()
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
@@ -157,15 +157,20 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             NotiSyncTheme {
                 AndroidScreenMirrorViewer(
                     activity = this,
-                    sourceId = ClientId(rawSourceId),
+                    sourceId = sourceId,
+                    requesterLeaseId = requesterLeaseId,
                     onImeDismissed = ::hideNavigationChrome,
-                    onClose = {
-                        closeActiveSession()
-                        finish()
-                    },
+                    onClose = ::closeSessionAndTask,
                 )
             }
         }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        if (::requesterLeaseId.isInitialized) {
+            outState.putString(STATE_REQUESTER_LEASE_ID, requesterLeaseId)
+        }
+        super.onSaveInstanceState(outState)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -185,85 +190,129 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        enteringPictureInPicture = false
+        renderingAllowed.value = true
+        if (!isInPictureInPictureMode) pictureInPictureChromeHidden.value = false
+    }
+
     override fun onStop() {
-        // There is deliberately no requester FGS. A viewer that is no longer visible relinquishes
-        // its sockets and tells the source to stop capture instead of continuing in the background.
-        if (!isChangingConfigurations) closeActiveSession()
+        if (!isInPictureInPictureMode && !enteringPictureInPicture) {
+            renderingAllowed.value = false
+            (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequesterHost
+                ?.detachSurface(viewerToken)
+        }
         super.onStop()
     }
 
-    override fun onDestroy() {
-        if (!isChangingConfigurations) closeActiveSession()
-        super.onDestroy()
-    }
-
-    internal fun closeActiveSession() {
-        val attempt = synchronized(attemptLock) {
-            activeAttempt.also { activeAttempt = null }
-        } ?: return
-        runCatching { attempt.decoder?.close() }
-        requester()?.closeOwner(attempt.ownerToken)
-    }
-
-    internal fun beginAttempt(ownerToken: String) {
-        val previous = synchronized(attemptLock) {
-            activeAttempt.also { activeAttempt = ActiveAttempt(ownerToken) }
+    override fun onUserLeaveHint() {
+        // autoEnterEnabled performs the transition. Hide chrome before Android snapshots the PiP
+        // surface so the toolbar and IME never flash inside the compact window.
+        if (pictureInPictureEligible && !explicitlyClosing) {
+            enteringPictureInPicture = true
+            pictureInPictureChromeHidden.value = true
+            currentFocus?.let { focused ->
+                getSystemService(InputMethodManager::class.java)
+                    .hideSoftInputFromWindow(focused.windowToken, 0)
+            }
+            // Some launchers/policies may decline auto-PiP after onUserLeaveHint(). Do not let the
+            // optimistic transition flag keep a genuinely hidden Activity attached forever.
+            window.decorView.postDelayed({
+                if (enteringPictureInPicture && !isInPictureInPictureMode) {
+                    enteringPictureInPicture = false
+                    if (!window.decorView.hasWindowFocus()) {
+                        renderingAllowed.value = false
+                        (applicationContext as NotiSyncApp).graphIfReady
+                            ?.screenMirrorRequesterHost?.detachSurface(viewerToken)
+                    } else {
+                        // Auto-PiP was declined but this Activity stayed foreground. Restore the
+                        // toolbar immediately; there may be no onResume callback to do it for us.
+                        pictureInPictureChromeHidden.value = false
+                    }
+                }
+            }, PICTURE_IN_PICTURE_TRANSITION_TIMEOUT_MS)
         }
-        if (previous != null) {
-            runCatching { previous.decoder?.close() }
-            requester()?.closeOwner(previous.ownerToken, "Android viewer attempt replaced")
-        }
+        super.onUserLeaveHint()
     }
 
-    internal fun attachDecoder(ownerToken: String, decoder: AndroidScreenVideoDecoder): Boolean {
-        val previous = synchronized(attemptLock) {
-            val attempt = activeAttempt?.takeIf { it.ownerToken == ownerToken }
-                ?: return@synchronized null
-            attempt.decoder.also { attempt.decoder = decoder }
-        }
-        val attached = synchronized(attemptLock) {
-            activeAttempt?.let { it.ownerToken == ownerToken && it.decoder === decoder } == true
-        }
-        if (attached) {
-            if (previous !== decoder) runCatching { previous?.close() }
-        } else {
-            runCatching { decoder.close() }
-        }
-        return attached
+    override fun onPictureInPictureModeChanged(
+        isInPictureInPictureMode: Boolean,
+        newConfig: Configuration,
+    ) {
+        super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
+        enteringPictureInPicture = false
+        pictureInPictureChromeHidden.value = isInPictureInPictureMode
+        if (isInPictureInPictureMode) renderingAllowed.value = true
+        if (!isInPictureInPictureMode) hideNavigationChrome()
     }
 
-    internal fun detachDecoder(ownerToken: String, decoder: AndroidScreenVideoDecoder?) {
-        if (decoder == null) return
-        synchronized(attemptLock) {
-            activeAttempt?.takeIf { it.ownerToken == ownerToken && it.decoder === decoder }
-                ?.decoder = null
+    internal fun updatePictureInPicturePolicy(
+        connected: Boolean,
+        dimensions: ScrcpySessionDimensions?,
+    ) {
+        val policy = androidScreenPictureInPicturePolicy(
+            supported = packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE),
+            connected = connected,
+            sourceWidth = dimensions?.width,
+            sourceHeight = dimensions?.height,
+        )
+        pictureInPictureEligible = policy.eligible && !explicitlyClosing
+        setPictureInPictureParams(
+            PictureInPictureParams.Builder()
+                .setAutoEnterEnabled(pictureInPictureEligible)
+                .setSeamlessResizeEnabled(true)
+                .apply { policy.rationalAspectRatio()?.let(::setAspectRatio) }
+                .build(),
+        )
+    }
+
+    private fun closeSessionAndTask() {
+        if (explicitlyClosing) return
+        explicitlyClosing = true
+        pictureInPictureEligible = false
+        renderingAllowed.value = false
+        setPictureInPictureParams(
+            PictureInPictureParams.Builder().setAutoEnterEnabled(false).build(),
+        )
+        (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequesterHost?.let { host ->
+            host.detachSurface(viewerToken)
         }
+        // The Activity-created lease reaches the service even if Close wins the race before the
+        // host publishes an attempt id. A stale same-source Activity cannot stop a replacement:
+        // only the service's currently owned source/lease pair has teardown authority.
+        ScreenMirrorRequesterForegroundService.stop(
+            applicationContext,
+            sourceId,
+            requesterLeaseId,
+        )
+        // Close only this Activity generation. A stale callback must not remove a replacement
+        // viewer task; the exact foreground-service command retires the matching host attempt.
+        finish()
     }
 
-    internal fun isCurrentAttempt(ownerToken: String): Boolean = synchronized(attemptLock) {
-        activeAttempt?.ownerToken == ownerToken
+    /** Close only this stale renderer; the host/FGS already owns terminal session cleanup. */
+    internal fun finishTerminatedViewer() {
+        if (explicitlyClosing || isFinishing || isDestroyed) return
+        explicitlyClosing = true
+        pictureInPictureEligible = false
+        renderingAllowed.value = false
+        setPictureInPictureParams(
+            PictureInPictureParams.Builder().setAutoEnterEnabled(false).build(),
+        )
+        (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequesterHost
+            ?.detachSurface(viewerToken)
+        // Target this exact Activity generation. finishAndRemoveTask() could also remove a
+        // replacement viewer which Android is already installing in the same task.
+        finish()
     }
-
-    internal fun finishAttempt(ownerToken: String) {
-        val attempt = synchronized(attemptLock) {
-            activeAttempt?.takeIf { it.ownerToken == ownerToken }?.also { activeAttempt = null }
-        }
-        runCatching { attempt?.decoder?.close() }
-    }
-
-    internal fun closeAttempt(ownerToken: String, detail: String) {
-        val attempt = synchronized(attemptLock) {
-            activeAttempt?.takeIf { it.ownerToken == ownerToken }?.also { activeAttempt = null }
-        } ?: return
-        runCatching { attempt.decoder?.close() }
-        requester()?.closeOwner(ownerToken, detail)
-    }
-
-    private fun requester(): AndroidScreenMirrorRequester? =
-        (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequester
 
     companion object {
         private const val EXTRA_SOURCE_ID = "net.extrawdw.apps.notisync.screen.SOURCE_ID"
+        private const val STATE_REQUESTER_LEASE_ID =
+            "net.extrawdw.apps.notisync.screen.REQUESTER_LEASE_ID"
+        private const val MAX_REQUESTER_LEASE_ID_LENGTH = 128
+        private const val PICTURE_IN_PICTURE_TRANSITION_TIMEOUT_MS = 1_000L
 
         fun intent(context: Context, sourceId: ClientId): Intent =
             Intent(context, AndroidScreenMirrorActivity::class.java)
@@ -276,11 +325,18 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
 
 private enum class AndroidViewerUiPhase { PREPARING, CONNECTING, CONNECTED, ENDED, ERROR }
 
+private val LIVE_SCREEN_HOST_PHASES = setOf(
+    AndroidScreenHostPhase.PREPARING,
+    AndroidScreenHostPhase.CONNECTING,
+    AndroidScreenHostPhase.CONNECTED,
+)
+
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AndroidScreenMirrorViewer(
     activity: AndroidScreenMirrorActivity,
     sourceId: ClientId,
+    requesterLeaseId: String,
     onImeDismissed: () -> Unit,
     onClose: () -> Unit,
 ) {
@@ -293,6 +349,7 @@ private fun AndroidScreenMirrorViewer(
     var codecName by remember { mutableStateOf<String?>(null) }
     var phase by remember { mutableStateOf(AndroidViewerUiPhase.PREPARING) }
     var detail by remember { mutableStateOf<String?>(null) }
+    var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
     var retryGeneration by remember { mutableIntStateOf(0) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }
     var toolbarPreferences by remember {
@@ -301,8 +358,10 @@ private fun AndroidScreenMirrorViewer(
                 ?: ScreenViewerToolbarPreferences(),
         )
     }
-    val uiHandler = remember { Handler(Looper.getMainLooper()) }
     val toolbarPreferenceStore = graph?.screenViewerToolbarPreferences
+    val pipChromeHidden by activity.pictureInPictureChromeHidden
+    val renderingAllowed by activity.renderingAllowed
+    val closeViewer = onClose
 
     val localPermissionRequired = Build.VERSION.SDK_INT >= 37
     val wifiAwareSupported = remember {
@@ -383,96 +442,126 @@ private fun AndroidScreenMirrorViewer(
         permissionResolved,
         localNetworkGranted,
         nearbyWifiGranted,
-        surface,
         retryGeneration,
     ) {
         val readyGraph = graph ?: return@LaunchedEffect
-        val requester = readyGraph.screenMirrorRequester ?: return@LaunchedEffect
-        val outputSurface = surface?.takeIf(Surface::isValid) ?: return@LaunchedEffect
         if (!permissionResolved || !canAttemptConnection) return@LaunchedEffect
-
-        val ownerToken = UUID.randomUUID().toString()
-        var session: AndroidViewerSession? = null
-        var dispatcher: AndroidScreenControlDispatcher? = null
-        var decoder: AndroidScreenVideoDecoder? = null
-        val controlFailure = AtomicReference<Throwable?>()
-        activity.beginAttempt(ownerToken)
         phase = AndroidViewerUiPhase.CONNECTING
         detail = null
         dimensions = null
         codecName = null
-        try {
-            session = requester.open(sourceId, ownerToken)
-            sourceName = session.sourceName
-            codecName = session.codec.name.lowercase()
-            val writer = AndroidScreenControlWriter(session.controlOutput)
-            val controlDispatcher = AndroidScreenControlDispatcher(writer) { error ->
-                controlFailure.compareAndSet(null, error)
-                Log.e(LOG_TAG, "Screen control channel failed", error)
-                uiHandler.post {
-                    if (activity.isCurrentAttempt(ownerToken)) {
-                        phase = AndroidViewerUiPhase.ERROR
-                        detail = error.message
-                            ?: activity.getString(R.string.screen_viewer_control_failed)
-                        activity.closeAttempt(ownerToken, "screen control channel failed")
-                    }
-                }
-            }
-            dispatcher = controlDispatcher
-            control = controlDispatcher
-            decoder = AndroidScreenVideoDecoder(
-                input = session.videoInput,
-                expectedCodec = session.codec,
-                surface = outputSurface,
-                hardwareDecoderName = readyGraph.screenMirrorDecoderSupport
-                    .hardwareDecoderName(session.codec),
-                onDimensionsChanged = { next ->
-                    uiHandler.post { dimensions = next }
-                },
+        sourceName = readyGraph.trust.displayName(sourceId) ?: sourceName
+        if (
+            !ScreenMirrorRequesterForegroundService.start(
+                activity,
+                sourceId,
+                sourceName,
+                requesterLeaseId,
             )
-            check(activity.attachDecoder(ownerToken, decoder)) { "screen viewer attempt was replaced" }
-            phase = AndroidViewerUiPhase.CONNECTED
-            withContext(Dispatchers.IO) { decoder.decode() }
-            if (activity.isCurrentAttempt(ownerToken)) {
-                val controlError = controlFailure.get()
-                if (controlError == null) {
-                    phase = AndroidViewerUiPhase.ENDED
-                    detail = requester.state.value.detail
-                        ?: activity.getString(R.string.screen_viewer_ended)
-                } else {
-                    phase = AndroidViewerUiPhase.ERROR
-                    detail = controlError.message
-                        ?: activity.getString(R.string.screen_viewer_control_failed)
-                }
+        ) {
+            phase = AndroidViewerUiPhase.ERROR
+            detail = activity.getString(R.string.screen_viewer_service_failed)
+            return@LaunchedEffect
+        }
+        // onStartCommand must promote within Android's five-second FGS deadline. If no matching
+        // attempt appeared by then, surface a retry instead of leaving this Activity on Preparing.
+        delay(REQUESTER_SERVICE_START_TIMEOUT_MS)
+        val hostState = readyGraph.screenMirrorRequesterHost?.state?.value
+        if (
+            hostState?.sourceId != sourceId &&
+            phase !in setOf(AndroidViewerUiPhase.ERROR, AndroidViewerUiPhase.ENDED)
+        ) {
+            phase = AndroidViewerUiPhase.ERROR
+            detail = activity.getString(R.string.screen_viewer_service_failed)
+        }
+    }
+
+    LaunchedEffect(
+        graph?.screenMirrorRequesterHost,
+        surface,
+        sourceId,
+        renderingAllowed,
+        pipChromeHidden,
+    ) {
+        val host = graph?.screenMirrorRequesterHost ?: return@LaunchedEffect
+        host.state.collect { state ->
+            if (
+                state.sourceId == sourceId && state.attemptId != null &&
+                state.phase in LIVE_SCREEN_HOST_PHASES
+            ) {
+                observedAttemptId = state.attemptId
             }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            if (activity.isCurrentAttempt(ownerToken)) {
-                val controlError = controlFailure.get()
-                phase = AndroidViewerUiPhase.ERROR
-                detail = requester.state.value.detail
-                    ?: controlError?.message?.takeIf(String::isNotBlank)
-                    ?: error.message?.takeIf(String::isNotBlank)
+            if (
+                shouldFinishTerminatedScreenViewer(
+                    viewerSourceId = sourceId,
+                    observedAttemptId = observedAttemptId,
+                    hostState = state,
+                    // pipChromeHidden is set optimistically in onUserLeaveHint(), before the
+                    // framework's PiP callback. Including it here prevents a terminal snapshot
+                    // from being missed in that transition window.
+                    inPictureInPicture = pipChromeHidden || activity.isInPictureInPictureMode,
+                    renderingAllowed = renderingAllowed,
+                )
+            ) {
+                activity.finishTerminatedViewer()
+                return@collect
+            }
+            if (state.sourceId != null && state.sourceId != sourceId) {
+                control = null
+                phase = AndroidViewerUiPhase.ENDED
+                detail = activity.getString(R.string.screen_viewer_ended)
+                return@collect
+            }
+            val outputSurface = surface?.takeIf(Surface::isValid)
+            if (
+                renderingAllowed && state.attemptId != null && outputSurface != null &&
+                !state.surfaceAttached
+            ) {
+                host.attachSurface(activity.viewerToken, outputSurface)
+            }
+            state.sourceName?.let { sourceName = it }
+            state.codec?.let { codecName = it.name.lowercase() }
+            dimensions = state.dimensions
+            control = host.controlDispatcher().takeIf {
+                state.phase == AndroidScreenHostPhase.CONNECTED
+            }
+            phase = when (state.phase) {
+                AndroidScreenHostPhase.IDLE -> phase.takeIf {
+                    it == AndroidViewerUiPhase.ERROR || it == AndroidViewerUiPhase.ENDED
+                } ?: AndroidViewerUiPhase.PREPARING
+                AndroidScreenHostPhase.PREPARING -> AndroidViewerUiPhase.PREPARING
+                AndroidScreenHostPhase.CONNECTING -> AndroidViewerUiPhase.CONNECTING
+                AndroidScreenHostPhase.CONNECTED -> AndroidViewerUiPhase.CONNECTED
+                AndroidScreenHostPhase.ENDED -> AndroidViewerUiPhase.ENDED
+                AndroidScreenHostPhase.ERROR -> AndroidViewerUiPhase.ERROR
+            }
+            detail = when (state.phase) {
+                AndroidScreenHostPhase.ERROR -> state.detail
                     ?: activity.getString(R.string.screen_viewer_failed)
+                AndroidScreenHostPhase.ENDED -> state.detail
+                    ?: activity.getString(R.string.screen_viewer_ended)
+                else -> state.detail
             }
-        } finally {
-            activity.detachDecoder(ownerToken, decoder)
-            runCatching { decoder?.close() }
-            runCatching { dispatcher?.close() }
-            runCatching { session?.close() }
-            if (control === dispatcher) control = null
-            activity.finishAttempt(ownerToken)
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(graph?.screenMirrorRequesterHost, activity.viewerToken) {
         onDispose {
-            activity.closeActiveSession()
+            graph?.screenMirrorRequesterHost?.detachSurface(activity.viewerToken)
         }
     }
 
-    BackHandler(onBack = onClose)
+    LaunchedEffect(phase, dimensions, surface, renderingAllowed) {
+        activity.updatePictureInPicturePolicy(
+            connected = phase == AndroidViewerUiPhase.CONNECTED &&
+                renderingAllowed && surface?.isValid == true,
+            dimensions = dimensions,
+        )
+    }
+
+    // System Back belongs to the controlled device. The explicit top-left close affordance is the
+    // only Activity action that terminates this authenticated session.
+    BackHandler { graph?.screenMirrorRequesterHost?.sendKeyPress(KeyEvent.KEYCODE_BACK) }
 
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(Color.Black),
@@ -545,97 +634,99 @@ private fun AndroidScreenMirrorViewer(
             dimensions = dimensions,
             control = control,
             onSurface = { next ->
-                if (next == null && surface != null) {
-                    activity.closeActiveSession()
+                if (next == null) {
+                    graph?.screenMirrorRequesterHost?.detachSurface(activity.viewerToken)
                 }
                 surface = next
             },
         )
 
-        // Keep the requested status bar visible and its white icons readable over arbitrary
-        // mirrored content without reserving any additional vertical space.
-        Spacer(
-            Modifier
-                .align(Alignment.TopCenter)
-                .fillMaxWidth()
-                .windowInsetsTopHeight(WindowInsets.statusBars)
-                .background(Color.Black.copy(alpha = 0.42f)),
-        )
-
-        when (phase) {
-            AndroidViewerUiPhase.PREPARING, AndroidViewerUiPhase.CONNECTING -> ViewerProgress(
-                if (phase == AndroidViewerUiPhase.PREPARING) {
-                    stringResource(R.string.screen_viewer_preparing)
-                } else {
-                    stringResource(R.string.screen_viewer_connecting, sourceName)
-                },
+        if (!pipChromeHidden) {
+            // Keep the requested status bar visible and its white icons readable over arbitrary
+            // mirrored content without reserving any additional vertical space.
+            Spacer(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .windowInsetsTopHeight(WindowInsets.statusBars)
+                    .background(Color.Black.copy(alpha = 0.42f)),
             )
 
-            AndroidViewerUiPhase.ERROR, AndroidViewerUiPhase.ENDED -> ViewerMessage(
-                message = detail ?: stringResource(R.string.screen_viewer_failed),
-                primaryLabel = if (!canAttemptConnection) {
-                    stringResource(R.string.screen_viewer_grant_local_network)
-                } else {
-                    stringResource(R.string.screen_viewer_retry)
-                },
-                onPrimary = {
-                    if (!canAttemptConnection) {
-                        permissionResolved = false
-                        permissionLauncher.launch(missingConnectionPermissions())
+            when (phase) {
+                AndroidViewerUiPhase.PREPARING, AndroidViewerUiPhase.CONNECTING -> ViewerProgress(
+                    if (phase == AndroidViewerUiPhase.PREPARING) {
+                        stringResource(R.string.screen_viewer_preparing)
                     } else {
-                        retryGeneration++
+                        stringResource(R.string.screen_viewer_connecting, sourceName)
+                    },
+                )
+
+                AndroidViewerUiPhase.ERROR, AndroidViewerUiPhase.ENDED -> ViewerMessage(
+                    message = detail ?: stringResource(R.string.screen_viewer_failed),
+                    primaryLabel = if (!canAttemptConnection) {
+                        stringResource(R.string.screen_viewer_grant_local_network)
+                    } else {
+                        stringResource(R.string.screen_viewer_retry)
+                    },
+                    onPrimary = {
+                        if (!canAttemptConnection) {
+                            permissionResolved = false
+                            permissionLauncher.launch(missingConnectionPermissions())
+                        } else {
+                            retryGeneration++
+                        }
+                    },
+                    onClose = closeViewer,
+                )
+
+                AndroidViewerUiPhase.CONNECTED -> Unit
+            }
+
+            AndroidScreenViewerToolbar(
+                sourceName = sourceName,
+                codecName = codecName,
+                dragState = toolbarDragState,
+                selectedControls = toolbarPreferences.pinnedControls,
+                enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
+                control = control,
+                onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
+                onClose = closeViewer,
+                onControlVisibilityChanged = { viewerControl, visible ->
+                    if (
+                        (viewerControl in toolbarPreferences.pinnedControls) != visible &&
+                        toolbarPreferenceStore != null
+                    ) {
+                        graph?.scope?.launch {
+                            toolbarPreferenceStore.setControlPinned(viewerControl, visible)
+                        }
                     }
                 },
-                onClose = onClose,
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .offset {
+                        val offset = toolbarDragState.offset
+                        IntOffset(
+                            x = 0,
+                            y = if (offset.isNaN()) 0 else offset.roundToInt(),
+                        )
+                    }
+                    .windowInsetsPadding(toolbarInsets)
+                    .padding(
+                        horizontal = 8.dp,
+                        vertical = TOOLBAR_VERTICAL_MARGIN_DP.dp,
+                    ),
             )
 
-            AndroidViewerUiPhase.CONNECTED -> Unit
+            // A real, attached text-editor View gives every IME a standard InputConnection without
+            // retaining typed text in Compose state or rendering it into the viewer hierarchy.
+            AndroidView(
+                factory = { context ->
+                    AndroidScreenImeView(context, onImeDismissed).also { imeView = it }
+                },
+                update = { view -> view.control = control },
+                modifier = Modifier.align(Alignment.Center).size(1.dp),
+            )
         }
-
-        AndroidScreenViewerToolbar(
-            sourceName = sourceName,
-            codecName = codecName,
-            dragState = toolbarDragState,
-            selectedControls = toolbarPreferences.pinnedControls,
-            enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
-            control = control,
-            onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
-            onClose = onClose,
-            onControlVisibilityChanged = { viewerControl, visible ->
-                if (
-                    (viewerControl in toolbarPreferences.pinnedControls) != visible &&
-                    toolbarPreferenceStore != null
-                ) {
-                    graph?.scope?.launch {
-                        toolbarPreferenceStore.setControlPinned(viewerControl, visible)
-                    }
-                }
-            },
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .offset {
-                    val offset = toolbarDragState.offset
-                    IntOffset(
-                        x = 0,
-                        y = if (offset.isNaN()) 0 else offset.roundToInt(),
-                    )
-                }
-                .windowInsetsPadding(toolbarInsets)
-                .padding(
-                    horizontal = 8.dp,
-                    vertical = TOOLBAR_VERTICAL_MARGIN_DP.dp,
-                ),
-        )
-
-        // A real, attached text-editor View gives every IME a standard InputConnection without
-        // retaining typed text in Compose state or rendering it into the viewer hierarchy.
-        AndroidView(
-            factory = { context ->
-                AndroidScreenImeView(context, onImeDismissed).also { imeView = it }
-            },
-            update = { view -> view.control = control },
-            modifier = Modifier.align(Alignment.Center).size(1.dp),
-        )
     }
 }
 
@@ -928,6 +1019,7 @@ private const val TOOLBAR_FIXED_WIDTH_DP = 196f
 private const val TOOLBAR_CONTROL_WIDTH_DP = 48f
 private const val TOOLBAR_HEIGHT_DP = 56f
 private const val TOOLBAR_VERTICAL_MARGIN_DP = 6f
+private const val REQUESTER_SERVICE_START_TIMEOUT_MS = 5_000L
 
 @Composable
 private fun AndroidScreenSurface(

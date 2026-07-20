@@ -66,6 +66,17 @@ internal class AndroidScreenControlWriter(
         writeFrames(byteArrayOf(TYPE_TOGGLE_POWER.toByte()))
     }
 
+    /** Pause/resume source video production without closing either authenticated channel. */
+    @Throws(IOException::class)
+    fun setVideoVisible(visible: Boolean) {
+        writeFrames(
+            byteArrayOf(
+                TYPE_SET_VIDEO_VISIBILITY.toByte(),
+                if (visible) VIDEO_VISIBLE else VIDEO_HIDDEN,
+            ),
+        )
+    }
+
     @Throws(IOException::class)
     fun sendTouches(touches: List<AndroidScreenTouch>) {
         require(touches.isNotEmpty()) { "touch batch is empty" }
@@ -132,6 +143,9 @@ internal class AndroidScreenControlWriter(
         private const val TYPE_INJECT_TEXT = 1
         private const val TYPE_INJECT_TOUCH = 2
         private const val TYPE_TOGGLE_POWER = 64
+        private const val TYPE_SET_VIDEO_VISIBILITY = 65
+        private const val VIDEO_HIDDEN: Byte = 0
+        private const val VIDEO_VISIBLE: Byte = 1
         private const val KEY_FRAME_BYTES = 14
         private const val TEXT_FRAME_HEADER_BYTES = 5
         private const val TOUCH_FRAME_BYTES = 32
@@ -195,6 +209,10 @@ internal class AndroidScreenControlDispatcher(
             override fun write(writer: AndroidScreenControlWriter) = writer.togglePower()
         }
 
+        data class VideoVisibility(val visible: Boolean) : Command {
+            override fun write(writer: AndroidScreenControlWriter) = writer.setVideoVisible(visible)
+        }
+
         data class Touches(val touches: List<AndroidScreenTouch>) : Command {
             override val coalescibleMove: Boolean =
                 touches.isNotEmpty() && touches.all { it.action == MotionEvent.ACTION_MOVE }
@@ -229,6 +247,8 @@ internal class AndroidScreenControlDispatcher(
 
     fun togglePower(): Boolean = enqueue(Command.Power)
 
+    fun setVideoVisible(visible: Boolean): Boolean = enqueue(Command.VideoVisibility(visible))
+
     fun sendTouches(touches: List<AndroidScreenTouch>): Boolean =
         enqueue(Command.Touches(touches.toList()))
 
@@ -243,7 +263,6 @@ internal class AndroidScreenControlDispatcher(
                 queue.addLast(command)
                 return true
             }
-
             if (queue.size >= MAX_QUEUED_COMMANDS) {
                 val iterator = queue.iterator()
                 while (iterator.hasNext()) {

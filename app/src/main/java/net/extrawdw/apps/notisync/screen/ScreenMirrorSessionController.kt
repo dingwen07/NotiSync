@@ -10,10 +10,14 @@ import android.content.pm.PackageManager
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import java.io.Closeable
+import java.util.UUID
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
@@ -21,7 +25,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.notisync.peer.channel.InboundMessage
@@ -67,6 +70,13 @@ class ScreenCaptureStartException(message: String, cause: Throwable? = null) :
 
 class ScreenRequestExpiredException : Exception("screen request expired")
 
+/** Exact process-local claim ensuring only one path may wait for privileged teardown. */
+internal class ScreenMirrorTeardownClaim {
+    private val claimed = AtomicBoolean(false)
+
+    fun tryClaim(): Boolean = claimed.compareAndSet(false, true)
+}
+
 /** Android source-side request validation, replay protection, authorization, and one-session lifecycle. */
 class ScreenMirrorSessionController(
     private val context: Context,
@@ -80,23 +90,60 @@ class ScreenMirrorSessionController(
     private val transport: AndroidScreenSessionTransport = UnavailableAndroidScreenSessionTransport,
     private val peerName: (ClientId) -> String? = { null },
     private val now: () -> Long = System::currentTimeMillis,
+    private val launchTeardown: ((() -> Unit) -> Unit) = { cleanup ->
+        scope.launch(Dispatchers.IO) { cleanup() }
+        Unit
+    },
 ) {
     private data class PendingRequest(
         val request: ScreenMirrorSync,
+        val foregroundLeaseId: String = UUID.randomUUID().toString(),
         var stopRequested: Boolean = false,
+        var admissionAnnounced: Boolean = false,
+        var foregroundState: ScreenMirrorForegroundState = ScreenMirrorForegroundState.NOT_REQUESTED,
+        var foregroundWatchdog: Job? = null,
     ) : Closeable {
+        val teardown = ScreenMirrorTeardownClaim()
+
         override fun close() {
+            foregroundWatchdog?.cancel()
+            foregroundWatchdog = null
             request.routingToken?.fill(0)
             request.masterPsk?.fill(0)
         }
     }
 
+    private data class StatusDelivery(
+        val requesterPeerId: ClientId,
+        val encodedBody: ByteArray,
+    )
+
     private val lock = Any()
-    private var pending: PendingRequest? = null
+    private val sessions = ScreenMirrorSessionSlot<PendingRequest>()
+    private val pending: PendingRequest? get() = sessions.active
     private var sessionJob: Job? = null
     private var expiryJob: Job? = null
+    private var replacementExpiryJob: Job? = null
     private val _state = MutableStateFlow(AndroidScreenSessionState.IDLE)
     val state: StateFlow<AndroidScreenSessionState> = _state.asStateFlow()
+    private val statusDeliveries = Channel<StatusDelivery>(Channel.UNLIMITED)
+
+    init {
+        // All state transitions enqueue here synchronously. A single consumer preserves per-session
+        // CONNECTING/READY/END order even when request, FGS, and transport callbacks race.
+        scope.launch {
+            for (delivery in statusDeliveries) {
+                runCatching {
+                    channel.send(
+                        MessageType.DATA_SYNC,
+                        delivery.encodedBody,
+                        Recipients.Only(delivery.requesterPeerId),
+                        Urgency.NORMAL,
+                    )
+                }
+            }
+        }
+    }
 
     /** Called inline by FoundationEngine after envelope authentication and the own-device policy gate. */
     fun onScreenMirrorSync(message: InboundMessage, sync: DataSync) {
@@ -151,26 +198,280 @@ class ScreenMirrorSessionController(
             rejectRequest(request, request, ScreenMirrorStatus.EXPIRED, "request already consumed")
             return
         }
+        val incoming = PendingRequest(request)
+        var previousToEnd: PendingRequest? = null
+        var displacedReplacement: PendingRequest? = null
+        var startNow = false
+        var stoppedBeforeTransport: PendingRequest? = null
+        var lateFailure: Pair<ScreenMirrorStatus, String>? = null
         synchronized(lock) {
-            if (_state.value != AndroidScreenSessionState.IDLE) {
-                rejectRequest(request, request, ScreenMirrorStatus.BUSY, "another controller is active")
-                return
-            }
-            pending = PendingRequest(request)
-            _state.value = AndroidScreenSessionState.PENDING
-            expiryJob = scope.launch {
-                delay((expiry - now()).coerceAtLeast(1L))
-                val stillPending = synchronized(lock) {
-                    pending?.request?.sessionId == request.sessionId && sessionJob == null
+            // Authorization, settings, Shizuku, codec availability, and expiry are mutable. Check
+            // them again in the same critical section that may evict the active controller.
+            lateFailure = runtimeAdmissionFailure(incoming)
+            val offer = sessions.offer(incoming, eligible = lateFailure == null)
+            when (offer.disposition) {
+                ScreenMirrorSessionSlot.Disposition.REJECTED -> Unit
+                ScreenMirrorSessionSlot.Disposition.ACTIVE -> {
+                    installActiveExpiryLocked(incoming)
+                    _state.value = AndroidScreenSessionState.PENDING
+                    announceConnectingLocked(incoming)
+                    startNow = true
                 }
-                if (stillPending) {
-                    sendStatus(request, ScreenMirrorStatus.EXPIRED)
-                    stop(request.sessionId, notifyPeer = false)
+                ScreenMirrorSessionSlot.Disposition.QUEUED -> {
+                    displacedReplacement = offer.displacedReplacement
+                    replacementExpiryJob?.cancel()
+                    replacementExpiryJob = scheduleReplacementExpiryLocked(incoming, expiry)
+
+                    val current = requireNotNull(offer.active)
+                    if (!current.stopRequested) {
+                        current.stopRequested = true
+                        previousToEnd = current
+                        _state.value = AndroidScreenSessionState.STOPPING
+                        // Reserve the old controller's END while ownership is still serialized.
+                        // READY can therefore only have been queued before this END, never after it.
+                        sendStatus(
+                            current.request,
+                            ScreenMirrorStatus.ENDED,
+                            "replaced by another controller",
+                        )
+                        expiryJob?.cancel()
+                        expiryJob = null
+                        val running = sessionJob
+                        running?.cancel()
+                        if (running == null) stoppedBeforeTransport = current
+                    }
                 }
             }
         }
-        sendStatus(request, ScreenMirrorStatus.CONNECTING)
-        if (!startForegroundSession(request)) postTapToStart(request)
+
+        lateFailure?.let { failureAfterReplay ->
+            rejectRequest(request, request, failureAfterReplay.first, failureAfterReplay.second)
+            return
+        }
+
+        displacedReplacement?.let { displaced ->
+            sendStatus(displaced.request, ScreenMirrorStatus.ENDED, "replaced by another controller")
+            displaced.close()
+        }
+        previousToEnd?.let { previous ->
+            cancelPendingNotification(previous)
+        }
+        // A locally generated foreground lease makes any late START/callback for this holder stale.
+        // It is therefore safe to promote immediately when no transport job owns cleanup.
+        stoppedBeforeTransport?.let(::finishStoppedPending)
+        if (startNow) startForegroundFor(incoming)
+    }
+
+    /** Caller holds [lock]; the call order is serialized before a successor may emit END. */
+    private fun announceConnectingLocked(holder: PendingRequest) {
+        if (holder.admissionAnnounced) return
+        sendStatus(holder.request, ScreenMirrorStatus.CONNECTING)
+        holder.admissionAnnounced = true
+    }
+
+    /** Caller holds [lock]. */
+    private fun installActiveExpiryLocked(holder: PendingRequest) {
+        expiryJob?.cancel()
+        val expiry = requireNotNull(holder.request.expiresAt)
+        expiryJob = scope.launch {
+            delay((expiry - now()).coerceAtLeast(1L))
+            val stillPending = synchronized(lock) {
+                pending === holder && sessionJob == null && !holder.stopRequested
+            }
+            if (stillPending) {
+                sendStatus(holder.request, ScreenMirrorStatus.EXPIRED)
+                stopInternal(
+                    sessionId = holder.request.sessionId,
+                    notifyPeer = false,
+                    authenticatedStop = null,
+                    foregroundLeaseId = holder.foregroundLeaseId,
+                )
+            }
+        }
+    }
+
+    /** Caller holds [lock]. */
+    private fun scheduleReplacementExpiryLocked(holder: PendingRequest, expiry: Long): Job = scope.launch {
+        delay((expiry - now()).coerceAtLeast(1L))
+        val removed = synchronized(lock) {
+            if (!sessions.removeReplacement(holder)) return@synchronized false
+            replacementExpiryJob = null
+            true
+        }
+        if (removed) {
+            sendStatus(holder.request, ScreenMirrorStatus.EXPIRED)
+            holder.close()
+        }
+    }
+
+    private fun startForegroundFor(holder: PendingRequest) {
+        synchronized(lock) {
+            if (
+                pending !== holder || holder.stopRequested || !holder.admissionAnnounced ||
+                holder.foregroundState != ScreenMirrorForegroundState.NOT_REQUESTED
+            ) return
+            holder.foregroundState = ScreenMirrorForegroundState.SUBMITTING
+            holder.foregroundWatchdog = scope.launch {
+                delay(FOREGROUND_START_WATCHDOG_MILLIS)
+                onForegroundStartTimeout(holder)
+            }
+        }
+
+        val started = startForegroundSession(holder)
+        var postFallback = false
+        synchronized(lock) {
+            if (pending !== holder) return@synchronized
+            if (holder.foregroundState == ScreenMirrorForegroundState.SUBMITTING) {
+                if (started) {
+                    holder.foregroundState = ScreenMirrorForegroundState.REQUESTED
+                } else {
+                    holder.foregroundWatchdog?.cancel()
+                    holder.foregroundWatchdog = null
+                    holder.foregroundState = ScreenMirrorForegroundState.UNAVAILABLE
+                    postFallback = !holder.stopRequested
+                }
+            }
+        }
+        if (postFallback) postTapToStart(holder)
+    }
+
+    /** Complete a request which was stopped before a transport coroutine owned its cleanup. */
+    private fun finishStoppedPending(holder: PendingRequest) {
+        val ownsStoppedPending = synchronized(lock) {
+            pending === holder && sessionJob == null && holder.stopRequested &&
+                holder.teardown.tryClaim()
+        }
+        if (!ownsStoppedPending) return
+        ScreenMirrorForegroundService.release(
+            context,
+            holder.request.sessionId,
+            holder.foregroundLeaseId,
+        )
+        launchTeardown {
+            cancelPendingNotification(holder)
+            holder.close()
+            val teardownAcknowledged = shizuku.stopPrivilegedSession(holder.foregroundLeaseId)
+            completeAndPromote(
+                holder = holder,
+                forcedPromotionFailure = if (teardownAcknowledged) {
+                    null
+                } else {
+                    ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                        "privileged capture teardown was not acknowledged"
+                },
+                // A queued replacement reuses the acknowledged backend; otherwise terminate the
+                // non-daemon privileged process even when transport never started.
+                removeUserServiceWhenIdle = true,
+            )
+        }
+    }
+
+    /** Fail closed if Android accepted the START request but never delivers an exact FGS callback. */
+    private fun onForegroundStartTimeout(holder: PendingRequest) {
+        val timedOut = synchronized(lock) {
+            if (
+                pending !== holder || sessionJob != null || holder.stopRequested ||
+                !holder.foregroundState.awaitingAcknowledgement()
+            ) return@synchronized false
+            holder.stopRequested = true
+            holder.foregroundWatchdog = null
+            _state.value = AndroidScreenSessionState.STOPPING
+            true
+        }
+        if (!timedOut) return
+        sendStatus(
+            holder.request,
+            ScreenMirrorStatus.TRANSPORT_FAILED,
+            "foreground service did not acknowledge the screen session",
+        )
+        finishStoppedPending(holder)
+    }
+
+    /**
+     * Give up [holder]'s exact ownership slot and, if present, promote only the newest replacement.
+     * Referential identity prevents a late transport/FGS callback from clearing a newer session.
+     */
+    private fun completeAndPromote(
+        holder: PendingRequest,
+        forcedPromotionFailure: Pair<ScreenMirrorStatus, String>? = null,
+        removeUserServiceWhenIdle: Boolean = false,
+    ) {
+        var next: PendingRequest? = null
+        var rejected: Pair<ScreenMirrorStatus, String>? = null
+        var rejectedHolder: PendingRequest? = null
+        fun completeLocked(): Boolean {
+            val completion = sessions.complete(holder)
+            if (!completion.owned) return false
+            sessionJob = null
+            expiryJob?.cancel()
+            expiryJob = null
+            replacementExpiryJob?.cancel()
+            replacementExpiryJob = null
+
+            val candidate = completion.replacement
+            if (candidate == null) {
+                _state.value = AndroidScreenSessionState.IDLE
+                return true
+            }
+            val failure = forcedPromotionFailure ?: runtimeAdmissionFailure(candidate)
+            if (failure != null) {
+                rejected = failure
+                rejectedHolder = candidate
+                _state.value = AndroidScreenSessionState.IDLE
+                return true
+            }
+            check(sessions.offer(candidate, eligible = true).disposition == ScreenMirrorSessionSlot.Disposition.ACTIVE)
+            installActiveExpiryLocked(candidate)
+            _state.value = AndroidScreenSessionState.PENDING
+            announceConnectingLocked(candidate)
+            next = candidate
+            return true
+        }
+
+        var owned = false
+        var removeBeforeCompletion = false
+        synchronized(lock) {
+            if (pending !== holder) return
+            val candidate = sessions.replacement
+            val candidateFailure = candidate?.let {
+                forcedPromotionFailure ?: runtimeAdmissionFailure(it)
+            }
+            // Keep the old holder installed while the potentially blocking Shizuku unbind runs.
+            // A request arriving in that window can only become a queued replacement, and is
+            // revalidated after removal before it is promoted into a freshly bound UserService.
+            removeBeforeCompletion = removeUserServiceWhenIdle &&
+                (candidate == null || candidateFailure != null)
+            if (!removeBeforeCompletion) owned = completeLocked()
+        }
+        if (removeBeforeCompletion) {
+            shizuku.removeUserService()
+            synchronized(lock) {
+                owned = completeLocked()
+            }
+        }
+        if (!owned) return
+
+        val rejectedCandidate = rejected
+        if (rejectedCandidate != null) {
+            val candidate = checkNotNull(rejectedHolder)
+            sendStatus(candidate.request, rejectedCandidate.first, rejectedCandidate.second)
+            candidate.close()
+            return
+        }
+        next?.let(::startForegroundFor)
+    }
+
+    /** Recheck mutable runtime policy after the old controller has fully released its resources. */
+    private fun runtimeAdmissionFailure(holder: PendingRequest): Pair<ScreenMirrorStatus, String>? = when {
+        now() >= (holder.request.expiresAt ?: 0L) -> ScreenMirrorStatus.EXPIRED to "request expired during controller handoff"
+        !settings.screenMirroringEnabled.value -> ScreenMirrorStatus.UNAUTHORIZED to "screen sharing disabled"
+        !authorizations.isAuthorized(holder.request.requesterPeerId) ->
+            ScreenMirrorStatus.UNAUTHORIZED to "requester authorization changed"
+        shizuku.status.value != ShizukuScreenStatus.READY ->
+            ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to shizuku.status.value.name
+        holder.request.codec?.let(capabilities::supports) != true ->
+            ScreenMirrorStatus.CODEC_UNAVAILABLE to "selected codec is no longer available"
+        else -> null
     }
 
     private fun receiveStop(message: InboundMessage, request: ScreenMirrorSync) {
@@ -182,51 +483,118 @@ class ScreenMirrorSessionController(
                 senderId = message.senderId,
                 senderOwnDevice = message.senderOwnDevice,
             ),
+            foregroundLeaseId = null,
         )
     }
 
+    /** A source FGS START is authoritative only for this exact, process-local request generation. */
+    fun isForegroundStartCurrent(sessionId: String, leaseId: String): Boolean = synchronized(lock) {
+        pending?.let {
+            it.request.sessionId == sessionId &&
+                it.foregroundLeaseId == leaseId &&
+                !it.stopRequested
+        } == true
+    }
+
+    /**
+     * Run a short foreground-notification transition while this exact local lease still owns the
+     * controller. Serializing the transition with takeover prevents a superseded session from
+     * posting a late high-importance "connected" notification.
+     */
+    internal fun runIfForegroundLeaseCurrent(
+        sessionId: String,
+        leaseId: String,
+        transition: () -> Unit,
+    ): Boolean = synchronized(lock) {
+        val current = pending
+        if (
+            current == null ||
+            current.request.sessionId != sessionId ||
+            current.foregroundLeaseId != leaseId ||
+            current.stopRequested
+        ) {
+            false
+        } else {
+            transition()
+            true
+        }
+    }
+
     /** Invoked by the connectedDevice FGS after it has entered the foreground. */
-    fun runPendingSession(sessionId: String, onFinished: () -> Unit): Boolean =
-        synchronized(lock) {
-            if (sessionJob != null) {
-                // A repeated START for the session already owned by this FGS is a no-op, not a
-                // reason for its completion callback to stop the service.
-                return@synchronized pending?.request?.sessionId == sessionId
-            }
-            if (pending?.request?.sessionId != sessionId) return@synchronized false
-            val holder = pending ?: return@synchronized false
+    fun runPendingSession(
+        sessionId: String,
+        leaseId: String,
+        onFinished: () -> Unit,
+    ): Boolean {
+        var expired: PendingRequest? = null
+        val launched = synchronized(lock) {
+            val holder = pending?.takeIf {
+                it.request.sessionId == sessionId &&
+                    it.foregroundLeaseId == leaseId &&
+                    !it.stopRequested
+            } ?: return@synchronized false
+            holder.foregroundWatchdog?.cancel()
+            holder.foregroundWatchdog = null
+            holder.foregroundState = ScreenMirrorForegroundState.ACKNOWLEDGED
+            if (sessionJob != null) return@synchronized true
+            if (!holder.teardown.tryClaim()) return@synchronized false
+
             expiryJob?.cancel()
             expiryJob = null
             if (now() >= (holder.request.expiresAt ?: 0L)) {
-                pending = null
-                _state.value = AndroidScreenSessionState.IDLE
-                holder.close()
-                sendStatus(holder.request, ScreenMirrorStatus.EXPIRED)
+                holder.stopRequested = true
+                _state.value = AndroidScreenSessionState.STOPPING
+                expired = holder
                 return@synchronized false
             }
             _state.value = AndroidScreenSessionState.CONNECTING
-            val launchedSession = scope.launch(start = CoroutineStart.LAZY) {
+            // The transport and its acknowledged Shizuku teardown may block in platform/Binder
+            // code. Pin this owner coroutine to IO even if a caller supplies a Main-based scope.
+            val launchedSession = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 var pipes: PrivilegedSessionPipes? = null
                 var ready = false
                 try {
                     transport.run(
                         request = holder.request,
                         startCapture = {
-                            shizuku.startPrivilegedSession(holder.request).getOrThrow().also { pipes = it }
+                            shizuku.startPrivilegedSession(
+                                holder.request,
+                                holder.foregroundLeaseId,
+                            ).getOrThrow().also { pipes = it }
                         },
                         onReady = {
-                            ready = true
-                            _state.value = AndroidScreenSessionState.ACTIVE
-                            ScreenMirrorForegroundService.markConnected(
-                                context,
-                                holder.request.sessionId,
-                                controllerLabel(holder.request),
-                            )
-                            sendStatus(holder.request, ScreenMirrorStatus.READY)
+                            val stillOwned = synchronized(lock) {
+                                if (pending === holder && !holder.stopRequested) {
+                                    ready = true
+                                    _state.value = AndroidScreenSessionState.ACTIVE
+                                    // Reserve READY in the same critical section as ownership. A
+                                    // takeover can enqueue END only before this block or after READY.
+                                    sendStatus(holder.request, ScreenMirrorStatus.READY)
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
+                            if (stillOwned) {
+                                ScreenMirrorForegroundService.markConnected(
+                                    context,
+                                    holder.request.sessionId,
+                                    holder.foregroundLeaseId,
+                                    controllerLabel(holder.request),
+                                )
+                            }
                         },
                     )
-                    if (ready) sendStatus(holder.request, ScreenMirrorStatus.ENDED)
-                    else sendStatus(holder.request, ScreenMirrorStatus.TRANSPORT_FAILED, "transport ended before capture")
+                    currentCoroutineContext().ensureActive()
+                    if (ready) {
+                        announceTransportTerminal(holder, ScreenMirrorStatus.ENDED)
+                    } else {
+                        announceTransportTerminal(
+                            holder,
+                            ScreenMirrorStatus.TRANSPORT_FAILED,
+                            "transport ended before capture",
+                        )
+                    }
                 } catch (error: CancellationException) {
                     throw error
                 } catch (error: Throwable) {
@@ -251,7 +619,7 @@ class ScreenMirrorSessionController(
                     } else {
                         ScreenMirrorStatus.TRANSPORT_FAILED
                     }
-                    sendStatus(holder.request, status, error.message)
+                    announceTransportTerminal(holder, status, error.message)
                 } finally {
                     synchronized(lock) {
                         if (pending === holder) {
@@ -259,111 +627,224 @@ class ScreenMirrorSessionController(
                         }
                     }
                     pipes?.close()
-                    shizuku.stopPrivilegedSession(holder.request.sessionId)
-                    shizuku.removeUserService()
+                    cancelPendingNotification(holder)
                     holder.close()
-                    cancelPendingNotification(holder.request.sessionId)
+                    val teardownAcknowledged =
+                        shizuku.stopPrivilegedSession(holder.foregroundLeaseId)
                     try {
-                        // The FGS callback synchronously gives up ownership before IDLE is
-                        // published. A request arriving immediately after IDLE can therefore be
-                        // acquired by the existing service instance without an old stopSelf()
-                        // tearing it down.
-                        onFinished()
+                        runCatching(onFinished)
                     } finally {
-                        synchronized(lock) {
-                            if (pending === holder) {
-                                pending = null
-                                sessionJob = null
-                                expiryJob = null
-                                _state.value = AndroidScreenSessionState.IDLE
-                            }
-                        }
+                        completeAndPromote(
+                            holder = holder,
+                            forcedPromotionFailure = if (teardownAcknowledged) {
+                                null
+                            } else {
+                                ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                                    "privileged capture teardown was not acknowledged"
+                            },
+                            // Keep the already-bound UserService across a safe, acknowledged
+                            // handoff. Removing it before promotion can kill the replacement.
+                            removeUserServiceWhenIdle = true,
+                        )
                     }
                 }
             }
             sessionJob = launchedSession
-            cancelPendingNotification(holder.request.sessionId)
+            cancelPendingNotification(holder)
             launchedSession.start()
             true
         }
 
-    fun onForegroundStartFailed(sessionId: String) {
-        val request = synchronized(lock) {
-            pending?.request?.takeIf { it.sessionId == sessionId && sessionJob == null }
+        expired?.let { holder ->
+            sendStatus(holder.request, ScreenMirrorStatus.EXPIRED)
+            launchTeardown {
+                cancelPendingNotification(holder)
+                holder.close()
+                val teardownAcknowledged = shizuku.stopPrivilegedSession(holder.foregroundLeaseId)
+                try {
+                    runCatching(onFinished)
+                } finally {
+                    completeAndPromote(
+                        holder = holder,
+                        forcedPromotionFailure = if (teardownAcknowledged) {
+                            null
+                        } else {
+                            ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                                "privileged capture teardown was not acknowledged"
+                        },
+                        removeUserServiceWhenIdle = true,
+                    )
+                }
+            }
+            return true
+        }
+        return launched
+    }
+
+    /**
+     * Claim the terminal transition before publishing it. Besides suppressing duplicate terminal
+     * messages, this invalidates any queued main-thread connected-notification promotion.
+     */
+    private fun announceTransportTerminal(
+        holder: PendingRequest,
+        status: ScreenMirrorStatus,
+        detail: String? = null,
+    ) {
+        synchronized(lock) {
+            if (pending !== holder || holder.stopRequested) return
+            holder.stopRequested = true
+            _state.value = AndroidScreenSessionState.STOPPING
+            sendStatus(holder.request, status, detail)
+        }
+    }
+
+    fun onForegroundStartFailed(sessionId: String, leaseId: String) {
+        val holder = synchronized(lock) {
+            pending?.takeIf {
+                it.request.sessionId == sessionId &&
+                    it.foregroundLeaseId == leaseId &&
+                    sessionJob == null &&
+                    !it.stopRequested
+            }?.also {
+                it.foregroundWatchdog?.cancel()
+                it.foregroundWatchdog = null
+                it.foregroundState = ScreenMirrorForegroundState.UNAVAILABLE
+            }
         } ?: return
-        postTapToStart(request)
+        postTapToStart(holder)
+    }
+
+    fun stopForegroundSession(sessionId: String, leaseId: String) {
+        stopInternal(
+            sessionId = sessionId,
+            notifyPeer = true,
+            authenticatedStop = null,
+            foregroundLeaseId = leaseId,
+        )
     }
 
     fun stop(sessionId: String? = null, notifyPeer: Boolean = true) {
-        stopInternal(sessionId, notifyPeer, authenticatedStop = null)
+        stopInternal(
+            sessionId = sessionId,
+            notifyPeer = notifyPeer,
+            authenticatedStop = null,
+            foregroundLeaseId = null,
+        )
     }
 
     private fun stopInternal(
         sessionId: String?,
         notifyPeer: Boolean,
         authenticatedStop: AuthenticatedScreenStop?,
+        foregroundLeaseId: String?,
     ) {
-        val holder: PendingRequest?
-        val running: Job?
+        var holder: PendingRequest? = null
+        var running: Job? = null
+        var queued: PendingRequest? = null
         synchronized(lock) {
-            holder = pending
-            if (holder == null || (sessionId != null && holder.request.sessionId != sessionId)) return
-            if (
-                authenticatedStop != null &&
-                !authenticatedStop.permits(holder.request, ownClientId)
-            ) return
-            if (holder.stopRequested) return
-            holder.stopRequested = true
-            _state.value = AndroidScreenSessionState.STOPPING
-            running = sessionJob
-            running?.cancel()
-            expiryJob?.cancel()
-            expiryJob = null
-            // A running session retains its holder and job as an ownership barrier until its
-            // finally block has released the foreground service. Clearing them here would allow
-            // a new request to race the old FGS completion callback.
-            if (running == null) pending = null
-        }
-        val active = requireNotNull(holder)
-        shizuku.stopPrivilegedSession(active.request.sessionId)
-        if (notifyPeer) sendStatus(active.request, ScreenMirrorStatus.ENDED)
-        cancelPendingNotification(active.request.sessionId)
-        if (running == null) {
-            active.close()
-            synchronized(lock) {
-                if (pending == null && sessionJob == null) {
-                    _state.value = AndroidScreenSessionState.IDLE
+            sessions.replacement?.let { candidate ->
+                val matches = sessionId == null || candidate.request.sessionId == sessionId
+                val exactForegroundLease = foregroundLeaseId == null ||
+                    candidate.foregroundLeaseId == foregroundLeaseId
+                val permitted = authenticatedStop == null ||
+                    authenticatedStop.permits(candidate.request, ownClientId)
+                if (
+                    matches && exactForegroundLease && permitted &&
+                    sessions.removeReplacement(candidate)
+                ) {
+                    queued = candidate
+                    if (notifyPeer) sendStatus(candidate.request, ScreenMirrorStatus.ENDED)
+                    replacementExpiryJob?.cancel()
+                    replacementExpiryJob = null
                 }
+            }
+
+            pending?.let { current ->
+                val matches = sessionId == null || current.request.sessionId == sessionId
+                val exactForegroundLease = foregroundLeaseId == null ||
+                    current.foregroundLeaseId == foregroundLeaseId
+                val permitted = authenticatedStop == null ||
+                    authenticatedStop.permits(current.request, ownClientId)
+                if (matches && exactForegroundLease && permitted && !current.stopRequested) {
+                    current.stopRequested = true
+                    holder = current
+                    _state.value = AndroidScreenSessionState.STOPPING
+                    if (notifyPeer) sendStatus(current.request, ScreenMirrorStatus.ENDED)
+                    running = sessionJob
+                    // The active proxy waits on a cancellable deferred, and cancellation closes
+                    // its TLS channels and privileged pipes in `finally`. The only preceding
+                    // non-cancellable read is the encoder preamble poll, bounded to ten seconds.
+                    // Let the IO session finalizer perform the single acknowledged Shizuku stop;
+                    // issuing a second Binder wait here would block Service main and race cleanup.
+                    running?.cancel()
+                    expiryJob?.cancel()
+                    expiryJob = null
+                }
+            }
+        }
+
+        queued?.let { candidate ->
+            cancelPendingNotification(candidate)
+            candidate.close()
+        }
+        holder?.let { active ->
+            cancelPendingNotification(active)
+            if (running == null) {
+                finishStoppedPending(active)
             }
         }
     }
 
     fun onAuthorizationPolicyChanged() {
-        val requester = synchronized(lock) { pending?.request?.requesterPeerId }
+        val requesters = synchronized(lock) {
+            listOfNotNull(
+                pending?.request?.requesterPeerId,
+                sessions.replacement?.request?.requesterPeerId,
+            )
+        }
         if (
             !settings.screenMirroringEnabled.value ||
             shizuku.status.value != ShizukuScreenStatus.READY ||
-            (requester != null && !authorizations.isAuthorized(requester))
+            requesters.any { !authorizations.isAuthorized(it) }
         ) {
             stop(notifyPeer = true)
-            ScreenMirrorForegroundService.stop(context)
         }
     }
 
-    private fun startForegroundSession(request: ScreenMirrorSync): Boolean = runCatching {
-        ScreenMirrorForegroundService.start(context, request.sessionId, controllerLabel(request))
+    private fun startForegroundSession(holder: PendingRequest): Boolean = runCatching {
+        ScreenMirrorForegroundService.start(
+            context,
+            holder.request.sessionId,
+            holder.foregroundLeaseId,
+            controllerLabel(holder.request),
+        )
         true
     }.getOrDefault(false)
 
-    private fun postTapToStart(request: ScreenMirrorSync) {
+    private fun postTapToStart(holder: PendingRequest) {
+        val request = holder.request
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            stop(request.sessionId, notifyPeer = false)
+            stopInternal(
+                sessionId = request.sessionId,
+                notifyPeer = false,
+                authenticatedStop = null,
+                foregroundLeaseId = holder.foregroundLeaseId,
+            )
             sendStatus(request, ScreenMirrorStatus.TRANSPORT_FAILED, "foreground start unavailable")
             return
         }
-        val manager = context.getSystemService(NotificationManager::class.java) ?: return
+        val manager = context.getSystemService(NotificationManager::class.java) ?: run {
+            stopInternal(
+                sessionId = request.sessionId,
+                notifyPeer = false,
+                authenticatedStop = null,
+                foregroundLeaseId = holder.foregroundLeaseId,
+            )
+            sendStatus(request, ScreenMirrorStatus.TRANSPORT_FAILED, "notification service unavailable")
+            return
+        }
         manager.createNotificationChannel(
             NotificationChannel(
                 PENDING_CHANNEL_ID,
@@ -372,7 +853,12 @@ class ScreenMirrorSessionController(
             ),
         )
         val controllerLabel = controllerLabel(request)
-        val start = ScreenMirrorForegroundService.pendingIntent(context, request.sessionId, controllerLabel)
+        val start = ScreenMirrorForegroundService.pendingIntent(
+            context,
+            request.sessionId,
+            holder.foregroundLeaseId,
+            controllerLabel,
+        )
         val notification = NotificationCompat.Builder(context, PENDING_CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
             .setContentTitle(context.getString(R.string.screen_mirror_request_title))
@@ -387,12 +873,22 @@ class ScreenMirrorSessionController(
             .setTimeoutAfter(((request.expiresAt ?: now()) - now()).coerceAtLeast(1L))
             .addAction(0, context.getString(R.string.screen_mirror_start), start)
             .build()
-        manager.notify(pendingNotificationId(request.sessionId), notification)
+        val stillCurrent = synchronized(lock) {
+            pending === holder && !holder.stopRequested &&
+                holder.foregroundState == ScreenMirrorForegroundState.UNAVAILABLE
+        }
+        if (!stillCurrent) return
+        val notificationId = pendingNotificationId(request.sessionId, holder.foregroundLeaseId)
+        manager.notify(notificationId, notification)
+        // If takeover won immediately after the pre-notify check, remove only this generation's
+        // stale fallback; an identical remote session id may already belong to its replacement.
+        val remainsCurrent = synchronized(lock) { pending === holder && !holder.stopRequested }
+        if (!remainsCurrent) manager.cancel(notificationId)
     }
 
-    private fun cancelPendingNotification(sessionId: String) {
+    private fun cancelPendingNotification(holder: PendingRequest) {
         context.getSystemService(NotificationManager::class.java)
-            ?.cancel(pendingNotificationId(sessionId))
+            ?.cancel(pendingNotificationId(holder.request.sessionId, holder.foregroundLeaseId))
     }
 
     private fun sendStatus(request: ScreenMirrorSync, status: ScreenMirrorStatus, detail: String? = null) {
@@ -410,16 +906,12 @@ class ScreenMirrorSessionController(
                 detail = sanitized,
             ),
         )
-        scope.launch {
-            runCatching {
-                channel.send(
-                    MessageType.DATA_SYNC,
-                    ProtocolCodec.encodeToCbor(body),
-                    Recipients.Only(request.requesterPeerId),
-                    Urgency.NORMAL,
-                )
-            }
-        }
+        statusDeliveries.trySend(
+            StatusDelivery(
+                requesterPeerId = request.requesterPeerId,
+                encodedBody = ProtocolCodec.encodeToCbor(body),
+            ),
+        )
     }
 
     private fun rejectRequest(
@@ -440,8 +932,8 @@ class ScreenMirrorSessionController(
         masterPsk?.fill(0)
     }
 
-    private fun pendingNotificationId(sessionId: String): Int =
-        ("screen-pending:$sessionId").hashCode()
+    private fun pendingNotificationId(sessionId: String, leaseId: String): Int =
+        ("screen-pending:$sessionId:$leaseId").hashCode()
 
     private fun controllerLabel(request: ScreenMirrorSync): String = ScreenControllerLabel.create(
         peerName(request.requesterPeerId),
@@ -450,6 +942,86 @@ class ScreenMirrorSessionController(
 
     private companion object {
         const val PENDING_CHANNEL_ID = "notisync.screen.request"
+        const val FOREGROUND_START_WATCHDOG_MILLIS = 10_000L
+    }
+}
+
+internal enum class ScreenMirrorForegroundState {
+    /** Admitted but no external service command has been reserved. */
+    NOT_REQUESTED,
+
+    /** The exact local lease is being submitted to Android. */
+    SUBMITTING,
+
+    /** Android accepted the command; its exact service callback is bounded by a watchdog. */
+    REQUESTED,
+
+    /** The service acknowledged this exact local lease and owns transport startup. */
+    ACKNOWLEDGED,
+
+    /** Background launch was unavailable; an exact-generation notification offers tap-to-start. */
+    UNAVAILABLE,
+}
+
+internal fun ScreenMirrorForegroundState.awaitingAcknowledgement(): Boolean =
+    this == ScreenMirrorForegroundState.SUBMITTING ||
+        this == ScreenMirrorForegroundState.REQUESTED
+
+/**
+ * Identity-scoped active/replacement slots used under the controller lock.
+ *
+ * Eligibility is supplied only after the signed request has passed all policy and replay checks.
+ * Keeping that gate explicit makes it impossible for an ineligible offer to displace either slot,
+ * while referential completion prevents a stale FGS callback from clearing its successor.
+ */
+internal class ScreenMirrorSessionSlot<T : Any> {
+    enum class Disposition { REJECTED, ACTIVE, QUEUED }
+
+    data class Offer<T>(
+        val disposition: Disposition,
+        val active: T? = null,
+        val displacedReplacement: T? = null,
+    )
+
+    data class Completion<T>(
+        val owned: Boolean,
+        val replacement: T? = null,
+    )
+
+    var active: T? = null
+        private set
+    var replacement: T? = null
+        private set
+
+    fun offer(candidate: T, eligible: Boolean): Offer<T> {
+        if (!eligible) return Offer(Disposition.REJECTED, active = active)
+        val current = active
+        if (current == null) {
+            check(replacement == null)
+            active = candidate
+            return Offer(Disposition.ACTIVE)
+        }
+        val displaced = replacement
+        replacement = candidate
+        return Offer(
+            disposition = Disposition.QUEUED,
+            active = current,
+            displacedReplacement = displaced,
+        )
+    }
+
+    fun complete(expected: T): Completion<T> {
+        if (active !== expected) return Completion(owned = false)
+        active = null
+        val queued = replacement
+        replacement = null
+        return Completion(owned = true, replacement = queued)
+    }
+
+    fun removeReplacement(expected: T): Boolean {
+        if (replacement !== expected) return false
+        replacement = null
+        return true
     }
 }
 

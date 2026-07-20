@@ -71,24 +71,38 @@ internal fun interface AndroidScreenSourceResolver {
     fun resolve(clientId: ClientId): AndroidScreenSource?
 }
 
+/** Narrow channel contract consumed by the requester-side foreground session host. */
+internal interface AndroidScreenViewerSession : AutoCloseable {
+    val sessionId: String
+    val sourceId: ClientId
+    val sourceName: String
+    val sourceCapabilities: Set<Capability>
+    val codec: ScreenMirrorCodec
+    val videoInput: InputStream
+    val controlInput: InputStream
+    val controlOutput: OutputStream
+}
+
 /**
- * Authenticated viewer-side channels. The Activity owns decoding and control, while [close] delegates
- * lifecycle ownership back to the requester so the source receives exactly one CANCEL or END.
+ * Authenticated viewer-side channels. The requester-side session host owns decoding and control,
+ * while [close] delegates lifecycle ownership back to the requester so the source receives exactly
+ * one CANCEL or END.
  */
 internal class AndroidViewerSession internal constructor(
-    val sessionId: String,
-    val sourceId: ClientId,
-    val sourceName: String,
-    val codec: ScreenMirrorCodec,
+    override val sessionId: String,
+    override val sourceId: ClientId,
+    override val sourceName: String,
+    override val sourceCapabilities: Set<Capability>,
+    override val codec: ScreenMirrorCodec,
     val descriptor: SessionDescriptor,
     private val pair: SecureChannelPair,
     private val closeOwner: (String, String) -> Unit,
-) : AutoCloseable {
+) : AndroidScreenViewerSession {
     private val transportClosed = AtomicBoolean()
 
-    val videoInput: InputStream get() = pair.video.input
-    val controlInput: InputStream get() = pair.control.input
-    val controlOutput: OutputStream get() = pair.control.output
+    override val videoInput: InputStream get() = pair.video.input
+    override val controlInput: InputStream get() = pair.control.input
+    override val controlOutput: OutputStream get() = pair.control.output
 
     override fun close() = closeOwner(sessionId, "Android viewer closed")
 
@@ -97,7 +111,7 @@ internal class AndroidViewerSession internal constructor(
     }
 }
 
-/** Android requester rendezvous and one-session owner. Video parsing remains in the foreground Activity. */
+/** Android requester rendezvous and one-session transport owner used by the requester host/FGS. */
 internal class AndroidScreenMirrorRequester(
     context: android.content.Context,
     private val ownClientId: ClientId,
@@ -316,6 +330,7 @@ internal class AndroidScreenMirrorRequester(
                 sessionId = descriptor.sessionId,
                 sourceId = source.clientId,
                 sourceName = source.displayName,
+                sourceCapabilities = source.capabilities.toSet(),
                 codec = codec,
                 descriptor = descriptor,
                 pair = pair,
@@ -412,9 +427,11 @@ internal class AndroidScreenMirrorRequester(
         context.remoteDetail = screen.detail?.take(DETAIL_LIMIT)
             ?: terminalStatus.name.lowercase().replace('_', ' ')
         context.remoteClosed.set(true)
+        // Release authenticated streams first so video/control readers unblock before NSD, Aware,
+        // or OEM network-lifecycle cleanup is allowed to wait.
+        context.session?.closeTransport()
         context.lanListener?.close()
         context.awareListener?.close()
-        context.session?.closeTransport()
         context.lan?.close()
         synchronized(lock) {
             if (active === context) {
@@ -438,9 +455,11 @@ internal class AndroidScreenMirrorRequester(
         } ?: return
         context.closeDetail = detail.take(DETAIL_LIMIT)
         context.closed.set(true)
+        // Release authenticated streams first so decoder/control readers never wait behind an OEM
+        // listener or Wi-Fi Aware teardown timeout.
+        context.session?.closeTransport()
         context.lanListener?.close()
         context.awareListener?.close()
-        context.session?.closeTransport()
         context.lan?.close()
         sendTerminalOnce(context, context.closeDetail)
     }

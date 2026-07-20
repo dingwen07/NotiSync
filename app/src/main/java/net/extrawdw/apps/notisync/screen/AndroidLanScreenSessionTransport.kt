@@ -21,7 +21,6 @@ import java.net.InetSocketAddress
 import java.net.InetAddress
 import java.net.Inet6Address
 import java.net.NetworkInterface
-import java.net.Socket
 import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.LinkedHashSet
@@ -32,7 +31,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext

@@ -8,6 +8,7 @@ import com.genymobile.scrcpy.model.Point;
 import com.genymobile.scrcpy.model.Position;
 import com.genymobile.scrcpy.model.Size;
 import com.genymobile.scrcpy.util.Ln;
+import com.genymobile.scrcpy.video.CaptureControl;
 import com.genymobile.scrcpy.video.CaptureDisplayListener;
 import com.genymobile.scrcpy.wrappers.ClipboardManager;
 import com.genymobile.scrcpy.wrappers.InputManager;
@@ -27,9 +28,10 @@ import java.util.concurrent.atomic.AtomicReference;
 /**
  * NotiSync's deliberately small scrcpy control loop.
  *
- * <p>Only direct input, primary-display power control, and text clipboard synchronization are compiled into
- * the privileged process. Generic scrcpy actions (UHID, app launch, panels, display mutation,
- * camera, file scan, and arbitrary commands) have no handler here.</p>
+ * <p>Only direct input, primary-display power control, session-local video flow control, and text
+ * clipboard synchronization are compiled into the privileged process. Generic scrcpy actions
+ * (UHID, app launch, panels, display mutation, camera, file scan, and arbitrary commands) have no
+ * handler here.</p>
  */
 public final class Controller implements AsyncProcessor, CaptureDisplayListener {
 
@@ -49,6 +51,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     private final int displayId;
     private final boolean supportsInputEvents;
     private final ControlChannel controlChannel;
+    private final CaptureControl captureControl;
     private final DeviceMessageSender sender;
     private final ClipboardManager clipboardManager;
     private final android.content.ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
@@ -65,8 +68,9 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     private long lastTouchDown;
     private Thread thread;
 
-    public Controller(ControlChannel controlChannel, Options options) {
+    public Controller(ControlChannel controlChannel, Options options, CaptureControl captureControl) {
         this.controlChannel = controlChannel;
+        this.captureControl = captureControl;
         this.displayId = options.getDisplayId();
         this.supportsInputEvents = Device.supportsInputEvents(displayId);
         initPointers();
@@ -249,6 +253,19 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             case ControlMessage.TYPE_TOGGLE_POWER:
                 if (!Device.togglePrimaryDisplayPower()) {
                     Ln.w("Could not toggle primary display power");
+                }
+                return true;
+            case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
+                captureControl.setVideoVisible(msg.isVideoVisible());
+                if (!msg.isVideoVisible()) {
+                    synchronized (inputStateLock) {
+                        DisplayData current = displayData.get();
+                        if (current != null) {
+                            cancelActivePointers(current.inputDisplayId);
+                        } else {
+                            pointersState.clear();
+                        }
+                    }
                 }
                 return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:

@@ -27,7 +27,7 @@ class ScreenMirrorForegroundService : Service() {
         SupervisorJob() + Dispatchers.Default + crashGuard("ScreenMirrorForegroundService"),
     )
     private val ownership = ScreenMirrorForegroundOwnership()
-    private var connectedSessionId: String? = null
+    private var connectedLease: ScreenMirrorForegroundLeaseKey? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -38,46 +38,49 @@ class ScreenMirrorForegroundService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_STOP) {
+            val key = intent.foregroundLeaseKey()
             if (!ownership.noteCommand(startId)) {
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
-            val id = intent.getStringExtra(EXTRA_SESSION_ID)
-            if (id == null || !ownership.isOwnedBy(id)) return START_NOT_STICKY
-            (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController?.stop(id)
-            finishOwnedSession(id)
+            if (key == null || !ownership.isOwnedBy(key)) return START_NOT_STICKY
+            // This only claims/cancels the exact controller lease. Privileged Binder teardown is
+            // acknowledged on the controller's IO cleanup lane, so Service main never waits for it.
+            (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
+                ?.stopForegroundSession(key.sessionId, key.leaseId)
+            finishOwnedSession(key)
             return START_NOT_STICKY
         }
-        val requestedId = intent?.getStringExtra(EXTRA_SESSION_ID)
-            ?.takeIf { it.isNotBlank() && it.length <= 128 }
-            ?: run {
-                // A malformed/stale command must not use its (now latest) startId to stop an
-                // unrelated active foreground session.
-                if (!ownership.noteCommand(startId)) stopSelf(startId)
-                return START_NOT_STICKY
-            }
-        when (ownership.onStart(requestedId, startId)) {
-            ScreenMirrorForegroundOwnership.StartDecision.DUPLICATE,
-            ScreenMirrorForegroundOwnership.StartDecision.CONFLICT,
-            -> {
-                // Duplicate notification taps/START redelivery are idempotent. A stale intent for
-                // a different session must never replace or tear down the active session.
-                return START_NOT_STICKY
-            }
+        val requestedLease = intent?.foregroundLeaseKey()
+        val controllerLabel = ScreenControllerLabel.fromIntent(
+            intent?.getStringExtra(EXTRA_CONTROLLER_LABEL),
+        )
+        val controller = (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
+        if (
+            requestedLease == null || controllerLabel == null || controller == null ||
+            !controller.isForegroundStartCurrent(
+                requestedLease.sessionId,
+                requestedLease.leaseId,
+            )
+        ) {
+            // Android assigns a new startId to every delivered command. Absorb the command into an
+            // existing owner so stopSelf(startId) cannot tear it down, but never let an invalid or
+            // stale START replace that owner.
+            if (!ownership.noteCommand(startId)) stopSelf(startId)
+            return START_NOT_STICKY
+        }
+        when (ownership.onStart(requestedLease, startId)) {
+            ScreenMirrorForegroundOwnership.StartDecision.DUPLICATE -> return START_NOT_STICKY
+            ScreenMirrorForegroundOwnership.StartDecision.SWITCHED -> connectedLease = null
             ScreenMirrorForegroundOwnership.StartDecision.ACQUIRED -> Unit
         }
-        val controllerLabel = ScreenControllerLabel.fromIntent(intent.getStringExtra(EXTRA_CONTROLLER_LABEL))
-            ?: run {
-                finishOwnedSession(requestedId)
-                return START_NOT_STICKY
-            }
         val channelId = ScreenMirrorNotificationChannels.ensureSourceConnecting(this)
         val foregroundStarted = runCatching {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
                 buildNotification(
-                    id = requestedId,
+                    lease = requestedLease,
                     controllerLabel = controllerLabel,
                     channelId = channelId,
                     connected = false,
@@ -86,26 +89,37 @@ class ScreenMirrorForegroundService : Service() {
             )
         }.isSuccess
         if (!foregroundStarted) {
-            (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
-                ?.onForegroundStartFailed(requestedId)
-            finishOwnedSession(requestedId)
+            controller.onForegroundStartFailed(
+                requestedLease.sessionId,
+                requestedLease.leaseId,
+            )
+            finishOwnedSession(requestedLease)
             return START_NOT_STICKY
         }
-        ownership.markForegroundOwned(requestedId)
+        ownership.markForegroundOwned(requestedLease)
 
-        val app = application as NotiSyncApp
         scope.launch {
-            val graph = app.awaitGraphReady() ?: run {
-                finishOwnedSession(requestedId)
-                return@launch
-            }
-            val controller = graph.screenMirrorController ?: run {
-                finishOwnedSession(requestedId)
-                return@launch
-            }
-            if (!controller.runPendingSession(requestedId) { finishOwnedSession(requestedId) }) {
-                controller.stop(requestedId)
-                finishOwnedSession(requestedId)
+            if (
+                !controller.runPendingSession(
+                    requestedLease.sessionId,
+                    requestedLease.leaseId,
+                ) {
+                    release(
+                        this@ScreenMirrorForegroundService,
+                        requestedLease.sessionId,
+                        requestedLease.leaseId,
+                    )
+                }
+            ) {
+                controller.stopForegroundSession(
+                    requestedLease.sessionId,
+                    requestedLease.leaseId,
+                )
+                release(
+                    this@ScreenMirrorForegroundService,
+                    requestedLease.sessionId,
+                    requestedLease.leaseId,
+                )
             }
         }
         return START_NOT_STICKY
@@ -113,55 +127,67 @@ class ScreenMirrorForegroundService : Service() {
 
     override fun onDestroy() {
         if (activeService?.get() === this) activeService = null
-        connectedSessionId = null
+        connectedLease = null
         val abandoned = ownership.abandon()
         if (abandoned?.foregroundOwned == true) {
+            // onDestroy is a main-thread callback; controller stop must remain non-blocking here.
             (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
-                ?.stop(abandoned.sessionId)
+                ?.stopForegroundSession(
+                    abandoned.key.sessionId,
+                    abandoned.key.leaseId,
+                )
         }
         scope.cancel()
         super.onDestroy()
     }
 
-    private fun finishOwnedSession(sessionId: String) {
-        val finished = ownership.finish(sessionId) ?: return
+    private fun finishOwnedSession(key: ScreenMirrorForegroundLeaseKey) {
+        val finished = ownership.finish(key) ?: return
+        if (connectedLease == key) connectedLease = null
         // Use the newest startId observed while this session owned the Service. If another session
         // is delivered after finish() releases the lease, Android assigns it a newer startId and
         // this stop becomes a no-op instead of tearing the replacement down.
         stopSelf(finished.latestStartId)
     }
 
-    private fun markConnectedIfOwned(sessionId: String, controllerLabel: String) {
-        if (!ownership.isOwnedBy(sessionId) || connectedSessionId == sessionId) return
-        val channelId = ScreenMirrorNotificationChannels.ensureSource(this)
-        val updated = runCatching {
-            ServiceCompat.startForeground(
-                this,
-                NOTIFICATION_ID,
-                buildNotification(
-                    id = sessionId,
-                    controllerLabel = controllerLabel,
-                    channelId = channelId,
-                    connected = true,
-                ),
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
-            )
-        }.isSuccess
-        if (updated) connectedSessionId = sessionId
+    private fun markConnectedIfOwned(
+        key: ScreenMirrorForegroundLeaseKey,
+        controllerLabel: String,
+    ) {
+        val controller = (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController ?: return
+        controller.runIfForegroundLeaseCurrent(key.sessionId, key.leaseId) {
+            if (!ownership.isOwnedBy(key) || connectedLease == key) return@runIfForegroundLeaseCurrent
+            val channelId = ScreenMirrorNotificationChannels.ensureSource(this)
+            val updated = runCatching {
+                ServiceCompat.startForeground(
+                    this,
+                    NOTIFICATION_ID,
+                    buildNotification(
+                        lease = key,
+                        controllerLabel = controllerLabel,
+                        channelId = channelId,
+                        connected = true,
+                    ),
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+                )
+            }.isSuccess
+            if (updated && ownership.isOwnedBy(key)) connectedLease = key
+        }
     }
 
     private fun buildNotification(
-        id: String,
+        lease: ScreenMirrorForegroundLeaseKey,
         controllerLabel: String,
         channelId: String,
         connected: Boolean,
     ): Notification {
         val stop = PendingIntent.getService(
             this,
-            ("stop:$id").hashCode(),
+            ("stop:${lease.sessionId}:${lease.leaseId}").hashCode(),
             Intent(this, ScreenMirrorForegroundService::class.java).apply {
                 action = ACTION_STOP
-                putExtra(EXTRA_SESSION_ID, id)
+                putExtra(EXTRA_SESSION_ID, lease.sessionId)
+                putExtra(EXTRA_LEASE_ID, lease.leaseId)
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -214,39 +240,66 @@ class ScreenMirrorForegroundService : Service() {
         private const val ACTION_START = "net.extrawdw.apps.notisync.screen.START"
         private const val ACTION_STOP = "net.extrawdw.apps.notisync.screen.STOP"
         private const val EXTRA_SESSION_ID = "session_id"
+        private const val EXTRA_LEASE_ID = "lease_id"
         private const val EXTRA_CONTROLLER_LABEL = "controller_label"
 
         @Volatile
         private var activeService: WeakReference<ScreenMirrorForegroundService>? = null
 
-        fun start(context: Context, sessionId: String, controllerLabel: String) {
+        fun start(
+            context: Context,
+            sessionId: String,
+            leaseId: String,
+            controllerLabel: String,
+        ) {
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, ScreenMirrorForegroundService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_SESSION_ID, sessionId)
+                    putExtra(EXTRA_LEASE_ID, leaseId)
                     putExtra(EXTRA_CONTROLLER_LABEL, ScreenControllerLabel.fromIntent(controllerLabel))
                 },
             )
         }
 
-        fun pendingIntent(context: Context, sessionId: String, controllerLabel: String): PendingIntent =
+        fun pendingIntent(
+            context: Context,
+            sessionId: String,
+            leaseId: String,
+            controllerLabel: String,
+        ): PendingIntent =
             PendingIntent.getForegroundService(
                 context,
-                ("screen:$sessionId").hashCode(),
+                ("screen:$sessionId:$leaseId").hashCode(),
                 Intent(context, ScreenMirrorForegroundService::class.java).apply {
                     action = ACTION_START
                     putExtra(EXTRA_SESSION_ID, sessionId)
+                    putExtra(EXTRA_LEASE_ID, leaseId)
                     putExtra(EXTRA_CONTROLLER_LABEL, ScreenControllerLabel.fromIntent(controllerLabel))
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
 
         /** Promotes the quiet preparing notification only for the exact FGS-owned ready session. */
-        fun markConnected(context: Context, sessionId: String, controllerLabel: String) {
+        fun markConnected(
+            context: Context,
+            sessionId: String,
+            leaseId: String,
+            controllerLabel: String,
+        ) {
             val safeLabel = ScreenControllerLabel.fromIntent(controllerLabel) ?: return
+            val key = ScreenMirrorForegroundLeaseKey.create(sessionId, leaseId) ?: return
             ContextCompat.getMainExecutor(context).execute {
-                activeService?.get()?.markConnectedIfOwned(sessionId, safeLabel)
+                activeService?.get()?.markConnectedIfOwned(key, safeLabel)
+            }
+        }
+
+        /** Releases only the exact local FGS lease; stale completion cannot stop its successor. */
+        fun release(context: Context, sessionId: String, leaseId: String) {
+            val key = ScreenMirrorForegroundLeaseKey.create(sessionId, leaseId) ?: return
+            ContextCompat.getMainExecutor(context).execute {
+                activeService?.get()?.finishOwnedSession(key)
             }
         }
 
@@ -254,13 +307,34 @@ class ScreenMirrorForegroundService : Service() {
             context.stopService(Intent(context, ScreenMirrorForegroundService::class.java))
         }
     }
+
+    private fun Intent.foregroundLeaseKey(): ScreenMirrorForegroundLeaseKey? =
+        ScreenMirrorForegroundLeaseKey.create(
+            getStringExtra(EXTRA_SESSION_ID),
+            getStringExtra(EXTRA_LEASE_ID),
+        )
+}
+
+internal data class ScreenMirrorForegroundLeaseKey(
+    val sessionId: String,
+    val leaseId: String,
+) {
+    companion object {
+        fun create(sessionId: String?, leaseId: String?): ScreenMirrorForegroundLeaseKey? {
+            val safeSessionId = sessionId?.takeIf { it.isNotBlank() && it.length <= 128 }
+                ?: return null
+            val safeLeaseId = leaseId?.takeIf { it.isNotBlank() && it.length <= 128 }
+                ?: return null
+            return ScreenMirrorForegroundLeaseKey(safeSessionId, safeLeaseId)
+        }
+    }
 }
 
 internal class ScreenMirrorForegroundOwnership {
-    enum class StartDecision { ACQUIRED, DUPLICATE, CONFLICT }
+    enum class StartDecision { ACQUIRED, DUPLICATE, SWITCHED }
 
     data class Lease(
-        val sessionId: String,
+        val key: ScreenMirrorForegroundLeaseKey,
         val latestStartId: Int,
         val foregroundOwned: Boolean,
     )
@@ -268,19 +342,24 @@ internal class ScreenMirrorForegroundOwnership {
     private var lease: Lease? = null
 
     @Synchronized
-    fun onStart(sessionId: String, startId: Int): StartDecision {
+    fun onStart(key: ScreenMirrorForegroundLeaseKey, startId: Int): StartDecision {
         val current = lease
         if (current == null) {
-            lease = Lease(sessionId, startId, foregroundOwned = false)
+            lease = Lease(key, startId, foregroundOwned = false)
             return StartDecision.ACQUIRED
         }
-        // Every delivered command advances Service's latest startId, including a stale command.
-        // The eventual owner cleanup must cover that command without using unscoped stopSelf().
-        lease = current.copy(latestStartId = maxOf(current.latestStartId, startId))
-        return if (current.sessionId == sessionId) StartDecision.DUPLICATE else StartDecision.CONFLICT
+        if (current.key == key) {
+            lease = current.copy(latestStartId = maxOf(current.latestStartId, startId))
+            return StartDecision.DUPLICATE
+        }
+        // The caller has already asked the controller whether this exact local lease is current.
+        // Replacing the key here makes controller-authorized handoff atomic from the Service's
+        // perspective: completion from the previous lease becomes a harmless no-op.
+        lease = Lease(key, startId, foregroundOwned = false)
+        return StartDecision.SWITCHED
     }
 
-    /** Records a delivered non-START or malformed command; true means an owner absorbed it. */
+    /** Records a delivered command without ever changing ownership. */
     @Synchronized
     fun noteCommand(startId: Int): Boolean {
         val current = lease ?: return false
@@ -289,18 +368,18 @@ internal class ScreenMirrorForegroundOwnership {
     }
 
     @Synchronized
-    fun markForegroundOwned(sessionId: String): Boolean {
-        val current = lease?.takeIf { it.sessionId == sessionId } ?: return false
+    fun markForegroundOwned(key: ScreenMirrorForegroundLeaseKey): Boolean {
+        val current = lease?.takeIf { it.key == key } ?: return false
         lease = current.copy(foregroundOwned = true)
         return true
     }
 
     @Synchronized
-    fun isOwnedBy(sessionId: String): Boolean = lease?.sessionId == sessionId
+    fun isOwnedBy(key: ScreenMirrorForegroundLeaseKey): Boolean = lease?.key == key
 
     @Synchronized
-    fun finish(sessionId: String): Lease? {
-        val current = lease?.takeIf { it.sessionId == sessionId } ?: return null
+    fun finish(key: ScreenMirrorForegroundLeaseKey): Lease? {
+        val current = lease?.takeIf { it.key == key } ?: return null
         lease = null
         return current
     }

@@ -121,14 +121,15 @@
             </intent-filter>
         </activity>
 
-        <!-- Foreground-only Android requester/viewer. It owns no background service: leaving this
-             Activity tears down both authenticated LAN channels and stops remote capture. -->
+        <!-- Replaceable full-screen/PiP client. Its requester foreground service owns the session,
+             so dismissing PiP detaches rendering without dropping the authenticated channels. -->
         <activity
             android:name=".screen.AndroidScreenMirrorActivity"
-            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
             android:enableOnBackInvokedCallback="true"
             android:exported="false"
             android:label="@string/screen_viewer_task_title"
+            android:supportsPictureInPicture="true"
             android:taskAffinity="${applicationId}.screen_viewer"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize" />
@@ -216,6 +217,13 @@
              Shizuku UserService and is intentionally not declared as an Android service. -->
         <service
             android:name=".screen.ScreenMirrorForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Quiet requester-side owner. The viewer Activity/PiP may be destroyed while this
+             service keeps the authenticated channels available for notification-tap resume. -->
+        <service
+            android:name=".screen.ScreenMirrorRequesterForegroundService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
 

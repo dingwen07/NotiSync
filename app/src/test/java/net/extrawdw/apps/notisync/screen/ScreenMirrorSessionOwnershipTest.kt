@@ -1,5 +1,9 @@
 package net.extrawdw.apps.notisync.screen
 
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicInteger
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
@@ -102,42 +106,149 @@ class ScreenMirrorSessionOwnershipTest {
     }
 
     @Test
-    fun completedForegroundLeaseCannotTearDownImmediateReplacement() {
+    fun exactForegroundLeaseSwitchIgnoresOldCompletionEvenWhenRemoteSessionIdIsReused() {
         val ownership = ScreenMirrorForegroundOwnership()
+        val oldKey = ScreenMirrorForegroundLeaseKey("same-remote-session", "local-lease-old")
+        val newKey = ScreenMirrorForegroundLeaseKey("same-remote-session", "local-lease-new")
 
         assertEquals(
             ScreenMirrorForegroundOwnership.StartDecision.ACQUIRED,
-            ownership.onStart("old-session", startId = 10),
+            ownership.onStart(oldKey, startId = 10),
         )
-        assertTrue(ownership.markForegroundOwned("old-session"))
+        assertTrue(ownership.markForegroundOwned(oldKey))
         assertEquals(
             ScreenMirrorForegroundOwnership.StartDecision.DUPLICATE,
-            ownership.onStart("old-session", startId = 11),
+            ownership.onStart(oldKey, startId = 11),
         )
         assertEquals(
-            ScreenMirrorForegroundOwnership.StartDecision.CONFLICT,
-            ownership.onStart("stale-session", startId = 12),
+            ScreenMirrorForegroundOwnership.StartDecision.SWITCHED,
+            ownership.onStart(newKey, startId = 12),
         )
-        assertTrue(ownership.noteCommand(startId = 13))
+        assertTrue(ownership.markForegroundOwned(newKey))
 
-        val oldLease = ownership.finish("old-session")
-        assertEquals(13, oldLease?.latestStartId)
-        assertTrue(oldLease?.foregroundOwned == true)
+        assertNull(ownership.finish(oldKey))
+        assertTrue(ownership.isOwnedBy(newKey))
 
-        // The controller publishes IDLE only after the call above. If a replacement START is then
-        // delivered, Android gives it a newer startId; stopSelf(oldLease.latestStartId) cannot stop
-        // it, and a delayed duplicate completion cannot clear its ownership record.
+        val newLease = ownership.finish(newKey)
+        assertEquals(12, newLease?.latestStartId)
+        assertTrue(newLease?.foregroundOwned == true)
+        assertFalse(ownership.isOwnedBy(newKey))
+    }
+
+    @Test
+    fun rejectedStaleForegroundCommandIsAbsorbedWithoutChangingExactOwner() {
+        val ownership = ScreenMirrorForegroundOwnership()
+        val current = ScreenMirrorForegroundLeaseKey("session-new", "lease-new")
+        val stale = ScreenMirrorForegroundLeaseKey("session-old", "lease-old")
+
         assertEquals(
             ScreenMirrorForegroundOwnership.StartDecision.ACQUIRED,
-            ownership.onStart("new-session", startId = 14),
+            ownership.onStart(current, startId = 20),
         )
-        assertTrue(ownership.markForegroundOwned("new-session"))
-        assertNull(ownership.finish("old-session"))
-        assertTrue(ownership.isOwnedBy("new-session"))
+        assertTrue(ownership.markForegroundOwned(current))
 
-        val newLease = ownership.finish("new-session")
-        assertEquals(14, newLease?.latestStartId)
-        assertTrue(newLease?.foregroundOwned == true)
-        assertFalse(ownership.isOwnedBy("new-session"))
+        // The service deliberately does not call onStart(stale): its controller validation failed.
+        // It still absorbs Android's newer startId so stopSelf(21) cannot stop the valid owner.
+        assertTrue(ownership.noteCommand(startId = 21))
+        assertTrue(ownership.isOwnedBy(current))
+        assertFalse(ownership.isOwnedBy(stale))
+
+        val currentLease = ownership.finish(current)
+        assertEquals(21, currentLease?.latestStartId)
+        assertTrue(currentLease?.foregroundOwned == true)
     }
+
+    @Test
+    fun ineligibleRequestCannotEvictActiveOrQueuedController() {
+        val active = Any()
+        val queued = Any()
+        val unauthorized = Any()
+        val slots = ScreenMirrorSessionSlot<Any>()
+
+        assertEquals(
+            ScreenMirrorSessionSlot.Disposition.ACTIVE,
+            slots.offer(active, eligible = true).disposition,
+        )
+        assertEquals(
+            ScreenMirrorSessionSlot.Disposition.QUEUED,
+            slots.offer(queued, eligible = true).disposition,
+        )
+
+        val rejected = slots.offer(unauthorized, eligible = false)
+
+        assertEquals(ScreenMirrorSessionSlot.Disposition.REJECTED, rejected.disposition)
+        assertTrue(slots.active === active)
+        assertTrue(slots.replacement === queued)
+    }
+
+    @Test
+    fun newestValidatedControllerReplacesQueuedRequestAndPromotesAfterOldCompletion() {
+        val active = Any()
+        val firstReplacement = Any()
+        val newestReplacement = Any()
+        val slots = ScreenMirrorSessionSlot<Any>()
+        slots.offer(active, eligible = true)
+        slots.offer(firstReplacement, eligible = true)
+
+        val replacement = slots.offer(newestReplacement, eligible = true)
+        assertEquals(ScreenMirrorSessionSlot.Disposition.QUEUED, replacement.disposition)
+        assertTrue(replacement.active === active)
+        assertTrue(replacement.displacedReplacement === firstReplacement)
+
+        val completion = slots.complete(active)
+        assertTrue(completion.owned)
+        assertTrue(completion.replacement === newestReplacement)
+        assertNull(slots.active)
+        assertNull(slots.replacement)
+
+        assertEquals(
+            ScreenMirrorSessionSlot.Disposition.ACTIVE,
+            slots.offer(checkNotNull(completion.replacement), eligible = true).disposition,
+        )
+        assertTrue(slots.active === newestReplacement)
+    }
+
+    @Test
+    fun staleCompletionCannotClearPromotedController() {
+        val old = Any()
+        val replacement = Any()
+        val slots = ScreenMirrorSessionSlot<Any>()
+        slots.offer(old, eligible = true)
+        slots.offer(replacement, eligible = true)
+        val completion = slots.complete(old)
+        slots.offer(checkNotNull(completion.replacement), eligible = true)
+
+        val stale = slots.complete(old)
+
+        assertFalse(stale.owned)
+        assertTrue(slots.active === replacement)
+        assertNull(slots.replacement)
+    }
+
+    @Test
+    fun privilegedTeardownHasOneExactOwnerAcrossConcurrentStopPaths() {
+        val claim = ScreenMirrorTeardownClaim()
+        val executor = Executors.newFixedThreadPool(8)
+        val ready = CountDownLatch(8)
+        val start = CountDownLatch(1)
+        val winners = AtomicInteger()
+        try {
+            val tasks = List(8) {
+                executor.submit {
+                    ready.countDown()
+                    assertTrue(start.await(2, TimeUnit.SECONDS))
+                    if (claim.tryClaim()) winners.incrementAndGet()
+                }
+            }
+            assertTrue(ready.await(2, TimeUnit.SECONDS))
+            start.countDown()
+            tasks.forEach { it.get(2, TimeUnit.SECONDS) }
+
+            assertEquals(1, winners.get())
+            assertFalse(claim.tryClaim())
+        } finally {
+            executor.shutdownNow()
+        }
+    }
+
 }

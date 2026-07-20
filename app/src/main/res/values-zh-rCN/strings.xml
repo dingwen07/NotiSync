@@ -329,6 +329,7 @@
     <string name="device_capability_screen_h264">硬件 H.264</string>
     <string name="device_capability_screen_h265">硬件 H.265</string>
     <string name="device_capability_screen_av1">硬件 AV1</string>
+    <string name="device_capability_screen_visibility">后台视频暂停</string>
     <string name="screen_mirror_settings_title">屏幕共享和控制（实验性）</string>
     <string name="screen_mirror_settings_body">允许您授权的设备通过本地网络和 Shizuku 查看并控制此屏幕。</string>
     <string name="screen_mirror_settings_not_running">请启动 Shizuku 管理器以完成设置。</string>
@@ -371,6 +372,11 @@
     <string name="screen_mirror_stop">停止</string>
     <string name="screen_viewer_preparing">正在准备安全屏幕会话…</string>
     <string name="screen_viewer_task_title">屏幕镜像</string>
+    <string name="screen_viewer_service_title">屏幕镜像</string>
+    <string name="screen_viewer_service_connecting">正在连接到 %1$s…</string>
+    <string name="screen_viewer_service_viewing">正在查看 %1$s</string>
+    <string name="screen_viewer_service_background">已连接到 %1$s · 点按以继续</string>
+    <string name="screen_viewer_service_failed">无法在后台保持屏幕会话。</string>
     <string name="screen_viewer_connecting">正在等待 %1$s…</string>
     <string name="screen_viewer_connected_codec">已连接 · %1$s</string>
     <string name="screen_viewer_ended">屏幕共享已结束。</string>

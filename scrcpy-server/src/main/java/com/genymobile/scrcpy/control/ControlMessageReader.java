@@ -49,6 +49,8 @@ public class ControlMessageReader {
                 return parseSetClipboard();
             case ControlMessage.TYPE_TOGGLE_POWER:
                 return ControlMessage.createTogglePower();
+            case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
+                return parseSetVideoVisibility();
             default:
                 throw new ControlProtocolException("Unsupported NotiSync control message type: " + type);
         }
@@ -138,6 +140,14 @@ public class ControlMessageReader {
         boolean paste = dis.readByte() != 0;
         String text = parseString(CLIPBOARD_TEXT_MAX_LENGTH);
         return ControlMessage.createSetClipboard(sequence, text, paste);
+    }
+
+    private ControlMessage parseSetVideoVisibility() throws IOException {
+        int visible = dis.readUnsignedByte();
+        if (visible > 1) {
+            throw new ControlProtocolException("Invalid video visibility value: " + visible);
+        }
+        return ControlMessage.createSetVideoVisibility(visible != 0);
     }
 
     private Position parsePosition() throws IOException {

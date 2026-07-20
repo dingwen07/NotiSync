@@ -195,13 +195,13 @@ class CborWireCompatTest {
     }
 
     @Test
-    fun screenCapabilitiesUsePermanentIds12Through17() {
+    fun screenCapabilitiesUsePermanentIds12Through18() {
         val screenCapabilities = Capability.entries.drop(12)
         val profile = ProfileUpdate(ClientId("screen"), "Screen", "android", screenCapabilities, 1L)
 
         val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
 
-        assertEquals((12..17).toList(), raw.capabilities)
+        assertEquals((12..18).toList(), raw.capabilities)
     }
 
     @Test

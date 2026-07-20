@@ -101,6 +101,7 @@ import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorRequester
+import net.extrawdw.apps.notisync.screen.AndroidScreenRequesterSessionHost
 import net.extrawdw.apps.notisync.screen.AndroidScreenSource
 import net.extrawdw.apps.notisync.screen.AndroidScreenSourceResolver
 import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
@@ -276,6 +277,8 @@ class AppGraph(private val app: Application) {
     var screenMirrorController: ScreenMirrorSessionController? = null
         private set
     internal var screenMirrorRequester: AndroidScreenMirrorRequester? = null
+        private set
+    internal var screenMirrorRequesterHost: AndroidScreenRequesterSessionHost? = null
         private set
 
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
@@ -478,6 +481,11 @@ class AppGraph(private val app: Application) {
             preferredCodec = screenMirrorCodecPreferences::preferredCodec,
         )
         screenMirrorRequester = screenRequester
+        screenMirrorRequesterHost = AndroidScreenRequesterSessionHost(
+            requester = screenRequester,
+            scope = scope,
+            hardwareDecoderName = screenMirrorDecoderSupport::hardwareDecoderName,
+        )
         trust.roster
             .onEach {
                 screenRequester.state.value.sourceId?.let { sourceId ->

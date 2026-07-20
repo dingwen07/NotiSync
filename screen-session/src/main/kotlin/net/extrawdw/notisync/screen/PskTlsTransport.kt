@@ -7,6 +7,7 @@ import java.net.Socket
 import java.security.SecureRandom
 import java.time.Duration
 import java.util.Vector
+import java.util.concurrent.atomic.AtomicBoolean
 import org.bouncycastle.tls.AbstractTlsClient
 import org.bouncycastle.tls.AbstractTlsServer
 import org.bouncycastle.tls.AlertDescription
@@ -38,9 +39,16 @@ class SecureSessionChannel internal constructor(
     private val closeProtocol: () -> Unit,
     private val socket: Socket,
 ) : AutoCloseable {
+    private val closed = AtomicBoolean(false)
+
     override fun close() {
-        runCatching { closeProtocol() }
+        if (!closed.compareAndSet(false, true)) return
+
+        // Bouncy Castle synchronizes protocol reads and close_notify writes. Closing
+        // the transport first releases a thread blocked in a TLS read before asking
+        // the protocol to perform its best-effort shutdown.
         runCatching { socket.close() }
+        runCatching { closeProtocol() }
     }
 }
 

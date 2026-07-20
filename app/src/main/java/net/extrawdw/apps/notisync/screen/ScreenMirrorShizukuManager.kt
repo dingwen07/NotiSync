@@ -186,7 +186,10 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         if (Shizuku.pingBinder()) refreshAndBind() else _status.value = ShizukuScreenStatus.NOT_RUNNING
     }
 
-    suspend fun startPrivilegedSession(request: ScreenMirrorSync): Result<PrivilegedSessionPipes> = runCatching {
+    suspend fun startPrivilegedSession(
+        request: ScreenMirrorSync,
+        ownerToken: String,
+    ): Result<PrivilegedSessionPipes> = runCatching {
         if (service == null) refreshAndBind()
         val remote = service ?: withTimeout(SERVICE_BIND_TIMEOUT_MS) {
             serviceFlow.filterNotNull().first()
@@ -206,7 +209,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             controlPair = createdControlPair
             val local = PrivilegedSessionPipes(videoRead = createdVideoPair[0], control = createdControlPair[0])
             val result = remote.startSession(
-                request.sessionId,
+                ownerToken,
                 codec.codecId(),
                 (request.maxDimension ?: DEFAULT_MAX_DIMENSION).coerceIn(240, 8192),
                 (request.maxFps ?: DEFAULT_MAX_FPS).coerceIn(1, 240),
@@ -232,9 +235,12 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         }
     }
 
-    fun stopPrivilegedSession(sessionId: String) {
-        runCatching { service?.stopSession(sessionId) }
-    }
+    /**
+     * Stops only [ownerToken]'s privileged capture and returns after the backend acknowledges that
+     * all capture workers and descriptors are gone. A missing binder means its process is already gone.
+     */
+    fun stopPrivilegedSession(ownerToken: String): Boolean =
+        runCatching { service?.stopSession(ownerToken) ?: true }.getOrDefault(false)
 
     /** Removes the non-daemon user service after a session; the next request receives a fresh process. */
     fun removeUserService() {
@@ -323,7 +329,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
-        const val USER_SERVICE_REVISION = 6
+        const val USER_SERVICE_REVISION = 8
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920

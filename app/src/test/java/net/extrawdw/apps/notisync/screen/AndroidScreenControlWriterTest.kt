@@ -125,6 +125,24 @@ class AndroidScreenControlWriterTest {
     }
 
     @Test
+    fun `video visibility uses a strict bounded NotiSync v1 frame`() {
+        val output = ByteArrayOutputStream()
+        val writer = AndroidScreenControlWriter(output)
+
+        writer.setVideoVisible(false)
+        writer.setVideoVisible(true)
+
+        assertArrayEquals(byteArrayOf(65, 0, 65, 1), output.toByteArray())
+        val reader = ControlMessageReader(ByteArrayInputStream(output.toByteArray()))
+        val hidden = reader.read { true }
+        val visible = reader.read { true }
+        assertEquals(ControlMessage.TYPE_SET_VIDEO_VISIBILITY, hidden.type)
+        assertFalse(hidden.isVideoVisible)
+        assertEquals(ControlMessage.TYPE_SET_VIDEO_VISIBILITY, visible.type)
+        assertTrue(visible.isVideoVisible)
+    }
+
+    @Test
     fun `concurrent operations remain whole output writes`() {
         val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
         val output = object : ByteArrayOutputStream() {
@@ -337,6 +355,46 @@ class AndroidScreenControlWriterTest {
         assertTouchFrame(writes[0], MotionEvent.ACTION_DOWN, 10)
         assertTouchFrame(writes[1], MotionEvent.ACTION_MOVE, 30)
         assertTouchFrame(writes[2], MotionEvent.ACTION_UP, 30)
+    }
+
+    @Test
+    fun `dispatcher preserves hide and show transitions for a fresh video boundary`() {
+        val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val firstWriteStarted = CountDownLatch(1)
+        val releaseFirstWrite = CountDownLatch(1)
+        val expectedWrites = CountDownLatch(3)
+        val firstWrite = AtomicBoolean(true)
+        val output = object : OutputStream() {
+            override fun write(value: Int) = Unit
+
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                writes += buffer.copyOfRange(offset, offset + length)
+                expectedWrites.countDown()
+                if (firstWrite.compareAndSet(true, false)) {
+                    firstWriteStarted.countDown()
+                    if (!releaseFirstWrite.await(5, TimeUnit.SECONDS)) {
+                        throw IOException("test timed out waiting to release first write")
+                    }
+                }
+            }
+        }
+        val failure = AtomicReference<Throwable>()
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) {
+            failure.compareAndSet(null, it)
+        }
+
+        assertTrue(dispatcher.togglePower())
+        assertTrue("first write did not start", firstWriteStarted.await(5, TimeUnit.SECONDS))
+        assertTrue(dispatcher.setVideoVisible(false))
+        assertTrue(dispatcher.setVideoVisible(true))
+        releaseFirstWrite.countDown()
+
+        assertTrue("visibility write did not finish", expectedWrites.await(5, TimeUnit.SECONDS))
+        dispatcher.close()
+        assertEquals(null, failure.get())
+        assertEquals(3, writes.size)
+        assertArrayEquals(byteArrayOf(65, 0), writes[1])
+        assertArrayEquals(byteArrayOf(65, 1), writes[2])
     }
 
     @Test

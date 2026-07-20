@@ -1,7 +1,9 @@
 package com.genymobile.scrcpy.control;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -37,6 +39,34 @@ public final class ControlChannelPolicyTest {
     @Test
     public void rejectsPowerToggleWhenControlDisabled() {
         ControlChannel channel = channel(new byte[]{ControlMessage.TYPE_TOGGLE_POWER}, false, true);
+
+        assertThrows(ControlProtocolException.class, channel::recv);
+    }
+
+    @Test
+    public void acceptsVideoVisibilityForViewOnlySession() throws Exception {
+        ControlChannel channel = channel(
+                new byte[]{ControlMessage.TYPE_SET_VIDEO_VISIBILITY, 0,
+                        ControlMessage.TYPE_SET_VIDEO_VISIBILITY, 1},
+                false,
+                false
+        );
+
+        ControlMessage hidden = channel.recv();
+        ControlMessage visible = channel.recv();
+        assertEquals(ControlMessage.TYPE_SET_VIDEO_VISIBILITY, hidden.getType());
+        assertFalse(hidden.isVideoVisible());
+        assertEquals(ControlMessage.TYPE_SET_VIDEO_VISIBILITY, visible.getType());
+        assertTrue(visible.isVideoVisible());
+    }
+
+    @Test
+    public void rejectsNonBooleanVideoVisibility() {
+        ControlChannel channel = channel(
+                new byte[]{ControlMessage.TYPE_SET_VIDEO_VISIBILITY, 2},
+                false,
+                false
+        );
 
         assertThrows(ControlProtocolException.class, channel::recv);
     }
