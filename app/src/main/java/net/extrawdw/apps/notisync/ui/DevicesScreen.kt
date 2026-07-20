@@ -40,6 +40,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
@@ -69,6 +70,7 @@ fun DevicesScreen(
     pairButtonModifier: Modifier = Modifier,
 ) {
     val graph = rememberGraph()
+    val context = LocalContext.current
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
@@ -101,8 +103,17 @@ fun DevicesScreen(
                     QuarantineCard(
                         // Approve re-signs the current roster as-is; broadcast it so peers re-converge once
                         // we're active again. Clear wipes it (nothing left to announce — they'll re-pair).
-                        onApprove = { graph.trust.approveQuarantine(); graph.broadcastTrust() },
-                        onClear = { graph.trust.clearQuarantine() },
+                        onApprove = {
+                            graph.launchDurableTrustAction(context) {
+                                graph.trust.approveQuarantine()
+                                graph.broadcastTrust()
+                            }
+                        },
+                        onClear = {
+                            graph.launchDurableTrustAction(context) {
+                                graph.trust.clearQuarantine()
+                            }
+                        },
                     )
                 }
             }
@@ -244,6 +255,7 @@ private fun DeviceListCard(
     onShowFilters: (RosterDevice) -> Unit = {},
     onShowDetails: (RosterDevice) -> Unit = {},
 ) {
+    val context = LocalContext.current
     val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
     Card(Modifier.fillMaxWidth()) {
         Column {
@@ -257,46 +269,63 @@ private fun DeviceListCard(
                     hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                     onApprove = {
-                        if (graph.trust.approveTrust(
-                                it,
-                                System.currentTimeMillis()
-                            )
-                        ) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.approveTrust(
+                                    it,
+                                    System.currentTimeMillis()
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onDeny = {
-                        if (graph.trust.rejectTrust(
-                                it,
-                                System.currentTimeMillis()
-                            )
-                        ) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.rejectTrust(
+                                    it,
+                                    System.currentTimeMillis()
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onRemoveConfirm = {
-                        if (graph.trust.confirmRevoke(
-                                it,
-                                System.currentTimeMillis()
-                            )
-                        ) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.confirmRevoke(
+                                    it,
+                                    System.currentTimeMillis()
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onKeep = {
-                        if (graph.trust.keepTrusted(
-                                it,
-                                System.currentTimeMillis()
-                            )
-                        ) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.keepTrusted(
+                                    it,
+                                    System.currentTimeMillis()
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onRemove = {
-                        if (graph.trust.revokeLocal(
-                                it,
-                                System.currentTimeMillis()
-                            )
-                        ) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.revokeLocal(
+                                    it,
+                                    System.currentTimeMillis()
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onPurge = {
-                        graph.trust.purgeRevoked(it)
-                        graph.notificationFilters.remove(it) // forget any filter this device had sent us
+                        graph.launchDurableTrustAction(context) {
+                            graph.trust.purgeRevoked(it)
+                            // Forget this peer's filter only after its trust-store removal was durable.
+                            graph.notificationFilters.remove(it)
+                        }
                     },
                     onRestore = {
-                        if (graph.trust.restoreTrust(it, System.currentTimeMillis())) graph.broadcastTrust()
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.restoreTrust(it, System.currentTimeMillis())) {
+                                graph.broadcastTrust()
+                            }
+                        }
                     },
                 )
                 if (index < devices.lastIndex) HorizontalDivider(Modifier.padding(start = 16.dp))

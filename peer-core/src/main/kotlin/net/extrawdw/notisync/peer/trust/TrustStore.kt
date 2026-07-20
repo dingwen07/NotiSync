@@ -119,6 +119,8 @@ data class IncomingTrustResult(
      *  (incl. epoch 0 = none) — relayed to the sender as a CardDelivery(epochBlob). Self-authenticating, so
      *  vouching by relay is safe: the receiver verifies each key-epoch independently of us. */
     val keyEpochsToOffer: List<SignedBlob> = emptyList(),
+    /** Prompts whose pending transition was resolved atomically with this table fold. */
+    val automaticallyAppliedPrompts: Set<Pair<ClientId, TrustPrompt>> = emptySet(),
 )
 
 /**
@@ -300,22 +302,6 @@ open class TrustStore(
             if (it.status == TrustStatus.REVOKED) TrustMachine.restoreTrust(it, now) else null
         }
 
-    @Synchronized
-    override fun resolveIncomingPrompt(clientId: ClientId, prompt: TrustPrompt, now: Long): Boolean =
-        when (prompt) {
-            TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST ->
-                if (_state.value.entries[clientId]?.status == TrustStatus.PENDING_TRUST) {
-                    approveTrust(clientId, now)
-                    true
-                } else false
-            TrustPrompt.NEW_REVOKE ->
-                if (_state.value.entries[clientId]?.status == TrustStatus.PENDING_REVOKE) {
-                    confirmRevoke(clientId, now)
-                    true
-                } else false
-            TrustPrompt.CONFLICT, TrustPrompt.OTHER_ADDED, TrustPrompt.OTHER_REMOVED -> false
-        }
-
     // ---- tamper quarantine (recover from a roster that fails its identity signature) ----
 
     /**
@@ -363,7 +349,16 @@ open class TrustStore(
 
     /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
     @Synchronized
-    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
+    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult =
+        applyIncomingTable(sender, table, clock()) { _, _ -> false }
+
+    @Synchronized
+    override fun applyIncomingTable(
+        sender: ClientId,
+        table: TrustTable,
+        decisionTime: Long,
+        shouldAutoApply: (ClientId, TrustPrompt) -> Boolean,
+    ): IncomingTrustResult {
         if (_quarantined.value) return IncomingTrustResult(
             emptyList(),
             emptyList(),
@@ -372,6 +367,7 @@ open class TrustStore(
         val prompts = mutableListOf<Pair<ClientId, TrustPrompt>>()
         val offers = mutableListOf<SignedBlob>()
         val keyEpochOffers = mutableListOf<SignedBlob>()
+        val automaticallyAppliedPrompts = mutableSetOf<Pair<ClientId, TrustPrompt>>()
         var needsBroadcast = false
         mutate { st ->
             var entries = st.entries
@@ -381,16 +377,28 @@ open class TrustStore(
                 // Only TRUSTED/REVOKED assertions change our trust state; a peer's PENDING_* is informational.
                 if (wire.status == TrustStatus.TRUSTED || wire.status == TrustStatus.REVOKED) {
                     val r = TrustMachine.resolveIncoming(entries[wire.clientId], wire, sender)
-                    if (r.entry != entries[wire.clientId]) {
-                        entries = entries + (wire.clientId to r.entry)
+                    val promptKey = r.prompt?.let { wire.clientId to it }
+                    val resolved = if (
+                        promptKey != null && shouldAutoApply(promptKey.first, promptKey.second)
+                    ) {
+                        resolvePrompt(
+                            r.entry,
+                            promptKey.second,
+                            maxOf(decisionTime, r.entry.updatedAt),
+                        )?.also { automaticallyAppliedPrompts += promptKey } ?: r.entry
+                    } else {
+                        r.entry
+                    }
+                    if (resolved != entries[wire.clientId]) {
+                        entries = entries + (wire.clientId to resolved)
                         // A new keyless trust/pending entry: re-broadcast so a card holder repairs us.
                         if (!st.cards.containsKey(wire.clientId) &&
-                            (r.entry.status == TrustStatus.PENDING_TRUST || r.entry.status == TrustStatus.TRUSTED)
+                            (resolved.status == TrustStatus.PENDING_TRUST || resolved.status == TrustStatus.TRUSTED)
                         ) {
                             needsBroadcast = true
                         }
                     }
-                    r.prompt?.let { prompts += wire.clientId to it }
+                    promptKey?.let { prompts += it }
                 }
                 // Keyless repair (runs for ANY wire status, incl. pending): offer our card if the sender
                 // lacks it and our local subject is trusted or pending trust.
@@ -410,7 +418,13 @@ open class TrustStore(
             }
             st.copy(entries = entries)
         }
-        return IncomingTrustResult(prompts, offers, needsBroadcast, keyEpochOffers)
+        return IncomingTrustResult(
+            prompts,
+            offers,
+            needsBroadcast,
+            keyEpochOffers,
+            automaticallyAppliedPrompts,
+        )
     }
 
     /**
@@ -615,13 +629,17 @@ open class TrustStore(
     }
 
     private fun mutate(f: (State) -> State) {
-        val next0 = f(_state.value)
+        val current = _state.value
+        val next0 = f(current)
         // Drop overlays orphaned by a removal (bounded growth), but KEEP them for revoked tombstones: the
         // tombstone is still shown in the UI until purge, and its live (renamed) name must not revert to the
         // card's original pairing-time name. purgeRevoked() drops the overlay with the entry at permanent delete.
         val overlays = next0.overlays.filterKeys { next0.entries.containsKey(it) }
         val next =
             if (overlays.size != next0.overlays.size) next0.copy(overlays = overlays) else next0
+        // Equal/stale anti-entropy still computes prompts and material-repair offers in [f], but it must not
+        // spend a Keystore signature and disk transaction on an identical state snapshot.
+        if (next == current) return
         // Durable-before-visible: an inbound relay must not appear applied in memory if its signed
         // persistence transaction fails. The caller can then classify the failure as retryable and a
         // redelivery will genuinely attempt the mutation again instead of observing an in-memory no-op.
@@ -630,6 +648,26 @@ open class TrustStore(
         _activePeers.value = computeActivePeers(next)
         _roster.value = computeRoster(next)
     }
+
+    /** Resolve only prompts whose pending state has an automatic/user agreement transition. */
+    private fun resolvePrompt(current: TrustEntry, prompt: TrustPrompt, now: Long): TrustEntry? =
+        when (prompt) {
+            TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST ->
+                if (current.status == TrustStatus.PENDING_TRUST) {
+                    TrustMachine.approveTrust(current, now)
+                } else {
+                    null
+                }
+
+            TrustPrompt.NEW_REVOKE ->
+                if (current.status == TrustStatus.PENDING_REVOKE) {
+                    TrustMachine.confirmRevoke(current, now)
+                } else {
+                    null
+                }
+
+            TrustPrompt.CONFLICT, TrustPrompt.OTHER_ADDED, TrustPrompt.OTHER_REMOVED -> null
+        }
 
     /** Verify a card blob exactly like QR pairing does; returns the decoded card or null. */
     private fun verifyCard(blob: SignedBlob): ClientCard? = runCatching {

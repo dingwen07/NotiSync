@@ -38,11 +38,27 @@ interface TrustState {
     /** Apply a peer's announced profile (last-writer-wins). Returns true if anything changed. */
     fun applyProfile(update: ProfileUpdate): Boolean
 
-    /** Fold a peer's broadcast roster into ours; returns prompts to raise + cards to offer. */
-    fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult
+    /**
+     * Fold a peer's broadcast roster into ours; returns prompts to raise + cards to offer.
+     * Implementations must apply every accepted automatic decision in the same durable transaction as
+     * the fold. This prevents a successfully persisted pending row from stranding its decision when a
+     * later, separate persistence operation fails.
+     */
+    fun applyIncomingTable(
+        sender: ClientId,
+        table: TrustTable,
+        decisionTime: Long,
+        shouldAutoApply: (ClientId, TrustPrompt) -> Boolean,
+    ): IncomingTrustResult
 
-    /** Finalize a verified incoming prompt under a platform's explicit auto-trust policy. */
-    fun resolveIncomingPrompt(clientId: ClientId, prompt: TrustPrompt, now: Long): Boolean = false
+    /** Manual-policy convenience for callers that only need the table fold. */
+    fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult =
+        applyIncomingTable(
+            sender = sender,
+            table = table,
+            decisionTime = System.currentTimeMillis(),
+            shouldAutoApply = { _, _ -> false },
+        )
 
     /** Store a verified delivered card when it is newer than the identity-pinned snapshot. */
     fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean

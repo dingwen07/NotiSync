@@ -123,7 +123,7 @@ fun PairingScreen(
         result = null
         inspecting = true
         scope.launch {
-            result = withContext(Dispatchers.Default) {
+            result = graph.durableTrustMutations.run {
                 pairing.accept(candidate.payload, ownDevice).fold(
                     onSuccess = { resources.getString(R.string.pair_paired_with, it.displayName) },
                     onFailure = { resources.getString(R.string.pair_could_not_pair, it.message) },
@@ -242,11 +242,6 @@ fun PairingScreen(
             val ready = codeState as? PairingCodeState.Ready
             if (ready?.automaticTimeEnabled == false) {
                 AutomaticTimeWarning(
-                    currentSystemTime = formatPairingSystemTime(
-                        ready.createdAt,
-                        ready.timeZoneId,
-                        resources.configuration.locales[0],
-                    ),
                     onOpenSettings = ::openDateAndTimeSettings,
                 )
             }
@@ -262,12 +257,29 @@ fun PairingScreen(
                 }
 
                 is PairingCodeState.Ready -> {
-                    Image(
-                        bitmap = state.bitmap.asImageBitmap(),
-                        contentDescription = stringResource(R.string.pair_qr_code_desc),
-                        filterQuality = FilterQuality.None,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                    )
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Image(
+                            bitmap = state.bitmap.asImageBitmap(),
+                            contentDescription = stringResource(R.string.pair_qr_code_desc),
+                            filterQuality = FilterQuality.None,
+                            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.pair_signed_card_time,
+                                formatPairingSystemTime(
+                                    state.createdAt,
+                                    state.timeZoneId,
+                                    resources.configuration.locales[0],
+                                ),
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 is PairingCodeState.Error -> {
@@ -372,7 +384,7 @@ private sealed interface PairingCodeState {
 }
 
 @Composable
-private fun AutomaticTimeWarning(currentSystemTime: String, onOpenSettings: () -> Unit) {
+private fun AutomaticTimeWarning(onOpenSettings: () -> Unit) {
     Card(
         modifier = Modifier.fillMaxWidth(),
         colors = CardDefaults.cardColors(
@@ -386,10 +398,17 @@ private fun AutomaticTimeWarning(currentSystemTime: String, onOpenSettings: () -
                 style = MaterialTheme.typography.titleMedium,
             )
             Text(
-                stringResource(R.string.pair_auto_time_warning_body, currentSystemTime),
+                stringResource(R.string.pair_auto_time_warning_body),
                 style = MaterialTheme.typography.bodyMedium,
             )
-            TextButton(onClick = onOpenSettings) {
+            Button(
+                onClick = onOpenSettings,
+                modifier = Modifier.align(Alignment.End),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.tertiaryContainer,
+                ),
+            ) {
                 Text(stringResource(R.string.pair_auto_time_open_settings))
             }
         }

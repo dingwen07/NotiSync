@@ -18,7 +18,7 @@ class AutomaticTimeTest {
     }
 
     @Test
-    fun systemTime_includesOffsetAndTimeZoneId() {
+    fun systemTime_includesTimeZoneOffset() {
         val formatted = formatPairingSystemTime(
             Instant.parse("2026-07-20T00:34:12Z").toEpochMilli(),
             "Asia/Singapore",
@@ -30,7 +30,6 @@ class AutomaticTimeTest {
         assertTrue(formatted.contains("8:34:12"))
         assertTrue(formatted.contains("AM"))
         assertTrue(formatted.contains("GMT+08:00"))
-        assertTrue(formatted.contains("[Asia/Singapore]"))
         assertEquals(1, formatted.count { it == '·' })
     }
 }

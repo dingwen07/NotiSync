@@ -243,21 +243,25 @@ open class FoundationEngine(
                 if (msg.signerEpoch != 0) return
                 val table = sync.trust ?: return
                 val byName = nameOf(msg.senderId)
+                val decisionTime = now()
                 val result = durableTrustMutation("trust table") {
-                    trust.applyIncomingTable(msg.senderId, table)
+                    trust.applyIncomingTable(
+                        sender = msg.senderId,
+                        table = table,
+                        decisionTime = decisionTime,
+                    ) { id, prompt ->
+                        incomingTrustPolicy.shouldAutoApply(
+                            IncomingTrustChange(
+                                senderId = msg.senderId,
+                                subjectId = id,
+                                prompt = prompt,
+                                senderIsTrustedOwnDevice = msg.senderOwnDevice,
+                            )
+                        )
+                    }
                 }
                 for ((id, prompt) in result.prompts) {
-                    val auto = incomingTrustPolicy.shouldAutoApply(
-                        IncomingTrustChange(
-                            senderId = msg.senderId,
-                            subjectId = id,
-                            prompt = prompt,
-                            senderIsTrustedOwnDevice = msg.senderOwnDevice,
-                        )
-                    )
-                    val applied = auto && durableTrustMutation("trust decision") {
-                        trust.resolveIncomingPrompt(id, prompt, now())
-                    }
+                    val applied = (id to prompt) in result.automaticallyAppliedPrompts
                     if (!applied) onTrustPrompt(id, prompt, byName)
                     eventSink.trustChanged(
                         id,

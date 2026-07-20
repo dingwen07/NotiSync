@@ -261,6 +261,7 @@
     <string name="devices_allow_posting_title">允许显示通知</string>
     <string name="devices_allow_posting_body">授予通知发送权限，以便镜像的通知能在此设备上显示。</string>
     <string name="devices_grant">授予</string>
+    <string name="trust_change_failed">无法保存设备信任更改，请重试。</string>
     <string name="devices_my_devices">我的设备 (%1$d)</string>
     <string name="devices_my_devices_empty">尚无已配对的设备。配对另一台设备即可在设备之间镜像通知。</string>
     <string name="devices_other_devices">其他设备 (%1$d)</string>
@@ -329,6 +330,7 @@
     <string name="pair_intro">在另一台设备上，使用 NotiSync 或相机应用扫描下面的二维码。</string>
     <string name="pair_intro_nfc">您也可以通过将另一台设备贴在此设备的背面来配对。</string>
     <string name="pair_qr_code_desc">配对二维码</string>
+    <string name="pair_signed_card_time">创建时间：%1$s</string>
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
     <string name="pair_verification_number">验证码：%1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
@@ -339,7 +341,7 @@
     <string name="pair_checking">正在检查设备…</string>
     <string name="pair_scan_button">扫描另一台设备的二维码</string>
     <string name="pair_auto_time_warning_title">自动日期和时间已关闭</string>
-    <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。\n\n当前系统时间：%1$s</string>
+    <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。</string>
     <string name="pair_auto_time_open_settings">设置</string>
     <string name="pair_trust_title">信任此设备？</string>
     <string name="pair_trust_body">NotiSync 已验证此已签名的配对卡。将其添加为您自己的设备以镜像通知，或添加为他人的设备以仅共享您的设备名称。</string>

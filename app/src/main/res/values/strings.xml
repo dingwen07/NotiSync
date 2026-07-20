@@ -274,6 +274,7 @@
     <string name="devices_allow_posting_title">Allow showing notifications</string>
     <string name="devices_allow_posting_body">Grant notification posting so mirrored notifications can appear on this device.</string>
     <string name="devices_grant">Grant</string>
+    <string name="trust_change_failed">Couldn\'t save the device trust change. Try again.</string>
     <string name="devices_my_devices">My devices (%1$d)</string>
     <string name="devices_my_devices_empty">No paired devices yet. Pair another device to start mirroring notifications between them.</string>
     <string name="devices_other_devices">Other devices (%1$d)</string>
@@ -342,6 +343,7 @@
     <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
     <string name="pair_intro_nfc">You can also pair by tapping the other device against the back of this device.</string>
     <string name="pair_qr_code_desc">Pairing QR code</string>
+    <string name="pair_signed_card_time">Created: %1$s</string>
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
@@ -352,7 +354,7 @@
     <string name="pair_checking">Checking device…</string>
     <string name="pair_scan_button">Scan the other device\'s code</string>
     <string name="pair_auto_time_warning_title">Automatic date and time is off</string>
-    <string name="pair_auto_time_warning_body">Pairing cards include the current time. If this clock is incorrect, another device may reject this card.\n\nCurrent system time: %1$s</string>
+    <string name="pair_auto_time_warning_body">Pairing cards include the current time. If this clock is incorrect, another device may reject this card.</string>
     <string name="pair_auto_time_open_settings">Settings</string>
     <string name="pair_trust_title">Trust this device?</string>
     <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>

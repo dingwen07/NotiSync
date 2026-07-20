@@ -47,8 +47,14 @@ internal class FoundationTrustState(
     override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult =
         mutate { delegate.applyIncomingTable(sender, table) }
 
-    override fun resolveIncomingPrompt(clientId: ClientId, prompt: TrustPrompt, now: Long): Boolean =
-        mutate { delegate.resolveIncomingPrompt(clientId, prompt, now) }
+    override fun applyIncomingTable(
+        sender: ClientId,
+        table: TrustTable,
+        decisionTime: Long,
+        shouldAutoApply: (ClientId, TrustPrompt) -> Boolean,
+    ): IncomingTrustResult = mutate {
+        delegate.applyIncomingTable(sender, table, decisionTime, shouldAutoApply)
+    }
 
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean =
         mutate { delegate.applyCard(clientId, cardBlob) }

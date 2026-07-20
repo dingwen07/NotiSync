@@ -29,6 +29,6 @@ internal fun formatPairingSystemTime(
     val localDateTime = DateTimeFormatter.ofLocalizedDateTime(FormatStyle.MEDIUM)
         .withLocale(locale)
         .format(time)
-    val zoneDescription = DateTimeFormatter.ofPattern("OOOO '['VV']'", locale).format(time)
+    val zoneDescription = DateTimeFormatter.ofPattern("OOOO", locale).format(time)
     return "$localDateTime · $zoneDescription"
 }

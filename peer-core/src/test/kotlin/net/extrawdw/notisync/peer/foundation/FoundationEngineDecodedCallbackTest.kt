@@ -144,7 +144,12 @@ class FoundationEngineDecodedCallbackTest {
         override fun displayName(clientId: ClientId): String? = null
         override fun buildTrustTable() = TrustTable(emptyList())
         override fun applyProfile(update: ProfileUpdate) = false
-        override fun applyIncomingTable(sender: ClientId, table: TrustTable) =
+        override fun applyIncomingTable(
+            sender: ClientId,
+            table: TrustTable,
+            decisionTime: Long,
+            shouldAutoApply: (ClientId, net.extrawdw.notisync.peer.trust.TrustPrompt) -> Boolean,
+        ) =
             IncomingTrustResult(emptyList(), emptyList())
         override fun applyCard(clientId: ClientId, cardBlob: SignedBlob) = false
     }

@@ -99,6 +99,7 @@ import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.transport.ifKnown
+import net.extrawdw.apps.notisync.trust.DurableTrustMutations
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
@@ -165,6 +166,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
 
 class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
+    internal val durableTrustMutations = DurableTrustMutations(scope)
     val activityLog = ActivityLog()
     val activityText: ActivityText = AndroidActivityText(app)
 

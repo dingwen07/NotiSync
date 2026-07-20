@@ -7,6 +7,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.IncomingTrustResult
 import net.extrawdw.apps.notisync.data.Peer
 import net.extrawdw.apps.notisync.data.PendingRotation
+import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustState
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.transport.DeliveryMode
@@ -138,8 +139,17 @@ class FakeTrustState : TrustState {
         return profileApplies
     }
 
-    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
-        foldedTables.add(sender to table); return incomingResult
+    override fun applyIncomingTable(
+        sender: ClientId,
+        table: TrustTable,
+        decisionTime: Long,
+        shouldAutoApply: (ClientId, TrustPrompt) -> Boolean,
+    ): IncomingTrustResult {
+        foldedTables.add(sender to table)
+        return incomingResult.copy(
+            automaticallyAppliedPrompts = incomingResult.prompts
+                .filterTo(mutableSetOf()) { (id, prompt) -> shouldAutoApply(id, prompt) },
+        )
     }
 
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
