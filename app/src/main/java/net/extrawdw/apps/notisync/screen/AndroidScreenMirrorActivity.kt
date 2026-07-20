@@ -72,6 +72,8 @@ import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
 import androidx.compose.material.icons.outlined.VerticalAlignTop
+import androidx.compose.material.icons.outlined.Visibility
+import androidx.compose.material.icons.outlined.VisibilityOff
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -130,6 +132,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
     internal val viewerToken: String = UUID.randomUUID().toString()
     internal val pictureInPictureChromeHidden = mutableStateOf(false)
     internal val renderingAllowed = mutableStateOf(true)
+    internal val statusBarVisible = mutableStateOf(true)
     private lateinit var sourceId: ClientId
     private lateinit var requesterLeaseId: String
     private var pictureInPictureEligible = false
@@ -149,17 +152,18 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         requesterLeaseId = savedInstanceState?.getString(STATE_REQUESTER_LEASE_ID)
             ?.takeIf { it.isNotBlank() && it.length <= MAX_REQUESTER_LEASE_ID_LENGTH }
             ?: UUID.randomUUID().toString()
+        statusBarVisible.value = savedInstanceState?.getBoolean(STATE_STATUS_BAR_VISIBLE) ?: true
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
-        hideNavigationChrome()
+        applySystemChrome()
         setContent {
             NotiSyncTheme {
                 AndroidScreenMirrorViewer(
                     activity = this,
                     sourceId = sourceId,
                     requesterLeaseId = requesterLeaseId,
-                    onImeDismissed = ::hideNavigationChrome,
+                    onImeDismissed = ::applySystemChrome,
                     onClose = ::closeSessionAndTask,
                 )
             }
@@ -170,24 +174,34 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         if (::requesterLeaseId.isInitialized) {
             outState.putString(STATE_REQUESTER_LEASE_ID, requesterLeaseId)
         }
+        outState.putBoolean(STATE_STATUS_BAR_VISIBLE, statusBarVisible.value)
         super.onSaveInstanceState(outState)
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
         // Transient system bars can reappear after dialogs or the software keyboard. Restore the
-        // viewer's immersive navigation state without hiding the status bar.
-        if (hasFocus) hideNavigationChrome()
+        // viewer's selected status-bar visibility and always-hidden navigation chrome.
+        if (hasFocus) applySystemChrome()
     }
 
-    private fun hideNavigationChrome() {
+    private fun applySystemChrome() {
         WindowCompat.getInsetsController(window, window.decorView).apply {
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            show(WindowInsetsCompat.Type.statusBars())
+            if (statusBarVisible.value) {
+                show(WindowInsetsCompat.Type.statusBars())
+            } else {
+                hide(WindowInsetsCompat.Type.statusBars())
+            }
             isAppearanceLightStatusBars = false
             hide(WindowInsetsCompat.Type.navigationBars())
         }
+    }
+
+    internal fun setStatusBarVisible(visible: Boolean) {
+        statusBarVisible.value = visible
+        applySystemChrome()
     }
 
     override fun onResume() {
@@ -244,7 +258,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         enteringPictureInPicture = false
         pictureInPictureChromeHidden.value = isInPictureInPictureMode
         if (isInPictureInPictureMode) renderingAllowed.value = true
-        if (!isInPictureInPictureMode) hideNavigationChrome()
+        if (!isInPictureInPictureMode) applySystemChrome()
     }
 
     internal fun updatePictureInPicturePolicy(
@@ -311,6 +325,8 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         private const val EXTRA_SOURCE_ID = "net.extrawdw.apps.notisync.screen.SOURCE_ID"
         private const val STATE_REQUESTER_LEASE_ID =
             "net.extrawdw.apps.notisync.screen.REQUESTER_LEASE_ID"
+        private const val STATE_STATUS_BAR_VISIBLE =
+            "net.extrawdw.apps.notisync.screen.STATUS_BAR_VISIBLE"
         private const val MAX_REQUESTER_LEASE_ID_LENGTH = 128
         private const val PICTURE_IN_PICTURE_TRANSITION_TIMEOUT_MS = 1_000L
 
@@ -361,6 +377,7 @@ private fun AndroidScreenMirrorViewer(
     val toolbarPreferenceStore = graph?.screenViewerToolbarPreferences
     val pipChromeHidden by activity.pictureInPictureChromeHidden
     val renderingAllowed by activity.renderingAllowed
+    val statusBarVisible by activity.statusBarVisible
     val closeViewer = onClose
 
     val localPermissionRequired = Build.VERSION.SDK_INT >= 37
@@ -691,6 +708,8 @@ private fun AndroidScreenMirrorViewer(
                 control = control,
                 onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
                 onClose = closeViewer,
+                statusBarVisible = statusBarVisible,
+                onStatusBarVisibilityChanged = activity::setStatusBarVisible,
                 onControlVisibilityChanged = { viewerControl, visible ->
                     if (
                         (viewerControl in toolbarPreferences.pinnedControls) != visible &&
@@ -740,6 +759,8 @@ private fun AndroidScreenViewerToolbar(
     control: AndroidScreenControlDispatcher?,
     onShowKeyboard: () -> Unit,
     onClose: () -> Unit,
+    statusBarVisible: Boolean,
+    onStatusBarVisibilityChanged: (Boolean) -> Unit,
     onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -880,6 +901,33 @@ private fun AndroidScreenViewerToolbar(
                                         ScreenViewerToolbarEdge.TOP
                                     }
                                 toolbarScope.launch { dragState.animateTo(nextEdge) }
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    stringResource(
+                                        if (statusBarVisible) {
+                                            R.string.screen_viewer_hide_status_bar
+                                        } else {
+                                            R.string.screen_viewer_show_status_bar
+                                        },
+                                    ),
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (statusBarVisible) {
+                                        Icons.Outlined.VisibilityOff
+                                    } else {
+                                        Icons.Outlined.Visibility
+                                    },
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onStatusBarVisibilityChanged(!statusBarVisible)
                             },
                         )
                     }

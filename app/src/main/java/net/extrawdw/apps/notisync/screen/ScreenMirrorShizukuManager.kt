@@ -252,7 +252,11 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         serviceFlow.value = null
         binding.set(false)
         connection?.let { runCatching { Shizuku.unbindUserService(userServiceArgs, it, true) } }
-        _status.value = if (Shizuku.pingBinder()) ShizukuScreenStatus.READY else ShizukuScreenStatus.NOT_RUNNING
+        _status.value = if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
+            ShizukuScreenStatus.READY
+        } else {
+            ShizukuScreenStatus.NOT_RUNNING
+        }
     }
 
     override fun close() {

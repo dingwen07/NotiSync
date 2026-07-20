@@ -1,4 +1,4 @@
-<resources>
+<resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name" translatable="false">NotiSync</string>
 
     <!-- Navigation tabs / screen titles -->
@@ -342,7 +342,7 @@
     <string name="device_capability_screen_clipboard">Screen clipboard</string>
     <string name="device_capability_screen_h264">Hardware H.264</string>
     <string name="device_capability_screen_h265">Hardware H.265</string>
-    <string name="device_capability_screen_av1">Hardware AV1</string>
+    <string name="device_capability_screen_av1" tools:ignore="Typos">Hardware AV1</string>
     <string name="device_capability_screen_visibility">Background video pause</string>
     <string name="screen_mirror_settings_title">Screen sharing and control (Experimental)</string>
     <string name="screen_mirror_settings_body">Allow authorized devices of yours to view and control this screen over the local network using Shizuku.</string>
@@ -365,7 +365,7 @@
     <string name="screen_mirror_codec_title">Video codec</string>
     <string name="screen_mirror_codec_body">Auto prefers AV1, then H.265, with H.264 as fallback. AV1 and H.265 require hardware decoding on this device; the source must support matching hardware encoding.</string>
     <string name="screen_mirror_codec_auto">Auto</string>
-    <string name="screen_mirror_codec_av1">AV1</string>
+    <string name="screen_mirror_codec_av1" tools:ignore="Typos">AV1</string>
     <string name="screen_mirror_codec_h265">H.265</string>
     <string name="screen_mirror_codec_h264">H.264</string>
     <string name="screen_mirror_request_channel">Screen control requests</string>
@@ -414,6 +414,8 @@
     </plurals>
     <string name="screen_viewer_move_toolbar_top">Move toolbar to top</string>
     <string name="screen_viewer_move_toolbar_bottom">Move toolbar to bottom</string>
+    <string name="screen_viewer_hide_status_bar">Hide status bar</string>
+    <string name="screen_viewer_show_status_bar">Show status bar</string>
     <string name="screen_viewer_done">Done</string>
     <string name="device_capability_push_filtering">Push filtering</string>
     <string name="device_capability_notification_updates">Notification updates</string>

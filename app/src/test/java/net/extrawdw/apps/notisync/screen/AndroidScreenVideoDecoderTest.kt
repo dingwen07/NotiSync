@@ -79,7 +79,7 @@ class AndroidScreenVideoDecoderTest {
 
         assertFalse(decodeThread.isAlive)
         assertEquals(null, failure.get())
-        assertTrue(input.closed)
+        assertTrue(input.awaitClosed(2, TimeUnit.SECONDS))
     }
 
     private fun stream(vararg records: ByteArray): ByteArray = ByteArrayOutputStream().apply {
@@ -125,6 +125,7 @@ class AndroidScreenVideoDecoderTest {
     ) : InputStream() {
         private var offset = 0
         private val lock = Object()
+        private val closedSignal = CountDownLatch(1)
 
         @Volatile
         var closed = false
@@ -153,7 +154,11 @@ class AndroidScreenVideoDecoderTest {
                 closed = true
                 lock.notifyAll()
             }
+            closedSignal.countDown()
         }
+
+        fun awaitClosed(timeout: Long, unit: TimeUnit): Boolean =
+            closedSignal.await(timeout, unit)
     }
 
     private companion object {

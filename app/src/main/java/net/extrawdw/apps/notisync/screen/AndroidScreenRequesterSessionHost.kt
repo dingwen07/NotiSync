@@ -385,15 +385,13 @@ internal class AndroidScreenRequesterSessionHost(
             }
         } ?: return false
 
-        // Cancellation is deliberately non-blocking. Java/Bouncy Castle socket reads do not
-        // respond to coroutine cancellation, so an independent daemon cleanup lane closes the
-        // raw transport first. Never make an Activity, FGS command, or StateFlow collector wait
-        // for TLS close_notify or an OEM network stack here.
-        attempt.job?.cancel()
         // AndroidScreenMirrorRequester.closeOwner atomically retires logical ownership and queues
-        // terminal delivery without waiting for physical cleanup. Do this before Stop returns so a
-        // fast retry cannot race the old requester's active slot.
+        // terminal delivery and raw-socket cleanup without waiting for it. Do this before Stop
+        // returns so a fast retry cannot race the old requester's active slot.
         closeAttemptOwner(attempt)
+        // Even Job.cancel() can synchronously invoke arbitrary cancellation handlers. Run it with
+        // all physical consumers on the disposable cleanup lane so Activity/FGS main never owns a
+        // potentially blocking teardown operation.
         scheduleCleanup(attempt)
         return true
     }
@@ -402,6 +400,7 @@ internal class AndroidScreenRequesterSessionHost(
         if (!attempt.cleanupStarted.compareAndSet(false, true)) return
         Thread(
             {
+                runCatching { attempt.job?.cancel() }
                 runCatching { attempt.session?.close() }
                 runCatching { attempt.decoder?.close() }
                 runCatching { attempt.dispatcher?.close() }

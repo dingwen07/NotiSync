@@ -29,6 +29,7 @@ class PskTlsTransportTest {
         val protocolStarted = CountDownLatch(1)
         val releaseProtocol = CountDownLatch(1)
         val protocolFinished = CountDownLatch(1)
+        val closeReturned = CountDownLatch(1)
         val socket = object : Socket() {
             override fun close() {
                 synchronized(closeOrder) { closeOrder += "socket" }
@@ -48,12 +49,22 @@ class PskTlsTransportTest {
             socket = socket,
         )
 
-        channel.close()
-        channel.close()
+        try {
+            Thread {
+                channel.close()
+                closeReturned.countDown()
+            }.start()
 
-        assertTrue(protocolStarted.await(2, TimeUnit.SECONDS))
-        assertEquals(listOf("socket", "protocol"), synchronized(closeOrder) { closeOrder.toList() })
-        releaseProtocol.countDown()
+            assertTrue(closeReturned.await(500, TimeUnit.MILLISECONDS))
+            assertTrue(protocolStarted.await(2, TimeUnit.SECONDS))
+            assertEquals(
+                listOf("socket", "protocol"),
+                synchronized(closeOrder) { closeOrder.toList() },
+            )
+            channel.close()
+        } finally {
+            releaseProtocol.countDown()
+        }
         assertTrue(protocolFinished.await(2, TimeUnit.SECONDS))
     }
 

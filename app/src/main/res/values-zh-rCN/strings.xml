@@ -399,6 +399,8 @@
     </plurals>
     <string name="screen_viewer_move_toolbar_top">将工具栏移到顶部</string>
     <string name="screen_viewer_move_toolbar_bottom">将工具栏移到底部</string>
+    <string name="screen_viewer_hide_status_bar">隐藏状态栏</string>
+    <string name="screen_viewer_show_status_bar">显示状态栏</string>
     <string name="screen_viewer_done">完成</string>
     <string name="device_capability_push_filtering">推送过滤</string>
     <string name="device_capability_notification_updates">通知更新</string>

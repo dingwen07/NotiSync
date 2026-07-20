@@ -462,6 +462,7 @@ class ScreenMirrorSessionController(
         var next: PendingRequest? = null
         var rejected: Pair<ScreenMirrorStatus, String>? = null
         var rejectedHolder: PendingRequest? = null
+        var effectiveForcedPromotionFailure = forcedPromotionFailure
         fun completeLocked(): Boolean {
             val completion = sessions.complete(holder)
             if (!completion.owned) return false
@@ -476,7 +477,7 @@ class ScreenMirrorSessionController(
                 _state.value = AndroidScreenSessionState.IDLE
                 return true
             }
-            val failure = forcedPromotionFailure ?: runtimeAdmissionFailure(candidate)
+            val failure = effectiveForcedPromotionFailure ?: runtimeAdmissionFailure(candidate)
             if (failure != null) {
                 rejected = failure
                 rejectedHolder = candidate
@@ -497,7 +498,7 @@ class ScreenMirrorSessionController(
             if (pending !== holder) return
             val candidate = sessions.replacement
             val candidateFailure = candidate?.let {
-                forcedPromotionFailure ?: runtimeAdmissionFailure(it)
+                effectiveForcedPromotionFailure ?: runtimeAdmissionFailure(it)
             }
             // Keep the old holder installed while the potentially blocking Shizuku unbind runs.
             // A request arriving in that window can only become a queued replacement, and is
@@ -507,7 +508,10 @@ class ScreenMirrorSessionController(
             if (!removeBeforeCompletion) owned = completeLocked()
         }
         if (removeBeforeCompletion) {
-            shizuku.removeUserService()
+            runCatching { shizuku.removeUserService() }.onFailure {
+                effectiveForcedPromotionFailure = ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                    "failed to remove privileged screen service"
+            }
             synchronized(lock) {
                 owned = completeLocked()
             }
@@ -590,6 +594,7 @@ class ScreenMirrorSessionController(
         onFinished: () -> Unit,
     ): Boolean {
         var expired: PendingRequest? = null
+        var notificationToCancel: PendingRequest? = null
         val launched = synchronized(lock) {
             val holder = pending?.takeIf {
                 it.request.sessionId == sessionId &&
@@ -722,8 +727,12 @@ class ScreenMirrorSessionController(
             // Publish the cancellable owner before opening its body. ATOMIC start guarantees that
             // even a cancellation before its first dispatch still executes the cleanup above.
             launchedSession.releaseAfterInstallation()
-            cancelPendingNotification(holder)
+            notificationToCancel = holder
             true
+        }
+
+        notificationToCancel?.let { holder ->
+            launchTeardown { runCatching { cancelPendingNotification(holder) } }
         }
 
         expired?.let { holder ->
@@ -901,27 +910,29 @@ class ScreenMirrorSessionController(
     }.getOrDefault(false)
 
     private fun postTapToStart(holder: PendingRequest) {
+        // NotificationManager is a Binder service. Run the whole fallback path away from FGS main
+        // and convert any OEM notification failure into the same exact pre-transport terminal
+        // transition as an unavailable permission/service.
+        launchTeardown {
+            runCatching { postTapToStartOnTeardownLane(holder) }.onFailure {
+                failPendingBeforeTransport(
+                    holder,
+                    "foreground start notification unavailable",
+                )
+            }
+        }
+    }
+
+    private fun postTapToStartOnTeardownLane(holder: PendingRequest) {
         val request = holder.request
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
             PackageManager.PERMISSION_GRANTED
         ) {
-            stopInternal(
-                sessionId = request.sessionId,
-                notifyPeer = false,
-                authenticatedStop = null,
-                foregroundLeaseId = holder.foregroundLeaseId,
-            )
-            sendStatus(request, ScreenMirrorStatus.TRANSPORT_FAILED, "foreground start unavailable")
+            failPendingBeforeTransport(holder, "foreground start unavailable")
             return
         }
         val manager = context.getSystemService(NotificationManager::class.java) ?: run {
-            stopInternal(
-                sessionId = request.sessionId,
-                notifyPeer = false,
-                authenticatedStop = null,
-                foregroundLeaseId = holder.foregroundLeaseId,
-            )
-            sendStatus(request, ScreenMirrorStatus.TRANSPORT_FAILED, "notification service unavailable")
+            failPendingBeforeTransport(holder, "notification service unavailable")
             return
         }
         manager.createNotificationChannel(
@@ -963,6 +974,25 @@ class ScreenMirrorSessionController(
         // stale fallback; an identical remote session id may already belong to its replacement.
         val remainsCurrent = synchronized(lock) { pending === holder && !holder.stopRequested }
         if (!remainsCurrent) manager.cancel(notificationId)
+    }
+
+    /** Atomically owns the only terminal status for a request that never started transport. */
+    private fun failPendingBeforeTransport(holder: PendingRequest, detail: String) {
+        val claimed = synchronized(lock) {
+            if (pending !== holder || sessionJob != null || holder.stopRequested) {
+                false
+            } else {
+                holder.stopRequested = true
+                holder.foregroundWatchdog?.cancel()
+                holder.foregroundWatchdog = null
+                expiryJob?.cancel()
+                expiryJob = null
+                _state.value = AndroidScreenSessionState.STOPPING
+                sendStatus(holder.request, ScreenMirrorStatus.TRANSPORT_FAILED, detail)
+                true
+            }
+        }
+        if (claimed) finishStoppedPending(holder)
     }
 
     private fun cancelPendingNotification(holder: PendingRequest) {
