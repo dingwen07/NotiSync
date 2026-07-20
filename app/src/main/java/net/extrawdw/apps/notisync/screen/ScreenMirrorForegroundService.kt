@@ -1,8 +1,6 @@
 package net.extrawdw.apps.notisync.screen
 
 import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
@@ -12,6 +10,7 @@ import android.os.IBinder
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
+import java.lang.ref.WeakReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -28,6 +27,12 @@ class ScreenMirrorForegroundService : Service() {
         SupervisorJob() + Dispatchers.Default + crashGuard("ScreenMirrorForegroundService"),
     )
     private val ownership = ScreenMirrorForegroundOwnership()
+    private var connectedSessionId: String? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        activeService = WeakReference(this)
+    }
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,12 +71,17 @@ class ScreenMirrorForegroundService : Service() {
                 finishOwnedSession(requestedId)
                 return START_NOT_STICKY
             }
-        ensureChannel()
+        val channelId = ScreenMirrorNotificationChannels.ensureSourceConnecting(this)
         val foregroundStarted = runCatching {
             ServiceCompat.startForeground(
                 this,
                 NOTIFICATION_ID,
-                buildNotification(requestedId, controllerLabel),
+                buildNotification(
+                    id = requestedId,
+                    controllerLabel = controllerLabel,
+                    channelId = channelId,
+                    connected = false,
+                ),
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
             )
         }.isSuccess
@@ -102,6 +112,8 @@ class ScreenMirrorForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        if (activeService?.get() === this) activeService = null
+        connectedSessionId = null
         val abandoned = ownership.abandon()
         if (abandoned?.foregroundOwned == true) {
             (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
@@ -119,17 +131,31 @@ class ScreenMirrorForegroundService : Service() {
         stopSelf(finished.latestStartId)
     }
 
-    private fun ensureChannel() {
-        getSystemService(NotificationManager::class.java)?.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                getString(R.string.screen_mirror_service_channel),
-                NotificationManager.IMPORTANCE_LOW,
-            ),
-        )
+    private fun markConnectedIfOwned(sessionId: String, controllerLabel: String) {
+        if (!ownership.isOwnedBy(sessionId) || connectedSessionId == sessionId) return
+        val channelId = ScreenMirrorNotificationChannels.ensureSource(this)
+        val updated = runCatching {
+            ServiceCompat.startForeground(
+                this,
+                NOTIFICATION_ID,
+                buildNotification(
+                    id = sessionId,
+                    controllerLabel = controllerLabel,
+                    channelId = channelId,
+                    connected = true,
+                ),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE,
+            )
+        }.isSuccess
+        if (updated) connectedSessionId = sessionId
     }
 
-    private fun buildNotification(id: String, controllerLabel: String): Notification {
+    private fun buildNotification(
+        id: String,
+        controllerLabel: String,
+        channelId: String,
+        connected: Boolean,
+    ): Notification {
         val stop = PendingIntent.getService(
             this,
             ("stop:$id").hashCode(),
@@ -147,25 +173,51 @@ class ScreenMirrorForegroundService : Service() {
             },
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
-            .setContentTitle(getString(R.string.screen_mirror_service_title))
-            .setContentText(getString(R.string.screen_mirror_service_body, controllerLabel))
+            .setContentTitle(
+                getString(
+                    if (connected) {
+                        R.string.screen_mirror_service_title
+                    } else {
+                        R.string.screen_mirror_service_connecting_title
+                    },
+                ),
+            )
+            .setContentText(
+                getString(
+                    if (connected) {
+                        R.string.screen_mirror_service_body
+                    } else {
+                        R.string.screen_mirror_service_connecting_body
+                    },
+                    controllerLabel,
+                ),
+            )
             .setContentIntent(open)
             .setOngoing(true)
-            .setOnlyAlertOnce(true)
+            // The first notification is deliberately quiet. The channel transition at READY is
+            // the one update that must be allowed to alert.
+            .setOnlyAlertOnce(!connected)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
+            .setPriority(
+                if (connected) NotificationCompat.PRIORITY_HIGH else NotificationCompat.PRIORITY_LOW,
+            )
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .addAction(0, getString(R.string.screen_mirror_stop), stop)
             .build()
     }
 
     companion object {
-        private const val CHANNEL_ID = "notisync.screen.session"
         private const val NOTIFICATION_ID = 0x4E53 // "NS"
         private const val ACTION_START = "net.extrawdw.apps.notisync.screen.START"
         private const val ACTION_STOP = "net.extrawdw.apps.notisync.screen.STOP"
         private const val EXTRA_SESSION_ID = "session_id"
         private const val EXTRA_CONTROLLER_LABEL = "controller_label"
+
+        @Volatile
+        private var activeService: WeakReference<ScreenMirrorForegroundService>? = null
 
         fun start(context: Context, sessionId: String, controllerLabel: String) {
             ContextCompat.startForegroundService(
@@ -189,6 +241,14 @@ class ScreenMirrorForegroundService : Service() {
                 },
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             )
+
+        /** Promotes the quiet preparing notification only for the exact FGS-owned ready session. */
+        fun markConnected(context: Context, sessionId: String, controllerLabel: String) {
+            val safeLabel = ScreenControllerLabel.fromIntent(controllerLabel) ?: return
+            ContextCompat.getMainExecutor(context).execute {
+                activeService?.get()?.markConnectedIfOwned(sessionId, safeLabel)
+            }
+        }
 
         fun stop(context: Context) {
             context.stopService(Intent(context, ScreenMirrorForegroundService::class.java))

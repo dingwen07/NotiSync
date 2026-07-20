@@ -65,6 +65,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.run.RunKey
+import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -407,6 +408,9 @@ private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier 
         },
         onOpenListenerSettings = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        },
+        onStartScreenMirror = { sourceId ->
+            context.startActivity(AndroidScreenMirrorActivity.intent(context, sourceId))
         },
     )
 }

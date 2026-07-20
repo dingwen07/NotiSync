@@ -217,6 +217,11 @@ class ScreenMirrorSessionController(
                         onReady = {
                             ready = true
                             _state.value = AndroidScreenSessionState.ACTIVE
+                            ScreenMirrorForegroundService.markConnected(
+                                context,
+                                holder.request.sessionId,
+                                controllerLabel(holder.request),
+                            )
                             sendStatus(holder.request, ScreenMirrorStatus.READY)
                         },
                     )

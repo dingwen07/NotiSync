@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ScreenShare
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Contactless
 import androidx.compose.material.icons.outlined.NotificationsOff
@@ -67,6 +68,7 @@ fun DevicesScreen(
     onPair: () -> Unit,
     onRequestPostNotifications: () -> Unit,
     onOpenListenerSettings: () -> Unit,
+    onStartScreenMirror: (ClientId) -> Unit = {},
     pairButtonModifier: Modifier = Modifier,
 ) {
     val graph = rememberGraph()
@@ -194,6 +196,7 @@ fun DevicesScreen(
                             filterSheetFor = null
                             detailsSheetFor = it.clientId
                         },
+                        onStartScreenMirror = { onStartScreenMirror(it.clientId) },
                     )
                 }
             }
@@ -243,8 +246,13 @@ fun DevicesScreen(
                     device = device,
                     screenMirroringEnabled = screenMirroringEnabled,
                     screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
+                    screenMirrorRequestEnabled = !quarantined,
                     onScreenControlAuthorizedChange = { authorized ->
                         graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                    },
+                    onStartScreenMirror = {
+                        detailsSheetFor = null
+                        onStartScreenMirror(device.clientId)
                     },
                     onDismiss = { detailsSheetFor = null },
                 )
@@ -261,6 +269,7 @@ private fun DeviceListCard(
     enabled: Boolean = true,
     onShowFilters: (RosterDevice) -> Unit = {},
     onShowDetails: (RosterDevice) -> Unit = {},
+    onStartScreenMirror: (RosterDevice) -> Unit = {},
 ) {
     val context = LocalContext.current
     val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
@@ -273,6 +282,7 @@ private fun DeviceListCard(
                     enabled = enabled,
                     onShowFilters = { onShowFilters(device) },
                     onShowDetails = { onShowDetails(device) },
+                    onStartScreenMirror = { onStartScreenMirror(device) },
                     hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
                     // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
                     onApprove = {
@@ -436,6 +446,7 @@ private fun DeviceRow(
     enabled: Boolean = true,
     onShowFilters: () -> Unit = {},
     onShowDetails: () -> Unit = {},
+    onStartScreenMirror: () -> Unit = {},
     hasFilters: Boolean = false,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
@@ -502,6 +513,17 @@ private fun DeviceRow(
                 // Own devices also expose the notification-filters this device received from them (DATA_SYNC
                 // FILTER) — what this device won't forward to that peer.
                 TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (device.supportsScreenMirrorRequest()) {
+                        IconButton(onClick = onStartScreenMirror, enabled = enabled) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.ScreenShare,
+                                contentDescription = stringResource(
+                                    R.string.screen_mirror_device_start_desc,
+                                    name,
+                                ),
+                            )
+                        }
+                    }
                     // Only own devices send filters; disabled when this device is hiding nothing from them.
                     if (device.ownDevice) {
                         IconButton(onClick = onShowFilters, enabled = enabled && hasFilters) {

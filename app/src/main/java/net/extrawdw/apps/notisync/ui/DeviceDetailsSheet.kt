@@ -11,7 +11,10 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ScreenShare
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -35,6 +38,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.TrustStatus
 import java.text.DateFormat
 import java.util.Date
@@ -49,7 +53,9 @@ internal fun DeviceDetailsSheet(
     device: RosterDevice,
     screenMirroringEnabled: Boolean,
     screenControlAuthorized: Boolean,
+    screenMirrorRequestEnabled: Boolean = true,
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
+    onStartScreenMirror: (ClientId) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -101,6 +107,25 @@ internal fun DeviceDetailsSheet(
             }
             item {
                 DeviceCapabilities(device.capabilities)
+            }
+            if (device.supportsScreenMirrorRequest()) {
+                item {
+                    Button(
+                        onClick = { onStartScreenMirror(device.clientId) },
+                        enabled = screenMirrorRequestEnabled,
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ScreenShare,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                        )
+                        androidx.compose.foundation.layout.Spacer(
+                            Modifier.size(ButtonDefaults.IconSpacing)
+                        )
+                        Text(stringResource(R.string.screen_mirror_device_start))
+                    }
+                }
             }
             if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
                 item {

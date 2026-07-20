@@ -98,6 +98,9 @@ import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
+import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorRequester
+import net.extrawdw.apps.notisync.screen.AndroidScreenSource
+import net.extrawdw.apps.notisync.screen.AndroidScreenSourceResolver
 import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorCapabilityProvider
 import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
@@ -128,6 +131,7 @@ import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
+import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.time.ZonedDateTime
@@ -260,6 +264,8 @@ class AppGraph(private val app: Application) {
     lateinit var screenMirrorCapabilities: ScreenMirrorCapabilityProvider
         private set
     var screenMirrorController: ScreenMirrorSessionController? = null
+        private set
+    internal var screenMirrorRequester: AndroidScreenMirrorRequester? = null
         private set
 
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
@@ -429,6 +435,43 @@ class AppGraph(private val app: Application) {
             peerName = { id -> trust.displayName(id) },
         )
         screenMirrorController = screenController
+        val screenSourceResolver = AndroidScreenSourceResolver { clientId ->
+            if (trust.quarantined.value) return@AndroidScreenSourceResolver null
+            trust.roster.value.firstOrNull { device ->
+                device.clientId == clientId &&
+                    device.ownDevice &&
+                    device.status == TrustStatus.TRUSTED &&
+                    device.keyAvailable &&
+                    device.verified &&
+                    device.currentEpoch > 0
+            }?.let { device ->
+                AndroidScreenSource(
+                    clientId = device.clientId,
+                    displayName = device.displayName ?: device.clientId.shortForm(),
+                    capabilities = device.capabilities.toSet(),
+                )
+            }
+        }
+        val screenRequester = AndroidScreenMirrorRequester(
+            context = app,
+            ownClientId = identity.clientId,
+            channel = channel,
+            sourceResolver = screenSourceResolver,
+            scope = scope,
+        )
+        screenMirrorRequester = screenRequester
+        trust.roster
+            .onEach {
+                screenRequester.state.value.sourceId?.let { sourceId ->
+                    if (screenSourceResolver.resolve(sourceId) == null) {
+                        screenRequester.close()
+                    }
+                }
+            }
+            .launchIn(scope)
+        trust.quarantined
+            .onEach { quarantined -> if (quarantined) screenRequester.close() }
+            .launchIn(scope)
         settings.screenMirroringEnabled
             .onEach { enabled ->
                 if (enabled) screenMirrorShizuku.refresh()
@@ -535,7 +578,10 @@ class AppGraph(private val app: Application) {
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
-            onScreenMirrorSync = screenController::onScreenMirrorSync,
+            onScreenMirrorSync = { message, sync ->
+                screenController.onScreenMirrorSync(message, sync)
+                screenRequester.onScreenMirrorSync(message, sync)
+            },
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.

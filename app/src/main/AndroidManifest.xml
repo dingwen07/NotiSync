@@ -114,6 +114,17 @@
             </intent-filter>
         </activity>
 
+        <!-- Foreground-only Android requester/viewer. It owns no background service: leaving this
+             Activity tears down both authenticated LAN channels and stops remote capture. -->
+        <activity
+            android:name=".screen.AndroidScreenMirrorActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenSize|smallestScreenSize"
+            android:enableOnBackInvokedCallback="true"
+            android:exported="false"
+            android:label="@string/screen_viewer_task_title"
+            android:taskAffinity="${applicationId}.screen_viewer"
+            android:theme="@style/Theme.NotiSync" />
+
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains
              callable by browsers. Android 17 requires NFC-dispatched activities in target-37 apps to be

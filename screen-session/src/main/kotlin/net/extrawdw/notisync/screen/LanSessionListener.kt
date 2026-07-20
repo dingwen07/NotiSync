@@ -3,7 +3,6 @@ package net.extrawdw.notisync.screen
 import java.io.IOException
 import java.net.InetAddress
 import java.net.InetSocketAddress
-import java.net.StandardProtocolFamily
 import java.nio.channels.SelectionKey
 import java.nio.channels.Selector
 import java.nio.channels.ServerSocketChannel
@@ -230,14 +229,11 @@ class LanSessionListener private constructor(
             val failures = mutableListOf<Exception>()
             try {
                 for (address in addresses) {
-                    val family = if (address.address.address.size == 4) {
-                        StandardProtocolFamily.INET
-                    } else {
-                        StandardProtocolFamily.INET6
-                    }
                     var channel: ServerSocketChannel? = null
                     try {
-                        val opened = ServerSocketChannel.open(family)
+                        // Android exposes only ServerSocketChannel.open(). Binding the channel to
+                        // this concrete InetAddress still selects the required IPv4/IPv6 family.
+                        val opened = ServerSocketChannel.open()
                         channel = opened
                         opened.bind(InetSocketAddress(address.address, 0), backlog)
                         opened.configureBlocking(false)
