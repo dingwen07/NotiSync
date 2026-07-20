@@ -45,10 +45,11 @@ class SecureSessionChannel internal constructor(
         if (!closed.compareAndSet(false, true)) return
 
         // Bouncy Castle synchronizes protocol reads and close_notify writes. Closing
-        // the transport first releases a thread blocked in a TLS read before asking
-        // the protocol to perform its best-effort shutdown.
+        // the transport first releases a thread blocked in a TLS read. Protocol shutdown is only
+        // best effort after that abort and must never hold up closure of the session's other
+        // channel on an OEM where the reader is slow to unwind.
         runCatching { socket.close() }
-        runCatching { closeProtocol() }
+        closeProtocolInBackground(closeProtocol)
     }
 }
 
@@ -86,8 +87,8 @@ object PskTlsClient {
                 socket,
             )
         } catch (error: Throwable) {
-            runCatching { protocol.close() }
             runCatching { socket.close() }
+            closeProtocolInBackground(protocol::close)
             throw error
         } finally {
             identity.fill(0)
@@ -140,11 +141,25 @@ object PskTlsServer {
         } catch (error: Throwable) {
             lease?.finish(false)
             peer.releaseLease()
-            runCatching { protocol.close() }
             runCatching { socket.close() }
+            closeProtocolInBackground(protocol::close)
             throw error
         } finally {
             peer.destroyPsk()
+        }
+    }
+}
+
+private fun closeProtocolInBackground(closeProtocol: () -> Unit) {
+    // Thread construction/start itself is best effort as well. Closing a session must never throw
+    // merely because the runtime cannot create this disposable close_notify worker.
+    runCatching {
+        Thread(
+            { runCatching { closeProtocol() } },
+            "notisync-tls-protocol-close",
+        ).apply {
+            isDaemon = true
+            start()
         }
     }
 }

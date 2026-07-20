@@ -80,8 +80,8 @@ class AndroidScreenRequesterSessionHostTest {
         val cleanupStarted = CountDownLatch(1)
         val fixture = HostFixture(
             capabilities = emptySet(),
-            ownerCloseStarted = cleanupStarted,
-            ownerCloseGate = cleanupGate,
+            physicalCloseStarted = cleanupStarted,
+            physicalCloseGate = cleanupGate,
         )
         val stopReturned = CountDownLatch(1)
         val stopResult = AtomicBoolean()
@@ -125,12 +125,17 @@ class AndroidScreenRequesterSessionHostTest {
 
     private class HostFixture(
         capabilities: Set<Capability>,
-        private val ownerCloseStarted: CountDownLatch? = null,
-        private val ownerCloseGate: CountDownLatch? = null,
+        private val physicalCloseStarted: CountDownLatch? = null,
+        private val physicalCloseGate: CountDownLatch? = null,
     ) : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val control = RecordingOutputStream()
-        val session = FakeSession(capabilities, control)
+        val session = FakeSession(
+            sourceCapabilities = capabilities,
+            controlOutput = control,
+            closeStarted = physicalCloseStarted,
+            closeGate = physicalCloseGate,
+        )
         val ownerCloses = mutableListOf<Pair<String, String>>()
         val host = AndroidScreenRequesterSessionHost(
             scope = scope,
@@ -138,9 +143,6 @@ class AndroidScreenRequesterSessionHostTest {
             openSession = { _, _ -> session },
             closeOwner = { owner, detail ->
                 synchronized(ownerCloses) { ownerCloses += owner to detail }
-                ownerCloseStarted?.countDown()
-                ownerCloseGate?.await()
-                session.close()
             },
             requesterState = {
                 AndroidScreenRequesterState(phase = AndroidScreenRequesterPhase.CONNECTED)
@@ -148,7 +150,7 @@ class AndroidScreenRequesterSessionHostTest {
         )
 
         override fun close() {
-            ownerCloseGate?.countDown()
+            physicalCloseGate?.countDown()
             host.close()
             session.close()
             scope.cancel()
@@ -158,6 +160,8 @@ class AndroidScreenRequesterSessionHostTest {
     private class FakeSession(
         override val sourceCapabilities: Set<Capability>,
         override val controlOutput: OutputStream,
+        private val closeStarted: CountDownLatch? = null,
+        private val closeGate: CountDownLatch? = null,
     ) : AndroidScreenViewerSession {
         private val video = PreambleThenBlockingInputStream()
         override val sessionId = "screen:test"
@@ -171,6 +175,8 @@ class AndroidScreenRequesterSessionHostTest {
 
         override fun close() {
             if (closed.compareAndSet(false, true)) {
+                closeStarted?.countDown()
+                closeGate?.await()
                 closeCount.incrementAndGet()
                 video.close()
                 controlOutput.close()

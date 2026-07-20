@@ -3,7 +3,12 @@ package net.extrawdw.apps.notisync.screen
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
+import kotlinx.coroutines.runBlocking
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
@@ -247,6 +252,84 @@ class ScreenMirrorSessionOwnershipTest {
             assertEquals(1, winners.get())
             assertFalse(claim.tryClaim())
         } finally {
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun atomicSessionOwnerCleansUpWhenCancelledBeforeFirstDispatch() {
+        val executor = Executors.newSingleThreadExecutor()
+        val dispatcher = executor.asCoroutineDispatcher()
+        val blockerStarted = CountDownLatch(1)
+        val releaseDispatcher = CountDownLatch(1)
+        val cleanupFinished = CountDownLatch(1)
+        val cleanupCount = AtomicInteger()
+        val bodyRan = AtomicBoolean(false)
+        try {
+            executor.execute {
+                blockerStarted.countDown()
+                releaseDispatcher.await(2, TimeUnit.SECONDS)
+            }
+            assertTrue(blockerStarted.await(2, TimeUnit.SECONDS))
+
+            val owner = CoroutineScope(SupervisorJob()).launchAtomicScreenMirrorSession(
+                dispatcher = dispatcher,
+                body = { bodyRan.set(true) },
+                cleanup = {
+                    cleanupCount.incrementAndGet()
+                    cleanupFinished.countDown()
+                },
+            )
+            owner.releaseAfterInstallation()
+            owner.job.cancel()
+            releaseDispatcher.countDown()
+
+            assertTrue(cleanupFinished.await(2, TimeUnit.SECONDS))
+            runBlocking { owner.job.join() }
+            assertFalse(bodyRan.get())
+            assertEquals(1, cleanupCount.get())
+        } finally {
+            releaseDispatcher.countDown()
+            dispatcher.close()
+            executor.shutdownNow()
+        }
+    }
+
+    @Test
+    fun atomicSessionOwnerCleansUpWhenCancelledBeforeInstallationGateOpens() {
+        val executor = Executors.newSingleThreadExecutor()
+        val dispatcher = executor.asCoroutineDispatcher()
+        val blockerStarted = CountDownLatch(1)
+        val releaseDispatcher = CountDownLatch(1)
+        val cleanupFinished = CountDownLatch(1)
+        val cleanupCount = AtomicInteger()
+        val bodyRan = AtomicBoolean(false)
+        try {
+            executor.execute {
+                blockerStarted.countDown()
+                releaseDispatcher.await(2, TimeUnit.SECONDS)
+            }
+            assertTrue(blockerStarted.await(2, TimeUnit.SECONDS))
+
+            val owner = CoroutineScope(SupervisorJob()).launchAtomicScreenMirrorSession(
+                dispatcher = dispatcher,
+                body = { bodyRan.set(true) },
+                cleanup = {
+                    cleanupCount.incrementAndGet()
+                    cleanupFinished.countDown()
+                },
+            )
+            owner.job.cancel()
+            owner.releaseAfterInstallation()
+            releaseDispatcher.countDown()
+
+            assertTrue(cleanupFinished.await(2, TimeUnit.SECONDS))
+            runBlocking { owner.job.join() }
+            assertFalse(bodyRan.get())
+            assertEquals(1, cleanupCount.get())
+        } finally {
+            releaseDispatcher.countDown()
+            dispatcher.close()
             executor.shutdownNow()
         }
     }

@@ -427,12 +427,6 @@ internal class AndroidScreenMirrorRequester(
         context.remoteDetail = screen.detail?.take(DETAIL_LIMIT)
             ?: terminalStatus.name.lowercase().replace('_', ' ')
         context.remoteClosed.set(true)
-        // Release authenticated streams first so video/control readers unblock before NSD, Aware,
-        // or OEM network-lifecycle cleanup is allowed to wait.
-        context.session?.closeTransport()
-        context.lanListener?.close()
-        context.awareListener?.close()
-        context.lan?.close()
         synchronized(lock) {
             if (active === context) {
                 active = null
@@ -443,6 +437,7 @@ internal class AndroidScreenMirrorRequester(
                 }
             }
         }
+        scheduleContextCleanup(context)
     }
 
     /** Idempotent local terminal path. Before pair acceptance it sends CANCEL; after it sends END. */
@@ -455,13 +450,10 @@ internal class AndroidScreenMirrorRequester(
         } ?: return
         context.closeDetail = detail.take(DETAIL_LIMIT)
         context.closed.set(true)
-        // Release authenticated streams first so decoder/control readers never wait behind an OEM
-        // listener or Wi-Fi Aware teardown timeout.
-        context.session?.closeTransport()
-        context.lanListener?.close()
-        context.awareListener?.close()
-        context.lan?.close()
+        // Terminal delivery is logically ordered before any OEM network or TLS cleanup. The
+        // status lane is non-blocking and the physical resources are retired independently.
         sendTerminalOnce(context, context.closeDetail)
+        scheduleContextCleanup(context)
     }
 
     /** Close only the attempt owned by one viewer generation; a stale callback is a no-op. */
@@ -505,6 +497,26 @@ internal class AndroidScreenMirrorRequester(
         }
     }
 
+    private fun scheduleContextCleanup(context: RequestContext) {
+        if (!context.cleanupStarted.compareAndSet(false, true)) return
+        runCatching {
+            Thread(
+                {
+                    // Release authenticated streams first so decoder/control readers never wait
+                    // behind NSD, Wi-Fi Aware, or OEM network-lifecycle teardown.
+                    runCatching { context.session?.closeTransport() }
+                    runCatching { context.lanListener?.close() }
+                    runCatching { context.awareListener?.close() }
+                    runCatching { context.lan?.close() }
+                },
+                "notisync-screen-requester-cleanup",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+        }
+    }
+
     private class RequestContext(
         val source: AndroidScreenSource,
         val descriptor: SessionDescriptor,
@@ -516,6 +528,7 @@ internal class AndroidScreenMirrorRequester(
         val terminalSent = AtomicBoolean()
         val closed = AtomicBoolean()
         val remoteClosed = AtomicBoolean()
+        val cleanupStarted = AtomicBoolean()
         @Volatile var closeDetail: String? = null
         @Volatile var remoteDetail: String? = null
         @Volatile var lan: AndroidScreenRequesterLan? = null

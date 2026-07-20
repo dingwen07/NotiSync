@@ -40,6 +40,7 @@ internal class AndroidScreenVideoDecoder(
     private val events = ArrayBlockingQueue<DecoderEvent>(EVENT_QUEUE_CAPACITY)
     private val started = AtomicBoolean()
     private val closed = AtomicBoolean()
+    private val readerCloseStarted = AtomicBoolean()
     private val surfaceLock = Any()
 
     private var requestedSurface: SurfaceAttachment? = null
@@ -204,11 +205,15 @@ internal class AndroidScreenVideoDecoder(
             closed.set(true)
             synchronized(surfaceLock) { requestedSurface = null }
             releaseCodec(codec)
-            runCatching { reader.close() }
             parser.interrupt()
-            if (Thread.currentThread() !== parser) {
-                runCatching { parser.join(READER_JOIN_TIMEOUT_MILLIS) }
+            // A MediaCodec failure may occur while the parser still owns Bouncy Castle's blocking
+            // TLS read lock. Give an already-finishing parser a tiny chance to settle (which keeps
+            // finite-stream cleanup deterministic), but never close that TLS stream synchronously
+            // while it remains blocked. The session owner will abort the raw socket next.
+            if (parser.isAlive && Thread.currentThread() !== parser) {
+                runCatching { parser.join(READER_SETTLE_JOIN_TIMEOUT_MILLIS) }
             }
+            if (parser.isAlive) closeReaderAsync() else closeReaderNow()
             readerThread = null
         }
     }
@@ -216,10 +221,29 @@ internal class AndroidScreenVideoDecoder(
     override fun close() {
         if (!closed.compareAndSet(false, true)) return
         synchronized(surfaceLock) { requestedSurface = null }
-        // Closing the authenticated video input interrupts the parser's only unbounded operation.
-        runCatching { reader.close() }
         readerThread?.interrupt()
         events.offer(DecoderEvent.Wake)
+        // Never make the caller wait on TlsInputStream.close(); raw transport ownership lives one
+        // layer above this decoder and its abort will release the parser.
+        closeReaderAsync()
+    }
+
+    private fun closeReaderNow() {
+        if (!readerCloseStarted.compareAndSet(false, true)) return
+        runCatching { reader.close() }
+    }
+
+    private fun closeReaderAsync() {
+        if (!readerCloseStarted.compareAndSet(false, true)) return
+        runCatching {
+            Thread(
+                { runCatching { reader.close() } },
+                "notisync-screen-video-input-close",
+            ).apply {
+                isDaemon = true
+                start()
+            }
+        }
     }
 
     private fun readEvents() {
@@ -410,7 +434,7 @@ internal class AndroidScreenVideoDecoder(
         private const val MAX_OWNER_TOKEN_LENGTH = 128
         private const val MAX_CACHED_CODEC_CONFIG_PACKETS = 4
         private const val MAX_CACHED_CODEC_CONFIG_BYTES = 1024 * 1024
-        private const val READER_JOIN_TIMEOUT_MILLIS = 1_000L
+        private const val READER_SETTLE_JOIN_TIMEOUT_MILLIS = 25L
         private const val INPUT_DEQUEUE_TIMEOUT_US = 10_000L
         private const val OUTPUT_DEQUEUE_TIMEOUT_US = 5_000L
         private const val END_OF_STREAM_DRAIN_TIMEOUT_NS = 250_000_000L

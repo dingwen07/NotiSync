@@ -9,6 +9,7 @@ import java.time.Clock
 import java.time.Duration
 import java.time.Instant
 import java.time.ZoneOffset
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertArrayEquals
@@ -25,9 +26,12 @@ class PskTlsTransportTest {
     fun `channel close releases socket before protocol and is idempotent`() {
         val fixture = Fixture()
         val closeOrder = mutableListOf<String>()
+        val protocolStarted = CountDownLatch(1)
+        val releaseProtocol = CountDownLatch(1)
+        val protocolFinished = CountDownLatch(1)
         val socket = object : Socket() {
             override fun close() {
-                closeOrder += "socket"
+                synchronized(closeOrder) { closeOrder += "socket" }
             }
         }
         val channel = SecureSessionChannel(
@@ -35,14 +39,22 @@ class PskTlsTransportTest {
             channel = ScreenChannel.VIDEO,
             input = ByteArrayInputStream(byteArrayOf()),
             output = ByteArrayOutputStream(),
-            closeProtocol = { closeOrder += "protocol" },
+            closeProtocol = {
+                synchronized(closeOrder) { closeOrder += "protocol" }
+                protocolStarted.countDown()
+                releaseProtocol.await(2, TimeUnit.SECONDS)
+                protocolFinished.countDown()
+            },
             socket = socket,
         )
 
         channel.close()
         channel.close()
 
-        assertEquals(listOf("socket", "protocol"), closeOrder)
+        assertTrue(protocolStarted.await(2, TimeUnit.SECONDS))
+        assertEquals(listOf("socket", "protocol"), synchronized(closeOrder) { closeOrder.toList() })
+        releaseProtocol.countDown()
+        assertTrue(protocolFinished.await(2, TimeUnit.SECONDS))
     }
 
     @Test

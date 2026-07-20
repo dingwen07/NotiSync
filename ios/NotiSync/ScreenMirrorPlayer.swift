@@ -282,7 +282,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var connected = false
     @Published var showsTextInput = false
-    @Published var obscuresInputText = true
+    @Published var showsInputText = false
     @Published var inputText = ""
     @Published var zoomedOut = false
 
@@ -419,7 +419,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         guard byteCount <= 300, returnAfter || !text.isEmpty else { return }
         inputText = ""
         showsTextInput = false
-        obscuresInputText = true
+        showsInputText = false
         guard let control else { return }
         Task {
             do {
@@ -431,13 +431,13 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 
     func beginTextInput() {
         inputText = ""
-        obscuresInputText = true
+        showsInputText = false
         showsTextInput = true
     }
 
     func cancelTextInput() {
         inputText = ""
-        obscuresInputText = true
+        showsInputText = false
         showsTextInput = false
     }
 
@@ -604,11 +604,11 @@ struct ScreenMirrorPlayerView: View {
                 Form {
                     Section {
                         Group {
-                            if model.obscuresInputText {
+                            if model.showsInputText {
+                                TextField("Text", text: $model.inputText)
+                            } else {
                                 SecureField("Text", text: $model.inputText)
                                     .textContentType(.password)
-                            } else {
-                                TextField("Text", text: $model.inputText)
                             }
                         }
                         .focused($inputIsFocused)
@@ -619,12 +619,12 @@ struct ScreenMirrorPlayerView: View {
                             model.sendInputText()
                         }
 
-                        Toggle("Hide text", isOn: $model.obscuresInputText)
+                        Toggle("Show input", isOn: $model.showsInputText)
                     } footer: {
-                        Text("Sends up to 300 UTF-8 bytes to the focused field.")
+                        Text("Send a maximum of 300 bytes at a time.")
                     }
                 }
-                .navigationTitle("Type on Screen")
+                .navigationTitle("Input")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
@@ -641,7 +641,7 @@ struct ScreenMirrorPlayerView: View {
             .presentationDetents([.height(260)])
             .presentationDragIndicator(.visible)
             .onAppear { inputIsFocused = true }
-            .onChange(of: model.obscuresInputText) { _, _ in inputIsFocused = true }
+            .onChange(of: model.showsInputText) { _, _ in inputIsFocused = true }
             .onDisappear {
                 inputIsFocused = false
                 model.cancelTextInput()
@@ -713,10 +713,10 @@ struct ScreenMirrorPlayerView: View {
 
     private var viewerControlButtons: some View {
         HStack(spacing: 2) {
+            viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
             viewerControl("Back", systemImage: "chevron.backward") { model.sendKey(4) }
             viewerControl("Home", systemImage: "circle") { model.sendKey(3) }
             viewerControl("Recent Apps", systemImage: "square.on.square") { model.sendKey(187) }
-            viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
             viewerControl("Power", systemImage: "power") { model.togglePower() }
         }
         .foregroundStyle(.white)
@@ -768,32 +768,41 @@ private struct ScreenMirrorVideoSurface: UIViewRepresentable {
         let view = ScreenMirrorLayerHostView()
         view.backgroundColor = .black
         view.hostedLayer = layer
-        view.configure(sourceSize: sourceSize, zoomedOut: zoomedOut, animated: false)
+        view.configure(sourceSize: sourceSize, zoomedOut: zoomedOut)
         view.onTouches = onTouches
         return view
     }
 
     func updateUIView(_ uiView: ScreenMirrorLayerHostView, context: Context) {
         uiView.hostedLayer = layer
-        uiView.configure(sourceSize: sourceSize, zoomedOut: zoomedOut, animated: true)
+        uiView.configure(sourceSize: sourceSize, zoomedOut: zoomedOut)
         uiView.onTouches = onTouches
     }
 }
 
 private final class ScreenMirrorLayerHostView: UIView {
     private static let zoomedOutScale: CGFloat = 0.76
-    private static let zoomDuration: CFTimeInterval = 0.32
+    private static let zoomedOutVerticalOffset: CGFloat = 20
+    private static let zoomDuration: CFTimeInterval = 0.24
 
     var onTouches: (([IOSScreenTouchSample], CGSize) -> Void)?
     private var pointerIds: [ObjectIdentifier: UInt64] = [:]
     private var nextPointerId: UInt64 = 0
     private var sourceSize = CGSize.zero
     private var zoomedOut = false
+    private let videoContainerLayer = CALayer()
 
     var hostedLayer: AVSampleBufferDisplayLayer? {
         didSet {
             if oldValue !== hostedLayer { oldValue?.removeFromSuperlayer() }
-            if let hostedLayer, hostedLayer.superlayer !== layer { layer.addSublayer(hostedLayer) }
+            if let hostedLayer, hostedLayer.superlayer !== videoContainerLayer {
+                hostedLayer.setAffineTransform(.identity)
+                hostedLayer.cornerRadius = 0
+                hostedLayer.borderWidth = 0
+                hostedLayer.masksToBounds = false
+                hostedLayer.isOpaque = true
+                videoContainerLayer.addSublayer(hostedLayer)
+            }
             setNeedsLayout()
         }
     }
@@ -802,27 +811,31 @@ private final class ScreenMirrorLayerHostView: UIView {
         super.init(frame: frame)
         isMultipleTouchEnabled = true
         isUserInteractionEnabled = true
+        configureVideoContainer()
     }
 
     required init?(coder: NSCoder) {
         super.init(coder: coder)
         isMultipleTouchEnabled = true
         isUserInteractionEnabled = true
+        configureVideoContainer()
     }
 
     override func layoutSubviews() {
         super.layoutSubviews()
-        guard let hostedLayer else { return }
         let size = aspectFitSourceSize()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        hostedLayer.bounds = CGRect(origin: .zero, size: size)
-        hostedLayer.position = CGPoint(x: bounds.midX, y: bounds.midY)
-        applyZoomState(to: hostedLayer)
+        videoContainerLayer.bounds = CGRect(origin: .zero, size: size)
+        applyZoomState(to: videoContainerLayer, animated: false)
+        if let hostedLayer {
+            hostedLayer.bounds = videoContainerLayer.bounds
+            hostedLayer.position = CGPoint(x: videoContainerLayer.bounds.midX, y: videoContainerLayer.bounds.midY)
+        }
         CATransaction.commit()
     }
 
-    func configure(sourceSize: CGSize, zoomedOut: Bool, animated: Bool) {
+    func configure(sourceSize: CGSize, zoomedOut: Bool) {
         let sourceChanged = self.sourceSize != sourceSize
         if sourceChanged {
             self.sourceSize = sourceSize
@@ -831,12 +844,18 @@ private final class ScreenMirrorLayerHostView: UIView {
         }
         guard self.zoomedOut != zoomedOut else { return }
         self.zoomedOut = zoomedOut
-        guard let hostedLayer else { return }
-        CATransaction.begin()
-        CATransaction.setAnimationDuration(animated ? Self.zoomDuration : 0)
-        CATransaction.setAnimationTimingFunction(CAMediaTimingFunction(name: .easeInEaseOut))
-        applyZoomState(to: hostedLayer)
-        CATransaction.commit()
+        applyZoomState(to: videoContainerLayer, animated: true)
+    }
+
+    private func configureVideoContainer() {
+        isOpaque = true
+        layer.isOpaque = true
+        videoContainerLayer.backgroundColor = UIColor.black.cgColor
+        videoContainerLayer.contentsScale = UIScreen.main.scale
+        videoContainerLayer.allowsEdgeAntialiasing = true
+        videoContainerLayer.isOpaque = true
+        videoContainerLayer.masksToBounds = true
+        layer.addSublayer(videoContainerLayer)
     }
 
     private func aspectFitSourceSize() -> CGSize {
@@ -846,13 +865,59 @@ private final class ScreenMirrorLayerHostView: UIView {
         return CGSize(width: sourceSize.width * scale, height: sourceSize.height * scale)
     }
 
-    private func applyZoomState(to hostedLayer: AVSampleBufferDisplayLayer) {
+    private func applyZoomState(to container: CALayer, animated: Bool) {
         let scale = zoomedOut ? Self.zoomedOutScale : 1
-        hostedLayer.setAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
-        hostedLayer.cornerRadius = zoomedOut ? 18 / scale : 0
-        hostedLayer.borderWidth = zoomedOut ? 1.25 / scale : 0
-        hostedLayer.borderColor = UIColor.white.withAlphaComponent(0.52).cgColor
-        hostedLayer.masksToBounds = zoomedOut
+        let targetPosition = CGPoint(
+            x: bounds.midX,
+            y: bounds.midY + (zoomedOut ? Self.zoomedOutVerticalOffset : 0)
+        )
+        let targetTransform = CATransform3DMakeAffineTransform(CGAffineTransform(scaleX: scale, y: scale))
+        let targetCornerRadius = zoomedOut ? 18 / scale : 0
+        let targetBorderWidth = zoomedOut ? 1.25 / scale : 0
+
+        guard animated, container.bounds.width > 0, container.bounds.height > 0 else {
+            container.position = targetPosition
+            container.transform = targetTransform
+            container.cornerRadius = targetCornerRadius
+            container.borderWidth = targetBorderWidth
+            container.borderColor = UIColor.white.withAlphaComponent(0.52).cgColor
+            return
+        }
+
+        let visible = container.presentation()
+        let fromPosition = visible?.position ?? container.position
+        let fromTransform = visible?.transform ?? container.transform
+        let fromCornerRadius = visible?.cornerRadius ?? container.cornerRadius
+        let fromBorderWidth = visible?.borderWidth ?? container.borderWidth
+        container.removeAnimation(forKey: "screenZoom")
+
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        container.position = targetPosition
+        container.transform = targetTransform
+        container.cornerRadius = targetCornerRadius
+        container.borderWidth = targetBorderWidth
+        container.borderColor = UIColor.white.withAlphaComponent(0.52).cgColor
+        CATransaction.commit()
+
+        let position = CABasicAnimation(keyPath: "position")
+        position.fromValue = NSValue(cgPoint: fromPosition)
+        position.toValue = NSValue(cgPoint: targetPosition)
+        let transform = CABasicAnimation(keyPath: "transform")
+        transform.fromValue = NSValue(caTransform3D: fromTransform)
+        transform.toValue = NSValue(caTransform3D: targetTransform)
+        let cornerRadius = CABasicAnimation(keyPath: "cornerRadius")
+        cornerRadius.fromValue = fromCornerRadius
+        cornerRadius.toValue = targetCornerRadius
+        let borderWidth = CABasicAnimation(keyPath: "borderWidth")
+        borderWidth.fromValue = fromBorderWidth
+        borderWidth.toValue = targetBorderWidth
+
+        let animation = CAAnimationGroup()
+        animation.animations = [position, transform, cornerRadius, borderWidth]
+        animation.duration = Self.zoomDuration
+        animation.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        container.add(animation, forKey: "screenZoom")
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
@@ -916,10 +981,14 @@ private final class ScreenMirrorLayerHostView: UIView {
 
     private func unscaledLocation(_ point: CGPoint) -> CGPoint {
         guard zoomedOut else { return point }
-        let center = CGPoint(x: bounds.midX, y: bounds.midY)
+        let baseCenter = CGPoint(x: bounds.midX, y: bounds.midY)
+        let visualCenter = CGPoint(
+            x: baseCenter.x,
+            y: baseCenter.y + Self.zoomedOutVerticalOffset
+        )
         return CGPoint(
-            x: center.x + (point.x - center.x) / Self.zoomedOutScale,
-            y: center.y + (point.y - center.y) / Self.zoomedOutScale
+            x: baseCenter.x + (point.x - visualCenter.x) / Self.zoomedOutScale,
+            y: baseCenter.y + (point.y - visualCenter.y) / Self.zoomedOutScale
         )
     }
 }

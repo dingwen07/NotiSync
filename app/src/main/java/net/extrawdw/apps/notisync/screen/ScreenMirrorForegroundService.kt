@@ -45,10 +45,12 @@ class ScreenMirrorForegroundService : Service() {
             }
             if (key == null || !ownership.isOwnedBy(key)) return START_NOT_STICKY
             // This only claims/cancels the exact controller lease. Privileged Binder teardown is
-            // acknowledged on the controller's IO cleanup lane, so Service main never waits for it.
-            (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
-                ?.stopForegroundSession(key.sessionId, key.leaseId)
-            finishOwnedSession(key)
+            // acknowledged on the controller's IO cleanup lane, so Service main never waits for
+            // it. Keep foreground ownership (and its disclosure) until that acknowledgement calls
+            // release(); only an unmatched/stale command can be finished immediately here.
+            val accepted = (application as? NotiSyncApp)?.graphIfReady?.screenMirrorController
+                ?.stopForegroundSession(key.sessionId, key.leaseId) == true
+            if (!accepted) finishOwnedSession(key)
             return START_NOT_STICKY
         }
         val requestedLease = intent?.foregroundLeaseKey()
@@ -111,15 +113,19 @@ class ScreenMirrorForegroundService : Service() {
                     )
                 }
             ) {
-                controller.stopForegroundSession(
+                val accepted = controller.stopForegroundSession(
                     requestedLease.sessionId,
                     requestedLease.leaseId,
                 )
-                release(
-                    this@ScreenMirrorForegroundService,
-                    requestedLease.sessionId,
-                    requestedLease.leaseId,
-                )
+                // An accepted exact lease owns asynchronous teardown and releases this FGS only
+                // after the privileged backend acknowledges stop. A stale start has no such owner.
+                if (!accepted) {
+                    release(
+                        this@ScreenMirrorForegroundService,
+                        requestedLease.sessionId,
+                        requestedLease.leaseId,
+                    )
+                }
             }
         }
         return START_NOT_STICKY
