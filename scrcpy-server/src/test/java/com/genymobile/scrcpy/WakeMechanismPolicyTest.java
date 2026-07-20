@@ -34,7 +34,8 @@ public final class WakeMechanismPolicyTest {
         assertTrue(device.contains("togglePrimaryDisplayPower()"));
         assertTrue(device.contains("KeyEvent.KEYCODE_WAKEUP"));
         assertTrue(device.contains("KeyEvent.changeAction(down, KeyEvent.ACTION_UP)"));
-        assertTrue(device.contains("InputDevice.SOURCE_UNKNOWN"));
+        assertTrue(device.contains("InputDevice.SOURCE_KEYBOARD"));
+        assertFalse(device.contains("InputDevice.SOURCE_UNKNOWN"));
         assertTrue(device.contains("INJECT_MODE_WAIT_FOR_FINISH"));
         assertFalse(backend.contains("Device.wakeUp(0)"));
         assertFalse(backend.contains("wakePrimaryDisplayOnce"));

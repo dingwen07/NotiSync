@@ -4,6 +4,10 @@
 media/control protocol implementation connects only to private Unix sockets owned by
 `nsscreen`; LAN endpoints and TLS keys remain in the Kotlin process.
 
+The persistent bottom function bar provides Back, Home, Recents, and an explicit primary-display
+Power toggle. The bar remains available before the first video frame and is excluded from Android
+pointer-coordinate mapping. Escape/right-click sends Back; F12 uses the same one-shot Power toggle.
+
 The helper supports SDL 3 or SDL 2 for developer builds and dynamically linked FFmpeg H.264,
 HEVC, and AV1 decoders. Release artifacts use only pinned SDL 3.4.12 and FFmpeg 8.1.2. The
 authoritative, fail-closed build is in `../runtime`; it starts FFmpeg from this minimal surface:

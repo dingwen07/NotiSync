@@ -1515,6 +1515,20 @@ ns_activate_function_button(struct ns_app *app,
 }
 
 static bool
+ns_send_keyboard_control(struct ns_app *app, bool down, int keycode,
+                         bool repeat, uint32_t modifiers) {
+    if (keycode == NS_KEYCODE_TOGGLE_POWER) {
+        // Power is an edge-triggered NotiSync command, not an Android key
+        // lifecycle. Key-up and auto-repeat are handled without enqueueing.
+        return !down || repeat || ns_send_power_toggle(app);
+    }
+    if (keycode >= 0 || keycode == NS_KEYCODE_BACK_OR_SCREEN_ON) {
+        return ns_send_key(app, down, keycode, repeat, modifiers);
+    }
+    return false;
+}
+
+static bool
 ns_send_text(struct ns_app *app, const char *text) {
     if (!app->allow_control) return false;
     size_t length = strlen(text);
@@ -1678,6 +1692,7 @@ ns_destination_rect(int output_width, int output_height,
 
 static struct ns_view_layout
 ns_view_layout(float width, float height, float function_bar_height,
+               float ui_scale_x, float ui_scale_y,
                uint16_t source_width, uint16_t source_height) {
     struct ns_view_layout result;
     memset(&result, 0, sizeof(result));
@@ -1685,6 +1700,8 @@ ns_view_layout(float width, float height, float function_bar_height,
     if (height < 0) height = 0;
     if (function_bar_height < 0) function_bar_height = 0;
     if (function_bar_height > height) function_bar_height = height;
+    if (ui_scale_x < 0) ui_scale_x = 0;
+    if (ui_scale_y < 0) ui_scale_y = 0;
 
     result.video_bounds = (SDL_FRect) {
         0, 0, width, height - function_bar_height,
@@ -1695,9 +1712,10 @@ ns_view_layout(float width, float height, float function_bar_height,
         0, height - function_bar_height, width, function_bar_height,
     };
 
-    float horizontal_padding = fminf(12.0f, width / 32.0f);
-    float gap = fminf(10.0f, width / 40.0f);
-    float vertical_padding = fminf(8.0f, function_bar_height / 8.0f);
+    float horizontal_padding = fminf(12.0f * ui_scale_x, width / 32.0f);
+    float gap = fminf(10.0f * ui_scale_x, width / 40.0f);
+    float vertical_padding = fminf(8.0f * ui_scale_y,
+                                   function_bar_height / 8.0f);
     float button_width = (width - 2 * horizontal_padding
                           - (NS_FUNCTION_BUTTON_COUNT - 1) * gap)
                          / NS_FUNCTION_BUTTON_COUNT;
@@ -1743,7 +1761,8 @@ ns_view_to_device(int width, int height, uint16_t source_width,
         return false;
     }
     struct ns_view_layout layout = ns_view_layout(
-        width, height, NS_FUNCTION_BAR_HEIGHT, source_width, source_height);
+        width, height, NS_FUNCTION_BAR_HEIGHT, 1, 1,
+        source_width, source_height);
     SDL_FRect destination = layout.video_destination;
     if (!destination.w || !destination.h) {
         return false;
@@ -1803,7 +1822,7 @@ ns_window_layout(SDL_Window *window, struct ns_app *app) {
     int width = 0;
     int height = 0;
     SDL_GetWindowSize(window, &width, &height);
-    return ns_view_layout(width, height, NS_FUNCTION_BAR_HEIGHT,
+    return ns_view_layout(width, height, NS_FUNCTION_BAR_HEIGHT, 1, 1,
                           app->source_width, app->source_height);
 }
 
@@ -1940,10 +1959,13 @@ ns_render_viewer(SDL_Window *window, SDL_Renderer *renderer,
     int window_width = 0;
     int window_height = 0;
     SDL_GetWindowSize(window, &window_width, &window_height);
+    float scale_x = window_width > 0
+                  ? (float) output_width / window_width : 1.0f;
     float scale_y = window_height > 0
                   ? (float) output_height / window_height : 1.0f;
     struct ns_view_layout layout = ns_view_layout(
         output_width, output_height, NS_FUNCTION_BAR_HEIGHT * scale_y,
+        scale_x, scale_y,
         app->source_width, app->source_height);
 
     SDL_SetRenderDrawColor(renderer, 0, 0, 0, 255);
@@ -1995,6 +2017,24 @@ ns_render_viewer(SDL_Window *window, SDL_Renderer *renderer,
             fmaxf(2.0f, layout.function_bar.h / 30.0f));
     }
     SDL_RenderPresent(renderer);
+}
+
+static bool
+ns_event_needs_redraw(const SDL_Event *event) {
+#if NS_SDL3
+    return event->type == SDL_EVENT_WINDOW_SHOWN
+        || event->type == SDL_EVENT_WINDOW_EXPOSED
+        || event->type == SDL_EVENT_WINDOW_RESIZED
+        || event->type == SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED
+        || event->type == SDL_EVENT_WINDOW_RESTORED;
+#else
+    if (event->type != SDL_WINDOWEVENT) return false;
+    return event->window.event == SDL_WINDOWEVENT_SHOWN
+        || event->window.event == SDL_WINDOWEVENT_EXPOSED
+        || event->window.event == SDL_WINDOWEVENT_RESIZED
+        || event->window.event == SDL_WINDOWEVENT_SIZE_CHANGED
+        || event->window.event == SDL_WINDOWEVENT_RESTORED;
+#endif
 }
 
 static void
@@ -2286,6 +2326,7 @@ ns_run_viewer(const struct ns_options *options) {
         if (!SDL_WaitEventTimeout(&event, 50)) {
             continue;
         }
+        bool redraw = ns_event_needs_redraw(&event);
         ns_reconcile_video_generation(&app);
         if (event.type == SDL_EVENT_QUIT) {
             quit = true;
@@ -2343,6 +2384,7 @@ ns_run_viewer(const struct ns_options *options) {
                 frame->video_generation == atomic_load(&app.video_generation);
             SDL_UpdateTexture(texture, NULL, frame->rgba, frame->pitch);
             ns_free_frame(frame);
+            redraw = true;
         } else if (app.allow_clipboard
                 && event.type == app.remote_clipboard_event) {
             char *text = ns_take_remote_clipboard(&app);
@@ -2367,15 +2409,7 @@ ns_run_viewer(const struct ns_options *options) {
 #endif
             int keycode = ns_android_keycode(key, modifiers);
             bool down = event.type == SDL_EVENT_KEY_DOWN;
-            if (keycode == NS_KEYCODE_TOGGLE_POWER) {
-                // Power is a one-byte edge-triggered NotiSync command, not an
-                // Android key lifecycle. Ignore key-up and keyboard repeat.
-                if (down && !repeat) ns_send_power_toggle(&app);
-            } else if (keycode >= 0
-                    || keycode == NS_KEYCODE_BACK_OR_SCREEN_ON) {
-                ns_send_key(&app, event.type == SDL_EVENT_KEY_DOWN,
-                            keycode, repeat, modifiers);
-            }
+            ns_send_keyboard_control(&app, down, keycode, repeat, modifiers);
         } else if (app.allow_control && event.type == SDL_EVENT_TEXT_INPUT) {
             ns_send_text(&app, event.text.text);
         } else if (app.allow_control
@@ -2397,6 +2431,8 @@ ns_run_viewer(const struct ns_options *options) {
                 if (down && in_function_bar) {
                     if (event.button.button == SDL_BUTTON_LEFT
                             && !app.input_state.mouse_active) {
+                        redraw = redraw
+                              || app.pressed_function_button != hit;
                         app.pressed_function_button = hit;
                     }
                     consumed = true;
@@ -2405,6 +2441,7 @@ ns_run_viewer(const struct ns_options *options) {
                     enum ns_function_button pressed =
                         app.pressed_function_button;
                     app.pressed_function_button = NS_FUNCTION_NONE;
+                    redraw = true;
                     if (event.button.button == SDL_BUTTON_LEFT
                             && hit == pressed) {
                         ns_activate_function_button(&app, pressed);
@@ -2545,8 +2582,8 @@ ns_run_viewer(const struct ns_options *options) {
             }
         }
         // SDL does not guarantee a fresh frame when a retained/black screen is
-        // resized or exposed. Redraw after every event so the bar is persistent.
-        ns_render_viewer(window, renderer, texture, &app);
+        // resized or exposed. Repaint those events and bar state transitions.
+        if (redraw) ns_render_viewer(window, renderer, texture, &app);
     }
 
 cleanup:
@@ -2610,7 +2647,8 @@ ns_self_test_control_queue(void) {
     bool success = false;
 
     app.allow_control = false;
-    if (ns_send_key(&app, true, -2, false, 0)
+    if (ns_send_key(&app, true, NS_KEYCODE_BACK_OR_SCREEN_ON, false, 0)
+            || ns_send_power_toggle(&app)
             || ns_send_touch(&app, NS_ACTION_DOWN, NS_POINTER_ID_MOUSE,
                              1, 1, 1, 1, 1)) {
         goto cleanup;
@@ -2620,6 +2658,23 @@ ns_self_test_control_queue(void) {
     if (ns_send_clipboard(&app, "disabled", NULL)) goto cleanup;
     app.allow_clipboard = true;
 
+    if (!ns_send_keyboard_control(&app, true, NS_KEYCODE_TOGGLE_POWER,
+                                  false, 0)
+            || !ns_send_keyboard_control(&app, true,
+                                         NS_KEYCODE_TOGGLE_POWER, true, 0)
+            || !ns_send_keyboard_control(&app, false,
+                                         NS_KEYCODE_TOGGLE_POWER, false, 0)) {
+        goto cleanup;
+    }
+    pthread_mutex_lock(&app.control_queue_mutex);
+    bool keyboard_power_once = app.control_queue_count == 1
+        && app.control_queue_head == app.control_queue_tail
+        && app.control_queue_head->length == 1
+        && app.control_queue_head->data[0] == NS_CONTROL_TOGGLE_POWER;
+    pthread_mutex_unlock(&app.control_queue_mutex);
+    if (!keyboard_power_once) goto cleanup;
+    ns_control_queue_clear(&app);
+
     for (uint64_t pointer = 0; pointer < NS_CONTROL_QUEUE_MAX_MESSAGES;
          ++pointer) {
         if (!ns_send_touch(&app, NS_ACTION_MOVE, pointer,
@@ -2627,7 +2682,9 @@ ns_self_test_control_queue(void) {
             goto cleanup;
         }
     }
-    if (!ns_send_key(&app, true, -2, false, 0)) goto cleanup;
+    if (!ns_send_key(&app, true, NS_KEYCODE_BACK_OR_SCREEN_ON, false, 0)) {
+        goto cleanup;
+    }
     pthread_mutex_lock(&app.control_queue_mutex);
     bool pressure_prioritized =
         app.control_queue_count == NS_CONTROL_QUEUE_MAX_MESSAGES
@@ -2643,8 +2700,10 @@ ns_self_test_control_queue(void) {
                        12, 34, 1, 0, 1)
             || !ns_send_touch(&app, NS_ACTION_MOVE, NS_POINTER_ID_MOUSE,
                               56, 78, 1, 0, 1)
-            || !ns_send_key(&app, true, -2, false, 0)
-            || !ns_send_key(&app, false, -2, false, 0)) {
+            || !ns_send_key(&app, true, NS_KEYCODE_BACK_OR_SCREEN_ON,
+                            false, 0)
+            || !ns_send_key(&app, false, NS_KEYCODE_BACK_OR_SCREEN_ON,
+                            false, 0)) {
         goto cleanup;
     }
     pthread_mutex_lock(&app.control_queue_mutex);
@@ -2758,7 +2817,7 @@ ns_self_test(void) {
     if (portrait.h != 500 || portrait.w < 224 || portrait.w > 226) return 1;
 
     struct ns_view_layout layout = ns_view_layout(
-        1000, 500, NS_FUNCTION_BAR_HEIGHT, 1080, 2400);
+        1000, 500, NS_FUNCTION_BAR_HEIGHT, 1, 1, 1080, 2400);
     if (layout.video_bounds.h != 436
             || layout.function_bar.y != 436
             || layout.function_bar.h != NS_FUNCTION_BAR_HEIGHT
@@ -2774,6 +2833,28 @@ ns_self_test(void) {
                 != (enum ns_function_button) i) {
             return 1;
         }
+    }
+    struct ns_view_layout retina_layout = ns_view_layout(
+        2000, 1000, NS_FUNCTION_BAR_HEIGHT * 2, 2, 2, 1080, 2400);
+    for (int i = 0; i < NS_FUNCTION_BUTTON_COUNT; ++i) {
+        SDL_FRect logical = layout.function_buttons[i];
+        SDL_FRect physical = retina_layout.function_buttons[i];
+        if (fabsf(physical.x - logical.x * 2) > 0.001f
+                || fabsf(physical.y - logical.y * 2) > 0.001f
+                || fabsf(physical.w - logical.w * 2) > 0.001f
+                || fabsf(physical.h - logical.h * 2) > 0.001f) {
+            return 1;
+        }
+    }
+    if (fabsf(retina_layout.video_destination.x
+              - layout.video_destination.x * 2) > 0.001f
+            || fabsf(retina_layout.video_destination.y
+                     - layout.video_destination.y * 2) > 0.001f
+            || fabsf(retina_layout.video_destination.w
+                     - layout.video_destination.w * 2) > 0.001f
+            || fabsf(retina_layout.video_destination.h
+                     - layout.video_destination.h * 2) > 0.001f) {
+        return 1;
     }
     float button_gap = (layout.function_buttons[0].x
                         + layout.function_buttons[0].w

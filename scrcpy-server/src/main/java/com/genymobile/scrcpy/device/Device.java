@@ -63,7 +63,7 @@ public final class Device {
                 KeyCharacterMap.VIRTUAL_KEYBOARD,
                 0,
                 0,
-                InputDevice.SOURCE_UNKNOWN
+                InputDevice.SOURCE_KEYBOARD
         );
         if (!injectEvent(down, 0, INJECT_MODE_WAIT_FOR_FINISH)) {
             return false;
