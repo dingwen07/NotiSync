@@ -136,7 +136,7 @@ the same behavior. The daemon executable itself provides the lower-level
 `notisyncd start|stop|restart|status` commands. Its `status` command writes JSON to stdout when the
 daemon is running and a concise error to stderr when it is not.
 
-The desktop defaults to `wss://notisync-api.extrawdw.net`. For a custom broker, configure the same
+The desktop defaults to `wss://notisync-api-v2.extrawdw.net`. For a custom broker, configure the same
 WebSocket URL in the Android app and on the desktop:
 
 ```bash

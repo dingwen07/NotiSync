@@ -1,45 +1,23 @@
 [Unit]
-Description=NotiSync broker (NS2 — clean /v2 API, notisync-api.extrawdw.net/v2)
+Description=NotiSync compact-CBOR broker (notisync-api-v2.extrawdw.net)
 After=network-online.target
 Wants=network-online.target
 
 [Service]
 Type=simple
 WorkingDirectory=/opt/notisync-v2
-# NS2 instance: loopback :8082 (v1 NS1 JAR stays on :8080); nginx routes /v2/ here while / stays on v1.
-# This is a SEPARATE binary + DB + JWT key from v1 — no shared state, no NS1 code path (see
-# docs/SECURITY_EPOCH_ROTATION.md §11). The clean NS2 JAR serves its routes under /v2 natively, plus
-# unversioned /healthz + /readyz at the root.
 ExecStart=/usr/bin/java -Dktor.deployment.host=127.0.0.1 -Dktor.deployment.port=8082 -jar /opt/notisync-v2/server-all.jar
 Environment=NOTISYNC_DB_PATH=/var/lib/notisync-v2/notisync.db
-Environment=NOTISYNC_FCM_PROJECT_ID=extrawdw-notifly
-Environment=NOTISYNC_FCM_ENABLED=true
-# APNs is off until the Apple Auth Key is installed and the iOS bundle-id topic is confirmed.
-Environment=NOTISYNC_APNS_ENABLED=false
-# Environment=NOTISYNC_APNS_TEAM_ID=ABC123DEFG
-# Environment=NOTISYNC_APNS_KEY_ID=ABC123DEFG
-# Environment=NOTISYNC_APNS_PRIVATE_KEY_PATH=/etc/notisync/apns-authkey.p8
-# Environment=NOTISYNC_APNS_TOPIC=net.extrawdw.apps.NotiSync
-# Security ENABLED (mirrors prod v1): real Play Integrity attestation + signed/JWT auth. The ES256 JWT
-# key is generated at /var/lib/notisync-v2/jwt-es256-private.pem (db-dir default) — distinct from v1's.
-# Public key: /v2/.well-known/jwks.json
-Environment=NOTISYNC_PLAY_INTEGRITY_PACKAGE=net.extrawdw.apps.notisync
-Environment=NOTISYNC_REQUIRE_APP_LICENSING=LICENSED
-Environment=NOTISYNC_REQUIRE_APP_RECOGNITION=PLAY_RECOGNIZED
-Environment=NOTISYNC_REQUIRE_DEVICE_RECOGNITION=MEETS_DEVICE_INTEGRITY
-Environment=NOTISYNC_ALLOW_DEVICE_ACTIVITY=LEVEL_1,LEVEL_2,LEVEL_3,UNEVALUATED
-Environment=NOTISYNC_REQUIRE_PLAY_PROTECT=NO_ISSUES
-# Firebase App Check — the new attestation method, accepted alongside Play Integrity during the migration.
-# The broker verifies the token locally against the App Check JWKS (no service account needed for this). The
-# app-id allow-list pins to the NotiSync app; the project's other app (net.extrawdw.notifly) is NOT listed.
-Environment=NOTISYNC_APPCHECK_ENABLED=true
-Environment=NOTISYNC_APPCHECK_PROJECT_NUMBER=873059270463
-Environment=NOTISYNC_APPCHECK_APP_IDS=1:873059270463:android:b7417ebafc094521011d8a,1:873059270463:ios:5d11b7d970889964011d8a
-# Enable Play Integrity decode + FCM later by adding (as in v1):
-Environment=GOOGLE_APPLICATION_CREDENTIALS=/etc/notisync/fcm-sa.json
+Environment=NOTISYNC_DEMO_CONFIG_PATH=/etc/notisync/demo-experience.json
+Environment=NOTISYNC_SECURITY_ENABLED=true
+Environment=NOTISYNC_INTEGRITY_REQUIRED=false
+Environment=NOTISYNC_POW_DIFFICULTY=0
+# Push-provider/App Check settings shared with the existing brokers. The per-instance file contains
+# only v2-private values such as NOTISYNC_METRICS_PASSWORD and is installed mode 0600.
+EnvironmentFile=/etc/notisync/common.env
+EnvironmentFile=/etc/notisync/v2.env
 Restart=on-failure
 RestartSec=3
-# Hardening (same as prod v1, scoped to the v2 data dir).
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/notisync-v2

@@ -34,12 +34,8 @@ nonisolated enum NotiSyncConfig {
     static func effectiveAPNSEnvironment(_ value: RouteEnvironment) -> RouteEnvironment { .PRODUCTION }
     #endif
 
-    /// Default broker — debug builds use the auth-enforced NS2 test instance; release builds use production.
-    #if DEBUG
-    static let defaultBrokerURL = "https://notisync-api-test.extrawdw.net"
-    #else
-    static let defaultBrokerURL = "https://notisync-api.extrawdw.net"
-    #endif
+    /// Dedicated compact-CBOR NS2 broker. Pre-release field-name-CBOR brokers are intentionally isolated.
+    static let defaultBrokerURL = "https://notisync-api-v2.extrawdw.net"
 
     /// Largest inline APNs payload we advertise in our route claim (base64 envelope chars).
     static let inlinePayloadLimitBytes = 3500

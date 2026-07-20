@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.CborLabel
 
 /**
  * JSON DTOs for the broker's REST control plane. Binary-bearing objects (signed cards/routes,
@@ -21,8 +22,8 @@ data class HealthResponse(
  */
 @Serializable
 data class SendRequest(
-    val envelope: Envelope,
-    val urgency: Urgency,
+    @CborLabel(0) val envelope: Envelope,
+    @CborLabel(1) val urgency: Urgency,
 )
 
 /** Result of /v2/send. Tells the caller which recipients delivered and what the broker is missing. */

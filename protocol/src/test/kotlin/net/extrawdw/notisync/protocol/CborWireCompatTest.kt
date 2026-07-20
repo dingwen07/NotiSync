@@ -1,265 +1,350 @@
 package net.extrawdw.notisync.protocol
 
-import kotlinx.serialization.cbor.Cbor
-import kotlinx.serialization.decodeFromByteArray
-import kotlinx.serialization.encodeToByteArray
-import kotlinx.serialization.SerializationException
+import java.util.Base64
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.Cbor
+import kotlinx.serialization.cbor.CborLabel
+import kotlinx.serialization.decodeFromByteArray
+import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encodeToByteArray
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
-import org.junit.Assert.assertThrows
 import org.junit.Test
 
-/**
- * Pins the wire contract behind [ProtocolCodec.cbor]'s `encodeDefaults = false` (see [Codec]):
- *  - default-valued fields are omitted (the size win that feeds the FCM/APNs inline-push budget);
- *  - the version/suite discriminators are still emitted, via `@EncodeDefault(ALWAYS)`;
- *  - a peer on the old `encodeDefaults = true` config and a peer on the new one interoperate BOTH
- *    directions (a mixed fleet, and any blob persisted at rest under the old config);
- *  - [EnvelopeAuth] and [AssetAad] — the only structs re-encoded independently on each end, for the
- *    envelope signature and the asset AEAD AAD — are byte-identical under both configs, so signatures
- *    and asset decryption are unaffected. This last property is the safety core of the change.
- *
- * [legacyFat] simulates a peer (or a persisted blob) produced by the pre-change config.
- */
+/** Pins NS2's compact-only CBOR contract: definite maps, stable numeric labels and tolerant evolution. */
+@OptIn(ExperimentalSerializationApi::class)
 class CborWireCompatTest {
 
-    /** CapturedNotification's pre-Live-Update wire shape, sufficient to exercise mixed-version decode. */
+    /** Future producer shape: label 99 and capability ids unknown to this reader are both intentional. */
     @Serializable
-    private data class LegacyCapturedNotification(
-        val sourceClientId: ClientId,
-        val sourceKey: String,
-        val packageName: String,
-        val appLabel: String,
-        val title: String? = null,
-        val text: String? = null,
-        val postTime: Long,
+    private data class FutureProfile(
+        @CborLabel(0) val clientId: ClientId,
+        @CborLabel(1) val displayName: String,
+        @CborLabel(2) val platform: String,
+        @CborLabel(3) val capabilities: List<Int>,
+        @CborLabel(4) val updatedAt: Long,
+        @CborLabel(99) val futureField: String,
     )
 
     @Serializable
-    private enum class LegacyCapability {
-        CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION,
-    }
+    private data class LegacyProfile(
+        val clientId: ClientId,
+        val displayName: String,
+        val platform: String,
+        val capabilities: List<Capability>,
+        val updatedAt: Long,
+    )
 
     @Serializable
-    private data class CurrentCapabilityList(val capabilities: List<Capability>)
+    private data class LegacyClientCard(
+        val suite: String,
+        val clientId: ClientId,
+        val identityPublicKey: ByteArray,
+        val displayName: String,
+        val platform: String,
+        val capabilities: List<Capability>,
+        val createdAt: Long,
+    )
 
     @Serializable
-    private data class LegacyCapabilityList(val capabilities: List<LegacyCapability>)
+    private data class EnvelopeHeader(
+        @CborLabel(0) val v: Int? = null,
+        @CborLabel(1) val suite: String? = null,
+    )
 
-    private val codec = ProtocolCodec.cbor // production: encodeDefaults = false
-    private val legacyFat = Cbor { ignoreUnknownKeys = true; encodeDefaults = true } // pre-change peer
+    @Serializable
+    private data class SuiteAtZero(@CborLabel(0) val suite: String? = null)
 
-    /** The CBOR map-key header for a short (<24-char) text key: 0x60+len, then the UTF-8 name. */
-    private fun cborKey(name: String): ByteArray {
-        require(name.length < 24)
-        return byteArrayOf((0x60 + name.length).toByte()) + name.toByteArray()
-    }
+    @Serializable
+    private data class SuiteAtOne(@CborLabel(1) val suite: String? = null)
 
-    private fun ByteArray.containsKey(name: String): Boolean {
-        val needle = cborKey(name)
-        outer@ for (i in 0..size - needle.size) {
-            for (j in needle.indices) if (this[i + j] != needle[j]) continue@outer
-            return true
-        }
-        return false
+    @Serializable
+    private data class SuiteAtSeven(@CborLabel(7) val suite: String? = null)
+
+    private val namedKeys = Cbor {
+        ignoreUnknownKeys = true
+        encodeDefaults = false
+        useDefiniteLengthEncoding = true
+        preferCborLabelsOverNames = false
     }
 
     private val asset = PrivateAssetRef(
-        role = AssetRole.AVATAR, assetHash = "h", mimeType = "image/webp", sizeBytes = 4096,
-        sourceClientId = ClientId("phone"), assetId = "id", assetKey = ByteArray(32) { it.toByte() },
+        role = AssetRole.AVATAR,
+        assetHash = "h",
+        mimeType = "image/webp",
+        sizeBytes = 4096,
+        sourceClientId = ClientId("phone"),
+        assetId = "id",
+        assetKey = ByteArray(32) { it.toByte() },
     )
 
     private fun simpleNotif() = CapturedNotification(
-        sourceClientId = ClientId("a3b2f8c1deadbeef"), sourceKey = "0|com.whatsapp|1|null",
-        packageName = "com.whatsapp", appLabel = "WhatsApp", title = "Alice", text = "See you at 6!",
-        category = MirrorCategory.MESSAGE, importance = MirrorImportance.HIGH, postTime = 1_750_000_000_000L,
-        channelId = "messages", channelName = "Messages",
+        sourceClientId = ClientId("a3b2f8c1deadbeef"),
+        sourceKey = "0|com.whatsapp|1|null",
+        packageName = "com.whatsapp",
+        appLabel = "WhatsApp",
+        title = "Alice",
+        text = "See you at 6!",
+        category = MirrorCategory.MESSAGE,
+        importance = MirrorImportance.HIGH,
+        postTime = 1_750_000_000_000L,
+        channelId = "messages",
+        channelName = "Messages",
     )
 
     @Test
-    fun legacyDecoder_rejectsUnknownCapabilityWithoutChangingTheWireFormat() {
-        val bytes = codec.encodeToByteArray(
-            CurrentCapabilityList(listOf(Capability.CAPABILITY_ROUTING_V1)),
+    fun unknownCapabilityIdsAndUnknownFields_areIgnoredWithoutLosingKnownCapabilities() {
+        val future = FutureProfile(
+            clientId = ClientId("future-peer"),
+            displayName = "Future peer",
+            platform = "desktop",
+            capabilities = listOf(1, 4000, 6, 1, 11, Int.MAX_VALUE),
+            updatedAt = 42L,
+            futureField = "not understood yet",
         )
 
-        assertThrows(SerializationException::class.java) {
-            legacyFat.decodeFromByteArray<LegacyCapabilityList>(bytes)
+        val decoded = ProtocolCodec.decodeFromCbor<ProfileUpdate>(ProtocolCodec.encodeToCbor(future))
+
+        assertEquals(future.clientId, decoded.clientId)
+        assertEquals(future.displayName, decoded.displayName)
+        assertEquals(future.updatedAt, decoded.updatedAt)
+        assertEquals(
+            listOf(Capability.DISPLAY, Capability.CAPABILITY_ROUTING_V1, Capability.RECEIVE_RUNS),
+            decoded.capabilities,
+        )
+    }
+
+    @Test
+    fun capabilityNamesRemainTheJsonRepresentation() {
+        val profile = ProfileUpdate(
+            ClientId("peer"),
+            "Peer",
+            "android",
+            listOf(Capability.CAPTURE, Capability.DISPLAY),
+            1L,
+        )
+
+        val json = ProtocolCodec.encodeToJson(profile)
+        assertTrue(json.contains("\"clientId\":\"peer\""))
+        assertTrue(json.contains("\"capabilities\":[\"CAPTURE\",\"DISPLAY\"]"))
+        assertEquals(profile, ProtocolCodec.decodeFromJson<ProfileUpdate>(json))
+    }
+
+    @Test
+    fun everyBinaryDtoUsesDenseUniqueNumericLabels() {
+        binaryDescriptors().forEach(::assertDenseLabels)
+    }
+
+    private fun assertDenseLabels(descriptor: SerialDescriptor) {
+        val labels = (0 until descriptor.elementsCount).map { index ->
+            descriptor.getElementAnnotations(index).filterIsInstance<CborLabel>().singleOrNull()?.label
+        }
+        assertEquals(
+            "${descriptor.serialName} labels must be permanent 0..n ids",
+            (0 until descriptor.elementsCount).map(Int::toLong),
+            labels,
+        )
+    }
+
+    private fun binaryDescriptors(): List<SerialDescriptor> = listOf(
+        SignedBlob.serializer().descriptor,
+        ClientKeyEpoch.serializer().descriptor,
+        ClientCard.serializer().descriptor,
+        RouteCapabilities.serializer().descriptor,
+        RouteClaim.serializer().descriptor,
+        PerRecipientKey.serializer().descriptor,
+        Envelope.serializer().descriptor,
+        EnvelopeAuth.serializer().descriptor,
+        PrivateAssetRef.serializer().descriptor,
+        AssetAad.serializer().descriptor,
+        NotificationAction.serializer().descriptor,
+        ConversationMessage.serializer().descriptor,
+        MediaCustomAction.serializer().descriptor,
+        NotificationProgress.serializer().descriptor,
+        NotificationLiveUpdate.serializer().descriptor,
+        CapturedNotification.serializer().descriptor,
+        DismissEvent.serializer().descriptor,
+        ActionEvent.serializer().descriptor,
+        AssetSync.serializer().descriptor,
+        AssetSyncItem.serializer().descriptor,
+        NotificationFilterRule.serializer().descriptor,
+        FilterSync.serializer().descriptor,
+        DataSync.serializer().descriptor,
+        TrustTableEntry.serializer().descriptor,
+        TrustTable.serializer().descriptor,
+        CardDelivery.serializer().descriptor,
+        ProfileUpdate.serializer().descriptor,
+        RunTerminalSnapshot.serializer().descriptor,
+        RunProgress.serializer().descriptor,
+        RunLlmSummary.serializer().descriptor,
+        RunState.serializer().descriptor,
+        RunControl.serializer().descriptor,
+        RunControlResult.serializer().descriptor,
+        RunEnvironmentChange.serializer().descriptor,
+        RunCommandRequest.serializer().descriptor,
+        RunSync.serializer().descriptor,
+        SendRequest.serializer().descriptor,
+    )
+
+    @Test
+    fun compactEncodingDoesNotCarryFieldNameStrings() {
+        val encoded = ProtocolCodec.encodeToCbor(simpleNotif())
+        listOf("sourceClientId", "sourceKey", "packageName", "appLabel", "postTime", "channelName")
+            .forEach { field -> assertFalse("CBOR must not contain field name $field", encoded.containsUtf8(field)) }
+    }
+
+    @Test
+    fun compactProfileAndCardMeetSizeReductionTargets() {
+        val capabilities = Capability.entries
+        val profile = ProfileUpdate(ClientId("client-aaa"), "Pixel 10 Pro XL", "android", capabilities, 1_750_000_000_000L)
+        val legacyProfile = LegacyProfile(
+            profile.clientId,
+            profile.displayName,
+            profile.platform,
+            profile.capabilities,
+            profile.updatedAt,
+        )
+        val card = ClientCard(
+            clientId = profile.clientId,
+            identityPublicKey = ByteArray(91) { it.toByte() },
+            displayName = profile.displayName,
+            platform = profile.platform,
+            capabilities = capabilities,
+            createdAt = profile.updatedAt,
+        )
+        val legacyCard = LegacyClientCard(
+            card.suite,
+            card.clientId,
+            card.identityPublicKey,
+            card.displayName,
+            card.platform,
+            card.capabilities,
+            card.createdAt,
+        )
+
+        assertAtLeastPercentSmaller(
+            "profile",
+            ProtocolCodec.encodeToCbor(profile).size,
+            namedKeys.encodeToByteArray(legacyProfile).size,
+            40,
+        )
+        assertAtLeastPercentSmaller(
+            "client card",
+            ProtocolCodec.encodeToCbor(card).size,
+            namedKeys.encodeToByteArray(legacyCard).size,
+            40,
+        )
+    }
+
+    @Test
+    fun compactNotificationMeetsSizeReductionTarget() {
+        val notification = simpleNotif()
+        assertAtLeastPercentSmaller(
+            "notification",
+            ProtocolCodec.encodeToCbor(notification).size,
+            namedKeys.encodeToByteArray(notification).size,
+            25,
+        )
+    }
+
+    private fun assertAtLeastPercentSmaller(name: String, compact: Int, named: Int, percent: Int) {
+        assertTrue(
+            "$name compact=$compact B, named=$named B must save at least $percent%",
+            compact * 100 <= named * (100 - percent),
+        )
+    }
+
+    @Test
+    fun mandatoryDiscriminatorsRemainPresentDespiteDefaultOmission() {
+        val envelope = Envelope(
+            typ = MessageType.NOTIFICATION,
+            signerId = ClientId("a"),
+            messageId = "m",
+            seq = 0L,
+            createdAt = 0L,
+            bodyCiphertext = ByteArray(4),
+            recipients = emptyList(),
+        )
+        val header = ProtocolCodec.decodeFromCbor<EnvelopeHeader>(ProtocolCodec.encodeToCbor(envelope))
+        assertEquals(1, header.v)
+        assertEquals(CipherSuite.CURRENT_ID, header.suite)
+
+        val signed = SignedBlob(SignedType.KEY_EPOCH, signerId = ClientId("a"), payload = byteArrayOf(1), sig = byteArrayOf(2))
+        assertEquals(CipherSuite.CURRENT_ID, ProtocolCodec.decodeFromCbor<SuiteAtOne>(ProtocolCodec.encodeToCbor(signed)).suite)
+
+        val card = ClientCard(
+            clientId = ClientId("a"),
+            identityPublicKey = byteArrayOf(1),
+            displayName = "d",
+            platform = "android",
+            capabilities = emptyList(),
+            createdAt = 0L,
+        )
+        assertEquals(CipherSuite.CURRENT_ID, ProtocolCodec.decodeFromCbor<SuiteAtZero>(ProtocolCodec.encodeToCbor(card)).suite)
+
+        val epoch = ClientKeyEpoch(
+            clientId = ClientId("a"),
+            identityPublicKey = byteArrayOf(1),
+            epoch = 1,
+            operationalSigningKey = byteArrayOf(1),
+            hpkePublicKey = byteArrayOf(1),
+            purposes = emptyList(),
+            notBefore = 0L,
+            notAfter = 1L,
+            minEpoch = 1,
+        )
+        assertEquals(CipherSuite.CURRENT_ID, ProtocolCodec.decodeFromCbor<SuiteAtZero>(ProtocolCodec.encodeToCbor(epoch)).suite)
+        assertEquals(CipherSuite.CURRENT_ID, ProtocolCodec.decodeFromCbor<SuiteAtSeven>(ProtocolCodec.encodeToCbor(asset)).suite)
+    }
+
+    @Test
+    fun cryptoInputsAreDeterministicUnderCompactEncoding() {
+        val auth = EnvelopeAuth(
+            v = 1,
+            suite = "NS2",
+            typ = MessageType.NOTIFICATION,
+            signerId = ClientId("a"),
+            signerEpoch = 1,
+            messageId = "m",
+            seq = 1L,
+            createdAt = 1L,
+            bodyCiphertextSha256 = ByteArray(32) { it.toByte() },
+            recipientIds = listOf(ClientId("b")),
+            recipientEpochs = listOf(1),
+        )
+        val aad = AssetAad("NS2", ClientId("a"), "id", "image/png", 99, AssetRole.AVATAR)
+
+        val authBytes = ProtocolCodec.encodeToCbor(auth)
+        val aadBytes = ProtocolCodec.encodeToCbor(aad)
+        assertArrayEquals(authBytes, ProtocolCodec.encodeToCbor(auth))
+        assertArrayEquals(aadBytes, ProtocolCodec.encodeToCbor(aad))
+        assertEquals("qwABAWNOUzICbE5PVElGSUNBVElPTgNhYQQBBWFtBgEHAQhYIAABAgMEBQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fCYFhYgqBAQ==", authBytes.b64())
+        assertEquals("pgBjTlMyAWFhAmJpZANpaW1hZ2UvcG5nBBhjBWZBVkFUQVI=", aadBytes.b64())
+    }
+
+    @Test
+    fun signedBlobWrapperPreservesOpaquePayloadAndSignatureBytes() {
+        val blob = SignedBlob(
+            SignedType.CLIENT_CARD,
+            signerId = ClientId("a"),
+            payload = ByteArray(40) { it.toByte() },
+            sig = ByteArray(16) { (it + 1).toByte() },
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<SignedBlob>(ProtocolCodec.encodeToCbor(blob))
+        assertArrayEquals(blob.payload, decoded.payload)
+        assertArrayEquals(blob.sig, decoded.sig)
+        assertEquals(blob.suite, decoded.suite)
+    }
+
+    private fun ByteArray.containsUtf8(value: String): Boolean {
+        val needle = value.encodeToByteArray()
+        return indices.any { start ->
+            start + needle.size <= size && needle.indices.all { offset -> this[start + offset] == needle[offset] }
         }
     }
 
-    @Test
-    fun discriminators_v_and_suite_stayOnWire() {
-        // `@EncodeDefault(ALWAYS)`: these must survive even when equal to their default. Letting
-        // encodeDefaults omit them would couple the wire to CipherSuite.CURRENT_ID at encode time and
-        // break the next suite bump — including blobs persisted at rest. This guards the annotation.
-        val env = ProtocolCodec.encodeToCbor(
-            Envelope(
-                typ = MessageType.NOTIFICATION, signerId = ClientId("a"), messageId = "m", seq = 0L,
-                createdAt = 0L, bodyCiphertext = ByteArray(4), recipients = emptyList(),
-            ),
-        )
-        assertTrue("Envelope.v must stay on the wire", env.containsKey("v"))
-        assertTrue("Envelope.suite must stay on the wire", env.containsKey("suite"))
-
-        assertTrue(
-            "SignedBlob.suite must stay on the wire",
-            ProtocolCodec.encodeToCbor(
-                SignedBlob(SignedType.KEY_EPOCH, signerId = ClientId("a"), payload = byteArrayOf(1), sig = byteArrayOf(2)),
-            ).containsKey("suite"),
-        )
-        assertTrue(
-            "ClientCard.suite must stay on the wire",
-            ProtocolCodec.encodeToCbor(
-                ClientCard(
-                    clientId = ClientId("a"), identityPublicKey = byteArrayOf(1), displayName = "d",
-                    platform = "android", capabilities = emptyList(), createdAt = 0L,
-                ),
-            ).containsKey("suite"),
-        )
-        assertTrue(
-            "ClientKeyEpoch.suite must stay on the wire",
-            ProtocolCodec.encodeToCbor(
-                ClientKeyEpoch(
-                    clientId = ClientId("a"), identityPublicKey = byteArrayOf(1), epoch = 1,
-                    operationalSigningKey = byteArrayOf(1), hpkePublicKey = byteArrayOf(1),
-                    purposes = emptyList(), notBefore = 0L, notAfter = 1L, minEpoch = 1,
-                ),
-            ).containsKey("suite"),
-        )
-        assertTrue("PrivateAssetRef.suite must stay on the wire", ProtocolCodec.encodeToCbor(asset).containsKey("suite"))
-    }
-
-    @Test
-    fun defaultValuedFields_areOmitted() {
-        val notif = simpleNotif()
-        val bytes = ProtocolCodec.encodeToCbor(notif)
-        // Fields left at their default must not appear on the wire — this is the size win.
-        assertFalse(bytes.containsKey("isGroupConversation"))
-        assertFalse(bytes.containsKey("sensitiveRedacted"))
-        assertFalse(bytes.containsKey("isClearable"))
-        assertFalse(bytes.containsKey("groupAlertBehavior"))
-        assertFalse(bytes.containsKey("onlyAlertOnce"))
-        assertFalse(bytes.containsKey("actions"))
-        assertFalse(bytes.containsKey("hasContentIntent"))
-        assertFalse(bytes.containsKey("liveUpdate"))
-        // Self-calibrating regression guard: flipping encodeDefaults back to true roughly triples the size.
-        val lean = bytes.size
-        val fat = legacyFat.encodeToByteArray(notif).size
-        assertTrue("lean ($lean B) should be well under the old fat encoding ($fat B)", lean < fat * 0.6)
-    }
-
-    @Test
-    fun mixedFleet_decodesBothDirections() {
-        val notif = simpleNotif() // asset-free → safe for value equality (no ByteArray fields)
-        // old peer → new reader
-        assertEquals(notif, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(notif)))
-        // new peer → old reader
-        assertEquals(notif, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(notif)))
-    }
-
-    @Test
-    fun mixedFleet_actionsSurviveBothConfigs() {
-        val withActions = simpleNotif().copy(
-            actions = listOf(
-                NotificationAction(index = 0, title = "Mark as read", semanticAction = 2),
-                NotificationAction(index = 1, title = "Reply", remoteInput = true, remoteInputLabel = "Message"),
-            ),
-            hasContentIntent = true,
-        )
-        assertEquals(withActions, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(withActions)))
-        assertEquals(withActions, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(withActions)))
-    }
-
-    @Test
-    fun mixedFleet_liveUpdateIsOptionalAndIgnoredByOlderReader() {
-        val old = LegacyCapturedNotification(
-            sourceClientId = ClientId("desktop"), sourceKey = "run", packageName = "notisync.run",
-            appLabel = "NotiSync Run", title = "Build", text = "Starting", postTime = 1L,
-        )
-        val decodedByCurrent = codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(old))
-        assertEquals(old.sourceKey, decodedByCurrent.sourceKey)
-        assertEquals(old.title, decodedByCurrent.title)
-        assertEquals(null, decodedByCurrent.liveUpdate)
-
-        val current = simpleNotif().copy(
-            isOngoing = true,
-            liveUpdate = NotificationLiveUpdate(
-                requestPromotedOngoing = true,
-                progress = NotificationProgress(current = 7L, total = 10L),
-                shortCriticalText = "70%",
-            ),
-        )
-        val decodedByOld = legacyFat.decodeFromByteArray<LegacyCapturedNotification>(codec.encodeToByteArray(current))
-        assertEquals(current.sourceKey, decodedByOld.sourceKey)
-        assertEquals(current.title, decodedByOld.title)
-    }
-
-    @Test
-    fun mixedFleet_richStyleFieldsSurviveBothConfigs() {
-        val call = simpleNotif().copy(
-            style = NotificationStyle.CALL,
-            callType = CallType.INCOMING,
-            callerName = "Alice",
-            callVerificationText = "Verified caller",
-            callAnswerIndex = 1,
-            callDeclineIndex = 0,
-            accentColor = 0xFF00C853.toInt(),
-            actions = listOf(
-                NotificationAction(index = 0, title = "Decline"),
-                NotificationAction(index = 1, title = "Answer"),
-            ),
-        )
-        assertEquals(call, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(call)))
-        assertEquals(call, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(call)))
-
-        val media = simpleNotif().copy(
-            style = NotificationStyle.MEDIA, isColorized = true, mediaCompactActionIndices = listOf(0, 1, 2),
-        )
-        assertEquals(media, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(media)))
-        assertEquals(media, legacyFat.decodeFromByteArray<CapturedNotification>(codec.encodeToByteArray(media)))
-
-        val inbox = simpleNotif().copy(style = NotificationStyle.INBOX, inboxLines = listOf("Line 1", "Line 2"))
-        assertEquals(inbox, codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(inbox)))
-    }
-
-    @Test
-    fun mixedFleet_withAssets_preservesAllFields() {
-        // CapturedNotification.equals can't be used here (PrivateAssetRef.assetKey is a ByteArray with
-        // reference equality), so prove field preservation by re-encoding under a fixed codec.
-        val rich = simpleNotif().copy(
-            largeIcon = asset, style = NotificationStyle.MESSAGING,
-            messages = listOf(ConversationMessage("Alice", "hi", 1L, avatar = asset)),
-        )
-        val viaLegacy = codec.decodeFromByteArray<CapturedNotification>(legacyFat.encodeToByteArray(rich))
-        assertArrayEquals(codec.encodeToByteArray(rich), codec.encodeToByteArray(viaLegacy))
-    }
-
-    @Test
-    fun cryptoStructs_areByteIdenticalAcrossConfigs() {
-        val auth = EnvelopeAuth(
-            v = 1, suite = "NS2", typ = MessageType.NOTIFICATION, signerId = ClientId("a"), signerEpoch = 1,
-            messageId = "m", seq = 1L, createdAt = 1L, bodyCiphertextSha256 = ByteArray(32) { it.toByte() },
-            recipientIds = listOf(ClientId("b")), recipientEpochs = listOf(1),
-        )
-        assertArrayEquals(legacyFat.encodeToByteArray(auth), codec.encodeToByteArray(auth))
-
-        val aad = AssetAad("NS2", ClientId("a"), "id", "image/png", 99, AssetRole.AVATAR)
-        assertArrayEquals(legacyFat.encodeToByteArray(aad), codec.encodeToByteArray(aad))
-    }
-
-    @Test
-    fun signedBlob_innerPayloadAndSigArePreserved() {
-        // A wrapper re-encode (broker relay / persist-at-rest) must never touch the opaque, signed payload.
-        val blob = SignedBlob(
-            SignedType.CLIENT_CARD, signerId = ClientId("a"),
-            payload = ByteArray(40) { it.toByte() }, sig = ByteArray(16) { (it + 1).toByte() },
-        )
-        val rt = codec.decodeFromByteArray<SignedBlob>(codec.encodeToByteArray(blob))
-        assertArrayEquals(blob.payload, rt.payload)
-        assertArrayEquals(blob.sig, rt.sig)
-        assertEquals(blob.suite, rt.suite)
-    }
+    private fun ByteArray.b64(): String = Base64.getEncoder().encodeToString(this)
 }

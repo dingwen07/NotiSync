@@ -4,6 +4,7 @@ import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
+import kotlinx.serialization.cbor.CborLabel
 
 /** Append-only — keep CBOR ordinals stable. [ACTION] is always unicast to the notification's
  *  origin client (the only peer that can perform it); it never fans out. */
@@ -13,15 +14,15 @@ enum class MessageType { NOTIFICATION, DISMISSAL, DATA_SYNC, ACTION }
 /** The data-encryption key for one envelope, HPKE-sealed to a single recipient's public keyset. */
 @Serializable
 data class PerRecipientKey(
-    val recipientId: ClientId,
-    @ByteString val sealedDek: ByteArray,
+    @CborLabel(0) val recipientId: ClientId,
+    @CborLabel(1) @ByteString val sealedDek: ByteArray,
     /**
      * NS2: which of the recipient's HPKE key epochs this DEK was sealed to, so the recipient selects the
      * matching (possibly retained, pre-rotation) private keyset. 0 = the identity-era single HPKE key
      * (NS1-compatible). Bound into the HPKE context and [EnvelopeAuth] so a (claimed, sealed) epoch
      * mismatch fails AEAD.
      */
-    val recipientEpoch: Int = 0,
+    @CborLabel(2) val recipientEpoch: Int = 0,
 )
 
 /**
@@ -32,25 +33,25 @@ data class PerRecipientKey(
  */
 @Serializable
 data class Envelope(
-    @EncodeDefault(ALWAYS) val v: Int = 1,
-    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
-    val typ: MessageType,
-    val signerId: ClientId,
+    @CborLabel(0) @EncodeDefault(ALWAYS) val v: Int = 1,
+    @CborLabel(1) @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
+    @CborLabel(2) val typ: MessageType,
+    @CborLabel(3) val signerId: ClientId,
     /**
      * NS2: which key signed this envelope. 0 = [signerId]'s identity key (NS1-compatible; also used for
      * identity-anchored control bodies like a trust roster); ≥1 = the operational key of that
      * [ClientKeyEpoch]. Bound into [EnvelopeAuth] so it cannot be stripped or swapped.
      */
-    val signerEpoch: Int = 0,
+    @CborLabel(4) val signerEpoch: Int = 0,
     /** Unique per message — recipients dedupe on this. */
-    val messageId: String,
+    @CborLabel(5) val messageId: String,
     /** Per-sender monotonic counter for ordering and replay detection. */
-    val seq: Long,
-    val createdAt: Long,
-    @ByteString val bodyCiphertext: ByteArray,
-    val recipients: List<PerRecipientKey>,
+    @CborLabel(6) val seq: Long,
+    @CborLabel(7) val createdAt: Long,
+    @CborLabel(8) @ByteString val bodyCiphertext: ByteArray,
+    @CborLabel(9) val recipients: List<PerRecipientKey>,
     /** ECDSA-P256 signature by [signerId] over [EnvelopeAuth] (source authenticity + replay binding). */
-    @ByteString val sig: ByteArray = ByteArray(0),
+    @CborLabel(10) @ByteString val sig: ByteArray = ByteArray(0),
 ) {
     /** The recipient ids in claim order — bound into the signature. */
     fun recipientIds(): List<ClientId> = recipients.map { it.recipientId }
@@ -66,17 +67,17 @@ data class Envelope(
  */
 @Serializable
 data class EnvelopeAuth(
-    val v: Int,
-    val suite: String,
-    val typ: MessageType,
-    val signerId: ClientId,
+    @CborLabel(0) val v: Int,
+    @CborLabel(1) val suite: String,
+    @CborLabel(2) val typ: MessageType,
+    @CborLabel(3) val signerId: ClientId,
     /** NS2: the signing key selector (0 = identity, ≥1 = operational epoch). */
-    val signerEpoch: Int,
-    val messageId: String,
-    val seq: Long,
-    val createdAt: Long,
-    @ByteString val bodyCiphertextSha256: ByteArray,
-    val recipientIds: List<ClientId>,
+    @CborLabel(4) val signerEpoch: Int,
+    @CborLabel(5) val messageId: String,
+    @CborLabel(6) val seq: Long,
+    @CborLabel(7) val createdAt: Long,
+    @CborLabel(8) @ByteString val bodyCiphertextSha256: ByteArray,
+    @CborLabel(9) val recipientIds: List<ClientId>,
     /** NS2: per-recipient HPKE epochs, parallel to [recipientIds]. */
-    val recipientEpochs: List<Int>,
+    @CborLabel(10) val recipientEpochs: List<Int>,
 )

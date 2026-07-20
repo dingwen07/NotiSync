@@ -19,6 +19,11 @@ import kotlinx.serialization.json.Json
 object ProtocolCodec {
     val cbor: Cbor = Cbor {
         ignoreUnknownKeys = true
+        // NS2's compact wire contract uses stable integer labels on class fields. Keeping classes as
+        // maps (rather than positional arrays) lets an older reader skip a future numbered field.
+        preferCborLabelsOverNames = true
+        // A definite-length map/array saves the trailing break byte and gives one deterministic shape.
+        useDefiniteLengthEncoding = true
         // Omit fields equal to their default, shrinking the wire and the inline-push budget (FCM/APNs).
         // Safe across versions: every field has a default, so a missing key decodes back to it, and
         // ignoreUnknownKeys absorbs the reverse — old and new peers interoperate (mixed fleet). The two

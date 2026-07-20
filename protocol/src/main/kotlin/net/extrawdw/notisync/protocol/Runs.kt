@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.CborLabel
 
 /** Maximum UTF-8 size of the authoritative, sanitized terminal tail carried in a [RunState]. */
 const val RUN_TERMINAL_MAX_UTF8_BYTES: Int = 64 * 1024
@@ -53,9 +54,9 @@ enum class RunPromptKind { YES_NO, TEXT }
  */
 @Serializable
 data class RunTerminalSnapshot(
-    val text: String,
-    val truncated: Boolean,
-    val rawBytesSeen: Long,
+    @CborLabel(0) val text: String,
+    @CborLabel(1) val truncated: Boolean,
+    @CborLabel(2) val rawBytesSeen: Long,
 ) {
     init {
         require(text.utf8Size() <= RUN_TERMINAL_MAX_UTF8_BYTES) {
@@ -71,9 +72,9 @@ data class RunTerminalSnapshot(
 /** Normalized Run progress. Determinate progress always carries a bounded current/total pair. */
 @Serializable
 data class RunProgress(
-    val current: Long? = null,
-    val total: Long? = null,
-    val indeterminate: Boolean = false,
+    @CborLabel(0) val current: Long? = null,
+    @CborLabel(1) val total: Long? = null,
+    @CborLabel(2) val indeterminate: Boolean = false,
 ) {
     init {
         if (indeterminate) {
@@ -91,9 +92,9 @@ data class RunProgress(
 /** Optional model-generated presentation, kept separate from deterministic state and terminal output. */
 @Serializable
 data class RunLlmSummary(
-    val title: String,
-    val text: String,
-    val expandedText: String? = null,
+    @CborLabel(0) val title: String,
+    @CborLabel(1) val text: String,
+    @CborLabel(2) val expandedText: String? = null,
 ) {
     init {
         require(title.isNotBlank() && title.utf8Size() <= RUN_LLM_TITLE_MAX_UTF8_BYTES) {
@@ -122,30 +123,30 @@ data class RunLlmSummary(
  */
 @Serializable
 data class RunState(
-    val hostClientId: ClientId,
-    val runId: String,
-    val revision: Long,
-    val phase: RunPhase,
-    val updateReason: RunUpdateReason,
-    val startedAt: Long,
-    val updatedAt: Long,
-    val argv: List<String>,
-    val cwd: String,
-    val usesPty: Boolean,
-    val terminal: RunTerminalSnapshot,
+    @CborLabel(0) val hostClientId: ClientId,
+    @CborLabel(1) val runId: String,
+    @CborLabel(2) val revision: Long,
+    @CborLabel(3) val phase: RunPhase,
+    @CborLabel(4) val updateReason: RunUpdateReason,
+    @CborLabel(5) val startedAt: Long,
+    @CborLabel(6) val updatedAt: Long,
+    @CborLabel(7) val argv: List<String>,
+    @CborLabel(8) val cwd: String,
+    @CborLabel(9) val usesPty: Boolean,
+    @CborLabel(10) val terminal: RunTerminalSnapshot,
     /** Changes only when the contextual prompt/input contract changes; zero means no context yet. */
-    val interactionGeneration: Long = 0,
-    val endedAt: Long? = null,
+    @CborLabel(11) val interactionGeneration: Long = 0,
+    @CborLabel(12) val endedAt: Long? = null,
     /** Monotonic elapsed time from the launch attempt until child exit; absent while active and on legacy states. */
-    val durationMs: Long? = null,
-    val blockedReason: RunBlockedReason? = null,
-    val prompt: RunPromptKind? = null,
-    val progress: RunProgress? = null,
-    val exitCode: Int? = null,
-    val failureMessage: String? = null,
-    val llmSummary: RunLlmSummary? = null,
+    @CborLabel(13) val durationMs: Long? = null,
+    @CborLabel(14) val blockedReason: RunBlockedReason? = null,
+    @CborLabel(15) val prompt: RunPromptKind? = null,
+    @CborLabel(16) val progress: RunProgress? = null,
+    @CborLabel(17) val exitCode: Int? = null,
+    @CborLabel(18) val failureMessage: String? = null,
+    @CborLabel(19) val llmSummary: RunLlmSummary? = null,
     /** [RunControl.requestId] when this snapshot is the immediate answer to a refresh. */
-    val responseToRequestId: String? = null,
+    @CborLabel(20) val responseToRequestId: String? = null,
 ) {
     init {
         require(hostClientId.value.isNotBlank()) { "hostClientId must not be blank" }
@@ -218,15 +219,15 @@ enum class RunControlKind { REFRESH, WRITE_INPUT, SIGNAL }
 
 @Serializable
 data class RunControl(
-    val requestId: String,
-    val hostClientId: ClientId,
-    val runId: String,
-    val kind: RunControlKind,
-    val requestedAt: Long,
-    val interactionGeneration: Long? = null,
-    val inputText: String? = null,
+    @CborLabel(0) val requestId: String,
+    @CborLabel(1) val hostClientId: ClientId,
+    @CborLabel(2) val runId: String,
+    @CborLabel(3) val kind: RunControlKind,
+    @CborLabel(4) val requestedAt: Long,
+    @CborLabel(5) val interactionGeneration: Long? = null,
+    @CborLabel(6) val inputText: String? = null,
     /** Arbitrary signal name or number, not an enum; examples include INT, TERM, KILL, and RTMIN+1. */
-    val signal: String? = null,
+    @CborLabel(7) val signal: String? = null,
 ) {
     init {
         require(requestId.isUuid()) { "requestId must be a UUID" }
@@ -260,11 +261,11 @@ enum class RunControlResultStatus { APPLIED, REJECTED, NOT_ACTIVE, STALE, FAILED
 
 @Serializable
 data class RunControlResult(
-    val requestId: String,
-    val runId: String,
-    val status: RunControlResultStatus,
-    val respondedAt: Long,
-    val message: String? = null,
+    @CborLabel(0) val requestId: String,
+    @CborLabel(1) val runId: String,
+    @CborLabel(2) val status: RunControlResultStatus,
+    @CborLabel(3) val respondedAt: Long,
+    @CborLabel(4) val message: String? = null,
 ) {
     init {
         require(requestId.isUuid()) { "requestId must be a UUID" }
@@ -288,11 +289,11 @@ enum class RunEnvironmentOperation { SET, UNSET, APPEND, PREPEND }
 
 @Serializable
 data class RunEnvironmentChange(
-    val name: String,
-    val operation: RunEnvironmentOperation,
-    val value: String? = null,
+    @CborLabel(0) val name: String,
+    @CborLabel(1) val operation: RunEnvironmentOperation,
+    @CborLabel(2) val value: String? = null,
     /** Literal join text for APPEND/PREPEND; omitted when either side is empty by a future executor. */
-    val separator: String = "",
+    @CborLabel(3) val separator: String = "",
 ) {
     init {
         require(name.isNotBlank() && name.utf8Size() <= 1024 && '=' !in name && '\u0000' !in name) {
@@ -324,13 +325,13 @@ data class RunEnvironmentChange(
  */
 @Serializable
 data class RunCommandRequest(
-    val requestId: String,
-    val hostClientId: ClientId,
-    val argv: List<String>,
-    val cwd: String,
-    val environmentChanges: List<RunEnvironmentChange>,
-    val requestedAt: Long,
-    val expiresAt: Long,
+    @CborLabel(0) val requestId: String,
+    @CborLabel(1) val hostClientId: ClientId,
+    @CborLabel(2) val argv: List<String>,
+    @CborLabel(3) val cwd: String,
+    @CborLabel(4) val environmentChanges: List<RunEnvironmentChange>,
+    @CborLabel(5) val requestedAt: Long,
+    @CborLabel(6) val expiresAt: Long,
 ) {
     init {
         require(requestId.isUuid()) { "requestId must be a UUID" }
@@ -350,11 +351,11 @@ data class RunCommandRequest(
  */
 @Serializable
 data class RunSync(
-    val kind: RunSyncKind,
-    val state: RunState? = null,
-    val control: RunControl? = null,
-    val controlResult: RunControlResult? = null,
-    val commandRequest: RunCommandRequest? = null,
+    @CborLabel(0) val kind: RunSyncKind,
+    @CborLabel(1) val state: RunState? = null,
+    @CborLabel(2) val control: RunControl? = null,
+    @CborLabel(3) val controlResult: RunControlResult? = null,
+    @CborLabel(4) val commandRequest: RunCommandRequest? = null,
 ) {
     init {
         val populated = listOfNotNull(state, control, controlResult, commandRequest).size

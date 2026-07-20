@@ -4,6 +4,7 @@ import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.EncodeDefault.Mode.ALWAYS
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
+import kotlinx.serialization.cbor.CborLabel
 
 /** Discriminator for the inner DTO carried by a [SignedBlob.payload]. */
 object SignedType {
@@ -25,11 +26,11 @@ object SignedType {
  */
 @Serializable
 data class SignedBlob(
-    val typ: String,
-    @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
-    val signerId: ClientId,
-    @ByteString val payload: ByteArray,
-    @ByteString val sig: ByteArray,
+    @CborLabel(0) val typ: String,
+    @CborLabel(1) @EncodeDefault(ALWAYS) val suite: String = CipherSuite.CURRENT_ID,
+    @CborLabel(2) val signerId: ClientId,
+    @CborLabel(3) @ByteString val payload: ByteArray,
+    @CborLabel(4) @ByteString val sig: ByteArray,
 ) {
     /** Decode the inner DTO. Call only after the signature has been verified. */
     inline fun <reified T> decode(): T = ProtocolCodec.decodeFromCbor(payload)

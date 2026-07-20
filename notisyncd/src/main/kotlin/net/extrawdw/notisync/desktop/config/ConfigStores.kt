@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.PrivateFiles
 
-private const val DEFAULT_BROKER_URL = "wss://notisync-api.extrawdw.net"
+private const val DEFAULT_BROKER_URL = "wss://notisync-api-v2.extrawdw.net"
 private const val DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES = false
 private const val DEFAULT_LOG_LEVEL = "WARN"
 private const val DEFAULT_WEBSOCKET_PING_SECONDS = 30
