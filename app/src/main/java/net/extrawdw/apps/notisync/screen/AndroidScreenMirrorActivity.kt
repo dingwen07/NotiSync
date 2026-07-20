@@ -1,12 +1,14 @@
 package net.extrawdw.apps.notisync.screen
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.PictureInPictureParams
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.os.Build
 import android.os.Bundle
 import android.os.SystemClock
@@ -103,6 +105,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
@@ -136,6 +140,8 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
     private lateinit var sourceId: ClientId
     private lateinit var requesterLeaseId: String
     private var pictureInPictureEligible = false
+    private var pictureInPicturePolicy: AndroidScreenPictureInPicturePolicy? = null
+    private var pictureInPictureSourceRect: Rect? = null
     private var enteringPictureInPicture = false
     private var explicitlyClosing = false
 
@@ -265,20 +271,33 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         connected: Boolean,
         dimensions: ScrcpySessionDimensions?,
     ) {
-        val policy = androidScreenPictureInPicturePolicy(
+        pictureInPicturePolicy = androidScreenPictureInPicturePolicy(
             supported = packageManager.hasSystemFeature(PackageManager.FEATURE_PICTURE_IN_PICTURE),
             connected = connected,
             sourceWidth = dimensions?.width,
             sourceHeight = dimensions?.height,
         )
+        applyPictureInPictureParams()
+    }
+
+    internal fun updatePictureInPictureSourceRect(sourceRect: Rect) {
+        val next = sourceRect.takeUnless { it.isEmpty }?.let(::Rect)
+        if (next == pictureInPictureSourceRect) return
+        pictureInPictureSourceRect = next
+        if (pictureInPicturePolicy != null) applyPictureInPictureParams()
+    }
+
+    private fun applyPictureInPictureParams() {
+        val policy = pictureInPicturePolicy ?: return
         pictureInPictureEligible = policy.eligible && !explicitlyClosing
-        setPictureInPictureParams(
-            PictureInPictureParams.Builder()
-                .setAutoEnterEnabled(pictureInPictureEligible)
-                .setSeamlessResizeEnabled(true)
-                .apply { policy.rationalAspectRatio()?.let(::setAspectRatio) }
-                .build(),
-        )
+        val builder = PictureInPictureParams.Builder()
+            .setAutoEnterEnabled(pictureInPictureEligible)
+            .setSeamlessResizeEnabled(true)
+            .apply { policy.rationalAspectRatio()?.let(::setAspectRatio) }
+        if (pictureInPictureEligible) {
+            pictureInPictureSourceRect?.let { builder.setSourceRectHint(it) }
+        }
+        setPictureInPictureParams(builder.build())
     }
 
     private fun closeSessionAndTask() {
@@ -650,6 +669,7 @@ private fun AndroidScreenMirrorViewer(
         AndroidScreenSurface(
             dimensions = dimensions,
             control = control,
+            onSourceRectChanged = activity::updatePictureInPictureSourceRect,
             onSurface = { next ->
                 if (next == null) {
                     graph?.screenMirrorRequesterHost?.detachSurface(activity.viewerToken)
@@ -1073,6 +1093,7 @@ private const val REQUESTER_SERVICE_START_TIMEOUT_MS = 5_000L
 private fun AndroidScreenSurface(
     dimensions: ScrcpySessionDimensions?,
     control: AndroidScreenControlDispatcher?,
+    onSourceRectChanged: (Rect) -> Unit,
     onSurface: (Surface?) -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -1098,7 +1119,20 @@ private fun AndroidScreenSurface(
                 view.control = control
                 view.sourceDimensions = dimensions
             },
-            modifier = Modifier.width(viewWidth).height(viewHeight),
+            modifier = Modifier
+                .width(viewWidth)
+                .height(viewHeight)
+                .onGloballyPositioned { coordinates ->
+                    val bounds = coordinates.boundsInWindow()
+                    onSourceRectChanged(
+                        Rect(
+                            bounds.left.roundToInt(),
+                            bounds.top.roundToInt(),
+                            bounds.right.roundToInt(),
+                            bounds.bottom.roundToInt(),
+                        ),
+                    )
+                },
         )
     }
 }
@@ -1142,6 +1176,12 @@ private class AndroidScreenSurfaceView(context: Context) : SurfaceView(context) 
             )
         }
         if (touches.isNotEmpty()) dispatcher.sendTouches(touches)
+        if (action == MotionEvent.ACTION_UP) performClick()
+        return true
+    }
+
+    override fun performClick(): Boolean {
+        super.performClick()
         return true
     }
 }
@@ -1151,6 +1191,7 @@ private class AndroidScreenSurfaceView(context: Context) : SurfaceView(context) 
  * committed text is immediately divided into bounded scrcpy frames, while composition updates are
  * deliberately ignored so predictive IMEs cannot duplicate partially composed text remotely.
  */
+@SuppressLint("ViewConstructor")
 private class AndroidScreenImeView(
     context: Context,
     onImeDismissed: () -> Unit,

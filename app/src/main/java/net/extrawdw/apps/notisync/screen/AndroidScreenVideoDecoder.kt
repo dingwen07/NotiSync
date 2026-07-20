@@ -389,7 +389,6 @@ internal class AndroidScreenVideoDecoder(
             when (val outputIndex = codec.dequeueOutputBuffer(info, timeoutUs)) {
                 MediaCodec.INFO_TRY_AGAIN_LATER -> return false
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> validateOutputFormat(codec.outputFormat)
-                MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
                 else -> if (outputIndex >= 0) {
                     val endOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
                     // surfaceDestroyed() may race with a finite dequeue call. Re-check the exact

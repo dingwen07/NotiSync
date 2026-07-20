@@ -358,7 +358,6 @@
     <string name="screen_mirror_request_title">屏幕控制请求</string>
     <string name="screen_mirror_request_body">点按以开始与 %1$s 共享。</string>
     <string name="screen_mirror_start">开始</string>
-    <string name="screen_mirror_service_channel">屏幕共享</string>
     <string name="screen_mirror_source_connecting_service_channel">正在准备屏幕共享</string>
     <string name="screen_mirror_source_connecting_service_channel_description">在验证已授权请求时保持屏幕共享服务运行。</string>
     <string name="screen_mirror_source_service_channel">屏幕共享已开启</string>
@@ -385,7 +384,6 @@
     <string name="screen_viewer_grant_local_network">授予网络权限</string>
     <string name="screen_viewer_retry">重试</string>
     <string name="screen_viewer_close">关闭</string>
-    <string name="screen_viewer_control_failed">控制通道已关闭。</string>
     <string name="screen_viewer_back">返回</string>
     <string name="screen_viewer_home">主屏幕</string>
     <string name="screen_viewer_recents">最近任务</string>

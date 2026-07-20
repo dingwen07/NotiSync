@@ -372,7 +372,6 @@
     <string name="screen_mirror_request_title">Screen control request</string>
     <string name="screen_mirror_request_body">Tap to start sharing with %1$s.</string>
     <string name="screen_mirror_start">Start</string>
-    <string name="screen_mirror_service_channel">Screen sharing</string>
     <string name="screen_mirror_source_connecting_service_channel">Preparing screen sharing</string>
     <string name="screen_mirror_source_connecting_service_channel_description">Keeps screen sharing available while an authorized request is authenticated.</string>
     <string name="screen_mirror_source_service_channel">Screen sharing active</string>
@@ -399,7 +398,6 @@
     <string name="screen_viewer_grant_local_network">Grant network access</string>
     <string name="screen_viewer_retry">Retry</string>
     <string name="screen_viewer_close">Close</string>
-    <string name="screen_viewer_control_failed">The control channel was closed.</string>
     <string name="screen_viewer_back">Back</string>
     <string name="screen_viewer_home">Home</string>
     <string name="screen_viewer_recents">Recents</string>
