@@ -245,8 +245,9 @@ internal class AndroidWifiAwareScreenListener private constructor(
                 .setPort(port)
                 .setTransportProtocol(AndroidWifiAwareEndpointPolicy.TCP_PROTOCOL_NUMBER)
                 .build()
+            // Keep the builder defaults, especially NOT_RESTRICTED. Clearing them makes this a
+            // restricted-network request which ConnectivityService rejects for normal apps.
             val request = NetworkRequest.Builder()
-                .clearCapabilities()
                 .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
                 .setNetworkSpecifier(specifier)
                 .build()

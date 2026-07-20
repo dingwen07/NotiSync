@@ -81,8 +81,9 @@ internal class AndroidWifiAwareScreenSubscriber(context: Context) {
             .setDataPathSecurityConfig(securityConfig)
             // Only the publisher/server is allowed to supply port and transport metadata.
             .build()
+        // Keep the builder defaults, especially NOT_RESTRICTED. Clearing them makes this a
+        // restricted-network request which ConnectivityService rejects for normal apps.
         val request = NetworkRequest.Builder()
-            .clearCapabilities()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI_AWARE)
             .setNetworkSpecifier(specifier)
             .build()

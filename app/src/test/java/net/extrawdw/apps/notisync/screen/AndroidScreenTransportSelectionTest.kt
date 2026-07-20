@@ -4,9 +4,22 @@ import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
 import net.extrawdw.notisync.screen.ScreenConnectionCandidate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AndroidScreenTransportSelectionTest {
+    @Test
+    fun `transport detail drops remote Binder stack trace`() {
+        assertEquals(
+            "ConnectivityService: user has no permission to access restricted network.",
+            sanitizeScreenTransportDetail(
+                "ConnectivityService: user has no permission to access restricted network.\n" +
+                    "Remote stack trace: at android.net.ConnectivityService.enforcePermission()",
+            ),
+        )
+        assertNull(sanitizeScreenTransportDetail("Remote stack trace:\n at android.os.Binder"))
+    }
+
     @Test
     fun `saturated request reserves DNS and Aware after direct LAN candidates`() {
         val lan = (1..10).map { index -> lanCandidate(index) }

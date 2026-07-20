@@ -543,10 +543,16 @@ private fun Throwable.deepestTransportMessage(): String? {
         value.message?.takeIf(String::isNotBlank)?.let { selected = it }
         current = value.cause?.takeUnless { cause -> cause === value }
     }
-    return selected
-        ?.replace(Regex("[\\p{Cc}\\p{Cf}]"), " ")
-        ?.take(200)
+    return sanitizeScreenTransportDetail(selected)
 }
+
+internal fun sanitizeScreenTransportDetail(value: String?): String? = value
+    ?.substringBefore("Remote stack trace:")
+    ?.replace(Regex("[\\p{Cc}\\p{Cf}]"), " ")
+    ?.replace(Regex("\\s+"), " ")
+    ?.trim()
+    ?.takeIf(String::isNotEmpty)
+    ?.take(200)
 
 internal object ScreenEndpointRetryPolicy {
     fun canRetry(videoAuthenticated: Boolean): Boolean = !videoAuthenticated

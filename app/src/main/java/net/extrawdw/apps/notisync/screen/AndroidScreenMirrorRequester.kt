@@ -695,9 +695,7 @@ private fun Throwable.deepestRequesterTransportMessage(): String? {
         value.message?.takeIf(String::isNotBlank)?.let { selected = it }
         current = value.cause?.takeUnless { cause -> cause === value }
     }
-    return selected
-        ?.replace(Regex("[\\p{Cc}\\p{Cf}]"), " ")
-        ?.take(200)
+    return sanitizeScreenTransportDetail(selected)
 }
 
 internal object AndroidScreenRequesterStatusPolicy {
