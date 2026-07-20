@@ -1,5 +1,8 @@
 package net.extrawdw.apps.notisync.channel
 
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
+
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
 import net.extrawdw.apps.notisync.testsupport.FakeTrustState
@@ -267,6 +270,32 @@ class SecureChannelTest {
     }
 
     @Test
+    fun retryableHandlerFailure_isNotAcknowledgedOrDeduplicated() {
+        val me = newSigner()
+        val myHpke = newHpke()
+        val sender = newSigner()
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset))
+        }
+        val dedup = FakeDedup()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
+        channel.onMessage(MessageType.ACTION) { throw RetryableDeliveryException("disk unavailable") }
+        val envelope = seal(
+            sender,
+            MessageType.ACTION,
+            byteArrayOf(1),
+            me.clientId,
+            myHpke.publicKeyset,
+            "durable-action",
+        )
+
+        assertEquals(DeliveryOutcome.DROPPED, channel.deliver(envelope))
+        assertFalse(dedup.seen("durable-action"))
+        assertEquals(DeliveryOutcome.DROPPED, channel.deliver(envelope))
+    }
+
+    @Test
     fun persistedDedup_dropsRedeliveryAcrossAFreshChannel() {
         val me = newSigner();
         val myHpke = newHpke()
@@ -425,7 +454,10 @@ class SecureChannelTest {
         val repairRequests = mutableListOf<ClientId>()
         // No sealable peers — the keyless peer is absent from activePeers — but it IS trusted-and-needing a
         // key-epoch (e.g. just upgraded, or its saved epoch went invalid), so it can never be a recipient.
-        val trust = FakeTrustState().apply { peersNeeding = listOf(keyless.clientId) }
+        val trust = FakeTrustState().apply {
+            peersNeeding = listOf(keyless.clientId)
+            peerOwnDevices = mapOf(keyless.clientId to true)
+        }
         // Send-side repair reuses the receive-side onUnresolvedSender handler (the broker key-epoch refetch).
         val channel = testChannel(
             me,
@@ -464,6 +496,10 @@ class SecureChannelTest {
                 androidKeyless.clientId to "android",
                 iosKeyless.clientId to " IOS ",
             )
+            peerOwnDevices = mapOf(
+                androidKeyless.clientId to true,
+                iosKeyless.clientId to true,
+            )
         }
         val channel = testChannel(
             me,
@@ -501,6 +537,10 @@ class SecureChannelTest {
                     Capability.DISPLAY_NOTIFICATION_UPDATES,
                 ),
                 unsupported.clientId to listOf(Capability.CAPABILITY_ROUTING_V1),
+            )
+            peerOwnDevices = mapOf(
+                supported.clientId to true,
+                unsupported.clientId to true,
             )
         }
         val channel = testChannel(

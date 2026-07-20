@@ -2,7 +2,7 @@ import Foundation
 
 /// One operational epoch of a peer: the rotatable operational signing key + raw HPKE key for that epoch,
 /// plus the validity window and the key's declared purposes (NS2 §5/§6).
-nonisolated struct EpochRecord: Codable, Sendable {
+nonisolated struct EpochRecord: Codable, Equatable, Sendable {
     var epoch: Int
     var operationalSpki: Data
     var hpkePublicKey: Data
@@ -59,6 +59,11 @@ nonisolated struct TrustedPeerRecord: Codable, Sendable {
     var isTrusted: Bool { status == TrustStatus.TRUSTED.rawValue }
     var announcedCapabilities: [Capability] { capabilities ?? [] }
     var profileRevision: Int64 { profileUpdatedAt ?? 0 }
+    /// Self-authenticating card/key material may be relayed without approving the subject. A pending
+    /// introduction or re-introduction is therefore eligible.
+    var mayRelayCardMaterial: Bool {
+        status == TrustStatus.TRUSTED.rawValue || status == TrustStatus.PENDING_TRUST.rawValue
+    }
     /// True when this peer is the broker's Experience Mode demo device, identified by the server-set,
     /// identity-signed card `platform` (pinned verbatim at pairing). Experience peers are pruned (deleted,
     /// not revoked) before a new Experience session and never appear in — nor receive — the trust roster.
@@ -100,10 +105,11 @@ nonisolated final class TrustStore {
     }
 
     /// Re-sign and persist. `sign` is the identity-key signer (app process only).
-    func save(sign: (Data) throws -> Data) {
+    @discardableResult
+    func save(sign: (Data) throws -> Data) -> Bool {
         let list = peers.values.sorted { $0.clientId < $1.clientId }
-        guard let signature = try? sign(Self.canonical(selfId: selfClientId, peers: list)) else { return }
-        AppGroupStore.write(TrustFile(peers: list, signature: signature), AppGroupStore.Files.trust)
+        guard let signature = try? sign(Self.canonical(selfId: selfClientId, peers: list)) else { return false }
+        return AppGroupStore.write(TrustFile(peers: list, signature: signature), AppGroupStore.Files.trust)
     }
 
     // MARK: Mutation
@@ -117,10 +123,13 @@ nonisolated final class TrustStore {
             capabilities: card.capabilities, profileUpdatedAt: card.createdAt
         )
         record.identitySpki = card.identityPublicKey
-        record.displayName = card.displayName
-        record.platform = card.platform
-        record.capabilities = card.capabilities
-        record.profileUpdatedAt = max(record.profileRevision, card.createdAt)
+        // Re-pairing with an older card must not roll back a profile learned from a newer card/update.
+        if card.createdAt > record.profileRevision {
+            record.displayName = card.displayName
+            record.platform = card.platform
+            record.capabilities = card.capabilities
+            record.profileUpdatedAt = card.createdAt
+        }
         record.ownDevice = ownDevice
         record.status = TrustStatus.TRUSTED.rawValue
         record.updatedAt = nowMillis
@@ -145,6 +154,31 @@ nonisolated final class TrustStore {
         let floor = record.floor ?? 0
         guard ke.epoch >= floor else { return false }      // rollback: a retired/superseded epoch
         guard ke.minEpoch >= floor else { return false }   // a replayed bundle must not drag the floor down
+        let originalFloor = record.floor
+        let originalCurrentEpoch = record.currentEpoch
+        let originalEpochs = record.epochs
+
+        if let held = record.epoch(ke.epoch) {
+            // Epoch identifies the operational key generation. Reusing it for different signing/HPKE keys is
+            // invalid even if the identity signs the conflicting certificate; a key rotation must increment it.
+            guard held.operationalSpki == ke.operationalSigningKey,
+                  held.hpkePublicKey == ke.hpkePublicKey else { return false }
+            let heldPurposes = Set(held.purposes ?? Purpose.allRawValues)
+            let incomingPurposes = Set(ke.purposes.map(\.rawValue))
+            guard heldPurposes == incomingPurposes else { return false }
+
+            if let heldBlobData = held.signedBlob,
+               let heldBlob = try? ProtocolCodec.decodeSignedBlob(heldBlobData),
+               let heldEpoch = try? ProtocolCodec.decodeClientKeyEpoch(heldBlob.payload) {
+                // Never lose the self-contained identity anchor by replacing a full broker/relay copy with the
+                // identity-stripped QR representation. The inverse is a useful relayability upgrade.
+                if !heldEpoch.identityPublicKey.isEmpty && ke.identityPublicKey.isEmpty { return false }
+                // Signatures may be non-deterministic. Compare certificate semantics, not SignedBlob bytes, so
+                // receiving the same identity-authorized epoch again is a true no-op (no disk write/UI refresh).
+                if Self.sameKeyEpochCertificate(heldEpoch, ke), floor >= ke.minEpoch { return false }
+            }
+        }
+
         let newFloor = max(floor, ke.minEpoch)
         record.floor = newFloor
         record.epochs.removeAll { $0.epoch == ke.epoch }
@@ -157,8 +191,23 @@ nonisolated final class TrustStore {
         record.epochs.removeAll { $0.epoch < newFloor }
         record.epochs.sort { $0.epoch > $1.epoch }
         if record.epochs.count > Self.ringSize { record.epochs = Array(record.epochs.prefix(Self.ringSize)) }
+        guard record.floor != originalFloor || record.currentEpoch != originalCurrentEpoch ||
+              record.epochs != originalEpochs else { return false }
         peers[ke.clientId] = record
         return true
+    }
+
+    private static func sameKeyEpochCertificate(_ lhs: ClientKeyEpoch, _ rhs: ClientKeyEpoch) -> Bool {
+        lhs.suite == rhs.suite &&
+        lhs.clientId == rhs.clientId &&
+        lhs.identityPublicKey == rhs.identityPublicKey &&
+        lhs.epoch == rhs.epoch &&
+        lhs.operationalSigningKey == rhs.operationalSigningKey &&
+        lhs.hpkePublicKey == rhs.hpkePublicKey &&
+        Set(lhs.purposes.map(\.rawValue)) == Set(rhs.purposes.map(\.rawValue)) &&
+        lhs.notBefore == rhs.notBefore &&
+        lhs.notAfter == rhs.notAfter &&
+        lhs.minEpoch == rhs.minEpoch
     }
 
     func setStatus(_ clientId: String, _ status: TrustStatus, at nowMillis: Int64) {
@@ -243,7 +292,7 @@ nonisolated final class TrustStore {
             }
             // Repair runs even for stale/informational rows: the sender may be telling us it lacks a card or
             // an epoch we already hold. The material is self-authenticating, so we only need to be a relay.
-            if let mine = peers[wire.clientId], mine.isTrusted {
+            if let mine = peers[wire.clientId], mine.mayRelayCardMaterial {
                 if !wire.keyAvailable, let card = CardStore.blob(wire.clientId) {
                     cardsToOffer.append(card)
                 }
@@ -256,31 +305,41 @@ nonisolated final class TrustStore {
                                    keyEpochsToOffer: keyEpochsToOffer, needsBroadcast: needsBroadcast)
     }
 
-    /// Pin a delivered (self-authenticating) card: store it for relay, and fill the identity/name of a
-    /// pending introduction that arrived without one. First-verified-wins. Returns true if the roster changed.
+    /// Apply a delivered self-authenticating card. A strictly newer signed card replaces the held copy; an
+    /// older/equal card is a no-op. Its profile fields advance the roster only when its creation time is newer
+    /// than the current card/ProfileUpdate revision, so delayed card repair cannot roll a live profile back.
     @discardableResult
     func applyCard(_ cardBlob: SignedBlob, now: Int64) -> Bool {
         guard cardBlob.typ == SignedType.clientCard,
               let card = try? ProtocolCodec.decodeClientCard(cardBlob.payload),
               card.clientId == cardBlob.signerId,
+              ClientCardFreshness.accepts(createdAt: card.createdAt, now: now),
               IdentityVerifier.verifyBound(expectedSignerId: cardBlob.signerId, spki: card.identityPublicKey,
                                            data: cardBlob.payload, signature: cardBlob.sig)
         else { return false }
-        CardStore.put(card.clientId, blob: cardBlob)
-        guard var record = peers[card.clientId] else { return false }   // no entry yet — held in CardStore for later
-        // Fill each field only if empty: identity is first-verified-wins (never overwrite a pinned key); name
-        // and platform may have been set by the key-epoch (identity only) or a later PROFILE update, so only
-        // backfill a blank. Decoupled so a key-epoch arriving before the card still gets named. (#3)
-        var changed = false
-        if record.identitySpki.isEmpty { record.identitySpki = card.identityPublicKey; changed = true }
-        if record.displayName.isEmpty { record.displayName = card.displayName; changed = true }
-        if record.platform.isEmpty { record.platform = card.platform; changed = true }
-        if record.capabilities == nil {
-            record.capabilities = card.capabilities
-            record.profileUpdatedAt = max(record.profileRevision, card.createdAt)
-            changed = true
+        if let record = peers[card.clientId], !record.identitySpki.isEmpty,
+           record.identitySpki != card.identityPublicKey { return false }
+        guard let put = CardStore.put(card.clientId, blob: cardBlob, now: now) else { return false }
+        let effectiveCard = put.card
+        guard var record = peers[card.clientId] else {
+            return put.changed // held for a later TRUST introduction; CardStore persisted the material
         }
-        guard changed else { return false }
+        guard record.identitySpki.isEmpty || record.identitySpki == effectiveCard.identityPublicKey else {
+            return false
+        }
+        var rosterChanged = false
+        if record.identitySpki.isEmpty {
+            record.identitySpki = effectiveCard.identityPublicKey
+            rosterChanged = true
+        }
+        if effectiveCard.createdAt > record.profileRevision {
+            record.displayName = effectiveCard.displayName
+            record.platform = effectiveCard.platform
+            record.capabilities = effectiveCard.capabilities
+            record.profileUpdatedAt = effectiveCard.createdAt
+            rosterChanged = true
+        }
+        guard put.changed || rosterChanged else { return false }
         peers[card.clientId] = record
         return true
     }
@@ -319,12 +378,6 @@ nonisolated final class TrustStore {
         if clearIntroducer { record.introducedBy = nil }
         peers[clientId] = record
         return true
-    }
-
-    /// Signed cards for every TRUSTED device — pushed alongside the roster so a peer can name a newly
-    /// introduced device. (#3) Experience Mode peers are never broadcast, so their cards are withheld.
-    func trustedCardBlobs() -> [SignedBlob] {
-        peers.values.filter { $0.isTrusted && !$0.isExperienceMode }.compactMap { CardStore.blob($0.clientId) }
     }
 
     /// The highest relayable, self-contained key-epoch blob we hold for a peer. Stripped QR copies are

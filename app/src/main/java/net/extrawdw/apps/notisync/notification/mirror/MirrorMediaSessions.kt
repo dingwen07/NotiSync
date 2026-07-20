@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.notification.mirror
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Bundle
@@ -134,6 +135,7 @@ class MirrorMediaSessions(
      * post-user-action grace window so a stale in-flight capture can't yank the slider back before the
      * origin's echo lands.
      */
+    @SuppressLint("RestrictedApi") // The 4-arg overload is the only compat API that sets volumeControlId.
     private fun applyVolume(entry: Entry, notif: CapturedNotification): VolumeProviderCompat {
         val max = (notif.mediaVolumeMax ?: 0).coerceAtLeast(0)
         val control = when {
@@ -194,6 +196,7 @@ class MirrorMediaSessions(
                 entry.lastUserVolumeAt = SystemClock.elapsedRealtime()
                 onCommand(entry.clientId, entry.sourceKey, MediaCommand.ADJUST_VOLUME, null, null, d)
             }
+            VolumeProviderCompat.VOLUME_CONTROL_FIXED -> Unit
         }
     }
 

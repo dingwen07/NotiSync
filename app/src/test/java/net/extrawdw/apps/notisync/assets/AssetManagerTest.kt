@@ -52,7 +52,9 @@ class AssetManagerTest {
         override suspend fun send(envelope: Envelope, urgency: Urgency): SendResult =
             SendResult(false)
 
-        override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
+        override suspend fun runLiveDelivery(
+            onEnvelope: (Envelope) -> net.extrawdw.notisync.protocol.LiveDeliveryDisposition
+        ) = Unit
     }
 
     private fun manager(transport: Transport): Pair<AssetManager, AssetCache> {

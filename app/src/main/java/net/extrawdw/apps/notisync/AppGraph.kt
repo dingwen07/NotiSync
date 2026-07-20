@@ -39,6 +39,7 @@ import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
+import net.extrawdw.apps.notisync.analytics.AndroidPeerTelemetry
 import net.extrawdw.apps.notisync.analytics.PerfSpan
 import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.analytics.perfTrace
@@ -71,16 +72,16 @@ import net.extrawdw.apps.notisync.appicon.ShippedIcons
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
-import net.extrawdw.apps.notisync.channel.DeliveryOutcome
-import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.notisync.peer.channel.DeliveryOutcome
+import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
-import net.extrawdw.apps.notisync.foundation.RotationManager
-import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
+import net.extrawdw.notisync.peer.foundation.RotationManager
+import net.extrawdw.notisync.peer.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.integrity.AppCheckAttestor
 import net.extrawdw.apps.notisync.notification.capture.GraphicsExtractor
 import net.extrawdw.apps.notisync.notification.capture.GraphicsPipeline
@@ -90,9 +91,15 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorChannels
 import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
-import net.extrawdw.apps.notisync.transport.BrokerClient
-import net.extrawdw.apps.notisync.transport.DeliveryMode
-import net.extrawdw.apps.notisync.transport.ifKnown
+import net.extrawdw.apps.notisync.pairing.automaticTimeEnabled
+import net.extrawdw.apps.notisync.run.RunEngine
+import net.extrawdw.apps.notisync.run.RunControlDrainWorker
+import net.extrawdw.apps.notisync.run.RunNotificationPresenter
+import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.notisync.peer.transport.BrokerClient
+import net.extrawdw.notisync.peer.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.ifKnown
+import net.extrawdw.apps.notisync.trust.DurableTrustMutations
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
@@ -101,6 +108,7 @@ import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
+import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
@@ -114,6 +122,7 @@ import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
+import java.time.ZonedDateTime
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
 
@@ -132,6 +141,14 @@ data class RotationKeyInfo(
     val nextEventAtMillis: Long,
 )
 
+/** A self card plus the wall-clock state captured at the same generation boundary. */
+internal data class GeneratedClientCard(
+    val blob: SignedBlob,
+    val automaticTimeEnabled: Boolean?,
+    val createdAt: Long,
+    val timeZoneId: String,
+)
+
 /** Complete Android declaration. Card and profile builders must both use this exact list. */
 internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.CAPTURE,
@@ -144,10 +161,12 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.PUSH_FILTERING,
     Capability.DISPLAY_NOTIFICATION_UPDATES,
     Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
+    Capability.RECEIVE_RUNS,
 )
 
 class AppGraph(private val app: Application) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
+    internal val durableTrustMutations = DurableTrustMutations(scope)
     val activityLog = ActivityLog()
     val activityText: ActivityText = AndroidActivityText(app)
 
@@ -204,6 +223,10 @@ class AppGraph(private val app: Application) {
         private set
     var foundationEngine: FoundationEngine? = null
         private set
+    lateinit var runStore: RunStore
+        private set
+    var runEngine: RunEngine? = null
+        private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
 
@@ -246,7 +269,7 @@ class AppGraph(private val app: Application) {
             settings.analyticsEnabled.onEach(AnalyticsController::apply).launchIn(this)
         }
         val trustStartNanos = System.nanoTime()
-        trust = TrustStore(ds, scope, identity)
+        trust = TrustStore(ds, identity)
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
         appSelection = AppSelectionRepository(ds, scope)
@@ -259,6 +282,7 @@ class AppGraph(private val app: Application) {
         val selfEpoch = trust.advanceSelfEpoch(1)
         epochHpke = EpochHpkeKeyManager(app, vault).apply { loadOrCreate(selfEpoch) }
         operational = AndroidOperationalSigner.loadOrCreate(identity.clientId, selfEpoch)
+        val peerTelemetry = AndroidPeerTelemetry()
         transport = BrokerClient(
             signer = identity,
             operationalSigner = { operational },
@@ -267,6 +291,7 @@ class AppGraph(private val app: Application) {
             clientKeyEpochProvider = ::buildClientKeyEpochBlob,
             tokenStore = KeyVaultAuthTokenStore(app, vault),
             scope = scope,
+            telemetry = peerTelemetry,
         )
         val assetsDir = java.io.File(app.filesDir, "assets")
         val assetCache = AssetCache(assetsDir)
@@ -337,6 +362,7 @@ class AppGraph(private val app: Application) {
                     deliveryMode = deliveryMode.ifKnown(),
                 )
             },
+            telemetry = peerTelemetry,
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
             onUnresolvedSender = { id ->
@@ -350,6 +376,26 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        // DATA_SYNC/RUN is a first-class Android application path. It has its own durable history and
+        // notification renderer; it must never be adapted into CapturedNotification/MirrorEngine.
+        val runsStore = RunStore(app)
+        runStore = runsStore
+        val runs = RunEngine(
+            channel = channel,
+            store = runsStore,
+            presenter = RunNotificationPresenter(
+                app,
+                deviceNameOf = { id -> trust.displayName(id) },
+            ),
+            scope = scope,
+        )
+        runEngine = runs
+        // Recover notification actions committed before a cold graph was ready, including a process death in the
+        // receiver's post-persist/pre-WorkManager window.
+        RunControlDrainWorker.enqueue(app)
+        // A process can die after a Run snapshot commits but before its stable notification posts. The store's
+        // presentation checkpoint makes this startup reconciliation precise and idempotent.
+        scope.launch { runs.reconcilePendingPresentations() }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
             channel = channel,
@@ -415,10 +461,16 @@ class AppGraph(private val app: Application) {
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
+            onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
             activityText = activityText,
-            // Self-announce our current key-epoch in each trust broadcast (E2E convergence without polling),
-            // and pull a peer's key-epoch when its advertised epoch outruns the one we hold.
-            selfKeyEpoch = { runCatching { buildClientKeyEpochBlob() }.getOrNull() },
+            // Continue announcing our own epoch with the roster; material held for a third peer is returned
+            // directly when the receiving peer advertises that gap.
+            selfKeyEpoch = {
+                // RotationManager owns the exact staged validity window/floor. A generic current-epoch
+                // certificate would overwrite those semantics on receivers while rotation is pending.
+                if (trust.pendingRotation() == null) runCatching { buildClientKeyEpochBlob() }.getOrNull()
+                else null
+            },
             fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
         foundationEngine = foundation
@@ -451,7 +503,9 @@ class AppGraph(private val app: Application) {
                     trust.advanceSelfEpoch(epoch)
                     // Restart the epoch-age clock so the NEXT scheduled rotation is measured from this activation.
                     scope.launch { runCatching { settings.setSelfEpochActivatedAt(System.currentTimeMillis()) } }
-                    scope.launch { runCatching { foundationEngine?.broadcastTrust() } } // E2E-announce the new active epoch to own-mesh
+                    // Re-announce the roster. N+1's correctly windowed certificate was already pre-warmed;
+                    // the generic self-epoch CARD stays suppressed until rotation completes.
+                    scope.launch { runCatching { foundationEngine?.broadcastTrust() } }
                 },
                 onRetire = { retired, keep ->
                     AndroidOperationalSigner.destroy(retired)
@@ -564,14 +618,23 @@ class AppGraph(private val app: Application) {
 
     /** Foreground only: refresh our key-epoch on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
+        // Also retry after notification permission is granted while the process remains alive.
+        scope.launch { runEngine?.reconcilePendingPresentations() }
         if (liveJob?.isActive == true) return
         liveJob = scope.launch {
             publishKeyEpochUnlessRotating()
             // Converge peer key-epochs BEFORE the live loop blocks, so a just-upgraded peer is sealable and
             // our broadcast actually reaches it (the pull is the bootstrap; the broadcast is anti-entropy).
             runCatching { foundationEngine?.convergeKeyEpochs() }
-            runCatching { foundationEngine?.broadcastTrust() } // anti-entropy: re-announce our trust roster + key-epoch
-            transport.runLiveDelivery { secureChannel?.deliver(it, DeliveryMode.WEBSOCKET) }
+            // Between rotations anti-entropy includes our own epoch; while staged, RotationManager owns that
+            // certificate. Material for third peers is returned by targeted CARD.
+            runCatching { foundationEngine?.broadcastTrust() }
+            transport.runLiveDelivery {
+                when (secureChannel?.deliver(it, DeliveryMode.WEBSOCKET)) {
+                    DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> LiveDeliveryDisposition.ACK
+                    DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED, null -> LiveDeliveryDisposition.RETRY
+                }
+            }
         }
         tickRotation() // advance any staged rotation across an activation/retirement boundary
     }
@@ -904,24 +967,35 @@ class AppGraph(private val app: Application) {
 
     /**
      * Build this device's self-signed client card — the QR/E2E-only pairing bundle (identity anchor +
-     * current HPKE keyset + human profile). NEVER uploaded to the broker in NS2; it travels in the pairing
+     * human profile). NEVER uploaded to the broker in NS2; it travels in the pairing
      * [net.extrawdw.notisync.protocol.CardDelivery] alongside the key-epoch.
      */
-    fun buildClientCardBlob(): SignedBlob {
+    internal fun generateClientCard(): GeneratedClientCard {
+        // Read AUTO_TIME immediately before the signed timestamp. A missing/unreadable setting is unknown,
+        // not "off", so callers warn only when Android explicitly reports 0.
+        val autoTimeEnabled = automaticTimeEnabled(app.contentResolver)
+        val systemTime = ZonedDateTime.now()
+        val createdAt = systemTime.toInstant().toEpochMilli()
+        val timeZoneId = systemTime.zone.id
         val card = ClientCard(
             clientId = identity.clientId,
             identityPublicKey = identity.publicKeySpki,
             displayName = settings.deviceName.value,
             platform = "android",
             capabilities = selfCapabilities(),
-            createdAt = System.currentTimeMillis(),
+            createdAt = createdAt,
         )
         val payload = ProtocolCodec.encodeToCbor(card)
-        return SignedBlob(
-            SignedType.CLIENT_CARD,
-            signerId = identity.clientId,
-            payload = payload,
-            sig = identity.sign(payload)
+        return GeneratedClientCard(
+            blob = SignedBlob(
+                SignedType.CLIENT_CARD,
+                signerId = identity.clientId,
+                payload = payload,
+                sig = identity.sign(payload),
+            ),
+            automaticTimeEnabled = autoTimeEnabled,
+            createdAt = createdAt,
+            timeZoneId = timeZoneId,
         )
     }
 

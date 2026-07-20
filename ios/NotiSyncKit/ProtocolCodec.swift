@@ -66,6 +66,17 @@ nonisolated enum ProtocolCodec {
         KMPProtocolBridge.data(kmp.encodeEnvelope(value: KMPProtocolBridge.toKmp(e)))
     }
 
+    static func encodeSendRequest(_ envelope: Envelope, urgency: Urgency) -> Data {
+        KMPProtocolBridge.data(
+            kmp.encodeSendRequest(
+                value: NotiSyncProtocol.SendRequest(
+                    envelope: KMPProtocolBridge.toKmp(envelope),
+                    urgency: KMPProtocolBridge.kmp(urgency)
+                )
+            )
+        )
+    }
+
     static func encodeSignedBlobList(_ blobs: [SignedBlob]) -> Data {
         KMPProtocolBridge.data(kmp.encodeSignedBlobList(value: blobs.map(KMPProtocolBridge.toKmp)))
     }
@@ -310,7 +321,9 @@ nonisolated enum KMPProtocolBridge {
             mediaSeekMs: nil,
             mediaCustomAction: nil,
             mediaVolume: nil,
-            actedAt: value.actedAt
+            actedAt: value.actedAt,
+            actionGeneration: value.actionGeneration.map { KotlinLong(longLong: $0) },
+            actionToken: value.actionToken
         )
     }
 
@@ -404,7 +417,8 @@ nonisolated enum KMPProtocolBridge {
             trust: value.trust.map { toKmp($0) },
             card: value.card.map { toKmp($0) },
             filter: value.filter.map { toKmp($0) },
-            notification: nil
+            notification: nil,
+            run: nil
         )
     }
 
@@ -560,11 +574,15 @@ nonisolated enum KMPProtocolBridge {
             remoteInput: value.remoteInput,
             remoteInputLabel: value.remoteInputLabel,
             semanticAction: Int(value.semanticAction),
-            showsUserInterface: value.showsUserInterface
+            showsUserInterface: value.showsUserInterface,
+            actionGeneration: value.actionGeneration?.int64Value,
+            actionToken: value.actionToken
         )
     }
 
     static func fromKmp(_ value: NotiSyncProtocol.CapturedNotification) throws -> CapturedNotification {
+        // value.liveUpdate is an Android-only presentation hint. Decode it in shared KMP so the wire remains
+        // forward compatible, but deliberately leave it out of the native iOS presentation model.
         CapturedNotification(
             sourceClientId: string(value.sourceClientId),
             sourceKey: value.sourceKey,
@@ -705,6 +723,10 @@ nonisolated enum KMPProtocolBridge {
 
     static func kmp(_ value: MessageType) -> NotiSyncProtocol.MessageType {
         NotiSyncProtocol.MessageType.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.MessageType.notification
+    }
+
+    static func kmp(_ value: Urgency) -> NotiSyncProtocol.Urgency {
+        NotiSyncProtocol.Urgency.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.Urgency.normal
     }
 
     static func kmp(_ value: ActionKind) -> NotiSyncProtocol.ActionKind {

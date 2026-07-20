@@ -354,9 +354,14 @@ extension NotiSyncRuntime {
             guard let engine else { return }
             let changed = await Task.detached(priority: .utility) {
                 guard engine.isOwnDevice(signerId) else { return false }
+                guard let delivery = ds.card else { return false }
                 var changed = false
-                if let card = ds.card?.card, engine.applyDeliveredCard(card) { changed = true }       // #3 — names for introduced peers
-                if let blob = ds.card?.epochBlob, engine.applyFetchedKeyEpoch(blob) { changed = true }
+                // Bind each independently self-authenticating component to the CardDelivery subject. A bad
+                // card must not suppress a valid epoch (or vice versa), but neither may mutate another subject.
+                if let card = delivery.card, card.signerId == delivery.clientId,
+                   engine.applyDeliveredCard(card) { changed = true }       // #3 — names for introduced peers
+                if let blob = delivery.epochBlob, blob.signerId == delivery.clientId,
+                   engine.applyFetchedKeyEpoch(blob) { changed = true }
                 return changed
             }.value
             if changed { await refreshPeerRowsAsync() }
@@ -416,18 +421,31 @@ extension NotiSyncRuntime {
         case .NOTIFICATION:
             // Quiet notification updates are Android-only for now.
             break
+        case .RUN:
+            // Run state and controls are consumed by PUSH_FILTERING peers (Android). iOS keeps the
+            // compatibility NOTIFICATION/ACTION path and deliberately ignores a misrouted RUN sync.
+            break
         }
     }
 
     private func sendTrustRepairs(to recipientId: String, result: TrustTableApplyResult) async {
         guard let engine, let broker else { return }
+        var repairs: [String: (card: SignedBlob?, epoch: SignedBlob?)] = [:]
         for card in result.cardsToOffer {
-            if let env = try? engine.sealCardRepair(to: recipientId, cardBlob: card) {
-                _ = try? await broker.send(env)
-            }
+            var material = repairs[card.signerId] ?? (card: nil, epoch: nil)
+            material.card = card
+            repairs[card.signerId] = material
         }
         for blob in result.keyEpochsToOffer {
-            if let env = try? engine.sealKeyEpochRepair(to: recipientId, blob: blob) {
+            var material = repairs[blob.signerId] ?? (card: nil, epoch: nil)
+            material.epoch = blob
+            repairs[blob.signerId] = material
+        }
+        for subjectId in repairs.keys.sorted() {
+            guard let material = repairs[subjectId] else { continue }
+            if let env = try? engine.sealCardMaterialRepair(
+                to: recipientId, subjectId: subjectId, card: material.card, epochBlob: material.epoch
+            ) {
                 _ = try? await broker.send(env)
             }
         }

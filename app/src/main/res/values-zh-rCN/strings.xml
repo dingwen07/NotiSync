@@ -5,6 +5,7 @@
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
     <string name="tab_ios">iPhone</string>
+    <string name="tab_run">Run</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
@@ -17,6 +18,73 @@
     <string name="action_cancel">取消</string>
     <string name="action_back">返回</string>
     <string name="error_unknown">未知错误</string>
+
+    <string name="run_notification_channel_description">来自 %1$s 的运行状态和警报</string>
+    <string name="run_command_fallback">命令</string>
+    <string name="run_empty_title">暂无历史记录</string>
+    <string name="run_empty_body">从您的计算机共享的命令执行将显示在此处。</string>
+    <string name="run_clear_history_action">删除全部历史记录</string>
+    <string name="run_section_active">活跃</string>
+    <string name="run_section_history">历史</string>
+    <string name="run_clear_history_title">删除所有 NotiSync Run 历史记录？</string>
+    <string name="run_clear_history_body">活跃的运行不会被删除</string>
+    <string name="run_clear_history_confirm">全部删除</string>
+    <string name="run_clear_history_failed">无法删除 Run 历史记录，请重试。</string>
+    <string name="run_terminal">终端</string>
+    <string name="run_terminal_empty">暂无终端输出。</string>
+    <string name="run_terminal_truncated">正在显示最新输出；较早的输出已被截断。</string>
+    <string name="run_summary">摘要</string>
+    <string name="run_details">详情</string>
+    <string name="run_detail_command">命令</string>
+    <string name="run_detail_directory">目录</string>
+    <string name="run_detail_host">主机</string>
+    <string name="run_detail_started">开始时间</string>
+    <string name="run_detail_updated">更新时间</string>
+    <string name="run_detail_finished">完成时间</string>
+    <string name="run_detail_duration">执行时长</string>
+    <string name="run_detail_exit">退出代码</string>
+    <string name="run_detail_pty">PTY</string>
+    <string name="run_yes">是</string>
+    <string name="run_no">否</string>
+    <string name="run_action_yes">是</string>
+    <string name="run_action_no">否</string>
+    <string name="run_action_input">输入</string>
+    <string name="run_action_interrupt">中断</string>
+    <string name="run_action_terminate">终止</string>
+    <string name="run_action_kill">强制终止</string>
+    <string name="run_action_signal">发送信号…</string>
+    <string name="run_action_refresh">刷新</string>
+    <string name="run_action_mark_inactive">标记为非活跃</string>
+    <string name="run_mark_inactive_failed">无法将 Run 标记为非活跃，请重试。</string>
+    <string name="run_input_hint">发送给命令</string>
+    <string name="run_input_send">发送</string>
+    <string name="run_input_send_failed">无法发送输入。请检查连接后重试。</string>
+    <string name="run_notification_action_failed">无法将 Run 操作加入队列。请打开该 Run 后重试。</string>
+    <string name="run_signal_title">发送信号</string>
+    <string name="run_signal_hint">信号名称或编号</string>
+    <string name="run_signal_send">发送信号</string>
+    <string name="run_kill_title">强制终止此命令？</string>
+    <string name="run_kill_body">命令无法处理或忽略强制终止操作。未保存的工作可能会丢失。</string>
+    <string name="run_kill_confirm">强制终止</string>
+    <string name="run_back">返回命令执行列表</string>
+    <string name="run_status_running">仍在运行</string>
+    <string name="run_status_resumed">已恢复运行</string>
+    <string name="run_status_progress">已完成 %1$d%%</string>
+    <string name="run_status_waiting_input">正在等待输入</string>
+    <string name="run_status_attention">可能需要您的关注</string>
+    <string name="run_status_blocked">等待中</string>
+    <string name="run_status_inactive">不再活跃</string>
+    <string name="run_status_completed">已成功完成</string>
+    <string name="run_status_exit_code">已退出，代码为 %1$d</string>
+    <string name="run_status_failed_start">无法启动</string>
+    <string name="run_short_input">输入</string>
+    <string name="run_short_attention">查看</string>
+    <string name="run_short_done">完成</string>
+    <string name="run_short_failed">失败</string>
+    <string name="run_short_running">运行中</string>
+    <string name="run_progress_description">%1$d%%</string>
+    <string name="run_pty_yes">是</string>
+    <string name="run_pty_no">否</string>
 
     <!-- Apps screen -->
     <string name="apps_search_hint">搜索应用</string>
@@ -155,7 +223,9 @@
     <string name="diag_oversized_hint">向您的其他设备发送一条过大的通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
     <string name="diag_oversized_send">发送超大测试通知</string>
     <string name="diag_oversized_sending">发送中…</string>
-    <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>
+    <plurals name="diag_oversized_sent">
+        <item quantity="other">已发送到 %1$d 台设备 — 请查看另一台设备。</item>
+    </plurals>
     <string name="diag_oversized_no_peers">没有可以发送的设备。</string>
     <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
     <string name="diag_rotation">密钥轮换</string>
@@ -195,6 +265,7 @@
     <string name="devices_allow_posting_title">允许显示通知</string>
     <string name="devices_allow_posting_body">授予通知发送权限，以便镜像的通知能在此设备上显示。</string>
     <string name="devices_grant">授予</string>
+    <string name="trust_change_failed">无法保存设备信任更改，请重试。</string>
     <string name="devices_my_devices">我的设备 (%1$d)</string>
     <string name="devices_my_devices_empty">尚无已配对的设备。配对另一台设备即可在设备之间镜像通知。</string>
     <string name="devices_other_devices">其他设备 (%1$d)</string>
@@ -253,6 +324,8 @@
     <string name="device_capability_push_filtering">推送过滤</string>
     <string name="device_capability_notification_updates">通知更新</string>
     <string name="device_capability_android_group_summaries">Android 分组摘要</string>
+    <string name="device_capability_publish_runs">发布 NotiSync Run</string>
+    <string name="device_capability_receive_runs">接收 NotiSync Run</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>
@@ -261,6 +334,7 @@
     <string name="pair_intro">在另一台设备上，使用 NotiSync 或相机应用扫描下面的二维码。</string>
     <string name="pair_intro_nfc">您也可以通过将另一台设备贴在此设备的背面来配对。</string>
     <string name="pair_qr_code_desc">配对二维码</string>
+    <string name="pair_signed_card_time">创建时间：%1$s</string>
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
     <string name="pair_verification_number">验证码：%1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
@@ -270,6 +344,9 @@
     <string name="pair_scanning">正在扫描…</string>
     <string name="pair_checking">正在检查设备…</string>
     <string name="pair_scan_button">扫描另一台设备的二维码</string>
+    <string name="pair_auto_time_warning_title">自动日期和时间已关闭</string>
+    <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。</string>
+    <string name="pair_auto_time_open_settings">设置</string>
     <string name="pair_trust_title">信任此设备？</string>
     <string name="pair_trust_body">NotiSync 已验证此已签名的配对卡。将其添加为您自己的设备以镜像通知，或添加为他人的设备以仅共享您的设备名称。</string>
     <string name="pair_field_name">名称</string>

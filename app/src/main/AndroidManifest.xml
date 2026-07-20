@@ -5,6 +5,9 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Android 16 promoted ongoing notifications (Live Updates). The sender still has to request
+         promotion on each eligible notification; the system/user remains the final arbiter. -->
+    <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <!-- Lets a mirrored CallStyle notification carry a full-screen intent (the platform requires a CallStyle
          notification to be a foreground service OR have an FSI, else it throws at post). On Android 14+ this is
          a user-grantable special access; when ungranted the mirrored call is shown as a heads-up, not full screen. -->
@@ -235,6 +238,11 @@
             android:name=".notification.mirror.MirrorActionReceiver"
             android:exported="false" />
 
+        <!-- Run shade controls are DATA_SYNC/RUN actions, separate from notification mirroring. -->
+        <receiver
+            android:name=".run.RunActionReceiver"
+            android:exported="false" />
+
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's
              active output, so a mirrored media card's Output Switcher chip names the source device instead of
              claiming playback on this phone. Bound by the system (exported is the platform contract for route
@@ -242,7 +250,8 @@
              SELF_SCAN_ONLY (honored on newer Android) spares it other apps' scans. -->
         <service
             android:name=".notification.mirror.MirrorRouteProviderService"
-            android:exported="true">
+            android:exported="true"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.media.MediaRoute2ProviderService" />
                 <category android:name="android.media.MediaRoute2ProviderService.SELF_SCAN_ONLY" />

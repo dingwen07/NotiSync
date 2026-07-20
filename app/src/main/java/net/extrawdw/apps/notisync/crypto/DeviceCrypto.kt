@@ -6,7 +6,7 @@ import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.util.Log
-import net.extrawdw.apps.notisync.transport.AuthTokenStore
+import net.extrawdw.notisync.peer.transport.AuthTokenStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec

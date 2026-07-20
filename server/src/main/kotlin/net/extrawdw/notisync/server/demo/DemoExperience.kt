@@ -24,6 +24,7 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Purpose
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
+import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.AssetAead
 import net.extrawdw.notisync.protocol.crypto.AssetHash
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
@@ -185,7 +186,7 @@ class DemoExperience(
                 seq = now + index,
                 createdAt = now,
             )
-            broker.send(ProtocolCodec.encodeToCbor(envelope), envelope)
+            broker.send(ProtocolCodec.encodeToCbor(envelope), envelope, Urgency.HIGH)
         }
     }
 

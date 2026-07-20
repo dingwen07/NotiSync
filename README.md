@@ -18,6 +18,16 @@ Kotlin/Ktor broker, so the wire format and signature verification can never drif
 :protocol-crypto  Pure-Kotlin/JVM. Tink-based envelope sealing/opening (random DEK → AES-256-GCM
                   body + HPKE per-recipient DEK), ECDSA-P256 signing/verification, client-id
                   derivation. Shared verbatim by client and server.
+:peer-core        Shared JVM peer engine: secure channel, signed trust store and convergence,
+                  pairing, key rotation, broker HTTP/WebSocket client, and platform ports.
+:protocol-local   JVM-only JSON DTOs for the local Unix-socket API.
+:local-client     Reusable Unix-socket client, streaming, autostart, platform paths, and private
+                  file helpers for desktop applications.
+:nsrun            Standalone NotiSync Run client: command supervision, terminal integration,
+                  private Run configuration/logs, and daemon reporting.
+:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon
+                  and the `notisync` peer-management CLI; its runtime distribution also composes
+                  the standalone `:nsrun` launcher.
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
@@ -97,6 +107,93 @@ To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file 
 `app/google-services.json` (for the `extrawdw-notifly` Firebase project) is already in place.
 In **Settings → Broker URL**, point the app at your broker. From the Android emulator, use
 `ws://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
+
+### Desktop daemon and NotiSync Run
+
+NotiSync Desktop supports Linux and macOS and requires JDK 21. On macOS, install Xcode Command Line
+Tools as well. Install the `notisyncd`, `notisync`, and `nsrun` commands for the current user:
+
+```bash
+git clone https://github.com/dingwen07/NotiSync.git
+cd NotiSync
+./scripts/install-desktop.sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The default installation is under `~/.local/share/notisync`. Add the `PATH` export to the shell's
+startup file. Operational `notisync` commands and `nsrun` start the daemon automatically when
+needed:
+
+```bash
+notisync config set device-name "Workstation"
+notisync status
+notisync applications list
+```
+
+Use `notisync daemon start|stop|restart` for explicit lifecycle control. `notisync daemon` and
+`notisync daemon status` only report status and do not autostart; `notisync status` is an alias with
+the same behavior. The daemon executable itself provides the lower-level
+`notisyncd start|stop|restart|status` commands. Its `status` command writes JSON to stdout when the
+daemon is running and a concise error to stderr when it is not.
+
+The desktop defaults to `wss://notisync-api.extrawdw.net`. For a custom broker, configure the same
+WebSocket URL in the Android app and on the desktop:
+
+```bash
+notisyncd config set broker-url "wss://notisync.example.com"
+```
+
+Pairing is mutual. Run `notisync devices pair show`, then scan the terminal QR code from **Devices →
+Pair a device** on Android. Copy the Android pairing link or payload back to the desktop and accept
+it as an own device:
+
+```bash
+notisync devices pair inspect 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices pair accept --own 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices list
+```
+
+Device trust actions take the action first and the device ID second. To approve every currently
+pending device, use the explicit `--all` form:
+
+```bash
+notisync devices action approve DEVICE_ID
+notisync devices action approve --all
+```
+
+Run traffic is restricted to trusted own devices. Prefix a command with `nsrun --` to send encrypted
+progress, input-wait, and completion updates to Android while the command runs normally:
+
+```bash
+nsrun -- git commit
+nsrun --update-interval 15s -- ./long-build
+```
+
+The Android **Run** tab and ongoing notification show the terminal tail and offer prompt input,
+Interrupt, Terminate, Kill, and signal controls. Dismissing a notification does not signal the
+process. `nsrun` preserves interactive terminal behavior, starts the daemon on demand, and still
+runs the child if reporting is unavailable. Private Run logs are stored under `~/.notisync/runs/`.
+
+```bash
+nsrun config get
+nsrun config set updateInterval 30s
+nsrun config set stuckAfter 5m       # or: off
+nsrun config set pty auto            # auto, always, or never
+notisync applications remove nsrun   # remove a stale local-app registration
+notisync daemon stop
+```
+
+Configuration and private daemon data live in `~/.notisync/`. Daemon logs use the platform's user log
+location: `~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
+`$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
+`~/.local/state/notisync/log/notisyncd.log`. Use `notisync applications list` to inspect persistent
+local-application registrations and `notisync applications remove APPLICATION_ID` to clean up one
+that is no longer used. Log lines include an ISO-8601
+timestamp, severity, and thread name; the default level is `WARN` and can be changed with
+`notisyncd config set log-level info`. Rerun `./scripts/install-desktop.sh` to update the installed
+commands; if the daemon is running, the installer stops it before replacing the installation and starts
+the updated daemon afterward. The current desktop key provider stores unencrypted key material in the
+private `~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 

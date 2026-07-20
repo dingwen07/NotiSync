@@ -1,0 +1,10 @@
+<!-- Material Symbols Outlined "terminal" glyph used by NotiSync Run notifications. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="@android:color/white"
+        android:pathData="M4,20Q3.18,20 2.59,19.41Q2,18.82 2,18V6Q2,5.18 2.59,4.59Q3.18,4 4,4H20Q20.83,4 21.41,4.59Q22,5.18 22,6V18Q22,18.82 21.41,19.41Q20.82,20 20,20H4ZM4,18H20V8H4V18ZM7.5,17L6.1,15.6L8.68,13L6.08,10.4L7.5,9L11.5,13L7.5,17ZM12,17V15H18V17H12Z" />
+</vector>

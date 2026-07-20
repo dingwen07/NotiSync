@@ -6,7 +6,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
-import net.extrawdw.notisync.protocol.NotifStyle
+import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -32,7 +32,7 @@ class EnvelopeCryptoTest {
             appLabel = "Chat",
             title = "Alice",
             text = "Dinner at 7?",
-            style = NotifStyle.MESSAGING,
+            style = NotificationStyle.MESSAGING,
             category = MirrorCategory.MESSAGE,
             importance = MirrorImportance.HIGH,
             postTime = 1_750_000_000_000L,
@@ -75,7 +75,7 @@ class EnvelopeCryptoTest {
 
         val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(openedByA)
         assertEquals("Dinner at 7?", decoded.text)
-        assertEquals(NotifStyle.MESSAGING, decoded.style)
+        assertEquals(NotificationStyle.MESSAGING, decoded.style)
     }
 
     @Test

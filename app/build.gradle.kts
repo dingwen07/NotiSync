@@ -28,7 +28,7 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 43
+        versionCode = 45
         versionName = "2.0.0-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
@@ -75,6 +75,7 @@ dependencies {
     // compileOnly Tink in :protocol-crypto on the Android side.
     implementation(project(":protocol"))
     implementation(project(":protocol-crypto"))
+    implementation(project(":peer-core"))
     implementation(libs.tink.android)
 
     // Compose / Material 3 Expressive

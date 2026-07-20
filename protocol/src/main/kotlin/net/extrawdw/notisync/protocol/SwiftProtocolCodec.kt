@@ -24,6 +24,7 @@ object SwiftProtocolCodec {
     fun encodeCardDelivery(value: CardDelivery): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeDataSync(value: DataSync): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeEnvelope(value: Envelope): ByteArray = ProtocolCodec.encodeToCbor(value)
+    fun encodeSendRequest(value: SendRequest): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeSignedBlobList(value: List<SignedBlob>): ByteArray = ProtocolCodec.encodeToCbor(value)
 
     @Throws(Exception::class)

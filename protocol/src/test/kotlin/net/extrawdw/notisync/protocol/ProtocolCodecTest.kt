@@ -10,6 +10,21 @@ import org.junit.Test
 class ProtocolCodecTest {
 
     @Test
+    fun integrityRequest_noneAttestationRoundTrips() {
+        val request = IntegrityVerificationRequest(
+            clientId = ClientId("desktop"),
+            attestationType = AttestationType.NONE,
+        )
+
+        val decoded = ProtocolCodec.decodeFromJson<IntegrityVerificationRequest>(
+            ProtocolCodec.encodeToJson(request),
+        )
+
+        assertEquals("none", decoded.attestationType)
+        assertNull(decoded.attestationToken)
+    }
+
+    @Test
     fun allPeerCapabilities_roundTripInClientCard() {
         val card = ClientCard(
             clientId = ClientId("all-capabilities"),
@@ -331,6 +346,8 @@ class ProtocolCodecTest {
                 NotificationAction(
                     index = 2, title = "Reply", remoteInput = true,
                     remoteInputLabel = "Message", semanticAction = 1,
+                    actionGeneration = 42,
+                    actionToken = "opaque-action-capability",
                 ),
                 NotificationAction(index = 3, title = "View", showsUserInterface = true),
             ),
@@ -361,6 +378,50 @@ class ProtocolCodecTest {
     }
 
     @Test
+    fun capturedNotification_liveUpdateRoundTrips() {
+        val notif = CapturedNotification(
+            sourceClientId = ClientId("desktop"),
+            sourceKey = "nsrun:42:1234",
+            packageName = "notisync.run",
+            appLabel = "NotiSync Run",
+            title = "Building NotiSync",
+            text = "42 / 100",
+            category = MirrorCategory.PROGRESS,
+            importance = MirrorImportance.DEFAULT,
+            postTime = 1_750_000_000_000L,
+            isOngoing = true,
+            isClearable = false,
+            silentUpdate = true,
+            liveUpdate = NotificationLiveUpdate(
+                requestPromotedOngoing = true,
+                progress = NotificationProgress(current = 42L, total = 100L),
+                shortCriticalText = "42%",
+            ),
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(notif))
+
+        assertEquals(notif, decoded)
+        assertTrue(decoded.liveUpdate?.requestPromotedOngoing == true)
+        assertEquals(42L, decoded.liveUpdate?.progress?.current)
+        assertEquals(100L, decoded.liveUpdate?.progress?.total)
+        assertFalse(decoded.liveUpdate?.progress?.indeterminate ?: true)
+        assertEquals("42%", decoded.liveUpdate?.shortCriticalText)
+    }
+
+    @Test
+    fun capturedNotification_liveUpdateDefaultsAbsent_forBackCompat() {
+        val legacy = CapturedNotification(
+            sourceClientId = ClientId("phone"), sourceKey = "k", packageName = "p",
+            appLabel = "App", postTime = 1L,
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<CapturedNotification>(ProtocolCodec.encodeToCbor(legacy))
+
+        assertNull(decoded.liveUpdate)
+    }
+
+    @Test
     fun actionEvent_performAndTapRoundTrip() {
         val perform = ActionEvent(
             sourceClientId = ClientId("phone"),
@@ -370,6 +431,8 @@ class ProtocolCodecTest {
             actionTitle = "Reply",
             remoteInputText = "On my way!",
             actedAt = 1_750_000_000_000L,
+            actionGeneration = 42,
+            actionToken = "opaque-action-capability",
         )
         assertEquals(perform, ProtocolCodec.decodeFromCbor<ActionEvent>(ProtocolCodec.encodeToCbor(perform)))
 

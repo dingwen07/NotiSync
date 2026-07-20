@@ -5,6 +5,7 @@
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
     <string name="tab_ios">iPhone</string>
+    <string name="tab_run">Run</string>
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 
@@ -17,6 +18,77 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_back">Back</string>
     <string name="error_unknown">Unknown error</string>
+
+    <!-- Run screen + locally-rendered Run live updates -->
+    <string name="run_screen_title" translatable="false">NotiSync Run</string>
+    <string name="run_notification_channel_description">Run status and alerts from %1$s</string>
+    <string name="run_notification_subtext" translatable="false">NotiSync Run</string>
+    <string name="run_notification_via" translatable="false">NotiSync Run · %1$s</string>
+    <string name="run_command_fallback">Command</string>
+    <string name="run_empty_title">No Runs yet</string>
+    <string name="run_empty_body">Commands shared from your computers will appear here.</string>
+    <string name="run_section_active">Active</string>
+    <string name="run_section_history">History</string>
+    <string name="run_clear_history_action">Delete all history</string>
+    <string name="run_clear_history_title">Delete all NotiSync Run history?</string>
+    <string name="run_clear_history_body">Active Runs will be kept.</string>
+    <string name="run_clear_history_confirm">Delete all</string>
+    <string name="run_clear_history_failed">Couldn\'t delete Run history. Try again.</string>
+    <string name="run_terminal">Terminal</string>
+    <string name="run_terminal_empty">No terminal output yet.</string>
+    <string name="run_terminal_truncated">Showing the latest output; earlier output was truncated.</string>
+    <string name="run_summary">Summary</string>
+    <string name="run_details">Details</string>
+    <string name="run_detail_command">Command</string>
+    <string name="run_detail_directory">Directory</string>
+    <string name="run_detail_host">Host</string>
+    <string name="run_detail_started">Started</string>
+    <string name="run_detail_updated">Updated</string>
+    <string name="run_detail_finished">Finished</string>
+    <string name="run_detail_duration">Duration</string>
+    <string name="run_detail_exit">Exit code</string>
+    <string name="run_detail_pty">PTY</string>
+    <string name="run_yes">Yes</string>
+    <string name="run_no">No</string>
+    <string name="run_action_yes">Yes</string>
+    <string name="run_action_no">No</string>
+    <string name="run_action_input">Input</string>
+    <string name="run_action_interrupt">Interrupt</string>
+    <string name="run_action_terminate">Terminate</string>
+    <string name="run_action_kill">Kill</string>
+    <string name="run_action_signal">Send signal…</string>
+    <string name="run_action_refresh">Refresh</string>
+    <string name="run_action_mark_inactive">Mark not active</string>
+    <string name="run_mark_inactive_failed">Couldn\'t mark the Run not active. Try again.</string>
+    <string name="run_input_hint">Send to command</string>
+    <string name="run_input_send">Send</string>
+    <string name="run_input_send_failed">Couldn\'t send input. Check the connection and try again.</string>
+    <string name="run_notification_action_failed">Couldn\'t queue the Run action. Open the Run and try again.</string>
+    <string name="run_signal_title">Send signal</string>
+    <string name="run_signal_hint">Signal name or number</string>
+    <string name="run_signal_send">Send signal</string>
+    <string name="run_kill_title">Kill this command?</string>
+    <string name="run_kill_body">Kill cannot be handled or ignored by the command. Unsaved work may be lost.</string>
+    <string name="run_kill_confirm">Kill</string>
+    <string name="run_back">Back to Runs</string>
+    <string name="run_status_running">Still running</string>
+    <string name="run_status_resumed">Running again</string>
+    <string name="run_status_progress">%1$d%% complete</string>
+    <string name="run_status_waiting_input">Waiting for input</string>
+    <string name="run_status_attention">May need your attention</string>
+    <string name="run_status_blocked">Waiting</string>
+    <string name="run_status_inactive">No longer active</string>
+    <string name="run_status_completed">Completed successfully</string>
+    <string name="run_status_exit_code">Exited with code %1$d</string>
+    <string name="run_status_failed_start">Could not start</string>
+    <string name="run_short_input">Input</string>
+    <string name="run_short_attention">Check</string>
+    <string name="run_short_done">Done</string>
+    <string name="run_short_failed">Failed</string>
+    <string name="run_short_running">Run</string>
+    <string name="run_progress_description">%1$d%%</string>
+    <string name="run_pty_yes">Yes</string>
+    <string name="run_pty_no">No</string>
 
     <!-- Apps screen -->
     <string name="apps_search_hint">Search apps</string>
@@ -163,7 +235,10 @@
     <string name="diag_oversized_hint">Sends an oversized notification (simulating net.extrawdw.notifly) to your other devices. It exceeds the FCM inline limit, so it is delivered via the wake + relay-fetch path.</string>
     <string name="diag_oversized_send">Send oversized test</string>
     <string name="diag_oversized_sending">Sending…</string>
-    <string name="diag_oversized_sent">Sent to %1$d device(s) — check the other device.</string>
+    <plurals name="diag_oversized_sent">
+        <item quantity="one">Sent to %1$d device — check the other device.</item>
+        <item quantity="other">Sent to %1$d devices — check the other device.</item>
+    </plurals>
     <string name="diag_oversized_no_peers">No devices to send to.</string>
     <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
     <string name="diag_rotation">Key rotation</string>
@@ -204,6 +279,7 @@
     <string name="devices_allow_posting_title">Allow showing notifications</string>
     <string name="devices_allow_posting_body">Grant notification posting so mirrored notifications can appear on this device.</string>
     <string name="devices_grant">Grant</string>
+    <string name="trust_change_failed">Couldn\'t save the device trust change. Try again.</string>
     <string name="devices_my_devices">My devices (%1$d)</string>
     <string name="devices_my_devices_empty">No paired devices yet. Pair another device to start mirroring notifications between them.</string>
     <string name="devices_other_devices">Other devices (%1$d)</string>
@@ -262,6 +338,8 @@
     <string name="device_capability_push_filtering">Push filtering</string>
     <string name="device_capability_notification_updates">Notification updates</string>
     <string name="device_capability_android_group_summaries">Android group summaries</string>
+    <string name="device_capability_publish_runs">Publish NotiSync Run</string>
+    <string name="device_capability_receive_runs">Receive NotiSync Run</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>
@@ -270,6 +348,7 @@
     <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
     <string name="pair_intro_nfc">You can also pair by tapping the other device against the back of this device.</string>
     <string name="pair_qr_code_desc">Pairing QR code</string>
+    <string name="pair_signed_card_time">Created: %1$s</string>
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
@@ -279,6 +358,9 @@
     <string name="pair_scanning">Scanning…</string>
     <string name="pair_checking">Checking device…</string>
     <string name="pair_scan_button">Scan the other device\'s code</string>
+    <string name="pair_auto_time_warning_title">Automatic date and time is off</string>
+    <string name="pair_auto_time_warning_body">Pairing cards include the current time. If this clock is incorrect, another device may reject this card.</string>
+    <string name="pair_auto_time_open_settings">Settings</string>
     <string name="pair_trust_title">Trust this device?</string>
     <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>
     <string name="pair_field_name">Name</string>

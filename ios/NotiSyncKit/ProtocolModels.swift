@@ -11,6 +11,7 @@ nonisolated enum CipherSuite {
 // MARK: - Enums (serialize to CBOR as their Kotlin name)
 
 nonisolated enum MessageType: String, Sendable { case NOTIFICATION, DISMISSAL, DATA_SYNC, ACTION }
+nonisolated enum Urgency: String, Sendable { case HIGH, NORMAL }
 nonisolated enum Purpose: String, CaseIterable, Sendable { case ENVELOPE_SIGN, REQUEST_AUTH, HPKE_SEAL
     static let allRawValues: [String] = allCases.map(\.rawValue)
 }
@@ -23,12 +24,12 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION }
+nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
     case CAPABILITY_ROUTING_V1, PUSH_FILTERING, DISPLAY_NOTIFICATION_UPDATES
-    case DISPLAY_ANDROID_GROUP_SUMMARIES
+    case DISPLAY_ANDROID_GROUP_SUMMARIES, PUBLISH_RUNS, RECEIVE_RUNS
 }
 
 nonisolated enum TransportType: String, Sendable { case FCM, WEBSOCKET, APNS, WEBPUSH }
@@ -45,6 +46,7 @@ nonisolated enum SignedType {
 }
 
 nonisolated enum AttestationType {
+    static let none = "none"
     static let playIntegrity = "playIntegrity"
     static let firebaseAppCheck = "firebaseAppCheck"
     static let appleAppAttest = "appleAppAttest"
@@ -156,6 +158,10 @@ nonisolated struct NotificationAction: Sendable {
     var semanticAction: Int = 0
     /// Origin hint that performing this opens UI *there* (not on this device).
     var showsUserInterface: Bool = false
+    /// Optional replay-safe generation issued by the origin.
+    var actionGeneration: Int64?
+    /// Opaque capability echoed only when the user performs this action.
+    var actionToken: String?
 }
 
 nonisolated enum ActionKind: String, Sendable {
@@ -180,6 +186,8 @@ nonisolated struct ActionEvent: Sendable {
     /// Free-form reply text for a remote-input action.
     var remoteInputText: String?
     var actedAt: Int64
+    var actionGeneration: Int64?
+    var actionToken: String?
 }
 
 nonisolated struct ConversationMessage: Sendable {
@@ -204,6 +212,7 @@ nonisolated struct PrivateAssetRef: Sendable {
 
 /// The normalized notification body (decoded from a NOTIFICATION envelope). We decode the fields the
 /// iOS mirror renders; unknown fields are ignored (CBOR decode is tolerant), matching kotlinx semantics.
+/// In particular, Android promoted-ongoing `liveUpdate` metadata is intentionally not represented here.
 nonisolated struct CapturedNotification: Sendable {
     var sourceClientId: String
     var sourceKey: String
@@ -303,6 +312,16 @@ nonisolated struct ClientCard: Sendable {
     var platform: String
     var capabilities: [Capability]
     var createdAt: Int64
+}
+
+/// Tolerate ordinary cross-device clock drift, but never let a far-future card pin profile LWW indefinitely.
+nonisolated enum ClientCardFreshness {
+    static let maximumFutureSkewMillis: Int64 = 5 * 60 * 1_000
+
+    static func accepts(createdAt: Int64, now: Int64) -> Bool {
+        let (limit, overflow) = now.addingReportingOverflow(maximumFutureSkewMillis)
+        return createdAt <= (overflow ? Int64.max : limit)
+    }
 }
 
 nonisolated struct CardDelivery: Sendable {

@@ -7,6 +7,7 @@ import net.extrawdw.apps.notisync.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.IncomingTrustResult
 import net.extrawdw.apps.notisync.data.Peer
 import net.extrawdw.apps.notisync.data.PendingRotation
+import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustState
 import net.extrawdw.apps.notisync.foundation.TrustPeerDirectory
 import net.extrawdw.apps.notisync.transport.DeliveryMode
@@ -67,7 +68,9 @@ class CapturingTransport : Transport {
     override suspend fun fetchPrivateAsset(sourceClientId: ClientId, assetId: String): ByteArray? =
         null
 
-    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> Unit) = Unit
+    override suspend fun runLiveDelivery(
+        onEnvelope: (Envelope) -> net.extrawdw.notisync.protocol.LiveDeliveryDisposition
+    ) = Unit
 }
 
 /**
@@ -81,7 +84,6 @@ class FakeTrustState : TrustState {
     override val activePeers: StateFlow<List<Peer>> = peers
 
     var table: TrustTable = TrustTable(emptyList())
-    var cards: List<SignedBlob> = emptyList()
     var incomingResult: IncomingTrustResult = IncomingTrustResult(emptyList(), emptyList())
     var profileApplies: Boolean = true
     var selfEpochValue: Int = 1
@@ -103,6 +105,8 @@ class FakeTrustState : TrustState {
     var peerPlatforms: Map<ClientId, String> = emptyMap()
     /** Best-known capability declarations for keyless peers not present in [peers]. */
     var peerCapabilitySets: Map<ClientId, List<Capability>> = emptyMap()
+    /** Own-mesh classification for keyless peers not present in [peers]. */
+    var peerOwnDevices: Map<ClientId, Boolean> = emptyMap()
 
     /** clientId → current key-epoch blob, for [currentKeyEpochBlob] (the repair-relay source). */
     var currentKeyEpochBlobs: Map<ClientId, SignedBlob> = emptyMap()
@@ -122,8 +126,10 @@ class FakeTrustState : TrustState {
         peers.value.firstOrNull { it.clientId == clientId }?.capabilities
             ?: peerCapabilitySets[clientId].orEmpty()
 
+    override fun peerOwnDevice(clientId: ClientId): Boolean? =
+        peers.value.firstOrNull { it.clientId == clientId }?.ownDevice ?: peerOwnDevices[clientId]
+
     override fun buildTrustTable(): TrustTable = table
-    override fun trustedCards(): List<SignedBlob> = cards
     override fun applyProfile(update: ProfileUpdate): Boolean {
         appliedProfiles.add(update)
         // Mutate the roster name like the real store, so a row built from displayName AFTER apply
@@ -133,8 +139,17 @@ class FakeTrustState : TrustState {
         return profileApplies
     }
 
-    override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
-        foldedTables.add(sender to table); return incomingResult
+    override fun applyIncomingTable(
+        sender: ClientId,
+        table: TrustTable,
+        decisionTime: Long,
+        shouldAutoApply: (ClientId, TrustPrompt) -> Boolean,
+    ): IncomingTrustResult {
+        foldedTables.add(sender to table)
+        return incomingResult.copy(
+            automaticallyAppliedPrompts = incomingResult.prompts
+                .filterTo(mutableSetOf()) { (id, prompt) -> shouldAutoApply(id, prompt) },
+        )
     }
 
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {

@@ -6,6 +6,7 @@ import android.media.MediaRoute2ProviderService
 import android.media.MediaRouter2
 import android.media.RouteDiscoveryPreference
 import android.media.RoutingSessionInfo
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -392,7 +393,10 @@ class MirrorRouteProviderService : MediaRoute2ProviderService() {
     private fun routeInfoFor(route: MirrorRouter.DesiredRoute): MediaRoute2Info =
         MediaRoute2Info.Builder(route.routeId, route.name)
             .addFeature(MirrorRouter.FEATURE_MIRROR_MEDIA)
-            .setType(MediaRoute2Info.TYPE_REMOTE_SMARTPHONE)
+            .setType(
+                if (Build.VERSION.SDK_INT >= 35) MediaRoute2Info.TYPE_REMOTE_SMARTPHONE
+                else MediaRoute2Info.TYPE_REMOTE_AUDIO_VIDEO_RECEIVER
+            )
             .setVolumeHandling(
                 if (route.volumeMax > 0) MediaRoute2Info.PLAYBACK_VOLUME_VARIABLE
                 else MediaRoute2Info.PLAYBACK_VOLUME_FIXED

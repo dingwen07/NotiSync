@@ -2,6 +2,8 @@ package net.extrawdw.apps.notisync.ui
 
 import android.content.Intent
 import android.graphics.Bitmap
+import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -13,7 +15,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.QrCodeScanner
@@ -34,6 +38,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -58,6 +63,7 @@ import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
 import net.extrawdw.apps.notisync.pairing.PairingNfcController
 import net.extrawdw.apps.notisync.pairing.QrCodes
+import net.extrawdw.apps.notisync.pairing.formatPairingSystemTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -80,6 +86,27 @@ fun PairingScreen(
     var scanning by remember { mutableStateOf(false) }
     var inspecting by remember { mutableStateOf(false) }
     var pendingCandidate by remember { mutableStateOf<PairingCandidate?>(null) }
+    var codeGeneration by remember { mutableIntStateOf(0) }
+    var hasResumed by remember { mutableStateOf(false) }
+
+    fun showScanFailure(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
+    fun openDateAndTimeSettings() {
+        runCatching {
+            context.startActivity(Intent(Settings.ACTION_DATE_SETTINGS))
+        }.recoverCatching {
+            context.startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+    }
+
+    // Recreate the signed card after every return to this screen. This covers our Date & Time action as well
+    // as a manual Settings visit, and ensures the warning and QR carry the same corrected wall-clock value.
+    LifecycleResumeEffect(Unit) {
+        if (hasResumed) codeGeneration += 1 else hasResumed = true
+        onPauseOrDispose { }
+    }
 
     fun inspect(content: String) {
         result = null
@@ -89,7 +116,7 @@ fun PairingScreen(
                 .fold(
                     onSuccess = { pendingCandidate = it },
                     onFailure = {
-                        result = resources.getString(R.string.pair_could_not_pair, it.message)
+                        showScanFailure(resources.getString(R.string.pair_could_not_pair, it.message))
                     },
                 )
             inspecting = false
@@ -101,7 +128,7 @@ fun PairingScreen(
         result = null
         inspecting = true
         scope.launch {
-            result = withContext(Dispatchers.Default) {
+            result = graph.durableTrustMutations.run {
                 pairing.accept(candidate.payload, ownDevice).fold(
                     onSuccess = { resources.getString(R.string.pair_paired_with, it.displayName) },
                     onFailure = { resources.getString(R.string.pair_could_not_pair, it.message) },
@@ -126,11 +153,22 @@ fun PairingScreen(
         onInitialPairingPayloadConsumed()
     }
 
-    val codeState by produceState<PairingCodeState>(PairingCodeState.Loading, pairing) {
+    val codeState by produceState<PairingCodeState>(
+        PairingCodeState.Loading,
+        pairing,
+        codeGeneration,
+    ) {
+        value = PairingCodeState.Loading
         value = withContext(Dispatchers.Default) {
             try {
-                val pairingUrl = pairing.myLink()
-                PairingCodeState.Ready(pairingUrl, QrCodes.encode(pairingUrl))
+                val pairingLink = pairing.myLink()
+                PairingCodeState.Ready(
+                    url = pairingLink.url,
+                    bitmap = QrCodes.encode(pairingLink.url),
+                    automaticTimeEnabled = pairingLink.automaticTimeEnabled,
+                    createdAt = pairingLink.createdAt,
+                    timeZoneId = pairingLink.timeZoneId,
+                )
             } catch (e: CancellationException) {
                 throw e
             } catch (t: Throwable) {
@@ -188,7 +226,11 @@ fun PairingScreen(
         },
     ) { padding ->
         Column(
-            Modifier.fillMaxSize().padding(padding).padding(24.dp),
+            Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -202,6 +244,13 @@ fun PairingScreen(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
+            val ready = codeState as? PairingCodeState.Ready
+            if (ready?.automaticTimeEnabled == false) {
+                AutomaticTimeWarning(
+                    onOpenSettings = ::openDateAndTimeSettings,
+                )
+            }
+
             when (val state = codeState) {
                 PairingCodeState.Loading -> {
                     Box(
@@ -213,12 +262,29 @@ fun PairingScreen(
                 }
 
                 is PairingCodeState.Ready -> {
-                    Image(
-                        bitmap = state.bitmap.asImageBitmap(),
-                        contentDescription = stringResource(R.string.pair_qr_code_desc),
-                        filterQuality = FilterQuality.None,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                    )
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        Image(
+                            bitmap = state.bitmap.asImageBitmap(),
+                            contentDescription = stringResource(R.string.pair_qr_code_desc),
+                            filterQuality = FilterQuality.None,
+                            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                        )
+                        Text(
+                            stringResource(
+                                R.string.pair_signed_card_time,
+                                formatPairingSystemTime(
+                                    state.createdAt,
+                                    state.timeZoneId,
+                                    resources.configuration.locales[0],
+                                ),
+                            ),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
 
                 is PairingCodeState.Error -> {
@@ -247,7 +313,7 @@ fun PairingScreen(
                         .addOnSuccessListener { barcode ->
                             val raw = barcode.rawValue
                             if (raw == null) {
-                                result = resources.getString(R.string.pair_no_code)
+                                showScanFailure(resources.getString(R.string.pair_no_code))
                                 scanning = false
                             } else {
                                 scanning = false
@@ -259,7 +325,7 @@ fun PairingScreen(
                             scanning = false
                         }
                         .addOnFailureListener {
-                            result = resources.getString(R.string.pair_scan_failed, it.message)
+                            showScanFailure(resources.getString(R.string.pair_scan_failed, it.message))
                             scanning = false
                         }
                 },
@@ -312,8 +378,46 @@ fun PairingScreen(
 
 private sealed interface PairingCodeState {
     data object Loading : PairingCodeState
-    data class Ready(val url: String, val bitmap: Bitmap) : PairingCodeState
+    data class Ready(
+        val url: String,
+        val bitmap: Bitmap,
+        val automaticTimeEnabled: Boolean?,
+        val createdAt: Long,
+        val timeZoneId: String,
+    ) : PairingCodeState
     data class Error(val message: String) : PairingCodeState
+}
+
+@Composable
+private fun AutomaticTimeWarning(onOpenSettings: () -> Unit) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(
+                stringResource(R.string.pair_auto_time_warning_title),
+                style = MaterialTheme.typography.titleMedium,
+            )
+            Text(
+                stringResource(R.string.pair_auto_time_warning_body),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Button(
+                onClick = onOpenSettings,
+                modifier = Modifier.align(Alignment.End),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = MaterialTheme.colorScheme.onTertiaryContainer,
+                    contentColor = MaterialTheme.colorScheme.tertiaryContainer,
+                ),
+            ) {
+                Text(stringResource(R.string.pair_auto_time_open_settings))
+            }
+        }
+    }
 }
 
 @Composable

@@ -233,7 +233,11 @@ fun DiagnosticsCard(
             when (oversizedTest) {
                 is OversizedTestState.Sent -> Text(
                     if (oversizedTest.deviceCount > 0) {
-                        stringResource(R.string.diag_oversized_sent, oversizedTest.deviceCount)
+                        pluralStringResource(
+                            R.plurals.diag_oversized_sent,
+                            oversizedTest.deviceCount,
+                            oversizedTest.deviceCount,
+                        )
                     } else {
                         stringResource(R.string.diag_oversized_no_peers)
                     },

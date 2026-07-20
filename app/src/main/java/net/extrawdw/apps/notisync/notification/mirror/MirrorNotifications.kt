@@ -34,6 +34,7 @@ import androidx.core.content.FileProvider
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.CoroutineScope
@@ -64,11 +65,59 @@ import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.CallType
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.NotificationAction
+import net.extrawdw.notisync.protocol.NotificationProgress
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
+import kotlin.math.roundToInt
+
+/**
+ * Rechecks the runtime permission immediately before posting and absorbs the race where it is
+ * revoked between that check and [NotificationManagerCompat.notify].
+ */
+private fun NotificationManagerCompat.tryNotify(
+    context: Context,
+    tag: String,
+    id: Int,
+    notification: Notification,
+): Result<Unit> {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return Result.failure(SecurityException("POST_NOTIFICATIONS is not granted"))
+    }
+    return runCatching { notify(tag, id, notification) }
+}
+
+/** Android's progress APIs use Ints; preserve exact values when possible and scale only very large totals. */
+internal data class NativeLiveProgress(
+    val current: Int,
+    val total: Int,
+    val indeterminate: Boolean,
+)
+
+internal fun normalizeLiveProgress(progress: NotificationProgress): NativeLiveProgress {
+    val current = progress.current
+    val total = progress.total
+    if (progress.indeterminate || current == null || total == null || total <= 0L) {
+        return NativeLiveProgress(current = 0, total = 100, indeterminate = true)
+    }
+
+    val clamped = current.coerceIn(0L, total)
+    if (total <= Int.MAX_VALUE.toLong()) {
+        return NativeLiveProgress(clamped.toInt(), total.toInt(), indeterminate = false)
+    }
+
+    // ProgressStyle ultimately accepts Int values. A fixed high-resolution scale avoids overflow while
+    // retaining hundredth-of-a-percent precision for byte/item counters larger than Int.MAX_VALUE.
+    val scaledTotal = 10_000
+    val scaledCurrent = (clamped.toDouble() / total.toDouble() * scaledTotal)
+        .roundToInt()
+        .coerceIn(0, scaledTotal)
+    return NativeLiveProgress(scaledCurrent, scaledTotal, indeterminate = false)
+}
 
 /**
  * Mirrors the SOURCE app's channel structure on the receiver. Android-origin captures keep the source's
@@ -459,6 +508,8 @@ class RemoteNotificationPoster(
         // Toast/feedback label for tap + UI-opening actions: where the user should look next.
         val originLabel = groupDeviceName ?: notif.sourceClientId.shortForm()
         val ringingCall = notif.isRingingCall()
+        val liveUpdate = notif.liveUpdate
+        val nativeLiveProgress = liveUpdate?.progress?.let(::normalizeLiveProgress)
         // A stale ringing call (postTime older than STALE_CALL_RING_MS) still posts, but must not ring or pop
         // the lock-screen call surface minutes after the phone actually rang (late relay / replay / backlog).
         val freshCall = notif.isFreshCall(System.currentTimeMillis())
@@ -535,6 +586,16 @@ class RemoteNotificationPoster(
         if (notif.hasContentIntent) {
             builder.setContentIntent(tapIntent(notif, id, originLabel))
         }
+        liveUpdate?.shortCriticalText?.let(builder::setShortCriticalText)
+        // Promotion is only requested when this mirror can satisfy Android's promoted-ongoing shape.
+        // ProgressStyle itself is eligible; without progress, Android accepts standard, BigText, and CallStyle.
+        val promotedStyleEligible = nativeLiveProgress != null || notif.style == NotificationStyle.DEFAULT ||
+            notif.style == NotificationStyle.BIG_TEXT || notif.style == NotificationStyle.CALL
+        if (liveUpdate?.requestPromotedOngoing == true && notif.isOngoing && !ringingCall &&
+            !isMediaStyle(notif) && !notif.isColorized && promotedStyleEligible
+        ) {
+            builder.setRequestPromotedOngoing(true)
+        }
         // CallStyle builds its own Answer/Decline/Hang-up buttons from the mirrored answer/decline/hang-up
         // actions, so the generic action row would duplicate them; the CALL branch adds actions itself only
         // when it can't assemble a CallStyle.
@@ -573,7 +634,18 @@ class RemoteNotificationPoster(
             }
         }
 
-        when (notif.style) {
+        if (nativeLiveProgress != null) {
+            builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
+            val progressStyle = NotificationCompat.ProgressStyle()
+                .setProgressIndeterminate(nativeLiveProgress.indeterminate)
+            if (!nativeLiveProgress.indeterminate) {
+                progressStyle
+                    .addProgressSegment(NotificationCompat.ProgressStyle.Segment(nativeLiveProgress.total))
+                    .setProgress(nativeLiveProgress.current)
+                    .setStyledByProgress(true)
+            }
+            builder.setStyle(progressStyle)
+        } else when (notif.style) {
             NotificationStyle.MESSAGING -> {
                 // MessagingStyle owns the title + per-message rendering. Do NOT also setContentTitle —
                 // that would draw a second, redundant bold title line. Set conversationTitle ONLY for
@@ -745,13 +817,15 @@ class RemoteNotificationPoster(
         // ANY failure, strip the style, restore the action row CALL skipped, and post a plain high-priority
         // notification so the call still shows with its Answer/Decline buttons. The old silent runCatching hid
         // exactly this failure mode; post failures are now logged.
-        fun post(): Boolean = runCatching {
-            NotificationManagerCompat.from(context).notify(tag, id, builder.build())
-            true
-        }.getOrElse {
-            Log.w("MirrorNotifications", "post failed for style=${notif.style}: ${it.message}", it)
-            false
-        }
+        fun post(): Boolean = NotificationManagerCompat.from(context)
+            .tryNotify(context, tag, id, builder.build())
+            .fold(
+                onSuccess = { true },
+                onFailure = {
+                    Log.w("MirrorNotifications", "post failed for style=${notif.style}: ${it.message}", it)
+                    false
+                },
+            )
         if (!post()) {
             builder.setStyle(null)
             if (notif.style == NotificationStyle.CALL) applyActions(builder, notif, tag, originLabel)
@@ -915,7 +989,7 @@ class RemoteNotificationPoster(
                 )
         }
         val summary = summaryBuilder.build()
-        runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
+        compat.tryNotify(context, summaryTag, summaryTag.hashCode(), summary)
     }
 
     private fun groupChildren(
@@ -1094,7 +1168,7 @@ class RemoteNotificationPoster(
         val size = minOf(width, height)
         val left = (width - size) / 2f
         val top = (height - size) / 2f
-        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val out = createBitmap(size, size)
         val shader = BitmapShader(this, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
             setLocalMatrix(Matrix().apply { setTranslate(-left, -top) })
         }
@@ -1242,7 +1316,7 @@ class RemoteNotificationPoster(
         val intent = Intent(context, MirrorTapActivity::class.java).apply {
             action = MirrorTapActivity.ACTION_TAP
             // Distinct data per mirror: extras don't participate in PendingIntent identity.
-            data = Uri.parse("notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}")
+            data = "notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}".toUri()
             putExtra(MirrorTapActivity.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorTapActivity.EXTRA_SOURCE_KEY, notif.sourceKey)
             putExtra(MirrorTapActivity.EXTRA_DEVICE_NAME, originLabel)
@@ -1261,11 +1335,13 @@ class RemoteNotificationPoster(
     ): PendingIntent {
         val intent = Intent(context, MirrorActionReceiver::class.java).apply {
             this.action = MirrorActionReceiver.ACTION_PERFORM
-            data = Uri.parse("notisync://action/${action.index}/${Uri.encode(tag)}")
+            data = "notisync://action/${action.index}/${Uri.encode(tag)}".toUri()
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_KEY, notif.sourceKey)
             putExtra(MirrorActionReceiver.EXTRA_ACTION_INDEX, action.index)
             putExtra(MirrorActionReceiver.EXTRA_ACTION_TITLE, action.title)
+            action.actionGeneration?.let { putExtra(MirrorActionReceiver.EXTRA_ACTION_GENERATION, it) }
+            action.actionToken?.let { putExtra(MirrorActionReceiver.EXTRA_ACTION_TOKEN, it) }
             putExtra(MirrorActionReceiver.EXTRA_REMOTE_INPUT, action.remoteInput)
             putExtra(MirrorActionReceiver.EXTRA_SHOWS_UI, action.showsUserInterface)
             putExtra(MirrorActionReceiver.EXTRA_DEVICE_NAME, originLabel)
@@ -1341,6 +1417,7 @@ class RemoteNotificationPoster(
 
         /** Per-app default mirror small icon, keyed by the (resolved) Android package. */
         private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(
+            "net.extrawdw.notisync.run" to R.drawable.ic_terminal_notification,
             "com.google.android.apps.messaging" to R.drawable.ic_google_messages_notification,
             "com.google.android.youtube" to R.drawable.ic_youtube_notification,
             "com.google.android.apps.youtube.music" to R.drawable.ic_youtube_music_notification,
@@ -1478,6 +1555,9 @@ class MirrorActionReceiver : BroadcastReceiver() {
         val actionTitle = intent.getStringExtra(EXTRA_ACTION_TITLE) ?: return
         val actionIndex = intent.getIntExtra(EXTRA_ACTION_INDEX, -1)
         if (actionIndex < 0) return
+        val actionGeneration = intent.takeIf { it.hasExtra(EXTRA_ACTION_GENERATION) }
+            ?.getLongExtra(EXTRA_ACTION_GENERATION, 0L)
+        val actionToken = intent.getStringExtra(EXTRA_ACTION_TOKEN)
         val isRemoteInput = intent.getBooleanExtra(EXTRA_REMOTE_INPUT, false)
         val replyText =
             if (isRemoteInput) {
@@ -1503,7 +1583,15 @@ class MirrorActionReceiver : BroadcastReceiver() {
                 // waiting for the origin's resulting state change to round-trip back. No-op for non-call actions.
                 graph.callRinger?.stop(RemoteNotificationPoster.tagOf(ClientId(sourceClient), sourceKey))
                 val engine = graph.mirrorEngine ?: return@launch
-                engine.performRemote(ClientId(sourceClient), sourceKey, actionIndex, actionTitle, replyText)
+                engine.performRemote(
+                    ClientId(sourceClient),
+                    sourceKey,
+                    actionIndex,
+                    actionTitle,
+                    replyText,
+                    actionGeneration,
+                    actionToken,
+                )
                 if (replyText != null) confirmReply(context, ClientId(sourceClient), sourceKey, replyText)
             } finally {
                 pending.finish()
@@ -1528,7 +1616,7 @@ class MirrorActionReceiver : BroadcastReceiver() {
                 .setRemoteInputHistory(arrayOf(replyText))
                 .setOnlyAlertOnce(true)
                 .build()
-            NotificationManagerCompat.from(context).notify(tag, tag.hashCode(), rebuilt)
+            NotificationManagerCompat.from(context).tryNotify(context, tag, tag.hashCode(), rebuilt).getOrThrow()
         }
     }
 
@@ -1539,6 +1627,8 @@ class MirrorActionReceiver : BroadcastReceiver() {
         const val EXTRA_SOURCE_KEY = "source_key"
         const val EXTRA_ACTION_INDEX = "action_index"
         const val EXTRA_ACTION_TITLE = "action_title"
+        const val EXTRA_ACTION_GENERATION = "action_generation"
+        const val EXTRA_ACTION_TOKEN = "action_token"
         const val EXTRA_REMOTE_INPUT = "remote_input"
         const val EXTRA_SHOWS_UI = "shows_ui"
         const val EXTRA_DEVICE_NAME = "device_name"

@@ -297,6 +297,8 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.PUSH_FILTERING -> R.string.device_capability_push_filtering
         Capability.DISPLAY_NOTIFICATION_UPDATES -> R.string.device_capability_notification_updates
         Capability.DISPLAY_ANDROID_GROUP_SUMMARIES -> R.string.device_capability_android_group_summaries
+        Capability.PUBLISH_RUNS -> R.string.device_capability_publish_runs
+        Capability.RECEIVE_RUNS -> R.string.device_capability_receive_runs
     },
 )
 
