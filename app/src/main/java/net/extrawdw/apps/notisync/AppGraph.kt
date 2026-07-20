@@ -109,6 +109,7 @@ import net.extrawdw.apps.notisync.screen.ScreenMirrorCodecPreferenceStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
 import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
 import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
+import net.extrawdw.apps.notisync.screen.ScreenViewerToolbarPreferenceStore
 import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
@@ -264,6 +265,8 @@ class AppGraph(private val app: Application) {
         private set
     internal lateinit var screenMirrorCodecPreferences: ScreenMirrorCodecPreferenceStore
         private set
+    internal lateinit var screenViewerToolbarPreferences: ScreenViewerToolbarPreferenceStore
+        private set
     internal lateinit var screenMirrorDecoderSupport: AndroidScreenDecoderSupport
         private set
     lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
@@ -307,6 +310,7 @@ class AppGraph(private val app: Application) {
         notificationFilters = NotificationFilterStore(ds, scope)
         screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
         screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds)
+        screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
         screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
         screenMirrorCapabilities = ScreenMirrorCapabilityProvider(

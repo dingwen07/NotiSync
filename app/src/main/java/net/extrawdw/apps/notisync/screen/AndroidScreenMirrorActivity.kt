@@ -9,6 +9,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.text.InputType
 import android.util.Log
 import android.view.KeyEvent
@@ -29,10 +30,18 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.AnchoredDraggableDefaults
+import androidx.compose.foundation.gestures.AnchoredDraggableState
+import androidx.compose.foundation.gestures.DraggableAnchors
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.anchoredDraggable
+import androidx.compose.foundation.gestures.animateTo
+import androidx.compose.foundation.gestures.snapTo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -40,43 +49,64 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeContent
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Keyboard
+import androidx.compose.material.icons.outlined.MoreVert
 import androidx.compose.material.icons.outlined.PowerSettingsNew
+import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.VerticalAlignBottom
+import androidx.compose.material.icons.outlined.VerticalAlignTop
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
@@ -86,8 +116,12 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.ViewCompat
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
@@ -242,6 +276,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
 
 private enum class AndroidViewerUiPhase { PREPARING, CONNECTING, CONNECTED, ENDED, ERROR }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun AndroidScreenMirrorViewer(
     activity: AndroidScreenMirrorActivity,
@@ -260,7 +295,14 @@ private fun AndroidScreenMirrorViewer(
     var detail by remember { mutableStateOf<String?>(null) }
     var retryGeneration by remember { mutableIntStateOf(0) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }
+    var toolbarPreferences by remember {
+        mutableStateOf(
+            graph?.screenViewerToolbarPreferences?.preferences?.value
+                ?: ScreenViewerToolbarPreferences(),
+        )
+    }
     val uiHandler = remember { Handler(Looper.getMainLooper()) }
+    val toolbarPreferenceStore = graph?.screenViewerToolbarPreferences
 
     val localPermissionRequired = Build.VERSION.SDK_INT >= 37
     val wifiAwareSupported = remember {
@@ -330,6 +372,10 @@ private fun AndroidScreenMirrorViewer(
 
     LaunchedEffect(graph, sourceId) {
         graph?.trust?.displayName(sourceId)?.let { sourceName = it }
+    }
+
+    LaunchedEffect(toolbarPreferenceStore) {
+        toolbarPreferenceStore?.preferences?.collect { toolbarPreferences = it }
     }
 
     LaunchedEffect(
@@ -428,10 +474,72 @@ private fun AndroidScreenMirrorViewer(
 
     BackHandler(onBack = onClose)
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(Color.Black),
         contentAlignment = Alignment.Center,
     ) {
+        val toolbarInsets = WindowInsets.safeDrawing
+            .only(
+                WindowInsetsSides.Top +
+                    WindowInsetsSides.Bottom +
+                    WindowInsetsSides.Horizontal,
+            )
+            .union(
+                WindowInsets.navigationBarsIgnoringVisibility.only(WindowInsetsSides.Bottom),
+            )
+        val density = LocalDensity.current
+        val toolbarOuterHeightPx = toolbarInsets.getTop(density) +
+            toolbarInsets.getBottom(density) +
+            with(density) {
+                (TOOLBAR_HEIGHT_DP + TOOLBAR_VERTICAL_MARGIN_DP * 2).dp.roundToPx()
+            }
+        val toolbarAnchors = remember(constraints.maxHeight, toolbarOuterHeightPx) {
+            DraggableAnchors {
+                ScreenViewerToolbarEdge.TOP at 0f
+                ScreenViewerToolbarEdge.BOTTOM at screenViewerToolbarTravelDistance(
+                    viewportHeightPx = constraints.maxHeight,
+                    toolbarHeightPx = toolbarOuterHeightPx,
+                )
+            }
+        }
+        val persistedToolbarEdge = toolbarPreferenceStore?.preferences?.value?.edge
+            ?: toolbarPreferences.edge
+        val toolbarDragState = remember(toolbarPreferenceStore) {
+            AnchoredDraggableState(
+                initialValue = persistedToolbarEdge,
+                anchors = toolbarAnchors,
+            )
+        }
+
+        SideEffect {
+            toolbarDragState.updateAnchors(
+                toolbarAnchors,
+                // Preserve the intended edge if the viewport or its system insets change.
+                newTarget = toolbarDragState.targetValue,
+            )
+        }
+
+        LaunchedEffect(toolbarDragState, toolbarPreferenceStore) {
+            val store = toolbarPreferenceStore ?: return@LaunchedEffect
+            snapshotFlow { toolbarDragState.settledValue }
+                .distinctUntilChanged()
+                .collect { settledEdge ->
+                    if (store.preferences.value.edge != settledEdge) {
+                        // Use the application scope so an immediate Activity close cannot cancel
+                        // the preference write made when the finger is released.
+                        graph?.scope?.launch { store.setEdge(settledEdge) }
+                    }
+                }
+        }
+
+        LaunchedEffect(persistedToolbarEdge, toolbarDragState, toolbarAnchors) {
+            // A late DataStore emission (for example, from the prior viewer Activity) remains
+            // authoritative, but this effect does not restart merely because a drag settles.
+            if (toolbarDragState.settledValue != persistedToolbarEdge) {
+                toolbarDragState.snapTo(persistedToolbarEdge)
+            }
+        }
+
         // The video owns the complete edge-to-edge window; lightweight chrome floats over it.
         AndroidScreenSurface(
             dimensions = dimensions,
@@ -484,18 +592,39 @@ private fun AndroidScreenMirrorViewer(
             AndroidViewerUiPhase.CONNECTED -> Unit
         }
 
-        AndroidScreenViewerHeader(
+        AndroidScreenViewerToolbar(
             sourceName = sourceName,
             codecName = codecName,
+            dragState = toolbarDragState,
+            selectedControls = toolbarPreferences.pinnedControls,
+            enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
+            control = control,
+            onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
             onClose = onClose,
+            onControlVisibilityChanged = { viewerControl, visible ->
+                if (
+                    (viewerControl in toolbarPreferences.pinnedControls) != visible &&
+                    toolbarPreferenceStore != null
+                ) {
+                    graph?.scope?.launch {
+                        toolbarPreferenceStore.setControlPinned(viewerControl, visible)
+                    }
+                }
+            },
             modifier = Modifier
                 .align(Alignment.TopCenter)
-                .windowInsetsPadding(
-                    WindowInsets.safeDrawing.only(
-                        WindowInsetsSides.Top + WindowInsetsSides.Horizontal,
-                    ),
-                )
-                .padding(horizontal = 8.dp, vertical = 6.dp),
+                .offset {
+                    val offset = toolbarDragState.offset
+                    IntOffset(
+                        x = 0,
+                        y = if (offset.isNaN()) 0 else offset.roundToInt(),
+                    )
+                }
+                .windowInsetsPadding(toolbarInsets)
+                .padding(
+                    horizontal = 8.dp,
+                    vertical = TOOLBAR_VERTICAL_MARGIN_DP.dp,
+                ),
         )
 
         // A real, attached text-editor View gives every IME a standard InputConnection without
@@ -507,66 +636,298 @@ private fun AndroidScreenMirrorViewer(
             update = { view -> view.control = control },
             modifier = Modifier.align(Alignment.Center).size(1.dp),
         )
-
-        AndroidScreenFunctionBar(
-            enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
-            control = control,
-            onShowKeyboard = { imeView?.showKeyboard() },
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .windowInsetsPadding(
-                    WindowInsets.safeContent.only(
-                        WindowInsetsSides.Bottom + WindowInsetsSides.Horizontal,
-                    ),
-                )
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        )
     }
 }
 
 @Composable
-private fun AndroidScreenViewerHeader(
+private fun AndroidScreenViewerToolbar(
     sourceName: String,
     codecName: String?,
+    dragState: AnchoredDraggableState<ScreenViewerToolbarEdge>,
+    selectedControls: Set<ScreenViewerControl>,
+    enabled: Boolean,
+    control: AndroidScreenControlDispatcher?,
+    onShowKeyboard: () -> Unit,
     onClose: () -> Unit,
+    onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    Surface(
-        modifier = modifier.widthIn(max = 720.dp).fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = MaterialTheme.shapes.extraLarge,
-        tonalElevation = 3.dp,
-        shadowElevation = 3.dp,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().height(50.dp).padding(end = 16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+    var menuExpanded by remember { mutableStateOf(false) }
+    var customizeControls by remember { mutableStateOf(false) }
+    val toolbarScope = rememberCoroutineScope()
+    val toolbarFlingBehavior = AnchoredDraggableDefaults.flingBehavior(state = dragState)
+    val edge = dragState.settledValue
+
+    BoxWithConstraints(modifier = modifier.widthIn(max = 720.dp).fillMaxWidth()) {
+        val directControlSlots = screenViewerDirectControlSlots(maxWidth.value)
+        val controlLayout = screenViewerControlLayout(selectedControls, directControlSlots)
+        val directControls = controlLayout.direct
+        val overflowControls = controlLayout.overflow
+
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .anchoredDraggable(
+                    state = dragState,
+                    orientation = Orientation.Vertical,
+                    flingBehavior = toolbarFlingBehavior,
+                ),
+            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+            contentColor = MaterialTheme.colorScheme.onSurface,
+            shape = MaterialTheme.shapes.extraLarge,
+            tonalElevation = 3.dp,
+            shadowElevation = 3.dp,
         ) {
-            IconButton(onClick = onClose) {
-                Icon(
-                    Icons.Outlined.Close,
-                    contentDescription = stringResource(R.string.screen_viewer_close),
-                )
-            }
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    sourceName,
-                    maxLines = 1,
-                    style = MaterialTheme.typography.titleMedium,
-                )
-                codecName?.let {
-                    Text(
-                        stringResource(R.string.screen_viewer_connected_codec, it),
-                        maxLines = 1,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(TOOLBAR_HEIGHT_DP.dp)
+                    .padding(end = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(
+                        Icons.Outlined.Close,
+                        contentDescription = stringResource(R.string.screen_viewer_close),
                     )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        sourceName,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        style = MaterialTheme.typography.titleMedium,
+                    )
+                    codecName?.let {
+                        Text(
+                            stringResource(R.string.screen_viewer_connected_codec, it),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+
+                directControls.forEach { viewerControl ->
+                    ScreenFunctionButton(
+                        enabled = enabled,
+                        icon = viewerControl.icon(),
+                        label = stringResource(viewerControl.labelResource()),
+                    ) {
+                        performScreenViewerControl(viewerControl, control, onShowKeyboard)
+                    }
+                }
+
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            Icons.Outlined.MoreVert,
+                            contentDescription = stringResource(R.string.screen_viewer_more_options),
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                    ) {
+                        overflowControls.forEach { viewerControl ->
+                            DropdownMenuItem(
+                                text = { Text(stringResource(viewerControl.labelResource())) },
+                                leadingIcon = {
+                                    Icon(viewerControl.icon(), contentDescription = null)
+                                },
+                                enabled = enabled,
+                                onClick = {
+                                    menuExpanded = false
+                                    performScreenViewerControl(
+                                        viewerControl,
+                                        control,
+                                        onShowKeyboard,
+                                    )
+                                },
+                            )
+                        }
+                        if (overflowControls.isNotEmpty()) HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.screen_viewer_customize_controls)) },
+                            leadingIcon = {
+                                Icon(Icons.Outlined.Settings, contentDescription = null)
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                customizeControls = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    stringResource(
+                                        if (edge == ScreenViewerToolbarEdge.TOP) {
+                                            R.string.screen_viewer_move_toolbar_bottom
+                                        } else {
+                                            R.string.screen_viewer_move_toolbar_top
+                                        },
+                                    ),
+                                )
+                            },
+                            leadingIcon = {
+                                Icon(
+                                    if (edge == ScreenViewerToolbarEdge.TOP) {
+                                        Icons.Outlined.VerticalAlignBottom
+                                    } else {
+                                        Icons.Outlined.VerticalAlignTop
+                                    },
+                                    contentDescription = null,
+                                )
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                val nextEdge =
+                                    if (edge == ScreenViewerToolbarEdge.TOP) {
+                                        ScreenViewerToolbarEdge.BOTTOM
+                                    } else {
+                                        ScreenViewerToolbarEdge.TOP
+                                    }
+                                toolbarScope.launch { dragState.animateTo(nextEdge) }
+                            },
+                        )
+                    }
                 }
             }
         }
+
+        if (customizeControls) {
+            ScreenViewerControlDialog(
+                selectedControls = selectedControls,
+                maximumControls = directControlSlots,
+                onControlVisibilityChanged = onControlVisibilityChanged,
+                onDismissRequest = { customizeControls = false },
+            )
+        }
     }
 }
+
+@Composable
+private fun ScreenViewerControlDialog(
+    selectedControls: Set<ScreenViewerControl>,
+    maximumControls: Int,
+    onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
+    onDismissRequest: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text(stringResource(R.string.screen_viewer_toolbar_controls)) },
+        text = {
+            Column {
+                Text(
+                    pluralStringResource(
+                        R.plurals.screen_viewer_toolbar_control_limit,
+                        maximumControls,
+                        maximumControls,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                    modifier = Modifier.padding(bottom = 8.dp),
+                )
+                ScreenViewerControl.entries.forEach { viewerControl ->
+                    val checked = viewerControl in selectedControls
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .toggleable(
+                                value = checked,
+                                role = Role.Checkbox,
+                                onValueChange = { selected ->
+                                    onControlVisibilityChanged(viewerControl, selected)
+                                },
+                            )
+                            .padding(horizontal = 4.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Icon(viewerControl.icon(), contentDescription = null)
+                        Spacer(Modifier.width(16.dp))
+                        Text(
+                            stringResource(viewerControl.labelResource()),
+                            modifier = Modifier.weight(1f),
+                        )
+                        Checkbox(
+                            checked = checked,
+                            onCheckedChange = null,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text(stringResource(R.string.screen_viewer_done))
+            }
+        },
+    )
+}
+
+private fun ScreenViewerControl.icon(): androidx.compose.ui.graphics.vector.ImageVector = when (this) {
+    ScreenViewerControl.BACK -> Icons.AutoMirrored.Outlined.ArrowBack
+    ScreenViewerControl.HOME -> Icons.Outlined.Home
+    ScreenViewerControl.RECENTS -> Icons.Outlined.Apps
+    ScreenViewerControl.KEYBOARD -> Icons.Outlined.Keyboard
+    ScreenViewerControl.POWER -> Icons.Outlined.PowerSettingsNew
+}
+
+private fun ScreenViewerControl.labelResource(): Int = when (this) {
+    ScreenViewerControl.BACK -> R.string.screen_viewer_back
+    ScreenViewerControl.HOME -> R.string.screen_viewer_home
+    ScreenViewerControl.RECENTS -> R.string.screen_viewer_recents
+    ScreenViewerControl.KEYBOARD -> R.string.screen_viewer_keyboard
+    ScreenViewerControl.POWER -> R.string.screen_viewer_power
+}
+
+private fun performScreenViewerControl(
+    viewerControl: ScreenViewerControl,
+    control: AndroidScreenControlDispatcher?,
+    onShowKeyboard: () -> Unit,
+) {
+    when (viewerControl) {
+        ScreenViewerControl.BACK -> control?.sendKeyPress(KeyEvent.KEYCODE_BACK)
+        ScreenViewerControl.HOME -> control?.sendKeyPress(KeyEvent.KEYCODE_HOME)
+        ScreenViewerControl.RECENTS -> control?.sendKeyPress(KeyEvent.KEYCODE_APP_SWITCH)
+        ScreenViewerControl.KEYBOARD -> if (control != null) onShowKeyboard()
+        ScreenViewerControl.POWER -> control?.togglePower()
+    }
+}
+
+internal fun screenViewerToolbarTravelDistance(
+    viewportHeightPx: Int,
+    toolbarHeightPx: Int,
+): Float = (viewportHeightPx - toolbarHeightPx).coerceAtLeast(1).toFloat()
+
+internal fun screenViewerDirectControlSlots(widthDp: Float): Int =
+    ((widthDp - TOOLBAR_FIXED_WIDTH_DP) / TOOLBAR_CONTROL_WIDTH_DP)
+        .toInt()
+        .coerceIn(1, ScreenViewerControl.entries.size)
+
+internal data class ScreenViewerControlLayout(
+    val direct: List<ScreenViewerControl>,
+    val overflow: List<ScreenViewerControl>,
+)
+
+internal fun screenViewerControlLayout(
+    selectedControls: Set<ScreenViewerControl>,
+    directControlSlots: Int,
+): ScreenViewerControlLayout {
+    val direct = ScreenViewerControl.entries
+        .filter(selectedControls::contains)
+        .take(directControlSlots.coerceAtLeast(0))
+    return ScreenViewerControlLayout(
+        direct = direct,
+        overflow = ScreenViewerControl.entries.filterNot(direct::contains),
+    )
+}
+
+private const val TOOLBAR_FIXED_WIDTH_DP = 196f
+private const val TOOLBAR_CONTROL_WIDTH_DP = 48f
+private const val TOOLBAR_HEIGHT_DP = 56f
+private const val TOOLBAR_VERTICAL_MARGIN_DP = 6f
 
 @Composable
 private fun AndroidScreenSurface(
@@ -749,6 +1110,21 @@ private class AndroidScreenImeView(
         return true
     }
 
+    /** Waits for a focusable Compose popup to release the Activity window before opening the IME. */
+    fun showKeyboardWhenWindowFocused() {
+        val deadline = SystemClock.uptimeMillis() + IME_WINDOW_FOCUS_TIMEOUT_MS
+        lateinit var attempt: Runnable
+        attempt = Runnable {
+            if (control == null || !isAttachedToWindow) return@Runnable
+            if (hasWindowFocus()) {
+                showKeyboard()
+            } else if (SystemClock.uptimeMillis() < deadline) {
+                postOnAnimation(attempt)
+            }
+        }
+        postOnAnimation(attempt)
+    }
+
     private fun forwardCommittedText(text: CharSequence): Boolean {
         val dispatcher = control ?: return false
         // Snapshot the IME-owned CharSequence for this call only. It is never saved or logged.
@@ -796,6 +1172,7 @@ private class AndroidScreenImeView(
         // Bound one callback below the dispatcher's queue capacity, including newline key events.
         const val MAX_IME_COMMANDS = 8
         const val MAX_IME_COMMIT_BYTES = SCRCPY_INJECT_TEXT_MAX_BYTES * 8
+        private const val IME_WINDOW_FOCUS_TIMEOUT_MS = 1_000L
     }
 }
 
@@ -864,56 +1241,6 @@ private fun utf8BytesForCodePointAt(text: CharSequence, index: Int): Int {
 }
 
 @Composable
-private fun AndroidScreenFunctionBar(
-    enabled: Boolean,
-    control: AndroidScreenControlDispatcher?,
-    onShowKeyboard: () -> Unit,
-    modifier: Modifier = Modifier,
-) {
-    Surface(
-        modifier = modifier.widthIn(max = 520.dp).fillMaxWidth(),
-        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
-        contentColor = MaterialTheme.colorScheme.onSurface,
-        shape = MaterialTheme.shapes.extraLarge,
-        tonalElevation = 3.dp,
-        shadowElevation = 3.dp,
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 5.dp),
-            horizontalArrangement = Arrangement.SpaceEvenly,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            ScreenFunctionButton(
-                enabled,
-                Icons.AutoMirrored.Outlined.ArrowBack,
-                stringResource(R.string.screen_viewer_back),
-            ) { control?.sendKeyPress(KeyEvent.KEYCODE_BACK) }
-            ScreenFunctionButton(
-                enabled,
-                Icons.Outlined.Home,
-                stringResource(R.string.screen_viewer_home),
-            ) { control?.sendKeyPress(KeyEvent.KEYCODE_HOME) }
-            ScreenFunctionButton(
-                enabled,
-                Icons.Outlined.Apps,
-                stringResource(R.string.screen_viewer_recents),
-            ) { control?.sendKeyPress(KeyEvent.KEYCODE_APP_SWITCH) }
-            ScreenFunctionButton(
-                enabled,
-                Icons.Outlined.Keyboard,
-                stringResource(R.string.screen_viewer_keyboard),
-                onShowKeyboard,
-            )
-            ScreenFunctionButton(
-                enabled,
-                Icons.Outlined.PowerSettingsNew,
-                stringResource(R.string.screen_viewer_power),
-            ) { control?.togglePower() }
-        }
-    }
-}
-
-@Composable
 private fun ScreenFunctionButton(
     enabled: Boolean,
     icon: androidx.compose.ui.graphics.vector.ImageVector,
@@ -929,6 +1256,7 @@ private fun ScreenFunctionButton(
 private fun ViewerProgress(label: String) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = MaterialTheme.shapes.large,
     ) {
         Row(
@@ -951,6 +1279,7 @@ private fun ViewerMessage(
 ) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+        contentColor = MaterialTheme.colorScheme.onSurface,
         shape = MaterialTheme.shapes.large,
     ) {
         Column(

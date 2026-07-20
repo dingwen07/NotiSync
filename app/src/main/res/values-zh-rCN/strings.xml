@@ -385,6 +385,15 @@
     <string name="screen_viewer_recents">最近任务</string>
     <string name="screen_viewer_keyboard">键盘</string>
     <string name="screen_viewer_power">电源</string>
+    <string name="screen_viewer_more_options">更多选项</string>
+    <string name="screen_viewer_customize_controls">自定义控制项</string>
+    <string name="screen_viewer_toolbar_controls">固定的控制项</string>
+    <plurals name="screen_viewer_toolbar_control_limit">
+        <item quantity="other">当前布局可直接显示 %1$d 个固定的控制项。多出的控制项仍会保留在更多选项菜单中。</item>
+    </plurals>
+    <string name="screen_viewer_move_toolbar_top">将工具栏移到顶部</string>
+    <string name="screen_viewer_move_toolbar_bottom">将工具栏移到底部</string>
+    <string name="screen_viewer_done">完成</string>
     <string name="device_capability_push_filtering">推送过滤</string>
     <string name="device_capability_notification_updates">通知更新</string>
     <string name="device_capability_android_group_summaries">Android 分组摘要</string>

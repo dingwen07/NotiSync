@@ -399,6 +399,16 @@
     <string name="screen_viewer_recents">Recents</string>
     <string name="screen_viewer_keyboard">Keyboard</string>
     <string name="screen_viewer_power">Power</string>
+    <string name="screen_viewer_more_options">More options</string>
+    <string name="screen_viewer_customize_controls">Customize controls</string>
+    <string name="screen_viewer_toolbar_controls">Pinned controls</string>
+    <plurals name="screen_viewer_toolbar_control_limit">
+        <item quantity="one">This layout has room for %1$d pinned control. Extra pinned controls stay in the overflow menu.</item>
+        <item quantity="other">This layout has room for %1$d pinned controls. Extra pinned controls stay in the overflow menu.</item>
+    </plurals>
+    <string name="screen_viewer_move_toolbar_top">Move toolbar to top</string>
+    <string name="screen_viewer_move_toolbar_bottom">Move toolbar to bottom</string>
+    <string name="screen_viewer_done">Done</string>
     <string name="device_capability_push_filtering">Push filtering</string>
     <string name="device_capability_notification_updates">Notification updates</string>
     <string name="device_capability_android_group_summaries">Android group summaries</string>
