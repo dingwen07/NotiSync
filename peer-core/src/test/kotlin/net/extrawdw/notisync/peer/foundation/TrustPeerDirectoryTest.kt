@@ -17,6 +17,28 @@ import java.util.Base64
 
 class TrustPeerDirectoryTest {
     @Test
+    fun capableUnicastRequiresExactOwnPeerAndEveryDeclaredCapability() {
+        val required = setOf(
+            Capability.CAPABILITY_ROUTING_V1,
+            Capability.SCREEN_MIRROR_SOURCE_V1,
+            Capability.SCREEN_MIRROR_CONTROL_V1,
+            Capability.SCREEN_MIRROR_ENCODER_H264_HW,
+        )
+        val matching = peer("matching-screen-source", required)
+        val missingControl = peer("missing-screen-control", required - Capability.SCREEN_MIRROR_CONTROL_V1)
+        val directory = TrustPeerDirectory(FakeTrustState(listOf(matching, missingControl)))
+
+        assertEquals(
+            listOf(matching.clientId),
+            directory.recipients(Recipients.OnlyCapable(matching.clientId, required)).map { it.clientId },
+        )
+        assertEquals(
+            emptyList<ClientId>(),
+            directory.recipients(Recipients.OnlyCapable(missingControl.clientId, required)).map { it.clientId },
+        )
+    }
+
+    @Test
     fun strictCapabilityRoutingRejectsLegacyPeers() {
         val legacy = peer(
             "legacy",
@@ -139,6 +161,36 @@ class TrustPeerDirectoryTest {
         assertEquals(
             emptySet<ClientId>(),
             directory.unsealableRecipients(Recipients.Only(other.clientId)),
+        )
+    }
+
+    @Test
+    fun capableUnicastRepairsOnlyAKeylessOwnTargetWithEveryCapability() {
+        val required = setOf(
+            Capability.CAPABILITY_ROUTING_V1,
+            Capability.SCREEN_MIRROR_SOURCE_V1,
+            Capability.SCREEN_MIRROR_ENCODER_H264_HW,
+        )
+        val matching = keylessPeer("matching", ownDevice = true, capabilities = required)
+        val missing = keylessPeer(
+            "missing",
+            ownDevice = true,
+            capabilities = required - Capability.SCREEN_MIRROR_ENCODER_H264_HW,
+        )
+        val other = keylessPeer("other", ownDevice = false, capabilities = required)
+        val directory = TrustPeerDirectory(FakeTrustState(emptyList(), listOf(matching, missing, other)))
+
+        assertEquals(
+            setOf(matching.clientId),
+            directory.unsealableRecipients(Recipients.OnlyCapable(matching.clientId, required)),
+        )
+        assertEquals(
+            emptySet<ClientId>(),
+            directory.unsealableRecipients(Recipients.OnlyCapable(missing.clientId, required)),
+        )
+        assertEquals(
+            emptySet<ClientId>(),
+            directory.unsealableRecipients(Recipients.OnlyCapable(other.clientId, required)),
         )
     }
 

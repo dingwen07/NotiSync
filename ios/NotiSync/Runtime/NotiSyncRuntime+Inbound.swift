@@ -425,6 +425,10 @@ extension NotiSyncRuntime {
             // Run state and controls are consumed by PUSH_FILTERING peers (Android). iOS keeps the
             // compatibility NOTIFICATION/ACTION path and deliberately ignores a misrouted RUN sync.
             break
+        case .SCREEN_MIRRORING:
+            // Android is the only screen source in v1. Capability routing should keep this away from iOS;
+            // acknowledge and ignore a misrouted or queued request rather than redelivering it forever.
+            break
         }
     }
 

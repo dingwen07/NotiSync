@@ -51,6 +51,8 @@ open class FoundationEngine(
     /** Hands an authenticated own-mesh DATA_SYNC `RUN` sub-body to the platform Run feature. The foundation
      *  remains the single decoder; state persistence and control validation stay with that feature. */
     private val onRunSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hands an authenticated own-mesh screen-session rendezvous to the platform screen feature. */
+    private val onScreenMirrorSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     /** Observes every successfully decoded DATA_SYNC before its sub-kind handler. Generic local bridges can
      *  reuse the exact decoded object without becoming a second decoder. */
     private val onDecodedDataSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
@@ -223,6 +225,11 @@ open class FoundationEngine(
             DataSyncKind.RUN -> {
                 if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.RUN, msg.senderOwnDevice)) return
                 onRunSync(msg, sync)
+            }
+
+            DataSyncKind.SCREEN_MIRRORING -> {
+                if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.SCREEN_MIRRORING, msg.senderOwnDevice)) return
+                onScreenMirrorSync(msg, sync)
             }
 
             DataSyncKind.PROFILE -> {

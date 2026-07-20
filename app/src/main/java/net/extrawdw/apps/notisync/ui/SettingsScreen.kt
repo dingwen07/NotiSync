@@ -1,8 +1,13 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.Manifest
 import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -40,9 +45,13 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
+import androidx.core.content.ContextCompat
+import androidx.annotation.StringRes
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.screen.ScreenMirrorProbeBits
+import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
 import kotlinx.coroutines.launch
 
 @Composable
@@ -56,15 +65,40 @@ fun SettingsScreen() {
     val analytics by graph.settings.analyticsEnabled.collectAsStateWithLifecycle()
     val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
     val lockScreenPublicIdentity by graph.settings.lockScreenPublicIdentity.collectAsStateWithLifecycle()
+    val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
+    val shizukuStatus by graph.screenMirrorShizuku.status.collectAsStateWithLifecycle()
+    val screenCodecBits by graph.screenMirrorShizuku.availableCodecBits.collectAsStateWithLifecycle()
+    val screenProbeBits by graph.screenMirrorShizuku.probeBits.collectAsStateWithLifecycle()
 
     // The full-screen-intent special access gates the mirrored incoming-call screen; the user (or Play) can
     // revoke it silently. Re-read on every resume so returning from the system settings screen refreshes it.
     val context = LocalContext.current
+    var screenEnableRequested by rememberSaveable { mutableStateOf(false) }
+    val screenPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions(),
+    ) { grants ->
+        val granted = grants.values.all { it }
+        if (granted) {
+            screenEnableRequested = true
+            graph.screenMirrorShizuku.requestPermission()
+        } else {
+            screenEnableRequested = false
+        }
+    }
+    LaunchedEffect(screenEnableRequested, shizukuStatus, screenCodecBits, screenProbeBits) {
+        if (screenEnableRequested && shizukuStatus == ShizukuScreenStatus.READY) {
+            if (screenSetupReady(shizukuStatus, screenCodecBits, screenProbeBits)) {
+                graph.settings.setScreenMirroringEnabled(true)
+            }
+            screenEnableRequested = false
+        }
+    }
     var fullScreenAllowed by remember { mutableStateOf(true) }
     LifecycleResumeEffect(Unit) {
         fullScreenAllowed = runCatching {
             context.getSystemService(NotificationManager::class.java)?.canUseFullScreenIntent() == true
         }.getOrDefault(true)
+        graph.screenMirrorShizuku.refresh()
         onPauseOrDispose { }
     }
 
@@ -129,6 +163,37 @@ fun SettingsScreen() {
                     stringResource(R.string.settings_lock_screen_public_identity),
                     lockScreenPublicIdentity
                 ) { scope.launch { graph.settings.setLockScreenPublicIdentity(it) } }
+            }
+            item {
+                ScreenMirrorSettingsRow(
+                    enabled = screenMirroringEnabled,
+                    status = shizukuStatus,
+                    codecBits = screenCodecBits,
+                    probeBits = screenProbeBits,
+                    onChange = { enabled ->
+                        if (!enabled) {
+                            screenEnableRequested = false
+                            scope.launch { graph.settings.setScreenMirroringEnabled(false) }
+                        } else {
+                            val permissions = buildList {
+                                if (ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.POST_NOTIFICATIONS,
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) add(Manifest.permission.POST_NOTIFICATIONS)
+                                if (Build.VERSION.SDK_INT >= 37 && ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.ACCESS_LOCAL_NETWORK,
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
+                            }
+                            screenEnableRequested = true
+                            if (permissions.isEmpty()) graph.screenMirrorShizuku.requestPermission()
+                            else screenPermissionLauncher.launch(permissions.toTypedArray())
+                        }
+                    },
+                    onOpenShizuku = { graph.screenMirrorShizuku.openManager() },
+                )
             }
             item {
                 ToggleRow(
@@ -310,3 +375,77 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
         Switch(checked = checked, onCheckedChange = onChange)
     }
 }
+
+@Composable
+private fun ScreenMirrorSettingsRow(
+    enabled: Boolean,
+    status: ShizukuScreenStatus,
+    codecBits: Int,
+    probeBits: Int,
+    onChange: (Boolean) -> Unit,
+    onOpenShizuku: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(stringResource(R.string.screen_mirror_settings_title), style = MaterialTheme.typography.bodyLarge)
+            Switch(checked = enabled, onCheckedChange = onChange)
+        }
+        Text(
+            stringResource(R.string.screen_mirror_settings_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            stringResource(screenStatusText(status, codecBits, probeBits)),
+            style = MaterialTheme.typography.bodySmall,
+            color = if (screenSetupReady(status, codecBits, probeBits)) {
+                MaterialTheme.colorScheme.primary
+            } else {
+                MaterialTheme.colorScheme.onSurfaceVariant
+            },
+        )
+        if (status == ShizukuScreenStatus.NOT_RUNNING ||
+            status == ShizukuScreenStatus.PERMISSION_REQUIRED ||
+            status == ShizukuScreenStatus.ERROR
+        ) {
+            Text(
+                stringResource(R.string.screen_mirror_open_shizuku),
+                modifier = Modifier.clickable(onClick = onOpenShizuku),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.primary,
+            )
+        }
+    }
+}
+
+@StringRes
+private fun screenStatusText(status: ShizukuScreenStatus, codecBits: Int, probeBits: Int): Int = when {
+    status == ShizukuScreenStatus.READY && codecBits == 0 ->
+        R.string.screen_mirror_settings_no_hardware_encoder
+    status == ShizukuScreenStatus.READY &&
+        probeBits and ScreenMirrorProbeBits.DISPLAY_CAPTURE == 0 ->
+        R.string.screen_mirror_settings_display_unavailable
+    status == ShizukuScreenStatus.READY &&
+        probeBits and ScreenMirrorProbeBits.INPUT_INJECTION == 0 ->
+        R.string.screen_mirror_settings_input_unavailable
+    else -> screenStatusText(status)
+}
+
+@StringRes
+private fun screenStatusText(status: ShizukuScreenStatus): Int = when (status) {
+    ShizukuScreenStatus.NOT_RUNNING -> R.string.screen_mirror_settings_not_running
+    ShizukuScreenStatus.PERMISSION_REQUIRED -> R.string.screen_mirror_settings_permission
+    ShizukuScreenStatus.ROOT_UNSUPPORTED -> R.string.screen_mirror_settings_root_unsupported
+    ShizukuScreenStatus.BINDING -> R.string.screen_mirror_settings_binding
+    ShizukuScreenStatus.BACKEND_UNAVAILABLE -> R.string.screen_mirror_settings_backend_unavailable
+    ShizukuScreenStatus.READY -> R.string.screen_mirror_settings_ready
+    ShizukuScreenStatus.ERROR -> R.string.screen_mirror_settings_error
+}
+
+private fun screenSetupReady(status: ShizukuScreenStatus, codecBits: Int, probeBits: Int): Boolean =
+    status == ShizukuScreenStatus.READY && codecBits != 0 &&
+        probeBits and ScreenMirrorProbeBits.REQUIRED == ScreenMirrorProbeBits.REQUIRED

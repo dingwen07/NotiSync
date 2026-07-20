@@ -31,6 +31,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -96,6 +97,13 @@ import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
+import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
+import net.extrawdw.apps.notisync.screen.ScreenMirrorCapabilityProvider
+import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
+import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
+import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
+import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.transport.ifKnown
@@ -245,6 +253,15 @@ class AppGraph(private val app: Application) {
     /** Live iOS bridge status + bonded iPhone name for the iOS tab. */
     val iosDeviceRepo = IosDeviceRepository()
 
+    lateinit var screenMirrorAuthorizations: ScreenMirrorAuthorizationStore
+        private set
+    lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
+        private set
+    lateinit var screenMirrorCapabilities: ScreenMirrorCapabilityProvider
+        private set
+    var screenMirrorController: ScreenMirrorSessionController? = null
+        private set
+
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
      *  stays at epoch 1 forever and never mints a second epoch). Driven by [tickRotation]. */
     var rotationManager: RotationManager? = null
@@ -275,6 +292,16 @@ class AppGraph(private val app: Application) {
         appSelection = AppSelectionRepository(ds, scope)
         appConfig = AppConfigRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
+        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
+        screenMirrorShizuku = ScreenMirrorShizukuManager(app)
+        screenMirrorCapabilities = ScreenMirrorCapabilityProvider(
+            settings = settings,
+            authorizations = screenMirrorAuthorizations,
+            scope = scope,
+        )
+        trust.roster
+            .onEach(screenMirrorAuthorizations::retainTrustedOwnPeers)
+            .launchIn(scope)
         if (settings.needsUnverifiedDeviceCleanupV1()) {
             val removed = trust.removeUnverifiedDevices()
             if (removed != null) {
@@ -389,6 +416,36 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        val screenController = ScreenMirrorSessionController(
+            context = app,
+            ownClientId = identity.clientId,
+            channel = channel,
+            settings = settings,
+            authorizations = screenMirrorAuthorizations,
+            capabilities = screenMirrorCapabilities,
+            shizuku = screenMirrorShizuku,
+            scope = scope,
+            transport = AndroidLanScreenSessionTransport(app),
+            peerName = { id -> trust.displayName(id) },
+        )
+        screenMirrorController = screenController
+        settings.screenMirroringEnabled
+            .onEach { enabled ->
+                if (enabled) screenMirrorShizuku.refresh()
+                else {
+                    screenController.onAuthorizationPolicyChanged()
+                    ScreenMirrorForegroundService.stop(app)
+                }
+            }
+            .launchIn(scope)
+        screenMirrorAuthorizations.authorizedPeerIds
+            .onEach { screenController.onAuthorizationPolicyChanged() }
+            .launchIn(scope)
+        screenMirrorShizuku.status
+            .onEach { status ->
+                if (status != ShizukuScreenStatus.READY) screenController.onAuthorizationPolicyChanged()
+            }
+            .launchIn(scope)
         // DATA_SYNC/RUN is a first-class Android application path. It has its own durable history and
         // notification renderer; it must never be adapted into CapturedNotification/MirrorEngine.
         val runsStore = RunStore(app)
@@ -478,6 +535,7 @@ class AppGraph(private val app: Application) {
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
+            onScreenMirrorSync = screenController::onScreenMirrorSync,
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.
@@ -969,7 +1027,13 @@ class AppGraph(private val app: Application) {
     }
 
     /** This device's advertised capabilities — shared by the published card and profile updates. */
-    private fun selfCapabilities(): List<Capability> = ANDROID_SELF_CAPABILITIES
+    private fun selfCapabilities(): List<Capability> =
+        ANDROID_SELF_CAPABILITIES +
+            if (::screenMirrorCapabilities.isInitialized) {
+                screenMirrorCapabilities.advertisedCapabilities.value
+            } else {
+                emptyList()
+            }
 
     private fun selfProfileFingerprint(): String = buildString {
         append(settings.deviceName.value)
@@ -1084,8 +1148,11 @@ class AppGraph(private val app: Application) {
      */
     @OptIn(FlowPreview::class) // debounce() is a preview API; used only to coalesce rapid renames
     private fun observeProfileChanges() {
-        settings.deviceName
-            .drop(1) // skip the eager StateFlow seed; only react to real edits
+        combine(
+            settings.deviceName,
+            screenMirrorCapabilities.advertisedCapabilities,
+        ) { name, capabilities -> name to capabilities }
+            .drop(1) // skip the eager StateFlow seed; only react to real profile changes
             .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
             .distinctUntilChanged()
             .onEach {

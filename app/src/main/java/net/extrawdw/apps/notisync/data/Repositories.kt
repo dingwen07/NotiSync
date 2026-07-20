@@ -46,6 +46,7 @@ class SettingsRepository(
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
+    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
     private val unverifiedDeviceCleanupV1CompletedKey =
         booleanPreferencesKey("unverified_device_cleanup_v1_completed")
 
@@ -124,6 +125,17 @@ class SettingsRepository(
 
     suspend fun setLockScreenPublicIdentity(on: Boolean) =
         store.edit { it[lockScreenPublicIdentityKey] = on }
+
+    /** Master opt-in for accepting screen-control requests from individually authorized own devices. */
+    val screenMirroringEnabled: StateFlow<Boolean> =
+        store.data.map { it[screenMirroringEnabledKey] ?: false }.stateInEager(scope, false)
+
+    /** Direct persisted read for cold FCM/foreground-service starts; avoids relying on a not-yet-loaded flow. */
+    suspend fun screenMirroringEnabledNow(): Boolean =
+        store.data.first()[screenMirroringEnabledKey] ?: false
+
+    suspend fun setScreenMirroringEnabled(on: Boolean) =
+        store.edit { it[screenMirroringEnabledKey] = on }
 
     /** The PERSISTED switch, read directly from DataStore — use this (not [iosBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */

@@ -24,12 +24,16 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
+nonisolated enum DataSyncKind: String, Sendable {
+    case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING
+}
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
     case CAPABILITY_ROUTING_V1, PUSH_FILTERING, DISPLAY_NOTIFICATION_UPDATES
     case DISPLAY_ANDROID_GROUP_SUMMARIES, PUBLISH_RUNS, RECEIVE_RUNS
+    case SCREEN_MIRROR_SOURCE_V1, SCREEN_MIRROR_CONTROL_V1, SCREEN_MIRROR_CLIPBOARD_TEXT_V1
+    case SCREEN_MIRROR_ENCODER_H264_HW, SCREEN_MIRROR_ENCODER_H265_HW, SCREEN_MIRROR_ENCODER_AV1_HW
 }
 
 nonisolated enum TransportType: String, Sendable { case FCM, WEBSOCKET, APNS, WEBPUSH }

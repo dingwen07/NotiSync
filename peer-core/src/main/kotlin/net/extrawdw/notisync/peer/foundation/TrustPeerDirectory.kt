@@ -54,6 +54,12 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             // guard: a body-controlled id (e.g. a notification's sourceClientId) must never cause a send
             // to a trusted "other" (non-own) contact device.
             is Recipients.Only -> peers.filter { it.clientId == scope.id && it.ownDevice }
+            is Recipients.OnlyCapable -> peers.filter {
+                it.clientId == scope.id &&
+                    it.ownDevice &&
+                    Capability.CAPABILITY_ROUTING_V1 in it.capabilities &&
+                    it.capabilities.containsAll(scope.requiredCapabilities)
+            }
         }
         // Seal to each recipient's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
         // signed EnvelopeAuth, so the recipient selects the matching (possibly retained) private keyset.
@@ -87,6 +93,16 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
                 }
             }
             is Recipients.Only -> if (scope.id in needing && trust.peerOwnDevice(scope.id) == true) {
+                setOf(scope.id)
+            } else {
+                emptySet()
+            }
+            is Recipients.OnlyCapable -> if (
+                scope.id in needing &&
+                trust.peerOwnDevice(scope.id) == true &&
+                Capability.CAPABILITY_ROUTING_V1 in trust.peerCapabilities(scope.id) &&
+                trust.peerCapabilities(scope.id).containsAll(scope.requiredCapabilities)
+            ) {
                 setOf(scope.id)
             } else {
                 emptySet()

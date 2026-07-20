@@ -66,6 +66,16 @@ class SettingsRepositoryTest {
     }
 
     @Test
+    fun screenMirroring_isExplicitOptInAndHasPersistedColdRead() = runBlocking {
+        val settings = newRepository()
+
+        assertFalse(settings.screenMirroringEnabled.value)
+        assertFalse(settings.screenMirroringEnabledNow())
+        settings.setScreenMirroringEnabled(true)
+        assertTrue(settings.screenMirroringEnabledNow())
+    }
+
+    @Test
     fun epochForFcmRoute_reusesEpochForSameRouteAndBumpsForNewRoute() = runBlocking {
         val settings = newRepository()
 

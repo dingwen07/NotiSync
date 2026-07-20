@@ -18,6 +18,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -34,17 +35,21 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.TrustStatus
 import java.text.DateFormat
 import java.util.Date
 
 /**
- * Read-only details for a paired device. Values come from the individually verified card and key-epoch held
- * by the trust store; no private key material is ever exposed here.
+ * Details for a paired device. Identity values come from the individually verified card and key-epoch held
+ * by the trust store; the only mutable field is the local screen-control grant.
  */
 @Suppress("DEPRECATION") // Stable M3 factory is deprecated only by the Expressive artifact in use.
 @Composable
 internal fun DeviceDetailsSheet(
     device: RosterDevice,
+    screenMirroringEnabled: Boolean,
+    screenControlAuthorized: Boolean,
+    onScreenControlAuthorizedChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -97,6 +102,52 @@ internal fun DeviceDetailsSheet(
             item {
                 DeviceCapabilities(device.capabilities)
             }
+            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
+                item {
+                    ScreenControlAuthorization(
+                        masterEnabled = screenMirroringEnabled,
+                        authorized = screenControlAuthorized,
+                        onAuthorizedChange = onScreenControlAuthorizedChange,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenControlAuthorization(
+    masterEnabled: Boolean,
+    authorized: Boolean,
+    onAuthorizedChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.screen_mirror_device_title),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Switch(
+                checked = authorized,
+                onCheckedChange = onAuthorizedChange,
+                enabled = masterEnabled,
+            )
+        }
+        Text(
+            stringResource(R.string.screen_mirror_device_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!masterEnabled) {
+            Text(
+                stringResource(R.string.screen_mirror_device_master_off),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -299,6 +350,12 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.DISPLAY_ANDROID_GROUP_SUMMARIES -> R.string.device_capability_android_group_summaries
         Capability.PUBLISH_RUNS -> R.string.device_capability_publish_runs
         Capability.RECEIVE_RUNS -> R.string.device_capability_receive_runs
+        Capability.SCREEN_MIRROR_SOURCE_V1 -> R.string.device_capability_screen_source
+        Capability.SCREEN_MIRROR_CONTROL_V1 -> R.string.device_capability_screen_control
+        Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1 -> R.string.device_capability_screen_clipboard
+        Capability.SCREEN_MIRROR_ENCODER_H264_HW -> R.string.device_capability_screen_h264
+        Capability.SCREEN_MIRROR_ENCODER_H265_HW -> R.string.device_capability_screen_h265
+        Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> R.string.device_capability_screen_av1
     },
 )
 

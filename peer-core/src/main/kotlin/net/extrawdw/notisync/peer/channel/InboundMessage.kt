@@ -21,6 +21,9 @@ import net.extrawdw.notisync.protocol.MessageType
  * [messageId] is the envelope's relay id — surfaced so a handler can later relay-ack the exact item
  * that delivered this message (e.g. when its mirror is dismissed). It is transport metadata, not
  * sender-authenticated content.
+ *
+ * [createdAt] is the signed envelope creation time. A handler may compare it with a body timestamp for
+ * expiry/replay policy without trusting transport arrival time.
  */
 class InboundMessage(
     val senderId: ClientId,
@@ -30,4 +33,5 @@ class InboundMessage(
     val signerEpoch: Int = 0,
     val messageId: String = "",
     val deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
+    val createdAt: Long = 0,
 )

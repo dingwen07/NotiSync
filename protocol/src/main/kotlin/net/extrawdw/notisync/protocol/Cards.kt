@@ -30,6 +30,12 @@ enum class Capability {
     DISPLAY_ANDROID_GROUP_SUMMARIES, // can consume Android group-summary render-control captures
     PUBLISH_RUNS,           // can publish and host Runs, including handling Run controls
     RECEIVE_RUNS,           // can consume Run state/results and issue Run controls
+    SCREEN_MIRROR_SOURCE_V1,          // can originate a NotiSync screen protocol v1 session
+    SCREEN_MIRROR_CONTROL_V1,         // accepts the v1 touch/key/mouse control subset
+    SCREEN_MIRROR_CLIPBOARD_TEXT_V1,  // accepts bidirectional text clipboard synchronization
+    SCREEN_MIRROR_ENCODER_H264_HW,    // has a probed hardware AVC encoder
+    SCREEN_MIRROR_ENCODER_H265_HW,    // has a probed hardware HEVC encoder
+    SCREEN_MIRROR_ENCODER_AV1_HW,     // has a probed hardware AV1 encoder
 }
 
 /**
@@ -77,6 +83,12 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         Capability.DISPLAY_ANDROID_GROUP_SUMMARIES -> 9
         Capability.PUBLISH_RUNS -> 10
         Capability.RECEIVE_RUNS -> 11
+        Capability.SCREEN_MIRROR_SOURCE_V1 -> 12
+        Capability.SCREEN_MIRROR_CONTROL_V1 -> 13
+        Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1 -> 14
+        Capability.SCREEN_MIRROR_ENCODER_H264_HW -> 15
+        Capability.SCREEN_MIRROR_ENCODER_H265_HW -> 16
+        Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> 17
     }
 
     private fun capabilityForWireId(id: Int): Capability? = when (id) {
@@ -92,6 +104,12 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         9 -> Capability.DISPLAY_ANDROID_GROUP_SUMMARIES
         10 -> Capability.PUBLISH_RUNS
         11 -> Capability.RECEIVE_RUNS
+        12 -> Capability.SCREEN_MIRROR_SOURCE_V1
+        13 -> Capability.SCREEN_MIRROR_CONTROL_V1
+        14 -> Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1
+        15 -> Capability.SCREEN_MIRROR_ENCODER_H264_HW
+        16 -> Capability.SCREEN_MIRROR_ENCODER_H265_HW
+        17 -> Capability.SCREEN_MIRROR_ENCODER_AV1_HW
         else -> null
     }
 }

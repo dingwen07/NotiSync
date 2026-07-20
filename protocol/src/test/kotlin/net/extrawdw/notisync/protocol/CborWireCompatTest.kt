@@ -2,11 +2,17 @@ package net.extrawdw.notisync.protocol
 
 import java.util.Base64
 import kotlinx.serialization.ExperimentalSerializationApi
+import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.cbor.Cbor
 import kotlinx.serialization.cbor.CborLabel
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.decodeFromByteArray
 import kotlinx.serialization.descriptors.SerialDescriptor
+import kotlinx.serialization.encoding.Decoder
+import kotlinx.serialization.encoding.Encoder
 import kotlinx.serialization.encodeToByteArray
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -27,6 +33,61 @@ class CborWireCompatTest {
         @CborLabel(3) val capabilities: List<Int>,
         @CborLabel(4) val updatedAt: Long,
         @CborLabel(99) val futureField: String,
+    )
+
+    /** Raw view used to pin the permanent integer capability registry without sharing its implementation. */
+    @Serializable
+    private data class RawCapabilityProfile(
+        @CborLabel(0) val clientId: ClientId,
+        @CborLabel(1) val displayName: String,
+        @CborLabel(2) val platform: String,
+        @CborLabel(3) val capabilities: List<Int>,
+        @CborLabel(4) val updatedAt: Long,
+    )
+
+    /** Simulates the capability registry shipped before screen sharing (wire ids 0..11 only). */
+    private object PreScreenCapabilityListSerializer : KSerializer<List<Capability>> {
+        private val numbered = ListSerializer(Int.serializer())
+        override val descriptor: SerialDescriptor = numbered.descriptor
+
+        override fun deserialize(decoder: Decoder): List<Capability> =
+            numbered.deserialize(decoder).mapNotNull { id ->
+                when (id) {
+                    in 0..11 -> Capability.entries[id]
+                    else -> null
+                }
+            }.distinct()
+
+        override fun serialize(encoder: Encoder, value: List<Capability>) =
+            numbered.serialize(encoder, value.map(Capability::ordinal))
+    }
+
+    @Serializable
+    private data class PreScreenProfile(
+        @CborLabel(0) val clientId: ClientId,
+        @CborLabel(1) val displayName: String,
+        @CborLabel(2) val platform: String,
+        @CborLabel(3) @Serializable(with = PreScreenCapabilityListSerializer::class)
+        val capabilities: List<Capability>,
+        @CborLabel(4) val updatedAt: Long,
+    )
+
+    @Serializable
+    private data class PreScreenClientCard(
+        @CborLabel(0) val suite: String,
+        @CborLabel(1) val clientId: ClientId,
+        @CborLabel(2) @ByteString val identityPublicKey: ByteArray,
+        @CborLabel(3) val displayName: String,
+        @CborLabel(4) val platform: String,
+        @CborLabel(5) @Serializable(with = PreScreenCapabilityListSerializer::class)
+        val capabilities: List<Capability>,
+        @CborLabel(6) val createdAt: Long,
+    )
+
+    @Serializable
+    private data class PreScreenProfileDataSync(
+        @CborLabel(0) val kind: DataSyncKind,
+        @CborLabel(2) val profile: PreScreenProfile? = null,
     )
 
     @Serializable
@@ -134,6 +195,49 @@ class CborWireCompatTest {
     }
 
     @Test
+    fun screenCapabilitiesUsePermanentIds12Through17() {
+        val screenCapabilities = Capability.entries.drop(12)
+        val profile = ProfileUpdate(ClientId("screen"), "Screen", "android", screenCapabilities, 1L)
+
+        val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
+
+        assertEquals((12..17).toList(), raw.capabilities)
+    }
+
+    @Test
+    fun preScreenReadersDropNewCapabilitiesWithoutDroppingTheirContainers() {
+        val capabilities = listOf(
+            Capability.CAPTURE,
+            Capability.SCREEN_MIRROR_SOURCE_V1,
+            Capability.DISPLAY,
+            Capability.SCREEN_MIRROR_ENCODER_H264_HW,
+            Capability.DISPLAY,
+            Capability.SCREEN_MIRROR_ENCODER_AV1_HW,
+        )
+        val profile = ProfileUpdate(ClientId("peer"), "Peer", "android", capabilities, 42L)
+        val card = ClientCard(
+            clientId = profile.clientId,
+            identityPublicKey = ByteArray(91),
+            displayName = profile.displayName,
+            platform = profile.platform,
+            capabilities = capabilities,
+            createdAt = profile.updatedAt,
+        )
+
+        val oldProfile = ProtocolCodec.decodeFromCbor<PreScreenProfile>(ProtocolCodec.encodeToCbor(profile))
+        val oldCard = ProtocolCodec.decodeFromCbor<PreScreenClientCard>(ProtocolCodec.encodeToCbor(card))
+        val oldNested = ProtocolCodec.decodeFromCbor<PreScreenProfileDataSync>(
+            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = profile)),
+        )
+
+        val expected = listOf(Capability.CAPTURE, Capability.DISPLAY)
+        assertEquals(expected, oldProfile.capabilities)
+        assertEquals(expected, oldCard.capabilities)
+        assertEquals(expected, oldNested.profile?.capabilities)
+        assertEquals(DataSyncKind.PROFILE, oldNested.kind)
+    }
+
+    @Test
     fun everyBinaryDtoUsesDenseUniqueNumericLabels() {
         binaryDescriptors().forEach(::assertDenseLabels)
     }
@@ -172,6 +276,8 @@ class CborWireCompatTest {
         AssetSyncItem.serializer().descriptor,
         NotificationFilterRule.serializer().descriptor,
         FilterSync.serializer().descriptor,
+        ScreenMirrorConnectionCandidate.serializer().descriptor,
+        ScreenMirrorSync.serializer().descriptor,
         DataSync.serializer().descriptor,
         TrustTableEntry.serializer().descriptor,
         TrustTable.serializer().descriptor,

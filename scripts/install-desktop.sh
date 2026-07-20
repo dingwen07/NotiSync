@@ -13,7 +13,7 @@ fi
 install_dir="${NOTISYNC_INSTALL_DIR:-$HOME/.local/share/notisync}"
 bin_dir="${NOTISYNC_BIN_DIR:-$HOME/.local/bin}"
 distribution_dir="$project_dir/notisyncd/build/install/notisyncd"
-launchers=(notisyncd notisync nsrun)
+launchers=(notisyncd notisync nsrun nsscreen)
 
 if [[ "$install_dir" != /* || "$bin_dir" != /* ]]; then
     echo "install-desktop: install directories must be absolute paths" >&2
@@ -29,6 +29,10 @@ for launcher in "${launchers[@]}"; do
         exit 1
     fi
 done
+if [[ ! -x "$distribution_dir/bin/notisync-screen-helper" ]]; then
+    echo "install-desktop: build did not produce bin/notisync-screen-helper" >&2
+    exit 1
+fi
 
 mkdir -p -- "$(dirname -- "$install_dir")" "$bin_dir"
 

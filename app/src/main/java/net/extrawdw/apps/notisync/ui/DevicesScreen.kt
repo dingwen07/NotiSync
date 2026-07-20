@@ -74,6 +74,8 @@ fun DevicesScreen(
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
+    val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
+    val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
     // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
     // purge delay elapses without needing to leave and reopen the page.
     val hasRevoked = roster.any { it.status == TrustStatus.REVOKED }
@@ -239,6 +241,11 @@ fun DevicesScreen(
             roster.firstOrNull { it.clientId == clientId }?.let { device ->
                 DeviceDetailsSheet(
                     device = device,
+                    screenMirroringEnabled = screenMirroringEnabled,
+                    screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
+                    onScreenControlAuthorizedChange = { authorized ->
+                        graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                    },
                     onDismiss = { detailsSheetFor = null },
                 )
             }

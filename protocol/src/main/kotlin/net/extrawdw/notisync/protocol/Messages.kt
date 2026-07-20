@@ -448,7 +448,114 @@ data class AssetSyncItem(
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable (the wire encodes
  *  the serial NAME; an unknown value throws on decode and is dropped by the peer's guarded DataSync decode). */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING }
+
+/** Lifecycle operation carried by [ScreenMirrorSync]. */
+@Serializable
+enum class ScreenMirrorAction { REQUEST, STATUS, CANCEL, END }
+
+/** Video codec selected by the requester before a session is offered to its source. */
+@Serializable
+enum class ScreenMirrorCodec {
+    H264,
+    H265,
+    AV1;
+
+    /** The source capability which proves this codec can be encoded in hardware. */
+    fun requiredEncoderCapability(): Capability = when (this) {
+        H264 -> Capability.SCREEN_MIRROR_ENCODER_H264_HW
+        H265 -> Capability.SCREEN_MIRROR_ENCODER_H265_HW
+        AV1 -> Capability.SCREEN_MIRROR_ENCODER_AV1_HW
+    }
+}
+
+/** Canonical screen protocol v1 quality bounds shared by requesters and sources. */
+object ScreenMirrorQualityLimits {
+    const val MIN_DIMENSION = 240
+    const val MAX_DIMENSION = 8_192
+    const val MIN_FPS = 1
+    const val MAX_FPS = 240
+    const val MIN_BITRATE_BPS = 128_000
+    const val MAX_BITRATE_BPS = 100_000_000
+}
+
+/** Status details for [ScreenMirrorAction.STATUS] and the terminal [ScreenMirrorAction.END]. */
+@Serializable
+enum class ScreenMirrorStatus {
+    CONNECTING,
+    READY,
+    UNAUTHORIZED,
+    EXPIRED,
+    BUSY,
+    SHIZUKU_UNAVAILABLE,
+    CODEC_UNAVAILABLE,
+    CODEC_START_FAILED,
+    TRANSPORT_FAILED,
+    ENDED,
+}
+
+/**
+ * One requester-listener location. [kind] deliberately remains an open string registry so transports
+ * such as Wi-Fi Aware can be added without making an older DATA_SYNC decoder reject the whole request.
+ * `LAN_TCP` uses [host] + [port]; `DNS_SD` uses [serviceName] and may also carry [port].
+ */
+@Serializable
+data class ScreenMirrorConnectionCandidate(
+    @CborLabel(0) val kind: String,
+    @CborLabel(1) val host: String? = null,
+    @CborLabel(2) val port: Int? = null,
+    @CborLabel(3) val serviceName: String? = null,
+    /** Optional interface/scope hint (for example an IPv6 zone id); never an authentication input. */
+    @CborLabel(4) val interfaceName: String? = null,
+) {
+    companion object {
+        const val LAN_TCP = "LAN_TCP"
+        const val DNS_SD = "DNS_SD"
+    }
+}
+
+/**
+ * Flat screen-session rendezvous body. REQUEST-only secrets and choices are nullable/defaulted so STATUS,
+ * CANCEL, and END do not repeat them. All fields are inside the signed, E2E-encrypted DATA_SYNC envelope.
+ * Implementations must validate the action-specific required fields before using them.
+ */
+@Serializable
+data class ScreenMirrorSync(
+    @CborLabel(0) val action: ScreenMirrorAction,
+    @CborLabel(1) @EncodeDefault(ALWAYS) val protocolVersion: Int = 1,
+    @CborLabel(2) val sessionId: String,
+    @CborLabel(3) val requesterPeerId: ClientId,
+    @CborLabel(4) val sourcePeerId: ClientId,
+    @CborLabel(5) val issuedAt: Long,
+    @CborLabel(6) val expiresAt: Long? = null,
+    @CborLabel(7) @ByteString val routingToken: ByteArray? = null,
+    @CborLabel(8) @ByteString val masterPsk: ByteArray? = null,
+    @CborLabel(9) val codec: ScreenMirrorCodec? = null,
+    @CborLabel(10) val requestControl: Boolean = false,
+    @CborLabel(11) val requestClipboard: Boolean = false,
+    @CborLabel(12) val maxDimension: Int? = null,
+    @CborLabel(13) val maxFps: Int? = null,
+    @CborLabel(14) val videoBitrateBps: Int? = null,
+    @CborLabel(15) val candidates: List<ScreenMirrorConnectionCandidate> = emptyList(),
+    @CborLabel(16) val status: ScreenMirrorStatus? = null,
+    /** Bounded human-readable diagnostic; never use it for protocol control flow. */
+    @CborLabel(17) val detail: String? = null,
+) {
+    /** Exact declarations required from the source for this request. */
+    fun requiredSourceCapabilities(): Set<Capability> {
+        if (action != ScreenMirrorAction.REQUEST) return emptySet()
+        val selectedCodec = codec ?: return emptySet()
+        return buildSet {
+            add(Capability.CAPABILITY_ROUTING_V1)
+            add(Capability.SCREEN_MIRROR_SOURCE_V1)
+            // Screen protocol v1 is routed only to the complete MVP source implementation.
+            // Per-session feature flags may disable use, but never weaken routing authority.
+            add(Capability.SCREEN_MIRROR_CONTROL_V1)
+            add(Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1)
+            add(selectedCodec.requiredEncoderCapability())
+        }
+    }
+}
 
 /**
  * One suppression rule a client asks a peer (the notification *source*) to apply to deliveries bound
@@ -520,6 +627,8 @@ data class DataSync(
     @CborLabel(6) val notification: CapturedNotification? = null,
     /** NotiSync Run state and control traffic — populated iff [kind] == [DataSyncKind.RUN]. */
     @CborLabel(7) val run: RunSync? = null,
+    /** Android screen-session rendezvous/status traffic — iff [kind] == [DataSyncKind.SCREEN_MIRRORING]. */
+    @CborLabel(8) val screenMirror: ScreenMirrorSync? = null,
 )
 
 /**

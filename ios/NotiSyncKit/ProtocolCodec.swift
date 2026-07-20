@@ -418,7 +418,8 @@ nonisolated enum KMPProtocolBridge {
             card: value.card.map { toKmp($0) },
             filter: value.filter.map { toKmp($0) },
             notification: nil,
-            run: nil
+            run: nil,
+            screenMirror: nil
         )
     }
 
@@ -750,7 +751,10 @@ nonisolated enum KMPProtocolBridge {
     }
 
     static func kmp(_ value: Capability) -> NotiSyncProtocol.Capability {
-        NotiSyncProtocol.Capability.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.Capability.display
+        guard let capability = NotiSyncProtocol.Capability.entries.first(where: { $0.name == value.rawValue }) else {
+            preconditionFailure("KMP protocol is missing native capability \(value.rawValue)")
+        }
+        return capability
     }
 
     static func kmp(_ value: DataSyncKind) -> NotiSyncProtocol.DataSyncKind {

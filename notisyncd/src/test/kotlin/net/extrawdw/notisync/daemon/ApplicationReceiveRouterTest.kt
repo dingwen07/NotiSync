@@ -372,6 +372,7 @@ class ApplicationReceiveRouterTest {
         assertEquals(7, record.signerEpoch)
         assertEquals(DeliveryMode.WEBSOCKET.name, record.deliveryMode)
         assertEquals(1_234, record.receivedAtEpochMillis)
+        assertEquals(777, record.envelopeCreatedAtEpochMillis)
     }
 
     @Test
@@ -519,6 +520,7 @@ class ApplicationReceiveRouterTest {
         signerEpoch = 7,
         messageId = id,
         deliveryMode = DeliveryMode.WEBSOCKET,
+        createdAt = 777,
     )
 
     private fun dataSyncInbound(id: String, sync: DataSync) = inbound(
