@@ -5,6 +5,23 @@ import Foundation
 import SwiftUI
 import UIKit
 
+fileprivate nonisolated struct IOSScreenTouchSample: Sendable {
+    let action: UInt8
+    let pointerId: UInt64
+    let location: CGPoint
+    let pressure: Double
+}
+
+fileprivate nonisolated struct IOSScreenTouchCommand: Sendable {
+    let action: UInt8
+    let pointerId: UInt64
+    let x: Int
+    let y: Int
+    let sourceWidth: Int
+    let sourceHeight: Int
+    let pressure: Double
+}
+
 actor IOSScreenControlWriter {
     private let connection: IOSScreenWireConnection
 
@@ -28,30 +45,33 @@ actor IOSScreenControlWriter {
 
     func togglePower() async throws { try await connection.send(Data([64])) }
 
-    func sendTouch(
-        action: UInt8,
-        x: Int,
-        y: Int,
-        sourceWidth: Int,
-        sourceHeight: Int,
-        pressure: Double
-    ) async throws {
-        guard sourceWidth > 0, sourceWidth <= Int(UInt16.max),
-              sourceHeight > 0, sourceHeight <= Int(UInt16.max) else { return }
+    fileprivate func sendTouches(_ touches: [IOSScreenTouchCommand]) async throws {
+        var frames = Data()
+        for touch in touches {
+            guard touch.action <= 3,
+                  touch.sourceWidth > 0, touch.sourceWidth <= Int(UInt16.max),
+                  touch.sourceHeight > 0, touch.sourceHeight <= Int(UInt16.max) else { continue }
+            frames.append(touchFrame(touch))
+        }
+        guard !frames.isEmpty else { return }
+        try await connection.send(frames)
+    }
+
+    private func touchFrame(_ touch: IOSScreenTouchCommand) -> Data {
         let fixedPressure: UInt16
-        if pressure <= 0 { fixedPressure = 0 }
-        else if pressure >= 1 { fixedPressure = UInt16.max }
-        else { fixedPressure = UInt16(min(Int(UInt16.max), Int(pressure * 65_536))) }
-        var frame = Data([2, action])
-        frame.appendScreenUInt64(0) // one touchscreen pointer
-        frame.appendScreenUInt32(UInt32(max(0, min(sourceWidth - 1, x))))
-        frame.appendScreenUInt32(UInt32(max(0, min(sourceHeight - 1, y))))
-        frame.appendScreenUInt16(UInt16(sourceWidth))
-        frame.appendScreenUInt16(UInt16(sourceHeight))
+        if touch.pressure <= 0 { fixedPressure = 0 }
+        else if touch.pressure >= 1 { fixedPressure = UInt16.max }
+        else { fixedPressure = UInt16(min(Int(UInt16.max), Int(touch.pressure * 65_536))) }
+        var frame = Data([2, touch.action])
+        frame.appendScreenUInt64(touch.pointerId)
+        frame.appendScreenUInt32(UInt32(max(0, min(touch.sourceWidth - 1, touch.x))))
+        frame.appendScreenUInt32(UInt32(max(0, min(touch.sourceHeight - 1, touch.y))))
+        frame.appendScreenUInt16(UInt16(touch.sourceWidth))
+        frame.appendScreenUInt16(UInt16(touch.sourceHeight))
         frame.appendScreenUInt16(fixedPressure)
         frame.appendScreenUInt32(0) // action button
         frame.appendScreenUInt32(0) // buttons
-        try await connection.send(frame)
+        return frame
     }
 
     private func keyFrame(action: UInt8, keyCode: Int32) -> Data {
@@ -105,11 +125,11 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         let preamble = try await connection.readExactly(16)
         var initial = IOSVideoDataReader(preamble)
         guard try initial.uint32() == 0x68323634 else {
-            throw IOSScreenTransportError.unsupportedStream("The Android source did not start an H.264 stream.")
+            throw IOSScreenTransportError.unsupportedStream("The source device did not start an H.264 stream.")
         }
         let flags = try initial.uint32()
         guard flags & 0x80000000 != 0, flags & 0x7ffffffe == 0 else {
-            throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid stream metadata.")
+            throw IOSScreenTransportError.unsupportedStream("The source device sent invalid stream metadata.")
         }
         try await updateDimensions(width: Int(initial.uint32()), height: Int(initial.uint32()))
 
@@ -119,7 +139,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
             let firstWord = try reader.uint32()
             if firstWord & 0x80000000 != 0 {
                 guard firstWord & 0x7ffffffe == 0 else {
-                    throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid resize metadata.")
+                    throw IOSScreenTransportError.unsupportedStream("The source device sent invalid resize metadata.")
                 }
                 try await updateDimensions(width: Int(reader.uint32()), height: Int(reader.uint32()))
                 formatDescription = nil
@@ -130,13 +150,13 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
             let ptsAndFlags = (UInt64(firstWord) << 32) | UInt64(secondWord)
             let packetSize = Int(try reader.uint32())
             guard packetSize > 0, packetSize <= 16 * 1024 * 1024 else {
-                throw IOSScreenTransportError.unsupportedStream("The Android source sent an oversized video packet.")
+                throw IOSScreenTransportError.unsupportedStream("The source device sent an oversized video packet.")
             }
             let packet = try await connection.readExactly(packetSize)
             let configFlag = UInt64(1) << 62
             if ptsAndFlags & configFlag != 0 {
                 guard ptsAndFlags == configFlag else {
-                    throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid codec metadata.")
+                    throw IOSScreenTransportError.unsupportedStream("The source device sent invalid codec metadata.")
                 }
                 formatDescription = try makeH264FormatDescription(config: packet)
             } else if let formatDescription {
@@ -149,7 +169,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
     private func updateDimensions(width: Int, height: Int) async throws {
         guard width > 0, width <= 8_192, height > 0, height <= 8_192,
               Int64(width) * Int64(height) <= 16_000_000 else {
-            throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid video dimensions.")
+            throw IOSScreenTransportError.unsupportedStream("The source device sent invalid video dimensions.")
         }
         await onDimensions(CGSize(width: width, height: height))
     }
@@ -158,7 +178,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         let parameterSets = h264ParameterSets(config)
         guard let sps = parameterSets.first(where: { $0.first.map { $0 & 0x1f == 7 } == true }),
               let pps = parameterSets.first(where: { $0.first.map { $0 & 0x1f == 8 } == true }) else {
-            throw IOSScreenTransportError.unsupportedStream("The Android H.264 encoder sent no SPS/PPS.")
+            throw IOSScreenTransportError.unsupportedStream("The source H.264 encoder sent no SPS/PPS.")
         }
         var description: CMFormatDescription?
         let status: OSStatus = sps.withUnsafeBytes { spsBytes in
@@ -254,13 +274,15 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     @Published var showsTextInput = false
     @Published var obscuresInputText = true
     @Published var inputText = ""
+    @Published var zoomedOut = false
 
     let displayLayer = AVSampleBufferDisplayLayer()
     private var session: IOSScreenMirrorSession?
     private var decoder: IOSScreenVideoDecoder?
     private var control: IOSScreenControlWriter?
-    private var lastTouch: CGPoint?
-    private var touchActive = false
+    private var activeTouchIds: Set<UInt64> = []
+    private var lastTouchLocations: [UInt64: CGPoint] = [:]
+    private var touchSendTask: Task<Void, Never>?
     private var stopped = false
 
     init() {
@@ -316,10 +338,14 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         stopped = true
         decoder?.cancel()
         decoder = nil
+        touchSendTask?.cancel()
+        touchSendTask = nil
         session?.cancelTransport()
         await runtime.endScreenMirror(sessionId: session?.sessionId)
         session = nil
         control = nil
+        activeTouchIds.removeAll()
+        lastTouchLocations.removeAll()
         connected = false
     }
 
@@ -333,13 +359,20 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         Task { try? await control.togglePower() }
     }
 
-    func sendInputText() {
+    func sendInputText(returnAfter: Bool = false) {
         let text = inputText
+        let byteCount = Data(text.utf8).count
+        guard byteCount <= 300, returnAfter || !text.isEmpty else { return }
         inputText = ""
         showsTextInput = false
         obscuresInputText = true
-        guard let control, !text.isEmpty, Data(text.utf8).count <= 300 else { return }
-        Task { try? await control.sendText(text) }
+        guard let control else { return }
+        Task {
+            do {
+                if !text.isEmpty { try await control.sendText(text) }
+                if returnAfter { try await control.sendKeyPress(66) }
+            } catch { }
+        }
     }
 
     func beginTextInput() {
@@ -354,43 +387,83 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         showsTextInput = false
     }
 
-    func touchChanged(at point: CGPoint, in viewSize: CGSize) {
-        guard let mapped = mappedTouch(point, viewSize: viewSize), let control else { return }
-        lastTouch = mapped
-        let action: UInt8 = touchActive ? 2 : 0
-        touchActive = true
-        Task {
-            try? await control.sendTouch(
-                action: action,
-                x: Int(mapped.x), y: Int(mapped.y),
-                sourceWidth: Int(dimensions.width), sourceHeight: Int(dimensions.height),
-                pressure: 1
-            )
+    func toggleDisplayZoom() {
+        withAnimation(.easeInOut(duration: 0.2)) { zoomedOut.toggle() }
+    }
+
+    fileprivate func handleTouches(_ samples: [IOSScreenTouchSample], in viewSize: CGSize) {
+        guard let control, dimensions.width > 0, dimensions.height > 0 else { return }
+        var commands: [IOSScreenTouchCommand] = []
+
+        for sample in samples {
+            switch sample.action {
+            case 0: // ACTION_DOWN; scrcpy converts later fingers to ACTION_POINTER_DOWN.
+                guard !activeTouchIds.contains(sample.pointerId),
+                      let mapped = mappedTouch(sample.location, viewSize: viewSize, allowsOutside: false) else { continue }
+                activeTouchIds.insert(sample.pointerId)
+                lastTouchLocations[sample.pointerId] = mapped
+                commands.append(touchCommand(for: sample, mapped: mapped, pressure: sample.pressure))
+            case 2: // ACTION_MOVE
+                guard activeTouchIds.contains(sample.pointerId),
+                      let mapped = mappedTouch(sample.location, viewSize: viewSize, allowsOutside: true)
+                        ?? lastTouchLocations[sample.pointerId] else { continue }
+                lastTouchLocations[sample.pointerId] = mapped
+                commands.append(touchCommand(for: sample, mapped: mapped, pressure: sample.pressure))
+            case 1: // ACTION_UP; scrcpy converts non-final fingers to ACTION_POINTER_UP.
+                guard activeTouchIds.remove(sample.pointerId) != nil else { continue }
+                let mapped = mappedTouch(sample.location, viewSize: viewSize, allowsOutside: true)
+                    ?? lastTouchLocations[sample.pointerId]
+                lastTouchLocations.removeValue(forKey: sample.pointerId)
+                if let mapped {
+                    commands.append(touchCommand(for: sample, mapped: mapped, pressure: 0))
+                }
+            case 3: // ACTION_CANCEL terminates the whole remote gesture.
+                guard let pointerId = activeTouchIds.first,
+                      let mapped = lastTouchLocations[pointerId] else { continue }
+                commands.append(IOSScreenTouchCommand(
+                    action: 3,
+                    pointerId: pointerId,
+                    x: Int(mapped.x), y: Int(mapped.y),
+                    sourceWidth: Int(dimensions.width), sourceHeight: Int(dimensions.height),
+                    pressure: 0
+                ))
+                activeTouchIds.removeAll()
+                lastTouchLocations.removeAll()
+            default:
+                continue
+            }
+        }
+        guard !commands.isEmpty else { return }
+        let precedingSend = touchSendTask
+        touchSendTask = Task {
+            await precedingSend?.value
+            guard !Task.isCancelled else { return }
+            try? await control.sendTouches(commands)
         }
     }
 
-    func touchEnded() {
-        guard touchActive, let point = lastTouch, let control else { return }
-        touchActive = false
-        lastTouch = nil
-        Task {
-            try? await control.sendTouch(
-                action: 1,
-                x: Int(point.x), y: Int(point.y),
-                sourceWidth: Int(dimensions.width), sourceHeight: Int(dimensions.height),
-                pressure: 0
-            )
-        }
+    private func touchCommand(
+        for sample: IOSScreenTouchSample,
+        mapped: CGPoint,
+        pressure: Double
+    ) -> IOSScreenTouchCommand {
+        IOSScreenTouchCommand(
+            action: sample.action,
+            pointerId: sample.pointerId,
+            x: Int(mapped.x), y: Int(mapped.y),
+            sourceWidth: Int(dimensions.width), sourceHeight: Int(dimensions.height),
+            pressure: pressure
+        )
     }
 
-    private func mappedTouch(_ point: CGPoint, viewSize: CGSize) -> CGPoint? {
+    private func mappedTouch(_ point: CGPoint, viewSize: CGSize, allowsOutside: Bool) -> CGPoint? {
         guard dimensions.width > 0, dimensions.height > 0,
               viewSize.width > 0, viewSize.height > 0 else { return nil }
         let scale = min(viewSize.width / dimensions.width, viewSize.height / dimensions.height)
         let rendered = CGSize(width: dimensions.width * scale, height: dimensions.height * scale)
         let origin = CGPoint(x: (viewSize.width - rendered.width) / 2, y: (viewSize.height - rendered.height) / 2)
         let rect = CGRect(origin: origin, size: rendered)
-        guard touchActive || rect.contains(point) else { return nil }
+        guard allowsOutside || rect.contains(point) else { return nil }
         let clampedX = min(rect.maxX.nextDown, max(rect.minX, point.x))
         let clampedY = min(rect.maxY.nextDown, max(rect.minY, point.y))
         return CGPoint(
@@ -411,19 +484,18 @@ struct ScreenMirrorPlayerView: View {
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
-            ScreenMirrorVideoSurface(layer: model.displayLayer)
-                .ignoresSafeArea()
-                .overlay {
-                    GeometryReader { geometry in
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .gesture(
-                                DragGesture(minimumDistance: 0)
-                                    .onChanged { model.touchChanged(at: $0.location, in: geometry.size) }
-                                    .onEnded { _ in model.touchEnded() }
-                            )
-                    }
-                }
+            GeometryReader { geometry in
+                let viewport = videoViewport(in: geometry)
+                ScreenMirrorVideoSurface(
+                    layer: model.displayLayer,
+                    onTouches: { samples, size in model.handleTouches(samples, in: size) }
+                )
+                .frame(width: viewport.width, height: viewport.height)
+                .position(x: viewport.midX, y: viewport.midY)
+                .allowsHitTesting(model.connected)
+                .animation(.easeInOut(duration: 0.2), value: model.zoomedOut)
+            }
+            .ignoresSafeArea()
             if !model.connected {
                 VStack(spacing: 14) {
                     if let error = model.errorMessage {
@@ -432,7 +504,7 @@ struct ScreenMirrorPlayerView: View {
                         Text(error).multilineTextAlignment(.center)
                         HStack(spacing: 12) {
                             Button("Cancel", role: .cancel) { dismiss() }
-                                .buttonStyle(.bordered)
+                                .screenMirrorNativeButton()
                             Button("Retry") {
                                 Task {
                                     await model.retry(
@@ -442,14 +514,14 @@ struct ScreenMirrorPlayerView: View {
                                     )
                                 }
                             }
-                            .buttonStyle(.borderedProminent)
+                            .screenMirrorNativeButton(prominent: true)
                         }
                     } else {
                         ProgressView().tint(.white)
                         Text(runtime.screenMirrorPhase ?? model.status)
                             .multilineTextAlignment(.center)
                         Button("Cancel", role: .cancel) { dismiss() }
-                            .buttonStyle(.bordered)
+                            .screenMirrorNativeButton()
                     }
                 }
                 .foregroundStyle(.white)
@@ -494,16 +566,18 @@ struct ScreenMirrorPlayerView: View {
 
                         Toggle("Hide text", isOn: $model.obscuresInputText)
                     } footer: {
-                        Text("Sends up to 300 UTF-8 bytes to the focused Android field.")
+                        Text("Sends up to 300 UTF-8 bytes to the focused field.")
                     }
                 }
-                .navigationTitle("Type on Android")
+                .navigationTitle("Type on Screen")
                 .navigationBarTitleDisplayMode(.inline)
                 .toolbar {
                     ToolbarItem(placement: .cancellationAction) {
                         Button("Cancel", role: .cancel) { model.cancelTextInput() }
                     }
-                    ToolbarItem(placement: .confirmationAction) {
+                    ToolbarItemGroup(placement: .confirmationAction) {
+                        Button("Return") { model.sendInputText(returnAfter: true) }
+                            .disabled(Data(model.inputText.utf8).count > 300)
                         Button("Send") { model.sendInputText() }
                             .disabled(model.inputText.isEmpty || Data(model.inputText.utf8).count > 300)
                     }
@@ -535,10 +609,10 @@ struct ScreenMirrorPlayerView: View {
                 Button { dismiss() } label: {
                     Image(systemName: "xmark")
                         .font(.body.weight(.semibold))
-                        .frame(width: 44, height: 44)
-                        .background(.black.opacity(0.62), in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.5))
+                        .frame(width: 28, height: 28)
                 }
+                .screenMirrorNativeButton()
+                .buttonBorderShape(.circle)
                 .accessibilityLabel("Close screen viewer")
                 Spacer()
             }
@@ -547,16 +621,27 @@ struct ScreenMirrorPlayerView: View {
     }
 
     private var viewerControls: some View {
+        Group {
+            if #available(iOS 26.0, *) {
+                GlassEffectContainer(spacing: 6) { viewerControlButtons }
+            } else {
+                viewerControlButtons
+            }
+        }
+    }
+
+    private var viewerControlButtons: some View {
         HStack(spacing: 2) {
             viewerControl("Back", systemImage: "chevron.backward") { model.sendKey(4) }
             viewerControl("Home", systemImage: "circle") { model.sendKey(3) }
             viewerControl("Recent Apps", systemImage: "square.on.square") { model.sendKey(187) }
+            viewerControl(
+                model.zoomedOut ? "Fill Screen" : "Zoom Out",
+                systemImage: model.zoomedOut ? "arrow.up.left.and.arrow.down.right" : "minus.magnifyingglass"
+            ) { model.toggleDisplayZoom() }
             viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
             viewerControl("Power", systemImage: "power") { model.togglePower() }
         }
-        .padding(6)
-        .background(.black.opacity(0.66), in: Capsule())
-        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
         .foregroundStyle(.white)
     }
 
@@ -568,30 +653,71 @@ struct ScreenMirrorPlayerView: View {
         Button(action: action) {
             Image(systemName: systemImage)
                 .font(.title3.weight(.medium))
-                .frame(width: 46, height: 46)
+                .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .screenMirrorNativeButton()
+        .buttonBorderShape(.circle)
+        .controlSize(.small)
         .accessibilityLabel(title)
+    }
+
+    private func videoViewport(in geometry: GeometryProxy) -> CGRect {
+        guard model.zoomedOut else { return CGRect(origin: .zero, size: geometry.size) }
+        let safe = geometry.safeAreaInsets
+        let leading = safe.leading + 12
+        let trailing = safe.trailing + 12
+        let top = safe.top + 58
+        let bottom = safe.bottom + 68
+        return CGRect(
+            x: leading,
+            y: top,
+            width: max(1, geometry.size.width - leading - trailing),
+            height: max(1, geometry.size.height - top - bottom)
+        )
+    }
+}
+
+extension View {
+    @ViewBuilder
+    func screenMirrorNativeButton(prominent: Bool = false) -> some View {
+        if #available(iOS 26.0, *) {
+            if prominent {
+                buttonStyle(.glassProminent)
+            } else {
+                buttonStyle(.glass)
+            }
+        } else if prominent {
+            buttonStyle(.borderedProminent)
+        } else {
+            buttonStyle(.bordered)
+        }
     }
 }
 
 private struct ScreenMirrorVideoSurface: UIViewRepresentable {
     let layer: AVSampleBufferDisplayLayer
+    let onTouches: ([IOSScreenTouchSample], CGSize) -> Void
 
-    func makeUIView(context: Context) -> UIView {
+    func makeUIView(context: Context) -> ScreenMirrorLayerHostView {
         let view = ScreenMirrorLayerHostView()
         view.backgroundColor = .black
         view.hostedLayer = layer
+        view.onTouches = onTouches
         return view
     }
 
-    func updateUIView(_ uiView: UIView, context: Context) {
-        (uiView as? ScreenMirrorLayerHostView)?.hostedLayer = layer
+    func updateUIView(_ uiView: ScreenMirrorLayerHostView, context: Context) {
+        uiView.hostedLayer = layer
+        uiView.onTouches = onTouches
     }
 }
 
 private final class ScreenMirrorLayerHostView: UIView {
+    var onTouches: (([IOSScreenTouchSample], CGSize) -> Void)?
+    private var pointerIds: [ObjectIdentifier: UInt64] = [:]
+    private var nextPointerId: UInt64 = 0
+
     var hostedLayer: AVSampleBufferDisplayLayer? {
         didSet {
             if oldValue !== hostedLayer { oldValue?.removeFromSuperlayer() }
@@ -600,9 +726,80 @@ private final class ScreenMirrorLayerHostView: UIView {
         }
     }
 
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        isMultipleTouchEnabled = true
+        isUserInteractionEnabled = true
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        isMultipleTouchEnabled = true
+        isUserInteractionEnabled = true
+    }
+
     override func layoutSubviews() {
         super.layoutSubviews()
         hostedLayer?.frame = bounds
+    }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        deliver(touches, action: 0, createsPointers: true, removesPointers: false)
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        deliver(touches, action: 2, createsPointers: false, removesPointers: false)
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        deliver(touches, action: 1, createsPointers: false, removesPointers: true)
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        defer { pointerIds.removeAll() }
+        guard let touch = touches.first(where: { pointerIds[ObjectIdentifier($0)] != nil }),
+              let pointerId = pointerIds[ObjectIdentifier(touch)] else { return }
+        onTouches?([IOSScreenTouchSample(
+            action: 3,
+            pointerId: pointerId,
+            location: touch.location(in: self),
+            pressure: 0
+        )], bounds.size)
+    }
+
+    private func deliver(
+        _ touches: Set<UITouch>,
+        action: UInt8,
+        createsPointers: Bool,
+        removesPointers: Bool
+    ) {
+        var samples: [IOSScreenTouchSample] = []
+        for touch in touches {
+            let key = ObjectIdentifier(touch)
+            let pointerId: UInt64
+            if let existing = pointerIds[key] {
+                pointerId = existing
+            } else if createsPointers {
+                pointerId = nextPointerId
+                nextPointerId &+= 1
+                pointerIds[key] = pointerId
+            } else {
+                continue
+            }
+            samples.append(IOSScreenTouchSample(
+                action: action,
+                pointerId: pointerId,
+                location: touch.location(in: self),
+                pressure: action == 1 ? 0 : normalizedPressure(touch)
+            ))
+            if removesPointers { pointerIds.removeValue(forKey: key) }
+        }
+        if !samples.isEmpty { onTouches?(samples, bounds.size) }
+    }
+
+    private func normalizedPressure(_ touch: UITouch) -> Double {
+        guard touch.maximumPossibleForce > 0, touch.force > 0 else { return 1 }
+        return min(1, max(0, Double(touch.force / touch.maximumPossibleForce)))
     }
 }
 

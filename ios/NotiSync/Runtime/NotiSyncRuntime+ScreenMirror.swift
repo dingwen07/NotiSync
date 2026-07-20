@@ -10,9 +10,9 @@ nonisolated enum IOSScreenMirrorRuntimeError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .unavailable: "This device is not an available trusted Android screen source."
+        case .unavailable: "This device is not an available trusted screen source."
         case .anotherSession: "Another screen session is already active."
-        case .requestFailed: "The screen request could not be delivered to the Android source."
+        case .requestFailed: "The screen request could not be delivered to the source device."
         case .remote(let detail): detail
         case .cancelled: "Screen sharing was cancelled."
         }
@@ -282,13 +282,13 @@ extension NotiSyncRuntime {
 
     private func screenStatusDescription(_ status: ScreenMirrorStatus?) -> String {
         switch status {
-        case .UNAUTHORIZED: "Authorize this iPhone for screen sharing on the Android device."
+        case .UNAUTHORIZED: "Authorize this iPhone for screen sharing on the source device."
         case .EXPIRED: "The screen-sharing request expired."
-        case .BUSY: "The Android device is already sharing its screen."
-        case .SHIZUKU_UNAVAILABLE: "Screen sharing is not ready in Shizuku on the Android device."
-        case .CODEC_UNAVAILABLE: "The Android device has no compatible H.264 encoder."
-        case .CODEC_START_FAILED: "The Android screen encoder could not start."
-        case .TRANSPORT_FAILED: "The Android device could not connect over the local network."
+        case .BUSY: "The source device is already sharing its screen."
+        case .SHIZUKU_UNAVAILABLE: "Screen sharing is not ready in Shizuku on the source device."
+        case .CODEC_UNAVAILABLE: "The source device has no compatible H.264 encoder."
+        case .CODEC_START_FAILED: "The source screen encoder could not start."
+        case .TRANSPORT_FAILED: "The source device could not connect over the local network."
         case .ENDED, nil: "Screen sharing ended."
         case .CONNECTING, .READY: "Screen sharing ended."
         }

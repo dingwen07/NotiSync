@@ -35,13 +35,13 @@ nonisolated enum IOSScreenTransportError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .noLAN: "Connect this iPhone and the Android source to the same Wi-Fi network."
+        case .noLAN: "Connect this iPhone and the source device to the same Wi-Fi network."
         case .listenerFailed(let detail): "Could not open the local screen listener: \(detail)"
         case .connectionFailed(let detail): "The secure screen connection failed: \(detail)"
-        case .timedOut: "The Android source did not connect before the request expired."
-        case .channelClosed: "The Android source closed the screen connection."
-        case .malformedBinding: "The Android source sent an invalid screen-channel binding."
-        case .duplicateChannel: "The Android source connected the same screen channel twice."
+        case .timedOut: "The source device did not connect before the request expired."
+        case .channelClosed: "The source device closed the screen connection."
+        case .malformedBinding: "The source device sent an invalid screen-channel binding."
+        case .duplicateChannel: "The source device connected the same screen channel twice."
         case .unsupportedStream(let detail): detail
         }
     }

@@ -598,7 +598,7 @@ struct DevicesView: View {
                             mirrorScreen: {
                                 selectedScreenSource = ScreenMirrorSelection(
                                     id: device.clientId,
-                                    name: device.displayName.isEmpty ? "Android" : device.displayName
+                                    name: device.displayName.isEmpty ? "Screen Source" : device.displayName
                                 )
                             }
                         )
@@ -717,21 +717,16 @@ private struct TrustedPeerRow: View {
                     }
                 if canMirrorScreen {
                     Button(action: mirrorScreen) {
-                        ZStack {
-                            Circle()
-                                .fill(Color.accentColor.opacity(0.12))
-                                .frame(width: 36, height: 36)
-                            Image(systemName: "rectangle.inset.filled.and.person.filled")
-                                .font(.body.weight(.semibold))
-                                .foregroundStyle(.tint)
-                        }
-                        .frame(width: 44, height: 44)
-                        .contentShape(Circle())
+                        Image(systemName: "rectangle.inset.filled.and.person.filled")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 28, height: 28)
                     }
-                    .buttonStyle(.plain)
+                    .screenMirrorNativeButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.small)
                     .accessibilityLabel("View Screen")
                     .accessibilityHint(device.displayName.isEmpty
-                                       ? "Opens this Android device in the screen viewer"
+                                       ? "Opens this device in the screen viewer"
                                        : "Opens " + device.displayName + " in the screen viewer")
                 }
             }
