@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.ui
 import android.icu.text.MeasureFormat
 import android.icu.util.Measure
 import android.icu.util.MeasureUnit
+import android.widget.Toast
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
@@ -65,6 +66,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -73,7 +75,10 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import java.text.DateFormat
 import java.time.Duration
 import java.util.Date
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunKey
@@ -90,11 +95,14 @@ fun RunScreen(
     onInitialSelectionConsumed: () -> Unit = {},
 ) {
     val graph = rememberGraph()
+    val context = LocalContext.current
     val engine = graph.runEngine ?: return
     val runs by engine.runs.collectAsStateWithLifecycle()
     val pendingRefreshes by engine.pendingRefreshes.collectAsStateWithLifecycle()
     var selectedEncoded by rememberSaveable { mutableStateOf<String?>(null) }
     var showClearHistory by rememberSaveable { mutableStateOf(false) }
+    var clearingHistory by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val selectedKey = selectedEncoded?.let(RunKey::decode)
     val selected = selectedKey?.let { key -> runs.firstOrNull { it.key == key } }
 
@@ -134,20 +142,51 @@ fun RunScreen(
 
     if (showClearHistory) {
         AlertDialog(
-            onDismissRequest = { showClearHistory = false },
+            onDismissRequest = {
+                if (!clearingHistory) {
+                    showClearHistory = false
+                }
+            },
             title = { Text(stringResource(R.string.run_clear_history_title)) },
             text = { Text(stringResource(R.string.run_clear_history_body)) },
             confirmButton = {
                 Button(
                     onClick = {
-                        showClearHistory = false
-                        engine.clearHistory()
+                        if (!clearingHistory) {
+                            clearingHistory = true
+                            scope.launch {
+                                val cleared = runStorageMutation(engine::clearHistory)
+                                clearingHistory = false
+                                if (cleared) {
+                                    showClearHistory = false
+                                } else {
+                                    Toast.makeText(
+                                        context,
+                                        R.string.run_clear_history_failed,
+                                        Toast.LENGTH_LONG,
+                                    ).show()
+                                }
+                            }
+                        }
                     },
+                    enabled = !clearingHistory,
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                ) { Text(stringResource(R.string.run_clear_history_confirm)) }
+                ) {
+                    if (clearingHistory) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                            strokeWidth = 2.dp,
+                        )
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                    }
+                    Text(stringResource(R.string.run_clear_history_confirm))
+                }
             },
             dismissButton = {
-                TextButton(onClick = { showClearHistory = false }) {
+                TextButton(
+                    onClick = { showClearHistory = false },
+                    enabled = !clearingHistory,
+                ) {
                     Text(stringResource(R.string.action_cancel))
                 }
             },
@@ -307,9 +346,12 @@ private fun RunDetail(
 ) {
     val state = run.state
     val scope = rememberCoroutineScope()
-    var input by remember(state.interactionGeneration) { mutableStateOf("") }
+    var input by remember(run.key, state.interactionGeneration) { mutableStateOf("") }
+    var inputSubmitting by remember(run.key, state.interactionGeneration) { mutableStateOf(false) }
+    var markingInactive by remember(run.key) { mutableStateOf(false) }
     var showSignal by remember { mutableStateOf(false) }
     var showKill by remember { mutableStateOf(false) }
+    val context = LocalContext.current
 
     LazyColumn(
         modifier,
@@ -337,7 +379,10 @@ private fun RunDetail(
                         style = MaterialTheme.typography.bodyMedium,
                     )
                 }
-                if (run.active) {
+                // A deferred liveness snapshot (or an older host that has none) can leave a remote-active state
+                // in local History. Refresh remains available there so the host can answer with a higher
+                // authenticated revision and reactivate it; input/signals stay active-only.
+                if (state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED) {
                     IconButton(
                         onClick = { scope.launch { engine.refresh(run.key) } },
                         enabled = !refreshing,
@@ -412,22 +457,46 @@ private fun RunDetail(
                                 onValueChange = { input = it },
                                 modifier = Modifier.weight(1f),
                                 label = { Text(stringResource(R.string.run_input_hint)) },
+                                enabled = !inputSubmitting,
                                 maxLines = 4,
                             )
                             Spacer(Modifier.width(8.dp))
                             Button(
                                 onClick = {
-                                    val submitted = input
-                                    input = ""
-                                    scope.launch {
-                                        engine.writeInput(
-                                            run.key,
-                                            submitted.asRunTerminalLine(),
-                                            state.interactionGeneration,
-                                        )
+                                    if (!inputSubmitting) {
+                                        val submitted = input
+                                        inputSubmitting = true
+                                        scope.launch {
+                                            val result = submitRunInput(submitted) { terminalLine ->
+                                                engine.writeInput(
+                                                    run.key,
+                                                    terminalLine,
+                                                    state.interactionGeneration,
+                                                )
+                                            }
+                                            input = result.input
+                                            inputSubmitting = false
+                                            if (!result.accepted) {
+                                                Toast.makeText(
+                                                    context,
+                                                    R.string.run_input_send_failed,
+                                                    Toast.LENGTH_LONG,
+                                                ).show()
+                                            }
+                                        }
                                     }
                                 },
-                            ) { Text(stringResource(R.string.run_input_send)) }
+                                enabled = !inputSubmitting,
+                            ) {
+                                if (inputSubmitting) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                                        strokeWidth = 2.dp,
+                                    )
+                                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                                }
+                                Text(stringResource(R.string.run_input_send))
+                            }
                         }
                     }
                     FlowRow(
@@ -450,7 +519,30 @@ private fun RunDetail(
                         TextButton(onClick = { showSignal = true }) {
                             Text(stringResource(R.string.run_action_signal))
                         }
-                        TextButton(onClick = { engine.markInactive(run.key) }) {
+                        TextButton(
+                            onClick = {
+                                if (!markingInactive) {
+                                    markingInactive = true
+                                    scope.launch {
+                                        val marked = runStorageMutation(
+                                            mutation = { engine.markInactive(run.key) },
+                                        )
+                                        markingInactive = false
+                                        val stillActive = engine.runs.value
+                                            .firstOrNull { it.key == run.key }
+                                            ?.active == true
+                                        if (!marked && stillActive) {
+                                            Toast.makeText(
+                                                context,
+                                                R.string.run_mark_inactive_failed,
+                                                Toast.LENGTH_LONG,
+                                            ).show()
+                                        }
+                                    }
+                                }
+                            },
+                            enabled = !markingInactive,
+                        ) {
                             Text(stringResource(R.string.run_action_mark_inactive))
                         }
                     }
@@ -549,8 +641,8 @@ private fun SignalDialog(onDismiss: () -> Unit, onSend: (String) -> Unit) {
 @Composable
 private fun RunTerminal(state: RunState) {
     val scroll = rememberScrollState()
-    val followOutput = scroll.maxValue == 0 || scroll.value >= scroll.maxValue - 8
     LaunchedEffect(state.terminal.text) {
+        val followOutput = scroll.maxValue == 0 || scroll.value >= scroll.maxValue - 8
         if (followOutput) {
             withFrameNanos { }
             scroll.scrollTo(scroll.maxValue)
@@ -653,6 +745,27 @@ private fun commandLabel(state: RunState): String =
 private fun displayArgv(argv: List<String>): String = argv.joinToString(" ") { arg ->
     if (arg.all { it.isLetterOrDigit() || it in "-._/:=@+,%" }) arg
     else "\"${arg.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+}
+
+internal suspend fun runStorageMutation(
+    mutation: () -> Boolean,
+    ioDispatcher: CoroutineDispatcher = Dispatchers.IO,
+): Boolean = withContext(ioDispatcher) { mutation() }
+
+internal data class RunInputSubmissionResult(
+    val accepted: Boolean,
+    val input: String,
+)
+
+internal suspend fun submitRunInput(
+    input: String,
+    submit: suspend (String) -> Boolean,
+): RunInputSubmissionResult {
+    val accepted = submit(input.asRunTerminalLine())
+    return RunInputSubmissionResult(
+        accepted = accepted,
+        input = if (accepted) "" else input,
+    )
 }
 
 @Composable

@@ -399,6 +399,7 @@ class NSRunRunner(
             }
             scheduler = activeScheduler
             val lastPeriodic = AtomicLong(System.nanoTime())
+            val lastHeartbeat = AtomicLong(System.nanoTime())
             val lastSize = AtomicReference<net.extrawdw.notisync.run.process.TerminalSize?>()
             activeScheduler.scheduleAtFixedRate({
                 if (!child.isAlive()) return@scheduleAtFixedRate
@@ -414,9 +415,18 @@ class NSRunRunner(
                         outputActivity.set(System.nanoTime())
                     }
                 }
-                if (!blocked.get() && System.nanoTime() - lastPeriodic.get() >= options.updateInterval.toNanos()) {
+                val sampledAt = System.nanoTime()
+                if (!blocked.get() && sampledAt - lastPeriodic.get() >= options.updateInterval.toNanos()) {
                     activeNotifications.periodic(snapshot)
-                    lastPeriodic.set(System.nanoTime())
+                    lastPeriodic.set(sampledAt)
+                }
+                // Unchanged RUNNING snapshots are intentionally suppressed above, and BLOCKED snapshots skip
+                // ordinary periodic updates entirely. Maintain a much cheaper hourly full-state lease so Android's
+                // three-hour stale policy cannot strand a still-live Run in History. heartbeat() preserves BLOCKED
+                // and does not request an LLM summary; native sends are NORMAL urgency and revision-coalesced.
+                if (sampledAt - lastHeartbeat.get() >= HEARTBEAT_INTERVAL_NANOS) {
+                    activeNotifications.heartbeat()
+                    lastHeartbeat.set(sampledAt)
                 }
                 if (child.usesPty) terminal.size()?.let { size ->
                     if (lastSize.getAndSet(size) != size) child.resize(size.columns, size.rows)
@@ -632,5 +642,6 @@ class NSRunRunner(
         const val OUTPUT_DRAIN_GRACE_MILLIS = 750L
         const val OUTPUT_CLOSE_GRACE_MILLIS = 250L
         const val OUTPUT_GATE_GRACE_MILLIS = 250L
+        val HEARTBEAT_INTERVAL_NANOS: Long = TimeUnit.HOURS.toNanos(1)
     }
 }

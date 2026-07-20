@@ -338,6 +338,73 @@ class RunEngineTest {
     }
 
     @Test
+    fun locallyStaleRemoteActiveRunCanRefreshAndReactivate() = runBlocking {
+        val staleState = running(revision = 1)
+        val stale = StoredRun(
+            state = staleState,
+            receivedAt = staleState.updatedAt,
+            presentedRevision = staleState.revision,
+            active = false,
+        )
+        val repository = FakeRepository(listOf(stale))
+        val sent = mutableListOf<RunControl>()
+        val harness = harness(repository, send = { control -> sent += control; true })
+
+        assertTrue(harness.engine.refresh(stale.key))
+        val refresh = sent.single()
+        val response = staleState.copy(
+            revision = 2,
+            updateReason = RunUpdateReason.REFRESH,
+            updatedAt = 1_001,
+            responseToRequestId = refresh.requestId,
+        )
+
+        harness.engine.onRunSync(message(HOST, own = true), stateSync(response))
+
+        assertTrue(repository.find(stale.key)!!.active)
+        assertEquals(2, repository.find(stale.key)!!.state.revision)
+        assertTrue(harness.engine.pendingRefreshes.value.isEmpty())
+        harness.close()
+    }
+
+    @Test
+    fun authenticatedHeartbeatAutomaticallyReactivatesLocallyStaleRun() {
+        val staleState = running(revision = 1)
+        val stale = StoredRun(
+            state = staleState,
+            receivedAt = staleState.updatedAt,
+            presentedRevision = staleState.revision,
+            active = false,
+        )
+        val repository = FakeRepository(listOf(stale))
+        val harness = harness(repository)
+        val heartbeat = staleState.copy(
+            revision = 2,
+            updateReason = RunUpdateReason.PERIODIC,
+            updatedAt = 1_001,
+        )
+
+        harness.engine.onRunSync(message(HOST, own = true), stateSync(heartbeat))
+
+        assertTrue(repository.find(stale.key)!!.active)
+        assertEquals(2, repository.find(stale.key)!!.state.revision)
+        harness.close()
+    }
+
+    @Test
+    fun terminalHistoryCannotBeRefreshed() = runBlocking {
+        val terminal = completed()
+        val repository = FakeRepository(terminal)
+        val sent = mutableListOf<RunControl>()
+        val harness = harness(repository, send = { control -> sent += control; true })
+
+        assertFalse(harness.engine.refresh(repository.runs.value.single().key))
+
+        assertTrue(sent.isEmpty())
+        harness.close()
+    }
+
+    @Test
     fun inputAndArbitrarySignalBecomeNormalRunControls() = runBlocking {
         val repository = FakeRepository(running())
         val sent = mutableListOf<RunControl>()

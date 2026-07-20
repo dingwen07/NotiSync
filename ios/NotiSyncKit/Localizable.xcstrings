@@ -1259,6 +1259,24 @@
         }
       }
     },
+    "error.engine.persistenceFailed" : {
+      "comment" : "Error shown when trusted-device state cannot be saved.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Could not save trusted-device state."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法保存可信设备状态。"
+          }
+        }
+      }
+    },
     "error.engine.unknownSender" : {
       "comment" : "Error shown when a sender has no trusted keys.",
       "extractionState" : "extracted_with_value",

@@ -193,8 +193,14 @@ data class RunState(
         require(endedAt == null || updatedAt >= endedAt) { "updatedAt must not precede endedAt" }
 
         when (updateReason) {
-            RunUpdateReason.INITIAL, RunUpdateReason.PERIODIC, RunUpdateReason.RESUMED ->
+            RunUpdateReason.INITIAL, RunUpdateReason.RESUMED ->
                 require(phase == RunPhase.RUNNING) { "$updateReason requires RUNNING" }
+            // PERIODIC also serves as the low-frequency liveness snapshot for a blocked Run. It must never
+            // revive a terminal phase, but preserving BLOCKED lets consumers keep their local activity lease
+            // alive without manufacturing a RESUMED transition.
+            RunUpdateReason.PERIODIC -> require(
+                phase == RunPhase.RUNNING || phase == RunPhase.BLOCKED,
+            ) { "PERIODIC requires an active phase" }
             RunUpdateReason.BLOCKED ->
                 require(phase == RunPhase.BLOCKED) { "BLOCKED update requires BLOCKED phase" }
             RunUpdateReason.COMPLETED ->

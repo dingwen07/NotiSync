@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.ui
 import android.content.Intent
 import android.graphics.Bitmap
 import android.provider.Settings
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -88,6 +89,10 @@ fun PairingScreen(
     var codeGeneration by remember { mutableIntStateOf(0) }
     var hasResumed by remember { mutableStateOf(false) }
 
+    fun showScanFailure(message: String) {
+        Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+    }
+
     fun openDateAndTimeSettings() {
         runCatching {
             context.startActivity(Intent(Settings.ACTION_DATE_SETTINGS))
@@ -111,7 +116,7 @@ fun PairingScreen(
                 .fold(
                     onSuccess = { pendingCandidate = it },
                     onFailure = {
-                        result = resources.getString(R.string.pair_could_not_pair, it.message)
+                        showScanFailure(resources.getString(R.string.pair_could_not_pair, it.message))
                     },
                 )
             inspecting = false
@@ -308,7 +313,7 @@ fun PairingScreen(
                         .addOnSuccessListener { barcode ->
                             val raw = barcode.rawValue
                             if (raw == null) {
-                                result = resources.getString(R.string.pair_no_code)
+                                showScanFailure(resources.getString(R.string.pair_no_code))
                                 scanning = false
                             } else {
                                 scanning = false
@@ -320,7 +325,7 @@ fun PairingScreen(
                             scanning = false
                         }
                         .addOnFailureListener {
-                            result = resources.getString(R.string.pair_scan_failed, it.message)
+                            showScanFailure(resources.getString(R.string.pair_scan_failed, it.message))
                             scanning = false
                         }
                 },

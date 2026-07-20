@@ -14,6 +14,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.app.RemoteInput
@@ -65,8 +66,10 @@ class RunNotificationPresenter(
             ?: state.failureMessage?.takeIf { it.isNotBlank() }
             ?: state.terminal.text.takeLast(NOTIFICATION_TERMINAL_CHARS).takeIf { it.isNotBlank() }
         val progress = state.progress?.takeUnless { terminal }?.toNativeProgress()
-        val tag = tagOf(key)
-        val id = tag.hashCode()
+        val tag = runNotificationTag(key)
+        val id = runNotificationId(key)
+        // Any render is a new authoritative opportunity to act (normally a higher Run revision).
+        RunNotificationActionGate.release(key)
 
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_terminal_notification)
@@ -121,8 +124,8 @@ class RunNotificationPresenter(
     }
 
     override fun dismiss(key: RunKey) {
-        val tag = tagOf(key)
-        NotificationManagerCompat.from(context).cancel(tag, tag.hashCode())
+        RunNotificationActionGate.release(key)
+        NotificationManagerCompat.from(context).cancel(runNotificationTag(key), runNotificationId(key))
     }
 
     private fun openIntent(key: RunKey, id: Int): PendingIntent {
@@ -230,12 +233,46 @@ class RunNotificationPresenter(
         return NativeProgress(scaledCurrent, scaledTotal, false)
     }
 
-    private fun tagOf(key: RunKey): String = "notisync-run:${key.hostClientId}:${key.runId}"
-
     companion object {
         private const val NOTIFICATION_TERMINAL_CHARS = 2_048
     }
 }
+
+internal fun runNotificationTag(key: RunKey): String =
+    "notisync-run:${key.hostClientId}:${key.runId}"
+
+internal fun runNotificationId(key: RunKey): Int = runNotificationTag(key).hashCode()
+
+/** Closes the tiny window where multiple already-dispatched PendingIntents could race the shade update. */
+internal object RunNotificationActionGate {
+    private val claimed = mutableSetOf<RunKey>()
+
+    fun claim(key: RunKey): Boolean = synchronized(claimed) { claimed.add(key) }
+
+    fun release(key: RunKey) {
+        synchronized(claimed) { claimed.remove(key) }
+    }
+}
+
+/**
+ * Replace the active Run notification with the same content but no controls as soon as its receiver accepts
+ * the first press. [RunNotificationActionGate] also rejects PendingIntents already queued before this visual
+ * update lands. A later authoritative Run render releases the gate and publishes its fresh action set.
+ */
+internal fun removeRunNotificationActions(context: Context, key: RunKey): Boolean = runCatching {
+    val manager = context.getSystemService(NotificationManager::class.java)
+    val tag = runNotificationTag(key)
+    val id = runNotificationId(key)
+    val active = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == id }
+        ?: return false
+    val replacement = Notification.Builder.recoverBuilder(context, active.notification)
+        .setActions()
+        // Re-posting only changes affordances; it must not alert a second time.
+        .setOnlyAlertOnce(true)
+        .build()
+    manager.notify(tag, id, replacement)
+    true
+}.getOrDefault(false)
 
 /** One fixed Run group and one deterministic, user-configurable HIGH channel per authenticated host peer. */
 internal object RunNotificationChannels {
@@ -371,6 +408,10 @@ class RunActionReceiver : BroadcastReceiver() {
             requestedAt = System.currentTimeMillis(),
         ) ?: return
         val app = context.applicationContext as? NotiSyncApp ?: return
+        if (!RunNotificationActionGate.claim(route.key)) return
+        // Update the shade synchronously on the receiver thread. Waiting for the IO coroutine leaves enough time
+        // for a fast double-tap to mint a second request id and bypass host-side request-id replay protection.
+        removeRunNotificationActions(context, route.key)
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO + crashGuard("RunActionReceiver")).launch {
             var outbox: RunControlOutbox? = null
@@ -392,7 +433,11 @@ class RunActionReceiver : BroadcastReceiver() {
                     }
                 }
             } catch (error: Exception) {
+                RunNotificationActionGate.release(route.key)
                 Log.w("RunActionReceiver", "could not queue Run action", error)
+                ContextCompat.getMainExecutor(context).execute {
+                    Toast.makeText(context, R.string.run_notification_action_failed, Toast.LENGTH_LONG).show()
+                }
             } finally {
                 outbox?.close()
                 pending.finish()

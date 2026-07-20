@@ -180,7 +180,12 @@ class RunEngine internal constructor(
     }
 
     suspend fun refresh(key: RunKey): Boolean {
-        if (repository.find(key)?.active != true || refreshByKey.containsKey(key)) return false
+        val stored = repository.find(key) ?: return false
+        // Retention can move a quiet RUNNING/BLOCKED snapshot to local History even though the host is still
+        // executing it. Current hosts emit a low-frequency liveness snapshot, but REFRESH also lets the user
+        // elicit the higher authenticated revision immediately (and recovers Runs produced by older hosts).
+        // Keep terminal snapshots ineligible and one request in flight for both active and locally-stale Runs.
+        if (!stored.state.remotePhaseIsActive() || refreshByKey.containsKey(key)) return false
         val requestId = UUID.randomUUID().toString()
         refreshByKey[key] = requestId
         publishPendingRefreshes()

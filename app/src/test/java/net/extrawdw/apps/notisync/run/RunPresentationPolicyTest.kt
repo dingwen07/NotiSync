@@ -134,6 +134,18 @@ class RunPresentationPolicyTest {
     }
 
     @Test
+    fun notificationIdentityIsStableAndScopedToTheExactRun() {
+        val key = RunKey("host", "run/with punctuation")
+        val repeated = RunKey("host", "run/with punctuation")
+        val other = RunKey("host", "another-run")
+
+        assertEquals(runNotificationTag(key), runNotificationTag(repeated))
+        assertEquals(runNotificationId(key), runNotificationId(repeated))
+        assertNotEquals(runNotificationTag(key), runNotificationTag(other))
+        assertEquals(runNotificationTag(key).hashCode(), runNotificationId(key))
+    }
+
+    @Test
     fun perPeerChannelIdsAreStableSafeAndDistinct() {
         val first = RunNotificationChannels.channelId(ClientId("peer/one?unsafe"))
         val repeated = RunNotificationChannels.channelId(ClientId("peer/one?unsafe"))

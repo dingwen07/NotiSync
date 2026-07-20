@@ -257,7 +257,12 @@ fun NotiSyncRoot(
     }
 
     LaunchedEffect(openRun) {
-        if (openRun != null) navController.navigateToTopLevel(TopLevelDestination.RUN)
+        if (openRun != null) {
+            // Pairing is not a navigation destination, so changing tabs alone leaves it drawn above Run.
+            // A notification open is explicit navigation: dismiss the overlay before selecting the Run tab.
+            showPairing = pairingOverlayAfterRunOpenRequest(showPairing, openRun)
+            navController.navigateToTopLevel(TopLevelDestination.RUN)
+        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -322,6 +327,9 @@ fun NotiSyncRoot(
         }
     }
 }
+
+internal fun pairingOverlayAfterRunOpenRequest(currentlyVisible: Boolean, openRun: RunKey?): Boolean =
+    currentlyVisible && openRun == null
 
 @Composable
 private fun TopLevelNavIcon(dest: TopLevelDestination) {

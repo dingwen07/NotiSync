@@ -35,6 +35,7 @@
     <string name="run_clear_history_title">Delete all NotiSync Run history?</string>
     <string name="run_clear_history_body">Active Runs will be kept.</string>
     <string name="run_clear_history_confirm">Delete all</string>
+    <string name="run_clear_history_failed">Couldn\'t delete Run history. Try again.</string>
     <string name="run_terminal">Terminal</string>
     <string name="run_terminal_empty">No terminal output yet.</string>
     <string name="run_terminal_truncated">Showing the latest output; earlier output was truncated.</string>
@@ -60,8 +61,11 @@
     <string name="run_action_signal">Send signal…</string>
     <string name="run_action_refresh">Refresh</string>
     <string name="run_action_mark_inactive">Mark not active</string>
+    <string name="run_mark_inactive_failed">Couldn\'t mark the Run not active. Try again.</string>
     <string name="run_input_hint">Send to command</string>
     <string name="run_input_send">Send</string>
+    <string name="run_input_send_failed">Couldn\'t send input. Check the connection and try again.</string>
+    <string name="run_notification_action_failed">Couldn\'t queue the Run action. Open the Run and try again.</string>
     <string name="run_signal_title">Send signal</string>
     <string name="run_signal_hint">Signal name or number</string>
     <string name="run_signal_send">Send signal</string>

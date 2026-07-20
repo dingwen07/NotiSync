@@ -83,6 +83,69 @@ class RunStateCoordinatorTest {
     }
 
     @Test
+    fun `unchanged periodic state is suppressed but heartbeat and refresh advance revision`() {
+        val states = mutableListOf<RunState>()
+        val unchanged = OutputSnapshot("quiet", null, null, rawBytesSeen = 5)
+        val requestId = "123e4567-e89b-12d3-a456-426614174002"
+        coordinator(states::add).use { coordinator ->
+            coordinator.initial(unchanged)
+            // The first timer sample establishes the periodic fingerprint. Further identical samples are
+            // suppressed, so consumers cannot rely on periodic traffic as an indefinite heartbeat.
+            coordinator.periodic(unchanged)
+            coordinator.periodic(unchanged)
+            coordinator.periodic(unchanged)
+            assertTrue(coordinator.heartbeat())
+            coordinator.refresh(requestId)
+        }
+
+        assertEquals(
+            listOf(
+                RunUpdateReason.INITIAL,
+                RunUpdateReason.PERIODIC,
+                RunUpdateReason.PERIODIC,
+                RunUpdateReason.REFRESH,
+            ),
+            states.map { it.updateReason },
+        )
+        assertEquals(listOf(1L, 2L, 3L, 4L), states.map { it.revision })
+        assertEquals(requestId, states.last().responseToRequestId)
+    }
+
+    @Test
+    fun `heartbeat preserves blocked state without requesting another model summary`() {
+        val calls = AtomicInteger()
+        val states = mutableListOf<RunState>()
+        val generator = ContentGenerator {
+            calls.incrementAndGet()
+            GeneratedContent("Title", "Status")
+        }
+        RunStateCoordinator(
+            ClientId("desktop"), "run", listOf("build"), Path.of("/work"), false,
+            publish = { synchronized(states) { states += it }; true },
+            generator = generator,
+            clock = CLOCK,
+        ).use { coordinator ->
+            coordinator.initial(OutputSnapshot("starting", null, null))
+            awaitContextCountForCoordinator(calls, 1)
+            coordinator.blocked(
+                OutputSnapshot("Continue?", null, PromptKind.YES_NO),
+                BlockedReason.TERMINAL_INPUT,
+            )
+            awaitContextCountForCoordinator(calls, 2)
+            val callsBeforeHeartbeat = calls.get()
+
+            assertTrue(coordinator.heartbeat())
+
+            assertEquals(callsBeforeHeartbeat, calls.get())
+        }
+
+        val heartbeat = synchronized(states) { states.last { it.updateReason == RunUpdateReason.PERIODIC } }
+        assertEquals(RunPhase.BLOCKED, heartbeat.phase)
+        assertEquals(PromptKind.YES_NO.name, heartbeat.prompt?.name)
+        assertEquals(1L, heartbeat.interactionGeneration)
+    }
+
+    @Test
     fun `hang lifecycle without an input prompt does not change interaction generation`() {
         val states = mutableListOf<RunState>()
         coordinator(states::add).use { coordinator ->
@@ -351,6 +414,15 @@ class RunStateCoordinatorTest {
             Thread.yield()
         }
         assertTrue("timed out waiting for model context", synchronized(contexts) { contexts.size >= expected })
+    }
+
+    private fun awaitContextCountForCoordinator(calls: AtomicInteger, expected: Int) {
+        val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(2)
+        while (System.nanoTime() < deadline) {
+            if (calls.get() >= expected) return
+            Thread.yield()
+        }
+        assertTrue("timed out waiting for model call", calls.get() >= expected)
     }
 
     private fun coordinator(publish: (RunState) -> Boolean) = RunStateCoordinator(

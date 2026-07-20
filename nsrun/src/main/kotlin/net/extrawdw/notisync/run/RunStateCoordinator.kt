@@ -95,6 +95,17 @@ class RunStateCoordinator(
         )
     }
 
+    /**
+     * Publish a low-frequency liveness snapshot without changing lifecycle/prompt state or asking the model to
+     * summarize identical content again. RunState is deliberately a full authoritative snapshot, so callers keep
+     * this cadence much lower than ordinary change detection and rely on the transport's revision coalescing.
+     */
+    @Synchronized
+    fun heartbeat(): Boolean {
+        val currentPhase = phase?.takeIf { it == RunPhase.RUNNING || it == RunPhase.BLOCKED } ?: return false
+        return publish(buildState(RunUpdateReason.PERIODIC, null, ++revision, currentPhase))
+    }
+
     fun blocked(snapshot: OutputSnapshot, reason: BlockedReason) {
         synchronized(this) {
             blockedReason = reason.toLocal()

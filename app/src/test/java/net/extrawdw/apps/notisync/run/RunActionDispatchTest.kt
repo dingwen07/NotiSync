@@ -2,7 +2,9 @@ package net.extrawdw.apps.notisync.run
 
 import net.extrawdw.notisync.protocol.RunControlKind
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RunActionDispatchTest {
@@ -63,5 +65,18 @@ class RunActionDispatchTest {
         assertNull(parseRunActionRoute("notisync://other/input/host/run/1"))
         assertNull(parseRunActionRoute("notisync://run-control/input/host/run/1?control=terminate"))
         assertNull(parseRunActionRoute("https://run-control/input/host/run/1"))
+    }
+
+    @Test
+    fun notificationActionGateAcceptsOnlyOnePressUntilANewRender() {
+        val key = RunKey("host", "run-1")
+        RunNotificationActionGate.release(key)
+
+        assertTrue(RunNotificationActionGate.claim(key))
+        assertFalse(RunNotificationActionGate.claim(key))
+
+        RunNotificationActionGate.release(key)
+        assertTrue(RunNotificationActionGate.claim(key))
+        RunNotificationActionGate.release(key)
     }
 }

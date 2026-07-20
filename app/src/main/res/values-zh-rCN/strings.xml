@@ -31,6 +31,7 @@
     <string name="run_clear_history_title">删除所有 NotiSync Run 历史记录？</string>
     <string name="run_clear_history_body">活跃的运行不会被删除</string>
     <string name="run_clear_history_confirm">全部删除</string>
+    <string name="run_clear_history_failed">无法删除 Run 历史记录，请重试。</string>
     <string name="run_terminal">终端</string>
     <string name="run_terminal_empty">暂无终端输出。</string>
     <string name="run_terminal_truncated">正在显示最新输出；较早的输出已被截断。</string>
@@ -56,8 +57,11 @@
     <string name="run_action_signal">发送信号…</string>
     <string name="run_action_refresh">刷新</string>
     <string name="run_action_mark_inactive">标记为非活跃</string>
+    <string name="run_mark_inactive_failed">无法将 Run 标记为非活跃，请重试。</string>
     <string name="run_input_hint">发送给命令</string>
     <string name="run_input_send">发送</string>
+    <string name="run_input_send_failed">无法发送输入。请检查连接后重试。</string>
+    <string name="run_notification_action_failed">无法将 Run 操作加入队列。请打开该 Run 后重试。</string>
     <string name="run_signal_title">发送信号</string>
     <string name="run_signal_hint">信号名称或编号</string>
     <string name="run_signal_send">发送信号</string>
