@@ -5,7 +5,11 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
     <!-- Runtime permission for LAN sockets and DNS-SD when targeting Android 17 / SDK 37. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
@@ -45,6 +49,9 @@
         android:required="false" />
     <uses-feature
         android:name="android.hardware.bluetooth_le"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.wifi.aware"
         android:required="false" />
     <!-- Required for CompanionDeviceManager (background auto-connect); without it getSystemService returns null. -->
     <uses-feature
@@ -123,7 +130,8 @@
             android:exported="false"
             android:label="@string/screen_viewer_task_title"
             android:taskAffinity="${applicationId}.screen_viewer"
-            android:theme="@style/Theme.NotiSync" />
+            android:theme="@style/Theme.NotiSync"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains

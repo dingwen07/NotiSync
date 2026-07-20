@@ -109,7 +109,7 @@ class ScreenMirrorRequestValidatorTest {
     fun unknownCandidateKind_isIgnoredWhenLanCandidateExists() {
         val mixed = request().copy(
             candidates = listOf(
-                ScreenMirrorConnectionCandidate(kind = "WIFI_AWARE", serviceName = "future"),
+                ScreenMirrorConnectionCandidate(kind = "FUTURE_P2P", serviceName = "future"),
                 ScreenMirrorConnectionCandidate(
                     kind = ScreenMirrorConnectionCandidate.DNS_SD,
                     serviceName = "instance-1",
@@ -121,5 +121,38 @@ class ScreenMirrorRequestValidatorTest {
                 mixed, requester, source, now, now, authorized = true, codecAvailable = true,
             ),
         )
+    }
+
+    @Test
+    fun wifiAwareCandidate_requiresSignedPortAndCanonicalServiceName() {
+        val aware = request().copy(
+            candidates = listOf(
+                ScreenMirrorConnectionCandidate(
+                    kind = ScreenMirrorConnectionCandidate.WIFI_AWARE,
+                    port = 31891,
+                    serviceName = "notisync-screen-0123456789abcdef0123456789abcdef",
+                ),
+            ),
+        )
+        assertNull(
+            ScreenMirrorRequestValidator.validate(
+                aware, requester, source, now, now, authorized = true, codecAvailable = true,
+            ),
+        )
+
+        listOf(
+            aware.copy(candidates = listOf(aware.candidates.single().copy(port = null))),
+            aware.copy(candidates = listOf(aware.candidates.single().copy(serviceName = "屏幕"))),
+            aware.copy(candidates = listOf(aware.candidates.single().copy(serviceName = "notisync-screen-a1b2"))),
+            aware.copy(candidates = listOf(aware.candidates.single().copy(interfaceName = "wlan0"))),
+        ).forEach { malformed ->
+            assertEquals(
+                ScreenMirrorStatus.TRANSPORT_FAILED,
+                ScreenMirrorRequestValidator.validate(
+                    malformed, requester, source, now, now,
+                    authorized = true, codecAvailable = true,
+                )?.status,
+            )
+        }
     }
 }

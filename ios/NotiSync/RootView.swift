@@ -553,6 +553,7 @@ struct DevicesView: View {
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
+    @State private var selectedScreenSource: ScreenMirrorSelection?
     /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
     /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
     /// was up. Loaded on page entry / pull-to-refresh, and re-derived when the user edits a filter (so a
@@ -589,9 +590,18 @@ struct DevicesView: View {
                 }
                 Section("Trusted Peers") {
                     ForEach(devices.filter { $0.status == .trusted }) { device in
-                        TrustedPeerRow(device: device, supportsNotificationFilters: !isIosPeer(device)) {
-                            selectedFilterDevice = .android(device)
-                        }
+                        TrustedPeerRow(
+                            device: device,
+                            supportsNotificationFilters: !isIosPeer(device),
+                            canMirrorScreen: runtime.screenMirrorSourceIds.contains(device.clientId),
+                            openFilters: { selectedFilterDevice = .android(device) },
+                            mirrorScreen: {
+                                selectedScreenSource = ScreenMirrorSelection(
+                                    id: device.clientId,
+                                    name: device.displayName.isEmpty ? "Android" : device.displayName
+                                )
+                            }
+                        )
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     runtime.revokePeer(clientId: device.clientId)
@@ -633,6 +643,10 @@ struct DevicesView: View {
                 AppFilterSheet(
                     title: selection.title(peerName: peerName),
                     selection: selection)
+                    .environmentObject(runtime)
+            }
+            .fullScreenCover(item: $selectedScreenSource) { source in
+                ScreenMirrorPlayerView(sourceId: source.id, sourceName: source.name)
                     .environmentObject(runtime)
             }
         }
@@ -686,7 +700,9 @@ private struct TrustedPeerRow: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     let device: TrustedDevice
     let supportsNotificationFilters: Bool
+    let canMirrorScreen: Bool
     let openFilters: () -> Void
+    let mirrorScreen: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -709,10 +725,22 @@ private struct TrustedPeerRow: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     Spacer()
+                    if canMirrorScreen {
+                        Button(action: mirrorScreen) {
+                            Label("View Screen", systemImage: "rectangle.inset.filled.and.person.filled")
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
             }
         }
     }
+}
+
+private struct ScreenMirrorSelection: Identifiable {
+    let id: String
+    let name: String
 }
 
 private enum FilterDeviceSelection: Identifiable {

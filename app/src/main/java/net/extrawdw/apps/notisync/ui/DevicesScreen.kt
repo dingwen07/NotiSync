@@ -49,6 +49,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
@@ -78,6 +79,7 @@ fun DevicesScreen(
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
     val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
+    val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
     // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
     // purge delay elapses without needing to leave and reopen the page.
     val hasRevoked = roster.any { it.status == TrustStatus.REVOKED }
@@ -247,8 +249,15 @@ fun DevicesScreen(
                     screenMirroringEnabled = screenMirroringEnabled,
                     screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
                     screenMirrorRequestEnabled = !quarantined,
+                    screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
+                    screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
                     onScreenControlAuthorizedChange = { authorized ->
                         graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                    },
+                    onScreenMirrorCodecOverrideChange = { codec ->
+                        graph.scope.launch {
+                            graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
+                        }
                     },
                     onStartScreenMirror = {
                         detailsSheetFor = null

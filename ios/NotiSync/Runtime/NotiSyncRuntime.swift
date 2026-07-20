@@ -38,6 +38,17 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// A pairing candidate surfaced from a deep link (notisync://pair or the universal /pair link), awaiting
     /// the user's confirmation. Pairing is never automatic.
     @Published var incomingPairing: PairingCandidate?
+    /// Trusted own Android peers that advertise the complete screen-v1 source stack and H.264 hardware.
+    @Published private(set) var screenMirrorSourceIds: Set<String> = []
+    @Published private(set) var screenMirrorPhase: String?
+
+    func replaceScreenMirrorSourceIds(_ sourceIds: Set<String>) {
+        screenMirrorSourceIds = sourceIds
+    }
+
+    func updateScreenMirrorPhase(_ phase: String?) {
+        screenMirrorPhase = phase
+    }
 
     var modelContext: ModelContext?
     /// The AppSettings singleton row, memoized after the first fetch — `settings()` is called on nearly
@@ -60,6 +71,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// Coalesces a burst of filter toggles into one outbound FILTER announce (see `notificationFiltersDidChange`).
     var filterAnnounceTask: Task<Void, Never>?
     var repairRequested: Set<String> = []   // assetHash → already asked the source to re-upload
+    var activeScreenMirror: IOSScreenMirrorRequestContext?
     var iconBytesByApp: [String: Data] = [:]   // appKey (ios:bundleId / and:packageName) → icon bytes
     var iconTokensByApp: [String: String] = [:]   // appKey → source token for the cached icon bytes
     var iconPrioritiesByApp: [String: Int] = [:]   // appKey → APP_ICON beats fallback large icons

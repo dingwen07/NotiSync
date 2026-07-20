@@ -26,33 +26,115 @@ class AndroidScreenMirrorRequesterTest {
     )
 
     @Test
-    fun `requester prefers H264 then falls through locally decodable codecs`() {
+    fun `automatic policy prefers hardware AV1 then hardware H265 then decodable H264`() {
         assertEquals(
-            ScreenMirrorCodec.H264,
-            selectAndroidScreenCodec(completeSource, ScreenMirrorCodec.entries.toSet()),
+            ScreenMirrorCodec.AV1,
+            selectAndroidScreenCodec(
+                completeSource,
+                decoderSupport(
+                    decodable = ScreenMirrorCodec.entries.toSet(),
+                    hardware = setOf(ScreenMirrorCodec.AV1, ScreenMirrorCodec.H265, ScreenMirrorCodec.H264),
+                ),
+            ),
         )
         assertEquals(
             ScreenMirrorCodec.H265,
             selectAndroidScreenCodec(
                 completeSource,
-                setOf(ScreenMirrorCodec.H265, ScreenMirrorCodec.AV1),
+                decoderSupport(
+                    decodable = ScreenMirrorCodec.entries.toSet(),
+                    hardware = setOf(ScreenMirrorCodec.H265, ScreenMirrorCodec.H264),
+                ),
             ),
         )
         assertEquals(
-            ScreenMirrorCodec.AV1,
-            selectAndroidScreenCodec(completeSource, setOf(ScreenMirrorCodec.AV1)),
+            ScreenMirrorCodec.H264,
+            selectAndroidScreenCodec(
+                completeSource,
+                decoderSupport(
+                    decodable = ScreenMirrorCodec.entries.toSet(),
+                    hardware = setOf(ScreenMirrorCodec.H264),
+                ),
+            ),
         )
     }
 
     @Test
-    fun `requester refuses an incomplete source or missing local decoder`() {
+    fun `software AV1 and H265 do not outrank the H264 fallback`() {
+        assertEquals(
+            ScreenMirrorCodec.H264,
+            selectAndroidScreenCodec(
+                completeSource,
+                decoderSupport(decodable = ScreenMirrorCodec.entries.toSet(), hardware = emptySet()),
+            ),
+        )
+        assertEquals(
+            setOf(ScreenMirrorCodec.H264),
+            availableAndroidScreenCodecs(
+                completeSource,
+                decoderSupport(decodable = ScreenMirrorCodec.entries.toSet(), hardware = emptySet()),
+            ),
+        )
+    }
+
+    @Test
+    fun `available override wins and stale override falls back to automatic`() {
+        val support = decoderSupport(
+            decodable = ScreenMirrorCodec.entries.toSet(),
+            hardware = setOf(ScreenMirrorCodec.AV1, ScreenMirrorCodec.H265),
+        )
+        assertEquals(
+            ScreenMirrorCodec.H264,
+            selectAndroidScreenCodec(completeSource, support, ScreenMirrorCodec.H264),
+        )
+        assertEquals(
+            ScreenMirrorCodec.H265,
+            selectAndroidScreenCodec(
+                completeSource - Capability.SCREEN_MIRROR_ENCODER_H264_HW -
+                    Capability.SCREEN_MIRROR_ENCODER_AV1_HW,
+                support,
+                ScreenMirrorCodec.AV1,
+            ),
+        )
+    }
+
+    @Test
+    fun `requester refuses an incomplete source or missing compatible decoder`() {
         assertNull(
             selectAndroidScreenCodec(
                 completeSource - Capability.SCREEN_MIRROR_CONTROL_V1,
-                setOf(ScreenMirrorCodec.H264),
+                decoderSupport(setOf(ScreenMirrorCodec.H264), setOf(ScreenMirrorCodec.H264)),
             ),
         )
-        assertNull(selectAndroidScreenCodec(completeSource, emptySet()))
+        assertNull(selectAndroidScreenCodec(completeSource, decoderSupport(emptySet(), emptySet())))
+    }
+
+    @Test
+    fun `decoder probe distinguishes hardware from software and ignores encoders`() {
+        val support = AndroidScreenDecoderCapabilities.supportFrom(
+            listOf(
+                AndroidScreenDecoderCapabilities.DecoderDescriptor(
+                    encoder = false,
+                    hardwareAccelerated = false,
+                    supportedTypes = setOf("video/avc", "video/hevc"),
+                ),
+                AndroidScreenDecoderCapabilities.DecoderDescriptor(
+                    name = "c2.vendor.av1.decoder",
+                    encoder = false,
+                    hardwareAccelerated = true,
+                    supportedTypes = setOf("VIDEO/AV01"),
+                ),
+                AndroidScreenDecoderCapabilities.DecoderDescriptor(
+                    encoder = true,
+                    hardwareAccelerated = true,
+                    supportedTypes = setOf("video/hevc"),
+                ),
+            ),
+        )
+
+        assertEquals(ScreenMirrorCodec.entries.toSet(), support.decodableCodecs)
+        assertEquals(setOf(ScreenMirrorCodec.AV1), support.hardwareCodecs)
+        assertEquals("c2.vendor.av1.decoder", support.hardwareDecoderName(ScreenMirrorCodec.AV1))
     }
 
     @Test
@@ -117,4 +199,9 @@ class AndroidScreenMirrorRequesterTest {
         issuedAt = now,
         status = ScreenMirrorStatus.READY,
     )
+
+    private fun decoderSupport(
+        decodable: Set<ScreenMirrorCodec>,
+        hardware: Set<ScreenMirrorCodec>,
+    ) = AndroidScreenDecoderSupport(decodable, hardware)
 }

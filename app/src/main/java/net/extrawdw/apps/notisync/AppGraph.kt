@@ -98,11 +98,14 @@ import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorRequester
 import net.extrawdw.apps.notisync.screen.AndroidScreenSource
 import net.extrawdw.apps.notisync.screen.AndroidScreenSourceResolver
 import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorCapabilityProvider
+import net.extrawdw.apps.notisync.screen.ScreenMirrorCodecPreferenceStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
 import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
 import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
@@ -259,6 +262,10 @@ class AppGraph(private val app: Application) {
 
     lateinit var screenMirrorAuthorizations: ScreenMirrorAuthorizationStore
         private set
+    internal lateinit var screenMirrorCodecPreferences: ScreenMirrorCodecPreferenceStore
+        private set
+    internal lateinit var screenMirrorDecoderSupport: AndroidScreenDecoderSupport
+        private set
     lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
         private set
     lateinit var screenMirrorCapabilities: ScreenMirrorCapabilityProvider
@@ -299,6 +306,8 @@ class AppGraph(private val app: Application) {
         appConfig = AppConfigRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
         screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
+        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds)
+        screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
         screenMirrorCapabilities = ScreenMirrorCapabilityProvider(
             settings = settings,
@@ -306,7 +315,10 @@ class AppGraph(private val app: Application) {
             scope = scope,
         )
         trust.roster
-            .onEach(screenMirrorAuthorizations::retainTrustedOwnPeers)
+            .onEach { roster ->
+                screenMirrorAuthorizations.retainTrustedOwnPeers(roster)
+                runCatching { screenMirrorCodecPreferences.retainTrustedOwnPeers(roster) }
+            }
             .launchIn(scope)
         if (settings.needsUnverifiedDeviceCleanupV1()) {
             val removed = trust.removeUnverifiedDevices()
@@ -458,6 +470,8 @@ class AppGraph(private val app: Application) {
             channel = channel,
             sourceResolver = screenSourceResolver,
             scope = scope,
+            decoderSupport = { screenMirrorDecoderSupport },
+            preferredCodec = screenMirrorCodecPreferences::preferredCodec,
         )
         screenMirrorRequester = screenRequester
         trust.roster

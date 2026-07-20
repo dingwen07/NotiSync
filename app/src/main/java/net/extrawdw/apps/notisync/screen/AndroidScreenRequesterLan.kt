@@ -164,6 +164,11 @@ internal class AndroidScreenRequesterLan private constructor(
 
     companion object {
         fun open(context: Context): AndroidScreenRequesterLan {
+            return openOrNull(context) ?: error("no usable Wi-Fi or Ethernet LAN is available")
+        }
+
+        /** A physical LAN is optional when a direct Wi-Fi Aware rendezvous can be advertised. */
+        fun openOrNull(context: Context): AndroidScreenRequesterLan? {
             val appContext = context.applicationContext
             if (android.os.Build.VERSION.SDK_INT >= 37 && ContextCompat.checkSelfPermission(
                     appContext,
@@ -189,7 +194,7 @@ internal class AndroidScreenRequesterLan private constructor(
                             properties.linkAddresses.map { it.address to it.prefixLength },
                         ).isNotEmpty()
                     } == true
-            } ?: error("no usable Wi-Fi or Ethernet LAN is available")
+            } ?: return null
             return AndroidScreenRequesterLan(
                 context = appContext,
                 connectivity = connectivity,

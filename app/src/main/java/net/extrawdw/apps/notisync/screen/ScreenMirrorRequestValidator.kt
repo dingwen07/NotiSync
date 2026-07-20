@@ -52,7 +52,7 @@ object ScreenMirrorRequestValidator {
         if (request.candidates.isEmpty() || request.candidates.size > MAX_CANDIDATES ||
             request.candidates.none(::validCandidate)
         ) {
-            return invalid("no valid LAN candidate")
+            return invalid("no valid connection candidate")
         }
         return null
     }
@@ -63,7 +63,11 @@ object ScreenMirrorRequestValidator {
         ScreenMirrorConnectionCandidate.DNS_SD ->
             candidate.serviceName?.let(::validServiceName) == true &&
                 (candidate.port == null || candidate.port.let { it in 1..65535 })
-        else -> false // Open registry on the wire; this implementation only attempts MVP transports.
+        ScreenMirrorConnectionCandidate.WIFI_AWARE ->
+            candidate.serviceName?.let(AndroidWifiAwareServiceNames::isValid) == true &&
+                candidate.host == null &&
+                candidate.interfaceName == null && candidate.port?.let { it in 1..65535 } == true
+        else -> false // Open registry on the wire; unknown transports never grant routing authority.
     }
 
     private fun validQuality(request: ScreenMirrorSync): Boolean =

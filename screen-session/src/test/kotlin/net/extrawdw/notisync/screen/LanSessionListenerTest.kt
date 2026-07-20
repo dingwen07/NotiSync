@@ -70,13 +70,18 @@ class LanSessionListenerTest {
     }
 
     @Test
-    fun `candidate ordering prefers direct LAN then DNS-SD then extensions`() {
+    fun `candidate ordering prefers direct LAN then DNS-SD then Aware then extensions`() {
         val dns = ScreenConnectionCandidate(ScreenConnectionCandidate.DNS_SD, serviceName = "session")
-        val future = ScreenConnectionCandidate("WIFI_AWARE", serviceName = "future")
+        val aware = ScreenConnectionCandidate(
+            ScreenConnectionCandidate.WIFI_AWARE,
+            port = 2345,
+            serviceName = "notisync-screen-aware",
+        )
+        val future = ScreenConnectionCandidate("FUTURE_P2P", serviceName = "future")
         val lan = ScreenConnectionCandidate(ScreenConnectionCandidate.LAN_TCP, "192.0.2.1", 1234)
         assertEquals(
-            listOf(lan, dns, future),
-            ScreenConnectionCandidate.connectionOrder(listOf(future, dns, lan)),
+            listOf(lan, dns, aware, future),
+            ScreenConnectionCandidate.connectionOrder(listOf(future, aware, dns, lan)),
         )
     }
 

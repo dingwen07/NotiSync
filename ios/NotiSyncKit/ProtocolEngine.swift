@@ -98,6 +98,13 @@ nonisolated struct PairingCandidate: Identifiable, Sendable {
     var keyEpochStatus: KeyEpochStatus
 }
 
+nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
+    var id: String { clientId }
+    var clientId: String
+    var displayName: String
+    var capabilities: Set<Capability>
+}
+
 nonisolated enum KeyFingerprint {
     /// Short, human-glanceable fingerprint of a key's bytes (groups of 4 hex). Peer-facing fingerprints
     /// match because both sides hash the same transmitted bytes.
@@ -349,6 +356,40 @@ nonisolated final class NotiSyncEngine: Sendable {
         let recipient = EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
         return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
                                        recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
+    }
+
+    /// Seal one screen-session lifecycle message to a trusted own Android source. REQUEST is additionally
+    /// capability-gated to the complete v1 source and H.264 hardware encoder declaration.
+    func sealScreenMirrorSync(_ sync: ScreenMirrorSync) throws -> Envelope? {
+        let store = trust()
+        guard sync.requesterPeerId == selfClientId,
+              let peer = store.peers[sync.sourcePeerId], peer.isTrusted, peer.ownDevice,
+              let epoch = peer.sealable(now: Self.nowMillis()) else { return nil }
+        if sync.action == .REQUEST {
+            let required: Set<Capability> = [
+                .CAPABILITY_ROUTING_V1,
+                .SCREEN_MIRROR_SOURCE_V1,
+                .SCREEN_MIRROR_CONTROL_V1,
+                .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
+                .SCREEN_MIRROR_ENCODER_H264_HW,
+            ]
+            guard required.isSubset(of: Set(peer.announcedCapabilities)), sync.codec == .H264 else { return nil }
+        }
+        let body = ProtocolCodec.encode(DataSync(kind: .SCREEN_MIRRORING, screenMirror: sync))
+        let recipient = EnvelopeCrypto.RecipientKey(
+            clientId: peer.clientId,
+            hpkePublicKey: epoch.hpkePublicKey,
+            recipientEpoch: epoch.epoch
+        )
+        return try EnvelopeCrypto.seal(
+            signer: operationalSigner,
+            typ: .DATA_SYNC,
+            bodyPlaintext: body,
+            recipients: [recipient],
+            messageId: Self.newMessageId(),
+            seq: Self.nextSeq(),
+            createdAt: Self.nowMillis()
+        )
     }
 
     // MARK: Assets
@@ -731,6 +772,25 @@ nonisolated final class NotiSyncEngine: Sendable {
     }
 
     func trustedPeers() -> [TrustedPeerRecord] { Array(trust().peers.values) }
+
+    func screenMirrorSources() -> [ScreenMirrorSourceRecord] {
+        let required: Set<Capability> = [
+            .CAPABILITY_ROUTING_V1,
+            .SCREEN_MIRROR_SOURCE_V1,
+            .SCREEN_MIRROR_CONTROL_V1,
+            .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
+            .SCREEN_MIRROR_ENCODER_H264_HW,
+        ]
+        return trust().peers.values.compactMap { peer in
+            let capabilities = Set(peer.announcedCapabilities)
+            guard peer.isTrusted, peer.ownDevice, required.isSubset(of: capabilities) else { return nil }
+            return ScreenMirrorSourceRecord(
+                clientId: peer.clientId,
+                displayName: peer.displayName,
+                capabilities: capabilities
+            )
+        }
+    }
 
     @discardableResult
     private func save(_ store: TrustStore) -> Bool {

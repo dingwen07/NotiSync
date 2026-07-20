@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.screen
 
-import android.media.MediaCodecList
+import android.util.Log
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.security.SecureRandom
@@ -12,6 +13,12 @@ import kotlin.math.abs
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,6 +44,7 @@ import net.extrawdw.notisync.screen.GeneratedSessionSecrets
 import net.extrawdw.notisync.screen.LanSessionListener
 import net.extrawdw.notisync.screen.PskRegistry
 import net.extrawdw.notisync.screen.ScreenConnectionCandidate
+import net.extrawdw.notisync.screen.ScreenSessionListener
 import net.extrawdw.notisync.screen.ScreenSessionProtocol
 import net.extrawdw.notisync.screen.SecureChannelPair
 import net.extrawdw.notisync.screen.SessionDescriptor
@@ -96,8 +104,9 @@ internal class AndroidScreenMirrorRequester(
     private val channel: SecureChannel,
     private val sourceResolver: AndroidScreenSourceResolver,
     private val scope: CoroutineScope,
-    private val supportedDecoderCodecs: () -> Set<ScreenMirrorCodec> =
-        AndroidScreenDecoderCapabilities::supportedCodecs,
+    private val decoderSupport: () -> AndroidScreenDecoderSupport =
+        AndroidScreenDecoderCapabilities::detect,
+    private val preferredCodec: (ClientId) -> ScreenMirrorCodec? = { null },
     private val clock: Clock = Clock.systemUTC(),
     private val random: SecureRandom = SecureRandom(),
 ) : AutoCloseable {
@@ -116,7 +125,11 @@ internal class AndroidScreenMirrorRequester(
         val source = requireNotNull(sourceResolver.resolve(sourceId)) {
             "screen source is not a trusted own device"
         }
-        val codec = selectAndroidScreenCodec(source.capabilities, supportedDecoderCodecs())
+        val codec = selectAndroidScreenCodec(
+            sourceCapabilities = source.capabilities,
+            decoderSupport = decoderSupport(),
+            preferredCodec = preferredCodec(source.clientId),
+        )
             ?: error("source and this Android device have no common screen codec")
         val issuedAt = clock.millis()
         val expiresAt = issuedAt + REQUEST_LIFETIME.toMillis()
@@ -141,21 +154,42 @@ internal class AndroidScreenMirrorRequester(
         }
 
         var lan: AndroidScreenRequesterLan? = null
-        var listener: LanSessionListener? = null
+        var lanListener: LanSessionListener? = null
+        var awareListener: AndroidWifiAwareScreenListener? = null
         var advertisement: AutoCloseable? = null
         var registry: PskRegistry? = null
         var transferred = false
         try {
-            lan = AndroidScreenRequesterLan.open(appContext).also { requestContext.lan = it }
-            requestContext.requireOpen()
-            listener = lan.track(LanSessionListener.open(lan.addressProvider)).also {
-                requestContext.listener = it
+            var lanFailure: Throwable? = null
+            try {
+                lan = AndroidScreenRequesterLan.openOrNull(appContext).also { requestContext.lan = it }
+                requestContext.requireOpen()
+                lan?.let { availableLan ->
+                    lanListener = availableLan.track(
+                        LanSessionListener.open(availableLan.addressProvider),
+                    ).also { requestContext.lanListener = it }
+                    val firstCandidate = lanListener?.candidates?.firstOrNull()
+                        ?: error("selected LAN has no listenable address")
+                    advertisement = withTimeoutOrNull(NSD_REGISTRATION_TIMEOUT.toMillis()) {
+                        availableLan.advertise(
+                            "notisync-${UUID.randomUUID()}",
+                            requireNotNull(firstCandidate.port),
+                        )
+                    }?.also(availableLan::track)
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                lanFailure = error
+                advertisement?.let { runCatching { it.close() } }
+                advertisement = null
+                lanListener?.let { runCatching { it.close() } }
+                lanListener = null
+                requestContext.lanListener = null
+                runCatching { lan?.close() }
+                lan = null
+                requestContext.lan = null
             }
-            val firstCandidate = listener.candidates.firstOrNull()
-                ?: error("selected LAN has no listenable address")
-            advertisement = withTimeoutOrNull(NSD_REGISTRATION_TIMEOUT.toMillis()) {
-                lan.advertise("notisync-${UUID.randomUUID()}", requireNotNull(firstCandidate.port))
-            }?.also(lan::track)
             requestContext.requireOpen()
 
             registry = PskRegistry(clock)
@@ -164,6 +198,49 @@ internal class AndroidScreenMirrorRequester(
                 val masterPsk = generated.masterPsk.copy()
                 try {
                     registry.register(descriptor, routingToken, masterPsk)
+                    var awareFailure: Throwable? = null
+                    awareListener = try {
+                        AndroidWifiAwareScreenListener.open(
+                            context = appContext,
+                            descriptor = descriptor,
+                            routingToken = routingToken,
+                            masterPsk = masterPsk,
+                            setupTimeout = if (lanListener == null) {
+                                WIFI_AWARE_ONLY_SETUP_TIMEOUT
+                            } else {
+                                WIFI_AWARE_FALLBACK_SETUP_TIMEOUT
+                            },
+                            random = random,
+                        ).also { requestContext.awareListener = it }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (error: Throwable) {
+                        awareFailure = error
+                        Log.w(LOG_TAG, "Wi-Fi Aware screen listener unavailable", error)
+                        null
+                    }
+                    requestContext.requireOpen()
+                    if (lanListener == null && awareListener == null) {
+                        val failure = awareFailure ?: lanFailure
+                        val detail = failure?.deepestRequesterTransportMessage()
+                        throw IllegalStateException(
+                            buildString {
+                                append("no usable LAN or Wi-Fi Aware listener is available")
+                                if (detail != null) append(": ").append(detail)
+                            },
+                            failure,
+                        )
+                    }
+                    val candidates = requestCandidates(
+                        lanListener = lanListener,
+                        advertisement = advertisement,
+                        awareListener = awareListener,
+                    )
+                    Log.i(
+                        LOG_TAG,
+                        "Advertising screen endpoints: " +
+                            ScreenMirrorConnectionCandidate.entriesSummary(candidates),
+                    )
                     val request = ScreenMirrorSync(
                         action = ScreenMirrorAction.REQUEST,
                         protocolVersion = ScreenSessionProtocol.VERSION,
@@ -180,9 +257,7 @@ internal class AndroidScreenMirrorRequester(
                         maxDimension = descriptor.maxDimension,
                         maxFps = descriptor.maxFps,
                         videoBitrateBps = descriptor.videoBitrateBps,
-                        candidates = (listener.candidates + listOfNotNull(
-                            (advertisement as? net.extrawdw.notisync.screen.ServiceAdvertisement)?.candidate,
-                        )).map(ScreenConnectionCandidate::toProtocolCandidate),
+                        candidates = candidates,
                     )
                     val recipients = channel.send(
                         typ = MessageType.DATA_SYNC,
@@ -207,8 +282,36 @@ internal class AndroidScreenMirrorRequester(
             }
 
             val remaining = (expiresAt - clock.millis()).coerceAtLeast(1L)
-            val pair = listener.acceptPair(descriptor.sessionId, registry, Duration.ofMillis(remaining))
-            lan.track(pair)
+            val accepted = acceptFirstPair(
+                listeners = listOfNotNull(lanListener, awareListener),
+                sessionId = descriptor.sessionId,
+                registry = registry,
+                timeout = Duration.ofMillis(remaining),
+            )
+            val pair = accepted.pair
+            if (accepted.listener === lanListener) {
+                requireNotNull(lan).track(pair)
+                awareListener?.let { resource ->
+                    requestContext.awareListener = null
+                    runCatching { resource.close() }
+                    awareListener = null
+                }
+            } else {
+                lanListener?.let { resource ->
+                    requestContext.lanListener = null
+                    lan?.untrack(resource)
+                    runCatching { resource.close() }
+                    lanListener = null
+                }
+                advertisement?.let { resource ->
+                    lan?.untrack(resource)
+                    runCatching { resource.close() }
+                    advertisement = null
+                }
+                runCatching { lan?.close() }
+                lan = null
+                requestContext.lan = null
+            }
             val session = AndroidViewerSession(
                 sessionId = descriptor.sessionId,
                 sourceId = source.clientId,
@@ -227,11 +330,14 @@ internal class AndroidScreenMirrorRequester(
                 requestContext.session = session
                 _state.value = requestContext.state(AndroidScreenRequesterPhase.CONNECTED)
             }
-            requestContext.listener = null
-            lan.untrack(listener)
-            listener.close()
+            lanListener?.let { resource ->
+                requestContext.lanListener = null
+                lan?.untrack(resource)
+                resource.close()
+                lanListener = null
+            }
             advertisement?.let {
-                lan.untrack(it)
+                lan?.untrack(it)
                 it.close()
                 advertisement = null
             }
@@ -267,10 +373,11 @@ internal class AndroidScreenMirrorRequester(
                     lan?.untrack(resource)
                     runCatching { resource.close() }
                 }
-                listener?.let { resource ->
+                lanListener?.let { resource ->
                     lan?.untrack(resource)
                     runCatching { resource.close() }
                 }
+                runCatching { awareListener?.close() }
                 runCatching { registry?.close() }
                 runCatching { lan?.close() }
             }
@@ -305,7 +412,8 @@ internal class AndroidScreenMirrorRequester(
         context.remoteDetail = screen.detail?.take(DETAIL_LIMIT)
             ?: terminalStatus.name.lowercase().replace('_', ' ')
         context.remoteClosed.set(true)
-        context.listener?.close()
+        context.lanListener?.close()
+        context.awareListener?.close()
         context.session?.closeTransport()
         context.lan?.close()
         synchronized(lock) {
@@ -330,7 +438,8 @@ internal class AndroidScreenMirrorRequester(
         } ?: return
         context.closeDetail = detail.take(DETAIL_LIMIT)
         context.closed.set(true)
-        context.listener?.close()
+        context.lanListener?.close()
+        context.awareListener?.close()
         context.session?.closeTransport()
         context.lan?.close()
         sendTerminalOnce(context, context.closeDetail)
@@ -391,12 +500,12 @@ internal class AndroidScreenMirrorRequester(
         @Volatile var closeDetail: String? = null
         @Volatile var remoteDetail: String? = null
         @Volatile var lan: AndroidScreenRequesterLan? = null
-        @Volatile var listener: LanSessionListener? = null
+        @Volatile var lanListener: LanSessionListener? = null
+        @Volatile var awareListener: AndroidWifiAwareScreenListener? = null
         @Volatile var session: AndroidViewerSession? = null
 
         fun requireOpen() {
             if (closed.get() || remoteClosed.get()) throw AndroidScreenRequesterClosedException()
-            lan?.requireActive()
         }
 
         fun state(phase: AndroidScreenRequesterPhase, detail: String? = null) =
@@ -413,51 +522,182 @@ internal class AndroidScreenMirrorRequester(
     private companion object {
         val REQUEST_LIFETIME: Duration = Duration.ofMinutes(5)
         val NSD_REGISTRATION_TIMEOUT: Duration = Duration.ofMillis(1_500)
+        val WIFI_AWARE_FALLBACK_SETUP_TIMEOUT: Duration = Duration.ofSeconds(3)
+        val WIFI_AWARE_ONLY_SETUP_TIMEOUT: Duration = Duration.ofSeconds(10)
         const val DEFAULT_MAX_DIMENSION = 1_920
         const val DEFAULT_MAX_FPS = 60
         const val DEFAULT_BITRATE_BPS = 8_000_000
         const val DETAIL_LIMIT = 160
+        const val LOG_TAG = "NotiSyncScreenRequester"
     }
 }
 
-internal object AndroidScreenDecoderCapabilities {
-    fun supportedCodecs(): Set<ScreenMirrorCodec> {
-        val supportedTypes = runCatching {
-            MediaCodecList(MediaCodecList.REGULAR_CODECS).codecInfos
-                .asSequence()
-                .filterNot { it.isEncoder }
-                .flatMap { it.supportedTypes.asSequence() }
-                .map(String::lowercase)
-                .toSet()
-        }.getOrDefault(emptySet())
-        return buildSet {
-            if (MIME_H264 in supportedTypes) add(ScreenMirrorCodec.H264)
-            if (MIME_H265 in supportedTypes) add(ScreenMirrorCodec.H265)
-            if (MIME_AV1 in supportedTypes) add(ScreenMirrorCodec.AV1)
+internal data class AcceptedScreenPair(
+    val listener: ScreenSessionListener,
+    val pair: SecureChannelPair,
+)
+
+private data class ListenerCompletion(
+    val listener: ScreenSessionListener,
+    val pair: SecureChannelPair? = null,
+    val error: Throwable? = null,
+)
+
+/**
+ * Waits for the first listener to authenticate both channels; a failed path does not cancel fallback.
+ *
+ * Every completed pair has exactly one owner while the listener race is active: either its producer,
+ * the completion queue, or this function after receipt. That ownership is released to the caller only
+ * after all losing producers have stopped and their queued results have been drained.
+ */
+internal suspend fun acceptFirstPair(
+    listeners: List<ScreenSessionListener>,
+    sessionId: String,
+    registry: PskRegistry,
+    timeout: Duration,
+): AcceptedScreenPair {
+    var transferPending: AcceptedScreenPair? = null
+    try {
+        val accepted = coroutineScope {
+            require(listeners.isNotEmpty()) { "no screen session listeners" }
+            val completions = Channel<ListenerCompletion>(listeners.size)
+            val jobs = listeners.map { listener ->
+                launch(Dispatchers.IO) {
+                    var completion: ListenerCompletion? = null
+                    var queued = false
+                    try {
+                        completion = try {
+                            ListenerCompletion(
+                                listener = listener,
+                                pair = listener.acceptPair(sessionId, registry, timeout),
+                            )
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (error: Exception) {
+                            ListenerCompletion(listener = listener, error = error)
+                        }
+                        completions.send(completion)
+                        queued = true
+                    } finally {
+                        // A successful send moves pair ownership to the completion queue. If the
+                        // race is cancelled or the channel closes first, the producer still owns it.
+                        if (!queued) completion?.pair?.let { pair -> runCatching { pair.close() } }
+                    }
+                }
+            }
+            var selected: AcceptedScreenPair? = null
+            var lastFailure: Throwable? = null
+            try {
+                repeat(listeners.size) {
+                    val completion = completions.receive()
+                    val pair = completion.pair
+                    if (pair != null) {
+                        val winner = AcceptedScreenPair(completion.listener, pair)
+                        selected = winner
+                        closeListenerRace(
+                            listeners = listeners,
+                            preservedListener = completion.listener,
+                            jobs = jobs,
+                            completions = completions,
+                        )
+                        currentCoroutineContext().ensureActive()
+                        transferPending = winner
+                        return@coroutineScope winner
+                    }
+                    lastFailure = completion.error ?: lastFailure
+                }
+                throw IOException("all screen session listeners failed", lastFailure)
+            } catch (error: Throwable) {
+                closeListenerRace(
+                    listeners = listeners,
+                    preservedListener = null,
+                    jobs = jobs,
+                    completions = completions,
+                )
+                selected?.pair?.let { pair -> runCatching { pair.close() } }
+                throw error
+            }
+        }
+        // There are no suspension points between clearing this guard and returning. From here the
+        // caller owns both the authenticated pair and the winning listener's required lifetime.
+        transferPending = null
+        return accepted
+    } finally {
+        // coroutineScope has a prompt-cancellation exit. If it withholds an already selected result,
+        // this guard closes the pair and its listener instead of leaking an unobservable session.
+        transferPending?.let { pending ->
+            runCatching { pending.listener.close() }
+            runCatching { pending.pair.close() }
         }
     }
-
-    private const val MIME_H264 = "video/avc"
-    private const val MIME_H265 = "video/hevc"
-    private const val MIME_AV1 = "video/av01"
 }
 
-/** H.264 first for broad decoder stability, then H.265 and AV1. */
-internal fun selectAndroidScreenCodec(
-    sourceCapabilities: Set<Capability>,
-    decoderCodecs: Set<ScreenMirrorCodec>,
-): ScreenMirrorCodec? {
-    val base = setOf(
-        Capability.CAPABILITY_ROUTING_V1,
-        Capability.SCREEN_MIRROR_SOURCE_V1,
-        Capability.SCREEN_MIRROR_CONTROL_V1,
-        Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
-    )
-    if (!sourceCapabilities.containsAll(base)) return null
-    return listOf(ScreenMirrorCodec.H264, ScreenMirrorCodec.H265, ScreenMirrorCodec.AV1)
-        .firstOrNull { codec ->
-            codec in decoderCodecs && codec.requiredEncoderCapability() in sourceCapabilities
-        }
+private suspend fun closeListenerRace(
+    listeners: List<ScreenSessionListener>,
+    preservedListener: ScreenSessionListener?,
+    jobs: List<Job>,
+    completions: Channel<ListenerCompletion>,
+) = withContext(NonCancellable) {
+    // Closing the channel first ensures a producer that finishes during teardown retains and closes
+    // its own pair instead of placing another resource into the queue after the final drain.
+    completions.close()
+    listeners.forEach { listener ->
+        if (listener !== preservedListener) runCatching { listener.close() }
+    }
+    jobs.forEach { job -> runCatching { job.cancel() } }
+    jobs.forEach { job -> runCatching { job.join() } }
+    while (true) {
+        val completion = completions.tryReceive().getOrNull() ?: break
+        completion.pair?.let { pair -> runCatching { pair.close() } }
+    }
+}
+
+private fun requestCandidates(
+    lanListener: LanSessionListener?,
+    advertisement: AutoCloseable?,
+    awareListener: AndroidWifiAwareScreenListener?,
+): List<ScreenMirrorConnectionCandidate> {
+    val dns = (advertisement as? net.extrawdw.notisync.screen.ServiceAdvertisement)?.candidate
+    return selectScreenMirrorRequestCandidates(
+        lanCandidates = lanListener?.candidates.orEmpty(),
+        dnsCandidate = dns,
+        awareCandidates = awareListener?.candidates.orEmpty(),
+    ).map(ScreenConnectionCandidate::toProtocolCandidate)
+}
+
+internal fun selectScreenMirrorRequestCandidates(
+    lanCandidates: List<ScreenConnectionCandidate>,
+    dnsCandidate: ScreenConnectionCandidate?,
+    awareCandidates: List<ScreenConnectionCandidate>,
+): List<ScreenConnectionCandidate> {
+    val aware = awareCandidates.singleOrNull()
+    val reserved = listOfNotNull(dnsCandidate, aware)
+    val direct = lanCandidates
+        .take((SCREEN_MIRROR_MAX_CANDIDATES - reserved.size).coerceAtLeast(0))
+    return (direct + reserved)
+        .distinct()
+        .take(SCREEN_MIRROR_MAX_CANDIDATES)
+}
+
+private const val SCREEN_MIRROR_MAX_CANDIDATES = 8
+
+private fun ScreenMirrorConnectionCandidate.Companion.entriesSummary(
+    candidates: List<ScreenMirrorConnectionCandidate>,
+): String = candidates.groupingBy { it.kind }.eachCount().entries
+    .sortedBy { it.key }
+    .joinToString { (kind, count) -> "$kind=$count" }
+
+private fun Throwable.deepestRequesterTransportMessage(): String? {
+    var current: Throwable? = this
+    var selected: String? = null
+    repeat(8) {
+        val value = current ?: return@repeat
+        value.message?.takeIf(String::isNotBlank)?.let { selected = it }
+        current = value.cause?.takeUnless { cause -> cause === value }
+    }
+    return selected
+        ?.replace(Regex("[\\p{Cc}\\p{Cf}]"), " ")
+        ?.take(200)
 }
 
 internal object AndroidScreenRequesterStatusPolicy {

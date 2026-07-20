@@ -409,6 +409,39 @@ nonisolated enum KMPProtocolBridge {
         NotiSyncProtocol.FilterSync(rules: value.rules.map(toKmp), updatedAt: value.updatedAt)
     }
 
+    static func toKmp(_ value: ScreenMirrorConnectionCandidate) -> NotiSyncProtocol.ScreenMirrorConnectionCandidate {
+        NotiSyncProtocol.ScreenMirrorConnectionCandidate(
+            kind: value.kind,
+            host: value.host,
+            port: value.port.map { KotlinInt(int: Int32($0)) },
+            serviceName: value.serviceName,
+            interfaceName: value.interfaceName
+        )
+    }
+
+    static func toKmp(_ value: ScreenMirrorSync) -> NotiSyncProtocol.ScreenMirrorSync {
+        NotiSyncProtocol.ScreenMirrorSync(
+            action: kmp(value.action),
+            protocolVersion: Int32(value.protocolVersion),
+            sessionId: value.sessionId,
+            requesterPeerId: clientId(value.requesterPeerId),
+            sourcePeerId: clientId(value.sourcePeerId),
+            issuedAt: value.issuedAt,
+            expiresAt: value.expiresAt.map { KotlinLong(longLong: $0) },
+            routingToken: value.routingToken.map(kotlinBytes),
+            masterPsk: value.masterPsk.map(kotlinBytes),
+            codec: value.codec.map(kmp),
+            requestControl: value.requestControl,
+            requestClipboard: value.requestClipboard,
+            maxDimension: value.maxDimension.map { KotlinInt(int: Int32($0)) },
+            maxFps: value.maxFps.map { KotlinInt(int: Int32($0)) },
+            videoBitrateBps: value.videoBitrateBps.map { KotlinInt(int: Int32($0)) },
+            candidates: value.candidates.map(toKmp),
+            status: value.status.map(kmp),
+            detail: value.detail
+        )
+    }
+
     static func toKmp(_ value: DataSync) -> NotiSyncProtocol.DataSync {
         NotiSyncProtocol.DataSync(
             kind: kmp(value.kind),
@@ -419,7 +452,7 @@ nonisolated enum KMPProtocolBridge {
             filter: value.filter.map { toKmp($0) },
             notification: nil,
             run: nil,
-            screenMirror: nil
+            screenMirror: value.screenMirror.map(toKmp)
         )
     }
 
@@ -704,6 +737,40 @@ nonisolated enum KMPProtocolBridge {
         return FilterSync(rules: value.rules.map(fromKmp), updatedAt: value.updatedAt)
     }
 
+    static func fromKmp(_ value: NotiSyncProtocol.ScreenMirrorConnectionCandidate) -> ScreenMirrorConnectionCandidate {
+        ScreenMirrorConnectionCandidate(
+            kind: value.kind,
+            host: value.host,
+            port: value.port?.intValue,
+            serviceName: value.serviceName,
+            interfaceName: value.interfaceName
+        )
+    }
+
+    static func fromKmp(_ value: NotiSyncProtocol.ScreenMirrorSync?) -> ScreenMirrorSync? {
+        guard let value else { return nil }
+        return ScreenMirrorSync(
+            action: ScreenMirrorAction(rawValue: value.action.name) ?? .STATUS,
+            protocolVersion: Int(value.protocolVersion),
+            sessionId: value.sessionId,
+            requesterPeerId: string(value.requesterPeerId),
+            sourcePeerId: string(value.sourcePeerId),
+            issuedAt: value.issuedAt,
+            expiresAt: value.expiresAt?.int64Value,
+            routingToken: value.routingToken.map(data),
+            masterPsk: value.masterPsk.map(data),
+            codec: value.codec.flatMap { ScreenMirrorCodec(rawValue: $0.name) },
+            requestControl: value.requestControl,
+            requestClipboard: value.requestClipboard,
+            maxDimension: value.maxDimension?.intValue,
+            maxFps: value.maxFps?.intValue,
+            videoBitrateBps: value.videoBitrateBps?.intValue,
+            candidates: value.candidates.map(fromKmp),
+            status: value.status.flatMap { ScreenMirrorStatus(rawValue: $0.name) },
+            detail: value.detail
+        )
+    }
+
     static func fromKmp(_ value: NotiSyncProtocol.DataSync) throws -> DataSync {
         DataSync(
             kind: DataSyncKind(rawValue: value.kind.name) ?? .ASSET,
@@ -711,7 +778,8 @@ nonisolated enum KMPProtocolBridge {
             profile: fromKmp(value.profile),
             trust: fromKmp(value.trust),
             card: value.card.map(fromKmp),
-            filter: fromKmp(value.filter)
+            filter: fromKmp(value.filter),
+            screenMirror: fromKmp(value.screenMirror)
         )
     }
 
@@ -759,6 +827,21 @@ nonisolated enum KMPProtocolBridge {
 
     static func kmp(_ value: DataSyncKind) -> NotiSyncProtocol.DataSyncKind {
         NotiSyncProtocol.DataSyncKind.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.DataSyncKind.asset
+    }
+
+    static func kmp(_ value: ScreenMirrorAction) -> NotiSyncProtocol.ScreenMirrorAction {
+        NotiSyncProtocol.ScreenMirrorAction.entries.first { $0.name == value.rawValue }
+            ?? NotiSyncProtocol.ScreenMirrorAction.request
+    }
+
+    static func kmp(_ value: ScreenMirrorCodec) -> NotiSyncProtocol.ScreenMirrorCodec {
+        NotiSyncProtocol.ScreenMirrorCodec.entries.first { $0.name == value.rawValue }
+            ?? NotiSyncProtocol.ScreenMirrorCodec.h264
+    }
+
+    static func kmp(_ value: ScreenMirrorStatus) -> NotiSyncProtocol.ScreenMirrorStatus {
+        NotiSyncProtocol.ScreenMirrorStatus.entries.first { $0.name == value.rawValue }
+            ?? NotiSyncProtocol.ScreenMirrorStatus.transportFailed
     }
 
     static func kmp(_ value: OriginPlatform) -> NotiSyncProtocol.OriginPlatform {

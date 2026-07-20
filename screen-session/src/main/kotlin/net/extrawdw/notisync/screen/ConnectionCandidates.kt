@@ -22,12 +22,16 @@ data class ScreenConnectionCandidate(
         when (kind) {
             LAN_TCP -> require(host != null && port != null) { "LAN_TCP requires host and port" }
             DNS_SD -> require(serviceName != null) { "DNS_SD requires serviceName" }
+            WIFI_AWARE -> require(serviceName != null && port != null) {
+                "WIFI_AWARE requires serviceName and port"
+            }
         }
     }
 
     companion object {
         const val LAN_TCP: String = "LAN_TCP"
         const val DNS_SD: String = "DNS_SD"
+        const val WIFI_AWARE: String = "WIFI_AWARE"
 
         /** Known candidates first; preserves source order within each candidate kind. */
         fun connectionOrder(candidates: List<ScreenConnectionCandidate>): List<ScreenConnectionCandidate> =
@@ -36,7 +40,8 @@ data class ScreenConnectionCandidate(
                     when (it.value.kind) {
                         LAN_TCP -> 0
                         DNS_SD -> 1
-                        else -> 2
+                        WIFI_AWARE -> 2
+                        else -> 3
                     }
                 }.thenBy { it.index },
             ).map(IndexedValue<ScreenConnectionCandidate>::value)

@@ -50,6 +50,18 @@
           }
         }
       }
+    },
+    "NSLocalNetworkUsageDescription" : {
+      "comment" : "Privacy - Local Network Usage Description",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "NotiSync connects directly to your trusted Android device to mirror and control its screen on your local network."
+          }
+        }
+      }
     }
   },
   "version" : "1.0"

@@ -1,5 +1,9 @@
 package net.extrawdw.apps.notisync.channel
 
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerializationException
+import kotlinx.serialization.cbor.CborLabel
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
 
@@ -17,10 +21,12 @@ import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -296,6 +302,49 @@ class SecureChannelTest {
     }
 
     @Test
+    fun futureNotificationEnum_isAlreadyContainedBySecureChannel_withoutCrashingReceiveLoop() {
+        val me = newSigner()
+        val myHpke = newHpke()
+        val sender = newSigner()
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset))
+        }
+        val dedup = FakeDedup()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
+        val body = ProtocolCodec.encodeToCbor(
+            FutureCapturedNotification(FutureNotifStyle.MEDIA),
+        )
+
+        val strictFailure = assertThrows(SerializationException::class.java) {
+            ProtocolCodec.decodeFromCbor<LegacyCapturedNotification>(body)
+        }
+        assertTrue(strictFailure.message.orEmpty().contains("NotifStyle"))
+        assertTrue(strictFailure.message.orEmpty().contains("MEDIA"))
+
+        var rendered = 0
+        channel.onMessage(MessageType.NOTIFICATION) { message ->
+            // Production handlers decode strictly. SecureChannel's existing handler boundary owns
+            // containment and durable deduplication for a mixed-version poison body.
+            val notification = ProtocolCodec.decodeFromCbor<LegacyCapturedNotification>(message.body)
+            if (notification.style == LegacyNotifStyle.DEFAULT) rendered++
+        }
+        val envelope = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            body,
+            me.clientId,
+            myHpke.publicKeyset,
+            "future-notification-style",
+        )
+
+        assertEquals(DeliveryOutcome.HANDLED, channel.deliver(envelope))
+        assertEquals(0, rendered)
+        assertTrue("a poison body must be consumed instead of redelivered forever", dedup.seen(envelope.messageId))
+        assertEquals(DeliveryOutcome.DUPLICATE, channel.deliver(envelope))
+    }
+
+    @Test
     fun persistedDedup_dropsRedeliveryAcrossAFreshChannel() {
         val me = newSigner();
         val myHpke = newHpke()
@@ -565,3 +614,21 @@ class SecureChannelTest {
         assertEquals(listOf(supported.clientId), repairRequests)
     }
 }
+
+@Serializable
+@SerialName("net.extrawdw.notisync.protocol.NotifStyle")
+private enum class LegacyNotifStyle { DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX }
+
+@Serializable
+@SerialName("net.extrawdw.notisync.protocol.NotifStyle")
+private enum class FutureNotifStyle { DEFAULT, BIG_TEXT, BIG_PICTURE, MESSAGING, INBOX, MEDIA }
+
+@Serializable
+private data class LegacyCapturedNotification(
+    @CborLabel(10) val style: LegacyNotifStyle,
+)
+
+@Serializable
+private data class FutureCapturedNotification(
+    @CborLabel(10) val style: FutureNotifStyle,
+)

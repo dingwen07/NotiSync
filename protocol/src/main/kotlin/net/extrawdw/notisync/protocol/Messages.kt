@@ -497,7 +497,9 @@ enum class ScreenMirrorStatus {
 /**
  * One requester-listener location. [kind] deliberately remains an open string registry so transports
  * such as Wi-Fi Aware can be added without making an older DATA_SYNC decoder reject the whole request.
- * `LAN_TCP` uses [host] + [port]; `DNS_SD` uses [serviceName] and may also carry [port].
+ * `LAN_TCP` uses [host] + [port]; `DNS_SD` uses [serviceName] and may also carry [port];
+ * `WIFI_AWARE` uses [serviceName] plus the signed [port] to discover a direct Android
+ * peer-to-peer data path.
  */
 @Serializable
 data class ScreenMirrorConnectionCandidate(
@@ -511,6 +513,7 @@ data class ScreenMirrorConnectionCandidate(
     companion object {
         const val LAN_TCP = "LAN_TCP"
         const val DNS_SD = "DNS_SD"
+        const val WIFI_AWARE = "WIFI_AWARE"
     }
 }
 

@@ -268,7 +268,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             char[] chars = decomposed != null ? decomposed.toCharArray() : new char[]{c};
             KeyEvent[] events = charMap.getEvents(chars);
             if (events == null) {
-                Ln.w("Could not inject char u+" + String.format("%04x", (int) c));
+                // Control text may be a password; do not log per-character content or metadata.
                 continue;
             }
             int actionDisplayId = getActionDisplayId();

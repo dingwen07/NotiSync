@@ -76,9 +76,15 @@ fun SettingsScreen() {
     var screenEnableRequested by rememberSaveable { mutableStateOf(false) }
     val screenPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions(),
-    ) { grants ->
-        val granted = grants.values.all { it }
-        if (granted) {
+    ) {
+        // LAN and Wi-Fi Aware are independent best-effort transports. Denying either network
+        // permission must not turn the sticky source capability back off; failure is reported when
+        // a session actually has no usable path. Notifications remain required for visible control.
+        val notificationsGranted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.POST_NOTIFICATIONS,
+        ) == PackageManager.PERMISSION_GRANTED
+        if (notificationsGranted) {
             screenEnableRequested = true
             graph.screenMirrorShizuku.requestPermission()
         } else {
@@ -186,6 +192,13 @@ fun SettingsScreen() {
                                         Manifest.permission.ACCESS_LOCAL_NETWORK,
                                     ) != PackageManager.PERMISSION_GRANTED
                                 ) add(Manifest.permission.ACCESS_LOCAL_NETWORK)
+                                if (context.packageManager.hasSystemFeature(
+                                        PackageManager.FEATURE_WIFI_AWARE,
+                                    ) && ContextCompat.checkSelfPermission(
+                                        context,
+                                        Manifest.permission.NEARBY_WIFI_DEVICES,
+                                    ) != PackageManager.PERMISSION_GRANTED
+                                ) add(Manifest.permission.NEARBY_WIFI_DEVICES)
                             }
                             screenEnableRequested = true
                             if (permissions.isEmpty()) graph.screenMirrorShizuku.requestPermission()

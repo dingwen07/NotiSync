@@ -14,6 +14,7 @@ import android.os.SystemClock
 import android.system.Os
 import android.system.OsConstants
 import android.system.StructPollfd
+import android.util.Log
 import androidx.core.content.ContextCompat
 import java.io.Closeable
 import java.net.InetSocketAddress
@@ -43,7 +44,7 @@ import net.extrawdw.notisync.screen.ScreenChannel
 import net.extrawdw.notisync.screen.SecureSessionChannel
 import net.extrawdw.notisync.screen.SessionDescriptor
 
-/** Android LAN client: physical Wi-Fi/Ethernet only, direct candidates first, DNS-SD second. */
+/** Android source transport: physical LAN first, then a direct Wi-Fi Aware data path. */
 class AndroidLanScreenSessionTransport(private val context: Context) : AndroidScreenSessionTransport {
     private val appContext = context.applicationContext
 
@@ -52,71 +53,146 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
         startCapture: suspend () -> PrivilegedSessionPipes,
         onReady: () -> Unit,
     ) = withContext(Dispatchers.IO) {
-        requireLocalNetworkPermission()
+        val descriptor = request.toSessionDescriptor()
+        val token = requireNotNull(request.routingToken)
+        val psk = requireNotNull(request.masterPsk)
+        val expiresAt = requireNotNull(request.expiresAt)
         val connectivity = requireNotNull(appContext.getSystemService(ConnectivityManager::class.java))
-        val network = requireLanNetwork()
-        ExactLanNetworkGuard(connectivity, network).use { guard ->
-            guard.requireActive()
-            val descriptor = request.toSessionDescriptor()
-            val token = requireNotNull(request.routingToken)
-            val psk = requireNotNull(request.masterPsk)
-            var lastFailure: Throwable? = null
-            var endpointAttempts = 0
-            suspend fun attempt(endpoints: List<Endpoint>): Boolean {
-                for (endpoint in endpoints) {
+        var lastFailure: Throwable? = null
+        var endpointAttempts = 0
+        var videoAuthenticated = false
+        Log.i(
+            LOG_TAG,
+            "Received screen endpoints: " + request.candidates.groupingBy { it.kind }.eachCount()
+                .entries.sortedBy { it.key }
+                .joinToString { (kind, count) -> "$kind=$count" },
+        )
+
+        val network = if (hasLocalNetworkPermission()) requireLanNetworkOrNull() else null
+        if (network != null) {
+            try {
+                ExactLanNetworkGuard(connectivity, network).use { guard ->
                     guard.requireActive()
-                    if (endpointAttempts >= MAX_ENDPOINT_ATTEMPTS) break
-                    endpointAttempts++
-                    val expiresAt = requireNotNull(request.expiresAt)
-                    if (System.currentTimeMillis() >= expiresAt) throw ScreenRequestExpiredException()
-                    var video: SecureSessionChannel? = null
-                    var control: SecureSessionChannel? = null
-                    var pipes: PrivilegedSessionPipes? = null
-                    var videoAuthenticated = false
-                    try {
-                        video = connect(
-                            network, endpoint, descriptor, token, psk, ScreenChannel.VIDEO, expiresAt, guard,
-                        )
-                        videoAuthenticated = true
-                        control = connect(
-                            network, endpoint, descriptor, token, psk, ScreenChannel.CONTROL, expiresAt, guard,
-                        )
-                        // Both one-shot channel handshakes have derived their own traffic keys. The
-                        // rendezvous secret is no longer needed in app memory for the lifetime of the stream.
-                        token.fill(0)
-                        psk.fill(0)
-                        pipes = guard.track(startCapture())
-                        proxy(request, video, control, pipes, onReady)
-                        guard.requireActive()
-                        return true
-                    } catch (error: CancellationException) {
-                        throw error
-                    } catch (error: Throwable) {
-                        // Capability/loss callbacks close the same resources that surfaced this exception;
-                        // preserve the transport reason instead of misclassifying it as encoder startup.
-                        guard.requireActive()
-                        if (error is ScreenRequestExpiredException) throw error
-                        // A successful VIDEO handshake consumes its one-shot registry identity. Starting the
-                        // next endpoint with VIDEO can never succeed, so any later failure is terminal.
-                        if (!ScreenEndpointRetryPolicy.canRetry(videoAuthenticated)) throw error
-                        lastFailure = error
-                    } finally {
-                        pipes?.let { guard.untrack(it); it.close() }
-                        control?.let { guard.untrack(it); it.close() }
-                        video?.let { guard.untrack(it); it.close() }
+                    suspend fun attempt(endpoints: List<Endpoint>): Boolean {
+                        for (endpoint in endpoints) {
+                            guard.requireActive()
+                            if (endpointAttempts >= MAX_ENDPOINT_ATTEMPTS) break
+                            endpointAttempts++
+                            if (System.currentTimeMillis() >= expiresAt) {
+                                throw ScreenRequestExpiredException()
+                            }
+                            var video: SecureSessionChannel? = null
+                            var control: SecureSessionChannel? = null
+                            var pipes: PrivilegedSessionPipes? = null
+                            try {
+                                video = connect(
+                                    network, endpoint, descriptor, token, psk,
+                                    ScreenChannel.VIDEO, expiresAt, guard,
+                                )
+                                videoAuthenticated = true
+                                control = connect(
+                                    network, endpoint, descriptor, token, psk,
+                                    ScreenChannel.CONTROL, expiresAt, guard,
+                                )
+                                destroyRendezvousSecrets(token, psk)
+                                pipes = guard.track(startCapture())
+                                proxy(request, video, control, pipes, onReady)
+                                guard.requireActive()
+                                return true
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (error: Throwable) {
+                                if (error is ScreenRequestExpiredException) throw error
+                                // A successful VIDEO handshake consumes its one-shot identity. Never
+                                // cross transports after that point or split VIDEO and CONTROL paths.
+                                if (!ScreenEndpointRetryPolicy.canRetry(videoAuthenticated)) throw error
+                                lastFailure = error
+                            } finally {
+                                pipes?.let { guard.untrack(it); it.close() }
+                                control?.let { guard.untrack(it); it.close() }
+                                video?.let { guard.untrack(it); it.close() }
+                            }
+                        }
+                        return false
                     }
+
+                    // Do not spend the DNS-SD timeout when a signed direct address works.
+                    if (attempt(resolveDirectEndpoints(request, network))) return@withContext
+                    guard.requireActive()
+                    if (attempt(resolveDnsSdEndpoints(request, network))) return@withContext
                 }
-                return false
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (error is ScreenRequestExpiredException || videoAuthenticated) throw error
+                lastFailure = error
             }
-            // Do not spend the DNS-SD timeout when a signed direct address works.
-            if (attempt(resolveDirectEndpoints(request, network))) return@withContext
-            guard.requireActive()
-            if (attempt(resolveDnsSdEndpoints(request, network))) return@withContext
-            if (System.currentTimeMillis() >= requireNotNull(request.expiresAt)) {
-                throw ScreenRequestExpiredException()
-            }
-            throw IllegalStateException("could not authenticate a LAN endpoint", lastFailure)
         }
+
+        // The request is signed and encrypted, so this candidate list is authority. Aware is only
+        // attempted after every LAN path failed before either one-shot TLS identity was consumed.
+        val awareCandidates = filterValidWifiAwareCandidates(request.candidates)
+        if (awareCandidates.isNotEmpty() &&
+            !AndroidWifiAwarePlatform.hasRequiredPermissions(appContext)
+        ) {
+            lastFailure = SecurityException(
+                "nearby Wi-Fi and local-network permissions are required for Wi-Fi Aware",
+            )
+        } else {
+            val subscriber = AndroidWifiAwareScreenSubscriber(appContext)
+            for (candidate in awareCandidates) {
+                if (endpointAttempts >= MAX_ENDPOINT_ATTEMPTS) break
+                endpointAttempts++
+                val remaining = expiresAt - System.currentTimeMillis()
+                if (remaining <= 0) throw ScreenRequestExpiredException()
+                var endpoint: AndroidWifiAwareScreenEndpoint? = null
+                var video: SecureSessionChannel? = null
+                var control: SecureSessionChannel? = null
+                var pipes: PrivilegedSessionPipes? = null
+                try {
+                    endpoint = subscriber.resolve(
+                        candidate = candidate,
+                        descriptor = descriptor,
+                        routingToken = token,
+                        masterPsk = psk,
+                        timeout = Duration.ofMillis(minOf(remaining, WIFI_AWARE_RESOLVE_TIMEOUT_MS)),
+                    )
+                    video = connect(
+                        endpoint, descriptor, token, psk, ScreenChannel.VIDEO, expiresAt,
+                    )
+                    videoAuthenticated = true
+                    control = connect(
+                        endpoint, descriptor, token, psk, ScreenChannel.CONTROL, expiresAt,
+                    )
+                    destroyRendezvousSecrets(token, psk)
+                    pipes = endpoint.track(startCapture())
+                    proxy(request, video, control, pipes, onReady)
+                    endpoint.requireActive()
+                    return@withContext
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Throwable) {
+                    if (error is ScreenRequestExpiredException || videoAuthenticated) throw error
+                    Log.w(LOG_TAG, "Wi-Fi Aware screen endpoint failed before TLS authentication", error)
+                    lastFailure = error
+                } finally {
+                    pipes?.let { endpoint?.untrack(it); it.close() }
+                    control?.let { endpoint?.untrack(it); it.close() }
+                    video?.let { endpoint?.untrack(it); it.close() }
+                    endpoint?.close()
+                }
+            }
+        }
+
+        if (System.currentTimeMillis() >= expiresAt) throw ScreenRequestExpiredException()
+        val detail = lastFailure?.deepestTransportMessage()
+        throw IllegalStateException(
+            buildString {
+                append("could not authenticate a LAN or Wi-Fi Aware screen endpoint")
+                if (detail != null) append(": ").append(detail)
+            },
+            lastFailure,
+        )
     }
 
     private fun connect(
@@ -150,6 +226,38 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
             secure
         } catch (error: Throwable) {
             guard.untrack(socket)
+            runCatching { socket.close() }
+            throw error
+        }
+    }
+
+    private fun connect(
+        endpoint: AndroidWifiAwareScreenEndpoint,
+        descriptor: SessionDescriptor,
+        token: ByteArray,
+        psk: ByteArray,
+        channel: ScreenChannel,
+        expiresAt: Long,
+    ): SecureSessionChannel {
+        val socket = endpoint.openSocket(
+            Duration.ofMillis(remainingTimeout(expiresAt, CONNECT_TIMEOUT_MS).toLong()),
+        )
+        return try {
+            val secure = PskTlsClient.connect(
+                socket = socket,
+                descriptor = descriptor,
+                routingToken = token,
+                masterPsk = psk,
+                channel = channel,
+                handshakeTimeout = Duration.ofMillis(
+                    remainingTimeout(expiresAt, HANDSHAKE_TIMEOUT_MS).toLong(),
+                ),
+            )
+            endpoint.track(secure)
+            endpoint.untrack(socket)
+            secure
+        } catch (error: Throwable) {
+            endpoint.untrack(socket)
             runCatching { socket.close() }
             throw error
         }
@@ -343,17 +451,11 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
             }.onFailure { finish(null) }
         }
 
-    private fun requireLocalNetworkPermission() {
-        if (android.os.Build.VERSION.SDK_INT >= 37 && ContextCompat.checkSelfPermission(
-                appContext,
-                Manifest.permission.ACCESS_LOCAL_NETWORK,
-            ) != PackageManager.PERMISSION_GRANTED
-        ) error("local network permission is not granted")
-    }
-
-    private fun requireLanNetwork(): Network = requireNotNull(requireLanNetworkOrNull()) {
-        "no usable Wi-Fi or Ethernet LAN is available"
-    }
+    private fun hasLocalNetworkPermission(): Boolean =
+        android.os.Build.VERSION.SDK_INT < 37 || ContextCompat.checkSelfPermission(
+            appContext,
+            Manifest.permission.ACCESS_LOCAL_NETWORK,
+        ) == PackageManager.PERMISSION_GRANTED
 
     private fun requireLanNetworkOrNull(): Network? {
         val connectivity = appContext.getSystemService(ConnectivityManager::class.java) ?: return null
@@ -412,8 +514,38 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
         const val DNS_SD_TIMEOUT_MS = 5_000L
         const val COPY_BUFFER_BYTES = 64 * 1024
         const val CAPTURE_START_TIMEOUT_MS = 10_000L
+        const val WIFI_AWARE_RESOLVE_TIMEOUT_MS = 10_000L
         const val MAX_ENDPOINT_ATTEMPTS = 8
+        const val LOG_TAG = "NotiSyncScreenTransport"
     }
+}
+
+internal fun filterValidWifiAwareCandidates(
+    candidates: List<ScreenMirrorConnectionCandidate>,
+): List<ScreenMirrorConnectionCandidate> = candidates.filter { candidate ->
+    candidate.kind == ScreenMirrorConnectionCandidate.WIFI_AWARE &&
+        AndroidWifiAwareEndpointPolicy.validSignedCandidate(
+            candidate.serviceName,
+            candidate.port,
+        )
+}
+
+private fun destroyRendezvousSecrets(token: ByteArray, psk: ByteArray) {
+    token.fill(0)
+    psk.fill(0)
+}
+
+private fun Throwable.deepestTransportMessage(): String? {
+    var current: Throwable? = this
+    var selected: String? = null
+    repeat(8) {
+        val value = current ?: return@repeat
+        value.message?.takeIf(String::isNotBlank)?.let { selected = it }
+        current = value.cause?.takeUnless { cause -> cause === value }
+    }
+    return selected
+        ?.replace(Regex("[\\p{Cc}\\p{Cf}]"), " ")
+        ?.take(200)
 }
 
 internal object ScreenEndpointRetryPolicy {

@@ -20,6 +20,7 @@ internal class AndroidScreenVideoDecoder(
     input: InputStream,
     private val expectedCodec: ScreenMirrorCodec,
     private val surface: Surface,
+    private val hardwareDecoderName: String? = null,
     private val onDimensionsChanged: (ScrcpySessionDimensions) -> Unit = {},
 ) : Closeable {
     private val reader = ScrcpyVideoStreamReader(input, expectedCodec)
@@ -81,7 +82,16 @@ internal class AndroidScreenVideoDecoder(
     private fun createAndStartCodec(dimensions: ScrcpySessionDimensions): MediaCodec {
         check(!closed.get()) { "screen video decoder is closed" }
         val mime = mimeFor(expectedCodec)
-        val codec = MediaCodec.createDecoderByType(mime)
+        val codec = when (expectedCodec) {
+            ScreenMirrorCodec.AV1, ScreenMirrorCodec.H265 -> MediaCodec.createByCodecName(
+                requireNotNull(hardwareDecoderName) {
+                    "selected ${expectedCodec.name.lowercase()} codec has no hardware decoder"
+                },
+            )
+            ScreenMirrorCodec.H264 -> hardwareDecoderName
+                ?.let(MediaCodec::createByCodecName)
+                ?: MediaCodec.createDecoderByType(mime)
+        }
         try {
             val format = MediaFormat.createVideoFormat(mime, dimensions.width, dimensions.height).apply {
                 // MAX_PACKET_SIZE_BYTES is a defensive protocol/parser ceiling, not a normal

@@ -7,6 +7,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
 import java.util.ArrayDeque
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -36,10 +37,27 @@ internal class AndroidScreenControlWriter(
 
     @Throws(IOException::class)
     fun sendKeyPress(keyCode: Int) {
-        require(keyCode in ALLOWED_NAVIGATION_KEYS) { "unsupported navigation key" }
+        require(keyCode in ALLOWED_KEYS) { "unsupported screen control key" }
         writeFrames(
             keyFrame(KeyEvent.ACTION_DOWN, keyCode),
             keyFrame(KeyEvent.ACTION_UP, keyCode),
+        )
+    }
+
+    /**
+     * Writes one pinned scrcpy inject-text message: type, unsigned big-endian byte length, UTF-8.
+     * The vendored server rejects inject-text payloads larger than 300 bytes.
+     */
+    @Throws(IOException::class)
+    fun sendText(text: String) {
+        val utf8 = text.toByteArray(StandardCharsets.UTF_8)
+        require(utf8.size <= SCRCPY_INJECT_TEXT_MAX_BYTES) { "screen control text is too long" }
+        writeFrames(
+            ByteBuffer.allocate(TEXT_FRAME_HEADER_BYTES + utf8.size).order(ByteOrder.BIG_ENDIAN)
+                .put(TYPE_INJECT_TEXT.toByte())
+                .putInt(utf8.size)
+                .put(utf8)
+                .array(),
         )
     }
 
@@ -111,16 +129,21 @@ internal class AndroidScreenControlWriter(
 
     companion object {
         private const val TYPE_INJECT_KEYCODE = 0
+        private const val TYPE_INJECT_TEXT = 1
         private const val TYPE_INJECT_TOUCH = 2
         private const val TYPE_TOGGLE_POWER = 64
         private const val KEY_FRAME_BYTES = 14
+        private const val TEXT_FRAME_HEADER_BYTES = 5
         private const val TOUCH_FRAME_BYTES = 32
         private const val MAX_UNSIGNED_SHORT = 0xffff
 
-        private val ALLOWED_NAVIGATION_KEYS = setOf(
+        private val ALLOWED_KEYS = setOf(
             KeyEvent.KEYCODE_BACK,
             KeyEvent.KEYCODE_HOME,
             KeyEvent.KEYCODE_APP_SWITCH,
+            KeyEvent.KEYCODE_ENTER,
+            KeyEvent.KEYCODE_DEL,
+            KeyEvent.KEYCODE_FORWARD_DEL,
         )
         private val TOUCH_ACTIONS = setOf(
             MotionEvent.ACTION_DOWN,
@@ -163,6 +186,11 @@ internal class AndroidScreenControlDispatcher(
             override fun write(writer: AndroidScreenControlWriter) = writer.sendKeyPress(keyCode)
         }
 
+        // Intentionally not a data class: its generated toString() would expose typed secrets.
+        class Text(private val text: String) : Command {
+            override fun write(writer: AndroidScreenControlWriter) = writer.sendText(text)
+        }
+
         data object Power : Command {
             override fun write(writer: AndroidScreenControlWriter) = writer.togglePower()
         }
@@ -191,6 +219,13 @@ internal class AndroidScreenControlDispatcher(
     private var drainScheduled = false
 
     fun sendKeyPress(keyCode: Int): Boolean = enqueue(Command.Key(keyCode))
+
+    /** Reject malformed/oversized IME commits before they can fail the control session. */
+    fun sendText(text: String): Boolean {
+        if (text.isEmpty()) return true
+        if (!isScrcpyInjectTextSizeAllowed(text)) return false
+        return enqueue(Command.Text(text))
+    }
 
     fun togglePower(): Boolean = enqueue(Command.Power)
 
@@ -298,4 +333,33 @@ internal class AndroidScreenControlDispatcher(
         const val MAX_QUEUED_COMMANDS = 64
         val THREAD_ID = AtomicInteger()
     }
+}
+
+/** Must stay aligned with ControlMessageReader.INJECT_TEXT_MAX_LENGTH in the pinned server. */
+internal const val SCRCPY_INJECT_TEXT_MAX_BYTES = 300
+
+/**
+ * Computes the UTF-8 size without allocating an unbounded byte array on the UI/InputConnection
+ * caller. Java's UTF-8 encoder replaces an unpaired surrogate with a single-byte question mark.
+ */
+internal fun isScrcpyInjectTextSizeAllowed(text: String): Boolean {
+    var utf8Bytes = 0
+    var index = 0
+    while (index < text.length) {
+        val current = text[index]
+        utf8Bytes += when {
+            current.code <= 0x7f -> 1
+            current.code <= 0x7ff -> 2
+            Character.isHighSurrogate(current) &&
+                index + 1 < text.length && Character.isLowSurrogate(text[index + 1]) -> {
+                index++
+                4
+            }
+            Character.isSurrogate(current) -> 1
+            else -> 3
+        }
+        if (utf8Bytes > SCRCPY_INJECT_TEXT_MAX_BYTES) return false
+        index++
+    }
+    return true
 }

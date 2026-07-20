@@ -2,11 +2,15 @@ package net.extrawdw.apps.notisync.screen
 
 import android.view.KeyEvent
 import android.view.MotionEvent
+import com.genymobile.scrcpy.control.ControlMessage
+import com.genymobile.scrcpy.control.ControlMessageReader
+import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -32,6 +36,56 @@ class AndroidScreenControlWriterTest {
         assertEquals(28, bytes.size)
         assertKeyFrame(bytes.copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HOME)
         assertKeyFrame(bytes.copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HOME)
+    }
+
+    @Test
+    fun `committed text uses pinned scrcpy utf8 framing`() {
+        val output = ByteArrayOutputStream()
+        val text = "paßwørd"
+        val expectedText = text.toByteArray(StandardCharsets.UTF_8)
+
+        AndroidScreenControlWriter(output).sendText(text)
+
+        val frame = ByteBuffer.wrap(output.toByteArray()).order(ByteOrder.BIG_ENDIAN)
+        assertEquals(1, frame.get().toInt())
+        assertEquals(expectedText.size, frame.int)
+        val actualText = ByteArray(frame.remaining())
+        frame.get(actualText)
+        assertArrayEquals(expectedText, actualText)
+
+        val parsed = ControlMessageReader(ByteArrayInputStream(output.toByteArray())).read { true }
+        assertEquals(ControlMessage.TYPE_INJECT_TEXT, parsed.type)
+        assertEquals(text, parsed.text)
+    }
+
+    @Test
+    fun `committed text enforces vendored 300 byte limit`() {
+        val acceptedOutput = ByteArrayOutputStream()
+        AndroidScreenControlWriter(acceptedOutput).sendText("é".repeat(150))
+        assertEquals(305, acceptedOutput.size())
+
+        val rejectedOutput = ByteArrayOutputStream()
+        val rejectedWriter = AndroidScreenControlWriter(rejectedOutput)
+        assertThrows(IllegalArgumentException::class.java) {
+            rejectedWriter.sendText("é".repeat(151))
+        }
+        assertEquals(0, rejectedOutput.size())
+    }
+
+    @Test
+    fun `keyboard enter and delete use adjacent key pairs`() {
+        val output = ByteArrayOutputStream()
+        val writer = AndroidScreenControlWriter(output)
+
+        writer.sendKeyPress(KeyEvent.KEYCODE_DEL)
+        writer.sendKeyPress(KeyEvent.KEYCODE_ENTER)
+
+        val bytes = output.toByteArray()
+        assertEquals(56, bytes.size)
+        assertKeyFrame(bytes.copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(bytes.copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(bytes.copyOfRange(28, 42), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
+        assertKeyFrame(bytes.copyOfRange(42, 56), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)
     }
 
     @Test
@@ -138,6 +192,109 @@ class AndroidScreenControlWriterTest {
         assertTrue(closeThread.get().name.startsWith("notisync-screen-control-close-"))
         assertEquals(0, failures.get())
         assertFalse(dispatcher.togglePower())
+    }
+
+    @Test
+    fun `dispatcher preserves committed text delete and enter ordering`() {
+        val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val expectedWrites = CountDownLatch(3)
+        val output = object : OutputStream() {
+            override fun write(value: Int) = Unit
+
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                writes += buffer.copyOfRange(offset, offset + length)
+                expectedWrites.countDown()
+            }
+        }
+        val failure = AtomicReference<Throwable>()
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) {
+            failure.compareAndSet(null, it)
+        }
+
+        assertTrue(dispatcher.sendText("typed"))
+        assertTrue(dispatcher.sendKeyPress(KeyEvent.KEYCODE_DEL))
+        assertTrue(dispatcher.sendKeyPress(KeyEvent.KEYCODE_ENTER))
+        assertTrue("keyboard writes did not finish", expectedWrites.await(5, TimeUnit.SECONDS))
+        dispatcher.close()
+
+        assertEquals(null, failure.get())
+        assertEquals(3, writes.size)
+        assertEquals(1, writes[0][0].toInt())
+        assertEquals("typed", String(writes[0], 5, writes[0].size - 5, StandardCharsets.UTF_8))
+        assertKeyFrame(writes[1].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(writes[1].copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(writes[2].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
+        assertKeyFrame(writes[2].copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)
+    }
+
+    @Test
+    fun `IME deletion forwards the requested bounded key count`() {
+        val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val expectedWrites = CountDownLatch(3)
+        val output = object : OutputStream() {
+            override fun write(value: Int) = Unit
+
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                writes += buffer.copyOfRange(offset, offset + length)
+                expectedWrites.countDown()
+            }
+        }
+        val failure = AtomicReference<Throwable>()
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) {
+            failure.compareAndSet(null, it)
+        }
+
+        assertTrue(forwardScreenImeDeletion(dispatcher, beforeLength = 2, afterLength = 1))
+        assertTrue("IME deletion writes did not finish", expectedWrites.await(5, TimeUnit.SECONDS))
+        dispatcher.close()
+
+        assertEquals(null, failure.get())
+        assertEquals(3, writes.size)
+        assertKeyFrame(writes[0].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(writes[1].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_DEL)
+        assertKeyFrame(
+            writes[2].copyOfRange(0, 14),
+            KeyEvent.ACTION_DOWN,
+            KeyEvent.KEYCODE_FORWARD_DEL,
+        )
+    }
+
+    @Test
+    fun `IME deletion rejects negative or unbounded requests`() {
+        val writes = AtomicInteger()
+        val dispatcher = AndroidScreenControlDispatcher(
+            AndroidScreenControlWriter(
+                object : OutputStream() {
+                    override fun write(value: Int) {
+                        writes.incrementAndGet()
+                    }
+                },
+            ),
+        ) { }
+
+        assertFalse(forwardScreenImeDeletion(dispatcher, -1, 0))
+        assertFalse(forwardScreenImeDeletion(dispatcher, 33, 0))
+        dispatcher.close()
+        assertEquals(0, writes.get())
+    }
+
+    @Test
+    fun `dispatcher rejects oversized text without failing the channel`() {
+        val writes = AtomicInteger()
+        val failures = AtomicInteger()
+        val output = object : OutputStream() {
+            override fun write(value: Int) {
+                writes.incrementAndGet()
+            }
+        }
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) {
+            failures.incrementAndGet()
+        }
+
+        assertFalse(dispatcher.sendText("€".repeat(101)))
+        assertEquals(0, writes.get())
+        assertEquals(0, failures.get())
+        dispatcher.close()
     }
 
     @Test

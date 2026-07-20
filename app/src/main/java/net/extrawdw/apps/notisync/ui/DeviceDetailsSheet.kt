@@ -20,6 +20,9 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -37,8 +40,11 @@ import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
+import net.extrawdw.apps.notisync.screen.availableAndroidScreenCodecs
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import net.extrawdw.notisync.protocol.TrustStatus
 import java.text.DateFormat
 import java.util.Date
@@ -54,7 +60,10 @@ internal fun DeviceDetailsSheet(
     screenMirroringEnabled: Boolean,
     screenControlAuthorized: Boolean,
     screenMirrorRequestEnabled: Boolean = true,
+    screenMirrorCodecOverride: ScreenMirrorCodec?,
+    screenMirrorDecoderSupport: AndroidScreenDecoderSupport,
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
+    onScreenMirrorCodecOverrideChange: (ScreenMirrorCodec?) -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
     onDismiss: () -> Unit,
 ) {
@@ -109,10 +118,24 @@ internal fun DeviceDetailsSheet(
                 DeviceCapabilities(device.capabilities)
             }
             if (device.supportsScreenMirrorRequest()) {
+                val availableCodecs = availableAndroidScreenCodecs(
+                    sourceCapabilities = device.capabilities.toSet(),
+                    decoderSupport = screenMirrorDecoderSupport,
+                )
+                item {
+                    ScreenMirrorCodecSelector(
+                        // Preserve and display an unavailable durable override as selected+disabled;
+                        // the requester temporarily falls back to Auto until that codec returns.
+                        selectedCodec = screenMirrorCodecOverride,
+                        availableCodecs = availableCodecs,
+                        enabled = screenMirrorRequestEnabled,
+                        onSelected = onScreenMirrorCodecOverrideChange,
+                    )
+                }
                 item {
                     Button(
                         onClick = { onStartScreenMirror(device.clientId) },
-                        enabled = screenMirrorRequestEnabled,
+                        enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(
@@ -137,6 +160,45 @@ internal fun DeviceDetailsSheet(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun ScreenMirrorCodecSelector(
+    selectedCodec: ScreenMirrorCodec?,
+    availableCodecs: Set<ScreenMirrorCodec>,
+    enabled: Boolean,
+    onSelected: (ScreenMirrorCodec?) -> Unit,
+) {
+    val choices = listOf(
+        null to stringResource(R.string.screen_mirror_codec_auto),
+        ScreenMirrorCodec.AV1 to stringResource(R.string.screen_mirror_codec_av1),
+        ScreenMirrorCodec.H265 to stringResource(R.string.screen_mirror_codec_h265),
+        ScreenMirrorCodec.H264 to stringResource(R.string.screen_mirror_codec_h264),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            stringResource(R.string.screen_mirror_codec_title),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            choices.forEachIndexed { index, (codec, label) ->
+                SegmentedButton(
+                    selected = codec == selectedCodec,
+                    onClick = { onSelected(codec) },
+                    enabled = enabled && (codec == null || codec in availableCodecs),
+                    shape = SegmentedButtonDefaults.itemShape(index, choices.size),
+                    label = {
+                        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                )
+            }
+        }
+        Text(
+            stringResource(R.string.screen_mirror_codec_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 
