@@ -89,6 +89,49 @@ class AndroidScreenListenerOwnershipTest {
     }
 
     @Test
+    fun loserFailureAfterQueueCloseDoesNotCancelWinner() = runBlocking {
+        val winnerPair = TestPair("queue-close-winner")
+        val loserStarted = CountDownLatch(1)
+        val releaseLoser = CountDownLatch(1)
+        val winner = TestListener(accept = {
+            loserStarted.awaitOrThrow()
+            winnerPair.pair
+        })
+        val loser = TestListener(
+            accept = {
+                loserStarted.countDown()
+                releaseLoser.awaitOrThrow()
+                throw IOException("expected loser shutdown")
+            },
+            onClose = { releaseLoser.countDown() },
+        )
+        val registry = PskRegistry()
+
+        try {
+            val accepted = acceptFirstPair(
+                listeners = listOf(winner, loser),
+                sessionId = SESSION_ID,
+                registry = registry,
+                timeout = TEST_TIMEOUT,
+            )
+
+            assertTrue("wrong listener won", accepted.listener === winner)
+            assertFalse("winner pair was closed", winnerPair.isClosed)
+            assertFalse("winner listener was closed", winner.isClosed)
+            assertTrue("loser was not closed", loser.isClosed)
+
+            accepted.listener.close()
+            accepted.pair.close()
+        } finally {
+            releaseLoser.countDown()
+            winner.close()
+            loser.close()
+            winnerPair.pair.close()
+            registry.close()
+        }
+    }
+
+    @Test
     fun cancellationWhileStoppingLoserClosesSelectedPairAndWinnerListener() = runBlocking {
         val selectedPair = TestPair("selected")
         val loserStarted = CountDownLatch(1)

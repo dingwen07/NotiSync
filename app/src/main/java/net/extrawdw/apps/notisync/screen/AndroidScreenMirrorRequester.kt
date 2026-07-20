@@ -576,8 +576,10 @@ internal suspend fun acceptFirstPair(
                         } catch (error: Exception) {
                             ListenerCompletion(listener = listener, error = error)
                         }
-                        completions.send(completion)
-                        queued = true
+                        // Teardown closes the queue before stopping losing listeners. A loser may
+                        // finish in that window, so a failed handoff is normal and must not throw a
+                        // ClosedSendChannelException that cancels the already-selected winner.
+                        queued = completions.trySend(completion).isSuccess
                     } finally {
                         // A successful send moves pair ownership to the completion queue. If the
                         // race is cancelled or the channel closes first, the producer still owns it.
