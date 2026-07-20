@@ -9,7 +9,8 @@ import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.trust.TrustPrompt
 
-/** Persisted sections used by the signed trust store. Keys are stable wire/storage names. */
+/** Persisted sections used by the signed trust store. Keys are stable wire/storage names; [write] applies
+ *  the complete batch atomically and durably before returning. */
 interface TrustPersistence {
     fun read(key: String): String?
     fun write(values: Map<String, String?>)

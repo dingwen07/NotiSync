@@ -4,9 +4,7 @@ import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
-import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.first
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
@@ -14,11 +12,12 @@ import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 /** Android DataStore adapter for the platform-neutral, signed peer trust store. */
 class TrustStore(
     store: DataStore<Preferences>,
-    scope: CoroutineScope,
     identity: IdentitySigner,
+    clock: () -> Long = System::currentTimeMillis,
 ) : net.extrawdw.notisync.peer.trust.TrustStore(
-    DataStoreTrustPersistence(store, scope),
+    DataStoreTrustPersistence(store),
     identity,
+    clock,
 ) {
     companion object {
         const val REVOKE_PURGE_DELAY_MS =
@@ -28,7 +27,6 @@ class TrustStore(
 
 private class DataStoreTrustPersistence(
     private val store: DataStore<Preferences>,
-    private val scope: CoroutineScope,
 ) : TrustPersistence {
     private val lock = Any()
     private val values = runBlocking {
@@ -39,15 +37,19 @@ private class DataStoreTrustPersistence(
     override fun read(key: String): String? = synchronized(lock) { values[key] }
 
     override fun write(values: Map<String, String?>) {
-        synchronized(lock) { this.values.putAll(values) }
-        scope.launch {
-            store.edit { preferences ->
-                values.forEach { (key, value) ->
-                    val preferenceKey = stringPreferencesKey(key)
-                    if (value == null) preferences.remove(preferenceKey)
-                    else preferences[preferenceKey] = value
+        synchronized(lock) {
+            // TrustPersistence is a durable-before-return contract. Serialize and await DataStore's atomic
+            // edit so concurrent WS/FCM deliveries cannot reorder signed snapshots on disk after an ACK.
+            runBlocking {
+                store.edit { preferences ->
+                    values.forEach { (key, value) ->
+                        val preferenceKey = stringPreferencesKey(key)
+                        if (value == null) preferences.remove(preferenceKey)
+                        else preferences[preferenceKey] = value
+                    }
                 }
             }
+            this.values.putAll(values)
         }
     }
 

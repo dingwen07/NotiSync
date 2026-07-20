@@ -257,7 +257,7 @@ class AppGraph(private val app: Application) {
             settings.analyticsEnabled.onEach(AnalyticsController::apply).launchIn(this)
         }
         val trustStartNanos = System.nanoTime()
-        trust = TrustStore(ds, scope, identity)
+        trust = TrustStore(ds, identity)
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
         appSelection = AppSelectionRepository(ds, scope)
@@ -453,7 +453,12 @@ class AppGraph(private val app: Application) {
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.
-            selfKeyEpoch = { runCatching { buildClientKeyEpochBlob() }.getOrNull() },
+            selfKeyEpoch = {
+                // RotationManager owns the exact staged validity window/floor. A generic current-epoch
+                // certificate would overwrite those semantics on receivers while rotation is pending.
+                if (trust.pendingRotation() == null) runCatching { buildClientKeyEpochBlob() }.getOrNull()
+                else null
+            },
             fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
         foundationEngine = foundation
@@ -486,7 +491,8 @@ class AppGraph(private val app: Application) {
                     trust.advanceSelfEpoch(epoch)
                     // Restart the epoch-age clock so the NEXT scheduled rotation is measured from this activation.
                     scope.launch { runCatching { settings.setSelfEpochActivatedAt(System.currentTimeMillis()) } }
-                    // E2E-announce the new active epoch to the own mesh.
+                    // Re-announce the roster. N+1's correctly windowed certificate was already pre-warmed;
+                    // the generic self-epoch CARD stays suppressed until rotation completes.
                     scope.launch { runCatching { foundationEngine?.broadcastTrust() } }
                 },
                 onRetire = { retired, keep ->
@@ -608,7 +614,8 @@ class AppGraph(private val app: Application) {
             // Converge peer key-epochs BEFORE the live loop blocks, so a just-upgraded peer is sealable and
             // our broadcast actually reaches it (the pull is the bootstrap; the broadcast is anti-entropy).
             runCatching { foundationEngine?.convergeKeyEpochs() }
-            // Anti-entropy includes our own epoch; material for third peers is returned by targeted CARD.
+            // Between rotations anti-entropy includes our own epoch; while staged, RotationManager owns that
+            // certificate. Material for third peers is returned by targeted CARD.
             runCatching { foundationEngine?.broadcastTrust() }
             transport.runLiveDelivery {
                 when (secureChannel?.deliver(it, DeliveryMode.WEBSOCKET)) {

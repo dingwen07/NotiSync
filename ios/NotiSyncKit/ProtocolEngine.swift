@@ -20,6 +20,7 @@ nonisolated enum EngineError: Error, LocalizedError {
     case unresolvedSender(String)
     case untrustedSender(String)
     case verificationFailed
+    case persistenceFailed
     case noHpkeKey(Int)
     case notForUs
 
@@ -29,14 +30,15 @@ nonisolated enum EngineError: Error, LocalizedError {
     var isSilentDrop: Bool {
         switch self {
         case .unknownSender, .untrustedSender, .unresolvedSender, .noHpkeKey, .notForUs: return true
-        case .verificationFailed: return false
+        case .verificationFailed, .persistenceFailed: return false
         }
     }
 
     var ackAfterSilentDrop: Bool {
         switch self {
         case .noHpkeKey: return true
-        case .unknownSender, .untrustedSender, .unresolvedSender, .notForUs, .verificationFailed: return false
+        case .unknownSender, .untrustedSender, .unresolvedSender, .notForUs, .verificationFailed,
+             .persistenceFailed: return false
         }
     }
 
@@ -59,6 +61,8 @@ nonisolated enum EngineError: Error, LocalizedError {
             )
         case .verificationFailed:
             return String(localized: "error.engine.verificationFailed", defaultValue: "Envelope signature did not verify.", comment: "Error shown when an envelope signature is invalid.")
+        case .persistenceFailed:
+            return String(localized: "error.engine.persistenceFailed", defaultValue: "Could not save trusted-device state.", comment: "Error shown when trusted-device state cannot be saved.")
         case let .noHpkeKey(epoch):
             return String(
                 format: String(localized: "error.engine.noHpkeKey", defaultValue: "No HPKE private key for epoch %d.", comment: "Error shown when this device cannot decrypt an envelope for the given key epoch."),
@@ -192,8 +196,7 @@ nonisolated final class NotiSyncEngine: Sendable {
         AppGroupStore.withLock(AppGroupStore.Files.trust) {
             let store = trust()
             guard change(store) else { return false }
-            save(store)
-            return true
+            return save(store)
         }
     }
 
@@ -517,7 +520,8 @@ nonisolated final class NotiSyncEngine: Sendable {
         guard signerEpoch == 0 else { return nil }
         return AppGroupStore.withLock(AppGroupStore.Files.trust) {
             let store = trust()
-            guard let sender = store.peers[signerId], sender.isTrusted, sender.ownDevice else { return nil }
+            guard let sender = store.peers[signerId], sender.isTrusted, sender.ownDevice,
+                  !sender.isExperienceMode else { return nil }
             let result = store.applyIncomingTable(sender: signerId, table: table, now: Self.nowMillis())
             if result.changed { save(store) }
             return result
@@ -580,38 +584,44 @@ nonisolated final class NotiSyncEngine: Sendable {
                                        recipients: recipients, messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
-    /// Seal this device's trusted-peer cards to own-mesh (identity-signed CARD deliveries), pushed alongside
-    /// the trust table so a peer can NAME a device this device just introduced (#3). One envelope per card.
-    func sealTrustCards() throws -> [Envelope] {
+    /// Seal only this device's current key epoch alongside its trust roster. Third-party cards and epochs are
+    /// sent on demand by `sealCardMaterialRepair` when a peer advertises a gap; broadcasting all
+    /// held cards here makes every anti-entropy heartbeat grow with the mesh and creates large CARD bursts.
+    func sealTrustSelfKeyEpoch() throws -> Envelope? {
+        // The rotation lifecycle owns the exact finite windows/floor while staged. A generic current-epoch
+        // certificate here would overwrite those semantics on receivers.
+        guard pendingRotation() == nil else { return nil }
         let store = trust()
         let recipients = store.ownMeshRecipients(excluding: selfClientId, includingExperience: false)
-        guard !recipients.isEmpty else { return [] }
-        return try store.trustedCardBlobs().map { cardBlob in
-            let body = ProtocolCodec.encode(DataSync(kind: .CARD, card: CardDelivery(clientId: cardBlob.signerId, card: cardBlob, epochBlob: nil)))
-            return try EnvelopeCrypto.seal(signer: identitySigner, typ: .DATA_SYNC, bodyPlaintext: body,
-                                           recipients: recipients, messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
-        }
+        guard !recipients.isEmpty else { return nil }
+        let blob = try buildClientKeyEpochBlob()
+        let body = ProtocolCodec.encode(
+            DataSync(kind: .CARD, card: CardDelivery(clientId: selfClientId, card: nil, epochBlob: blob))
+        )
+        return try EnvelopeCrypto.seal(signer: identitySigner, typ: .DATA_SYNC, bodyPlaintext: body,
+                                       recipients: recipients, messageId: Self.newMessageId(), seq: Self.nextSeq(),
+                                       createdAt: Self.nowMillis())
     }
 
-    /// Unicast a signed client card to an own-mesh peer that advertised it lacks that card.
-    func sealCardRepair(to recipientId: String, cardBlob: SignedBlob) throws -> Envelope? {
+    /// Unicast all held self-authenticating material for one subject to the own-mesh peer that advertised
+    /// the gap. Combining card + epoch avoids two envelopes when the receiver lacks both.
+    func sealCardMaterialRepair(to recipientId: String, subjectId: String,
+                                card: SignedBlob?, epochBlob: SignedBlob?) throws -> Envelope? {
+        guard card != nil || epochBlob != nil else { return nil }
+        if let card, card.signerId != subjectId { return nil }
+        if let epochBlob, epochBlob.signerId != subjectId { return nil }
         guard let recipient = ownMeshRecipient(recipientId) else { return nil }
-        let body = ProtocolCodec.encode(DataSync(kind: .CARD, card: CardDelivery(clientId: cardBlob.signerId, card: cardBlob, epochBlob: nil)))
-        return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
-                                       recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
-    }
-
-    /// Unicast a self-authenticating key-epoch blob to an own-mesh peer that advertised an older/missing epoch.
-    func sealKeyEpochRepair(to recipientId: String, blob: SignedBlob) throws -> Envelope? {
-        guard let recipient = ownMeshRecipient(recipientId) else { return nil }
-        let body = ProtocolCodec.encode(DataSync(kind: .CARD, card: CardDelivery(clientId: blob.signerId, card: nil, epochBlob: blob)))
+        let body = ProtocolCodec.encode(
+            DataSync(kind: .CARD,
+                     card: CardDelivery(clientId: subjectId, card: card, epochBlob: epochBlob))
+        )
         return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
                                        recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
     private func ownMeshRecipient(_ clientId: String) -> EnvelopeCrypto.RecipientKey? {
         let store = trust()
-        guard let peer = store.peers[clientId], peer.isTrusted, peer.ownDevice,
+        guard let peer = store.peers[clientId], peer.isTrusted, peer.ownDevice, !peer.isExperienceMode,
               let e = peer.sealable(now: Self.nowMillis()) else { return nil }
         return EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
     }
@@ -667,16 +677,22 @@ nonisolated final class NotiSyncEngine: Sendable {
         let payload = Self.extractPairingPayload(scanned)
         let (cardBlob, card, epochBlob) = try decodeVerifiedDelivery(payload)
         guard card.clientId != selfClientId else { throw EngineError.notForUs }
-        AppGroupStore.withLock(AppGroupStore.Files.trust) {
+        let now = Self.nowMillis()
+        let pairedName: String? = AppGroupStore.withLock(AppGroupStore.Files.trust) {
             let store = trust()
-            store.pin(card: card, ownDevice: ownDevice, at: Self.nowMillis())
-            CardStore.put(card.clientId, blob: cardBlob)   // retain the signed card so we can introduce this peer (#3)
-            if let epochBlob, let ke = KeyEpochs.verify(epochBlob, pinnedIdentitySpki: card.identityPublicKey) {
+            guard let put = CardStore.put(card.clientId, blob: cardBlob, now: now) else { return nil }
+            // CardStore and the signed roster are separate files. If an earlier write stored a newer card but
+            // did not finish the roster update, pair from that effective newest snapshot rather than pinning
+            // stale scanned profile data over it.
+            store.pin(card: put.card, ownDevice: ownDevice, at: now)
+            if let epochBlob,
+               let ke = KeyEpochs.verify(epochBlob, pinnedIdentitySpki: put.card.identityPublicKey) {
                 store.applyKeyEpoch(ke, blob: epochBlob)
             }
-            save(store)
+            return save(store) ? put.card.displayName : nil
         }
-        return card.displayName
+        guard let pairedName else { throw EngineError.persistenceFailed }
+        return pairedName
     }
 
     private func decodeVerifiedDelivery(_ payload: String) throws -> (SignedBlob, ClientCard, SignedBlob?) {
@@ -694,6 +710,7 @@ nonisolated final class NotiSyncEngine: Sendable {
         }
         let card = try ProtocolCodec.decodeClientCard(cardBlob.payload)
         guard card.clientId == cardBlob.signerId,
+              ClientCardFreshness.accepts(createdAt: card.createdAt, now: Self.nowMillis()),
               IdentityVerifier.verifyBound(expectedSignerId: cardBlob.signerId, spki: card.identityPublicKey,
                                            data: cardBlob.payload, signature: cardBlob.sig) else {
             throw EngineError.verificationFailed
@@ -703,7 +720,10 @@ nonisolated final class NotiSyncEngine: Sendable {
 
     func trustedPeers() -> [TrustedPeerRecord] { Array(trust().peers.values) }
 
-    private func save(_ store: TrustStore) { store.save(sign: { try identityKeys.sign($0) }) }
+    @discardableResult
+    private func save(_ store: TrustStore) -> Bool {
+        store.save(sign: { try identityKeys.sign($0) })
+    }
 
     // MARK: Helpers
 

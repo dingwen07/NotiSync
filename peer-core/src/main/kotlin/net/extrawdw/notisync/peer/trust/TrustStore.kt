@@ -124,7 +124,7 @@ data class IncomingTrustResult(
 /**
  * The device's trust roster. Three layers, keyed by [ClientId]:
  *  - trust decisions ([TrustEntry], the [TrustMachine] state),
- *  - keys (a verified, first-verified-wins, immutable-key card store),
+ *  - cards (verified, identity-pinned snapshots that advance strictly by [ClientCard.createdAt]),
  *  - a mutable profile overlay (live names from [ProfileUpdate]).
  *
  * The *active* roster — the only thing [recipients] and inbound verification consult — is the
@@ -136,6 +136,7 @@ open class TrustStore(
     /** This device's identity: its [IdentitySigner.clientId] is our own id (implicitly trusted, external
      *  rows about it ignored), and the key signs the persisted roster and verifies it on load. */
     private val identity: IdentitySigner,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) : TrustState {
     private val selfId: ClientId = identity.clientId
     private val entriesKey = ENTRIES_KEY
@@ -192,12 +193,21 @@ open class TrustStore(
     // ---- local user actions (return true when the change should be broadcast immediately) ----
 
     /** Optical/manual add: pin [cardBlob]'s keys and trust it. Returns false if the card fails verification. */
+    @Synchronized
     fun addLocal(cardBlob: SignedBlob, now: Long, ownDevice: Boolean = true): Boolean {
         if (_quarantined.value) return false
         val card = verifyCard(cardBlob) ?: return false
+        if (!isAcceptableCardCreatedAt(card.createdAt, now)) return false
         mutate { st ->
+            val cards = putCard(st.cards, card.clientId, cardBlob)
+            val overlay = st.overlays[card.clientId]
             st.copy(
-                cards = putCard(st.cards, card.clientId, cardBlob),
+                cards = cards,
+                overlays = if (cards !== st.cards && overlay != null && overlay.updatedAt < card.createdAt) {
+                    st.overlays - card.clientId
+                } else {
+                    st.overlays
+                },
                 entries = st.entries + (card.clientId to TrustMachine.localAdd(
                     card.clientId,
                     now,
@@ -208,6 +218,7 @@ open class TrustStore(
         return true
     }
 
+    @Synchronized
     fun revokeLocal(clientId: ClientId, now: Long): Boolean {
         if (_quarantined.value) return false
         // Keep the device's own/other classification on its tombstone — a revoke must never reclassify it.
@@ -229,6 +240,7 @@ open class TrustStore(
      * (not broadcast). Only safe once the tombstone has outlived any lagging peer's stale-trust window,
      * so the UI gates this on [REVOKE_PURGE_DELAY_MS]; until then a stale re-introduction is re-tombstoned.
      */
+    @Synchronized
     fun purgeRevoked(clientId: ClientId): Boolean {
         if (_quarantined.value) return false
         if (_state.value.entries[clientId]?.status != TrustStatus.REVOKED) return false
@@ -249,18 +261,21 @@ open class TrustStore(
     }
 
     /** Approve a PENDING_TRUST. Silent (anti-entropy carries it). */
+    @Synchronized
     fun approveTrust(clientId: ClientId, now: Long): Boolean =
         transition(clientId, now, broadcast = false) {
             if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.approveTrust(it, now) else null
         }
 
     /** Reject a PENDING_TRUST -> REVOKED. Overturn -> broadcast. */
+    @Synchronized
     fun rejectTrust(clientId: ClientId, now: Long): Boolean =
         transition(clientId, now, broadcast = true) {
             if (it.status == TrustStatus.PENDING_TRUST) TrustMachine.rejectTrust(it, now) else null
         }
 
     /** Confirm a PENDING_REVOKE -> REVOKED. Silent. */
+    @Synchronized
     fun confirmRevoke(clientId: ClientId, now: Long): Boolean =
         transition(clientId, now, broadcast = false) {
             if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.confirmRevoke(
@@ -270,6 +285,7 @@ open class TrustStore(
         }
 
     /** Reject a PENDING_REVOKE (keep the device) -> TRUSTED. Overturn -> broadcast. */
+    @Synchronized
     fun keepTrusted(clientId: ClientId, now: Long): Boolean =
         transition(clientId, now, broadcast = true) {
             if (it.status == TrustStatus.PENDING_REVOKE) TrustMachine.keepTrusted(it, now) else null
@@ -278,11 +294,13 @@ open class TrustStore(
     /** Revert a local delete: REVOKED -> TRUSTED. Own decision -> broadcast (peers re-confirm via RE_TRUST).
      *  Its card/key-epoch survive a revoke (only [purgeRevoked] drops them), so the device becomes reachable
      *  again as soon as its key-epoch is held. */
+    @Synchronized
     fun restoreTrust(clientId: ClientId, now: Long): Boolean =
         transition(clientId, now, broadcast = true) {
             if (it.status == TrustStatus.REVOKED) TrustMachine.restoreTrust(it, now) else null
         }
 
+    @Synchronized
     override fun resolveIncomingPrompt(clientId: ClientId, prompt: TrustPrompt, now: Long): Boolean =
         when (prompt) {
             TrustPrompt.NEW_TRUST, TrustPrompt.RE_TRUST ->
@@ -305,6 +323,7 @@ open class TrustStore(
      * identity key and resume. The right choice when the mismatch is benign — most commonly the first
      * launch after signing shipped, when a pre-existing roster simply had no signature yet.
      */
+    @Synchronized
     fun approveQuarantine() {
         if (!_quarantined.value) return
         val st = _state.value
@@ -315,6 +334,7 @@ open class TrustStore(
     }
 
     /** The user declined to trust the unverifiable roster: wipe it, sign the empty store, and resume (re-pair). */
+    @Synchronized
     fun clearQuarantine() {
         if (!_quarantined.value) return
         val empty = State(emptyMap(), emptyMap(), emptyMap(), EpochSection())
@@ -330,6 +350,7 @@ open class TrustStore(
      * end-to-end (Devices banner + high-importance notification + the send/receive freeze) without editing
      * storage by hand. Survives a restart — [load] then re-detects the missing signature.
      */
+    @Synchronized
     fun simulateSignatureTamper() {
         persistence.write(mapOf(sigKey to null))
         if (!_quarantined.value) {
@@ -341,6 +362,7 @@ open class TrustStore(
     // ---- incoming ----
 
     /** Fold a peer's broadcast roster into ours. Returns prompts to raise, cards to offer, and whether to re-broadcast. */
+    @Synchronized
     override fun applyIncomingTable(sender: ClientId, table: TrustTable): IncomingTrustResult {
         if (_quarantined.value) return IncomingTrustResult(
             emptyList(),
@@ -374,7 +396,7 @@ open class TrustStore(
                 // lacks it and our local subject is trusted or pending trust.
                 val mine = entries[wire.clientId] // running accumulator, consistent with the fold above
                 // CARD material self-authenticates, so a pending introduction or re-introduction may relay
-                // what it holds without approving C. Entries that remain revoked/pending-revoke are excluded.
+                // what it holds without approving C.
                 if (mine?.status == TrustStatus.TRUSTED || mine?.status == TrustStatus.PENDING_TRUST) {
                     if (!wire.keyAvailable) st.cards[wire.clientId]?.let { offers += it }
                     // NS2 key-epoch repair: if the sender's advertised epoch for this subject is BEHIND what
@@ -392,20 +414,51 @@ open class TrustStore(
     }
 
     /**
-     * Store a delivered card. Self-verifying (clientId == fingerprint + self-sig) and first-verified-wins,
-     * so it is safe to accept even before a trust entry exists — that's what lets a targeted repair after
-     * an introduction resolve a still-pending device's name instead of leaving it "Unknown".
+     * Store a delivered card. It must self-verify (clientId == fingerprint + self-sig) and may only advance
+     * the identity-pinned snapshot to a strictly newer [ClientCard.createdAt]. This makes stale relay replay a
+     * no-op while still allowing a newer self-announcement to refresh the signed card retained for repair.
+     * A profile overlay newer than the incoming card remains authoritative; an older overlay is discarded.
      */
+    @Synchronized
     override fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean {
         if (_quarantined.value) return false
         val card = verifyCard(cardBlob) ?: return false
         if (card.clientId != clientId) return false
-        if (_state.value.cards.containsKey(clientId)) return false // already pinned (immutable) — see putCard
-        mutate { it.copy(cards = putCard(it.cards, clientId, cardBlob)) }
-        return true
+        if (!isAcceptableCardCreatedAt(card.createdAt, clock())) return false
+        val before = _state.value
+        val pinnedIdentity = pinnedIdentityOf(clientId, before)
+        if (pinnedIdentity != null && !pinnedIdentity.contentEquals(card.identityPublicKey)) return false
+        val existing = before.cards[clientId]?.let(::verifyCard)
+        if (existing != null && card.createdAt <= existing.createdAt) return false
+
+        var applied = false
+        mutate { current ->
+            // Re-check against the state passed to the mutation so a racing newer delivery cannot be replaced
+            // by the card that won the optimistic check above.
+            val currentCard = current.cards[clientId]?.let(::verifyCard)
+            val currentIdentity = pinnedIdentityOf(clientId, current)
+            if ((currentIdentity != null && !currentIdentity.contentEquals(card.identityPublicKey)) ||
+                (currentCard != null && card.createdAt <= currentCard.createdAt)
+            ) {
+                current
+            } else {
+                applied = true
+                val overlay = current.overlays[clientId]
+                current.copy(
+                    cards = current.cards + (clientId to cardBlob),
+                    overlays = if (overlay != null && overlay.updatedAt < card.createdAt) {
+                        current.overlays - clientId
+                    } else {
+                        current.overlays
+                    },
+                )
+            }
+        }
+        return applied
     }
 
     /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
+    @Synchronized
     override fun applyProfile(update: ProfileUpdate): Boolean {
         if (_quarantined.value) return false
         val st = _state.value
@@ -453,6 +506,7 @@ open class TrustStore(
 
     // ---- NS2 epochs (§5/§6): generation ring, monotonic floor, self counter ----
 
+    @Synchronized
     override fun applyKeyEpoch(clientId: ClientId, keyEpochBlob: SignedBlob): Boolean {
         if (_quarantined.value) return false
         val st = _state.value
@@ -465,6 +519,24 @@ open class TrustStore(
         if (ke.clientId != clientId) return false
         if (ke.epoch < floor) return false        // rollback: an epoch below the floor is a retired/superseded key
         if (ke.minEpoch < floor) return false      // a replayed bundle must not assert a stale minEpoch to drag the floor down
+        val sameEpoch = existing?.let(::decodeRing)?.firstOrNull { it.first.epoch == ke.epoch }
+        if (sameEpoch != null) {
+            val (held, _) = sameEpoch
+            // One epoch names one operational/HPKE key pair. A conflicting identity-signed certificate for
+            // the same epoch is equivocation, not rotation; rotation must increment the epoch.
+            if (!held.operationalSigningKey.contentEquals(ke.operationalSigningKey) ||
+                !held.hpkePublicKey.contentEquals(ke.hpkePublicKey)
+            ) return false
+            // Purpose authorization belongs to the key generation. A different purpose set must advance the
+            // epoch; otherwise delayed same-epoch certificates could restore permissions that were removed.
+            if (held.purposes.toSet() != ke.purposes.toSet()) return false
+            // A compact pairing-QR certificate omits the identity anchor. It may be upgraded by a full copy,
+            // but must never replace a self-contained copy that can be relayed to a cardless peer.
+            if (held.identityPublicKey.isNotEmpty() && ke.identityPublicKey.isEmpty()) return false
+            // ECDSA signatures are randomized. Re-signing the same semantic certificate must not cause a
+            // persistent write merely because SignedBlob.sig differs.
+            if (held.semanticallyEquals(ke)) return false
+        }
         val newFloor = maxOf(floor, ke.minEpoch)
         val next = PeerEpochs(
             mergeRing(existing?.ringB64.orEmpty(), keyEpochBlob, ke.epoch, newFloor),
@@ -510,6 +582,7 @@ open class TrustStore(
 
     override fun selfEpoch(): Int = _state.value.epochs.selfEpoch
 
+    @Synchronized
     override fun advanceSelfEpoch(to: Int): Int {
         val cur = _state.value.epochs.selfEpoch
         if (to <= cur || _quarantined.value) return cur
@@ -519,6 +592,7 @@ open class TrustStore(
 
     override fun pendingRotation(): PendingRotation? = _state.value.epochs.pending
 
+    @Synchronized
     override fun setPendingRotation(pending: PendingRotation?) {
         if (_quarantined.value) return
         if (_state.value.epochs.pending == pending) return
@@ -573,13 +647,19 @@ open class TrustStore(
         card
     }.getOrNull()
 
-    /** First-verified-wins, immutable keys: keep the pinned card; never overwrite with a re-keyed one. */
+    /** Advance a verified card snapshot strictly by createdAt while preserving its immutable identity anchor. */
     private fun putCard(
         cards: Map<ClientId, SignedBlob>,
         id: ClientId,
         blob: SignedBlob
-    ): Map<ClientId, SignedBlob> =
-        if (cards.containsKey(id)) cards else cards + (id to blob)
+    ): Map<ClientId, SignedBlob> {
+        val incoming = verifyCard(blob) ?: return cards
+        val held = cards[id]?.let(::verifyCard)
+        if (held != null && (!held.identityPublicKey.contentEquals(incoming.identityPublicKey) ||
+                incoming.createdAt <= held.createdAt)
+        ) return cards
+        return cards + (id to blob)
+    }
 
     private fun computeActivePeers(st: State): List<Peer> =
         st.entries.values.mapNotNull { toPeer(it, st) }
@@ -694,6 +774,19 @@ open class TrustStore(
                 runCatching { blob.decode<ClientKeyEpoch>() }.getOrNull()?.let { it to blob }
             }
         }
+
+    /** Value equality for a certificate whose key fields are byte arrays (data-class equality is referential). */
+    private fun ClientKeyEpoch.semanticallyEquals(other: ClientKeyEpoch): Boolean =
+        suite == other.suite &&
+            clientId == other.clientId &&
+            identityPublicKey.contentEquals(other.identityPublicKey) &&
+            epoch == other.epoch &&
+            operationalSigningKey.contentEquals(other.operationalSigningKey) &&
+            hpkePublicKey.contentEquals(other.hpkePublicKey) &&
+            purposes.toSet() == other.purposes.toSet() &&
+            notBefore == other.notBefore &&
+            notAfter == other.notAfter &&
+            minEpoch == other.minEpoch
 
     /** The peer's highest key-epoch that is ≥ its floor AND whose notBefore has arrived — what we seal to (§7). */
     private fun currentSealableEpoch(
@@ -817,9 +910,8 @@ open class TrustStore(
         return Loaded(state, quarantined = !isEmpty && !verified)
     }
 
-    /** Serialize [st], sign it with the identity key, and persist the sections + signature atomically.
-     *  Serialization and the Keystore signature run off the caller's thread (mutations can fire on the UI
-     *  thread); DataStore applies the four keys as one transaction, so sections and signature stay in step. */
+    /** Serialize [st], sign it with the identity key, and durably persist all sections + signature as one
+     *  transaction before publishing the new in-memory state. Platform adapters must not return early. */
     private fun writeSigned(st: State) {
         val entriesJson = ProtocolCodec.encodeToJson(st.entries.values.toList())
         val cardsJson = ProtocolCodec.encodeToJson(st.cards.mapKeys { it.key.value }
@@ -838,6 +930,15 @@ open class TrustStore(
         )
     }
 
+    private fun isAcceptableCardCreatedAt(createdAt: Long, now: Long): Boolean {
+        val latestAccepted = if (now > Long.MAX_VALUE - MAX_CARD_FUTURE_SKEW_MS) {
+            Long.MAX_VALUE
+        } else {
+            now + MAX_CARD_FUTURE_SKEW_MS
+        }
+        return createdAt <= latestAccepted
+    }
+
     companion object {
         const val ENTRIES_KEY = "trust_entries_json"
         const val CARDS_KEY = "trust_cards_json"
@@ -847,6 +948,8 @@ open class TrustStore(
         /** Generations retained per peer (§6, K≈3): enough to verify an in-flight epoch-N envelope after
          *  learning N+1, bounded by the floor. */
         const val RING_SIZE = 3
+        /** Allow ordinary clock drift without letting a far-future card pin profile LWW indefinitely. */
+        const val MAX_CARD_FUTURE_SKEW_MS = 5L * 60 * 1000
 
         // How long a revoked tombstone must persist before it can be permanently deleted. Purging drops
         // the entry, so the LWW staleness guard no longer protects that id: this delay only BOUNDS (it does

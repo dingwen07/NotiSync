@@ -545,19 +545,48 @@ nonisolated enum NotificationFilterStore {
 }
 
 /// Held signed client cards (`SignedBlob` CBOR, keyed by clientId), in the App Group. They are
-/// self-authenticating (clientId == identity fingerprint + identity signature, verified on use), so they
-/// are stored unsigned and relayed to introduce a peer by name (the trust-table introduction flow, #3).
+/// self-authenticating (clientId == identity fingerprint + identity signature). Every write verifies the
+/// blob, and a held card is replaced only by a strictly newer identity-signed card from the same client.
+/// The map itself is stored unsigned and relayed to introduce a peer by name (trust-table flow, #3).
 nonisolated enum CardStore {
     private static let name = AppGroupStore.Files.cards
 
+    struct PutResult: Sendable {
+        var card: ClientCard
+        var changed: Bool
+    }
+
     static func all() -> [String: Data] { AppGroupStore.read([String: Data].self, name) ?? [:] }
 
-    static func put(_ clientId: String, blob: SignedBlob) {
-        AppGroupStore.withLock(name) {
+    /// Persist a verified card iff no card is held or this card has a strictly greater `createdAt`.
+    /// Returns the effective newest card even when the incoming value is stale/equal. Callers use that
+    /// value to reconcile a separately persisted trust row after an interrupted earlier update.
+    @discardableResult
+    static func put(_ clientId: String, blob: SignedBlob, now: Int64) -> PutResult? {
+        guard blob.typ == SignedType.clientCard, blob.signerId == clientId,
+              let card = try? ProtocolCodec.decodeClientCard(blob.payload), card.clientId == clientId,
+              ClientCardFreshness.accepts(createdAt: card.createdAt, now: now),
+              IdentityVerifier.verifyBound(expectedSignerId: clientId, spki: card.identityPublicKey,
+                                           data: blob.payload, signature: blob.sig) else { return nil }
+        return AppGroupStore.withLock(name) {
             var m = all()
-            guard m[clientId] == nil else { return }   // first-verified-wins: never overwrite a pinned card
+            if let heldData = m[clientId],
+               let heldBlob = try? ProtocolCodec.decodeSignedBlob(heldData),
+               heldBlob.typ == SignedType.clientCard, heldBlob.signerId == clientId,
+               let heldCard = try? ProtocolCodec.decodeClientCard(heldBlob.payload),
+               heldCard.clientId == clientId,
+               IdentityVerifier.verifyBound(expectedSignerId: clientId, spki: heldCard.identityPublicKey,
+                                            data: heldBlob.payload, signature: heldBlob.sig) {
+                // One client id binds one identity key. Never replace a held identity anchor even if an
+                // impossible hash collision presents a second self-consistent card for the same id.
+                guard heldCard.identityPublicKey == card.identityPublicKey else { return nil }
+                if card.createdAt <= heldCard.createdAt {
+                    return PutResult(card: heldCard, changed: false)
+                }
+            }
             m[clientId] = ProtocolCodec.encode(blob)
-            AppGroupStore.write(m, name)
+            guard AppGroupStore.write(m, name) else { return nil }
+            return PutResult(card: card, changed: true)
         }
     }
 

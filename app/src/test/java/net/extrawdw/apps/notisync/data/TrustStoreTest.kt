@@ -7,6 +7,9 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.crypto.KeyFingerprint
 import net.extrawdw.notisync.protocol.ClientCard
@@ -37,13 +40,16 @@ import java.util.Base64
 /** Store-level wiring around the trust state machine (DataStore-backed, file under the JVM temp dir). */
 class TrustStoreTest {
 
-    private fun newStore(self: IdentitySigner): TrustStore {
+    private fun newStore(
+        self: IdentitySigner,
+        clock: () -> Long = System::currentTimeMillis,
+    ): TrustStore {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         // Unique non-existent path per store — DataStore allows only one active instance per file.
         val file = File.createTempFile("truststore-${System.nanoTime()}", ".preferences_pb")
             .also { it.delete() }
         val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
-        return TrustStore(ds, scope, self)
+        return TrustStore(ds, self, clock)
     }
 
     private fun trusted(signer: IdentitySigner) =
@@ -95,7 +101,7 @@ class TrustStoreTest {
                 }
             }
         }
-        return TrustStore(ds, scope, self)
+        return TrustStore(ds, self)
     }
 
     /** Seed a store signed over ONLY the legacy three sections (no epoch section persisted) — a pre-NS2
@@ -132,7 +138,7 @@ class TrustStoreTest {
                     b64url.encodeToString(self.sign(legacyCanonical))
             }
         }
-        return TrustStore(ds, scope, self)
+        return TrustStore(ds, self)
     }
 
     /** A valid identity-signed KEY_EPOCH blob for [signer] (its own operational keys at [epoch]). */
@@ -171,14 +177,18 @@ class TrustStoreTest {
             floor
         )
 
-    private fun signedCard(signer: IdentitySigner): SignedBlob {
+    private fun signedCard(
+        signer: IdentitySigner,
+        displayName: String = "Other",
+        createdAt: Long = 1L,
+    ): SignedBlob {
         val card = ClientCard(
             clientId = signer.clientId,
             identityPublicKey = signer.publicKeySpki,
-            displayName = "Other",
+            displayName = displayName,
             platform = "android",
             capabilities = emptyList(),
-            createdAt = 1L,
+            createdAt = createdAt,
         )
         val payload = ProtocolCodec.encodeToCbor(card)
         return SignedBlob(
@@ -186,6 +196,16 @@ class TrustStoreTest {
             signerId = signer.clientId,
             payload = payload,
             sig = signer.sign(payload)
+        )
+    }
+
+    private fun signedKeyEpoch(signer: IdentitySigner, epoch: ClientKeyEpoch): SignedBlob {
+        val payload = ProtocolCodec.encodeToCbor(epoch)
+        return SignedBlob(
+            SignedType.KEY_EPOCH,
+            signerId = signer.clientId,
+            payload = payload,
+            sig = signer.sign(payload),
         )
     }
 
@@ -248,6 +268,182 @@ class TrustStoreTest {
             "Renamed",
             tombstone.displayName
         )
+    }
+
+    @Test
+    fun applyCard_replacesOnlyStrictlyNewerCard_andReconcilesProfileOverlay() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(
+            store.addLocal(
+                signedCard(other, displayName = "Card 10", createdAt = 10L),
+                now = 10L,
+                ownDevice = true,
+            )
+        )
+        assertTrue(
+            store.applyProfile(
+                ProfileUpdate(
+                    other.clientId,
+                    "Overlay 30",
+                    "android",
+                    emptyList(),
+                    updatedAt = 30L,
+                )
+            )
+        )
+
+        // A newer card is retained for future repair, but cannot overwrite an even newer profile overlay.
+        assertTrue(
+            store.applyCard(
+                other.clientId,
+                signedCard(other, displayName = "Card 20", createdAt = 20L),
+            )
+        )
+        assertEquals(20L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+        assertEquals("Overlay 30", store.displayName(other.clientId))
+
+        // Equal/older deliveries are stale relay replays, even if their signed profile differs.
+        assertFalse(
+            store.applyCard(
+                other.clientId,
+                signedCard(other, displayName = "Equal but different", createdAt = 20L),
+            )
+        )
+        assertFalse(
+            store.applyCard(
+                other.clientId,
+                signedCard(other, displayName = "Older", createdAt = 19L),
+            )
+        )
+        assertEquals("Overlay 30", store.displayName(other.clientId))
+
+        // A card newer than the overlay supersedes it and establishes the new profile-update floor.
+        assertTrue(
+            store.applyCard(
+                other.clientId,
+                signedCard(other, displayName = "Card 40", createdAt = 40L),
+            )
+        )
+        assertEquals("Card 40", store.displayName(other.clientId))
+        assertFalse(
+            store.applyProfile(
+                ProfileUpdate(
+                    other.clientId,
+                    "Stale overlay",
+                    "android",
+                    emptyList(),
+                    updatedAt = 35L,
+                )
+            )
+        )
+    }
+
+    @Test
+    fun addLocal_usesTheSameNewerCardAndProfilePrecedenceRules() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(other, displayName = "Card 10", createdAt = 10L), now = 10L))
+        assertTrue(
+            store.applyProfile(
+                ProfileUpdate(other.clientId, "Overlay 30", "android", emptyList(), updatedAt = 30L)
+            )
+        )
+
+        assertTrue(store.addLocal(signedCard(other, displayName = "Card 20", createdAt = 20L), now = 20L))
+        assertEquals(20L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+        assertEquals("Overlay 30", store.displayName(other.clientId))
+
+        assertTrue(store.addLocal(signedCard(other, displayName = "Card 40", createdAt = 40L), now = 40L))
+        assertEquals(40L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+        assertEquals("Card 40", store.displayName(other.clientId))
+
+        assertTrue(store.addLocal(signedCard(other, displayName = "Older", createdAt = 35L), now = 40L))
+        assertEquals(40L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+        assertEquals("Card 40", store.displayName(other.clientId))
+    }
+
+    @Test
+    fun applyCard_rejectsCardWhoseIdentityDoesNotMatchDeliverySubject() {
+        val self = SoftwareIdentitySigner.generate()
+        val subject = SoftwareIdentitySigner.generate()
+        val imposter = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(subject, createdAt = 10L), now = 10L))
+
+        assertFalse(store.applyCard(subject.clientId, signedCard(imposter, createdAt = 20L)))
+        assertEquals(subject.clientId, store.cardFor(subject.clientId)?.signerId)
+        assertEquals(10L, store.cardFor(subject.clientId)?.decode<ClientCard>()?.createdAt)
+    }
+
+    @Test
+    fun cardCreatedAt_allowsClockSkewButRejectsFarFutureValues() {
+        val now = 1_000_000L
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self) { now }
+        assertTrue(store.addLocal(signedCard(other, createdAt = now), now = now))
+
+        val latestAccepted = now + net.extrawdw.notisync.peer.trust.TrustStore.MAX_CARD_FUTURE_SKEW_MS
+        assertTrue(store.applyCard(other.clientId, signedCard(other, createdAt = latestAccepted)))
+        assertFalse(store.applyCard(other.clientId, signedCard(other, createdAt = latestAccepted + 1)))
+        assertEquals(latestAccepted, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+
+        val newPeer = SoftwareIdentitySigner.generate()
+        assertFalse(
+            store.addLocal(
+                signedCard(newPeer, createdAt = latestAccepted + 1),
+                now = now,
+            )
+        )
+    }
+
+    @Test
+    fun newerDeliveredCard_isPersistedAndSurvivesStoreReload() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val file = File.createTempFile("truststore-card-reload-${System.nanoTime()}", ".preferences_pb")
+            .also { it.delete() }
+        val firstJob = SupervisorJob()
+        val firstScope = CoroutineScope(firstJob + Dispatchers.IO)
+        val firstDataStore = PreferenceDataStoreFactory.create(scope = firstScope) { file }
+        val first = TrustStore(firstDataStore, self)
+        assertTrue(first.addLocal(signedCard(other, createdAt = 10L), now = 10L))
+        assertTrue(first.applyCard(other.clientId, signedCard(other, createdAt = 20L)))
+
+        // Verify the durable DataStore transaction itself, not merely TrustStore's in-memory cache.
+        runBlocking {
+            firstDataStore.data.first { preferences ->
+                val cardsJson = preferences[stringPreferencesKey(
+                    net.extrawdw.notisync.peer.trust.TrustStore.CARDS_KEY
+                )] ?: return@first false
+                runCatching {
+                    val encoded = ProtocolCodec.decodeFromJson<Map<String, String>>(cardsJson)
+                        .getValue(other.clientId.value)
+                    ProtocolCodec.decodeFromCbor<SignedBlob>(Base64.getDecoder().decode(encoded))
+                        .decode<ClientCard>()
+                        .createdAt == 20L
+                }.getOrDefault(false)
+            }
+        }
+        firstScope.cancel()
+        runBlocking { firstJob.join() }
+
+        val secondJob = SupervisorJob()
+        val secondScope = CoroutineScope(secondJob + Dispatchers.IO)
+        try {
+            val reloaded = TrustStore(
+                PreferenceDataStoreFactory.create(scope = secondScope) { file },
+                self,
+            )
+            assertFalse(reloaded.quarantined.value)
+            assertEquals(20L, reloaded.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+        } finally {
+            secondScope.cancel()
+            runBlocking { secondJob.join() }
+        }
     }
 
     // ---- tamper quarantine ----
@@ -330,6 +526,87 @@ class TrustStoreTest {
             store.applyKeyEpoch(other.clientId, keyEpochBlobFor(other, epoch = 1, minEpoch = 1))
         )
         assertEquals(2, store.peerEpoch(other.clientId))
+    }
+
+    @Test
+    fun applyKeyEpoch_sameSemanticCertificateIsNoOp_butWindowUpdateWithSameKeysApplies() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(other), now = 10L))
+        val original = keyEpochBlobFor(other, epoch = 2, minEpoch = 1)
+        assertTrue(store.applyKeyEpoch(other.clientId, original))
+
+        // ECDSA creates a different signature and purpose ordering is irrelevant, but the certificate is
+        // semantically equivalent.
+        val reordered = original.decode<ClientKeyEpoch>().copy(
+            purposes = original.decode<ClientKeyEpoch>().purposes.reversed(),
+        )
+        val resigned = signedKeyEpoch(other, reordered)
+        assertFalse(store.applyKeyEpoch(other.clientId, resigned))
+
+        // Purpose authorization cannot change within one key generation; that requires a new epoch.
+        val changedPurposes = signedKeyEpoch(
+            other,
+            original.decode<ClientKeyEpoch>().copy(purposes = listOf(Purpose.ENVELOPE_SIGN)),
+        )
+        assertFalse(store.applyKeyEpoch(other.clientId, changedPurposes))
+
+        // Rotation staging legitimately republishes one epoch with revised validity/floor metadata.
+        val revised = signedKeyEpoch(
+            other,
+            original.decode<ClientKeyEpoch>().copy(notAfter = 500L),
+        )
+        assertTrue(store.applyKeyEpoch(other.clientId, revised))
+        assertEquals(500L, store.currentKeyEpochBlob(other.clientId)?.decode<ClientKeyEpoch>()?.notAfter)
+    }
+
+    @Test
+    fun applyKeyEpoch_sameEpochRejectsKeyChange_andNeverDowngradesFullCertificate() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(other), now = 10L))
+        val full = keyEpochBlobFor(other, epoch = 2, minEpoch = 1)
+        assertTrue(store.applyKeyEpoch(other.clientId, full))
+
+        // A rotation with different operational/HPKE keys must advance the epoch, even if identity-signed.
+        assertFalse(
+            store.applyKeyEpoch(
+                other.clientId,
+                keyEpochBlobFor(other, epoch = 2, minEpoch = 1),
+            )
+        )
+        // A compact QR copy cannot replace the self-contained certificate needed for third-peer repair.
+        val stripped = signedKeyEpoch(
+            other,
+            full.decode<ClientKeyEpoch>().copy(identityPublicKey = ByteArray(0)),
+        )
+        assertFalse(store.applyKeyEpoch(other.clientId, stripped))
+        assertTrue(
+            store.currentKeyEpochBlob(other.clientId)
+                ?.decode<ClientKeyEpoch>()
+                ?.identityPublicKey
+                ?.isNotEmpty() == true
+        )
+    }
+
+    @Test
+    fun applyKeyEpoch_upgradesStrippedSameEpochToSelfContainedCertificate() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(other), now = 10L))
+        val full = keyEpochBlobFor(other, epoch = 1, minEpoch = 1)
+        val stripped = signedKeyEpoch(
+            other,
+            full.decode<ClientKeyEpoch>().copy(identityPublicKey = ByteArray(0)),
+        )
+        assertTrue(store.applyKeyEpoch(other.clientId, stripped))
+        assertNull(store.currentKeyEpochBlob(other.clientId))
+
+        assertTrue(store.applyKeyEpoch(other.clientId, full))
+        assertEquals(1, store.currentKeyEpochBlob(other.clientId)?.decode<ClientKeyEpoch>()?.epoch)
     }
 
     @Test
@@ -468,6 +745,36 @@ class TrustStoreTest {
                         subject.clientId,
                         TrustStatus.TRUSTED,
                         5L,
+                        keyAvailable = false,
+                        epoch = 0,
+                    )
+                )
+            ),
+        )
+
+        assertEquals(TrustStatus.PENDING_TRUST, store.statusOf(subject.clientId))
+        assertEquals(listOf(subject.clientId), result.cardsToOffer.map { it.signerId })
+        assertEquals(listOf(subject.clientId), result.keyEpochsToOffer.map { it.signerId })
+    }
+
+    @Test
+    fun applyIncomingTable_reintroducedSubjectMayOfferRetainedMaterial() {
+        val self = SoftwareIdentitySigner.generate()
+        val sender = SoftwareIdentitySigner.generate()
+        val subject = SoftwareIdentitySigner.generate()
+        val store = newStore(self)
+        assertTrue(store.addLocal(signedCard(subject), now = 10L, ownDevice = true))
+        assertTrue(store.applyKeyEpoch(subject.clientId, keyEpochBlobFor(subject, epoch = 2, minEpoch = 2)))
+        assertTrue(store.revokeLocal(subject.clientId, now = 20L))
+
+        val result = store.applyIncomingTable(
+            sender.clientId,
+            TrustTable(
+                listOf(
+                    TrustTableEntry(
+                        subject.clientId,
+                        TrustStatus.TRUSTED,
+                        updatedAt = 30L,
                         keyAvailable = false,
                         epoch = 0,
                     )

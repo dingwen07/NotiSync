@@ -44,7 +44,7 @@ interface TrustState {
     /** Finalize a verified incoming prompt under a platform's explicit auto-trust policy. */
     fun resolveIncomingPrompt(clientId: ClientId, prompt: TrustPrompt, now: Long): Boolean = false
 
-    /** Pin a delivered card (first-verified-wins). Returns true if newly stored. */
+    /** Store a verified delivered card when it is newer than the identity-pinned snapshot. */
     fun applyCard(clientId: ClientId, cardBlob: SignedBlob): Boolean
 
     // ---- NS2 operational-key epochs (§5/§6): generation ring + anti-rollback floor ----

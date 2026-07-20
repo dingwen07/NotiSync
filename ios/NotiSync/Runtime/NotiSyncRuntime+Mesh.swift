@@ -239,9 +239,9 @@ extension NotiSyncRuntime {
     private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
         let name = try await acceptPairingLocally(scanned, ownDevice: ownDevice)
         await publishCurrentRoute()
-        // Enforcement that Experience Mode never broadcasts the trust roster lives in the seal (`sealTrustTable`
-        // / `sealTrustCards` exclude demo peers from both the table and its recipients), so it holds for every
-        // `broadcastTrust()` caller — pairing, approve/reject/revoke, and the periodic heartbeat alike.
+        // Enforcement that Experience Mode never broadcasts or receives the trust roster lives in
+        // `sealTrustTable`, so it holds for every `broadcastTrust()` caller — pairing,
+        // approve/reject/revoke, and the periodic heartbeat alike.
         await broadcastTrust()   // #5 — announce the new device to the rest of the own-mesh
         return name
     }
@@ -259,17 +259,16 @@ extension NotiSyncRuntime {
         Task { await broadcastTrust() }
     }
 
-    /// #5/#3 — broadcast this device's trust roster to its own-mesh (identity-signed), plus the signed cards
-    /// of every trusted device so a peer can NAME (and then approve) a device this device introduces.
+    /// Broadcast this device's trust roster and, between rotations, its own current key epoch to the own mesh.
+    /// Material held for third peers is sent only after the receiver advertises a missing card/epoch.
     func broadcastTrust() async {
         guard let engine, let broker else { return }
         do {
-            // Each seal loads + verifies the trust roster and signs in the Secure Enclave (one signature
-            // per card envelope) — off the main actor.
+            // Each seal loads + verifies the trust roster and signs in the Secure Enclave — off the main actor.
             if let env = try await Task.detached(priority: .utility, operation: { try engine.sealTrustTable() }).value {
                 try await broker.send(env)
             }
-            for env in try await Task.detached(priority: .utility, operation: { try engine.sealTrustCards() }).value {
+            if let env = try await Task.detached(priority: .utility, operation: { try engine.sealTrustSelfKeyEpoch() }).value {
                 _ = try? await broker.send(env)
             }
         } catch {

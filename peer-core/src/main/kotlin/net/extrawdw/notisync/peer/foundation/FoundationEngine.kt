@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
 import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.notisync.peer.channel.SignerSelection
 import net.extrawdw.notisync.peer.ports.FoundationEventSink
@@ -230,7 +231,7 @@ open class FoundationEngine(
                 // require the update to be about that same peer (a peer can't rename another).
                 if (update.clientId != msg.senderId) return
                 val previousName = nameOf(msg.senderId)
-                if (trust.applyProfile(update)) {
+                if (durableTrustMutation("profile update") { trust.applyProfile(update) }) {
                     eventSink.profileRenamed(update.displayName, previousName, msg.deliveryMode.ifKnown())
                 }
             }
@@ -242,7 +243,9 @@ open class FoundationEngine(
                 if (msg.signerEpoch != 0) return
                 val table = sync.trust ?: return
                 val byName = nameOf(msg.senderId)
-                val result = trust.applyIncomingTable(msg.senderId, table)
+                val result = durableTrustMutation("trust table") {
+                    trust.applyIncomingTable(msg.senderId, table)
+                }
                 for ((id, prompt) in result.prompts) {
                     val auto = incomingTrustPolicy.shouldAutoApply(
                         IncomingTrustChange(
@@ -252,7 +255,9 @@ open class FoundationEngine(
                             senderIsTrustedOwnDevice = msg.senderOwnDevice,
                         )
                     )
-                    val applied = auto && trust.resolveIncomingPrompt(id, prompt, now())
+                    val applied = auto && durableTrustMutation("trust decision") {
+                        trust.resolveIncomingPrompt(id, prompt, now())
+                    }
                     if (!applied) onTrustPrompt(id, prompt, byName)
                     eventSink.trustChanged(
                         id,
@@ -301,11 +306,24 @@ open class FoundationEngine(
                 // A delivery carries self-authenticating material — a card (identity + profile) and/or a
                 // key-epoch (NS2 operational keys); each verifies and applies independently of the relaying
                 // envelope, so delivery.clientId need not be the sender.
-                delivery.card?.let { trust.applyCard(delivery.clientId, it) }
-                delivery.epochBlob?.let { trust.applyKeyEpoch(delivery.clientId, it) }
+                durableTrustMutation("card material") {
+                    delivery.card?.let { trust.applyCard(delivery.clientId, it) }
+                    delivery.epochBlob?.let { trust.applyKeyEpoch(delivery.clientId, it) }
+                }
             }
         }
     }
+
+    /** A trust mutator has already validated malformed/stale input as a false/no-op result. Any exception
+     *  escaping it is therefore a durable-state failure and must keep the relay item unacknowledged. */
+    private inline fun <T> durableTrustMutation(description: String, mutation: () -> T): T =
+        try {
+            mutation()
+        } catch (failure: RetryableDeliveryException) {
+            throw failure
+        } catch (failure: Exception) {
+            throw RetryableDeliveryException("could not persist $description", failure)
+        }
 
     /** Best-known display name for an authenticated sender, falling back to its short id. */
     private fun nameOf(id: ClientId): String = trust.displayName(id) ?: id.shortForm()

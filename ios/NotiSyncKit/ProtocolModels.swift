@@ -314,6 +314,16 @@ nonisolated struct ClientCard: Sendable {
     var createdAt: Int64
 }
 
+/// Tolerate ordinary cross-device clock drift, but never let a far-future card pin profile LWW indefinitely.
+nonisolated enum ClientCardFreshness {
+    static let maximumFutureSkewMillis: Int64 = 5 * 60 * 1_000
+
+    static func accepts(createdAt: Int64, now: Int64) -> Bool {
+        let (limit, overflow) = now.addingReportingOverflow(maximumFutureSkewMillis)
+        return createdAt <= (overflow ? Int64.max : limit)
+    }
+}
+
 nonisolated struct CardDelivery: Sendable {
     var clientId: String
     var card: SignedBlob?
