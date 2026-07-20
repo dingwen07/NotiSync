@@ -706,33 +706,44 @@ private struct TrustedPeerRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            DeviceLabel(device: device)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
-                        openFilters()
-                    }
-                }
-            if supportsNotificationFilters {
-                HStack {
-                    Toggle(isOn: Binding(
-                        get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
-                        set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
-                    )) {
-                        NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    Spacer()
-                    if canMirrorScreen {
-                        Button(action: mirrorScreen) {
-                            Label("View Screen", systemImage: "rectangle.inset.filled.and.person.filled")
+            HStack(alignment: .top, spacing: 12) {
+                DeviceLabel(device: device)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
+                            openFilters()
                         }
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
                     }
+                if canMirrorScreen {
+                    Button(action: mirrorScreen) {
+                        ZStack {
+                            Circle()
+                                .fill(Color.accentColor.opacity(0.12))
+                                .frame(width: 36, height: 36)
+                            Image(systemName: "rectangle.inset.filled.and.person.filled")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(.tint)
+                        }
+                        .frame(width: 44, height: 44)
+                        .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("View Screen")
+                    .accessibilityHint(device.displayName.isEmpty
+                                       ? "Opens this Android device in the screen viewer"
+                                       : "Opens " + device.displayName + " in the screen viewer")
                 }
+            }
+            if supportsNotificationFilters {
+                Toggle(isOn: Binding(
+                    get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
+                    set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
+                )) {
+                    NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }

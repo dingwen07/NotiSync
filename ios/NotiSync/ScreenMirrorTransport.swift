@@ -1,7 +1,6 @@
 import CryptoKit
+import Dispatch
 import Foundation
-import Network
-import Security
 
 nonisolated enum IOSScreenChannel: UInt8, Sendable {
     case video = 0
@@ -27,6 +26,7 @@ nonisolated struct IOSScreenSessionDescriptor: Equatable, Sendable {
 nonisolated enum IOSScreenTransportError: Error, LocalizedError {
     case noLAN
     case listenerFailed(String)
+    case connectionFailed(String)
     case timedOut
     case channelClosed
     case malformedBinding
@@ -37,6 +37,7 @@ nonisolated enum IOSScreenTransportError: Error, LocalizedError {
         switch self {
         case .noLAN: "Connect this iPhone and the Android source to the same Wi-Fi network."
         case .listenerFailed(let detail): "Could not open the local screen listener: \(detail)"
+        case .connectionFailed(let detail): "The secure screen connection failed: \(detail)"
         case .timedOut: "The Android source did not connect before the request expired."
         case .channelClosed: "The Android source closed the screen connection."
         case .malformedBinding: "The Android source sent an invalid screen-channel binding."
@@ -46,108 +47,113 @@ nonisolated enum IOSScreenTransportError: Error, LocalizedError {
     }
 }
 
-private nonisolated final class IOSScreenCompletionGate: @unchecked Sendable {
-    private let lock = NSLock()
-    private var completed = false
-
-    func finish(_ body: () -> Void) {
-        lock.lock()
-        guard !completed else {
-            lock.unlock()
-            return
-        }
-        completed = true
-        lock.unlock()
-        body()
-    }
-}
-
-/// One TLS-protected screen channel. Network.framework owns the socket and applies back-pressure to every
-/// async send/receive; callers never touch the underlying file descriptor.
+/// One OpenSSL-backed TLS 1.3 PSK channel. Blocking TLS I/O stays on a private serial queue.
 nonisolated final class IOSScreenWireConnection: @unchecked Sendable {
-    private let connection: NWConnection
+    private let connection: OpaquePointer
     private let queue: DispatchQueue
 
-    init(_ connection: NWConnection, label: String) {
+    init(_ connection: OpaquePointer, label: String) {
         self.connection = connection
         self.queue = DispatchQueue(label: label, qos: .userInitiated)
     }
 
-    func start() async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            let gate = IOSScreenCompletionGate()
-            connection.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    gate.finish { continuation.resume() }
-                case .failed(let error):
-                    gate.finish { continuation.resume(throwing: error) }
-                case .cancelled:
-                    gate.finish { continuation.resume(throwing: IOSScreenTransportError.channelClosed) }
-                default:
-                    break
-                }
-            }
-            connection.start(queue: queue)
-            queue.asyncAfter(deadline: .now() + .seconds(10)) { [connection] in
-                gate.finish {
-                    connection.cancel()
-                    continuation.resume(throwing: IOSScreenTransportError.timedOut)
-                }
-            }
-        }
+    deinit {
+        NSScreenTLSConnectionDestroy(connection)
     }
 
     func readExactly(_ count: Int, deadline: DispatchTime? = nil) async throws -> Data {
         precondition(count >= 0)
-        var result = Data()
-        result.reserveCapacity(count)
-        while result.count < count {
-            let remaining = count - result.count
-            let chunk = try await receive(maximumLength: remaining, deadline: deadline)
-            guard !chunk.isEmpty else { throw IOSScreenTransportError.channelClosed }
-            result.append(chunk)
-        }
-        return result
-    }
-
-    private func receive(maximumLength: Int, deadline: DispatchTime?) async throws -> Data {
-        try await withCheckedThrowingContinuation { continuation in
-            let gate = IOSScreenCompletionGate()
-            connection.receive(minimumIncompleteLength: 1, maximumLength: maximumLength) { data, _, complete, error in
-                gate.finish {
-                    if let error {
-                        continuation.resume(throwing: error)
-                    } else if let data, !data.isEmpty {
-                        continuation.resume(returning: data)
-                    } else if complete {
-                        continuation.resume(throwing: IOSScreenTransportError.channelClosed)
-                    } else {
-                        continuation.resume(returning: Data())
+        guard count > 0 else { return Data() }
+        let timeout = try timeoutMilliseconds(until: deadline)
+        do {
+            let data = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { continuation in
+                    queue.async { [self] in
+                        var data = Data(count: count)
+                        var errorBuffer = [CChar](repeating: 0, count: 512)
+                        let succeeded = data.withUnsafeMutableBytes { bytes in
+                            NSScreenTLSConnectionReadExactly(
+                                connection,
+                                bytes.bindMemory(to: UInt8.self).baseAddress!,
+                                bytes.count,
+                                timeout,
+                                &errorBuffer,
+                                errorBuffer.count
+                            )
+                        }
+                        if succeeded == 1 {
+                            continuation.resume(returning: data)
+                        } else {
+                            let detail = String(cString: errorBuffer)
+                            if detail.localizedCaseInsensitiveContains("closed") {
+                                continuation.resume(throwing: IOSScreenTransportError.channelClosed)
+                            } else if deadline != nil {
+                                continuation.resume(throwing: IOSScreenTransportError.timedOut)
+                            } else {
+                                continuation.resume(throwing: IOSScreenTransportError.connectionFailed(detail))
+                            }
+                        }
                     }
                 }
+            } onCancel: {
+                NSScreenTLSConnectionClose(connection)
             }
-            if let deadline {
-                queue.asyncAfter(deadline: deadline) { [connection] in
-                    gate.finish {
-                        connection.cancel()
-                        continuation.resume(throwing: IOSScreenTransportError.timedOut)
-                    }
-                }
-            }
+            try Task.checkCancellation()
+            return data
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
         }
     }
 
     func send(_ data: Data) async throws {
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            connection.send(content: data, completion: .contentProcessed { error in
-                if let error { continuation.resume(throwing: error) }
-                else { continuation.resume() }
-            })
+        guard !data.isEmpty else { return }
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                    queue.async { [self] in
+                        var errorBuffer = [CChar](repeating: 0, count: 512)
+                        let succeeded = data.withUnsafeBytes { bytes in
+                            NSScreenTLSConnectionWriteAll(
+                                connection,
+                                bytes.bindMemory(to: UInt8.self).baseAddress!,
+                                bytes.count,
+                                10_000,
+                                &errorBuffer,
+                                errorBuffer.count
+                            )
+                        }
+                        if succeeded == 1 {
+                            continuation.resume()
+                        } else {
+                            let detail = String(cString: errorBuffer)
+                            if detail.localizedCaseInsensitiveContains("closed") {
+                                continuation.resume(throwing: IOSScreenTransportError.channelClosed)
+                            } else {
+                                continuation.resume(throwing: IOSScreenTransportError.connectionFailed(detail))
+                            }
+                        }
+                    }
+                }
+            } onCancel: {
+                NSScreenTLSConnectionClose(connection)
+            }
+            try Task.checkCancellation()
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
         }
     }
 
-    func cancel() { connection.cancel() }
+    func cancel() { NSScreenTLSConnectionClose(connection) }
+
+    private func timeoutMilliseconds(until deadline: DispatchTime?) throws -> Int32 {
+        guard let deadline else { return -1 }
+        let now = DispatchTime.now().uptimeNanoseconds
+        guard deadline.uptimeNanoseconds > now else { throw IOSScreenTransportError.timedOut }
+        let remaining = (deadline.uptimeNanoseconds - now + 999_999) / 1_000_000
+        return Int32(min(UInt64(Int32.max), max(1, remaining)))
+    }
 }
 
 nonisolated struct IOSScreenChannelPair: Sendable {
@@ -164,24 +170,22 @@ nonisolated struct IOSScreenChannelPair: Sendable {
 nonisolated final class IOSScreenLANListener: @unchecked Sendable {
     let candidates: [ScreenMirrorConnectionCandidate]
 
-    private let listener: NWListener
+    private let listener: OpaquePointer
     private let descriptor: IOSScreenSessionDescriptor
-    private let incoming: AsyncThrowingStream<NWConnection, Error>
-    private let incomingContinuation: AsyncThrowingStream<NWConnection, Error>.Continuation
     private let queue = DispatchQueue(label: "net.extrawdw.apps.NotiSync.screen-listener", qos: .userInitiated)
 
     private init(
-        listener: NWListener,
+        listener: OpaquePointer,
         descriptor: IOSScreenSessionDescriptor,
-        candidates: [ScreenMirrorConnectionCandidate],
-        incoming: AsyncThrowingStream<NWConnection, Error>,
-        continuation: AsyncThrowingStream<NWConnection, Error>.Continuation
+        candidates: [ScreenMirrorConnectionCandidate]
     ) {
         self.listener = listener
         self.descriptor = descriptor
         self.candidates = candidates
-        self.incoming = incoming
-        self.incomingContinuation = continuation
+    }
+
+    deinit {
+        NSScreenTLSListenerDestroy(listener)
     }
 
     static func open(
@@ -192,132 +196,95 @@ nonisolated final class IOSScreenLANListener: @unchecked Sendable {
         guard routingToken.count == 16, masterPsk.count == 32 else {
             throw IOSScreenTransportError.listenerFailed("invalid session secrets")
         }
-        let tls = NWProtocolTLS.Options()
-        let security = tls.securityProtocolOptions
-        sec_protocol_options_set_min_tls_protocol_version(security, .TLSv13)
-        sec_protocol_options_set_max_tls_protocol_version(security, .TLSv13)
-        sec_protocol_options_append_tls_ciphersuite(security, .AES_128_GCM_SHA256)
-        sec_protocol_options_append_tls_ciphersuite(security, .CHACHA20_POLY1305_SHA256)
-        sec_protocol_options_add_tls_application_protocol(security, "notisync-screen/1")
-        sec_protocol_options_set_tls_tickets_enabled(security, false)
-        sec_protocol_options_set_peer_authentication_required(security, false)
-
-        for channel in [IOSScreenChannel.video, .control] {
-            let identity = Data("nss1.\(routingToken.base64URLEncoded()).\(channel.wireName)".utf8)
-            let key = IOSScreenSessionKeyDeriver.derive(
-                masterPsk: masterPsk,
-                routingToken: routingToken,
-                descriptor: descriptor,
-                channel: channel
-            )
-            sec_protocol_options_add_pre_shared_key(
-                security,
-                key.securityDispatchData,
-                identity.securityDispatchData
-            )
+        let videoIdentity = Data("nss1.\(routingToken.base64URLEncoded()).video".utf8)
+        let controlIdentity = Data("nss1.\(routingToken.base64URLEncoded()).control".utf8)
+        var videoKey = IOSScreenSessionKeyDeriver.derive(
+            masterPsk: masterPsk,
+            routingToken: routingToken,
+            descriptor: descriptor,
+            channel: .video
+        )
+        var controlKey = IOSScreenSessionKeyDeriver.derive(
+            masterPsk: masterPsk,
+            routingToken: routingToken,
+            descriptor: descriptor,
+            channel: .control
+        )
+        defer {
+            videoKey.resetBytes(in: videoKey.startIndex..<videoKey.endIndex)
+            controlKey.resetBytes(in: controlKey.startIndex..<controlKey.endIndex)
         }
-
-        let tcp = NWProtocolTCP.Options()
-        tcp.noDelay = true
-        tcp.enableKeepalive = true
-        let parameters = NWParameters(tls: tls, tcp: tcp)
-        parameters.includePeerToPeer = true
-        parameters.allowLocalEndpointReuse = true
-        let listener: NWListener
-        do {
-            listener = try NWListener(using: parameters, on: .any)
-        } catch {
-            throw IOSScreenTransportError.listenerFailed(error.localizedDescription)
-        }
-
-        let serviceName = "notisync-\(UUID().uuidString.lowercased())"
-        listener.service = NWListener.Service(name: serviceName, type: "_notisync-screen._tcp")
-        let streamPair = AsyncThrowingStream<NWConnection, Error>.makeStream(bufferingPolicy: .bufferingNewest(8))
-
-        let port = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<UInt16, Error>) in
-            let gate = IOSScreenCompletionGate()
-            listener.stateUpdateHandler = { state in
-                switch state {
-                case .ready:
-                    if let port = listener.port?.rawValue {
-                        gate.finish { continuation.resume(returning: port) }
-                    } else {
-                        gate.finish {
-                            continuation.resume(throwing: IOSScreenTransportError.listenerFailed("no listener port"))
-                        }
+        var port: UInt16 = 0
+        var errorBuffer = [CChar](repeating: 0, count: 512)
+        let listener = videoIdentity.withUnsafeBytes { videoIdentityBytes in
+            videoKey.withUnsafeBytes { videoKeyBytes in
+                controlIdentity.withUnsafeBytes { controlIdentityBytes in
+                    controlKey.withUnsafeBytes { controlKeyBytes in
+                        NSScreenTLSListenerCreate(
+                            videoIdentityBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            videoIdentityBytes.count,
+                            videoKeyBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            videoKeyBytes.count,
+                            controlIdentityBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            controlIdentityBytes.count,
+                            controlKeyBytes.bindMemory(to: UInt8.self).baseAddress!,
+                            controlKeyBytes.count,
+                            &port,
+                            &errorBuffer,
+                            errorBuffer.count
+                        )
                     }
-                case .failed(let error):
-                    gate.finish {
-                        continuation.resume(throwing: IOSScreenTransportError.listenerFailed(error.localizedDescription))
-                    }
-                case .cancelled:
-                    gate.finish { continuation.resume(throwing: IOSScreenTransportError.channelClosed) }
-                default:
-                    break
                 }
             }
-            listener.newConnectionHandler = { streamPair.continuation.yield($0) }
-            listener.start(queue: DispatchQueue(label: "net.extrawdw.apps.NotiSync.screen-listener.start"))
         }
-
-        var candidates = localLANCandidates(port: port)
+        guard let listener else {
+            throw IOSScreenTransportError.listenerFailed(String(cString: errorBuffer))
+        }
+        let candidates = localLANCandidates(port: port)
         guard !candidates.isEmpty else {
-            listener.cancel()
+            NSScreenTLSListenerDestroy(listener)
             throw IOSScreenTransportError.noLAN
         }
-        candidates.append(ScreenMirrorConnectionCandidate(
-            kind: ScreenMirrorConnectionCandidate.dnsSD,
-            host: nil,
-            port: Int(port),
-            serviceName: serviceName,
-            interfaceName: nil
-        ))
         return IOSScreenLANListener(
             listener: listener,
             descriptor: descriptor,
-            candidates: Array(candidates.prefix(8)),
-            incoming: streamPair.stream,
-            continuation: streamPair.continuation
+            candidates: Array(candidates.prefix(8))
         )
     }
 
     func acceptPair() async throws -> IOSScreenChannelPair {
-        let delay = max(1, descriptor.expiresAt - NotiSyncEngine.nowMillis())
-        queue.asyncAfter(deadline: .now() + .milliseconds(Int(delay))) { [incomingContinuation] in
-            incomingContinuation.finish(throwing: IOSScreenTransportError.timedOut)
-        }
-
         var accepted: [IOSScreenChannel: IOSScreenWireConnection] = [:]
         var attempts = 0
+        var lastFailure: String?
         do {
-            for try await rawConnection in incoming {
-                if accepted.count == 2 { break }
+            while accepted.count < 2 {
+                let remaining = descriptor.expiresAt - NotiSyncEngine.nowMillis()
+                guard remaining > 0 else { throw IOSScreenTransportError.timedOut }
                 attempts += 1
                 guard attempts <= 8 else {
-                    rawConnection.cancel()
-                    throw IOSScreenTransportError.listenerFailed("too many unauthenticated connections")
+                    throw IOSScreenTransportError.listenerFailed(
+                        lastFailure ?? "too many unauthenticated connections"
+                    )
                 }
-                let wire = IOSScreenWireConnection(
-                    rawConnection,
-                    label: "net.extrawdw.apps.NotiSync.screen-channel-\(accepted.count)"
-                )
                 do {
-                    try await wire.start()
+                    guard let wire = try await acceptConnection(timeoutMilliseconds: remaining) else {
+                        throw IOSScreenTransportError.timedOut
+                    }
                     let channel = try await authenticateBinding(on: wire)
                     guard accepted[channel] == nil else { throw IOSScreenTransportError.duplicateChannel }
                     accepted[channel] = wire
-                    if accepted.count == 2 { break }
                 } catch {
-                    wire.cancel()
-                    if case IOSScreenTransportError.timedOut = error { continue }
-                    if error is IOSScreenTransportError { throw error }
+                    if case IOSScreenTransportError.connectionFailed(let detail) = error {
+                        lastFailure = detail
+                        continue
+                    }
+                    throw error
                 }
             }
             guard let video = accepted[.video], let control = accepted[.control] else {
                 throw IOSScreenTransportError.timedOut
             }
-            listener.cancel()
-            incomingContinuation.finish()
+            NSScreenTLSListenerClose(listener)
             return IOSScreenChannelPair(video: video, control: control)
         } catch {
             accepted.values.forEach { $0.cancel() }
@@ -326,8 +293,56 @@ nonisolated final class IOSScreenLANListener: @unchecked Sendable {
     }
 
     func cancel() {
-        listener.cancel()
-        incomingContinuation.finish()
+        NSScreenTLSListenerClose(listener)
+    }
+
+    private func acceptConnection(timeoutMilliseconds: Int64) async throws -> IOSScreenWireConnection? {
+        let timeout = Int32(min(Int64(Int32.max), max(1, timeoutMilliseconds)))
+        do {
+            let accepted = try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation {
+                    (continuation: CheckedContinuation<IOSScreenWireConnection?, Error>) in
+                    queue.async { [self] in
+                        var connection: OpaquePointer?
+                        var errorBuffer = [CChar](repeating: 0, count: 512)
+                        let result = NSScreenTLSListenerAccept(
+                            listener,
+                            timeout,
+                            &connection,
+                            &errorBuffer,
+                            errorBuffer.count
+                        )
+                        switch result {
+                        case 1:
+                            guard let connection else {
+                                continuation.resume(throwing: IOSScreenTransportError.connectionFailed("missing TLS connection"))
+                                return
+                            }
+                            continuation.resume(returning: IOSScreenWireConnection(
+                                connection,
+                                label: "net.extrawdw.apps.NotiSync.screen-channel"
+                            ))
+                        case 0:
+                            continuation.resume(returning: nil)
+                        default:
+                            continuation.resume(throwing: IOSScreenTransportError.connectionFailed(
+                                String(cString: errorBuffer)
+                            ))
+                        }
+                    }
+                }
+            } onCancel: {
+                NSScreenTLSListenerClose(listener)
+            }
+            guard !Task.isCancelled else {
+                accepted?.cancel()
+                throw CancellationError()
+            }
+            return accepted
+        } catch {
+            if Task.isCancelled { throw CancellationError() }
+            throw error
+        }
     }
 
     private func authenticateBinding(on connection: IOSScreenWireConnection) async throws -> IOSScreenChannel {
@@ -466,10 +481,6 @@ private nonisolated struct IOSScreenDataReader {
 }
 
 private nonisolated extension Data {
-    var securityDispatchData: dispatch_data_t {
-        withUnsafeBytes { DispatchData(bytes: $0)._bridgeToObjectiveC() }
-    }
-
     func base64URLEncoded() -> String {
         base64EncodedString().replacingOccurrences(of: "+", with: "-")
             .replacingOccurrences(of: "/", with: "_")

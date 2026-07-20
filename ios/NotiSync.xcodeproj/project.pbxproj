@@ -15,6 +15,7 @@
 		AA1F0000000000000000F101 /* InfoPlist.xcstrings in Resources */ = {isa = PBXBuildFile; fileRef = AA1F0000000000000000F100 /* InfoPlist.xcstrings */; };
 		AA1F0000000000000000F201 /* FirebaseCrashlytics in Frameworks */ = {isa = PBXBuildFile; productRef = AA1F0000000000000000F204 /* FirebaseCrashlytics */; };
 		AA1F0000000000000000F202 /* FirebasePerformance in Frameworks */ = {isa = PBXBuildFile; productRef = AA1F0000000000000000F205 /* FirebasePerformance */; };
+		B10000000000000000000001 /* OpenSSL in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000004 /* OpenSSL */; };
 		AC1F0000000000000000F302 /* NotificationContentViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC1F0000000000000000F300 /* NotificationContentViewController.swift */; };
 		AC1F0000000000000000F303 /* NotiSyncProtocol.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 1F718FAB2FF0FFE5005C6496 /* NotiSyncProtocol.xcframework */; };
 		AC1F0000000000000000F304 /* NotificationContent.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = AC1F0000000000000000F301 /* NotificationContent.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -104,6 +105,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				B10000000000000000000001 /* OpenSSL in Frameworks */,
 				297BF63FAE3921D0B297ADB3 /* FirebaseCore in Frameworks */,
 				1F71923C2FF21EE1005C6496 /* NotiSyncProtocol.xcframework in Frameworks */,
 				5108C6857E4B1F964A2957D6 /* FirebaseAppCheck in Frameworks */,
@@ -212,6 +214,7 @@
 			);
 			name = NotiSync;
 			packageProductDependencies = (
+				B10000000000000000000004 /* OpenSSL */,
 				8F8FD9FE59183A9D305DC2E6 /* FirebaseCore */,
 				242BAD2A41779DEE51CB0A55 /* FirebaseAppCheck */,
 				AA1F0000000000000000F204 /* FirebaseCrashlytics */,
@@ -288,6 +291,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				061E06B8FC7A178C0C2140DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */,
+				B10000000000000000000003 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 1F712D082FEDE20A00A49D22 /* Products */;
@@ -553,6 +557,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = NotiSync/NotiSyncOpenSSLBridge.h;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -598,6 +603,7 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SUPPORTED_PLATFORMS = "iphoneos iphonesimulator";
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = NotiSync/NotiSyncOpenSSLBridge.h;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
@@ -778,6 +784,14 @@
 				minimumVersion = 11.0.0;
 			};
 		};
+		B10000000000000000000003 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/krzyzanowskim/OpenSSL-Package.git";
+			requirement = {
+				kind = exactVersion;
+				version = 3.6.2000;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -800,6 +814,11 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 061E06B8FC7A178C0C2140DA /* XCRemoteSwiftPackageReference "firebase-ios-sdk" */;
 			productName = FirebasePerformance;
+		};
+		B10000000000000000000004 /* OpenSSL */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = B10000000000000000000003 /* XCRemoteSwiftPackageReference "OpenSSL-Package" */;
+			productName = OpenSSL;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

@@ -67,16 +67,16 @@ actor IOSScreenControlWriter {
 nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
     private let connection: IOSScreenWireConnection
     private let displayLayer: AVSampleBufferDisplayLayer
-    private let onDimensions: @Sendable (CGSize) -> Void
-    private let onFailure: @Sendable (Error) -> Void
+    private let onDimensions: @MainActor @Sendable (CGSize) -> Void
+    private let onFailure: @MainActor @Sendable (Error) -> Void
     private var task: Task<Void, Never>?
     private var formatDescription: CMVideoFormatDescription?
 
     init(
         connection: IOSScreenWireConnection,
         displayLayer: AVSampleBufferDisplayLayer,
-        onDimensions: @escaping @Sendable (CGSize) -> Void,
-        onFailure: @escaping @Sendable (Error) -> Void
+        onDimensions: @escaping @MainActor @Sendable (CGSize) -> Void,
+        onFailure: @escaping @MainActor @Sendable (Error) -> Void
     ) {
         self.connection = connection
         self.displayLayer = displayLayer
@@ -90,7 +90,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
             guard let self else { return }
             do { try await self.decode() }
             catch is CancellationError { }
-            catch { self.onFailure(error) }
+            catch { await self.onFailure(error) }
         }
     }
 
@@ -111,7 +111,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         guard flags & 0x80000000 != 0, flags & 0x7ffffffe == 0 else {
             throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid stream metadata.")
         }
-        try updateDimensions(width: Int(initial.uint32()), height: Int(initial.uint32()))
+        try await updateDimensions(width: Int(initial.uint32()), height: Int(initial.uint32()))
 
         while !Task.isCancelled {
             let header = try await connection.readExactly(12)
@@ -121,7 +121,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
                 guard firstWord & 0x7ffffffe == 0 else {
                     throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid resize metadata.")
                 }
-                try updateDimensions(width: Int(reader.uint32()), height: Int(reader.uint32()))
+                try await updateDimensions(width: Int(reader.uint32()), height: Int(reader.uint32()))
                 formatDescription = nil
                 await displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
                 continue
@@ -146,12 +146,12 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         }
     }
 
-    private func updateDimensions(width: Int, height: Int) throws {
+    private func updateDimensions(width: Int, height: Int) async throws {
         guard width > 0, width <= 8_192, height > 0, height <= 8_192,
               Int64(width) * Int64(height) <= 16_000_000 else {
             throw IOSScreenTransportError.unsupportedStream("The Android source sent invalid video dimensions.")
         }
-        onDimensions(CGSize(width: width, height: height))
+        await onDimensions(CGSize(width: width, height: height))
     }
 
     private func makeH264FormatDescription(config: Data) throws -> CMVideoFormatDescription {
@@ -252,6 +252,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var connected = false
     @Published var showsTextInput = false
+    @Published var obscuresInputText = true
     @Published var inputText = ""
 
     let displayLayer = AVSampleBufferDisplayLayer()
@@ -269,6 +270,10 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 
     func start(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
         stopped = false
+        connected = false
+        errorMessage = nil
+        dimensions = .zero
+        status = "Preparing secure LAN session…"
         do {
             let session = try await runtime.openScreenMirror(sourceId: sourceId, sourceName: sourceName)
             guard !stopped else {
@@ -279,19 +284,17 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             self.session = session
             control = IOSScreenControlWriter(connection: session.channels.control)
             connected = true
-            status = "Connected over local Wi-Fi"
+            status = "Connected over local network"
             let decoder = IOSScreenVideoDecoder(
                 connection: session.channels.video,
                 displayLayer: displayLayer,
                 onDimensions: { [weak self] size in
-                    Task { @MainActor in self?.dimensions = size }
+                    self?.dimensions = size
                 },
                 onFailure: { [weak self] error in
-                    Task { @MainActor in
-                        guard let self, !self.stopped else { return }
-                        self.errorMessage = error.localizedDescription
-                        self.connected = false
-                    }
+                    guard let self, !self.stopped else { return }
+                    self.errorMessage = error.localizedDescription
+                    self.connected = false
                 }
             )
             self.decoder = decoder
@@ -301,6 +304,11 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             errorMessage = error.localizedDescription
             status = "Could not connect"
         }
+    }
+
+    func retry(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
+        await stop(runtime: runtime)
+        await start(runtime: runtime, sourceId: sourceId, sourceName: sourceName)
     }
 
     func stop(runtime: NotiSyncRuntime) async {
@@ -329,8 +337,21 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         let text = inputText
         inputText = ""
         showsTextInput = false
+        obscuresInputText = true
         guard let control, !text.isEmpty, Data(text.utf8).count <= 300 else { return }
         Task { try? await control.sendText(text) }
+    }
+
+    func beginTextInput() {
+        inputText = ""
+        obscuresInputText = true
+        showsTextInput = true
+    }
+
+    func cancelTextInput() {
+        inputText = ""
+        obscuresInputText = true
+        showsTextInput = false
     }
 
     func touchChanged(at point: CGPoint, in viewSize: CGSize) {
@@ -383,74 +404,175 @@ struct ScreenMirrorPlayerView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model = IOSScreenMirrorPlayerModel()
+    @FocusState private var inputIsFocused: Bool
     let sourceId: String
     let sourceName: String
 
     var body: some View {
-        NavigationStack {
-            ZStack {
-                Color.black.ignoresSafeArea()
-                ScreenMirrorVideoSurface(layer: model.displayLayer)
-                    .overlay {
-                        GeometryReader { geometry in
-                            Color.clear
-                                .contentShape(Rectangle())
-                                .gesture(
-                                    DragGesture(minimumDistance: 0)
-                                        .onChanged { model.touchChanged(at: $0.location, in: geometry.size) }
-                                        .onEnded { _ in model.touchEnded() }
-                                )
-                        }
+        ZStack {
+            Color.black.ignoresSafeArea()
+            ScreenMirrorVideoSurface(layer: model.displayLayer)
+                .ignoresSafeArea()
+                .overlay {
+                    GeometryReader { geometry in
+                        Color.clear
+                            .contentShape(Rectangle())
+                            .gesture(
+                                DragGesture(minimumDistance: 0)
+                                    .onChanged { model.touchChanged(at: $0.location, in: geometry.size) }
+                                    .onEnded { _ in model.touchEnded() }
+                            )
                     }
-                if !model.connected {
-                    VStack(spacing: 14) {
-                        if let error = model.errorMessage {
-                            Image(systemName: "wifi.exclamationmark")
-                                .font(.largeTitle)
-                            Text(error).multilineTextAlignment(.center)
-                            Button("Close") { dismiss() }.buttonStyle(.borderedProminent)
-                        } else {
-                            ProgressView().tint(.white)
-                            Text(runtime.screenMirrorPhase ?? model.status)
-                                .multilineTextAlignment(.center)
+                }
+            if !model.connected {
+                VStack(spacing: 14) {
+                    if let error = model.errorMessage {
+                        Image(systemName: "wifi.exclamationmark")
+                            .font(.largeTitle)
+                        Text(error).multilineTextAlignment(.center)
+                        HStack(spacing: 12) {
+                            Button("Cancel", role: .cancel) { dismiss() }
+                                .buttonStyle(.bordered)
+                            Button("Retry") {
+                                Task {
+                                    await model.retry(
+                                        runtime: runtime,
+                                        sourceId: sourceId,
+                                        sourceName: sourceName
+                                    )
+                                }
+                            }
+                            .buttonStyle(.borderedProminent)
                         }
+                    } else {
+                        ProgressView().tint(.white)
+                        Text(runtime.screenMirrorPhase ?? model.status)
+                            .multilineTextAlignment(.center)
+                        Button("Cancel", role: .cancel) { dismiss() }
+                            .buttonStyle(.bordered)
                     }
-                    .foregroundStyle(.white)
-                    .padding(28)
-                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 20))
-                    .padding()
+                }
+                .foregroundStyle(.white)
+                .padding(28)
+                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 20))
+                .padding()
+            }
+
+            VStack(spacing: 0) {
+                viewerHeader
+                Spacer(minLength: 0)
+                if model.connected {
+                    viewerControls
                 }
             }
-            .navigationTitle(sourceName)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbarBackground(.black.opacity(0.82), for: .navigationBar, .bottomBar)
-            .toolbarColorScheme(.dark, for: .navigationBar, .bottomBar)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Done") { dismiss() }
-                }
-                ToolbarItemGroup(placement: .bottomBar) {
-                    Button { model.sendKey(4) } label: { Label("Back", systemImage: "chevron.backward") }
-                    Spacer()
-                    Button { model.sendKey(3) } label: { Label("Home", systemImage: "circle") }
-                    Spacer()
-                    Button { model.sendKey(187) } label: { Label("Recent Apps", systemImage: "square.on.square") }
-                    Spacer()
-                    Button { model.showsTextInput = true } label: { Label("Type", systemImage: "keyboard") }
-                    Spacer()
-                    Button { model.togglePower() } label: { Label("Power", systemImage: "power") }
-                }
-            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 10)
         }
+        .statusBarHidden(true)
+        .persistentSystemOverlays(.hidden)
         .task { await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName) }
         .onDisappear { Task { await model.stop(runtime: runtime) } }
-        .alert("Type on Android", isPresented: $model.showsTextInput) {
-            TextField("Text", text: $model.inputText)
-            Button("Cancel", role: .cancel) { model.inputText = "" }
-            Button("Send") { model.sendInputText() }
-        } message: {
-            Text("Sends up to 300 UTF-8 bytes to the focused Android field.")
+        .sheet(isPresented: $model.showsTextInput) {
+            NavigationStack {
+                Form {
+                    Section {
+                        Group {
+                            if model.obscuresInputText {
+                                SecureField("Text", text: $model.inputText)
+                                    .textContentType(.password)
+                            } else {
+                                TextField("Text", text: $model.inputText)
+                            }
+                        }
+                        .focused($inputIsFocused)
+                        .submitLabel(.send)
+                        .onSubmit {
+                            guard !model.inputText.isEmpty,
+                                  Data(model.inputText.utf8).count <= 300 else { return }
+                            model.sendInputText()
+                        }
+
+                        Toggle("Hide text", isOn: $model.obscuresInputText)
+                    } footer: {
+                        Text("Sends up to 300 UTF-8 bytes to the focused Android field.")
+                    }
+                }
+                .navigationTitle("Type on Android")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel", role: .cancel) { model.cancelTextInput() }
+                    }
+                    ToolbarItem(placement: .confirmationAction) {
+                        Button("Send") { model.sendInputText() }
+                            .disabled(model.inputText.isEmpty || Data(model.inputText.utf8).count > 300)
+                    }
+                }
+            }
+            .presentationDetents([.height(260)])
+            .presentationDragIndicator(.visible)
+            .onAppear { inputIsFocused = true }
+            .onChange(of: model.obscuresInputText) { _, _ in inputIsFocused = true }
+            .onDisappear {
+                inputIsFocused = false
+                model.cancelTextInput()
+            }
         }
+    }
+
+    private var viewerHeader: some View {
+        ZStack {
+            Text(sourceName)
+                .font(.subheadline.weight(.semibold))
+                .lineLimit(1)
+                .padding(.horizontal, 14)
+                .frame(maxWidth: 240)
+                .frame(height: 40)
+                .background(.black.opacity(0.62), in: Capsule())
+                .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+
+            HStack {
+                Button { dismiss() } label: {
+                    Image(systemName: "xmark")
+                        .font(.body.weight(.semibold))
+                        .frame(width: 44, height: 44)
+                        .background(.black.opacity(0.62), in: Circle())
+                        .overlay(Circle().stroke(.white.opacity(0.16), lineWidth: 0.5))
+                }
+                .accessibilityLabel("Close screen viewer")
+                Spacer()
+            }
+        }
+        .foregroundStyle(.white)
+    }
+
+    private var viewerControls: some View {
+        HStack(spacing: 2) {
+            viewerControl("Back", systemImage: "chevron.backward") { model.sendKey(4) }
+            viewerControl("Home", systemImage: "circle") { model.sendKey(3) }
+            viewerControl("Recent Apps", systemImage: "square.on.square") { model.sendKey(187) }
+            viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
+            viewerControl("Power", systemImage: "power") { model.togglePower() }
+        }
+        .padding(6)
+        .background(.black.opacity(0.66), in: Capsule())
+        .overlay(Capsule().stroke(.white.opacity(0.16), lineWidth: 0.5))
+        .foregroundStyle(.white)
+    }
+
+    private func viewerControl(
+        _ title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(.title3.weight(.medium))
+                .frame(width: 46, height: 46)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
     }
 }
 

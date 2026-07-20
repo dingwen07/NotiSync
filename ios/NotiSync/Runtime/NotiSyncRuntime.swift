@@ -193,6 +193,13 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
                     log.info("removed \(removed.count, privacy: .public) unverified device(s) during NS2 upgrade")
                 }
             }
+            // TrustedDevice rows survive a process restart, but the published screen-source set does not.
+            // Rehydrate it from the signed trust roster now instead of waiting for a later PROFILE/TRUST
+            // message to incidentally call refreshPeerRowsAsync().
+            let restoredScreenSourceIds = await Task.detached(priority: .utility) {
+                Set(engine.screenMirrorSources().map(\.clientId))
+            }.value
+            replaceScreenMirrorSourceIds(restoredScreenSourceIds)
             self.broker = BrokerClient(
                 baseURL: { NotiSyncConfig.brokerURL },
                 identitySigner: engine.identitySigner,

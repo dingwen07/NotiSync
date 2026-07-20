@@ -48,11 +48,35 @@ final class IOSScreenMirrorRequestContext {
     var locallyCancelled = false
     var remoteDetail: String?
     var channels: IOSScreenChannelPair?
+    private var channelResult: Result<IOSScreenChannelPair, Error>?
+    private var channelWaiter: CheckedContinuation<Result<IOSScreenChannelPair, Error>, Never>?
 
     init(source: ScreenMirrorSourceRecord, descriptor: IOSScreenSessionDescriptor, listener: IOSScreenLANListener) {
         self.source = source
         self.descriptor = descriptor
         self.listener = listener
+    }
+
+    func waitForChannels() async throws -> IOSScreenChannelPair {
+        let result = await withCheckedContinuation {
+            (continuation: CheckedContinuation<Result<IOSScreenChannelPair, Error>, Never>) in
+            if let channelResult {
+                continuation.resume(returning: channelResult)
+            } else {
+                channelWaiter = continuation
+            }
+        }
+        return try result.get()
+    }
+
+    func resolveChannels(_ result: Result<IOSScreenChannelPair, Error>) {
+        guard channelResult == nil else {
+            if case .success(let channels) = result { channels.cancel() }
+            return
+        }
+        channelResult = result
+        channelWaiter?.resume(returning: result)
+        channelWaiter = nil
     }
 }
 
@@ -124,7 +148,28 @@ extension NotiSyncRuntime {
             }
             context.requestSent = true
             updateScreenMirrorPhase("Waiting for \(source.displayName.isEmpty ? fallbackName : source.displayName)…")
-            let channels = try await listener.acceptPair()
+            let acceptTask = Task { [weak context] in
+                do {
+                    let channels = try await listener.acceptPair()
+                    guard let context else {
+                        channels.cancel()
+                        return
+                    }
+                    context.resolveChannels(.success(channels))
+                } catch {
+                    context?.resolveChannels(.failure(error))
+                }
+            }
+            defer { acceptTask.cancel() }
+            let channels = try await withTaskCancellationHandler {
+                try await context.waitForChannels()
+            } onCancel: {
+                listener.cancel()
+                Task { @MainActor [weak context] in
+                    context?.resolveChannels(.failure(CancellationError()))
+                }
+            }
+            try Task.checkCancellation()
             guard activeScreenMirror === context, !context.locallyCancelled, context.remoteDetail == nil else {
                 channels.cancel()
                 if let detail = context.remoteDetail { throw IOSScreenMirrorRuntimeError.remote(detail) }
@@ -155,6 +200,7 @@ extension NotiSyncRuntime {
         guard let context = activeScreenMirror,
               sessionId == nil || context.descriptor.sessionId == sessionId else { return }
         context.locallyCancelled = true
+        context.resolveChannels(.failure(IOSScreenMirrorRuntimeError.cancelled))
         context.listener.cancel()
         context.channels?.cancel()
         await sendScreenTerminal(context, detail: detail)
@@ -183,25 +229,28 @@ extension NotiSyncRuntime {
               envelopeCreatedAt >= now - 5 * 60 * 1_000 else { return }
 
         if status.action == .STATUS, status.status == .CONNECTING {
-            updateScreenMirrorPhase("Android is connecting…")
+            updateScreenMirrorPhase("Establishing secure connection…")
             return
         }
         if status.action == .STATUS, status.status == .READY {
-            updateScreenMirrorPhase("Android started sharing…")
+            updateScreenMirrorPhase("Starting video stream…")
             return
         }
         let terminal = status.action == .CANCEL || status.action == .END ||
             (status.action == .STATUS && status.status != .CONNECTING && status.status != .READY)
         guard terminal else { return }
         let detail = status.detail?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let remoteDetail: String
         if let detail, !detail.isEmpty {
-            context.remoteDetail = String(detail.prefix(160))
+            remoteDetail = String(detail.prefix(160))
         } else {
-            context.remoteDetail = screenStatusDescription(status.status)
+            remoteDetail = screenStatusDescription(status.status)
         }
+        context.remoteDetail = remoteDetail
+        context.resolveChannels(.failure(IOSScreenMirrorRuntimeError.remote(remoteDetail)))
         context.listener.cancel()
         context.channels?.cancel()
-        updateScreenMirrorPhase(context.remoteDetail)
+        updateScreenMirrorPhase(remoteDetail)
     }
 
     private func sendScreenTerminal(_ context: IOSScreenMirrorRequestContext, detail: String?) async {
