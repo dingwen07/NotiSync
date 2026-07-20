@@ -250,7 +250,8 @@
              SELF_SCAN_ONLY (honored on newer Android) spares it other apps' scans. -->
         <service
             android:name=".notification.mirror.MirrorRouteProviderService"
-            android:exported="true">
+            android:exported="true"
+            tools:ignore="ExportedService">
             <intent-filter>
                 <action android:name="android.media.MediaRoute2ProviderService" />
                 <category android:name="android.media.MediaRoute2ProviderService.SELF_SCAN_ONLY" />

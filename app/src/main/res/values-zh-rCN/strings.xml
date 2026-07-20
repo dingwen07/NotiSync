@@ -24,8 +24,6 @@
     <string name="run_empty_title">暂无历史记录</string>
     <string name="run_empty_body">从您的计算机共享的命令执行将显示在此处。</string>
     <string name="run_clear_history_action">删除全部历史记录</string>
-    <string name="run_select_title">选择命令运行历史</string>
-    <string name="run_select_body">选择一个命令运行历史来查看它的终端内容。</string>
     <string name="run_section_active">活跃</string>
     <string name="run_section_history">历史</string>
     <string name="run_clear_history_title">删除所有 NotiSync Run 历史记录？</string>
@@ -225,7 +223,9 @@
     <string name="diag_oversized_hint">向您的其他设备发送一条过大的通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
     <string name="diag_oversized_send">发送超大测试通知</string>
     <string name="diag_oversized_sending">发送中…</string>
-    <string name="diag_oversized_sent">已发送到 %1$d 台设备 — 请查看另一台设备。</string>
+    <plurals name="diag_oversized_sent">
+        <item quantity="other">已发送到 %1$d 台设备 — 请查看另一台设备。</item>
+    </plurals>
     <string name="diag_oversized_no_peers">没有可以发送的设备。</string>
     <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
     <string name="diag_rotation">密钥轮换</string>

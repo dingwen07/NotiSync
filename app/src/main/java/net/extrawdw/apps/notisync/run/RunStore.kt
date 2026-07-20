@@ -4,6 +4,7 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import androidx.core.database.sqlite.transaction
 import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -125,8 +126,7 @@ class RunStore(
 
         val result = if (existing == null) RunApplyResult.INSERTED else RunApplyResult.UPDATED
         val receivedAt = now()
-        db.beginTransaction()
-        try {
+        db.transaction {
             db.insertWithOnConflict(
                 "runs",
                 null,
@@ -143,9 +143,6 @@ class RunStore(
                 },
                 SQLiteDatabase.CONFLICT_REPLACE,
             ).also { if (it == -1L) error("could not persist Run state") }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
         }
         val key = RunKey(state.hostClientId.value, state.runId)
         val retained = _runs.value.filterNot { it.key == key }
@@ -370,8 +367,7 @@ class RunStore(
     }
 
     private fun deleteKeys(db: SQLiteDatabase, keys: List<RunKey>) {
-        db.beginTransaction()
-        try {
+        db.transaction {
             keys.forEach { key ->
                 db.delete(
                     "runs",
@@ -379,9 +375,6 @@ class RunStore(
                     arrayOf(key.hostClientId, key.runId),
                 )
             }
-            db.setTransactionSuccessful()
-        } finally {
-            db.endTransaction()
         }
     }
 

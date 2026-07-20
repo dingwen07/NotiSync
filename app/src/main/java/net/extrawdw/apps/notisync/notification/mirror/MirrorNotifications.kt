@@ -34,6 +34,7 @@ import androidx.core.content.FileProvider
 import androidx.core.content.LocusIdCompat
 import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.core.graphics.drawable.IconCompat
+import androidx.core.graphics.createBitmap
 import androidx.core.net.toUri
 import androidx.core.content.pm.ShortcutManagerCompat
 import kotlinx.coroutines.CoroutineScope
@@ -71,6 +72,24 @@ import java.security.MessageDigest
 import java.util.Base64
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.roundToInt
+
+/**
+ * Rechecks the runtime permission immediately before posting and absorbs the race where it is
+ * revoked between that check and [NotificationManagerCompat.notify].
+ */
+private fun NotificationManagerCompat.tryNotify(
+    context: Context,
+    tag: String,
+    id: Int,
+    notification: Notification,
+): Result<Unit> {
+    if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+        PackageManager.PERMISSION_GRANTED
+    ) {
+        return Result.failure(SecurityException("POST_NOTIFICATIONS is not granted"))
+    }
+    return runCatching { notify(tag, id, notification) }
+}
 
 /** Android's progress APIs use Ints; preserve exact values when possible and scale only very large totals. */
 internal data class NativeLiveProgress(
@@ -798,13 +817,15 @@ class RemoteNotificationPoster(
         // ANY failure, strip the style, restore the action row CALL skipped, and post a plain high-priority
         // notification so the call still shows with its Answer/Decline buttons. The old silent runCatching hid
         // exactly this failure mode; post failures are now logged.
-        fun post(): Boolean = runCatching {
-            NotificationManagerCompat.from(context).notify(tag, id, builder.build())
-            true
-        }.getOrElse {
-            Log.w("MirrorNotifications", "post failed for style=${notif.style}: ${it.message}", it)
-            false
-        }
+        fun post(): Boolean = NotificationManagerCompat.from(context)
+            .tryNotify(context, tag, id, builder.build())
+            .fold(
+                onSuccess = { true },
+                onFailure = {
+                    Log.w("MirrorNotifications", "post failed for style=${notif.style}: ${it.message}", it)
+                    false
+                },
+            )
         if (!post()) {
             builder.setStyle(null)
             if (notif.style == NotificationStyle.CALL) applyActions(builder, notif, tag, originLabel)
@@ -968,7 +989,7 @@ class RemoteNotificationPoster(
                 )
         }
         val summary = summaryBuilder.build()
-        runCatching { compat.notify(summaryTag, summaryTag.hashCode(), summary) }
+        compat.tryNotify(context, summaryTag, summaryTag.hashCode(), summary)
     }
 
     private fun groupChildren(
@@ -1147,7 +1168,7 @@ class RemoteNotificationPoster(
         val size = minOf(width, height)
         val left = (width - size) / 2f
         val top = (height - size) / 2f
-        val out = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        val out = createBitmap(size, size)
         val shader = BitmapShader(this, Shader.TileMode.CLAMP, Shader.TileMode.CLAMP).apply {
             setLocalMatrix(Matrix().apply { setTranslate(-left, -top) })
         }
@@ -1295,7 +1316,7 @@ class RemoteNotificationPoster(
         val intent = Intent(context, MirrorTapActivity::class.java).apply {
             action = MirrorTapActivity.ACTION_TAP
             // Distinct data per mirror: extras don't participate in PendingIntent identity.
-            data = Uri.parse("notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}")
+            data = "notisync://tap/${Uri.encode(tagOf(notif.sourceClientId, notif.sourceKey))}".toUri()
             putExtra(MirrorTapActivity.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorTapActivity.EXTRA_SOURCE_KEY, notif.sourceKey)
             putExtra(MirrorTapActivity.EXTRA_DEVICE_NAME, originLabel)
@@ -1314,7 +1335,7 @@ class RemoteNotificationPoster(
     ): PendingIntent {
         val intent = Intent(context, MirrorActionReceiver::class.java).apply {
             this.action = MirrorActionReceiver.ACTION_PERFORM
-            data = Uri.parse("notisync://action/${action.index}/${Uri.encode(tag)}")
+            data = "notisync://action/${action.index}/${Uri.encode(tag)}".toUri()
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_KEY, notif.sourceKey)
             putExtra(MirrorActionReceiver.EXTRA_ACTION_INDEX, action.index)
@@ -1595,7 +1616,7 @@ class MirrorActionReceiver : BroadcastReceiver() {
                 .setRemoteInputHistory(arrayOf(replyText))
                 .setOnlyAlertOnce(true)
                 .build()
-            NotificationManagerCompat.from(context).notify(tag, tag.hashCode(), rebuilt)
+            NotificationManagerCompat.from(context).tryNotify(context, tag, tag.hashCode(), rebuilt).getOrThrow()
         }
     }
 

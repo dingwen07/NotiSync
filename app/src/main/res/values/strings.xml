@@ -27,8 +27,6 @@
     <string name="run_command_fallback">Command</string>
     <string name="run_empty_title">No Runs yet</string>
     <string name="run_empty_body">Commands shared from your computers will appear here.</string>
-    <string name="run_select_title">Select a Run</string>
-    <string name="run_select_body">Choose a current or historical Run to inspect its terminal.</string>
     <string name="run_section_active">Active</string>
     <string name="run_section_history">History</string>
     <string name="run_clear_history_action">Delete all history</string>
@@ -237,7 +235,10 @@
     <string name="diag_oversized_hint">Sends an oversized notification (simulating net.extrawdw.notifly) to your other devices. It exceeds the FCM inline limit, so it is delivered via the wake + relay-fetch path.</string>
     <string name="diag_oversized_send">Send oversized test</string>
     <string name="diag_oversized_sending">Sending…</string>
-    <string name="diag_oversized_sent">Sent to %1$d device(s) — check the other device.</string>
+    <plurals name="diag_oversized_sent">
+        <item quantity="one">Sent to %1$d device — check the other device.</item>
+        <item quantity="other">Sent to %1$d devices — check the other device.</item>
+    </plurals>
     <string name="diag_oversized_no_peers">No devices to send to.</string>
     <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
     <string name="diag_rotation">Key rotation</string>
