@@ -127,7 +127,7 @@
 
     <!-- Activity screen -->
     <string name="activity_empty_title">No activity yet</string>
-    <string name="activity_empty_body">Pair a device, then notifications you receive will appear here.</string>
+    <string name="activity_empty_body">Device, notification, and NotiSync Run diagnostics will appear here.</string>
     <string name="activity_event_overline">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s via %2$s</string>
     <string name="activity_delivery_unknown">unknown route</string>
@@ -173,6 +173,8 @@
         <item quantity="other">updated notification filters (%1$d rules)</item>
     </plurals>
     <string name="activity_detail_filters_cleared">cleared notification filters</string>
+    <string name="activity_detail_run_received">%1$s · from %2$s</string>
+    <string name="activity_detail_run_sent">%1$s · to %2$s</string>
     <string name="activity_detail_action_to">"“%1$s” sent to %2$s"</string>
     <string name="activity_detail_tap_to">opening on %1$s</string>
     <string name="activity_detail_action_by">"“%1$s” by %2$s"</string>

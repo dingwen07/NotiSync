@@ -123,7 +123,7 @@
 
     <!-- Activity screen -->
     <string name="activity_empty_title">暂无动态</string>
-    <string name="activity_empty_body">配对设备后，您收到的通知将显示在此处。</string>
+    <string name="activity_empty_body">设备、通知和 NotiSync Run 诊断信息将显示在此处。</string>
     <string name="activity_event_overline">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s，通过 %2$s</string>
     <string name="activity_delivery_unknown">未知路线</string>
@@ -164,6 +164,8 @@
         <item quantity="other">已更新通知过滤（%1$d 条规则）</item>
     </plurals>
     <string name="activity_detail_filters_cleared">已清除通知过滤</string>
+    <string name="activity_detail_run_received">%1$s · 来自 %2$s</string>
+    <string name="activity_detail_run_sent">%1$s · 发送至 %2$s</string>
     <string name="activity_detail_action_to">已将“%1$s”发送给 %2$s</string>
     <string name="activity_detail_tap_to">正在 %1$s 上打开</string>
     <string name="activity_detail_action_by">由 %2$s 执行“%1$s”</string>

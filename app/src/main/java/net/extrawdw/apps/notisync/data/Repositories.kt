@@ -435,15 +435,17 @@ class ActivityLog {
         now: Long,
         deliveryMode: DeliveryMode? = null,
     ) {
-        _events.value = (listOf(
-            ActivityEvent(
-                kind,
-                title,
-                detail,
-                now,
-                deliveryMode
-            )
-        ) + _events.value).take(MAX)
+        _events.update { events ->
+            (listOf(
+                ActivityEvent(
+                    kind,
+                    title,
+                    detail,
+                    now,
+                    deliveryMode
+                )
+            ) + events).take(MAX)
+        }
     }
 
     companion object {

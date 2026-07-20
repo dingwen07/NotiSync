@@ -401,6 +401,9 @@ class AppGraph(private val app: Application) {
                 deviceNameOf = { id -> trust.displayName(id) },
             ),
             scope = scope,
+            activityLog = activityLog,
+            activityText = activityText,
+            deviceNameOf = { id -> trust.displayName(id) },
         )
         runEngine = runs
         // Recover notification actions committed before a cold graph was ready, including a process death in the
