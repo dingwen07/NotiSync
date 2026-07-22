@@ -43,6 +43,18 @@ class ScreenRelayVideoQueueTest {
         queue.close()
     }
 
+    @Test
+    fun freshKeyFrameImmediatelySupersedesQueuedPredictiveHistory() = runTest {
+        val queue = ScreenRelayVideoQueue(2 * ScreenRelayVideoWire.MAX_MESSAGE_BYTES)
+        val delta = frame(ScreenRelayVideoWire.FLAG_DELTA, 0)
+        val key = frame(ScreenRelayVideoWire.FLAG_KEY_FRAME, 1)
+        queue.enqueue(delta)
+
+        assertEquals(0L, queue.enqueue(key).congestedThroughSequence)
+        assertArrayEquals(key, queue.take())
+        queue.close()
+    }
+
     private fun frame(flags: Int, sequence: Long): ByteArray {
         val plaintextBytes = ScreenRelayVideoWire.MAX_FRAGMENT_PLAINTEXT_BYTES
         val header = ScreenRelayVideoWire.encodeHeader(

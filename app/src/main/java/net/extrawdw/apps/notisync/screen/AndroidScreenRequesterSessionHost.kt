@@ -118,16 +118,14 @@ internal class AndroidScreenRequesterSessionHost(
                     check(current.sourceId == sourceId) {
                         "another Android screen viewer is already active"
                     }
-                    if (current.connectionMode == connectionMode ||
-                        current.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY
-                    ) {
+                    if (current.connectionMode == connectionMode) {
                         return current.id
                     }
                     current.id
                 }
             }
             if (switchAttempt == null) break
-            stopIfAttempt(switchAttempt, "switching to broker relay")
+            stopIfAttempt(switchAttempt, "switching screen transport")
         }
         val attempt: Attempt
         val job: Job

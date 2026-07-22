@@ -94,10 +94,8 @@ class ScreenMirrorRequesterForegroundService : Service() {
                 stateJob?.cancel()
             }
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Transferred -> {
-                // A replacement Activity for the same source takes over the foreground-service
-                // commands and notification actions, but adopts the existing authenticated host
-                // attempt. In particular, a late Close from the previous Activity lease must not
-                // be able to disconnect the replacement.
+                // A replacement Activity takes over command ownership. host.start() reuses the
+                // existing attempt only when its explicitly requested transport mode also matches.
                 stateJob?.cancel()
             }
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Switched -> {
@@ -343,8 +341,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
  *
  * Replacing the lease is one atomic operation: callbacks and notification actions for the previous
  * Activity generation immediately lose authority. A replacement Activity for the same source
- * transfers only service ownership and adopts the existing host attempt; a different source is a
- * real session switch.
+ * transfers service ownership; the host independently enforces its requested transport mode.
  */
 internal class ScreenMirrorRequesterForegroundOwnership {
     sealed interface StartDecision {

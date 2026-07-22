@@ -156,6 +156,30 @@ class AndroidScreenRequesterSessionHostTest {
     }
 
     @Test
+    fun directStartDoesNotAdoptRelayFromAnEarlierViewerLease() {
+        val fixture = HostFixture(emptySet())
+        try {
+            val relayAttempt = fixture.host.start(
+                SOURCE,
+                AndroidScreenConnectionMode.BROKER_RELAY,
+            )
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+
+            val directAttempt = fixture.host.start(SOURCE, AndroidScreenConnectionMode.DIRECT)
+
+            assertNotEquals(relayAttempt, directAttempt)
+            waitUntil {
+                fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED &&
+                    fixture.host.state.value.connectionMode == AndroidScreenConnectionMode.DIRECT
+            }
+            assertEquals(1, fixture.relayOpens.get())
+            assertEquals(1, fixture.directOpens.get())
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
     fun relayTlsTruncationReconnectsWithoutUserAction() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val opens = AtomicInteger()

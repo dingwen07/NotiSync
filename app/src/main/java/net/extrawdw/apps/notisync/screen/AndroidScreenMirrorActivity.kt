@@ -137,6 +137,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
     internal val pictureInPictureChromeHidden = mutableStateOf(false)
     internal val renderingAllowed = mutableStateOf(true)
     internal val statusBarVisible = mutableStateOf(true)
+    internal val relayOptedIn = mutableStateOf(false)
     private lateinit var sourceId: ClientId
     private lateinit var requesterLeaseId: String
     private var pictureInPictureEligible = false
@@ -159,6 +160,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             ?.takeIf { it.isNotBlank() && it.length <= MAX_REQUESTER_LEASE_ID_LENGTH }
             ?: UUID.randomUUID().toString()
         statusBarVisible.value = savedInstanceState?.getBoolean(STATE_STATUS_BAR_VISIBLE) ?: true
+        relayOptedIn.value = savedInstanceState?.getBoolean(STATE_RELAY_OPTED_IN) ?: false
 
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         enableEdgeToEdge()
@@ -181,6 +183,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             outState.putString(STATE_REQUESTER_LEASE_ID, requesterLeaseId)
         }
         outState.putBoolean(STATE_STATUS_BAR_VISIBLE, statusBarVisible.value)
+        outState.putBoolean(STATE_RELAY_OPTED_IN, relayOptedIn.value)
         super.onSaveInstanceState(outState)
     }
 
@@ -346,6 +349,8 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             "net.extrawdw.apps.notisync.screen.REQUESTER_LEASE_ID"
         private const val STATE_STATUS_BAR_VISIBLE =
             "net.extrawdw.apps.notisync.screen.STATUS_BAR_VISIBLE"
+        private const val STATE_RELAY_OPTED_IN =
+            "net.extrawdw.apps.notisync.screen.RELAY_OPTED_IN"
         private const val MAX_REQUESTER_LEASE_ID_LENGTH = 128
         private const val PICTURE_IN_PICTURE_TRANSITION_TIMEOUT_MS = 1_000L
 
@@ -387,7 +392,7 @@ private fun AndroidScreenMirrorViewer(
     var detail by remember { mutableStateOf<String?>(null) }
     var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
     var retryGeneration by remember { mutableIntStateOf(0) }
-    var brokerRelayRequested by remember(sourceId.value) { mutableStateOf(false) }
+    var brokerRelayRequested by activity.relayOptedIn
     var brokerRelaySupported by remember { mutableStateOf(false) }
     var showBrokerRelayFallback by remember { mutableStateOf(false) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }
@@ -560,6 +565,15 @@ private fun AndroidScreenMirrorViewer(
                 detail = activity.getString(R.string.screen_viewer_ended)
                 return@collect
             }
+            if (state.sourceId == sourceId &&
+                state.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY &&
+                !brokerRelayRequested
+            ) {
+                control = null
+                phase = AndroidViewerUiPhase.CONNECTING
+                detail = null
+                return@collect
+            }
             val outputSurface = surface?.takeIf(Surface::isValid)
             if (
                 renderingAllowed && state.attemptId != null && outputSurface != null &&
@@ -568,9 +582,6 @@ private fun AndroidScreenMirrorViewer(
                 host.attachSurface(activity.viewerToken, outputSurface)
             }
             state.sourceName?.let { sourceName = it }
-            if (state.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
-                brokerRelayRequested = true
-            }
             state.codec?.let { codecName = it.name.lowercase() }
             connectionType = state.connectionType
             dimensions = state.dimensions

@@ -40,14 +40,21 @@ internal class ScreenRelayVideoQueue(
         val header = ScreenRelayVideoWire.decodeHeader(bytes)
             ?: throw IOException("invalid Relay video fragment")
         val packet = Packet(bytes.copyOf(), header.predictive, header.recordSequence)
+        var keyFrameStarted = false
+        var congestionSignal: Long? = null
         while (true) {
             var waitForSpace = false
             var completed: ScreenRelayVideoEnqueueResult? = null
             mutex.withLock {
                 if (closed.get()) throw IOException("Relay video queue is closed")
-                if (header.keyFrame && header.firstFragment) {
+                if (header.keyFrame && header.firstFragment && !keyFrameStarted) {
+                    keyFrameStarted = true
                     droppingUntilKeyFrame = false
-                    lastDiscardSignalledSequence = -1L
+                    discardQueuedPredictiveLocked()?.let { discardedThrough ->
+                        congestionSignal = discardedThrough
+                        lastDiscardSignalledSequence = discardedThrough
+                        spaceReady.trySend(Unit)
+                    }
                 }
                 when {
                     droppingUntilKeyFrame && packet.predictive -> {
@@ -60,7 +67,7 @@ internal class ScreenRelayVideoQueue(
                         packets.addLast(packet)
                         queuedBytes += packet.bytes.size
                         itemReady.trySend(Unit)
-                        completed = ScreenRelayVideoEnqueueResult()
+                        completed = ScreenRelayVideoEnqueueResult(congestionSignal)
                     }
                     packet.predictive -> {
                         var congestedThrough = packet.sequence
@@ -114,6 +121,22 @@ internal class ScreenRelayVideoQueue(
         if (!closed.compareAndSet(false, true)) return
         itemReady.close()
         spaceReady.close()
+    }
+
+    private fun discardQueuedPredictiveLocked(): Long? {
+        var discardedThrough: Long? = null
+        val retained = ArrayDeque<Packet>(packets.size)
+        while (packets.isNotEmpty()) {
+            val queued = packets.removeFirst()
+            if (queued.predictive) {
+                queuedBytes -= queued.bytes.size
+                discardedThrough = maxOf(discardedThrough ?: queued.sequence, queued.sequence)
+            } else {
+                retained.addLast(queued)
+            }
+        }
+        packets.addAll(retained)
+        return discardedThrough
     }
 
     private companion object {
