@@ -387,7 +387,7 @@ private fun AndroidScreenMirrorViewer(
     var detail by remember { mutableStateOf<String?>(null) }
     var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
     var retryGeneration by remember { mutableIntStateOf(0) }
-    var brokerRelayRequested by rememberSaveable(sourceId.value) { mutableStateOf(false) }
+    var brokerRelayRequested by remember(sourceId.value) { mutableStateOf(false) }
     var brokerRelaySupported by remember { mutableStateOf(false) }
     var showBrokerRelayFallback by remember { mutableStateOf(false) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }

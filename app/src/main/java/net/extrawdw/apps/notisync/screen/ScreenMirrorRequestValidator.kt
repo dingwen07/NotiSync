@@ -54,6 +54,12 @@ object ScreenMirrorRequestValidator {
         ) {
             return invalid("no valid connection candidate")
         }
+        val relayCount = request.candidates.count {
+            it.kind == ScreenMirrorConnectionCandidate.BROKER_RELAY
+        }
+        if (relayCount > 0 && (relayCount != 1 || request.candidates.size != 1)) {
+            return invalid("relay candidate must be an exclusive manual request")
+        }
         return null
     }
 

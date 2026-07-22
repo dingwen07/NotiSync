@@ -172,6 +172,18 @@ class ScreenMirrorRequestValidatorTest {
             ),
         )
 
+        val mixed = relay.copy(
+            candidates = request().candidates + relay.candidates.single(),
+        )
+        assertEquals(
+            ScreenMirrorStatus.TRANSPORT_FAILED,
+            ScreenMirrorRequestValidator.validate(
+                mixed, requester, source, now, now,
+                authorized = true,
+                codecAvailable = true,
+            )?.status,
+        )
+
         listOf(
             relay.copy(candidates = listOf(relay.candidates.single().copy(serviceName = "short"))),
             relay.copy(candidates = listOf(relay.candidates.single().copy(host = "192.0.2.1"))),

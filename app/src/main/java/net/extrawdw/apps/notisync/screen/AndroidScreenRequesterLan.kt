@@ -178,28 +178,17 @@ internal class AndroidScreenRequesterLan private constructor(
                 error("local network permission is not granted")
             }
             val connectivity = requireNotNull(appContext.getSystemService(ConnectivityManager::class.java))
-            val active = connectivity.activeNetwork
-            val candidates = LinkedHashSet<Network>()
-            if (active != null && connectivity.getNetworkCapabilities(active)?.isPhysicalLan() == true) {
-                candidates += active
-            }
-            // A VPN may be the default. Android has no public VPN-to-underlying-network mapping, so
-            // best effort means scanning the visible non-VPN Wi-Fi/Ethernet Networks after active.
-            connectivity.allNetworks.forEach(candidates::add)
-            val selected = candidates.firstOrNull { candidate ->
-                connectivity.getNetworkCapabilities(candidate)?.isPhysicalLan() == true &&
-                    connectivity.getLinkProperties(candidate)?.let { properties ->
-                        androidLanAddresses(
-                            properties.interfaceName,
-                            properties.linkAddresses.map { it.address to it.prefixLength },
-                        ).isNotEmpty()
-                    } == true
+            val selected = awaitAndroidLanNetworkSnapshot(connectivity) { capabilities, properties ->
+                capabilities.isPhysicalLan() && androidLanAddresses(
+                    properties.interfaceName,
+                    properties.linkAddresses.map { it.address to it.prefixLength },
+                ).isNotEmpty()
             } ?: return null
             return AndroidScreenRequesterLan(
                 context = appContext,
                 connectivity = connectivity,
-                network = selected,
-                linkProperties = requireNotNull(connectivity.getLinkProperties(selected)),
+                network = selected.network,
+                linkProperties = selected.linkProperties,
             )
         }
 

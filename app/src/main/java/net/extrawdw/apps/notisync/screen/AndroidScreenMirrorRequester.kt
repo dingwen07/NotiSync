@@ -276,6 +276,7 @@ internal class AndroidScreenMirrorRequester(
                         )
                     }
                     val candidates = requestCandidates(
+                        connectionMode = connectionMode,
                         lanListener = lanListener,
                         advertisement = advertisement,
                         awareListener = awareListener,
@@ -730,6 +731,7 @@ private suspend fun closeListenerRace(
 }
 
 private fun requestCandidates(
+    connectionMode: AndroidScreenConnectionMode,
     lanListener: LanSessionListener?,
     advertisement: AutoCloseable?,
     awareListener: AndroidWifiAwareScreenListener?,
@@ -741,6 +743,7 @@ private fun requestCandidates(
         dnsCandidate = dns,
         awareCandidates = awareListener?.candidates.orEmpty(),
         relayCandidates = relayListener?.candidates.orEmpty(),
+        connectionMode = connectionMode,
     ).map(ScreenConnectionCandidate::toProtocolCandidate)
 }
 
@@ -749,15 +752,25 @@ internal fun selectScreenMirrorRequestCandidates(
     dnsCandidate: ScreenConnectionCandidate?,
     awareCandidates: List<ScreenConnectionCandidate>,
     relayCandidates: List<ScreenConnectionCandidate> = emptyList(),
+    connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
 ): List<ScreenConnectionCandidate> {
     val aware = awareCandidates.singleOrNull()
     val relay = relayCandidates.singleOrNull()
-    val reserved = listOfNotNull(dnsCandidate, aware, relay)
-    val direct = lanCandidates
-        .take((SCREEN_MIRROR_MAX_CANDIDATES - reserved.size).coerceAtLeast(0))
-    return (direct + reserved)
-        .distinct()
-        .take(SCREEN_MIRROR_MAX_CANDIDATES)
+    return when (connectionMode) {
+        AndroidScreenConnectionMode.DIRECT -> {
+            require(relayCandidates.isEmpty()) { "direct screen request must not advertise relay" }
+            val reserved = listOfNotNull(dnsCandidate, aware)
+            val direct = lanCandidates
+                .take((SCREEN_MIRROR_MAX_CANDIDATES - reserved.size).coerceAtLeast(0))
+            (direct + reserved).distinct().take(SCREEN_MIRROR_MAX_CANDIDATES)
+        }
+        AndroidScreenConnectionMode.BROKER_RELAY -> {
+            require(lanCandidates.isEmpty() && dnsCandidate == null && awareCandidates.isEmpty()) {
+                "relay screen request must not advertise direct candidates"
+            }
+            listOfNotNull(relay)
+        }
+    }
 }
 
 private const val SCREEN_MIRROR_MAX_CANDIDATES = 8

@@ -5,6 +5,7 @@ import net.extrawdw.notisync.screen.ScreenConnectionCandidate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -107,8 +108,48 @@ class AndroidScreenTransportSelectionTest {
                 dnsCandidate = null,
                 awareCandidates = emptyList(),
                 relayCandidates = listOf(relay),
+                connectionMode = AndroidScreenConnectionMode.BROKER_RELAY,
             ),
         )
+    }
+
+    @Test
+    fun `direct request cannot advertise relay alongside slower Aware`() {
+        val aware = ScreenConnectionCandidate(
+            kind = ScreenConnectionCandidate.WIFI_AWARE,
+            serviceName = awareServiceName(9),
+            port = 31_899,
+        )
+        val relay = ScreenConnectionCandidate(
+            kind = ScreenConnectionCandidate.BROKER_RELAY,
+            serviceName = "abcdefghijklmnopqrstuvwxABCDEFGH",
+        )
+
+        assertThrows(IllegalArgumentException::class.java) {
+            selectScreenMirrorRequestCandidates(
+                lanCandidates = emptyList(),
+                dnsCandidate = null,
+                awareCandidates = listOf(aware),
+                relayCandidates = listOf(relay),
+                connectionMode = AndroidScreenConnectionMode.DIRECT,
+            )
+        }
+    }
+
+    @Test
+    fun `source ignores relay when a request also contains direct candidates`() {
+        val relay = ScreenMirrorConnectionCandidate(
+            kind = ScreenMirrorConnectionCandidate.BROKER_RELAY,
+            serviceName = "abcdefghijklmnopqrstuvwxABCDEFGH",
+        )
+        val direct = ScreenMirrorConnectionCandidate(
+            kind = ScreenMirrorConnectionCandidate.LAN_TCP,
+            host = "192.0.2.1",
+            port = 31_890,
+        )
+
+        assertTrue(exclusiveBrokerRelayCandidates(listOf(relay)).isNotEmpty())
+        assertTrue(exclusiveBrokerRelayCandidates(listOf(direct, relay)).isEmpty())
     }
 
     @Test

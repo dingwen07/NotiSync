@@ -190,7 +190,7 @@ class AndroidLanScreenSessionTransport(
             }
         }
 
-        val relayCandidates = request.candidates.filter(::validBrokerRelayCandidate)
+        val relayCandidates = exclusiveBrokerRelayCandidates(request.candidates)
         for (candidate in relayCandidates) {
             val relayBroker = broker ?: break
             var videoRelay: BrokerRelayConnection? = null
@@ -547,18 +547,9 @@ class AndroidLanScreenSessionTransport(
 
     private fun requireLanNetworkOrNull(): Network? {
         val connectivity = appContext.getSystemService(ConnectivityManager::class.java) ?: return null
-        val active = connectivity.activeNetwork
-        val activeCapabilities = active?.let(connectivity::getNetworkCapabilities)
-        val candidates = LinkedHashSet<Network>()
-        // Prefer the default network when it is already physical. Android does not expose a public
-        // VPN-to-underlying-Network mapping to client apps, so allNetworks is the best-effort path
-        // when a VPN is default; only non-VPN Wi-Fi/Ethernet candidates survive the filter below.
-        if (active != null && activeCapabilities?.isUsableLan() == true) candidates += active
-        connectivity.allNetworks.forEach(candidates::add)
-        return candidates.firstOrNull { network ->
-            connectivity.getNetworkCapabilities(network)?.isUsableLan() == true &&
-                connectivity.getLinkProperties(network) != null
-        }
+        return awaitAndroidLanNetworkSnapshot(connectivity) { capabilities, _ ->
+            capabilities.isUsableLan()
+        }?.network
     }
 
     /** Reject internet/default-route targets even when they are reachable through the active Wi-Fi network. */
@@ -659,6 +650,13 @@ internal fun sanitizeScreenTransportDetail(value: String?): String? = value
     ?.trim()
     ?.takeIf(String::isNotEmpty)
     ?.take(200)
+
+internal fun exclusiveBrokerRelayCandidates(
+    candidates: List<ScreenMirrorConnectionCandidate>,
+): List<ScreenMirrorConnectionCandidate> =
+    candidates.takeIf { entries ->
+        entries.size == 1 && entries.single().kind == ScreenMirrorConnectionCandidate.BROKER_RELAY
+    }?.filter(::validBrokerRelayCandidate).orEmpty()
 
 internal object ScreenEndpointRetryPolicy {
     fun canRetry(videoAuthenticated: Boolean): Boolean = !videoAuthenticated
