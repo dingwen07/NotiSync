@@ -130,6 +130,10 @@ class BrokerClient(
         .connectTimeout(HTTP_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .writeTimeout(HTTP_SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .pingInterval(webSocketPingSeconds, TimeUnit.SECONDS)
+        // Relay control messages are tiny (a touch is one 32-byte scrcpy frame inside TLS).
+        // OkHttp otherwise leaves TCP_NODELAY at the platform default, so Nagle plus delayed ACKs
+        // can pace MOVE events into visibly slow bursts on both Android relay clients.
+        .socketFactory(TcpNoDelaySocketFactory())
         // Relay VIDEO is already AES-GCM ciphertext. Deflate cannot reduce it and only adds CPU and
         // another staging buffer on the latency-sensitive path.
         .minWebSocketMessageToCompress(Long.MAX_VALUE)
@@ -767,7 +771,7 @@ class BrokerClient(
             withTimeout(SCREEN_RELAY_REGISTER_TIMEOUT_MS) { registered.await() }
             return connection
         } catch (error: Throwable) {
-            connection.close()
+            connection.abort()
             throw error
         }
     }

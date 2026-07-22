@@ -362,6 +362,26 @@ internal class AndroidScreenRequesterSessionHost(
             throw cancelled
         } catch (error: Throwable) {
             if (isCurrent(attempt.id)) {
+                awaitRemoteRelayTerminal(attempt, error)?.let { terminalRequesterState ->
+                    val failed = terminalRequesterState.phase == AndroidScreenRequesterPhase.FAILED
+                    val hostSnapshot = state.value
+                    completeAttempt(
+                        attempt.id,
+                        hostSnapshot.copy(
+                            phase = if (failed) {
+                                AndroidScreenHostPhase.ERROR
+                            } else {
+                                AndroidScreenHostPhase.ENDED
+                            },
+                            sessionId = session?.sessionId ?: hostSnapshot.sessionId,
+                            sourceName = session?.sourceName ?: hostSnapshot.sourceName,
+                            codec = session?.codec ?: hostSnapshot.codec,
+                            connectionType = session?.connectionType ?: hostSnapshot.connectionType,
+                            detail = terminalRequesterState.detail,
+                        ),
+                    )
+                    return
+                }
                 if (reconnectRelay(attempt, error, session, decoder, dispatcher)) return
                 failAttempt(
                     attempt.id,
@@ -391,6 +411,26 @@ internal class AndroidScreenRequesterSessionHost(
                 attempt.surface = null
             }
         }
+    }
+
+    /**
+     * Source Stop publishes an authenticated END immediately before it tears down the relay.
+     * The independent relay socket can reach TLS EOF first, so briefly allow the status lane to
+     * retire the requester before classifying the EOF as a disconnect and reconnecting.
+     */
+    private suspend fun awaitRemoteRelayTerminal(
+        attempt: Attempt,
+        error: Throwable,
+    ): AndroidScreenRequesterState? {
+        if (attempt.connectionMode != AndroidScreenConnectionMode.BROKER_RELAY ||
+            !isReconnectableRelayFailure(error)
+        ) return null
+
+        requesterState().remoteTerminalOrNull()?.let { return it }
+        delay(RELAY_REMOTE_TERMINAL_GRACE_MS)
+        currentCoroutineContext().ensureActive()
+        if (!isCurrent(attempt.id)) return null
+        return requesterState().remoteTerminalOrNull()
     }
 
     private suspend fun reconnectRelay(
@@ -529,6 +569,7 @@ internal class AndroidScreenRequesterSessionHost(
         const val DEFAULT_CLOSE_DETAIL = "Android viewer closed"
         const val MAX_RELAY_RECONNECT_ATTEMPTS = 6
         const val RELAY_RECONNECT_BASE_DELAY_MS = 250L
+        const val RELAY_REMOTE_TERMINAL_GRACE_MS = 750L
         const val RELAY_STABLE_RESET_NANOS = 30_000_000_000L
         val TERMINAL_PHASES = setOf(AndroidScreenHostPhase.ENDED, AndroidScreenHostPhase.ERROR)
         val HOST_ALLOWED_KEYS = setOf(
@@ -541,6 +582,12 @@ internal class AndroidScreenRequesterSessionHost(
         )
     }
 }
+
+private fun AndroidScreenRequesterState.remoteTerminalOrNull(): AndroidScreenRequesterState? =
+    takeIf {
+        it.phase == AndroidScreenRequesterPhase.IDLE ||
+            it.phase == AndroidScreenRequesterPhase.FAILED
+    }
 
 internal fun isReconnectableRelayFailure(error: Throwable): Boolean {
     var current: Throwable? = error
@@ -559,6 +606,8 @@ private val RECONNECTABLE_RELAY_FAILURES = listOf(
     "websocket",
     "connection reset",
     "broken pipe",
+    "decoder input stalled",
+    "video decoder stalled",
     "unexpected end",
     "end of stream",
     "eof",

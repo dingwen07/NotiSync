@@ -4,6 +4,7 @@ import android.media.MediaCodec
 import android.media.MediaFormat
 import android.view.Surface
 import java.io.Closeable
+import java.io.IOException
 import java.io.InputStream
 import java.util.ArrayDeque
 import java.util.concurrent.ArrayBlockingQueue
@@ -25,6 +26,7 @@ internal class AndroidScreenVideoDecoder(
     private val expectedCodec: ScreenMirrorCodec,
     private val hardwareDecoderName: String? = null,
     private val onDimensionsChanged: (ScrcpySessionDimensions) -> Unit = {},
+    private val nanoTime: () -> Long = System::nanoTime,
 ) : Closeable {
     private data class SurfaceAttachment(val ownerToken: String, val surface: Surface)
     private data class PendingOutput(val index: Int, val size: Int, val flags: Int)
@@ -337,10 +339,14 @@ internal class AndroidScreenVideoDecoder(
         packet: ScrcpyVideoRecord.Packet,
         codecSurface: SurfaceAttachment?,
     ) {
+        val deadlineNanos = nanoTime() + INPUT_BUFFER_STALL_TIMEOUT_NS
         while (!closed.get()) {
             val inputIndex = codec.dequeueInputBuffer(INPUT_DEQUEUE_TIMEOUT_US)
             if (inputIndex < 0) {
                 drainAvailableOutput(codec, 0L, codecSurface)
+                if (nanoTime() >= deadlineNanos) {
+                    throw IOException("screen decoder input stalled")
+                }
                 continue
             }
             val inputBuffer = checkNotNull(codec.getInputBuffer(inputIndex)) {
@@ -474,6 +480,7 @@ internal class AndroidScreenVideoDecoder(
         private const val MAX_CACHED_CODEC_CONFIG_BYTES = 1024 * 1024
         private const val READER_SETTLE_JOIN_TIMEOUT_MILLIS = 25L
         private const val INPUT_DEQUEUE_TIMEOUT_US = 10_000L
+        private const val INPUT_BUFFER_STALL_TIMEOUT_NS = 2_000_000_000L
         private const val OUTPUT_DEQUEUE_TIMEOUT_US = 5_000L
         private const val END_OF_STREAM_DRAIN_TIMEOUT_NS = 250_000_000L
 

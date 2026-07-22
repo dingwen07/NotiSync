@@ -12,6 +12,7 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -222,6 +223,51 @@ class AndroidScreenRequesterSessionHostTest {
     }
 
     @Test
+    fun remoteEndWinsOverRelayTlsTruncation() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val opens = AtomicInteger()
+        val requesterState = AtomicReference(
+            AndroidScreenRequesterState(phase = AndroidScreenRequesterPhase.CONNECTED),
+        )
+        val session = FakeSession(
+            sourceCapabilities = emptySet(),
+            controlOutput = RecordingOutputStream(),
+            connectionType = AndroidScreenConnectionType.BROKER_RELAY,
+            videoStream = PreambleThenFailingInputStream(
+                "No close_notify alert received before connection closed",
+            ),
+        )
+        val host = AndroidScreenRequesterSessionHost(
+            scope = scope,
+            hardwareDecoderName = { null },
+            openSession = { _, _ -> error("direct path should not open") },
+            openRelaySession = { _, _ ->
+                opens.incrementAndGet()
+                session
+            },
+            closeOwner = { _, _ -> },
+            requesterState = requesterState::get,
+        )
+        try {
+            val attempt = host.start(SOURCE, AndroidScreenConnectionMode.BROKER_RELAY)
+            Thread {
+                Thread.sleep(100)
+                requesterState.set(AndroidScreenRequesterState())
+            }.start()
+
+            waitUntil { host.state.value.phase == AndroidScreenHostPhase.ENDED }
+
+            assertEquals(attempt, host.state.value.attemptId)
+            assertEquals(1, opens.get())
+            assertEquals(null, host.state.value.detail)
+        } finally {
+            host.close()
+            session.close()
+            scope.cancel()
+        }
+    }
+
+    @Test
     fun onlyTransientRelayFailuresAreReconnectable() {
         assertTrue(
             isReconnectableRelayFailure(
@@ -229,6 +275,8 @@ class AndroidScreenRequesterSessionHostTest {
             ),
         )
         assertTrue(isReconnectableRelayFailure(IOException("broker relay closed (1001): restart")))
+        assertTrue(isReconnectableRelayFailure(IOException("screen decoder input stalled")))
+        assertTrue(isReconnectableRelayFailure(IOException("broker relay video decoder stalled")))
         assertFalse(isReconnectableRelayFailure(IllegalArgumentException("invalid scrcpy packet size")))
     }
 

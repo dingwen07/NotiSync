@@ -11,6 +11,9 @@ import android.os.Process
 import androidx.core.net.toUri
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.FutureTask
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -261,8 +264,12 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
      * Stops only [ownerToken]'s privileged capture and returns after the backend acknowledges that
      * all capture workers and descriptors are gone. A missing binder means its process is already gone.
      */
-    fun stopPrivilegedSession(ownerToken: String): Boolean =
-        runCatching { service?.stopSession(ownerToken) ?: true }.getOrDefault(false)
+    fun stopPrivilegedSession(ownerToken: String): Boolean {
+        val remote = service ?: return true
+        return runScreenTeardownWithTimeout(PRIVILEGED_STOP_TIMEOUT_MS) {
+            remote.stopSession(ownerToken)
+        }
+    }
 
     /** Removes the non-daemon user service after a session; the next request receives a fresh process. */
     fun removeUserService() {
@@ -362,6 +369,30 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         const val DEFAULT_MAX_FPS = 60
         const val DEFAULT_BITRATE_BPS = 8_000_000
         const val SERVICE_BIND_TIMEOUT_MS = 10_000L
+        const val PRIVILEGED_STOP_TIMEOUT_MS = 3_000L
+    }
+}
+
+/** Binder calls are not coroutine-cancellable; bound teardown so a dead UserService cannot own the FGS forever. */
+internal fun runScreenTeardownWithTimeout(
+    timeoutMillis: Long,
+    teardown: () -> Boolean,
+): Boolean {
+    require(timeoutMillis > 0)
+    val task = FutureTask(teardown)
+    val thread = Thread(task, "notisync-screen-privileged-stop").apply {
+        isDaemon = true
+        start()
+    }
+    return try {
+        task.get(timeoutMillis, TimeUnit.MILLISECONDS)
+    } catch (_: TimeoutException) {
+        task.cancel(true)
+        false
+    } catch (_: Throwable) {
+        false
+    } finally {
+        if (!task.isDone) thread.interrupt()
     }
 }
 

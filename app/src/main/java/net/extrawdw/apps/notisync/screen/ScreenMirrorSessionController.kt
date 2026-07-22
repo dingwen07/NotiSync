@@ -508,10 +508,19 @@ class ScreenMirrorSessionController(
             if (!removeBeforeCompletion) owned = completeLocked()
         }
         if (removeBeforeCompletion) {
-            runCatching { shizuku.removeUserService() }.onFailure {
-                effectiveForcedPromotionFailure = ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
-                    "failed to remove privileged screen service"
-            }
+            runCatching { shizuku.removeUserService() }.fold(
+                onSuccess = {
+                    // Killing the exact non-daemon UserService is the fallback acknowledgement:
+                    // its capture process and descriptors are gone even if stopSession wedged.
+                    // A queued replacement may now bind a fresh generation instead of inheriting
+                    // the old teardown failure and remaining permanently blocked.
+                    effectiveForcedPromotionFailure = null
+                },
+                onFailure = {
+                    effectiveForcedPromotionFailure = ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                        "failed to remove privileged screen service"
+                },
+            )
             synchronized(lock) {
                 owned = completeLocked()
             }

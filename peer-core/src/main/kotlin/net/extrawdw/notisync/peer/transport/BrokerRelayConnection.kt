@@ -68,6 +68,18 @@ class BrokerRelayConnection internal constructor(
             }
         }
 
+        /**
+         * Preserve the latency/backpressure contract of the nested TLS stream. OkHttp's
+         * [WebSocket.send] only enqueues a frame, so inheriting OutputStream's no-op flush lets
+         * touch records build up behind the app's MOVE coalescing boundary. Waiting for the local
+         * WebSocket writer to empty its queue keeps at most one stale touch in flight without
+         * waiting for a network acknowledgement.
+         */
+        override fun flush() {
+            check(channel == ScreenRelayChannel.CONTROL) { "Relay VIDEO is message framed" }
+            awaitWebSocketQueueDrained()
+        }
+
         override fun close() = this@BrokerRelayConnection.close()
     }
 
@@ -79,9 +91,13 @@ class BrokerRelayConnection internal constructor(
         if (closed.get()) return
         try {
             if (channel == ScreenRelayChannel.VIDEO) {
-                videoFrames.put(bytes)
+                receiveVideoFrame(bytes)
             } else {
                 inboundSink.write(bytes)
+                // PipedInputStream waits in one-second intervals and write() alone does not notify
+                // a reader sleeping on an empty pipe. Tiny CONTROL frames therefore need this
+                // explicit wake-up; VIDEO uses ArrayBlockingQueue and already signals its reader.
+                inboundSink.flush()
             }
         } catch (interrupted: InterruptedException) {
             Thread.currentThread().interrupt()
@@ -89,6 +105,22 @@ class BrokerRelayConnection internal constructor(
         } catch (error: IOException) {
             if (!closed.get()) throw error
         }
+    }
+
+    /** Never park OkHttp's WebSocket reader indefinitely behind a stalled decoder. */
+    private fun receiveVideoFrame(bytes: ByteArray) {
+        if (videoFrames.offer(bytes)) return
+        val accepted = try {
+            videoFrames.offer(
+                bytes,
+                minOf(stallTimeoutNanos, VIDEO_RECEIVE_STALL_TIMEOUT_NANOS),
+                TimeUnit.NANOSECONDS,
+            )
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException("broker relay video receive interrupted", interrupted)
+        }
+        if (!accepted) throw IOException("broker relay video decoder stalled")
     }
 
     internal fun receiveSignal(signal: ScreenRelaySignal) {
@@ -193,14 +225,31 @@ class BrokerRelayConnection internal constructor(
         congestionPending.also { congestionPending = false }
     }
 
-    internal fun terminate() = closeInternal(cancelSocket = false)
+    internal fun terminate() = closeInternal(SocketClose.NONE)
 
-    override fun close() = closeInternal(cancelSocket = true)
+    /** Normal session teardown preserves all WebSocket frames already queued ahead of CLOSE. */
+    override fun close() = closeInternal(SocketClose.GRACEFUL)
+
+    /** Failed registration/authentication has no established stream worth draining. */
+    internal fun abort() = closeInternal(SocketClose.ABORT)
 
     private fun sendBinary(bytes: ByteArray, offset: Int, count: Int, maximumQueuedBytes: Long) {
         val socket = awaitWritableSocket(count, maximumQueuedBytes)
         if (!socket.send(bytes.toByteString(offset, count))) {
             throw IOException("broker relay WebSocket rejected data")
+        }
+    }
+
+    private fun awaitWebSocketQueueDrained() {
+        val deadline = System.nanoTime() + stallTimeoutNanos
+        while (true) {
+            if (closed.get()) throw IOException("broker relay is closed")
+            val socket = webSocket ?: throw IOException("broker relay is not attached")
+            if (socket.queueSize() == 0L) return
+            if (System.nanoTime() >= deadline) {
+                throw IOException("broker relay WebSocket flush stalled")
+            }
+            sleepForQueueProgress("broker relay flush interrupted")
         }
     }
 
@@ -213,12 +262,16 @@ class BrokerRelayConnection internal constructor(
             if (System.nanoTime() >= deadline) {
                 throw IOException("broker relay WebSocket write stalled")
             }
-            try {
-                Thread.sleep(QUEUE_POLL_MILLIS)
-            } catch (interrupted: InterruptedException) {
-                Thread.currentThread().interrupt()
-                throw IOException("broker relay write interrupted", interrupted)
-            }
+            sleepForQueueProgress("broker relay write interrupted")
+        }
+    }
+
+    private fun sleepForQueueProgress(message: String) {
+        try {
+            Thread.sleep(QUEUE_POLL_MILLIS)
+        } catch (interrupted: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw IOException(message, interrupted)
         }
     }
 
@@ -234,7 +287,7 @@ class BrokerRelayConnection internal constructor(
         lastReleasedSequence = sequence
     }
 
-    private fun closeInternal(cancelSocket: Boolean) {
+    private fun closeInternal(socketClose: SocketClose) {
         if (!closed.compareAndSet(false, true)) return
         synchronized(flowLock) {
             inFlightRecords.clear()
@@ -245,9 +298,21 @@ class BrokerRelayConnection internal constructor(
         videoFrames.offer(ByteArray(0))
         runCatching { inboundSink.close() }
         runCatching { inbound.close() }
-        if (cancelSocket) runCatching { webSocket?.cancel() }
+        val socket = webSocket
         webSocket = null
+        when (socketClose) {
+            SocketClose.NONE -> Unit
+            SocketClose.ABORT -> runCatching { socket?.cancel() }
+            SocketClose.GRACEFUL -> {
+                val closeQueued = runCatching {
+                    socket?.close(NORMAL_CLOSE_CODE, NORMAL_CLOSE_REASON) ?: true
+                }.getOrDefault(false)
+                if (!closeQueued) runCatching { socket?.cancel() }
+            }
+        }
     }
+
+    private enum class SocketClose { NONE, GRACEFUL, ABORT }
 
     companion object {
         const val MAX_FRAME_BYTES = ScreenRelayVideoWire.MAX_MESSAGE_BYTES
@@ -259,6 +324,9 @@ class BrokerRelayConnection internal constructor(
         private const val CONTROL_MAX_QUEUED_BYTES = 2L * CONTROL_FRAME_BYTES
         private const val QUEUE_POLL_MILLIS = 2L
         private const val DELIVERY_WAIT_POLL_MILLIS = 1_000L
-        private val DEFAULT_STALL_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(15)
+        private const val NORMAL_CLOSE_CODE = 1000
+        private const val NORMAL_CLOSE_REASON = "screen relay closed"
+        private val VIDEO_RECEIVE_STALL_TIMEOUT_NANOS = TimeUnit.MILLISECONDS.toNanos(250)
+        private val DEFAULT_STALL_TIMEOUT_NANOS = TimeUnit.SECONDS.toNanos(5)
     }
 }
