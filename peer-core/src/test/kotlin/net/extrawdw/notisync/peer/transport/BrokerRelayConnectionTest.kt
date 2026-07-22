@@ -1,50 +1,136 @@
 package net.extrawdw.notisync.peer.transport
 
+import java.io.IOException
+import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenRelayChannel
+import net.extrawdw.notisync.protocol.ScreenRelayRole
+import net.extrawdw.notisync.protocol.ScreenRelaySignal
+import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
 import okhttp3.Request
 import okhttp3.WebSocket
 import okio.ByteString
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class BrokerRelayConnectionTest {
     @Test
-    fun videoWritesAreSplitIntoSmallBoundedFrames() {
+    fun controlWritesAreSplitIntoSmallBoundedFrames() {
         val socket = RecordingWebSocket()
-        val relay = BrokerRelayConnection(ScreenRelayChannel.VIDEO)
+        val relay = BrokerRelayConnection(ScreenRelayChannel.CONTROL, ScreenRelayRole.SOURCE)
         relay.attach(socket)
-        val bytes = ByteArray(BrokerRelayConnection.MAX_FRAME_BYTES * 2 + 7) { it.toByte() }
+        val bytes = ByteArray(4 * 1024 + 7) { it.toByte() }
 
         relay.output.write(bytes)
         relay.close()
 
-        assertEquals(listOf(16 * 1024, 16 * 1024, 7), socket.frames.map { frame -> frame.size })
+        assertEquals(listOf(2 * 1024, 2 * 1024, 7), socket.frames.map { it.size })
         assertArrayEquals(bytes, socket.frames.flatMap { it.toByteArray().asIterable() }.toByteArray())
         assertTrue(socket.cancelled.get())
     }
 
     @Test
-    fun inboundFramesRemainAnOrderedByteStream() {
-        val relay = BrokerRelayConnection(ScreenRelayChannel.CONTROL)
+    fun inboundVideoPreservesWebSocketMessageBoundaries() {
+        val relay = BrokerRelayConnection(ScreenRelayChannel.VIDEO, ScreenRelayRole.REQUESTER)
         relay.attach(RecordingWebSocket())
 
         relay.receive(byteArrayOf(1, 2))
         relay.receive(byteArrayOf(3, 4))
 
-        assertArrayEquals(byteArrayOf(1, 2, 3, 4), relay.input.readNBytes(4))
+        assertArrayEquals(byteArrayOf(1, 2), relay.takeVideoFrame())
+        assertArrayEquals(byteArrayOf(3, 4), relay.takeVideoFrame())
         relay.close()
     }
 
-    private class RecordingWebSocket : WebSocket {
-        val frames = mutableListOf<ByteString>()
+    @Test
+    fun sourceWaitsForRequesterDeliveryAcknowledgement() {
+        val relay = BrokerRelayConnection(ScreenRelayChannel.VIDEO, ScreenRelayRole.SOURCE)
+        relay.attach(RecordingWebSocket())
+        relay.beginVideoRecord(0, 200 * 1024)
+        val started = CountDownLatch(1)
+        val completed = CountDownLatch(1)
+        Thread {
+            started.countDown()
+            relay.beginVideoRecord(1, 100 * 1024)
+            completed.countDown()
+        }.start()
+
+        assertTrue(started.await(1, TimeUnit.SECONDS))
+        assertFalse(completed.await(100, TimeUnit.MILLISECONDS))
+        relay.receiveSignal(
+            ScreenRelaySignal(
+                kind = ScreenRelaySignalKind.VIDEO_ACK,
+                sequence = 0,
+                deliveredBytes = 200L * 1024,
+            ),
+        )
+
+        assertTrue(completed.await(1, TimeUnit.SECONDS))
+        relay.close()
+    }
+
+    @Test
+    fun requesterAcknowledgementCarriesCumulativeConsumedBytes() {
+        val socket = RecordingWebSocket()
+        val relay = BrokerRelayConnection(ScreenRelayChannel.VIDEO, ScreenRelayRole.REQUESTER)
+        relay.attach(socket)
+
+        relay.acknowledgeVideoRecord(3, 120)
+        relay.acknowledgeVideoRecord(4, 80)
+
+        val last = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(socket.textFrames.last())
+        assertEquals(ScreenRelaySignalKind.VIDEO_ACK, last.kind)
+        assertEquals(4L, last.sequence)
+        assertEquals(200L, last.deliveredBytes)
+        relay.close()
+    }
+
+    @Test
+    fun sourceFailsWhenRequesterStopsConsumingVideo() {
+        val relay = BrokerRelayConnection(
+            ScreenRelayChannel.VIDEO,
+            ScreenRelayRole.SOURCE,
+            TimeUnit.MILLISECONDS.toNanos(10),
+        )
+        relay.attach(RecordingWebSocket())
+        relay.beginVideoRecord(0, 200 * 1024)
+
+        assertThrows(IOException::class.java) {
+            relay.beginVideoRecord(1, 100 * 1024)
+        }
+        relay.close()
+    }
+
+    @Test
+    fun sourceFailsWhenWebSocketSendQueueStopsDraining() {
+        val relay = BrokerRelayConnection(
+            ScreenRelayChannel.VIDEO,
+            ScreenRelayRole.SOURCE,
+            TimeUnit.MILLISECONDS.toNanos(10),
+        )
+        relay.attach(RecordingWebSocket(queuedBytes = Long.MAX_VALUE))
+
+        assertThrows(IOException::class.java) {
+            relay.sendVideoFrame(byteArrayOf(1))
+        }
+        relay.close()
+    }
+
+    private class RecordingWebSocket(private val queuedBytes: Long = 0L) : WebSocket {
+        val frames = Collections.synchronizedList(mutableListOf<ByteString>())
+        val textFrames = Collections.synchronizedList(mutableListOf<String>())
         val cancelled = AtomicBoolean()
 
         override fun request(): Request = Request.Builder().url("https://broker.invalid/v1/screen-relay").build()
-        override fun queueSize(): Long = 0L
-        override fun send(text: String): Boolean = true
+        override fun queueSize(): Long = queuedBytes
+        override fun send(text: String): Boolean = textFrames.add(text)
         override fun send(bytes: ByteString): Boolean = frames.add(bytes)
         override fun close(code: Int, reason: String?): Boolean = true
         override fun cancel() {

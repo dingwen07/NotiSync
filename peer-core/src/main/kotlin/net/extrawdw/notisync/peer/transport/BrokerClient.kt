@@ -130,6 +130,9 @@ class BrokerClient(
         .connectTimeout(HTTP_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .writeTimeout(HTTP_SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS)
         .pingInterval(webSocketPingSeconds, TimeUnit.SECONDS)
+        // Relay VIDEO is already AES-GCM ciphertext. Deflate cannot reduce it and only adds CPU and
+        // another staging buffer on the latency-sensitive path.
+        .minWebSocketMessageToCompress(Long.MAX_VALUE)
         .build()
     private val authMutex = Mutex()
 
@@ -679,14 +682,11 @@ class BrokerClient(
         }
     }
 
-    /**
-     * Registers one opaque binary screen-relay stream. Both devices are broker-authenticated; the bytes
-     * carried after registration are still protected by the screen session's independent TLS 1.3 PSK.
-     */
+    /** Registers one broker-authenticated v1 screen Relay channel. */
     suspend fun openScreenRelay(join: ScreenRelayJoin): BrokerRelayConnection {
         require(join.relayId.matches(Regex("[A-Za-z0-9_-]{32}"))) { "invalid screen relay id" }
         require(join.expiresAt > System.currentTimeMillis()) { "screen relay request expired" }
-        val connection = BrokerRelayConnection(join.channel)
+        val connection = BrokerRelayConnection(join.channel, join.role)
         val registered = CompletableDeferred<Unit>()
         val url = "${wsBase()}/v1/screen-relay"
         val token = bearerTokenOrNull()
@@ -702,6 +702,7 @@ class BrokerClient(
         }.build()
         val socket = relayWebSocketClient.newWebSocket(request, object : WebSocketListener() {
             private var challengeHandled = false
+            private var registeredHandled = false
 
             override fun onMessage(webSocket: WebSocket, text: String) {
                 try {
@@ -720,12 +721,15 @@ class BrokerClient(
                             "broker relay join send failed"
                         }
                         challengeHandled = true
-                    } else {
+                    } else if (!registeredHandled) {
                         val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(text)
                         check(signal.kind == ScreenRelaySignalKind.REGISTERED) {
                             signal.detail ?: "broker relay registration rejected"
                         }
+                        registeredHandled = true
                         registered.complete(Unit)
+                    } else {
+                        connection.receiveSignal(ProtocolCodec.decodeFromJson(text))
                     }
                 } catch (error: Throwable) {
                     registered.completeExceptionally(error)

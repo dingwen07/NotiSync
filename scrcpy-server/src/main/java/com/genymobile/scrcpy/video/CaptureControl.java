@@ -7,6 +7,9 @@ import com.genymobile.scrcpy.util.Ln;
 
 public class CaptureControl {
 
+    public static final int RECOVERY_BITRATE_APPLIED = 1;
+    public static final int RECOVERY_SYNC_FRAME_REQUESTED = 1 << 1;
+
     public static final int RESET_REASON_TERMINATED = 1;
     public static final int RESET_REASON_DISPLAY_PROPERTIES_CHANGED = 1 << 1;
     public static final int RESET_REASON_CLIENT_RESET = 1 << 2;
@@ -48,16 +51,16 @@ public class CaptureControl {
     }
 
     /** Apply sender-side congestion feedback without rebuilding the capture session. */
-    public synchronized boolean recoverVideo(int bitRate) {
+    public synchronized int recoverVideo(int bitRate) {
         if (bitRate < 128_000 || runningMediaCodec == null || reset != 0) {
-            return false;
+            return 0;
         }
-        boolean bitRateApplied = false;
+        int result = 0;
         try {
             Bundle parameters = new Bundle();
             parameters.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitRate);
             runningMediaCodec.setParameters(parameters);
-            bitRateApplied = true;
+            result |= RECOVERY_BITRATE_APPLIED;
         } catch (RuntimeException error) {
             Ln.w("Video encoder rejected bitrate " + bitRate + ": " + error.getMessage());
         }
@@ -66,11 +69,11 @@ public class CaptureControl {
             parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
             runningMediaCodec.setParameters(parameters);
             Ln.i("Video recovery requested at " + bitRate + " bps"
-                    + (bitRateApplied ? "" : " (bitrate update unavailable)"));
-            return true;
+                    + ((result & RECOVERY_BITRATE_APPLIED) != 0 ? "" : " (bitrate update unavailable)"));
+            return result | RECOVERY_SYNC_FRAME_REQUESTED;
         } catch (RuntimeException error) {
             Ln.w("Video encoder rejected sync-frame request: " + error.getMessage());
-            return false;
+            return result;
         }
     }
 

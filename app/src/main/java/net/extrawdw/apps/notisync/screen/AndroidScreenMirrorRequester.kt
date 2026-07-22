@@ -261,6 +261,9 @@ internal class AndroidScreenMirrorRequester(
                             requesterId = ownClientId,
                             sourceId = source.clientId,
                             expiresAt = expiresAt,
+                            descriptor = descriptor,
+                            routingToken = routingToken,
+                            masterPsk = masterPsk,
                         ).also { requestContext.relayListener = it }
                     }
                     requestContext.requireOpen()

@@ -32,12 +32,25 @@ enum class ShizukuScreenStatus {
     ERROR,
 }
 
+data class VideoEncoderRecoveryResult(
+    val bitrateApplied: Boolean,
+    val syncFrameRequested: Boolean,
+) {
+    companion object {
+        fun fromBits(bits: Int) = VideoEncoderRecoveryResult(
+            bitrateApplied = bits and 1 != 0,
+            syncFrameRequested = bits and 2 != 0,
+        )
+    }
+}
+
 data class PrivilegedSessionPipes(
     val videoRead: ParcelFileDescriptor,
     val control: ParcelFileDescriptor,
-    private val recoverVideoCallback: (Int) -> Boolean = { false },
+    private val recoverVideoCallback: (Int) -> Int = { 0 },
 ) : Closeable {
-    fun recoverVideo(bitrateBps: Int): Boolean = recoverVideoCallback(bitrateBps)
+    fun recoverVideo(bitrateBps: Int): VideoEncoderRecoveryResult =
+        VideoEncoderRecoveryResult.fromBits(recoverVideoCallback(bitrateBps))
 
     override fun close() {
         videoRead.closeQuietly()
@@ -214,7 +227,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                 videoRead = createdVideoPair[0],
                 control = createdControlPair[0],
                 recoverVideoCallback = { bitrateBps ->
-                    runCatching { remote.recoverVideo(ownerToken, bitrateBps) }.getOrDefault(false)
+                    runCatching { remote.recoverVideo(ownerToken, bitrateBps) }.getOrDefault(0)
                 },
             )
             val result = remote.startSession(

@@ -47,6 +47,7 @@ import net.extrawdw.notisync.protocol.ScreenRelayJoin
 import net.extrawdw.notisync.protocol.ScreenRelayRole
 import net.extrawdw.notisync.protocol.ScreenRelaySignal
 import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
+import net.extrawdw.notisync.protocol.ScreenRelayVideoWire
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
@@ -808,7 +809,7 @@ class BrokerFlowTest {
     }
 
     @Test
-    fun screenRelayForwardsOpaqueBinaryFramesBothWays() = testApplication {
+    fun screenRelayForwardsFramedVideoAndDeliveryFeedback() = testApplication {
         val tmp = File.createTempFile("notisync-screen-relay", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
@@ -823,6 +824,14 @@ class BrokerFlowTest {
         val expiresAt = System.currentTimeMillis() + 60_000
         val relayId = "abcdefghijklmnopqrstuvwxABCDEFGH"
         val requesterRegistered = CompletableDeferred<Unit>()
+        val videoHeader = ScreenRelayVideoWire.encodeHeader(
+            flags = ScreenRelayVideoWire.FLAG_DELTA,
+            recordSequence = 0,
+            recordBytes = 1,
+            fragmentOffset = 0,
+            fragmentBytes = 1,
+        )
+        val videoFrame = videoHeader + ByteArray(1 + ScreenRelayVideoWire.AEAD_TAG_BYTES) { 7 }
 
         coroutineScope {
             val requesterJob = async {
@@ -858,8 +867,18 @@ class BrokerFlowTest {
                     )
                     assertEquals(ScreenRelaySignalKind.REGISTERED, signal.kind)
                     requesterRegistered.complete(Unit)
-                    assertArrayEquals(byteArrayOf(1, 2, 3), (incoming.receive() as Frame.Binary).data)
-                    send(Frame.Binary(true, byteArrayOf(7, 8)))
+                    assertArrayEquals(videoFrame, (incoming.receive() as Frame.Binary).data)
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelaySignal(
+                                    kind = ScreenRelaySignalKind.VIDEO_ACK,
+                                    sequence = 0,
+                                    deliveredBytes = 1,
+                                ),
+                            ),
+                        ),
+                    )
                     close(CloseReason(CloseReason.Codes.NORMAL, "done"))
                 }
             }
@@ -896,8 +915,12 @@ class BrokerFlowTest {
                         (incoming.receive() as Frame.Text).readText(),
                     )
                     assertEquals(ScreenRelaySignalKind.REGISTERED, signal.kind)
-                    send(Frame.Binary(true, byteArrayOf(1, 2, 3)))
-                    assertArrayEquals(byteArrayOf(7, 8), (incoming.receive() as Frame.Binary).data)
+                    send(Frame.Binary(true, videoFrame))
+                    val feedback = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.VIDEO_ACK, feedback.kind)
+                    assertEquals(0L, feedback.sequence)
                     close(CloseReason(CloseReason.Codes.NORMAL, "done"))
                 }
             }

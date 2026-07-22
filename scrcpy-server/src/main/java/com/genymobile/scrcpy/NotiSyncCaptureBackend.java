@@ -199,13 +199,13 @@ public final class NotiSyncCaptureBackend {
     }
 
     /** Updates only the exact active session; stale app-process callbacks cannot affect a replacement. */
-    public boolean recoverVideo(String ownerToken, int bitrateBps) {
+    public int recoverVideo(String ownerToken, int bitrateBps) {
         Session current;
         synchronized (this) {
             current = session;
             if (current == null || !current.ownerToken.equals(ownerToken)
                     || bitrateBps < 128_000 || bitrateBps > current.bitrateBps) {
-                return false;
+                return 0;
             }
         }
         return current.recoverVideo(bitrateBps);
@@ -388,9 +388,9 @@ public final class NotiSyncCaptureBackend {
             finishAsync();
         }
 
-        boolean recoverVideo(int bitRate) {
+        int recoverVideo(int bitRate) {
             synchronized (lifecycleLock) {
-                return !stopping.get() && captureControl != null && captureControl.recoverVideo(bitRate);
+                return !stopping.get() && captureControl != null ? captureControl.recoverVideo(bitRate) : 0;
             }
         }
 

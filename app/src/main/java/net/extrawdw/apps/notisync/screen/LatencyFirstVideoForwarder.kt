@@ -21,6 +21,31 @@ internal data class VideoRecoveryDecision(
     val reason: VideoCongestionReason,
 )
 
+/** Record-preserving output used by both direct TLS streams and the frame-aware Relay transport. */
+internal interface VideoRecordSink : Closeable {
+    fun writePreamble(bytes: ByteArray)
+    fun writeRecord(record: QueuedVideoRecord)
+    fun flush()
+    fun consumeCongestion(): Boolean = false
+}
+
+internal class StreamVideoRecordSink(
+    private val output: OutputStream,
+) : VideoRecordSink {
+    override fun writePreamble(bytes: ByteArray) {
+        output.write(bytes)
+        output.flush()
+    }
+
+    override fun writeRecord(record: QueuedVideoRecord) {
+        output.write(record.header)
+        if (record.payload.isNotEmpty()) output.write(record.payload)
+    }
+
+    override fun flush() = output.flush()
+    override fun close() = Unit
+}
+
 /** Sender-side bitrate decisions driven by the real network writer instead of the encoder pipe. */
 internal class AdaptiveVideoBitrateController(
     private val targetBitrateBps: Int,
@@ -91,17 +116,35 @@ internal class AdaptiveVideoBitrateController(
 /**
  * Parses complete encoded access units before the encrypted network writer. When that writer falls
  * behind, queued predictive frames are discarded and the privileged encoder is asked for a lower
- * bitrate sync frame. At most the frame currently inside TLS remains unavoidable.
+ * bitrate sync frame. At most the record already handed to the active transport remains unavoidable.
  */
 internal class LatencyFirstVideoForwarder(
     private val input: InputStream,
-    private val output: OutputStream,
+    private val sink: VideoRecordSink,
     private val preamble: ByteArray,
     private val codec: ScreenMirrorCodec,
     targetBitrateBps: Int,
     private val recoverVideo: (VideoRecoveryDecision) -> Boolean,
     private val nanoTime: () -> Long = System::nanoTime,
 ) : Closeable {
+    constructor(
+        input: InputStream,
+        output: OutputStream,
+        preamble: ByteArray,
+        codec: ScreenMirrorCodec,
+        targetBitrateBps: Int,
+        recoverVideo: (VideoRecoveryDecision) -> Boolean,
+        nanoTime: () -> Long = System::nanoTime,
+    ) : this(
+        input = input,
+        sink = StreamVideoRecordSink(output),
+        preamble = preamble,
+        codec = codec,
+        targetBitrateBps = targetBitrateBps,
+        recoverVideo = recoverVideo,
+        nanoTime = nanoTime,
+    )
+
     private val queue = LatestDecodableVideoQueue(nanoTime)
     private val bitrate = AdaptiveVideoBitrateController(targetBitrateBps)
     private val recoveryLock = Any()
@@ -157,13 +200,15 @@ internal class LatencyFirstVideoForwarder(
     private fun writeQueuedRecords() {
         while (true) {
             val record = queue.take() ?: break
+            if (sink.consumeCongestion() &&
+                requestRecovery(VideoCongestionReason.WRITE_STALL, 0, 0L)
+            ) continue
             val now = nanoTime()
             if (record.visual && now - record.enqueuedAtNanos >= MAX_QUEUE_AGE_NANOS) {
                 if (requestRecovery(VideoCongestionReason.QUEUE_AGE, 0, 0L)) continue
             }
             val started = nanoTime()
-            output.write(record.header)
-            if (record.payload.isNotEmpty()) output.write(record.payload)
+            sink.writeRecord(record)
             val completed = nanoTime()
             val duration = completed - started
             if (duration >= SLOW_WRITE_NANOS) {
@@ -172,7 +217,7 @@ internal class LatencyFirstVideoForwarder(
                 bitrate.onHealthyWrite(completed)?.let(::applyRecovery)
             }
         }
-        output.flush()
+        sink.flush()
     }
 
     private fun requestRecovery(reason: VideoCongestionReason, bytes: Int, durationNanos: Long): Boolean =

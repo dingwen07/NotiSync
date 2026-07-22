@@ -20,6 +20,7 @@ import io.ktor.server.routing.post
 import io.ktor.server.routing.route
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.server.websocket.pingPeriod
 import io.ktor.server.websocket.timeout
 import io.ktor.server.websocket.webSocket
@@ -28,6 +29,8 @@ import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import kotlinx.coroutines.channels.consumeEach
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -44,8 +47,11 @@ import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelayChannel
+import net.extrawdw.notisync.protocol.ScreenRelayRole
 import net.extrawdw.notisync.protocol.ScreenRelaySignal
 import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
+import net.extrawdw.notisync.protocol.ScreenRelayVideoWire
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -585,14 +591,7 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
                 } ?: return@webSocket close(
                     CloseReason(CloseReason.Codes.NORMAL, "relay_expired"),
                 )
-                for (frame in incoming) {
-                    if (frame !is Frame.Binary || frame.data.size > SCREEN_RELAY_MAX_FRAME_BYTES) {
-                        return@webSocket close(
-                            CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_frame"),
-                        )
-                    }
-                    peer.session.send(Frame.Binary(fin = true, data = frame.data))
-                }
+                forwardScreenRelay(join, handle, peer)
             } finally {
                 handle.close()
                 runCatching {
@@ -601,6 +600,75 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             }
         }
     } }
+}
+
+private suspend fun DefaultWebSocketServerSession.forwardScreenRelay(
+    join: ScreenRelayJoin,
+    handle: ScreenRelayHub.Handle,
+    peer: ScreenRelayHub.Handle,
+) = coroutineScope {
+    val videoDelivery = if (
+        join.channel == ScreenRelayChannel.VIDEO && join.role == ScreenRelayRole.REQUESTER
+    ) launch {
+        while (isActive) {
+            val data = handle.takeVideo() ?: break
+            send(Frame.Binary(fin = true, data = data))
+        }
+    } else null
+    try {
+        for (frame in incoming) {
+            when (join.channel) {
+                ScreenRelayChannel.CONTROL -> {
+                    if (frame !is Frame.Binary || frame.data.size > SCREEN_RELAY_MAX_FRAME_BYTES) {
+                        close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_frame"))
+                        return@coroutineScope
+                    }
+                    peer.session.send(Frame.Binary(fin = true, data = frame.data))
+                }
+                ScreenRelayChannel.VIDEO -> when (join.role) {
+                    ScreenRelayRole.SOURCE -> {
+                        val data = (frame as? Frame.Binary)?.data
+                        if (data == null || ScreenRelayVideoWire.decodeHeader(data) == null) {
+                            close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_video"))
+                            return@coroutineScope
+                        }
+                        peer.enqueueVideo(data).congestedThroughSequence?.let { sequence ->
+                            send(
+                                Frame.Text(
+                                    ProtocolCodec.encodeToJson(
+                                        ScreenRelaySignal(
+                                            kind = ScreenRelaySignalKind.VIDEO_CONGESTED,
+                                            detail = "broker video queue dropped stale frames",
+                                            sequence = sequence,
+                                        ),
+                                    ),
+                                ),
+                            )
+                        }
+                    }
+                    ScreenRelayRole.REQUESTER -> {
+                        val signal = (frame as? Frame.Text)?.readText()?.let { text ->
+                            runCatching {
+                                ProtocolCodec.decodeFromJson<ScreenRelaySignal>(text)
+                            }.getOrNull()
+                        }
+                        val acknowledgedSequence = signal?.sequence
+                        val deliveredBytes = signal?.deliveredBytes
+                        if (signal?.kind != ScreenRelaySignalKind.VIDEO_ACK ||
+                            acknowledgedSequence == null || acknowledgedSequence < 0 ||
+                            deliveredBytes == null || deliveredBytes < 0
+                        ) {
+                            close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_feedback"))
+                            return@coroutineScope
+                        }
+                        peer.session.send(Frame.Text(ProtocolCodec.encodeToJson(signal)))
+                    }
+                }
+            }
+        }
+    } finally {
+        videoDelivery?.cancelAndJoin()
+    }
 }
 
 private const val SCREEN_RELAY_JOIN_TIMEOUT_MS = 10_000L

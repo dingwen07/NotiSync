@@ -5,9 +5,10 @@ import java.io.IOException
 import kotlinx.coroutines.CompletableDeferred
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelayChannel
 import net.extrawdw.notisync.protocol.ScreenRelayRole
 
-/** In-memory rendezvous for short-lived, opaque Android screen relay streams. */
+/** In-memory rendezvous for short-lived Android screen Relay channels. */
 class ScreenRelayHub(
     private val maximumConnections: Int = 1_024,
     private val maximumConnectionsPerClient: Int = 8,
@@ -32,10 +33,20 @@ class ScreenRelayHub(
         val session: DefaultWebSocketServerSession,
     ) : AutoCloseable {
         private val peerDeferred = CompletableDeferred<Handle>()
+        private val videoQueue = if (
+            key.channel == ScreenRelayChannel.VIDEO && role == ScreenRelayRole.REQUESTER
+        ) ScreenRelayVideoQueue() else null
         private var ready = false
         private var closed = false
 
         suspend fun awaitPeer(): Handle = peerDeferred.await()
+
+        internal suspend fun enqueueVideo(bytes: ByteArray): ScreenRelayVideoEnqueueResult =
+            requireNotNull(videoQueue) { "video may only be enqueued toward the requester" }
+                .enqueue(bytes)
+
+        internal suspend fun takeVideo(): ByteArray? =
+            requireNotNull(videoQueue) { "only the requester has a video delivery queue" }.take()
 
         fun markReady() = synchronized(this@ScreenRelayHub) {
             if (closed) return@synchronized
@@ -50,6 +61,7 @@ class ScreenRelayHub(
         override fun close() = synchronized(this@ScreenRelayHub) {
             if (closed) return@synchronized
             closed = true
+            videoQueue?.close()
             val slot = slots[key]
             if (role == ScreenRelayRole.REQUESTER && slot?.requester === this) slot.requester = null
             if (role == ScreenRelayRole.SOURCE && slot?.source === this) slot.source = null

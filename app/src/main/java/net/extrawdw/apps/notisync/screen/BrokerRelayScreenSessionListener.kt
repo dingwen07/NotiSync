@@ -19,6 +19,7 @@ import net.extrawdw.notisync.screen.ScreenConnectionCandidate
 import net.extrawdw.notisync.screen.ScreenSessionListener
 import net.extrawdw.notisync.screen.SecureChannelPair
 import net.extrawdw.notisync.screen.SecureSessionChannel
+import net.extrawdw.notisync.screen.SessionDescriptor
 
 /** Requester-side listener whose two ordered streams rendezvous through the authenticated broker. */
 internal class BrokerRelayScreenSessionListener(
@@ -27,11 +28,16 @@ internal class BrokerRelayScreenSessionListener(
     private val requesterId: ClientId,
     private val sourceId: ClientId,
     private val expiresAt: Long,
+    private val descriptor: SessionDescriptor,
+    routingToken: ByteArray,
+    masterPsk: ByteArray,
 ) : ScreenSessionListener {
     private val closed = AtomicBoolean(false)
     private val lock = Any()
     private var videoConnection: BrokerRelayConnection? = null
     private var controlConnection: BrokerRelayConnection? = null
+    private var relayRoutingToken: ByteArray? = routingToken.copyOf()
+    private var relayMasterPsk: ByteArray? = masterPsk.copyOf()
 
     override val candidates = listOf(
         ScreenConnectionCandidate(
@@ -55,13 +61,6 @@ internal class BrokerRelayScreenSessionListener(
         try {
             val video = open(ScreenRelayChannel.VIDEO).also { track(ScreenChannel.VIDEO, it) }
             val control = open(ScreenRelayChannel.CONTROL).also { track(ScreenChannel.CONTROL, it) }
-            videoSecure = PskTlsServer.accept(
-                input = video.input,
-                output = video.output,
-                closeTransport = video::close,
-                registry = registry,
-                handshakeTimeout = minOf(handshakeTimeout, timeout),
-            )
             controlSecure = PskTlsServer.accept(
                 input = control.input,
                 output = control.output,
@@ -69,7 +68,25 @@ internal class BrokerRelayScreenSessionListener(
                 registry = registry,
                 handshakeTimeout = minOf(handshakeTimeout, timeout),
             )
-            check(videoSecure.descriptor.sessionId == sessionId && controlSecure.descriptor.sessionId == sessionId)
+            check(controlSecure.descriptor.sessionId == sessionId && descriptor.sessionId == sessionId)
+            val secrets = synchronized(lock) {
+                val token = requireNotNull(relayRoutingToken) { "Relay video secrets were already consumed" }
+                val psk = requireNotNull(relayMasterPsk) { "Relay video secrets were already consumed" }
+                relayRoutingToken = null
+                relayMasterPsk = null
+                token to psk
+            }
+            try {
+                val input = RelayVideoInputStream(video, descriptor, secrets.first, secrets.second)
+                videoSecure = SecureSessionChannel.authenticatedRelayVideo(
+                    descriptor = descriptor,
+                    input = input,
+                    closeTransport = input::close,
+                )
+            } finally {
+                secrets.first.fill(0)
+                secrets.second.fill(0)
+            }
             synchronized(lock) {
                 videoConnection = null
                 controlConnection = null
@@ -115,6 +132,10 @@ internal class BrokerRelayScreenSessionListener(
             listOfNotNull(videoConnection, controlConnection).also {
                 videoConnection = null
                 controlConnection = null
+                relayRoutingToken?.fill(0)
+                relayMasterPsk?.fill(0)
+                relayRoutingToken = null
+                relayMasterPsk = null
             }
         }
         connections.forEach { runCatching { it.close() } }

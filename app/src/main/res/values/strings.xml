@@ -401,7 +401,7 @@
     <string name="screen_viewer_local_network_denied">Nearby device or local network access is required to connect directly to this device.</string>
     <string name="screen_viewer_grant_local_network">Grant network access</string>
     <string name="screen_viewer_retry">Retry</string>
-    <string name="screen_viewer_use_broker_relay">Use broker relay</string>
+    <string name="screen_viewer_use_broker_relay">Use Relay</string>
     <string name="screen_viewer_close">Close</string>
     <string name="screen_viewer_back">Back</string>
     <string name="screen_viewer_home">Home</string>

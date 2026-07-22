@@ -387,7 +387,7 @@
     <string name="screen_viewer_local_network_denied">需要“附近设备”或本地网络访问权限才能直接连接到此设备。</string>
     <string name="screen_viewer_grant_local_network">授予网络权限</string>
     <string name="screen_viewer_retry">重试</string>
-    <string name="screen_viewer_use_broker_relay">使用中继服务器</string>
+    <string name="screen_viewer_use_broker_relay">使用中继</string>
     <string name="screen_viewer_close">关闭</string>
     <string name="screen_viewer_back">返回</string>
     <string name="screen_viewer_home">主屏幕</string>

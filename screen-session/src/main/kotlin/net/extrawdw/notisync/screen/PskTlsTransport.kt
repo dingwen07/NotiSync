@@ -54,6 +54,31 @@ class SecureSessionChannel internal constructor(
         runCatching { socket?.close() ?: closeTransport?.invoke() }
         closeProtocolInBackground(closeProtocol)
     }
+
+    companion object {
+        /**
+         * VIDEO-only Relay channel whose records are independently PSK-derived and AEAD-authenticated.
+         * CONTROL continues to use [PskTlsServer], so callers cannot accidentally use this as a
+         * general replacement for the bidirectional authenticated stream.
+         */
+        fun authenticatedRelayVideo(
+            descriptor: SessionDescriptor,
+            input: InputStream,
+            closeTransport: () -> Unit,
+        ): SecureSessionChannel = SecureSessionChannel(
+            descriptor = descriptor,
+            channel = ScreenChannel.VIDEO,
+            input = input,
+            output = object : OutputStream() {
+                override fun write(value: Int) {
+                    throw IOException("Relay video is source-to-viewer only")
+                }
+            },
+            closeProtocol = {},
+            socket = null,
+            closeTransport = closeTransport,
+        )
+    }
 }
 
 object PskTlsClient {

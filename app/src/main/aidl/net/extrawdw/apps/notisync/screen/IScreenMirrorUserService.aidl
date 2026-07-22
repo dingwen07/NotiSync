@@ -42,5 +42,6 @@ interface IScreenMirrorUserService {
      * Applies latency recovery to the exact active encoder: update its bitrate and request a sync frame.
      * This is local app-to-UserService feedback; no network/session material crosses Binder.
      */
-    boolean recoverVideo(String ownerToken, int bitrateBps) = 6;
+    /** Result flags: bitrate applied=1, sync frame requested=2. */
+    int recoverVideo(String ownerToken, int bitrateBps) = 6;
 }

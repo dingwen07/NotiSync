@@ -102,7 +102,13 @@ class AndroidLanScreenSessionTransport(
                                 )
                                 destroyRendezvousSecrets(token, psk)
                                 pipes = guard.track(startCapture())
-                                proxy(request, video, control, pipes, onReady)
+                                proxy(
+                                    request,
+                                    StreamVideoRecordSink(video.output),
+                                    control,
+                                    pipes,
+                                    onReady,
+                                )
                                 guard.requireActive()
                                 return true
                             } catch (cancelled: CancellationException) {
@@ -172,7 +178,13 @@ class AndroidLanScreenSessionTransport(
                     )
                     destroyRendezvousSecrets(token, psk)
                     pipes = endpoint.track(startCapture())
-                    proxy(request, video, control, pipes, onReady)
+                    proxy(
+                        request,
+                        StreamVideoRecordSink(video.output),
+                        control,
+                        pipes,
+                        onReady,
+                    )
                     endpoint.requireActive()
                     return@withContext
                 } catch (cancelled: CancellationException) {
@@ -195,7 +207,7 @@ class AndroidLanScreenSessionTransport(
             val relayBroker = broker ?: break
             var videoRelay: BrokerRelayConnection? = null
             var controlRelay: BrokerRelayConnection? = null
-            var video: SecureSessionChannel? = null
+            var videoSink: RelayVideoRecordSink? = null
             var control: SecureSessionChannel? = null
             var pipes: PrivilegedSessionPipes? = null
             try {
@@ -203,19 +215,12 @@ class AndroidLanScreenSessionTransport(
                 videoRelay = relayBroker.openScreenRelay(
                     request.relayJoin(relayId, ScreenRelayChannel.VIDEO),
                 )
-                video = PskTlsClient.connect(
-                    input = videoRelay.input,
-                    output = videoRelay.output,
-                    closeTransport = videoRelay::close,
+                videoSink = RelayVideoRecordSink(
+                    connection = videoRelay,
                     descriptor = descriptor,
                     routingToken = token,
                     masterPsk = psk,
-                    channel = ScreenChannel.VIDEO,
-                    handshakeTimeout = Duration.ofMillis(
-                        remainingTimeout(expiresAt, HANDSHAKE_TIMEOUT_MS).toLong(),
-                    ),
                 )
-                videoAuthenticated = true
                 controlRelay = relayBroker.openScreenRelay(
                     request.relayJoin(relayId, ScreenRelayChannel.CONTROL),
                 )
@@ -231,9 +236,10 @@ class AndroidLanScreenSessionTransport(
                         remainingTimeout(expiresAt, HANDSHAKE_TIMEOUT_MS).toLong(),
                     ),
                 )
+                videoAuthenticated = true
                 destroyRendezvousSecrets(token, psk)
                 pipes = startCapture()
-                proxy(request, video, control, pipes, onReady)
+                proxy(request, videoSink, control, pipes, onReady)
                 return@withContext
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -244,7 +250,7 @@ class AndroidLanScreenSessionTransport(
             } finally {
                 runCatching { pipes?.close() }
                 runCatching { control?.close() }
-                runCatching { video?.close() }
+                runCatching { videoSink?.close() }
                 runCatching { controlRelay?.close() }
                 runCatching { videoRelay?.close() }
             }
@@ -337,7 +343,7 @@ class AndroidLanScreenSessionTransport(
 
     private suspend fun proxy(
         request: ScreenMirrorSync,
-        video: SecureSessionChannel,
+        video: VideoRecordSink,
         control: SecureSessionChannel,
         pipes: PrivilegedSessionPipes,
         onReady: () -> Unit,
@@ -367,27 +373,27 @@ class AndroidLanScreenSessionTransport(
             videoInput = videoSource
             deviceMessages = deviceSource
             controls = controlSink
-            video.output.write(preamble)
-            video.output.flush()
+            video.writePreamble(preamble)
             // READY means both authenticated channels and the privileged encoder/control pipes are usable.
             onReady()
             jobs += launch(Dispatchers.IO) {
                 try {
                     LatencyFirstVideoForwarder(
                         input = videoSource,
-                        output = video.output,
+                        sink = video,
                         preamble = preamble,
                         codec = requireNotNull(request.codec),
                         targetBitrateBps = request.videoBitrateBps ?: DEFAULT_VIDEO_BITRATE_BPS,
                         recoverVideo = { decision ->
-                            val accepted = pipes.recoverVideo(decision.bitrateBps)
+                            val recovery = pipes.recoverVideo(decision.bitrateBps)
                             Log.i(
                                 LOG_TAG,
                                 "Video ${decision.reason.name.lowercase()}: " +
                                     "${decision.previousBitrateBps} -> ${decision.bitrateBps} bps; " +
-                                    "sync=${if (accepted) "requested" else "unavailable"}",
+                                    "bitrate=${if (recovery.bitrateApplied) "applied" else "unavailable"}; " +
+                                    "sync=${if (recovery.syncFrameRequested) "requested" else "unavailable"}",
                             )
-                            accepted
+                            recovery.syncFrameRequested
                         },
                     ).forward()
                 } finally {

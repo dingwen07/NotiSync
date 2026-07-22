@@ -38,7 +38,7 @@ interface PrivilegedCaptureBackend : Closeable {
     ): Int
     /** Returns only after the exact owner's capture workers and descriptors have been cleaned up. */
     fun stop(ownerToken: String): Boolean
-    fun recoverVideo(ownerToken: String, bitrateBps: Int): Boolean
+    fun recoverVideo(ownerToken: String, bitrateBps: Int): Int
     override fun close()
 }
 
@@ -80,7 +80,7 @@ private class ScrcpyCaptureBackend : PrivilegedCaptureBackend {
         }
     }
     override fun stop(ownerToken: String): Boolean = delegate.stopSession(ownerToken)
-    override fun recoverVideo(ownerToken: String, bitrateBps: Int): Boolean =
+    override fun recoverVideo(ownerToken: String, bitrateBps: Int): Int =
         delegate.recoverVideo(ownerToken, bitrateBps)
     override fun close() = delegate.destroy()
 }
@@ -170,9 +170,12 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
     override fun stopSession(ownerToken: String): Boolean =
         validOwnerToken(ownerToken) && runCatching { backend.get().stop(ownerToken) }.getOrDefault(false)
 
-    override fun recoverVideo(ownerToken: String, bitrateBps: Int): Boolean =
-        validOwnerToken(ownerToken) && bitrateBps in 128_000..100_000_000 &&
-            runCatching { backend.get().recoverVideo(ownerToken, bitrateBps) }.getOrDefault(false)
+    override fun recoverVideo(ownerToken: String, bitrateBps: Int): Int =
+        if (validOwnerToken(ownerToken) && bitrateBps in 128_000..100_000_000) {
+            runCatching { backend.get().recoverVideo(ownerToken, bitrateBps) }.getOrDefault(0)
+        } else {
+            0
+        }
 
     /** Reserved Shizuku destroy transaction. Shizuku owns process teardown after unbind. */
     override fun destroy() {

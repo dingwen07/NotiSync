@@ -109,10 +109,10 @@ In **Settings → Broker URL**, point the app at your broker. From the Android e
 `http://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
 
 Android-to-Android screen sharing prefers direct LAN or Wi-Fi Aware. While connecting, or after a
-direct failure, the requester can manually replace the attempt with the broker relay. The relay
-forwards two opaque, end-to-end PSK-TLS-protected byte streams; see
-[`docs/SCREEN_BROKER_RELAY.md`](docs/SCREEN_BROKER_RELAY.md) for the wire flow, limits, and the
-WebRTC/TURN protocol direction.
+direct failure, the requester can manually replace the attempt with Relay. Relay uses separate
+TCP/WebSocket channels so control input cannot queue behind video. Control remains an opaque
+end-to-end PSK-TLS stream; video uses end-to-end AES-GCM records with authenticated frame metadata,
+bounded delivery feedback, and broker-side stale-delta dropping. It does not depend on QUIC.
 
 ### Desktop daemon and NotiSync Run
 
