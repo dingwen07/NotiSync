@@ -40,6 +40,7 @@ internal data class AndroidScreenHostState(
     val dimensions: ScrcpySessionDimensions? = null,
     val detail: String? = null,
     val surfaceAttached: Boolean = false,
+    val connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
 )
 
 /**
@@ -53,6 +54,7 @@ internal class AndroidScreenRequesterSessionHost(
     private val scope: CoroutineScope,
     private val hardwareDecoderName: (ScreenMirrorCodec) -> String?,
     private val openSession: suspend (ClientId, String) -> AndroidScreenViewerSession,
+    private val openRelaySession: suspend (ClientId, String) -> AndroidScreenViewerSession = openSession,
     private val closeOwner: (String, String) -> Unit,
     private val requesterState: () -> AndroidScreenRequesterState,
 ) : Closeable {
@@ -63,7 +65,10 @@ internal class AndroidScreenRequesterSessionHost(
     ) : this(
         scope = scope,
         hardwareDecoderName = hardwareDecoderName,
-        openSession = requester::open,
+        openSession = { sourceId, ownerToken -> requester.open(sourceId, ownerToken) },
+        openRelaySession = { sourceId, ownerToken ->
+            requester.open(sourceId, ownerToken, AndroidScreenConnectionMode.BROKER_RELAY)
+        },
         closeOwner = requester::closeOwner,
         requesterState = { requester.state.value },
     )
@@ -73,6 +78,7 @@ internal class AndroidScreenRequesterSessionHost(
     private class Attempt(
         val id: String,
         val sourceId: ClientId,
+        val connectionMode: AndroidScreenConnectionMode,
     ) {
         val cleanupStarted = AtomicBoolean()
         val ownerCloseStarted = AtomicBoolean()
@@ -98,22 +104,38 @@ internal class AndroidScreenRequesterSessionHost(
      * Starts one viewer attempt, or returns the existing attempt id for the same source.
      * Selecting a second source while one is active is deliberately not an implicit disconnect.
      */
-    fun start(sourceId: ClientId): String {
+    fun start(
+        sourceId: ClientId,
+        connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+    ): String {
+        while (true) {
+            val switchAttempt = synchronized(lock) {
+                active?.let { current ->
+                    check(current.sourceId == sourceId) {
+                        "another Android screen viewer is already active"
+                    }
+                    if (current.connectionMode == connectionMode ||
+                        current.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY
+                    ) {
+                        return current.id
+                    }
+                    current.id
+                }
+            }
+            if (switchAttempt == null) break
+            stopIfAttempt(switchAttempt, "switching to broker relay")
+        }
         val attempt: Attempt
         val job: Job
         synchronized(lock) {
             check(!closed) { "screen requester session host is closed" }
-            active?.let { current ->
-                check(current.sourceId == sourceId) {
-                    "another Android screen viewer is already active"
-                }
-                return current.id
-            }
-            attempt = Attempt(UUID.randomUUID().toString(), sourceId)
+            active?.let { current -> return current.id }
+            attempt = Attempt(UUID.randomUUID().toString(), sourceId, connectionMode)
             _state.value = AndroidScreenHostState(
                 phase = AndroidScreenHostPhase.PREPARING,
                 attemptId = attempt.id,
                 sourceId = sourceId,
+                connectionMode = connectionMode,
             )
             job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
                 runAttempt(attempt)
@@ -210,6 +232,7 @@ internal class AndroidScreenRequesterSessionHost(
                 dimensions = snapshot.dimensions,
                 detail = detail,
                 surfaceAttached = false,
+                connectionMode = current.connectionMode,
             )
         } ?: return false
         return terminateAttempt(
@@ -240,7 +263,11 @@ internal class AndroidScreenRequesterSessionHost(
             updateCurrent(attempt.id) {
                 it.copy(phase = AndroidScreenHostPhase.CONNECTING, detail = null)
             }
-            session = openSession(attempt.sourceId, attempt.id)
+            session = if (attempt.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+                openRelaySession(attempt.sourceId, attempt.id)
+            } else {
+                openSession(attempt.sourceId, attempt.id)
+            }
             val connectedSession = session
             val writer = AndroidScreenControlWriter(connectedSession.controlOutput)
             dispatcher = AndroidScreenControlDispatcher(writer) { error ->
@@ -310,6 +337,7 @@ internal class AndroidScreenRequesterSessionHost(
                         codec = connectedSession.codec,
                         dimensions = state.value.dimensions,
                         detail = terminalRequesterState.detail,
+                        connectionMode = attempt.connectionMode,
                     ),
                 )
             }
@@ -362,6 +390,7 @@ internal class AndroidScreenRequesterSessionHost(
                 codec = current.session?.codec,
                 dimensions = _state.value.dimensions,
                 detail = detail,
+                connectionMode = current.connectionMode,
             )
         }
         terminateAttempt(attemptId, snapshot, detail)

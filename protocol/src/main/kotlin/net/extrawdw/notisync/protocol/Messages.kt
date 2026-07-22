@@ -499,7 +499,8 @@ enum class ScreenMirrorStatus {
  * such as Wi-Fi Aware can be added without making an older DATA_SYNC decoder reject the whole request.
  * `LAN_TCP` uses [host] + [port]; `DNS_SD` uses [serviceName] and may also carry [port];
  * `WIFI_AWARE` uses [serviceName] plus the signed [port] to discover a direct Android
- * peer-to-peer data path.
+ * peer-to-peer data path. `BROKER_RELAY` uses [serviceName] as a random, per-request relay id;
+ * the broker authenticates both device identities but only forwards the already PSK-TLS-encrypted bytes.
  */
 @Serializable
 data class ScreenMirrorConnectionCandidate(
@@ -514,6 +515,7 @@ data class ScreenMirrorConnectionCandidate(
         const val LAN_TCP = "LAN_TCP"
         const val DNS_SD = "DNS_SD"
         const val WIFI_AWARE = "WIFI_AWARE"
+        const val BROKER_RELAY = "BROKER_RELAY"
     }
 }
 
@@ -556,6 +558,9 @@ data class ScreenMirrorSync(
             add(Capability.SCREEN_MIRROR_CONTROL_V1)
             add(Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1)
             add(selectedCodec.requiredEncoderCapability())
+            if (candidates.any { it.kind == ScreenMirrorConnectionCandidate.BROKER_RELAY }) {
+                add(Capability.SCREEN_MIRROR_BROKER_RELAY_V1)
+            }
         }
     }
 }

@@ -67,6 +67,9 @@ object ScreenMirrorRequestValidator {
             candidate.serviceName?.let(AndroidWifiAwareServiceNames::isValid) == true &&
                 candidate.host == null &&
                 candidate.interfaceName == null && candidate.port?.let { it in 1..65535 } == true
+        ScreenMirrorConnectionCandidate.BROKER_RELAY ->
+            candidate.host == null && candidate.port == null && candidate.interfaceName == null &&
+                candidate.serviceName?.matches(Regex("[A-Za-z0-9_-]{32}")) == true
         else -> false // Open registry on the wire; unknown transports never grant routing authority.
     }
 

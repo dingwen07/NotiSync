@@ -279,7 +279,8 @@ class AndroidScreenListenerOwnershipTest {
         val isClosed: Boolean get() = videoSocket.isClosed && controlSocket.isClosed
 
         private fun testChannel(channel: ScreenChannel, socket: Socket): SecureSessionChannel {
-            val constructor = SecureSessionChannel::class.java.declaredConstructors.single()
+            val constructor = SecureSessionChannel::class.java.declaredConstructors
+                .single { it.parameterCount == 7 }
             constructor.isAccessible = true
             val closeProtocol: () -> Unit = {}
             return constructor.newInstance(
@@ -289,6 +290,7 @@ class AndroidScreenListenerOwnershipTest {
                 OutputStream.nullOutputStream(),
                 closeProtocol,
                 socket,
+                null,
             ) as SecureSessionChannel
         }
     }

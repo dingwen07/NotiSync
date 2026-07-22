@@ -21,6 +21,7 @@ import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -123,6 +124,28 @@ class AndroidScreenRequesterSessionHostTest {
         }
     }
 
+    @Test
+    fun manualRelayFallbackReplacesTheDirectAttemptForTheSameSource() {
+        val fixture = HostFixture(emptySet())
+        try {
+            val directAttempt = fixture.host.start(SOURCE)
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+
+            val relayAttempt = fixture.host.start(SOURCE, AndroidScreenConnectionMode.BROKER_RELAY)
+
+            assertNotEquals(directAttempt, relayAttempt)
+            waitUntil {
+                fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED &&
+                    fixture.host.state.value.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY
+            }
+            waitUntil { fixture.session.closeCount.get() == 1 }
+            assertEquals(1, fixture.directOpens.get())
+            assertEquals(1, fixture.relayOpens.get())
+        } finally {
+            fixture.close()
+        }
+    }
+
     private class HostFixture(
         capabilities: Set<Capability>,
         private val physicalCloseStarted: CountDownLatch? = null,
@@ -130,17 +153,31 @@ class AndroidScreenRequesterSessionHostTest {
     ) : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val control = RecordingOutputStream()
+        val relayControl = RecordingOutputStream()
+        val directOpens = AtomicInteger()
+        val relayOpens = AtomicInteger()
         val session = FakeSession(
             sourceCapabilities = capabilities,
             controlOutput = control,
             closeStarted = physicalCloseStarted,
             closeGate = physicalCloseGate,
         )
+        val relaySession = FakeSession(
+            sourceCapabilities = capabilities,
+            controlOutput = relayControl,
+        )
         val ownerCloses = mutableListOf<Pair<String, String>>()
         val host = AndroidScreenRequesterSessionHost(
             scope = scope,
             hardwareDecoderName = { null },
-            openSession = { _, _ -> session },
+            openSession = { _, _ ->
+                directOpens.incrementAndGet()
+                session
+            },
+            openRelaySession = { _, _ ->
+                relayOpens.incrementAndGet()
+                relaySession
+            },
             closeOwner = { owner, detail ->
                 synchronized(ownerCloses) { ownerCloses += owner to detail }
             },
@@ -153,6 +190,7 @@ class AndroidScreenRequesterSessionHostTest {
             physicalCloseGate?.countDown()
             host.close()
             session.close()
+            relaySession.close()
             scope.cancel()
         }
     }

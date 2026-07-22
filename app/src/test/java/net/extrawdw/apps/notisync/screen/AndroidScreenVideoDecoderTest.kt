@@ -17,6 +17,31 @@ import org.junit.Test
 
 class AndroidScreenVideoDecoderTest {
     @Test
+    fun decodedOutputRendersOnlyWhenItIsTheNewestAvailableState() {
+        assertTrue(
+            shouldRenderAndroidScreenOutput(
+                hasBytes = true,
+                surfaceCurrent = true,
+                newerVisualStateQueued = false,
+            ),
+        )
+        assertFalse(
+            shouldRenderAndroidScreenOutput(
+                hasBytes = true,
+                surfaceCurrent = true,
+                newerVisualStateQueued = true,
+            ),
+        )
+        assertFalse(
+            shouldRenderAndroidScreenOutput(
+                hasBytes = true,
+                surfaceCurrent = false,
+                newerVisualStateQueued = false,
+            ),
+        )
+    }
+
+    @Test
     fun detachedDecoderConsumesWholeStreamAndTracksSessionChanges() {
         val input = TrackingInputStream(
             stream(

@@ -57,6 +57,7 @@ internal fun screenMirrorCapabilitiesFor(
         add(Capability.SCREEN_MIRROR_CONTROL_V1)
         add(Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1)
         add(Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1)
+        add(Capability.SCREEN_MIRROR_BROKER_RELAY_V1)
         hardwareCodecs.sortedBy { it.ordinal }
             .forEach { add(it.requiredEncoderCapability()) }
     }

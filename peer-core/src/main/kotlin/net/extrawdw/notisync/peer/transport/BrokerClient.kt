@@ -23,11 +23,15 @@ import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.peer.ports.IntegrityEvidenceProvider
@@ -45,6 +49,9 @@ import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelaySignal
+import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
 import net.extrawdw.notisync.protocol.Transport
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.Urgency
@@ -660,6 +667,76 @@ class BrokerClient(
         }
     }
 
+    /**
+     * Registers one opaque binary screen-relay stream. Both devices are broker-authenticated; the bytes
+     * carried after registration are still protected by the screen session's independent TLS 1.3 PSK.
+     */
+    suspend fun openScreenRelay(join: ScreenRelayJoin): BrokerRelayConnection {
+        require(join.relayId.matches(Regex("[A-Za-z0-9_-]{32}"))) { "invalid screen relay id" }
+        require(join.expiresAt > System.currentTimeMillis()) { "screen relay request expired" }
+        val connection = BrokerRelayConnection(join.channel)
+        val registered = CompletableDeferred<Unit>()
+        val job = scope.launch(Dispatchers.IO) {
+            try {
+                val url = "${wsBase()}/v1/screen-relay"
+                val token = bearerTokenOrNull()
+                client.webSocket(url, request = {
+                    signedHeaders("GET", url, ByteArray(0), token)
+                }) {
+                    val challengeFrame = incoming.receive() as? Frame.Text
+                        ?: error("broker relay challenge missing")
+                    val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(challengeFrame.readText())
+                    val signature = Base64.getEncoder()
+                        .encodeToString(signer.sign(challenge.nonce.toByteArray()))
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                WsAuth(signer.clientId, challenge.nonce, signature, epoch = 0),
+                            ),
+                        ),
+                    )
+                    send(Frame.Text(ProtocolCodec.encodeToJson(join)))
+                    val signalFrame = incoming.receive() as? Frame.Text
+                        ?: error("broker relay registration missing")
+                    val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(signalFrame.readText())
+                    check(signal.kind == ScreenRelaySignalKind.REGISTERED) {
+                        signal.detail ?: "broker relay registration rejected"
+                    }
+                    registered.complete(Unit)
+                    coroutineScope {
+                        val writer = launch(Dispatchers.IO) {
+                            for (bytes in connection.outgoingFrames) {
+                                send(Frame.Binary(fin = true, data = bytes))
+                            }
+                        }
+                        try {
+                            for (frame in incoming) {
+                                if (frame is Frame.Binary) connection.receive(frame.data)
+                            }
+                        } finally {
+                            writer.cancel()
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                registered.completeExceptionally(cancelled)
+                throw cancelled
+            } catch (error: Throwable) {
+                registered.completeExceptionally(error)
+            } finally {
+                connection.terminate()
+            }
+        }
+        connection.attach(job)
+        try {
+            withTimeout(SCREEN_RELAY_REGISTER_TIMEOUT_MS) { registered.await() }
+            return connection
+        } catch (error: Throwable) {
+            connection.close()
+            throw error
+        }
+    }
+
     fun close() = client.close()
 
     private companion object {
@@ -678,6 +755,7 @@ class BrokerClient(
         const val AUTH_COOLDOWN_MAX_MS = 5L * 60 * 1000
         const val WS_REAUTH_AFTER_FAILURES = 3
         const val DEFAULT_WS_PING_SECONDS = 30L
+        const val SCREEN_RELAY_REGISTER_TIMEOUT_MS = 30_000L
 
         // HTTP timeouts. Connect makes the platform default explicit; socket (per-read/write inactivity,
         // which is also the HTTP/2 per-stream response-header wait) gets headroom over the old implicit 10s

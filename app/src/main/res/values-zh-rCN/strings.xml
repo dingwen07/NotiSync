@@ -330,8 +330,9 @@
     <string name="device_capability_screen_h265">硬件 H.265</string>
     <string name="device_capability_screen_av1">硬件 AV1</string>
     <string name="device_capability_screen_visibility">后台视频暂停</string>
+    <string name="device_capability_screen_broker_relay">中继屏幕共享</string>
     <string name="screen_mirror_settings_title">屏幕共享和控制（实验性）</string>
-    <string name="screen_mirror_settings_body">允许您授权的设备通过本地网络和 Shizuku 查看并控制此屏幕。</string>
+    <string name="screen_mirror_settings_body">允许您授权的设备通过 Shizuku 查看并控制此屏幕；可使用本地直连，或手动选择中继服务器。</string>
     <string name="screen_mirror_settings_not_running">请启动 Shizuku 管理器以完成设置。</string>
     <string name="screen_mirror_settings_permission">需要 Shizuku 权限。</string>
     <string name="screen_mirror_settings_root_unsupported">不支持 Root 模式的 Shizuku。</string>
@@ -383,6 +384,7 @@
     <string name="screen_viewer_local_network_denied">需要“附近设备”或本地网络访问权限才能直接连接到此设备。</string>
     <string name="screen_viewer_grant_local_network">授予网络权限</string>
     <string name="screen_viewer_retry">重试</string>
+    <string name="screen_viewer_use_broker_relay">使用中继服务器</string>
     <string name="screen_viewer_close">关闭</string>
     <string name="screen_viewer_back">返回</string>
     <string name="screen_viewer_home">主屏幕</string>

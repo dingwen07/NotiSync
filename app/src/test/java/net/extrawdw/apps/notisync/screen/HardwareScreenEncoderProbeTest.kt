@@ -41,6 +41,7 @@ class HardwareScreenEncoderProbeTest {
                 Capability.SCREEN_MIRROR_CONTROL_V1,
                 Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
                 Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1,
+                Capability.SCREEN_MIRROR_BROKER_RELAY_V1,
                 Capability.SCREEN_MIRROR_ENCODER_H264_HW,
             ),
             screenMirrorCapabilitiesFor(
@@ -57,6 +58,7 @@ class HardwareScreenEncoderProbeTest {
             Capability.SCREEN_MIRROR_CONTROL_V1,
             Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
             Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1,
+            Capability.SCREEN_MIRROR_BROKER_RELAY_V1,
             Capability.SCREEN_MIRROR_ENCODER_H264_HW,
             Capability.SCREEN_MIRROR_ENCODER_H265_HW,
             Capability.SCREEN_MIRROR_ENCODER_AV1_HW,

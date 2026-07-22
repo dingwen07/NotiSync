@@ -37,6 +37,7 @@ enum class Capability {
     SCREEN_MIRROR_ENCODER_H265_HW,    // has a probed hardware HEVC encoder
     SCREEN_MIRROR_ENCODER_AV1_HW,     // has a probed hardware AV1 encoder
     SCREEN_MIRROR_VIDEO_VISIBILITY_V1, // can pause/resume video without ending authenticated channels
+    SCREEN_MIRROR_BROKER_RELAY_V1,    // can tunnel the E2E screen byte streams through the broker
 }
 
 /**
@@ -91,6 +92,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         Capability.SCREEN_MIRROR_ENCODER_H265_HW -> 16
         Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> 17
         Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 -> 18
+        Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> 19
     }
 
     private fun capabilityForWireId(id: Int): Capability? = when (id) {
@@ -113,6 +115,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         16 -> Capability.SCREEN_MIRROR_ENCODER_H265_HW
         17 -> Capability.SCREEN_MIRROR_ENCODER_AV1_HW
         18 -> Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1
+        19 -> Capability.SCREEN_MIRROR_BROKER_RELAY_V1
         else -> null
     }
 }

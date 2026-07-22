@@ -76,6 +76,11 @@ class ScreenMirrorRequesterForegroundService : Service() {
                 if (ownership.noteCommand(startId) == null) stopSelf(startId)
                 return START_NOT_STICKY
             }
+        val connectionMode = if (intent.getBooleanExtra(EXTRA_BROKER_RELAY, false)) {
+            AndroidScreenConnectionMode.BROKER_RELAY
+        } else {
+            AndroidScreenConnectionMode.DIRECT
+        }
 
         val startDecision = ownership.onStart(
             sourceId = rawSourceId,
@@ -85,7 +90,8 @@ class ScreenMirrorRequesterForegroundService : Service() {
         val leaseId = startDecision.leaseId
         when (startDecision) {
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Duplicate -> {
-                return START_NOT_STICKY
+                if (connectionMode == AndroidScreenConnectionMode.DIRECT) return START_NOT_STICKY
+                stateJob?.cancel()
             }
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Transferred -> {
                 // A replacement Activity for the same source takes over the foreground-service
@@ -140,7 +146,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
                 finishOwned(rawSourceId, leaseId)
                 return@launch
             }
-            val attemptId = runCatching { host.start(ClientId(rawSourceId)) }
+            val attemptId = runCatching { host.start(ClientId(rawSourceId), connectionMode) }
                 .onFailure { Log.e(TAG, "Could not start requester screen session", it) }
                 .getOrElse {
                     finishOwned(rawSourceId, leaseId)
@@ -286,15 +292,17 @@ class ScreenMirrorRequesterForegroundService : Service() {
         private const val EXTRA_SOURCE_ID = "source_id"
         private const val EXTRA_SOURCE_NAME = "source_name"
         private const val EXTRA_LEASE_ID = "lease_id"
+        private const val EXTRA_BROKER_RELAY = "broker_relay"
         private const val MAX_SOURCE_ID_LENGTH = 128
         private const val MAX_SOURCE_NAME_LENGTH = 160
         private const val MAX_LEASE_ID_LENGTH = 128
 
-        fun start(
+        internal fun start(
             context: Context,
             sourceId: ClientId,
             sourceName: String,
             leaseId: String,
+            connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
         ): Boolean = runCatching {
             require(leaseId.isNotBlank() && leaseId.length <= MAX_LEASE_ID_LENGTH) {
                 "invalid requester foreground lease id"
@@ -306,6 +314,10 @@ class ScreenMirrorRequesterForegroundService : Service() {
                     putExtra(EXTRA_SOURCE_ID, sourceId.value)
                     putExtra(EXTRA_SOURCE_NAME, sourceName)
                     putExtra(EXTRA_LEASE_ID, leaseId)
+                    putExtra(
+                        EXTRA_BROKER_RELAY,
+                        connectionMode == AndroidScreenConnectionMode.BROKER_RELAY,
+                    )
                 },
             )
         }.isSuccess

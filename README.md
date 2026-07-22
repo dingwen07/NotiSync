@@ -108,6 +108,12 @@ To enable APNs delivery for the iOS client, mount the Apple Auth Key `.p8` file 
 In **Settings → Broker URL**, point the app at your broker. From the Android emulator, use
 `http://10.0.2.2:8080` (host loopback); on a device, use your machine's LAN address.
 
+Android-to-Android screen sharing prefers direct LAN or Wi-Fi Aware. While connecting, or after a
+direct failure, the requester can manually replace the attempt with the broker relay. The relay
+forwards two opaque, end-to-end PSK-TLS-protected byte streams; see
+[`docs/SCREEN_BROKER_RELAY.md`](docs/SCREEN_BROKER_RELAY.md) for the wire flow, limits, and the
+WebRTC/TURN protocol direction.
+
 ### Desktop daemon and NotiSync Run
 
 NotiSync Desktop supports Linux and macOS and requires JDK 21. On macOS, install Xcode Command Line

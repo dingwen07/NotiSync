@@ -450,7 +450,7 @@ class AppGraph(private val app: Application) {
             capabilities = screenMirrorCapabilities,
             shizuku = screenMirrorShizuku,
             scope = scope,
-            transport = AndroidLanScreenSessionTransport(app),
+            transport = AndroidLanScreenSessionTransport(app, transport),
             peerName = { id -> trust.displayName(id) },
         )
         screenMirrorController = screenController
@@ -475,6 +475,7 @@ class AppGraph(private val app: Application) {
             context = app,
             ownClientId = identity.clientId,
             channel = channel,
+            broker = transport,
             sourceResolver = screenSourceResolver,
             scope = scope,
             decoderSupport = { screenMirrorDecoderSupport },

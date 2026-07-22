@@ -27,6 +27,7 @@ internal class AndroidScreenVideoDecoder(
     private val onDimensionsChanged: (ScrcpySessionDimensions) -> Unit = {},
 ) : Closeable {
     private data class SurfaceAttachment(val ownerToken: String, val surface: Surface)
+    private data class PendingOutput(val index: Int, val size: Int, val flags: Int)
 
     private sealed interface DecoderEvent {
         data class Dimensions(val value: ScrcpySessionDimensions) : DecoderEvent
@@ -385,23 +386,61 @@ internal class AndroidScreenVideoDecoder(
     ): Boolean {
         var timeoutUs = firstTimeoutUs
         val info = MediaCodec.BufferInfo()
-        while (!closed.get()) {
-            when (val outputIndex = codec.dequeueOutputBuffer(info, timeoutUs)) {
-                MediaCodec.INFO_TRY_AGAIN_LATER -> return false
-                MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> validateOutputFormat(codec.outputFormat)
-                else -> if (outputIndex >= 0) {
-                    val endOfStream = info.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
-                    // surfaceDestroyed() may race with a finite dequeue call. Re-check the exact
-                    // owner immediately before release so the last buffered frame is discarded
-                    // instead of being rendered into a Surface whose callback is returning.
-                    val render = info.size > 0 && codecSurface.matches(requestedValidSurface())
-                    codec.releaseOutputBuffer(outputIndex, render)
-                    if (endOfStream) return true
+        var pending: PendingOutput? = null
+        try {
+            while (!closed.get()) {
+                when (val outputIndex = codec.dequeueOutputBuffer(info, timeoutUs)) {
+                    MediaCodec.INFO_TRY_AGAIN_LATER -> {
+                        val latest = pending ?: return false
+                        pending = null
+                        val render = shouldRenderAndroidScreenOutput(
+                            hasBytes = latest.size > 0,
+                            surfaceCurrent = codecSurface.matches(requestedValidSurface()),
+                            newerVisualStateQueued = hasQueuedNewerVisualState(),
+                        )
+                        if (render) {
+                            // The source PTS belongs to a different device's monotonic clock. Render
+                            // the newest frame at the requester's next VSYNC instead of replaying that
+                            // unrelated timeline through SurfaceView.
+                            codec.releaseOutputBuffer(latest.index, System.nanoTime())
+                        } else {
+                            codec.releaseOutputBuffer(latest.index, false)
+                        }
+                        return latest.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0
+                    }
+                    MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> validateOutputFormat(codec.outputFormat)
+                    else -> if (outputIndex >= 0) {
+                        // Retain at most one decoded output. If another output is already available,
+                        // release the older one without presenting it so SurfaceView never animates
+                        // through a congestion backlog merely because the network recovered.
+                        pending?.let { older ->
+                            codec.releaseOutputBuffer(older.index, false)
+                            if (older.flags and MediaCodec.BUFFER_FLAG_END_OF_STREAM != 0) {
+                                codec.releaseOutputBuffer(outputIndex, false)
+                                pending = null
+                                return true
+                            }
+                        }
+                        pending = PendingOutput(outputIndex, info.size, info.flags)
+                    }
                 }
+                timeoutUs = 0L
             }
-            timeoutUs = 0L
+            return false
+        } finally {
+            pending?.let { runCatching { codec.releaseOutputBuffer(it.index, false) } }
         }
-        return false
+    }
+
+    private fun hasQueuedNewerVisualState(): Boolean = events.any { event ->
+        when (event) {
+            is DecoderEvent.Dimensions -> true
+            is DecoderEvent.Record -> when (val record = event.value) {
+                is ScrcpyVideoRecord.Session -> true
+                is ScrcpyVideoRecord.Packet -> !record.codecConfig
+            }
+            else -> false
+        }
     }
 
     private fun drainEndOfStream(codec: MediaCodec, codecSurface: SurfaceAttachment?) {
@@ -445,3 +484,9 @@ internal class AndroidScreenVideoDecoder(
         }
     }
 }
+
+internal fun shouldRenderAndroidScreenOutput(
+    hasBytes: Boolean,
+    surfaceCurrent: Boolean,
+    newerVisualStateQueued: Boolean,
+): Boolean = hasBytes && surfaceCurrent && !newerVisualStateQueued

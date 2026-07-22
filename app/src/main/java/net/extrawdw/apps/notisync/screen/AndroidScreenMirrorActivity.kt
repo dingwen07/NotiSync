@@ -386,6 +386,9 @@ private fun AndroidScreenMirrorViewer(
     var detail by remember { mutableStateOf<String?>(null) }
     var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
     var retryGeneration by remember { mutableIntStateOf(0) }
+    var brokerRelayRequested by rememberSaveable(sourceId.value) { mutableStateOf(false) }
+    var brokerRelaySupported by remember { mutableStateOf(false) }
+    var showBrokerRelayFallback by remember { mutableStateOf(false) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }
     var toolbarPreferences by remember {
         mutableStateOf(
@@ -467,6 +470,7 @@ private fun AndroidScreenMirrorViewer(
 
     LaunchedEffect(graph, sourceId) {
         graph?.trust?.displayName(sourceId)?.let { sourceName = it }
+        brokerRelaySupported = graph?.screenMirrorRequester?.supportsBrokerRelay(sourceId) == true
     }
 
     LaunchedEffect(toolbarPreferenceStore) {
@@ -478,10 +482,11 @@ private fun AndroidScreenMirrorViewer(
         permissionResolved,
         localNetworkGranted,
         nearbyWifiGranted,
+        brokerRelayRequested,
         retryGeneration,
     ) {
         val readyGraph = graph ?: return@LaunchedEffect
-        if (!permissionResolved || !canAttemptConnection) return@LaunchedEffect
+        if (!permissionResolved || (!canAttemptConnection && !brokerRelayRequested)) return@LaunchedEffect
         phase = AndroidViewerUiPhase.CONNECTING
         detail = null
         dimensions = null
@@ -493,6 +498,11 @@ private fun AndroidScreenMirrorViewer(
                 sourceId,
                 sourceName,
                 requesterLeaseId,
+                if (brokerRelayRequested) {
+                    AndroidScreenConnectionMode.BROKER_RELAY
+                } else {
+                    AndroidScreenConnectionMode.DIRECT
+                },
             )
         ) {
             phase = AndroidViewerUiPhase.ERROR
@@ -556,6 +566,9 @@ private fun AndroidScreenMirrorViewer(
                 host.attachSurface(activity.viewerToken, outputSurface)
             }
             state.sourceName?.let { sourceName = it }
+            if (state.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+                brokerRelayRequested = true
+            }
             state.codec?.let { codecName = it.name.lowercase() }
             dimensions = state.dimensions
             control = host.controlDispatcher().takeIf {
@@ -593,6 +606,22 @@ private fun AndroidScreenMirrorViewer(
                 renderingAllowed && surface?.isValid == true,
             dimensions = dimensions,
         )
+    }
+
+    LaunchedEffect(phase, brokerRelaySupported, brokerRelayRequested) {
+        showBrokerRelayFallback = false
+        if (phase == AndroidViewerUiPhase.CONNECTING && brokerRelaySupported && !brokerRelayRequested) {
+            delay(BROKER_RELAY_FALLBACK_DELAY_MS)
+            if (phase == AndroidViewerUiPhase.CONNECTING && !brokerRelayRequested) {
+                showBrokerRelayFallback = true
+            }
+        }
+    }
+
+    val useBrokerRelay = {
+        brokerRelayRequested = true
+        permissionResolved = true
+        showBrokerRelayFallback = false
     }
 
     // System Back belongs to the controlled device. The explicit top-left close affordance is the
@@ -696,23 +725,29 @@ private fun AndroidScreenMirrorViewer(
                     } else {
                         stringResource(R.string.screen_viewer_connecting, sourceName)
                     },
+                    brokerRelayLabel = stringResource(R.string.screen_viewer_use_broker_relay)
+                        .takeIf { showBrokerRelayFallback },
+                    onBrokerRelay = useBrokerRelay,
                 )
 
                 AndroidViewerUiPhase.ERROR, AndroidViewerUiPhase.ENDED -> ViewerMessage(
                     message = detail ?: stringResource(R.string.screen_viewer_failed),
-                    primaryLabel = if (!canAttemptConnection) {
+                    primaryLabel = if (!canAttemptConnection && !brokerRelayRequested) {
                         stringResource(R.string.screen_viewer_grant_local_network)
                     } else {
                         stringResource(R.string.screen_viewer_retry)
                     },
                     onPrimary = {
-                        if (!canAttemptConnection) {
+                        if (!canAttemptConnection && !brokerRelayRequested) {
                             permissionResolved = false
                             permissionLauncher.launch(missingConnectionPermissions())
                         } else {
                             retryGeneration++
                         }
                     },
+                    secondaryLabel = stringResource(R.string.screen_viewer_use_broker_relay)
+                        .takeIf { brokerRelaySupported && !brokerRelayRequested },
+                    onSecondary = useBrokerRelay,
                     onClose = closeViewer,
                 )
 
@@ -1088,6 +1123,7 @@ private const val TOOLBAR_CONTROL_WIDTH_DP = 48f
 private const val TOOLBAR_HEIGHT_DP = 56f
 private const val TOOLBAR_VERTICAL_MARGIN_DP = 6f
 private const val REQUESTER_SERVICE_START_TIMEOUT_MS = 5_000L
+private const val BROKER_RELAY_FALLBACK_DELAY_MS = 8_000L
 
 @Composable
 private fun AndroidScreenSurface(
@@ -1434,19 +1470,31 @@ private fun ScreenFunctionButton(
 }
 
 @Composable
-private fun ViewerProgress(label: String) {
+private fun ViewerProgress(
+    label: String,
+    brokerRelayLabel: String? = null,
+    onBrokerRelay: () -> Unit = {},
+) {
     Surface(
         color = MaterialTheme.colorScheme.surface.copy(alpha = 0.92f),
         contentColor = MaterialTheme.colorScheme.onSurface,
         shape = MaterialTheme.shapes.large,
     ) {
-        Row(
+        Column(
             Modifier.padding(horizontal = 22.dp, vertical = 18.dp),
-            horizontalArrangement = Arrangement.spacedBy(14.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 3.dp)
-            Text(label)
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(14.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 3.dp)
+                Text(label)
+            }
+            brokerRelayLabel?.let { relayLabel ->
+                Button(onClick = onBrokerRelay) { Text(relayLabel) }
+            }
         }
     }
 }
@@ -1456,6 +1504,8 @@ private fun ViewerMessage(
     message: String,
     primaryLabel: String,
     onPrimary: () -> Unit,
+    secondaryLabel: String? = null,
+    onSecondary: () -> Unit = {},
     onClose: () -> Unit,
 ) {
     Surface(
@@ -1471,6 +1521,9 @@ private fun ViewerMessage(
             Text(message, color = MaterialTheme.colorScheme.onSurface)
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Button(onClick = onPrimary) { Text(primaryLabel) }
+                secondaryLabel?.let { label ->
+                    Button(onClick = onSecondary) { Text(label) }
+                }
                 Button(onClick = onClose) { Text(stringResource(R.string.screen_viewer_close)) }
             }
         }

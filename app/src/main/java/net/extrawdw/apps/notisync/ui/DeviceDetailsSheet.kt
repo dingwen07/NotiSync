@@ -444,6 +444,7 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.SCREEN_MIRROR_ENCODER_H265_HW -> R.string.device_capability_screen_h265
         Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> R.string.device_capability_screen_av1
         Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 -> R.string.device_capability_screen_visibility
+        Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> R.string.device_capability_screen_broker_relay
     },
 )
 

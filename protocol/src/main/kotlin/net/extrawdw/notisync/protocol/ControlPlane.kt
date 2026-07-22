@@ -174,6 +174,40 @@ data class WsAuth(
     val epoch: Int = 0,
 )
 
+/** Authenticated participant role for one opaque screen-relay channel. */
+@Serializable
+enum class ScreenRelayRole { REQUESTER, SOURCE }
+
+/** The two independent v1 byte streams. Keeping them separate prevents control behind video. */
+@Serializable
+enum class ScreenRelayChannel { VIDEO, CONTROL }
+
+/**
+ * First frame after WebSocket authentication on `/v1/screen-relay`. [relayId] is a random capability
+ * delivered only inside the E2E screen request. The broker additionally binds each role to its authenticated
+ * [ClientId], then forwards binary frames without inspecting the nested PSK-TLS stream.
+ */
+@Serializable
+data class ScreenRelayJoin(
+    val relayId: String,
+    val requesterPeerId: ClientId,
+    val sourcePeerId: ClientId,
+    val role: ScreenRelayRole,
+    val channel: ScreenRelayChannel,
+    val expiresAt: Long,
+)
+
+/** Server acknowledgement that the relay slot is registered and may begin buffering its TLS handshake. */
+@Serializable
+data class ScreenRelaySignal(
+    val kind: String,
+    val detail: String? = null,
+)
+
+object ScreenRelaySignalKind {
+    const val REGISTERED = "registered"
+}
+
 /** Realtime frame over the dev WebSocket transport (flat to avoid polymorphic serialization). */
 @Serializable
 data class WsMessage(

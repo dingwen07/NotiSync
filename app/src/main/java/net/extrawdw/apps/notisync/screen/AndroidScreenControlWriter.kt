@@ -194,6 +194,7 @@ internal class AndroidScreenControlDispatcher(
 ) : Closeable {
     private sealed interface Command {
         val coalescibleMove: Boolean get() = false
+        val terminalTouch: Boolean get() = false
         fun write(writer: AndroidScreenControlWriter)
 
         data class Key(val keyCode: Int) : Command {
@@ -216,6 +217,9 @@ internal class AndroidScreenControlDispatcher(
         data class Touches(val touches: List<AndroidScreenTouch>) : Command {
             override val coalescibleMove: Boolean =
                 touches.isNotEmpty() && touches.all { it.action == MotionEvent.ACTION_MOVE }
+            override val terminalTouch: Boolean = touches.any {
+                it.action == MotionEvent.ACTION_UP || it.action == MotionEvent.ACTION_CANCEL
+            }
 
             override fun write(writer: AndroidScreenControlWriter) = writer.sendTouches(touches)
         }
@@ -258,6 +262,9 @@ internal class AndroidScreenControlDispatcher(
         synchronized(lock) {
             if (closed) return false
 
+            if (command.terminalTouch) {
+                queue.removeAll { it.coalescibleMove }
+            }
             if (command.coalescibleMove && queue.peekLast()?.coalescibleMove == true) {
                 queue.removeLast()
                 queue.addLast(command)

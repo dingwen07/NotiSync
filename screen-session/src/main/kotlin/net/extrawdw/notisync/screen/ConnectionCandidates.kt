@@ -25,6 +25,7 @@ data class ScreenConnectionCandidate(
             WIFI_AWARE -> require(serviceName != null && port != null) {
                 "WIFI_AWARE requires serviceName and port"
             }
+            BROKER_RELAY -> require(serviceName != null) { "BROKER_RELAY requires serviceName" }
         }
     }
 
@@ -32,6 +33,7 @@ data class ScreenConnectionCandidate(
         const val LAN_TCP: String = "LAN_TCP"
         const val DNS_SD: String = "DNS_SD"
         const val WIFI_AWARE: String = "WIFI_AWARE"
+        const val BROKER_RELAY: String = "BROKER_RELAY"
 
         /** Known candidates first; preserves source order within each candidate kind. */
         fun connectionOrder(candidates: List<ScreenConnectionCandidate>): List<ScreenConnectionCandidate> =
@@ -41,7 +43,8 @@ data class ScreenConnectionCandidate(
                         LAN_TCP -> 0
                         DNS_SD -> 1
                         WIFI_AWARE -> 2
-                        else -> 3
+                        BROKER_RELAY -> 3
+                        else -> 4
                     }
                 }.thenBy { it.index },
             ).map(IndexedValue<ScreenConnectionCandidate>::value)

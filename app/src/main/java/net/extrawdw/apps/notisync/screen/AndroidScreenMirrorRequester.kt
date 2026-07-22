@@ -28,6 +28,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
+import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
@@ -50,6 +51,7 @@ import net.extrawdw.notisync.screen.SecureChannelPair
 import net.extrawdw.notisync.screen.SessionDescriptor
 
 internal enum class AndroidScreenRequesterPhase { IDLE, PREPARING, WAITING, CONNECTED, FAILED }
+internal enum class AndroidScreenConnectionMode { DIRECT, BROKER_RELAY }
 
 internal data class AndroidScreenRequesterState(
     val phase: AndroidScreenRequesterPhase = AndroidScreenRequesterPhase.IDLE,
@@ -58,6 +60,7 @@ internal data class AndroidScreenRequesterState(
     val sourceName: String? = null,
     val codec: ScreenMirrorCodec? = null,
     val detail: String? = null,
+    val connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
 )
 
 /** A resolver result is authority: implementations return only a currently trusted own device. */
@@ -116,6 +119,7 @@ internal class AndroidScreenMirrorRequester(
     context: android.content.Context,
     private val ownClientId: ClientId,
     private val channel: SecureChannel,
+    private val broker: BrokerClient,
     private val sourceResolver: AndroidScreenSourceResolver,
     private val scope: CoroutineScope,
     private val decoderSupport: () -> AndroidScreenDecoderSupport =
@@ -130,14 +134,27 @@ internal class AndroidScreenMirrorRequester(
     private val _state = MutableStateFlow(AndroidScreenRequesterState())
     val state: StateFlow<AndroidScreenRequesterState> = _state.asStateFlow()
 
+    fun supportsBrokerRelay(sourceId: ClientId): Boolean =
+        sourceResolver.resolve(sourceId)?.capabilities
+            ?.contains(Capability.SCREEN_MIRROR_BROKER_RELAY_V1) == true
+
     /**
      * Opens the listener before sending the HIGH request and suspends until both authenticated channels
      * arrive. Only one local viewer session may be opening or active at once.
      */
-    suspend fun open(sourceId: ClientId, ownerToken: String): AndroidViewerSession = withContext(Dispatchers.IO) {
+    suspend fun open(
+        sourceId: ClientId,
+        ownerToken: String,
+        connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+    ): AndroidViewerSession = withContext(Dispatchers.IO) {
         require(ownerToken.isNotBlank() && ownerToken.length <= 128) { "invalid viewer owner token" }
         val source = requireNotNull(sourceResolver.resolve(sourceId)) {
             "screen source is not a trusted own device"
+        }
+        if (connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+            require(Capability.SCREEN_MIRROR_BROKER_RELAY_V1 in source.capabilities) {
+                "screen source does not support broker relay"
+            }
         }
         val codec = selectAndroidScreenCodec(
             sourceCapabilities = source.capabilities,
@@ -160,7 +177,7 @@ internal class AndroidScreenMirrorRequester(
             maxFps = DEFAULT_MAX_FPS,
             videoBitrateBps = DEFAULT_BITRATE_BPS,
         )
-        val requestContext = RequestContext(source, descriptor, codec, ownerToken)
+        val requestContext = RequestContext(source, descriptor, codec, ownerToken, connectionMode)
         synchronized(lock) {
             check(active == null) { "another Android screen viewer is already active" }
             active = requestContext
@@ -170,12 +187,13 @@ internal class AndroidScreenMirrorRequester(
         var lan: AndroidScreenRequesterLan? = null
         var lanListener: LanSessionListener? = null
         var awareListener: AndroidWifiAwareScreenListener? = null
+        var relayListener: BrokerRelayScreenSessionListener? = null
         var advertisement: AutoCloseable? = null
         var registry: PskRegistry? = null
         var transferred = false
         try {
             var lanFailure: Throwable? = null
-            try {
+            if (connectionMode == AndroidScreenConnectionMode.DIRECT) try {
                 lan = AndroidScreenRequesterLan.openOrNull(appContext).also { requestContext.lan = it }
                 requestContext.requireOpen()
                 lan?.let { availableLan ->
@@ -213,7 +231,7 @@ internal class AndroidScreenMirrorRequester(
                 try {
                     registry.register(descriptor, routingToken, masterPsk)
                     var awareFailure: Throwable? = null
-                    awareListener = try {
+                    awareListener = if (connectionMode == AndroidScreenConnectionMode.DIRECT) try {
                         AndroidWifiAwareScreenListener.open(
                             context = appContext,
                             descriptor = descriptor,
@@ -232,9 +250,18 @@ internal class AndroidScreenMirrorRequester(
                         awareFailure = error
                         Log.w(LOG_TAG, "Wi-Fi Aware screen listener unavailable", error)
                         null
+                    } else null
+                    if (connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+                        relayListener = BrokerRelayScreenSessionListener(
+                            broker = broker,
+                            relayId = BrokerRelayScreenSessionListener.randomRelayId(random),
+                            requesterId = ownClientId,
+                            sourceId = source.clientId,
+                            expiresAt = expiresAt,
+                        ).also { requestContext.relayListener = it }
                     }
                     requestContext.requireOpen()
-                    if (lanListener == null && awareListener == null) {
+                    if (lanListener == null && awareListener == null && relayListener == null) {
                         val failure = awareFailure ?: lanFailure
                         val detail = failure?.deepestRequesterTransportMessage()
                         throw IllegalStateException(
@@ -249,6 +276,7 @@ internal class AndroidScreenMirrorRequester(
                         lanListener = lanListener,
                         advertisement = advertisement,
                         awareListener = awareListener,
+                        relayListener = relayListener,
                     )
                     Log.i(
                         LOG_TAG,
@@ -297,7 +325,7 @@ internal class AndroidScreenMirrorRequester(
 
             val remaining = (expiresAt - clock.millis()).coerceAtLeast(1L)
             val accepted = acceptFirstPair(
-                listeners = listOfNotNull(lanListener, awareListener),
+                listeners = listOfNotNull(lanListener, awareListener, relayListener),
                 sessionId = descriptor.sessionId,
                 registry = registry,
                 timeout = Duration.ofMillis(remaining),
@@ -393,6 +421,7 @@ internal class AndroidScreenMirrorRequester(
                     runCatching { resource.close() }
                 }
                 runCatching { awareListener?.close() }
+                runCatching { relayListener?.close() }
                 runCatching { registry?.close() }
                 runCatching { lan?.close() }
             }
@@ -507,6 +536,7 @@ internal class AndroidScreenMirrorRequester(
                     runCatching { context.session?.closeTransport() }
                     runCatching { context.lanListener?.close() }
                     runCatching { context.awareListener?.close() }
+                    runCatching { context.relayListener?.close() }
                     runCatching { context.lan?.close() }
                 },
                 "notisync-screen-requester-cleanup",
@@ -522,6 +552,7 @@ internal class AndroidScreenMirrorRequester(
         val descriptor: SessionDescriptor,
         val codec: ScreenMirrorCodec,
         val ownerToken: String,
+        val connectionMode: AndroidScreenConnectionMode,
     ) {
         val requestSent = AtomicBoolean()
         val connected = AtomicBoolean()
@@ -534,6 +565,7 @@ internal class AndroidScreenMirrorRequester(
         @Volatile var lan: AndroidScreenRequesterLan? = null
         @Volatile var lanListener: LanSessionListener? = null
         @Volatile var awareListener: AndroidWifiAwareScreenListener? = null
+        @Volatile var relayListener: BrokerRelayScreenSessionListener? = null
         @Volatile var session: AndroidViewerSession? = null
 
         fun requireOpen() {
@@ -548,6 +580,7 @@ internal class AndroidScreenMirrorRequester(
                 sourceName = source.displayName,
                 codec = codec,
                 detail = detail,
+                connectionMode = connectionMode,
             )
     }
 
@@ -690,12 +723,14 @@ private fun requestCandidates(
     lanListener: LanSessionListener?,
     advertisement: AutoCloseable?,
     awareListener: AndroidWifiAwareScreenListener?,
+    relayListener: BrokerRelayScreenSessionListener?,
 ): List<ScreenMirrorConnectionCandidate> {
     val dns = (advertisement as? net.extrawdw.notisync.screen.ServiceAdvertisement)?.candidate
     return selectScreenMirrorRequestCandidates(
         lanCandidates = lanListener?.candidates.orEmpty(),
         dnsCandidate = dns,
         awareCandidates = awareListener?.candidates.orEmpty(),
+        relayCandidates = relayListener?.candidates.orEmpty(),
     ).map(ScreenConnectionCandidate::toProtocolCandidate)
 }
 
@@ -703,9 +738,11 @@ internal fun selectScreenMirrorRequestCandidates(
     lanCandidates: List<ScreenConnectionCandidate>,
     dnsCandidate: ScreenConnectionCandidate?,
     awareCandidates: List<ScreenConnectionCandidate>,
+    relayCandidates: List<ScreenConnectionCandidate> = emptyList(),
 ): List<ScreenConnectionCandidate> {
     val aware = awareCandidates.singleOrNull()
-    val reserved = listOfNotNull(dnsCandidate, aware)
+    val relay = relayCandidates.singleOrNull()
+    val reserved = listOfNotNull(dnsCandidate, aware, relay)
     val direct = lanCandidates
         .take((SCREEN_MIRROR_MAX_CANDIDATES - reserved.size).coerceAtLeast(0))
     return (direct + reserved)

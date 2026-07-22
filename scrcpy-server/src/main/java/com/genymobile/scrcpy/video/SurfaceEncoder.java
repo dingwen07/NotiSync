@@ -105,7 +105,7 @@ public final class SurfaceEncoder implements AsyncProcessor {
                         if (!captureControl.isResetRequested()) {
                             streamer.writeSessionMeta(size.getWidth(), size.getHeight(), false);
                             requestSyncFrame(mediaCodec);
-                            encode(mediaCodec, streamer, captureControl);
+                            encode(mediaCodec, streamer, captureControl, videoBitRate);
                         }
                         alive = !stopped.get() && !capture.isClosed();
                     }
@@ -186,20 +186,34 @@ public final class SurfaceEncoder implements AsyncProcessor {
         return format;
     }
 
-    private static void requestSyncFrame(MediaCodec codec) {
+    private static boolean requestSyncFrame(MediaCodec codec) {
         Bundle parameters = new Bundle();
         parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
         try {
             codec.setParameters(parameters);
+            return true;
         } catch (RuntimeException error) {
             // A newly started encoder is already required to begin at a random-access frame. This
             // request makes resume immediate on implementations that support the standard key.
             Ln.w("Video encoder rejected sync-frame request: " + error.getMessage());
+            return false;
         }
     }
 
-    private static void encode(MediaCodec codec, Streamer streamer, CaptureControl captureControl) throws IOException {
+    private static void updateBitRate(MediaCodec codec, int bitRate) {
+        Bundle parameters = new Bundle();
+        parameters.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitRate);
+        try {
+            codec.setParameters(parameters);
+        } catch (RuntimeException error) {
+            Ln.w("Video encoder rejected bitrate update: " + error.getMessage());
+        }
+    }
+
+    private static void encode(MediaCodec codec, Streamer streamer, CaptureControl captureControl, int targetBitRate)
+            throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
+        VideoBackpressureController backpressure = new VideoBackpressureController(targetBitRate);
         boolean eos;
         do {
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, -1);
@@ -210,8 +224,23 @@ public final class SurfaceEncoder implements AsyncProcessor {
                     // A hide/reset may race with buffers already queued by MediaCodec. Never write
                     // those stale frames, even if a rapid hide/show has made visibility true again;
                     // isResetRequested() remains true until the fresh encoder iteration begins.
-                    if (captureControl.isVideoVisible() && !captureControl.isResetRequested()) {
+                    boolean codecConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
+                    boolean keyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
+                    if (captureControl.isVideoVisible() && !captureControl.isResetRequested()
+                            && backpressure.shouldWritePacket(codecConfig, keyFrame)) {
+                        long writeStartedNanos = System.nanoTime();
                         streamer.writePacket(codecBuffer, bufferInfo);
+                        long writeCompletedNanos = System.nanoTime();
+                        VideoBackpressureController.Decision decision = backpressure.onPacketWritten(
+                                writeCompletedNanos - writeStartedNanos,
+                                writeCompletedNanos
+                        );
+                        if (decision.newBitRate > 0) {
+                            updateBitRate(codec, decision.newBitRate);
+                        }
+                        if (decision.requestSyncFrame) {
+                            backpressure.beginDroppingUntilKeyFrame(requestSyncFrame(codec));
+                        }
                     }
                 }
             } finally {

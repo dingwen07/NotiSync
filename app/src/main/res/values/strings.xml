@@ -344,8 +344,9 @@
     <string name="device_capability_screen_h265">Hardware H.265</string>
     <string name="device_capability_screen_av1" tools:ignore="Typos">Hardware AV1</string>
     <string name="device_capability_screen_visibility">Background video pause</string>
+    <string name="device_capability_screen_broker_relay">Broker-relayed screen sharing</string>
     <string name="screen_mirror_settings_title">Screen sharing and control (Experimental)</string>
-    <string name="screen_mirror_settings_body">Allow authorized devices of yours to view and control this screen over the local network using Shizuku.</string>
+    <string name="screen_mirror_settings_body">Allow authorized devices of yours to view and control this screen using Shizuku, over a direct local connection or a manually selected broker relay.</string>
     <string name="screen_mirror_settings_not_running">Start Shizuku Manager to finish setup.</string>
     <string name="screen_mirror_settings_permission">Shizuku permission is required.</string>
     <string name="screen_mirror_settings_root_unsupported">Root-backed Shizuku is not supported.</string>
@@ -397,6 +398,7 @@
     <string name="screen_viewer_local_network_denied">Nearby device or local network access is required to connect directly to this device.</string>
     <string name="screen_viewer_grant_local_network">Grant network access</string>
     <string name="screen_viewer_retry">Retry</string>
+    <string name="screen_viewer_use_broker_relay">Use broker relay</string>
     <string name="screen_viewer_close">Close</string>
     <string name="screen_viewer_back">Back</string>
     <string name="screen_viewer_home">Home</string>

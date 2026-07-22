@@ -5,6 +5,7 @@ import net.extrawdw.notisync.screen.ScreenConnectionCandidate
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidScreenTransportSelectionTest {
@@ -93,6 +94,24 @@ class AndroidScreenTransportSelectionTest {
     }
 
     @Test
+    fun `manual relay request advertises its reserved relay candidate`() {
+        val relay = ScreenConnectionCandidate(
+            kind = ScreenConnectionCandidate.BROKER_RELAY,
+            serviceName = "abcdefghijklmnopqrstuvwxABCDEFGH",
+        )
+
+        assertEquals(
+            listOf(relay),
+            selectScreenMirrorRequestCandidates(
+                lanCandidates = emptyList(),
+                dnsCandidate = null,
+                awareCandidates = emptyList(),
+                relayCandidates = listOf(relay),
+            ),
+        )
+    }
+
+    @Test
     fun `source filters valid signed Aware candidates and preserves their order`() {
         val first = protocolAwareCandidate(5, 31_895)
         val second = protocolAwareCandidate(6, 31_896)
@@ -113,6 +132,18 @@ class AndroidScreenTransportSelectionTest {
         )
 
         assertEquals(listOf(first, second), filterValidWifiAwareCandidates(candidates))
+    }
+
+    @Test
+    fun `source accepts only canonical relay candidates`() {
+        val valid = ScreenMirrorConnectionCandidate(
+            kind = ScreenMirrorConnectionCandidate.BROKER_RELAY,
+            serviceName = "abcdefghijklmnopqrstuvwxABCDEFGH",
+        )
+
+        assertTrue(validBrokerRelayCandidate(valid))
+        assertFalse(validBrokerRelayCandidate(valid.copy(serviceName = "short")))
+        assertFalse(validBrokerRelayCandidate(valid.copy(port = 443)))
     }
 
     private fun lanCandidate(index: Int) = ScreenConnectionCandidate(

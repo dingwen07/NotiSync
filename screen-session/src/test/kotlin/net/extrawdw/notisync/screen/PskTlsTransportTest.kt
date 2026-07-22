@@ -2,6 +2,8 @@ package net.extrawdw.notisync.screen
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.PipedInputStream
+import java.io.PipedOutputStream
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
@@ -47,6 +49,7 @@ class PskTlsTransportTest {
                 protocolFinished.countDown()
             },
             socket = socket,
+            closeTransport = null,
         )
 
         try {
@@ -81,6 +84,52 @@ class PskTlsTransportTest {
                     client.output.flush()
                     assertArrayEquals(byteArrayOf(4, 5, 6), server.input.readNBytes(3))
                 }
+            }
+        }
+    }
+
+    @Test
+    fun `TLS 1_3 external PSK connects over generic ordered relay streams`() {
+        val fixture = Fixture()
+        PskRegistry(fixture.clock).use { registry ->
+            registry.register(fixture.descriptor, fixture.token, fixture.masterPsk)
+            val clientInput = PipedInputStream(256 * 1024)
+            val serverOutput = PipedOutputStream(clientInput)
+            val serverInput = PipedInputStream(256 * 1024)
+            val clientOutput = PipedOutputStream(serverInput)
+            val executor = Executors.newSingleThreadExecutor()
+            val serverFuture = executor.submit<SecureSessionChannel> {
+                PskTlsServer.accept(
+                    input = serverInput,
+                    output = serverOutput,
+                    closeTransport = {
+                        serverInput.close()
+                        serverOutput.close()
+                    },
+                    registry = registry,
+                )
+            }
+            val client = PskTlsClient.connect(
+                input = clientInput,
+                output = clientOutput,
+                closeTransport = {
+                    clientInput.close()
+                    clientOutput.close()
+                },
+                descriptor = fixture.descriptor,
+                routingToken = fixture.token,
+                masterPsk = fixture.masterPsk,
+                channel = ScreenChannel.VIDEO,
+            )
+            val server = serverFuture.get(5, TimeUnit.SECONDS)
+            try {
+                client.output.write(byteArrayOf(9, 8, 7))
+                client.output.flush()
+                assertArrayEquals(byteArrayOf(9, 8, 7), server.input.readNBytes(3))
+            } finally {
+                client.close()
+                server.close()
+                executor.shutdownNow()
             }
         }
     }

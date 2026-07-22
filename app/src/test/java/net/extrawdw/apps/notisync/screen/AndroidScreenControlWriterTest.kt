@@ -316,12 +316,12 @@ class AndroidScreenControlWriterTest {
     }
 
     @Test
-    fun `dispatcher coalesces adjacent moves without reordering down and up`() {
+    fun `terminal touch supersedes queued moves without reordering down and up`() {
         val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
         val firstWrite = AtomicBoolean(true)
         val firstWriteStarted = CountDownLatch(1)
         val releaseFirstWrite = CountDownLatch(1)
-        val expectedWrites = CountDownLatch(3)
+        val expectedWrites = CountDownLatch(2)
         val output = object : OutputStream() {
             override fun write(value: Int) = Unit
 
@@ -351,10 +351,9 @@ class AndroidScreenControlWriterTest {
         assertTrue("coalesced control writes did not finish", expectedWrites.await(5, TimeUnit.SECONDS))
         dispatcher.close()
         assertEquals(null, failure.get())
-        assertEquals(3, writes.size)
+        assertEquals(2, writes.size)
         assertTouchFrame(writes[0], MotionEvent.ACTION_DOWN, 10)
-        assertTouchFrame(writes[1], MotionEvent.ACTION_MOVE, 30)
-        assertTouchFrame(writes[2], MotionEvent.ACTION_UP, 30)
+        assertTouchFrame(writes[1], MotionEvent.ACTION_UP, 30)
     }
 
     @Test

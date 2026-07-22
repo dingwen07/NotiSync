@@ -155,4 +155,36 @@ class ScreenMirrorRequestValidatorTest {
             )
         }
     }
+
+    @Test
+    fun brokerRelayCandidate_requiresOpaqueIdAndNoDirectEndpointFields() {
+        val relay = request().copy(
+            candidates = listOf(
+                ScreenMirrorConnectionCandidate(
+                    kind = ScreenMirrorConnectionCandidate.BROKER_RELAY,
+                    serviceName = "abcdefghijklmnopqrstuvwxABCDEFGH",
+                ),
+            ),
+        )
+        assertNull(
+            ScreenMirrorRequestValidator.validate(
+                relay, requester, source, now, now, authorized = true, codecAvailable = true,
+            ),
+        )
+
+        listOf(
+            relay.copy(candidates = listOf(relay.candidates.single().copy(serviceName = "short"))),
+            relay.copy(candidates = listOf(relay.candidates.single().copy(host = "192.0.2.1"))),
+            relay.copy(candidates = listOf(relay.candidates.single().copy(port = 443))),
+            relay.copy(candidates = listOf(relay.candidates.single().copy(interfaceName = "wlan0"))),
+        ).forEach { malformed ->
+            assertEquals(
+                ScreenMirrorStatus.TRANSPORT_FAILED,
+                ScreenMirrorRequestValidator.validate(
+                    malformed, requester, source, now, now,
+                    authorized = true, codecAvailable = true,
+                )?.status,
+            )
+        }
+    }
 }

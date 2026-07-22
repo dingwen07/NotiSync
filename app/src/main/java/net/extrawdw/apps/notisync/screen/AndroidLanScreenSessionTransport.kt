@@ -37,13 +37,21 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
+import net.extrawdw.notisync.protocol.ScreenRelayChannel
+import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelayRole
+import net.extrawdw.notisync.peer.transport.BrokerClient
+import net.extrawdw.notisync.peer.transport.BrokerRelayConnection
 import net.extrawdw.notisync.screen.PskTlsClient
 import net.extrawdw.notisync.screen.ScreenChannel
 import net.extrawdw.notisync.screen.SecureSessionChannel
 import net.extrawdw.notisync.screen.SessionDescriptor
 
-/** Android source transport: physical LAN first, then a direct Wi-Fi Aware data path. */
-class AndroidLanScreenSessionTransport(private val context: Context) : AndroidScreenSessionTransport {
+/** Android source transport: direct LAN/Aware first, with an explicitly requested broker relay. */
+class AndroidLanScreenSessionTransport(
+    private val context: Context,
+    private val broker: BrokerClient? = null,
+) : AndroidScreenSessionTransport {
     private val appContext = context.applicationContext
 
     override suspend fun run(
@@ -182,11 +190,71 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
             }
         }
 
+        val relayCandidates = request.candidates.filter(::validBrokerRelayCandidate)
+        for (candidate in relayCandidates) {
+            val relayBroker = broker ?: break
+            var videoRelay: BrokerRelayConnection? = null
+            var controlRelay: BrokerRelayConnection? = null
+            var video: SecureSessionChannel? = null
+            var control: SecureSessionChannel? = null
+            var pipes: PrivilegedSessionPipes? = null
+            try {
+                val relayId = requireNotNull(candidate.serviceName)
+                videoRelay = relayBroker.openScreenRelay(
+                    request.relayJoin(relayId, ScreenRelayChannel.VIDEO),
+                )
+                video = PskTlsClient.connect(
+                    input = videoRelay.input,
+                    output = videoRelay.output,
+                    closeTransport = videoRelay::close,
+                    descriptor = descriptor,
+                    routingToken = token,
+                    masterPsk = psk,
+                    channel = ScreenChannel.VIDEO,
+                    handshakeTimeout = Duration.ofMillis(
+                        remainingTimeout(expiresAt, HANDSHAKE_TIMEOUT_MS).toLong(),
+                    ),
+                )
+                videoAuthenticated = true
+                controlRelay = relayBroker.openScreenRelay(
+                    request.relayJoin(relayId, ScreenRelayChannel.CONTROL),
+                )
+                control = PskTlsClient.connect(
+                    input = controlRelay.input,
+                    output = controlRelay.output,
+                    closeTransport = controlRelay::close,
+                    descriptor = descriptor,
+                    routingToken = token,
+                    masterPsk = psk,
+                    channel = ScreenChannel.CONTROL,
+                    handshakeTimeout = Duration.ofMillis(
+                        remainingTimeout(expiresAt, HANDSHAKE_TIMEOUT_MS).toLong(),
+                    ),
+                )
+                destroyRendezvousSecrets(token, psk)
+                pipes = startCapture()
+                proxy(request, video, control, pipes, onReady)
+                return@withContext
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Throwable) {
+                if (error is ScreenRequestExpiredException || videoAuthenticated) throw error
+                Log.w(LOG_TAG, "Broker screen relay failed before TLS authentication", error)
+                lastFailure = error
+            } finally {
+                runCatching { pipes?.close() }
+                runCatching { control?.close() }
+                runCatching { video?.close() }
+                runCatching { controlRelay?.close() }
+                runCatching { videoRelay?.close() }
+            }
+        }
+
         if (System.currentTimeMillis() >= expiresAt) throw ScreenRequestExpiredException()
         val detail = lastFailure?.deepestTransportMessage()
         throw IllegalStateException(
             buildString {
-                append("could not authenticate a LAN or Wi-Fi Aware screen endpoint")
+                append("could not authenticate a direct or broker-relayed screen endpoint")
                 if (detail != null) append(": ").append(detail)
             },
             lastFailure,
@@ -503,6 +571,18 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
         videoBitrateBps = videoBitrateBps ?: 8_000_000,
     )
 
+    private fun ScreenMirrorSync.relayJoin(
+        relayId: String,
+        channel: ScreenRelayChannel,
+    ) = ScreenRelayJoin(
+        relayId = relayId,
+        requesterPeerId = requesterPeerId,
+        sourcePeerId = sourcePeerId,
+        role = ScreenRelayRole.SOURCE,
+        channel = channel,
+        expiresAt = requireNotNull(expiresAt),
+    )
+
     private data class Endpoint(val address: InetAddress, val port: Int)
 
     private companion object {
@@ -517,6 +597,11 @@ class AndroidLanScreenSessionTransport(private val context: Context) : AndroidSc
         const val LOG_TAG = "NotiSyncScreenTransport"
     }
 }
+
+internal fun validBrokerRelayCandidate(candidate: ScreenMirrorConnectionCandidate): Boolean =
+    candidate.kind == ScreenMirrorConnectionCandidate.BROKER_RELAY &&
+        candidate.host == null && candidate.port == null && candidate.interfaceName == null &&
+        candidate.serviceName?.matches(Regex("[A-Za-z0-9_-]{32}")) == true
 
 internal fun filterValidWifiAwareCandidates(
     candidates: List<ScreenMirrorConnectionCandidate>,

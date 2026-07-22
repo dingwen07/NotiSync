@@ -7,6 +7,8 @@ import java.net.Socket
 import java.security.SecureRandom
 import java.time.Duration
 import java.util.Vector
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import org.bouncycastle.tls.AbstractTlsClient
 import org.bouncycastle.tls.AbstractTlsServer
@@ -37,7 +39,8 @@ class SecureSessionChannel internal constructor(
     val input: InputStream,
     val output: OutputStream,
     private val closeProtocol: () -> Unit,
-    private val socket: Socket,
+    private val socket: Socket?,
+    private val closeTransport: (() -> Unit)?,
 ) : AutoCloseable {
     private val closed = AtomicBoolean(false)
 
@@ -48,7 +51,7 @@ class SecureSessionChannel internal constructor(
         // the transport first releases a thread blocked in a TLS read. Protocol shutdown is only
         // best effort after that abort and must never hold up closure of the session's other
         // channel on an OEM where the reader is slow to unwind.
-        runCatching { socket.close() }
+        runCatching { socket?.close() ?: closeTransport?.invoke() }
         closeProtocolInBackground(closeProtocol)
     }
 }
@@ -65,6 +68,7 @@ object PskTlsClient {
         random: SecureRandom = SecureRandom(),
     ): SecureSessionChannel {
         require(!handshakeTimeout.isNegative && !handshakeTimeout.isZero)
+        tuneScreenSocket(socket, channel)
         val identity = RoutingIdentity.encode(routingToken, channel)
         val key = SessionKeyDeriver.derive(masterPsk, routingToken, descriptor, channel)
         val originalTimeout = socket.soTimeout
@@ -85,9 +89,57 @@ object PskTlsClient {
                 protocol.outputStream,
                 protocol::close,
                 socket,
+                null,
             )
         } catch (error: Throwable) {
             runCatching { socket.close() }
+            closeProtocolInBackground(protocol::close)
+            throw error
+        } finally {
+            identity.fill(0)
+            key.fill(0)
+            peer.destroyPsk()
+        }
+    }
+
+    /** TLS over an ordered broker-relay byte stream instead of a directly connected TCP socket. */
+    @Throws(IOException::class)
+    fun connect(
+        input: InputStream,
+        output: OutputStream,
+        closeTransport: () -> Unit,
+        descriptor: SessionDescriptor,
+        routingToken: ByteArray,
+        masterPsk: ByteArray,
+        channel: ScreenChannel,
+        handshakeTimeout: Duration = DEFAULT_HANDSHAKE_TIMEOUT,
+        random: SecureRandom = SecureRandom(),
+    ): SecureSessionChannel {
+        require(!handshakeTimeout.isNegative && !handshakeTimeout.isZero)
+        val identity = RoutingIdentity.encode(routingToken, channel)
+        val key = SessionKeyDeriver.derive(masterPsk, routingToken, descriptor, channel)
+        val protocol = TlsClientProtocol(input, output)
+        val peer = RestrictedPskClient(identity, key, random, handshakeTimeout)
+        val guard = HandshakeTransportGuard(handshakeTimeout, closeTransport)
+        return try {
+            protocol.connect(peer)
+            val localBinding = ChannelBinding(descriptor, channel, SessionRole.SOURCE)
+            ChannelBindingCodec.write(protocol.outputStream, localBinding)
+            val remoteBinding = ChannelBindingCodec.read(protocol.inputStream)
+            requireBinding(remoteBinding, ChannelBinding(descriptor, channel, SessionRole.VIEWER))
+            guard.complete()
+            SecureSessionChannel(
+                descriptor = descriptor,
+                channel = channel,
+                input = protocol.inputStream,
+                output = protocol.outputStream,
+                closeProtocol = protocol::close,
+                socket = null,
+                closeTransport = closeTransport,
+            )
+        } catch (error: Throwable) {
+            guard.complete()
+            runCatching(closeTransport)
             closeProtocolInBackground(protocol::close)
             throw error
         } finally {
@@ -115,6 +167,7 @@ object PskTlsServer {
             socket.soTimeout = handshakeTimeout.asTimeoutMillis()
             protocol.accept(peer)
             lease = peer.requireLease()
+            tuneScreenSocket(socket, lease.channel)
             // Only a peer that proved possession of the derived PSK consumes the
             // registry's per-channel authenticated-attempt budget. Unknown identities
             // and bad binders are handled by the listener's admission limits instead.
@@ -137,6 +190,7 @@ object PskTlsServer {
                 protocol.outputStream,
                 protocol::close,
                 socket,
+                null,
             )
         } catch (error: Throwable) {
             lease?.finish(false)
@@ -147,6 +201,84 @@ object PskTlsServer {
         } finally {
             peer.destroyPsk()
         }
+    }
+
+    /** Accept TLS over an ordered broker-relay byte stream instead of an accepted TCP socket. */
+    @Throws(IOException::class)
+    fun accept(
+        input: InputStream,
+        output: OutputStream,
+        closeTransport: () -> Unit,
+        registry: PskRegistry,
+        handshakeTimeout: Duration = DEFAULT_HANDSHAKE_TIMEOUT,
+        random: SecureRandom = SecureRandom(),
+    ): SecureSessionChannel {
+        require(!handshakeTimeout.isNegative && !handshakeTimeout.isZero)
+        val protocol = TlsServerProtocol(input, output)
+        val peer = RestrictedPskServer(registry, random, handshakeTimeout)
+        val guard = HandshakeTransportGuard(handshakeTimeout, closeTransport)
+        var lease: PskRegistry.PskLease? = null
+        return try {
+            protocol.accept(peer)
+            lease = peer.requireLease()
+            lease.markAuthenticated()
+            val remoteBinding = ChannelBindingCodec.read(protocol.inputStream)
+            requireBinding(
+                remoteBinding,
+                ChannelBinding(lease.descriptor, lease.channel, SessionRole.SOURCE),
+            )
+            ChannelBindingCodec.write(
+                protocol.outputStream,
+                ChannelBinding(lease.descriptor, lease.channel, SessionRole.VIEWER),
+            )
+            lease.finish(true)
+            guard.complete()
+            SecureSessionChannel(
+                descriptor = lease.descriptor,
+                channel = lease.channel,
+                input = protocol.inputStream,
+                output = protocol.outputStream,
+                closeProtocol = protocol::close,
+                socket = null,
+                closeTransport = closeTransport,
+            )
+        } catch (error: Throwable) {
+            guard.complete()
+            lease?.finish(false)
+            peer.releaseLease()
+            runCatching(closeTransport)
+            closeProtocolInBackground(protocol::close)
+            throw error
+        } finally {
+            peer.destroyPsk()
+        }
+    }
+}
+
+/** A blocking stream has no SO_TIMEOUT, so close it if the TLS handshake stalls. */
+private class HandshakeTransportGuard(
+    timeout: Duration,
+    closeTransport: () -> Unit,
+) {
+    private val completed = CountDownLatch(1)
+
+    init {
+        Thread(
+            {
+                val finished = runCatching {
+                    completed.await(timeout.toMillis().coerceAtLeast(1L), TimeUnit.MILLISECONDS)
+                }.getOrDefault(true)
+                if (!finished) runCatching(closeTransport)
+            },
+            "notisync-tls-handshake-timeout",
+        ).apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    fun complete() {
+        completed.countDown()
     }
 }
 
@@ -163,6 +295,25 @@ private fun closeProtocolInBackground(closeProtocol: () -> Unit) {
         }
     }
 }
+
+/** Keep tiny control records out of deep per-socket queues when video saturates a weak link. */
+private fun tuneScreenSocket(socket: Socket, channel: ScreenChannel) {
+    runCatching { socket.tcpNoDelay = true }
+    val bufferBytes = if (channel == ScreenChannel.CONTROL) {
+        CONTROL_SOCKET_BUFFER_BYTES
+    } else {
+        VIDEO_SOCKET_BUFFER_BYTES
+    }
+    runCatching { socket.sendBufferSize = bufferBytes }
+    runCatching { socket.receiveBufferSize = bufferBytes }
+    if (channel == ScreenChannel.CONTROL) {
+        runCatching { socket.trafficClass = IPTOS_LOWDELAY }
+    }
+}
+
+private const val CONTROL_SOCKET_BUFFER_BYTES = 16 * 1024
+private const val VIDEO_SOCKET_BUFFER_BYTES = 128 * 1024
+private const val IPTOS_LOWDELAY = 0x10
 
 private abstract class RestrictedTlsProfile {
     protected val alpn: ProtocolName = ProtocolName.asUtf8Encoding(ScreenSessionProtocol.ALPN)

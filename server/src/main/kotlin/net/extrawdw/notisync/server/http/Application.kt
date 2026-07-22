@@ -31,6 +31,7 @@ import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ErrorResponse
@@ -42,6 +43,9 @@ import net.extrawdw.notisync.protocol.RelayAck
 import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendRequest
+import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelaySignal
+import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -60,6 +64,8 @@ import net.extrawdw.notisync.server.broker.Broker
 import net.extrawdw.notisync.server.crypto.Verification
 import net.extrawdw.notisync.server.delivery.WebSocketHub
 import net.extrawdw.notisync.server.delivery.WsConnection
+import net.extrawdw.notisync.server.delivery.ScreenRelayAdmissionPolicy
+import net.extrawdw.notisync.server.delivery.ScreenRelayHub
 import net.extrawdw.notisync.server.delivery.push.CompositePushTransport
 import net.extrawdw.notisync.server.integrity.AppCheckJwks
 import net.extrawdw.notisync.server.integrity.AppCheckVerifier
@@ -113,6 +119,7 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
     val assets = PrivateAssetStore(db)
     val epochs = EpochStore(db)
     val hub = WebSocketHub()
+    val screenRelayHub = ScreenRelayHub()
     val push = CompositePushTransport.create(config)
     val broker = Broker(routes, relay, assets, epochs, hub, push, config)
     val auth = ServerAuth(config, JwtIssuer.load(config))
@@ -198,8 +205,6 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             call.respond(response)
         }
 
-        // Clean NS2 API — everything version-specific (its own JWT key, the NS2 wire contract) is served
-        // under /v2 (the legacy NS1 JAR owns /v1). No NS1 code path.
         route("/v2") {
         get("/.well-known/jwks.json") { call.respondText(auth.jwksJson(), ContentType.Application.Json) }
 
@@ -506,5 +511,91 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
                 log.info("ws disconnected client={}", auth.clientId.shortForm())
             }
         }
+        }
+
+        route("/v1") {
+        webSocket("/screen-relay") {
+            val principal = when (val result = auth.authenticateJwtSigned(call, ByteArray(0), broker)) {
+                is AuthResult.Accepted -> result.principal
+                is AuthResult.Rejected -> return@webSocket close(
+                    CloseReason(CloseReason.Codes.VIOLATED_POLICY, result.reason),
+                )
+            }
+            val nonce = Base64.getUrlEncoder().withoutPadding()
+                .encodeToString(ByteArray(18).also { random.nextBytes(it) })
+            send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge(nonce))))
+            val authFrame = withTimeoutOrNull(SCREEN_RELAY_JOIN_TIMEOUT_MS) {
+                incoming.receiveCatching().getOrNull()
+            } as? Frame.Text
+            val wsAuth = authFrame?.let {
+                runCatching { ProtocolCodec.decodeFromJson<WsAuth>(it.readText()) }.getOrNull()
+            }
+            if (wsAuth == null || wsAuth.nonce != nonce ||
+                (config.securityEnabled && wsAuth.clientId != principal.clientId)
+            ) {
+                return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "auth_failed"))
+            }
+            val spki = (if (wsAuth.epoch == 0) broker.clientSpki(wsAuth.clientId)
+                else broker.operationalSpki(wsAuth.clientId, wsAuth.epoch))
+                ?: return@webSocket close(
+                    CloseReason(CloseReason.Codes.VIOLATED_POLICY, "unknown_client"),
+                )
+            val signature = runCatching { Base64.getDecoder().decode(wsAuth.signatureB64) }.getOrNull()
+            if (signature == null || !Verification.verifyDetached(spki, nonce.toByteArray(), signature)) {
+                return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_signature"))
+            }
+            val joinFrame = withTimeoutOrNull(SCREEN_RELAY_JOIN_TIMEOUT_MS) {
+                incoming.receiveCatching().getOrNull()
+            } as? Frame.Text
+            val join = joinFrame?.let {
+                runCatching { ProtocolCodec.decodeFromJson<ScreenRelayJoin>(it.readText()) }.getOrNull()
+            } ?: return@webSocket close(
+                CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_join"),
+            )
+            ScreenRelayAdmissionPolicy.rejection(
+                join = join,
+                principal = principal.clientId,
+                securityEnabled = config.securityEnabled,
+                now = System.currentTimeMillis(),
+            )?.let { reason ->
+                return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, reason))
+            }
+            val handle = screenRelayHub.register(join, principal.clientId, this)
+                ?: return@webSocket close(
+                    CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "relay_capacity"),
+                )
+            var peer: ScreenRelayHub.Handle? = null
+            try {
+                send(
+                    Frame.Text(
+                        ProtocolCodec.encodeToJson(
+                            ScreenRelaySignal(ScreenRelaySignalKind.REGISTERED),
+                        ),
+                    ),
+                )
+                handle.markReady()
+                peer = withTimeoutOrNull((join.expiresAt - System.currentTimeMillis()).coerceAtLeast(1L)) {
+                    handle.awaitPeer()
+                } ?: return@webSocket close(
+                    CloseReason(CloseReason.Codes.NORMAL, "relay_expired"),
+                )
+                for (frame in incoming) {
+                    if (frame !is Frame.Binary || frame.data.size > SCREEN_RELAY_MAX_FRAME_BYTES) {
+                        return@webSocket close(
+                            CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_frame"),
+                        )
+                    }
+                    peer.session.send(Frame.Binary(fin = true, data = frame.data))
+                }
+            } finally {
+                handle.close()
+                runCatching {
+                    peer?.session?.close(CloseReason(CloseReason.Codes.NORMAL, "relay_peer_closed"))
+                }
+            }
+        }
     } }
 }
+
+private const val SCREEN_RELAY_JOIN_TIMEOUT_MS = 10_000L
+private const val SCREEN_RELAY_MAX_FRAME_BYTES = 64 * 1024
