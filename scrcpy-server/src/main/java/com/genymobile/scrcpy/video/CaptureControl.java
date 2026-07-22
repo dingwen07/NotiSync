@@ -1,6 +1,9 @@
 package com.genymobile.scrcpy.video;
 
 import android.media.MediaCodec;
+import android.os.Bundle;
+
+import com.genymobile.scrcpy.util.Ln;
 
 public class CaptureControl {
 
@@ -42,6 +45,33 @@ public class CaptureControl {
 
     public synchronized void setRunningMediaCodec(MediaCodec runningMediaCodec) {
         this.runningMediaCodec = runningMediaCodec;
+    }
+
+    /** Apply sender-side congestion feedback without rebuilding the capture session. */
+    public synchronized boolean recoverVideo(int bitRate) {
+        if (bitRate < 128_000 || runningMediaCodec == null || reset != 0) {
+            return false;
+        }
+        boolean bitRateApplied = false;
+        try {
+            Bundle parameters = new Bundle();
+            parameters.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitRate);
+            runningMediaCodec.setParameters(parameters);
+            bitRateApplied = true;
+        } catch (RuntimeException error) {
+            Ln.w("Video encoder rejected bitrate " + bitRate + ": " + error.getMessage());
+        }
+        try {
+            Bundle parameters = new Bundle();
+            parameters.putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0);
+            runningMediaCodec.setParameters(parameters);
+            Ln.i("Video recovery requested at " + bitRate + " bps"
+                    + (bitRateApplied ? "" : " (bitrate update unavailable)"));
+            return true;
+        } catch (RuntimeException error) {
+            Ln.w("Video encoder rejected sync-frame request: " + error.getMessage());
+            return false;
+        }
     }
 
     /**

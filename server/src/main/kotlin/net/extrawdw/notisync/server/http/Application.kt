@@ -146,6 +146,12 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
         // tears the socket down and the client reconnects.
         pingPeriod = 30.seconds
         timeout = 60.seconds
+        channels {
+            // The relay is an interactive stream, so backpressure must reach the sender instead of
+            // accumulating an unlimited FIFO of screen history in either broker direction.
+            incoming = bounded(capacity = 4)
+            outgoing = bounded(capacity = 1)
+        }
     }
     install(ContentNegotiation) { json(ProtocolCodec.json) }
     install(StatusPages) {
@@ -598,4 +604,4 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
 }
 
 private const val SCREEN_RELAY_JOIN_TIMEOUT_MS = 10_000L
-private const val SCREEN_RELAY_MAX_FRAME_BYTES = 64 * 1024
+private const val SCREEN_RELAY_MAX_FRAME_BYTES = 16 * 1024

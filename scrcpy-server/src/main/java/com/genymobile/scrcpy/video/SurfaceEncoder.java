@@ -105,7 +105,7 @@ public final class SurfaceEncoder implements AsyncProcessor {
                         if (!captureControl.isResetRequested()) {
                             streamer.writeSessionMeta(size.getWidth(), size.getHeight(), false);
                             requestSyncFrame(mediaCodec);
-                            encode(mediaCodec, streamer, captureControl, videoBitRate);
+                            encode(mediaCodec, streamer, captureControl);
                         }
                         alive = !stopped.get() && !capture.isClosed();
                     }
@@ -200,20 +200,8 @@ public final class SurfaceEncoder implements AsyncProcessor {
         }
     }
 
-    private static void updateBitRate(MediaCodec codec, int bitRate) {
-        Bundle parameters = new Bundle();
-        parameters.putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bitRate);
-        try {
-            codec.setParameters(parameters);
-        } catch (RuntimeException error) {
-            Ln.w("Video encoder rejected bitrate update: " + error.getMessage());
-        }
-    }
-
-    private static void encode(MediaCodec codec, Streamer streamer, CaptureControl captureControl, int targetBitRate)
-            throws IOException {
+    private static void encode(MediaCodec codec, Streamer streamer, CaptureControl captureControl) throws IOException {
         MediaCodec.BufferInfo bufferInfo = new MediaCodec.BufferInfo();
-        VideoBackpressureController backpressure = new VideoBackpressureController(targetBitRate);
         boolean eos;
         do {
             int outputBufferId = codec.dequeueOutputBuffer(bufferInfo, -1);
@@ -224,23 +212,8 @@ public final class SurfaceEncoder implements AsyncProcessor {
                     // A hide/reset may race with buffers already queued by MediaCodec. Never write
                     // those stale frames, even if a rapid hide/show has made visibility true again;
                     // isResetRequested() remains true until the fresh encoder iteration begins.
-                    boolean codecConfig = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
-                    boolean keyFrame = (bufferInfo.flags & MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0;
-                    if (captureControl.isVideoVisible() && !captureControl.isResetRequested()
-                            && backpressure.shouldWritePacket(codecConfig, keyFrame)) {
-                        long writeStartedNanos = System.nanoTime();
+                    if (captureControl.isVideoVisible() && !captureControl.isResetRequested()) {
                         streamer.writePacket(codecBuffer, bufferInfo);
-                        long writeCompletedNanos = System.nanoTime();
-                        VideoBackpressureController.Decision decision = backpressure.onPacketWritten(
-                                writeCompletedNanos - writeStartedNanos,
-                                writeCompletedNanos
-                        );
-                        if (decision.newBitRate > 0) {
-                            updateBitRate(codec, decision.newBitRate);
-                        }
-                        if (decision.requestSyncFrame) {
-                            backpressure.beginDroppingUntilKeyFrame(requestSyncFrame(codec));
-                        }
                     }
                 }
             } finally {

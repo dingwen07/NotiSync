@@ -382,6 +382,7 @@ private fun AndroidScreenMirrorViewer(
     var control by remember { mutableStateOf<AndroidScreenControlDispatcher?>(null) }
     var sourceName by remember { mutableStateOf(sourceId.shortForm()) }
     var codecName by remember { mutableStateOf<String?>(null) }
+    var connectionType by remember { mutableStateOf<AndroidScreenConnectionType?>(null) }
     var phase by remember { mutableStateOf(AndroidViewerUiPhase.PREPARING) }
     var detail by remember { mutableStateOf<String?>(null) }
     var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
@@ -491,6 +492,7 @@ private fun AndroidScreenMirrorViewer(
         detail = null
         dimensions = null
         codecName = null
+        connectionType = null
         sourceName = readyGraph.trust.displayName(sourceId) ?: sourceName
         if (
             !ScreenMirrorRequesterForegroundService.start(
@@ -570,6 +572,7 @@ private fun AndroidScreenMirrorViewer(
                 brokerRelayRequested = true
             }
             state.codec?.let { codecName = it.name.lowercase() }
+            connectionType = state.connectionType
             dimensions = state.dimensions
             control = host.controlDispatcher().takeIf {
                 state.phase == AndroidScreenHostPhase.CONNECTED
@@ -757,6 +760,7 @@ private fun AndroidScreenMirrorViewer(
             AndroidScreenViewerToolbar(
                 sourceName = sourceName,
                 codecName = codecName,
+                connectionType = connectionType,
                 dragState = toolbarDragState,
                 selectedControls = toolbarPreferences.pinnedControls,
                 enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
@@ -808,6 +812,7 @@ private fun AndroidScreenMirrorViewer(
 private fun AndroidScreenViewerToolbar(
     sourceName: String,
     codecName: String?,
+    connectionType: AndroidScreenConnectionType?,
     dragState: AnchoredDraggableState<ScreenViewerToolbarEdge>,
     selectedControls: Set<ScreenViewerControl>,
     enabled: Boolean,
@@ -865,9 +870,23 @@ private fun AndroidScreenViewerToolbar(
                         overflow = TextOverflow.Ellipsis,
                         style = MaterialTheme.typography.titleMedium,
                     )
-                    codecName?.let {
+                    if (codecName != null && connectionType != null) {
+                        val connectionLabel = stringResource(
+                            when (connectionType) {
+                                AndroidScreenConnectionType.LOCAL_NETWORK ->
+                                    R.string.screen_viewer_connection_local_network
+                                AndroidScreenConnectionType.WIFI_AWARE ->
+                                    R.string.screen_viewer_connection_wifi_aware
+                                AndroidScreenConnectionType.BROKER_RELAY ->
+                                    R.string.screen_viewer_connection_broker_relay
+                            },
+                        )
                         Text(
-                            stringResource(R.string.screen_viewer_connected_codec, it),
+                            stringResource(
+                                R.string.screen_viewer_connection_codec,
+                                connectionLabel,
+                                codecName,
+                            ),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             style = MaterialTheme.typography.labelSmall,

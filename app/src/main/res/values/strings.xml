@@ -392,7 +392,10 @@
     <string name="screen_viewer_service_background">Connected to %1$s · tap to resume</string>
     <string name="screen_viewer_service_failed">Could not keep the screen session active in the background.</string>
     <string name="screen_viewer_connecting">Waiting for %1$s…</string>
-    <string name="screen_viewer_connected_codec">Connected · %1$s</string>
+    <string name="screen_viewer_connection_codec">%1$s · %2$s</string>
+    <string name="screen_viewer_connection_local_network">Local Network</string>
+    <string name="screen_viewer_connection_wifi_aware">Wi-Fi Aware</string>
+    <string name="screen_viewer_connection_broker_relay">Relay</string>
     <string name="screen_viewer_ended">Screen sharing ended.</string>
     <string name="screen_viewer_failed">Could not start screen sharing.</string>
     <string name="screen_viewer_local_network_denied">Nearby device or local network access is required to connect directly to this device.</string>

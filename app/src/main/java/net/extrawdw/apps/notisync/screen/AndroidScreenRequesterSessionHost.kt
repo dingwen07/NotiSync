@@ -11,6 +11,7 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -37,6 +38,7 @@ internal data class AndroidScreenHostState(
     val sourceId: ClientId? = null,
     val sourceName: String? = null,
     val codec: ScreenMirrorCodec? = null,
+    val connectionType: AndroidScreenConnectionType? = null,
     val dimensions: ScrcpySessionDimensions? = null,
     val detail: String? = null,
     val surfaceAttached: Boolean = false,
@@ -88,6 +90,8 @@ internal class AndroidScreenRequesterSessionHost(
         var dispatcher: AndroidScreenControlDispatcher? = null
         var surface: SurfaceLease? = null
         var supportsVideoVisibility = false
+        var relayReconnectAttempts = 0
+        var relayConnectedAtNanos = Long.MIN_VALUE
         var stopping = false
 
         @Volatile
@@ -229,6 +233,7 @@ internal class AndroidScreenRequesterSessionHost(
                 sourceId = current.sourceId,
                 sourceName = current.session?.sourceName ?: snapshot.sourceName,
                 codec = current.session?.codec ?: snapshot.codec,
+                connectionType = current.session?.connectionType ?: snapshot.connectionType,
                 dimensions = snapshot.dimensions,
                 detail = detail,
                 surfaceAttached = false,
@@ -271,11 +276,17 @@ internal class AndroidScreenRequesterSessionHost(
             val connectedSession = session
             val writer = AndroidScreenControlWriter(connectedSession.controlOutput)
             dispatcher = AndroidScreenControlDispatcher(writer) { error ->
-                failAttempt(
-                    attempt.id,
-                    error.message?.takeIf(String::isNotBlank)
-                        ?: "screen control channel failed",
-                )
+                if (attempt.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+                    // Closing the shared requester session makes the decoder observe the same
+                    // transient relay loss and enter the single reconnect path below.
+                    connectedSession.close()
+                } else {
+                    failAttempt(
+                        attempt.id,
+                        error.message?.takeIf(String::isNotBlank)
+                            ?: "screen control channel failed",
+                    )
+                }
             }
             val connectedDispatcher = dispatcher
             decoder = AndroidScreenVideoDecoder(
@@ -298,6 +309,9 @@ internal class AndroidScreenRequesterSessionHost(
                 attempt.supportsVideoVisibility =
                     Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 in
                     connectedSession.sourceCapabilities
+                if (attempt.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+                    attempt.relayConnectedAtNanos = System.nanoTime()
+                }
                 val initialSurface = attempt.surface
                 val surfaceAttached = initialSurface?.let {
                     connectedDecoder.attachSurface(it.viewerToken, it.surface)
@@ -310,6 +324,7 @@ internal class AndroidScreenRequesterSessionHost(
                     sessionId = connectedSession.sessionId,
                     sourceName = connectedSession.sourceName,
                     codec = connectedSession.codec,
+                    connectionType = connectedSession.connectionType,
                     detail = null,
                     surfaceAttached = surfaceAttached,
                 )
@@ -335,6 +350,7 @@ internal class AndroidScreenRequesterSessionHost(
                         sourceId = connectedSession.sourceId,
                         sourceName = connectedSession.sourceName,
                         codec = connectedSession.codec,
+                        connectionType = connectedSession.connectionType,
                         dimensions = state.value.dimensions,
                         detail = terminalRequesterState.detail,
                         connectionMode = attempt.connectionMode,
@@ -348,6 +364,7 @@ internal class AndroidScreenRequesterSessionHost(
             throw cancelled
         } catch (error: Throwable) {
             if (isCurrent(attempt.id)) {
+                if (reconnectRelay(attempt, error, session, decoder, dispatcher)) return
                 failAttempt(
                     attempt.id,
                     requesterState().detail
@@ -378,6 +395,53 @@ internal class AndroidScreenRequesterSessionHost(
         }
     }
 
+    private suspend fun reconnectRelay(
+        attempt: Attempt,
+        error: Throwable,
+        session: AndroidScreenViewerSession?,
+        decoder: AndroidScreenVideoDecoder?,
+        dispatcher: AndroidScreenControlDispatcher?,
+    ): Boolean {
+        if (attempt.connectionMode != AndroidScreenConnectionMode.BROKER_RELAY ||
+            !isReconnectableRelayFailure(error)
+        ) return false
+        val retry = synchronized(lock) {
+            if (active !== attempt || attempt.stopping) return@synchronized 0
+            if (attempt.relayConnectedAtNanos != Long.MIN_VALUE &&
+                System.nanoTime() - attempt.relayConnectedAtNanos >= RELAY_STABLE_RESET_NANOS
+            ) {
+                attempt.relayReconnectAttempts = 0
+            }
+            if (attempt.relayReconnectAttempts >= MAX_RELAY_RECONNECT_ATTEMPTS) return@synchronized 0
+            (++attempt.relayReconnectAttempts).also { number ->
+                attempt.session = null
+                attempt.decoder = null
+                attempt.dispatcher = null
+                attempt.supportsVideoVisibility = false
+                _state.value = _state.value.copy(
+                    phase = AndroidScreenHostPhase.CONNECTING,
+                    sessionId = null,
+                    dimensions = null,
+                    detail = "Relay disconnected; reconnecting ($number/$MAX_RELAY_RECONNECT_ATTEMPTS)",
+                    surfaceAttached = attempt.surface != null,
+                )
+            }
+        }
+        if (retry == 0) return false
+
+        attempt.closeDetail = "reconnecting broker relay"
+        closeAttemptOwner(attempt)
+        runCatching { session?.close() }
+        runCatching { decoder?.close() }
+        runCatching { dispatcher?.close() }
+        attempt.ownerCloseStarted.set(false)
+        delay(RELAY_RECONNECT_BASE_DELAY_MS shl (retry - 1).coerceAtMost(4))
+        currentCoroutineContext().ensureActive()
+        if (!isCurrent(attempt.id)) return true
+        runAttempt(attempt)
+        return true
+    }
+
     private fun failAttempt(attemptId: String, detail: String) {
         val snapshot = synchronized(lock) {
             val current = active?.takeIf { it.id == attemptId } ?: return
@@ -388,6 +452,7 @@ internal class AndroidScreenRequesterSessionHost(
                 sourceId = current.sourceId,
                 sourceName = current.session?.sourceName ?: _state.value.sourceName,
                 codec = current.session?.codec,
+                connectionType = current.session?.connectionType ?: _state.value.connectionType,
                 dimensions = _state.value.dimensions,
                 detail = detail,
                 connectionMode = current.connectionMode,
@@ -464,6 +529,9 @@ internal class AndroidScreenRequesterSessionHost(
     private companion object {
         const val MAX_TOKEN_LENGTH = 128
         const val DEFAULT_CLOSE_DETAIL = "Android viewer closed"
+        const val MAX_RELAY_RECONNECT_ATTEMPTS = 6
+        const val RELAY_RECONNECT_BASE_DELAY_MS = 250L
+        const val RELAY_STABLE_RESET_NANOS = 30_000_000_000L
         val TERMINAL_PHASES = setOf(AndroidScreenHostPhase.ENDED, AndroidScreenHostPhase.ERROR)
         val HOST_ALLOWED_KEYS = setOf(
             KeyEvent.KEYCODE_BACK,
@@ -475,3 +543,25 @@ internal class AndroidScreenRequesterSessionHost(
         )
     }
 }
+
+internal fun isReconnectableRelayFailure(error: Throwable): Boolean {
+    var current: Throwable? = error
+    repeat(10) {
+        val value = current ?: return false
+        val message = value.message.orEmpty().lowercase()
+        if (RECONNECTABLE_RELAY_FAILURES.any(message::contains)) return true
+        current = value.cause?.takeUnless { cause -> cause === value }
+    }
+    return false
+}
+
+private val RECONNECTABLE_RELAY_FAILURES = listOf(
+    "no close_notify alert",
+    "broker relay closed",
+    "websocket",
+    "connection reset",
+    "broken pipe",
+    "unexpected end",
+    "end of stream",
+    "eof",
+)

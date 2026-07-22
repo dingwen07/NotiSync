@@ -35,7 +35,10 @@ enum class ShizukuScreenStatus {
 data class PrivilegedSessionPipes(
     val videoRead: ParcelFileDescriptor,
     val control: ParcelFileDescriptor,
+    private val recoverVideoCallback: (Int) -> Boolean = { false },
 ) : Closeable {
+    fun recoverVideo(bitrateBps: Int): Boolean = recoverVideoCallback(bitrateBps)
+
     override fun close() {
         videoRead.closeQuietly()
         control.closeQuietly()
@@ -207,7 +210,13 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             videoPair = createdVideoPair
             val createdControlPair = ParcelFileDescriptor.createSocketPair()
             controlPair = createdControlPair
-            val local = PrivilegedSessionPipes(videoRead = createdVideoPair[0], control = createdControlPair[0])
+            val local = PrivilegedSessionPipes(
+                videoRead = createdVideoPair[0],
+                control = createdControlPair[0],
+                recoverVideoCallback = { bitrateBps ->
+                    runCatching { remote.recoverVideo(ownerToken, bitrateBps) }.getOrDefault(false)
+                },
+            )
             val result = remote.startSession(
                 ownerToken,
                 codec.codecId(),
@@ -333,7 +342,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
-        const val USER_SERVICE_REVISION = 8
+        const val USER_SERVICE_REVISION = 9
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920

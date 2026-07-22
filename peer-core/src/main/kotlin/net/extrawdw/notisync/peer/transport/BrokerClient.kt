@@ -64,10 +64,17 @@ import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
+import java.io.IOException
 import java.net.URI
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 
 /**
  * Ktor-based client implementing the transport-neutral [Transport]. The control plane is signed HTTP
@@ -119,6 +126,11 @@ class BrokerClient(
         }
         install(WebSockets)
     }
+    private val relayWebSocketClient = OkHttpClient.Builder()
+        .connectTimeout(HTTP_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .writeTimeout(HTTP_SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .pingInterval(webSocketPingSeconds, TimeUnit.SECONDS)
+        .build()
     private val authMutex = Mutex()
 
     @Volatile
@@ -676,58 +688,77 @@ class BrokerClient(
         require(join.expiresAt > System.currentTimeMillis()) { "screen relay request expired" }
         val connection = BrokerRelayConnection(join.channel)
         val registered = CompletableDeferred<Unit>()
-        val job = scope.launch(Dispatchers.IO) {
-            try {
-                val url = "${wsBase()}/v1/screen-relay"
-                val token = bearerTokenOrNull()
-                client.webSocket(url, request = {
-                    signedHeaders("GET", url, ByteArray(0), token)
-                }) {
-                    val challengeFrame = incoming.receive() as? Frame.Text
-                        ?: error("broker relay challenge missing")
-                    val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(challengeFrame.readText())
-                    val signature = Base64.getEncoder()
-                        .encodeToString(signer.sign(challenge.nonce.toByteArray()))
-                    send(
-                        Frame.Text(
-                            ProtocolCodec.encodeToJson(
-                                WsAuth(signer.clientId, challenge.nonce, signature, epoch = 0),
+        val url = "${wsBase()}/v1/screen-relay"
+        val token = bearerTokenOrNull()
+        val signed = HttpRequestSigning.sign(signer, "GET", pathAndQuery(url), ByteArray(0))
+        val request = Request.Builder().url(url).apply {
+            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+            header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
+            header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
+            header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
+            header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
+            header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
+            header(HttpRequestSigning.HEADER_SIGNER_EPOCH, signed.signerEpoch.toString())
+        }.build()
+        val socket = relayWebSocketClient.newWebSocket(request, object : WebSocketListener() {
+            private var challengeHandled = false
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    if (!challengeHandled) {
+                        val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(text)
+                        val signature = Base64.getEncoder()
+                            .encodeToString(signer.sign(challenge.nonce.toByteArray()))
+                        check(
+                            webSocket.send(
+                                ProtocolCodec.encodeToJson(
+                                    WsAuth(signer.clientId, challenge.nonce, signature, epoch = 0),
+                                ),
                             ),
-                        ),
-                    )
-                    send(Frame.Text(ProtocolCodec.encodeToJson(join)))
-                    val signalFrame = incoming.receive() as? Frame.Text
-                        ?: error("broker relay registration missing")
-                    val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(signalFrame.readText())
-                    check(signal.kind == ScreenRelaySignalKind.REGISTERED) {
-                        signal.detail ?: "broker relay registration rejected"
-                    }
-                    registered.complete(Unit)
-                    coroutineScope {
-                        val writer = launch(Dispatchers.IO) {
-                            for (bytes in connection.outgoingFrames) {
-                                send(Frame.Binary(fin = true, data = bytes))
-                            }
+                        ) { "broker relay authentication send failed" }
+                        check(webSocket.send(ProtocolCodec.encodeToJson(join))) {
+                            "broker relay join send failed"
                         }
-                        try {
-                            for (frame in incoming) {
-                                if (frame is Frame.Binary) connection.receive(frame.data)
-                            }
-                        } finally {
-                            writer.cancel()
+                        challengeHandled = true
+                    } else {
+                        val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(text)
+                        check(signal.kind == ScreenRelaySignalKind.REGISTERED) {
+                            signal.detail ?: "broker relay registration rejected"
                         }
+                        registered.complete(Unit)
                     }
+                } catch (error: Throwable) {
+                    registered.completeExceptionally(error)
+                    webSocket.cancel()
+                    connection.terminate()
                 }
-            } catch (cancelled: CancellationException) {
-                registered.completeExceptionally(cancelled)
-                throw cancelled
-            } catch (error: Throwable) {
-                registered.completeExceptionally(error)
-            } finally {
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                try {
+                    connection.receive(bytes.toByteArray())
+                } catch (error: Throwable) {
+                    registered.completeExceptionally(error)
+                    webSocket.cancel()
+                    connection.terminate()
+                }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                registered.completeExceptionally(IOException("broker relay closed ($code): $reason"))
                 connection.terminate()
             }
-        }
-        connection.attach(job)
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                registered.completeExceptionally(t)
+                connection.terminate()
+            }
+        })
+        connection.attach(socket)
         try {
             withTimeout(SCREEN_RELAY_REGISTER_TIMEOUT_MS) { registered.await() }
             return connection
@@ -737,7 +768,12 @@ class BrokerClient(
         }
     }
 
-    fun close() = client.close()
+    fun close() {
+        client.close()
+        relayWebSocketClient.dispatcher.cancelAll()
+        relayWebSocketClient.dispatcher.executorService.shutdown()
+        relayWebSocketClient.connectionPool.evictAll()
+    }
 
     private companion object {
         const val AUTH_REFRESH_SKEW_MS = 60_000L
@@ -746,9 +782,8 @@ class BrokerClient(
         // multi-day JWT is renewed in the background long before any request would have to block to re-attest.
         const val AUTH_PROACTIVE_REFRESH_MS = 24L * 60 * 60 * 1000
 
-        // Re-attestation backoff: the nth consecutive failure waits base·2^(n-1), shift- then total-capped,
-        // plus jitter (see [backoffCooldownMs]). Retryable (429/5xx/stale) starts gentle at 5s; a definitive
-        // reject (bad device/app/signature) starts at 60s. Both reset on the next successful attestation.
+        // Re-attestation backoff is exponential with jitter. Retryable errors start at 5s; a definitive
+        // rejection starts at 60s. Both reset after a successful attestation.
         const val AUTH_RETRYABLE_COOLDOWN_BASE_MS = 5_000L
         const val AUTH_FAILURE_COOLDOWN_BASE_MS = 60_000L
         const val AUTH_COOLDOWN_MAX_SHIFT = 4

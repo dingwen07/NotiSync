@@ -37,4 +37,10 @@ interface IScreenMirrorUserService {
      * Returns false when another owner is active or cleanup could not be acknowledged in time.
      */
     boolean stopSession(String ownerToken) = 4;
+
+    /**
+     * Applies latency recovery to the exact active encoder: update its bitrate and request a sync frame.
+     * This is local app-to-UserService feedback; no network/session material crosses Binder.
+     */
+    boolean recoverVideo(String ownerToken, int bitrateBps) = 6;
 }

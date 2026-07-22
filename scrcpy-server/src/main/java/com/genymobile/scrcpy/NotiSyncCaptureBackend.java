@@ -198,6 +198,19 @@ public final class NotiSyncCaptureBackend {
         return stopped;
     }
 
+    /** Updates only the exact active session; stale app-process callbacks cannot affect a replacement. */
+    public boolean recoverVideo(String ownerToken, int bitrateBps) {
+        Session current;
+        synchronized (this) {
+            current = session;
+            if (current == null || !current.ownerToken.equals(ownerToken)
+                    || bitrateBps < 128_000 || bitrateBps > current.bitrateBps) {
+                return false;
+            }
+        }
+        return current.recoverVideo(bitrateBps);
+    }
+
     public void destroy() {
         Session current;
         synchronized (this) {
@@ -286,6 +299,7 @@ public final class NotiSyncCaptureBackend {
         private final Object lifecycleLock = new Object();
         private final List<AsyncProcessor> processors = new ArrayList<>();
         private ControlChannel controlChannel;
+        private CaptureControl captureControl;
 
         Session(String ownerToken, VideoCodec codec, String encoderName, int maxDimension, int maxFps, int bitrateBps,
                 boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoFd, ParcelFileDescriptor controlFd,
@@ -328,7 +342,7 @@ public final class NotiSyncCaptureBackend {
                     Ln.initLogLevel(Ln.Level.INFO);
                     Options options = Options.forScreenMirror(maxDimension, maxFps, bitrateBps, encoderName, allowClipboard);
 
-                    CaptureControl captureControl = new CaptureControl();
+                    captureControl = new CaptureControl();
                     ParcelFileDescriptor readFd = null;
                     ParcelFileDescriptor writeFd = null;
                     try {
@@ -372,6 +386,12 @@ public final class NotiSyncCaptureBackend {
 
         void stop() {
             finishAsync();
+        }
+
+        boolean recoverVideo(int bitRate) {
+            synchronized (lifecycleLock) {
+                return !stopping.get() && captureControl != null && captureControl.recoverVideo(bitRate);
+            }
         }
 
         boolean awaitStopped(long timeoutMillis) {

@@ -52,6 +52,7 @@ import net.extrawdw.notisync.screen.SessionDescriptor
 
 internal enum class AndroidScreenRequesterPhase { IDLE, PREPARING, WAITING, CONNECTED, FAILED }
 internal enum class AndroidScreenConnectionMode { DIRECT, BROKER_RELAY }
+internal enum class AndroidScreenConnectionType { LOCAL_NETWORK, WIFI_AWARE, BROKER_RELAY }
 
 internal data class AndroidScreenRequesterState(
     val phase: AndroidScreenRequesterPhase = AndroidScreenRequesterPhase.IDLE,
@@ -81,6 +82,7 @@ internal interface AndroidScreenViewerSession : AutoCloseable {
     val sourceName: String
     val sourceCapabilities: Set<Capability>
     val codec: ScreenMirrorCodec
+    val connectionType: AndroidScreenConnectionType
     val videoInput: InputStream
     val controlInput: InputStream
     val controlOutput: OutputStream
@@ -97,6 +99,7 @@ internal class AndroidViewerSession internal constructor(
     override val sourceName: String,
     override val sourceCapabilities: Set<Capability>,
     override val codec: ScreenMirrorCodec,
+    override val connectionType: AndroidScreenConnectionType,
     val descriptor: SessionDescriptor,
     private val pair: SecureChannelPair,
     private val closeOwner: (String, String) -> Unit,
@@ -331,6 +334,12 @@ internal class AndroidScreenMirrorRequester(
                 timeout = Duration.ofMillis(remaining),
             )
             val pair = accepted.pair
+            val connectionType = when {
+                accepted.listener === lanListener -> AndroidScreenConnectionType.LOCAL_NETWORK
+                accepted.listener === awareListener -> AndroidScreenConnectionType.WIFI_AWARE
+                accepted.listener === relayListener -> AndroidScreenConnectionType.BROKER_RELAY
+                else -> error("screen session was accepted by an unknown listener")
+            }
             if (accepted.listener === lanListener) {
                 requireNotNull(lan).track(pair)
                 awareListener?.let { resource ->
@@ -360,6 +369,7 @@ internal class AndroidScreenMirrorRequester(
                 sourceName = source.displayName,
                 sourceCapabilities = source.capabilities.toSet(),
                 codec = codec,
+                connectionType = connectionType,
                 descriptor = descriptor,
                 pair = pair,
                 closeOwner = ::close,

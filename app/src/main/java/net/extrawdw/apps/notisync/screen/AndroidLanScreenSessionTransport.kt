@@ -371,7 +371,29 @@ class AndroidLanScreenSessionTransport(
             video.output.flush()
             // READY means both authenticated channels and the privileged encoder/control pipes are usable.
             onReady()
-            jobs += launch(Dispatchers.IO) { copyUntilClosed(videoSource, video.output, terminated) }
+            jobs += launch(Dispatchers.IO) {
+                try {
+                    LatencyFirstVideoForwarder(
+                        input = videoSource,
+                        output = video.output,
+                        preamble = preamble,
+                        codec = requireNotNull(request.codec),
+                        targetBitrateBps = request.videoBitrateBps ?: DEFAULT_VIDEO_BITRATE_BPS,
+                        recoverVideo = { decision ->
+                            val accepted = pipes.recoverVideo(decision.bitrateBps)
+                            Log.i(
+                                LOG_TAG,
+                                "Video ${decision.reason.name.lowercase()}: " +
+                                    "${decision.previousBitrateBps} -> ${decision.bitrateBps} bps; " +
+                                    "sync=${if (accepted) "requested" else "unavailable"}",
+                            )
+                            accepted
+                        },
+                    ).forward()
+                } finally {
+                    terminated.complete(Unit)
+                }
+            }
             jobs += launch(Dispatchers.IO) { copyUntilClosed(control.input, controlSink, terminated) }
             jobs += launch(Dispatchers.IO) { copyUntilClosed(deviceSource, control.output, terminated) }
             terminated.await()
@@ -594,6 +616,7 @@ class AndroidLanScreenSessionTransport(
         const val CAPTURE_START_TIMEOUT_MS = 10_000L
         const val WIFI_AWARE_RESOLVE_TIMEOUT_MS = 10_000L
         const val MAX_ENDPOINT_ATTEMPTS = 8
+        const val DEFAULT_VIDEO_BITRATE_BPS = 8_000_000
         const val LOG_TAG = "NotiSyncScreenTransport"
     }
 }

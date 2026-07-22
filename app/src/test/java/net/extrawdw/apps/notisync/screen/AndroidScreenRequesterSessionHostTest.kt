@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.InputStream
+import java.io.IOException
 import java.io.OutputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -36,6 +37,10 @@ class AndroidScreenRequesterSessionHostTest {
             assertEquals(attempt, fixture.host.start(SOURCE))
             assertThrows(IllegalStateException::class.java) { fixture.host.start(OTHER_SOURCE) }
             waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+            assertEquals(
+                AndroidScreenConnectionType.LOCAL_NETWORK,
+                fixture.host.state.value.connectionType,
+            )
             assertFalse(fixture.host.stopIfAttempt("stale-attempt"))
             assertTrue(fixture.host.sendKeyPress(KeyEvent.KEYCODE_BACK))
             waitUntil { fixture.control.size() == KEY_PRESS_BYTES }
@@ -141,9 +146,66 @@ class AndroidScreenRequesterSessionHostTest {
             waitUntil { fixture.session.closeCount.get() == 1 }
             assertEquals(1, fixture.directOpens.get())
             assertEquals(1, fixture.relayOpens.get())
+            assertEquals(
+                AndroidScreenConnectionType.BROKER_RELAY,
+                fixture.host.state.value.connectionType,
+            )
         } finally {
             fixture.close()
         }
+    }
+
+    @Test
+    fun relayTlsTruncationReconnectsWithoutUserAction() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val opens = AtomicInteger()
+        val sessions = mutableListOf<FakeSession>()
+        val ownerCloses = mutableListOf<Pair<String, String>>()
+        val host = AndroidScreenRequesterSessionHost(
+            scope = scope,
+            hardwareDecoderName = { null },
+            openSession = { _, _ -> error("direct path should not open") },
+            openRelaySession = { _, _ ->
+                val video = if (opens.incrementAndGet() == 1) {
+                    PreambleThenFailingInputStream("No close_notify alert received before connection closed")
+                } else {
+                    PreambleThenBlockingInputStream()
+                }
+                FakeSession(emptySet(), RecordingOutputStream(), videoStream = video)
+                    .also { synchronized(sessions) { sessions += it } }
+            },
+            closeOwner = { owner, detail ->
+                synchronized(ownerCloses) { ownerCloses += owner to detail }
+            },
+            requesterState = {
+                AndroidScreenRequesterState(phase = AndroidScreenRequesterPhase.CONNECTED)
+            },
+        )
+        try {
+            val attempt = host.start(SOURCE, AndroidScreenConnectionMode.BROKER_RELAY)
+            waitUntil(4_000) {
+                opens.get() >= 2 && host.state.value.phase == AndroidScreenHostPhase.CONNECTED
+            }
+
+            assertEquals(attempt, host.state.value.attemptId)
+            assertEquals(2, opens.get())
+            assertTrue(ownerCloses.any { it.first == attempt && it.second == "reconnecting broker relay" })
+        } finally {
+            host.close()
+            synchronized(sessions) { sessions.forEach(FakeSession::close) }
+            scope.cancel()
+        }
+    }
+
+    @Test
+    fun onlyTransientRelayFailuresAreReconnectable() {
+        assertTrue(
+            isReconnectableRelayFailure(
+                IOException("No close_notify alert received before connection closed"),
+            ),
+        )
+        assertTrue(isReconnectableRelayFailure(IOException("broker relay closed (1001): restart")))
+        assertFalse(isReconnectableRelayFailure(IllegalArgumentException("invalid scrcpy packet size")))
     }
 
     private class HostFixture(
@@ -165,6 +227,7 @@ class AndroidScreenRequesterSessionHostTest {
         val relaySession = FakeSession(
             sourceCapabilities = capabilities,
             controlOutput = relayControl,
+            connectionType = AndroidScreenConnectionType.BROKER_RELAY,
         )
         val ownerCloses = mutableListOf<Pair<String, String>>()
         val host = AndroidScreenRequesterSessionHost(
@@ -198,15 +261,17 @@ class AndroidScreenRequesterSessionHostTest {
     private class FakeSession(
         override val sourceCapabilities: Set<Capability>,
         override val controlOutput: OutputStream,
+        override val connectionType: AndroidScreenConnectionType =
+            AndroidScreenConnectionType.LOCAL_NETWORK,
         private val closeStarted: CountDownLatch? = null,
         private val closeGate: CountDownLatch? = null,
+        private val videoStream: InputStream = PreambleThenBlockingInputStream(),
     ) : AndroidScreenViewerSession {
-        private val video = PreambleThenBlockingInputStream()
         override val sessionId = "screen:test"
         override val sourceId = SOURCE
         override val sourceName = "Test source"
         override val codec = ScreenMirrorCodec.H264
-        override val videoInput: InputStream = video
+        override val videoInput: InputStream = videoStream
         override val controlInput: InputStream = ByteArrayInputStream(byteArrayOf())
         val closeCount = AtomicInteger()
         private val closed = AtomicBoolean()
@@ -216,7 +281,7 @@ class AndroidScreenRequesterSessionHostTest {
                 closeStarted?.countDown()
                 closeGate?.await()
                 closeCount.incrementAndGet()
-                video.close()
+                videoStream.close()
                 controlOutput.close()
             }
         }
@@ -287,6 +352,30 @@ class AndroidScreenRequesterSessionHostTest {
                 closed = true
                 lock.notifyAll()
             }
+        }
+    }
+
+    private class PreambleThenFailingInputStream(private val failure: String) : InputStream() {
+        private val delegate = ByteArrayInputStream(
+            ByteBuffer.allocate(ScrcpyVideoPreamble.SIZE_BYTES)
+                .order(ByteOrder.BIG_ENDIAN)
+                .putInt(H264_WIRE_ID)
+                .putInt(Int.MIN_VALUE)
+                .putInt(1080)
+                .putInt(2400)
+                .array(),
+        )
+
+        override fun read(): Int {
+            val value = delegate.read()
+            if (value >= 0) return value
+            throw IOException(failure)
+        }
+
+        override fun read(target: ByteArray, offset: Int, length: Int): Int {
+            val count = delegate.read(target, offset, length)
+            if (count >= 0) return count
+            throw IOException(failure)
         }
     }
 

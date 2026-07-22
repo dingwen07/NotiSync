@@ -378,7 +378,10 @@
     <string name="screen_viewer_service_background">已连接到 %1$s · 点按以继续</string>
     <string name="screen_viewer_service_failed">无法在后台保持屏幕会话。</string>
     <string name="screen_viewer_connecting">正在等待 %1$s…</string>
-    <string name="screen_viewer_connected_codec">已连接 · %1$s</string>
+    <string name="screen_viewer_connection_codec">%1$s · %2$s</string>
+    <string name="screen_viewer_connection_local_network">本地网络</string>
+    <string name="screen_viewer_connection_wifi_aware">Wi-Fi Aware</string>
+    <string name="screen_viewer_connection_broker_relay">中继</string>
     <string name="screen_viewer_ended">屏幕共享已结束。</string>
     <string name="screen_viewer_failed">无法启动屏幕共享。</string>
     <string name="screen_viewer_local_network_denied">需要“附近设备”或本地网络访问权限才能直接连接到此设备。</string>
