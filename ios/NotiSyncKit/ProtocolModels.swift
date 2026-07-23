@@ -371,6 +371,51 @@ nonisolated struct ScreenMirrorConnectionCandidate: Sendable {
 
     static let lanTCP = "LAN_TCP"
     static let dnsSD = "DNS_SD"
+    static let brokerRelay = "BROKER_RELAY"
+}
+
+/// Authenticated participant role for one broker screen-Relay channel.
+nonisolated enum ScreenRelayRole: String, Codable, Sendable {
+    case requester = "REQUESTER"
+    case source = "SOURCE"
+}
+
+/// The independent Relay video and control channels. Keeping them separate prevents control input
+/// from queueing behind video frames.
+nonisolated enum ScreenRelayChannel: String, Codable, Sendable {
+    case video = "VIDEO"
+    case control = "CONTROL"
+}
+
+/// First application frame after the broker WebSocket nonce challenge succeeds.
+nonisolated struct ScreenRelayJoin: Codable, Sendable {
+    var relayId: String
+    var requesterPeerId: String
+    var sourcePeerId: String
+    var role: ScreenRelayRole
+    var channel: ScreenRelayChannel
+    var expiresAt: Int64
+}
+
+/// Broker registration and Relay-video flow-control signal.
+nonisolated struct ScreenRelaySignal: Codable, Sendable {
+    var kind: String
+    var detail: String?
+    var sequence: Int64?
+    var deliveredBytes: Int64?
+
+    init(kind: String, detail: String? = nil, sequence: Int64? = nil, deliveredBytes: Int64? = nil) {
+        self.kind = kind
+        self.detail = detail
+        self.sequence = sequence
+        self.deliveredBytes = deliveredBytes
+    }
+}
+
+nonisolated enum ScreenRelaySignalKind {
+    static let registered = "registered"
+    static let videoAck = "video_ack"
+    static let videoCongested = "video_congested"
 }
 
 /// Screen protocol v1 rendezvous/status body. Secrets are present only on REQUEST.

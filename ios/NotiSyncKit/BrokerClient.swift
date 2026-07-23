@@ -33,6 +33,47 @@ private nonisolated enum WebSocketLoopEvent: Sendable {
     case deliveryFinished
 }
 
+nonisolated enum BrokerScreenRelayError: Error, LocalizedError {
+    case invalidRequest
+    case registrationFailed(String)
+    case unexpectedMessage
+    case timedOut
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidRequest: "The broker Relay request is invalid or expired."
+        case .registrationFailed(let detail): "The broker Relay rejected this connection: \(detail)"
+        case .unexpectedMessage: "The broker Relay sent an unexpected message."
+        case .timedOut: "The broker Relay did not respond in time."
+        }
+    }
+}
+
+/// One registered `/v1/screen-relay` WebSocket. Each instance has exactly one receive consumer.
+nonisolated final class BrokerScreenRelayConnection: @unchecked Sendable {
+    private let task: URLSessionWebSocketTask
+
+    fileprivate init(task: URLSessionWebSocketTask) {
+        self.task = task
+    }
+
+    func receive() async throws -> URLSessionWebSocketTask.Message {
+        try await task.receive()
+    }
+
+    func sendBinary(_ data: Data) async throws {
+        try await task.send(.data(data))
+    }
+
+    func sendText(_ text: String) async throws {
+        try await task.send(.string(text))
+    }
+
+    func cancel() {
+        task.cancel(with: .goingAway, reason: nil)
+    }
+}
+
 nonisolated struct StoredBrokerAuth: Codable, Sendable {
     var token: String
     var clientId: String
@@ -104,6 +145,7 @@ actor BrokerClient {
     private static let wsMaxBackoffNanos: UInt64 = 30_000_000_000
     private static let wsReauthAfterFailures = 3
     private static let wsMaxInFlightDeliveries = 8
+    private static let screenRelayRegistrationTimeoutNanos: UInt64 = 10_000_000_000
     init(baseURL: @escaping @Sendable () -> String,
          identitySigner: IdentitySigner,
          operationalSigner: @escaping @Sendable () -> OperationalSigner,
@@ -138,6 +180,81 @@ actor BrokerClient {
     private func url(_ path: String) throws -> URL {
         guard let u = URL(string: httpBase() + path) else { throw BrokerError.badURL }
         return u
+    }
+
+    /// Authenticate and register one requester/source channel on the broker's v1 screen Relay.
+    func openScreenRelay(_ join: ScreenRelayJoin) async throws -> BrokerScreenRelayConnection {
+        let relayCharacters = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")
+        guard join.relayId.utf8.count == 32,
+              join.relayId.unicodeScalars.allSatisfy(relayCharacters.contains),
+              join.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000),
+              let websocketURL = URL(string: wsBase() + "/v1/screen-relay") else {
+            throw BrokerScreenRelayError.invalidRequest
+        }
+
+        let signingURL = try url("/v1/screen-relay")
+        var request = URLRequest(url: websocketURL)
+        let headers = try RequestSigner.signedHeaders(
+            signer: identitySigner,
+            method: "GET",
+            url: signingURL,
+            body: Data()
+        )
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        if let token = await bearerTokenOrNil() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        let task = session.webSocketTask(with: request)
+        task.resume()
+        do {
+            let challengeMessage = try await Self.receiveRelayRegistrationMessage(from: task)
+            let challengeText = try Self.text(from: challengeMessage)
+            let challenge = try ProtocolCodec.decodeWsChallenge(challengeText)
+            let signature = try identitySigner.sign(Data(challenge.nonce.utf8)).base64EncodedString()
+            try await task.send(.string(ProtocolCodec.encodeWsAuth(
+                clientId: identitySigner.clientId,
+                nonce: challenge.nonce,
+                signatureB64: signature
+            )))
+            let joinData = try JSONEncoder().encode(join)
+            try await task.send(.string(String(decoding: joinData, as: UTF8.self)))
+
+            let registrationMessage = try await Self.receiveRelayRegistrationMessage(from: task)
+            let registrationText = try Self.text(from: registrationMessage)
+            let signal = try JSONDecoder().decode(ScreenRelaySignal.self, from: Data(registrationText.utf8))
+            guard signal.kind == ScreenRelaySignalKind.registered else {
+                throw BrokerScreenRelayError.registrationFailed(signal.detail ?? signal.kind)
+            }
+            return BrokerScreenRelayConnection(task: task)
+        } catch {
+            task.cancel(with: .goingAway, reason: nil)
+            throw error
+        }
+    }
+
+    private static func receiveRelayRegistrationMessage(
+        from task: URLSessionWebSocketTask
+    ) async throws -> URLSessionWebSocketTask.Message {
+        try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message.self) { group in
+            group.addTask { try await task.receive() }
+            group.addTask {
+                try await Task.sleep(nanoseconds: screenRelayRegistrationTimeoutNanos)
+                task.cancel(with: .goingAway, reason: nil)
+                throw BrokerScreenRelayError.timedOut
+            }
+            defer { group.cancelAll() }
+            guard let message = try await group.next() else { throw BrokerScreenRelayError.timedOut }
+            return message
+        }
+    }
+
+    private static func text(from message: URLSessionWebSocketTask.Message) throws -> String {
+        switch message {
+        case .string(let text): text
+        case .data(let data): String(decoding: data, as: UTF8.self)
+        @unknown default: throw BrokerScreenRelayError.unexpectedMessage
+        }
     }
 
     /// Normalize a request path to a stable Performance-Monitoring label, collapsing id-bearing segments

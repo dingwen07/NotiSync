@@ -380,13 +380,16 @@ nonisolated final class NotiSyncEngine: Sendable {
               let peer = store.peers[sync.sourcePeerId], peer.isTrusted, peer.ownDevice,
               let epoch = peer.sealable(now: Self.nowMillis()) else { return nil }
         if sync.action == .REQUEST {
-            let required: Set<Capability> = [
+            var required: Set<Capability> = [
                 .CAPABILITY_ROUTING_V1,
                 .SCREEN_MIRROR_SOURCE_V1,
                 .SCREEN_MIRROR_CONTROL_V1,
                 .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
                 .SCREEN_MIRROR_ENCODER_H264_HW,
             ]
+            if sync.candidates.contains(where: { $0.kind == ScreenMirrorConnectionCandidate.brokerRelay }) {
+                required.insert(.SCREEN_MIRROR_BROKER_RELAY_V1)
+            }
             guard required.isSubset(of: Set(peer.announcedCapabilities)), sync.codec == .H264 else { return nil }
         }
         let body = ProtocolCodec.encode(DataSync(kind: .SCREEN_MIRRORING, screenMirror: sync))

@@ -461,9 +461,14 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var lastTouchLocations: [UInt64: CGPoint] = [:]
     private var touchSendTask: Task<Void, Never>?
     private var videoVisibilityTask: Task<Void, Never>?
+    private var relayFallbackTask: Task<Void, Never>?
     private var playbackSuspended = false
     private var appIsActive = true
     private var stopped = false
+    private var pageClosed = false
+    private var connectionMode: IOSScreenConnectionMode = .direct
+    private var relayAvailableForSource = false
+    private var attemptGeneration = 0
 
     init() {
         displayLayer.videoGravity = .resizeAspect
@@ -486,52 +491,128 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     func start(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
+        guard !pageClosed else { return }
+        attemptGeneration += 1
+        let attempt = attemptGeneration
         stopped = false
         connected = false
         errorMessage = nil
         dimensions = .zero
-        status = "Preparing secure LAN session…"
+        relayAvailableForSource = runtime.supportsScreenMirrorBrokerRelay(sourceId: sourceId)
+        relayFallbackTask?.cancel()
+        if connectionMode == .direct, relayAvailableForSource {
+            relayFallbackTask = Task { [weak self] in
+                try? await Task.sleep(nanoseconds: 8_000_000_000)
+                guard let self, !Task.isCancelled, !self.stopped,
+                      self.attemptGeneration == attempt, !self.connected,
+                      self.connectionMode == .direct else { return }
+                self.relayFallbackTask = nil
+                await self.switchToBrokerRelay(
+                    runtime: runtime,
+                    sourceId: sourceId,
+                    sourceName: sourceName
+                )
+            }
+        }
+        status = connectionMode == .brokerRelay
+            ? "Preparing secure broker Relay…"
+            : "Preparing secure LAN session…"
         do {
-            let session = try await runtime.openScreenMirror(sourceId: sourceId, sourceName: sourceName)
-            guard !stopped else {
+            let session = try await runtime.openScreenMirror(
+                sourceId: sourceId,
+                sourceName: sourceName,
+                connectionMode: connectionMode
+            )
+            guard !stopped, attemptGeneration == attempt else {
                 session.cancelTransport()
                 await runtime.endScreenMirror(sessionId: session.sessionId)
                 return
             }
+            relayFallbackTask?.cancel()
+            relayFallbackTask = nil
             self.session = session
             control = IOSScreenControlWriter(connection: session.channels.control)
             connected = true
             pictureInPicture?.prepareForAutomaticStart()
             if playbackSuspended { queueVideoVisibility(false) }
-            status = "Connected over local network"
+            status = session.connectionMode == .brokerRelay
+                ? "Connected through broker Relay"
+                : "Connected over local network"
             let decoder = IOSScreenVideoDecoder(
                 connection: session.channels.video,
                 displayLayer: displayLayer,
                 onDimensions: { [weak self] size in
-                    self?.dimensions = size
+                    guard let self, !self.stopped, self.attemptGeneration == attempt else { return }
+                    self.dimensions = size
                 },
                 onFailure: { [weak self] error in
-                    guard let self, !self.stopped else { return }
-                    self.errorMessage = error.localizedDescription
+                    guard let self, !self.stopped, self.attemptGeneration == attempt else { return }
                     self.connected = false
+                    if self.connectionMode == .direct, self.relayAvailableForSource {
+                        self.status = "Local connection interrupted. Switching to broker Relay…"
+                        Task { [weak self] in
+                            await self?.switchToBrokerRelay(
+                                runtime: runtime,
+                                sourceId: sourceId,
+                                sourceName: sourceName
+                            )
+                        }
+                    } else {
+                        self.errorMessage = error.localizedDescription
+                    }
                 }
             )
             self.decoder = decoder
             decoder.start()
         } catch {
-            guard !stopped else { return }
+            guard !stopped, attemptGeneration == attempt else { return }
+            relayFallbackTask?.cancel()
+            relayFallbackTask = nil
+            if connectionMode == .direct, relayAvailableForSource,
+               Self.isDirectTransportFailure(error) {
+                await switchToBrokerRelay(
+                    runtime: runtime,
+                    sourceId: sourceId,
+                    sourceName: sourceName
+                )
+                return
+            }
             errorMessage = error.localizedDescription
             status = "Could not connect"
         }
     }
 
     func retry(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
-        await stop(runtime: runtime)
+        await tearDownTransport(runtime: runtime)
+        guard !pageClosed else { return }
         await start(runtime: runtime, sourceId: sourceId, sourceName: sourceName)
     }
 
+    private func switchToBrokerRelay(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
+        guard relayAvailableForSource, connectionMode == .direct else { return }
+        relayFallbackTask?.cancel()
+        relayFallbackTask = nil
+        connectionMode = .brokerRelay
+        errorMessage = nil
+        status = "Switching to broker Relay…"
+        await retry(runtime: runtime, sourceId: sourceId, sourceName: sourceName)
+    }
+
+    private static func isDirectTransportFailure(_ error: Error) -> Bool {
+        if error is IOSScreenTransportError { return true }
+        if let runtimeError = error as? IOSScreenMirrorRuntimeError,
+           case .transport = runtimeError { return true }
+        return false
+    }
+
     func stop(runtime: NotiSyncRuntime) async {
+        pageClosed = true
+        await tearDownTransport(runtime: runtime)
+    }
+
+    private func tearDownTransport(runtime: NotiSyncRuntime) async {
         guard !stopped else { return }
+        attemptGeneration += 1
         stopped = true
         pictureInPicture?.shutdown()
         pictureInPictureActive = false
@@ -541,6 +622,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         touchSendTask = nil
         videoVisibilityTask?.cancel()
         videoVisibilityTask = nil
+        relayFallbackTask?.cancel()
+        relayFallbackTask = nil
         session?.cancelTransport()
         await runtime.endScreenMirror(sessionId: session?.sessionId)
         session = nil
@@ -886,7 +969,7 @@ struct ScreenMirrorPlayerView: View {
                     viewerControl(
                         model.zoomedOut ? "Fill Screen" : "Zoom Out",
                         systemImage: model.zoomedOut
-                            ? "arrow.up.left.and.arrow.down.right"
+                            ? "plus.magnifyingglass"
                             : "minus.magnifyingglass"
                     ) { model.toggleDisplayZoom() }
                 }

@@ -6,6 +6,7 @@ nonisolated enum IOSScreenMirrorRuntimeError: Error, LocalizedError {
     case anotherSession
     case requestFailed
     case remote(String)
+    case transport(String)
     case cancelled
 
     var errorDescription: String? {
@@ -14,9 +15,15 @@ nonisolated enum IOSScreenMirrorRuntimeError: Error, LocalizedError {
         case .anotherSession: "Another screen session is already active."
         case .requestFailed: "The screen request could not be delivered to the source device."
         case .remote(let detail): detail
+        case .transport(let detail): detail
         case .cancelled: "Screen sharing was cancelled."
         }
     }
+}
+
+nonisolated enum IOSScreenConnectionMode: Sendable {
+    case direct
+    case brokerRelay
 }
 
 nonisolated final class IOSScreenMirrorSession: @unchecked Sendable {
@@ -25,13 +32,20 @@ nonisolated final class IOSScreenMirrorSession: @unchecked Sendable {
     let sourceName: String
     let descriptor: IOSScreenSessionDescriptor
     let channels: IOSScreenChannelPair
+    let connectionMode: IOSScreenConnectionMode
 
-    init(sourceName: String, descriptor: IOSScreenSessionDescriptor, channels: IOSScreenChannelPair) {
+    init(
+        sourceName: String,
+        descriptor: IOSScreenSessionDescriptor,
+        channels: IOSScreenChannelPair,
+        connectionMode: IOSScreenConnectionMode
+    ) {
         sessionId = descriptor.sessionId
         sourceId = descriptor.sourcePeerId
         self.sourceName = sourceName
         self.descriptor = descriptor
         self.channels = channels
+        self.connectionMode = connectionMode
     }
 
     func cancelTransport() { channels.cancel() }
@@ -41,17 +55,18 @@ nonisolated final class IOSScreenMirrorSession: @unchecked Sendable {
 final class IOSScreenMirrorRequestContext {
     let source: ScreenMirrorSourceRecord
     let descriptor: IOSScreenSessionDescriptor
-    let listener: IOSScreenLANListener
+    let listener: IOSScreenSessionListener
     var requestSent = false
     var connected = false
     var terminalSent = false
     var locallyCancelled = false
     var remoteDetail: String?
+    var remoteTransportFailed = false
     var channels: IOSScreenChannelPair?
     private var channelResult: Result<IOSScreenChannelPair, Error>?
     private var channelWaiter: CheckedContinuation<Result<IOSScreenChannelPair, Error>, Never>?
 
-    init(source: ScreenMirrorSourceRecord, descriptor: IOSScreenSessionDescriptor, listener: IOSScreenLANListener) {
+    init(source: ScreenMirrorSourceRecord, descriptor: IOSScreenSessionDescriptor, listener: IOSScreenSessionListener) {
         self.source = source
         self.descriptor = descriptor
         self.listener = listener
@@ -81,10 +96,23 @@ final class IOSScreenMirrorRequestContext {
 }
 
 extension NotiSyncRuntime {
-    func openScreenMirror(sourceId: String, sourceName fallbackName: String) async throws -> IOSScreenMirrorSession {
+    func supportsScreenMirrorBrokerRelay(sourceId: String) -> Bool {
+        engine?.screenMirrorSources().first(where: { $0.clientId == sourceId })?
+            .capabilities.contains(.SCREEN_MIRROR_BROKER_RELAY_V1) == true
+    }
+
+    func openScreenMirror(
+        sourceId: String,
+        sourceName fallbackName: String,
+        connectionMode: IOSScreenConnectionMode = .direct
+    ) async throws -> IOSScreenMirrorSession {
         guard activeScreenMirror == nil else { throw IOSScreenMirrorRuntimeError.anotherSession }
         guard let engine, let broker,
               let source = engine.screenMirrorSources().first(where: { $0.clientId == sourceId }) else {
+            throw IOSScreenMirrorRuntimeError.unavailable
+        }
+        if connectionMode == .brokerRelay,
+           !source.capabilities.contains(.SCREEN_MIRROR_BROKER_RELAY_V1) {
             throw IOSScreenMirrorRuntimeError.unavailable
         }
 
@@ -104,14 +132,27 @@ extension NotiSyncRuntime {
         )
         let routingToken = try secureRandomData(count: 16)
         let masterPsk = try secureRandomData(count: 32)
-        updateScreenMirrorPhase("Opening local listener…")
-        let listener: IOSScreenLANListener
+        updateScreenMirrorPhase(connectionMode == .brokerRelay
+            ? "Opening broker Relay…"
+            : "Opening local listener…")
+        let listener: IOSScreenSessionListener
         do {
-            listener = try await IOSScreenLANListener.open(
-                descriptor: descriptor,
-                routingToken: routingToken,
-                masterPsk: masterPsk
-            )
+            switch connectionMode {
+            case .direct:
+                listener = try await IOSScreenLANListener.open(
+                    descriptor: descriptor,
+                    routingToken: routingToken,
+                    masterPsk: masterPsk
+                )
+            case .brokerRelay:
+                listener = try IOSScreenBrokerRelayListener(
+                    broker: broker,
+                    relayId: try secureRandomData(count: 24).base64URLEncoded(),
+                    descriptor: descriptor,
+                    routingToken: routingToken,
+                    masterPsk: masterPsk
+                )
+            }
         } catch {
             updateScreenMirrorPhase(nil)
             throw error
@@ -147,7 +188,9 @@ extension NotiSyncRuntime {
                 throw IOSScreenMirrorRuntimeError.requestFailed
             }
             context.requestSent = true
-            updateScreenMirrorPhase("Waiting for \(source.displayName.isEmpty ? fallbackName : source.displayName)…")
+            updateScreenMirrorPhase(connectionMode == .brokerRelay
+                ? "Waiting through broker Relay…"
+                : "Waiting for \(source.displayName.isEmpty ? fallbackName : source.displayName)…")
             let acceptTask = Task { [weak context] in
                 do {
                     let channels = try await listener.acceptPair()
@@ -172,7 +215,11 @@ extension NotiSyncRuntime {
             try Task.checkCancellation()
             guard activeScreenMirror === context, !context.locallyCancelled, context.remoteDetail == nil else {
                 channels.cancel()
-                if let detail = context.remoteDetail { throw IOSScreenMirrorRuntimeError.remote(detail) }
+                if let detail = context.remoteDetail {
+                    throw context.remoteTransportFailed
+                        ? IOSScreenMirrorRuntimeError.transport(detail)
+                        : IOSScreenMirrorRuntimeError.remote(detail)
+                }
                 throw IOSScreenMirrorRuntimeError.cancelled
             }
             context.channels = channels
@@ -181,7 +228,8 @@ extension NotiSyncRuntime {
             return IOSScreenMirrorSession(
                 sourceName: source.displayName.isEmpty ? fallbackName : source.displayName,
                 descriptor: descriptor,
-                channels: channels
+                channels: channels,
+                connectionMode: connectionMode
             )
         } catch {
             listener.cancel()
@@ -191,7 +239,11 @@ extension NotiSyncRuntime {
                 activeScreenMirror = nil
                 updateScreenMirrorPhase(nil)
             }
-            if let detail = context.remoteDetail { throw IOSScreenMirrorRuntimeError.remote(detail) }
+            if let detail = context.remoteDetail {
+                throw context.remoteTransportFailed
+                    ? IOSScreenMirrorRuntimeError.transport(detail)
+                    : IOSScreenMirrorRuntimeError.remote(detail)
+            }
             throw error
         }
     }
@@ -247,7 +299,10 @@ extension NotiSyncRuntime {
             remoteDetail = screenStatusDescription(status.status)
         }
         context.remoteDetail = remoteDetail
-        context.resolveChannels(.failure(IOSScreenMirrorRuntimeError.remote(remoteDetail)))
+        context.remoteTransportFailed = status.status == .TRANSPORT_FAILED
+        context.resolveChannels(.failure(context.remoteTransportFailed
+            ? IOSScreenMirrorRuntimeError.transport(remoteDetail)
+            : IOSScreenMirrorRuntimeError.remote(remoteDetail)))
         context.listener.cancel()
         context.channels?.cancel()
         updateScreenMirrorPhase(remoteDetail)
@@ -288,7 +343,7 @@ extension NotiSyncRuntime {
         case .SHIZUKU_UNAVAILABLE: "Screen sharing is not ready in Shizuku on the source device."
         case .CODEC_UNAVAILABLE: "The source device has no compatible H.264 encoder."
         case .CODEC_START_FAILED: "The source screen encoder could not start."
-        case .TRANSPORT_FAILED: "The source device could not connect over the local network."
+        case .TRANSPORT_FAILED: "The source device could not establish the screen connection."
         case .ENDED, nil: "Screen sharing ended."
         case .CONNECTING, .READY: "Screen sharing ended."
         }
