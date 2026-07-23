@@ -49,7 +49,8 @@ object PairingDeepLinks {
         uri.scheme.equals(CUSTOM_SCHEME, ignoreCase = true) ->
             uri.host.equals(CUSTOM_HOST, ignoreCase = true)
         uri.scheme.equals(HTTPS_SCHEME, ignoreCase = true) ->
-            uri.host.equals(HTTPS_HOST, ignoreCase = true) && uri.path == PAIRING_PATH
+            uri.host.equals(HTTPS_HOST, ignoreCase = true) &&
+                (uri.path == PAIRING_PATH || uri.path == "$PAIRING_PATH/")
         else -> false
     }
 }

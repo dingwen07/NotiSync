@@ -14,6 +14,12 @@ private nonisolated struct RoutePublishSnapshot: Sendable {
     var routeEpoch: Int
 }
 
+nonisolated struct IOSScreenMirrorPresentation: Identifiable, Sendable {
+    var id: String { sourceId }
+    var sourceId: String
+    var sourceName: String
+}
+
 /// App-process orchestration: owns the protocol engine + broker client and drives identity/auth, route
 /// publishing, inbound delivery (foreground WS / relay drain / silent push), dismissal sync + two-poll
 /// reconciliation, and pairing. The NSE handles the alert-push fast path independently (see the extension).
@@ -38,6 +44,35 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// A pairing candidate surfaced from a deep link (notisync://pair or the universal /pair link), awaiting
     /// the user's confirmation. Pairing is never automatic.
     @Published var incomingPairing: PairingCandidate?
+    /// Trusted own Android peers that advertise the complete screen-v1 source stack and H.264 hardware.
+    @Published private(set) var screenMirrorSourceIds: Set<String> = []
+    @Published private(set) var screenMirrorPhase: String?
+    @Published var screenMirrorPresentation: IOSScreenMirrorPresentation?
+
+    func replaceScreenMirrorSourceIds(_ sourceIds: Set<String>) {
+        screenMirrorSourceIds = sourceIds
+    }
+
+    func updateScreenMirrorPhase(_ phase: String?) {
+        screenMirrorPhase = phase
+    }
+
+    /// Route both explicit Devices-page requests and foreground notification actions through one viewer.
+    @discardableResult
+    func presentScreenMirror(sourceId: String, fallbackName: String = "Screen Source") -> Bool {
+        guard activeScreenMirror == nil,
+              screenMirrorPresentation == nil,
+              let source = engine?.screenMirrorSources().first(where: { $0.clientId == sourceId }) else {
+            return false
+        }
+        let sourceName = source.displayName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = fallbackName.trimmingCharacters(in: .whitespacesAndNewlines)
+        screenMirrorPresentation = IOSScreenMirrorPresentation(
+            sourceId: source.clientId,
+            sourceName: sourceName.isEmpty ? (fallback.isEmpty ? "Screen Source" : fallback) : sourceName
+        )
+        return true
+    }
 
     var modelContext: ModelContext?
     /// The AppSettings singleton row, memoized after the first fetch — `settings()` is called on nearly
@@ -60,6 +95,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     /// Coalesces a burst of filter toggles into one outbound FILTER announce (see `notificationFiltersDidChange`).
     var filterAnnounceTask: Task<Void, Never>?
     var repairRequested: Set<String> = []   // assetHash → already asked the source to re-upload
+    var activeScreenMirror: IOSScreenMirrorRequestContext?
     var iconBytesByApp: [String: Data] = [:]   // appKey (ios:bundleId / and:packageName) → icon bytes
     var iconTokensByApp: [String: String] = [:]   // appKey → source token for the cached icon bytes
     var iconPrioritiesByApp: [String: Int] = [:]   // appKey → APP_ICON beats fallback large icons
@@ -161,6 +197,33 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         case .success(let engine):
             self.engine = engine
             self.clientId = engine.selfClientId
+            let needsCleanup = await Task.detached {
+                NotiSyncConfig.needsUnverifiedDeviceCleanupV1
+            }.value
+            if needsCleanup,
+               let removed = await Task.detached(priority: .utility, operation: {
+                   engine.cleanupUnverifiedPeersV1()
+               }).value {
+                if let modelContext {
+                    for id in removed {
+                        if let row = fetchDevice(clientId: id) { modelContext.delete(row) }
+                    }
+                    saveModelContext(modelContext)
+                }
+                let marked = await Task.detached {
+                    NotiSyncConfig.markUnverifiedDeviceCleanupV1Completed()
+                }.value
+                if marked, !removed.isEmpty {
+                    log.info("removed \(removed.count, privacy: .public) unverified device(s) during NS2 upgrade")
+                }
+            }
+            // TrustedDevice rows survive a process restart, but the published screen-source set does not.
+            // Rehydrate it from the signed trust roster now instead of waiting for a later PROFILE/TRUST
+            // message to incidentally call refreshPeerRowsAsync().
+            let restoredScreenSourceIds = await Task.detached(priority: .utility) {
+                Set(engine.screenMirrorSources().map(\.clientId))
+            }.value
+            replaceScreenMirrorSourceIds(restoredScreenSourceIds)
             self.broker = BrokerClient(
                 baseURL: { NotiSyncConfig.brokerURL },
                 identitySigner: engine.identitySigner,
@@ -383,6 +446,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             await bringUpCore()
             await sendMirrorAction(
                 ActionEvent(sourceClientId: scid, sourceKey: sk, kind: .TAP, actedAt: NotiSyncEngine.nowMillis()))
+            _ = presentScreenMirror(sourceId: scid)
             return
         }
         // A mirrored action button ("notisync.act.<index>"): unicast a PERFORM to the origin, echoing the
@@ -416,6 +480,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
 
     func saveSettings(brokerURL: String, deviceName: String, environment: RouteEnvironment) {
         let s = settings()
+        let brokerURL = NotiSyncConfig.upgradeLegacyDefaultBrokerURL(brokerURL)
         let effectiveEnvironment = NotiSyncConfig.effectiveAPNSEnvironment(environment)
         let brokerChanged = s.brokerURL != brokerURL
         let renamed = s.deviceName != deviceName

@@ -24,6 +24,11 @@ interface ActivityText {
     fun filtersUpdated(count: Int): String
     fun filtersCleared(): String
 
+    /** Privacy-safe NotiSync Run protocol diagnostics; [summary] never contains terminal/input content. */
+    fun runTitle(): String
+    fun runReceived(summary: String, name: String): String
+    fun runSent(summary: String, name: String): String
+
     /** Outbound mirrored-action row: `"Reply" sent to Pixel 9`, or `Opening on Pixel 9` for a tap (null action). */
     fun actionToDevice(action: String?, name: String): String
 
@@ -91,6 +96,15 @@ class AndroidActivityText(private val context: Context) : ActivityText {
 
     override fun filtersCleared(): String =
         context.getString(R.string.activity_detail_filters_cleared)
+
+    override fun runTitle(): String =
+        context.getString(R.string.run_screen_title)
+
+    override fun runReceived(summary: String, name: String): String =
+        context.getString(R.string.activity_detail_run_received, summary, name)
+
+    override fun runSent(summary: String, name: String): String =
+        context.getString(R.string.activity_detail_run_sent, summary, name)
 
     override fun actionToDevice(action: String?, name: String): String =
         if (action != null) context.getString(R.string.activity_detail_action_to, action, name)

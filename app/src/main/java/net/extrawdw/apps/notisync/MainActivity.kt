@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -64,6 +65,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.run.RunKey
+import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -230,6 +232,11 @@ fun NotiSyncRoot(
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
+    // NavHost remembers the graph it builds. Keep the mutable notification handoff behind stable State
+    // objects so the remembered Run destination observes the latest request instead of the value captured
+    // when the graph was first created (normally null).
+    val latestOpenRun = rememberUpdatedState(openRun)
+    val latestOnOpenRunConsumed = rememberUpdatedState(onOpenRunConsumed)
 
     // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
     // this also blocks the deep-link path so a pairing link can't bypass the freeze.
@@ -308,8 +315,8 @@ fun NotiSyncRoot(
                 composable<Route.Ios> { IosScreen() }
                 composable<Route.Run> {
                     RunScreen(
-                        initialSelection = openRun,
-                        onInitialSelectionConsumed = onOpenRunConsumed,
+                        initialSelection = latestOpenRun.value,
+                        onInitialSelectionConsumed = latestOnOpenRunConsumed.value,
                     )
                 }
                 composable<Route.Activity> { ActivityScreen() }
@@ -401,6 +408,9 @@ private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier 
         },
         onOpenListenerSettings = {
             context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
+        },
+        onStartScreenMirror = { sourceId ->
+            context.startActivity(AndroidScreenMirrorActivity.intent(context, sourceId))
         },
     )
 }

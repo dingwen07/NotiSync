@@ -19,6 +19,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.first
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import java.net.URI
 
 /** Global app + transport settings, persisted in Preferences DataStore. */
 class SettingsRepository(
@@ -45,9 +46,22 @@ class SettingsRepository(
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
+    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
+    private val unverifiedDeviceCleanupV1CompletedKey =
+        booleanPreferencesKey("unverified_device_cleanup_v1_completed")
+
+    private val initialBrokerUrl: String = runBlocking {
+        val stored = store.data.first()[brokerUrlKey]
+        val upgraded = upgradeLegacyDefaultBrokerUrl(stored ?: DEFAULT_BROKER)
+        if (stored != null && upgraded != stored) {
+            store.edit { it[brokerUrlKey] = upgraded }
+        }
+        upgraded
+    }
 
     val brokerUrl: StateFlow<String> =
-        store.data.map { it[brokerUrlKey] ?: DEFAULT_BROKER }.stateInEager(scope, DEFAULT_BROKER)
+        store.data.map { upgradeLegacyDefaultBrokerUrl(it[brokerUrlKey] ?: DEFAULT_BROKER) }
+            .stateInEager(scope, initialBrokerUrl)
     val deviceName: StateFlow<String> =
         store.data.map { it[deviceNameKey] ?: android.os.Build.MODEL }
             .stateInEager(scope, android.os.Build.MODEL)
@@ -112,6 +126,17 @@ class SettingsRepository(
     suspend fun setLockScreenPublicIdentity(on: Boolean) =
         store.edit { it[lockScreenPublicIdentityKey] = on }
 
+    /** Master opt-in for accepting screen-control requests from individually authorized own devices. */
+    val screenMirroringEnabled: StateFlow<Boolean> =
+        store.data.map { it[screenMirroringEnabledKey] ?: false }.stateInEager(scope, false)
+
+    /** Direct persisted read for cold FCM/foreground-service starts; avoids relying on a not-yet-loaded flow. */
+    suspend fun screenMirroringEnabledNow(): Boolean =
+        store.data.first()[screenMirroringEnabledKey] ?: false
+
+    suspend fun setScreenMirroringEnabled(on: Boolean) =
+        store.edit { it[screenMirroringEnabledKey] = on }
+
     /** The PERSISTED switch, read directly from DataStore — use this (not [iosBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
     suspend fun iosBridgeEnabledNow(): Boolean = store.data.first()[iosBridgeKey] ?: false
@@ -127,7 +152,20 @@ class SettingsRepository(
     suspend fun onboardingCompletedNow(): Boolean = store.data.first()[onboardingDoneKey] ?: false
     suspend fun setOnboardingCompleted() = store.edit { it[onboardingDoneKey] = true }
 
-    suspend fun setBrokerUrl(url: String) = store.edit { it[brokerUrlKey] = url }
+    suspend fun setBrokerUrl(url: String) = store.edit {
+        it[brokerUrlKey] = upgradeLegacyDefaultBrokerUrl(url)
+    }
+
+    /** Independent, versioned upgrade marker. Broker URL changes never arm or reset this cleanup. */
+    fun needsUnverifiedDeviceCleanupV1(): Boolean = runBlocking {
+        store.data.first()[unverifiedDeviceCleanupV1CompletedKey] != true
+    }
+
+    /** Written only after the signed trust-store cleanup has durably completed. */
+    fun markUnverifiedDeviceCleanupV1Completed() = runBlocking {
+        store.edit { it[unverifiedDeviceCleanupV1CompletedKey] = true }
+    }
+
     suspend fun setDeviceName(name: String) = store.edit {
         it[deviceNameKey] = name
         it[deviceNameUpdatedKey] = System.currentTimeMillis()
@@ -204,9 +242,19 @@ class SettingsRepository(
 
     companion object {
         // Production broker (via Cloudflare). For a local server from the emulator, override in
-        // Settings with ws://10.0.2.2:8080.
-        const val DEFAULT_BROKER = "wss://notisync-api.extrawdw.net"
+        // Settings with http://10.0.2.2:8080. BrokerClient derives ws/wss for live delivery.
+        const val DEFAULT_BROKER = "https://notisync-api-v2.extrawdw.net"
     }
+}
+
+/** Upgrade only NotiSync's former production default; test, local, and user-provided brokers are untouched. */
+internal fun upgradeLegacyDefaultBrokerUrl(value: String): String {
+    val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return value
+    val isFormerDefault = uri.scheme?.lowercase() in setOf("http", "https", "ws", "wss") &&
+        uri.host.equals("notisync-api.extrawdw.net", ignoreCase = true) &&
+        uri.port == -1 && uri.userInfo == null && uri.query == null && uri.fragment == null &&
+        (uri.path.isNullOrEmpty() || uri.path == "/")
+    return if (isFormerDefault) SettingsRepository.DEFAULT_BROKER else value
 }
 
 /**
@@ -399,15 +447,17 @@ class ActivityLog {
         now: Long,
         deliveryMode: DeliveryMode? = null,
     ) {
-        _events.value = (listOf(
-            ActivityEvent(
-                kind,
-                title,
-                detail,
-                now,
-                deliveryMode
-            )
-        ) + _events.value).take(MAX)
+        _events.update { events ->
+            (listOf(
+                ActivityEvent(
+                    kind,
+                    title,
+                    detail,
+                    now,
+                    deliveryMode
+                )
+            ) + events).take(MAX)
+        }
     }
 
     companion object {

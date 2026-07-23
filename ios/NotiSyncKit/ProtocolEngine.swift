@@ -98,6 +98,51 @@ nonisolated struct PairingCandidate: Identifiable, Sendable {
     var keyEpochStatus: KeyEpochStatus
 }
 
+nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
+    static let requiredCapabilities: Set<Capability> = [
+        .CAPABILITY_ROUTING_V1,
+        .SCREEN_MIRROR_SOURCE_V1,
+        .SCREEN_MIRROR_CONTROL_V1,
+        .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
+        .SCREEN_MIRROR_ENCODER_H264_HW,
+    ]
+
+    var id: String { clientId }
+    var clientId: String
+    var displayName: String
+    var capabilities: Set<Capability>
+
+    static func sourceCapabilities(
+        for peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Set<Capability>? {
+        guard peer.isTrusted,
+              peer.ownDevice,
+              peer.sealable(now: now) != nil,
+              let card = CardStore.verifiedCard(
+                  peer.clientId,
+                  pinnedIdentitySpki: peer.identitySpki,
+                  now: now
+              ) else { return nil }
+
+        // A newer authenticated PROFILE supersedes the pairing CARD's mutable platform/capability snapshot.
+        // Otherwise use the re-verified CARD, not possibly stale fields cached in the roster.
+        let hasNewerProfile = peer.profileRevision > card.createdAt
+        let platform = hasNewerProfile ? peer.platform : card.platform
+        let capabilities = Set(hasNewerProfile ? peer.announcedCapabilities : card.capabilities)
+        guard platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "android",
+              requiredCapabilities.isSubset(of: capabilities) else { return nil }
+        return capabilities
+    }
+
+    static func supports(
+        _ peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Bool {
+        sourceCapabilities(for: peer, now: now) != nil
+    }
+}
+
 nonisolated enum KeyFingerprint {
     /// Short, human-glanceable fingerprint of a key's bytes (groups of 4 hex). Peer-facing fingerprints
     /// match because both sides hash the same transmitted bytes.
@@ -351,6 +396,38 @@ nonisolated final class NotiSyncEngine: Sendable {
                                        recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
     }
 
+    /// Seal one screen-session lifecycle message to a trusted own Android source. REQUEST is additionally
+    /// capability-gated to the complete v1 source and H.264 hardware encoder declaration.
+    func sealScreenMirrorSync(_ sync: ScreenMirrorSync) throws -> Envelope? {
+        let store = trust()
+        guard sync.requesterPeerId == selfClientId,
+              let peer = store.peers[sync.sourcePeerId], peer.isTrusted, peer.ownDevice,
+              let epoch = peer.sealable(now: Self.nowMillis()) else { return nil }
+        if sync.action == .REQUEST {
+            guard let capabilities = ScreenMirrorSourceRecord.sourceCapabilities(
+                for: peer,
+                now: Self.nowMillis()
+            ), sync.codec == .H264 else { return nil }
+            if sync.candidates.contains(where: { $0.kind == ScreenMirrorConnectionCandidate.brokerRelay }),
+               !capabilities.contains(.SCREEN_MIRROR_BROKER_RELAY_V1) { return nil }
+        }
+        let body = ProtocolCodec.encode(DataSync(kind: .SCREEN_MIRRORING, screenMirror: sync))
+        let recipient = EnvelopeCrypto.RecipientKey(
+            clientId: peer.clientId,
+            hpkePublicKey: epoch.hpkePublicKey,
+            recipientEpoch: epoch.epoch
+        )
+        return try EnvelopeCrypto.seal(
+            signer: operationalSigner,
+            typ: .DATA_SYNC,
+            bodyPlaintext: body,
+            recipients: [recipient],
+            messageId: Self.newMessageId(),
+            seq: Self.nextSeq(),
+            createdAt: Self.nowMillis()
+        )
+    }
+
     // MARK: Assets
 
     /// Fetch + decrypt + integrity-check a private asset blob via the broker. Returns plaintext or nil.
@@ -564,6 +641,18 @@ nonisolated final class NotiSyncEngine: Sendable {
         return removed
     }
 
+    /// Run the versioned local cleanup and durably replace even an unreadable/quarantined legacy trust file
+    /// with the verified remainder. Nil means persistence failed, so the caller must leave its marker unset.
+    func cleanupUnverifiedPeersV1() -> [String]? {
+        AppGroupStore.withLock(AppGroupStore.Files.trust) {
+            let store = trust()
+            let removed = store.removeUnverifiedPeers()
+            guard save(store) else { return nil }
+            for id in removed { CardStore.remove(id) }
+            return removed
+        }
+    }
+
     /// Approve a PENDING_TRUST device → TRUSTED (the user accepts a mesh introduction). (#3)
     @discardableResult func approveTrust(_ clientId: String) -> Bool { mutateTrust { $0.approveTrust(clientId, at: Self.nowMillis()) } }
     /// Reject a PENDING_TRUST device → REVOKED (overturn — propagates). (#3)
@@ -719,6 +808,19 @@ nonisolated final class NotiSyncEngine: Sendable {
     }
 
     func trustedPeers() -> [TrustedPeerRecord] { Array(trust().peers.values) }
+
+    func screenMirrorSources() -> [ScreenMirrorSourceRecord] {
+        return trust().peers.values.compactMap { peer in
+            guard let capabilities = ScreenMirrorSourceRecord.sourceCapabilities(for: peer) else {
+                return nil
+            }
+            return ScreenMirrorSourceRecord(
+                clientId: peer.clientId,
+                displayName: peer.displayName,
+                capabilities: capabilities
+            )
+        }
+    }
 
     @discardableResult
     private func save(_ store: TrustStore) -> Bool {

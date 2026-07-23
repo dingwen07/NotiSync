@@ -4,6 +4,14 @@
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission
+        android:name="android.permission.NEARBY_WIFI_DEVICES"
+        android:usesPermissionFlags="neverForLocation" />
+    <!-- Runtime permission for LAN sockets and DNS-SD when targeting Android 17 / SDK 37. -->
+    <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- Android 16 promoted ongoing notifications (Live Updates). The sender still has to request
          promotion on each eligible notification; the system/user remains the final arbiter. -->
@@ -42,6 +50,9 @@
     <uses-feature
         android:name="android.hardware.bluetooth_le"
         android:required="false" />
+    <uses-feature
+        android:name="android.hardware.wifi.aware"
+        android:required="false" />
     <!-- Required for CompanionDeviceManager (background auto-connect); without it getSystemService returns null. -->
     <uses-feature
         android:name="android.software.companion_device_setup"
@@ -61,6 +72,7 @@
         <package android:name="com.android.phone" />                <!-- Telephony / Phone services -->
         <package android:name="com.google.android.gms" />           <!-- Google Play services -->
         <package android:name="net.extrawdw.notifly" />             <!-- Notifly diagnostic source -->
+        <package android:name="moe.shizuku.privileged.api" />       <!-- External Shizuku Manager setup -->
     </queries>
 
     <application
@@ -108,6 +120,19 @@
                     android:host="pair" />
             </intent-filter>
         </activity>
+
+        <!-- Replaceable full-screen/PiP client. Its requester foreground service owns the session,
+             so dismissing PiP detaches rendering without dropping the authenticated channels. -->
+        <activity
+            android:name=".screen.AndroidScreenMirrorActivity"
+            android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize"
+            android:enableOnBackInvokedCallback="true"
+            android:exported="false"
+            android:label="@string/screen_viewer_task_title"
+            android:supportsPictureInPicture="true"
+            android:taskAffinity="${applicationId}.screen_viewer"
+            android:theme="@style/Theme.NotiSync"
+            android:windowSoftInputMode="adjustResize" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains
@@ -187,6 +212,30 @@
             android:name=".ios.IosBridgeService"
             android:exported="false"
             android:foregroundServiceType="connectedDevice" />
+
+        <!-- Normal-app owner of an authenticated screen session. Capture/input itself runs in a short-lived
+             Shizuku UserService and is intentionally not declared as an Android service. -->
+        <service
+            android:name=".screen.ScreenMirrorForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Quiet requester-side owner. The viewer Activity/PiP may be destroyed while this
+             service keeps the authenticated channels available for notification-tap resume. -->
+        <service
+            android:name=".screen.ScreenMirrorRequesterForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice" />
+
+        <!-- Shizuku Manager delivers its binder through this provider. The external Manager remains a
+             separate install and this app accepts shell-backed mode only. -->
+        <provider
+            android:name="rikka.shizuku.ShizukuProvider"
+            android:authorities="${applicationId}.shizuku"
+            android:enabled="true"
+            android:exported="true"
+            android:multiprocess="false"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
         <!-- Optional reliability: the OS (re)starts the bridge when the associated iPhone is in range, after
              the user creates a CompanionDeviceManager association from the iOS tab. -->

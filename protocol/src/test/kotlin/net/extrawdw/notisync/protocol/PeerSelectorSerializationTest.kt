@@ -20,6 +20,10 @@ class PeerSelectorSerializationTest {
                 requireCapabilityRoutingV1 = true,
             ),
             Recipients.Only(ClientId("tablet")),
+            Recipients.OnlyCapable(
+                ClientId("screen-source"),
+                setOf(Capability.SCREEN_MIRROR_SOURCE_V1, Capability.SCREEN_MIRROR_ENCODER_H264_HW),
+            ),
         )
 
         selectors.forEach { selector ->
@@ -40,8 +44,19 @@ class PeerSelectorSerializationTest {
     }
 
     @Test
-    fun runCapabilities_areAppendedInDeclarationOrder() {
-        assertEquals(Capability.PUBLISH_RUNS, Capability.entries[Capability.entries.lastIndex - 1])
-        assertEquals(Capability.RECEIVE_RUNS, Capability.entries.last())
+    fun screenCapabilities_areAppendedInPermanentWireOrder() {
+        assertEquals(
+            listOf(
+                Capability.SCREEN_MIRROR_SOURCE_V1,
+                Capability.SCREEN_MIRROR_CONTROL_V1,
+                Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
+                Capability.SCREEN_MIRROR_ENCODER_H264_HW,
+                Capability.SCREEN_MIRROR_ENCODER_H265_HW,
+                Capability.SCREEN_MIRROR_ENCODER_AV1_HW,
+                Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1,
+                Capability.SCREEN_MIRROR_BROKER_RELAY_V1,
+            ),
+            Capability.entries.drop(12),
+        )
     }
 }

@@ -14,6 +14,8 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.contentType
 import io.ktor.server.testing.testApplication
 import io.ktor.websocket.Frame
+import io.ktor.websocket.CloseReason
+import io.ktor.websocket.close
 import io.ktor.websocket.readText
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
@@ -40,6 +42,12 @@ import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
+import net.extrawdw.notisync.protocol.ScreenRelayChannel
+import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelayRole
+import net.extrawdw.notisync.protocol.ScreenRelaySignal
+import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
+import net.extrawdw.notisync.protocol.ScreenRelayVideoWire
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
@@ -76,6 +84,9 @@ import net.extrawdw.notisync.server.delivery.PushOutcome
 import net.extrawdw.notisync.server.delivery.PushTransport
 import net.extrawdw.notisync.server.delivery.WebSocketHub
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -91,7 +102,7 @@ import java.security.interfaces.RSAPublicKey
 import java.util.Base64
 
 /**
- * NS2 broker flow tests, served entirely under `/v2`. There are no client cards: a client's identity is
+ * Broker flow tests. There are no client cards: a client's identity is
  * learned from its self-authenticating [ClientKeyEpoch] (uploaded at attestation or via POST /v2/keyepoch),
  * and the broker resolves [Broker.clientSpki] from the latest stored key-epoch.
  */
@@ -794,6 +805,144 @@ class BrokerFlowTest {
             assertEquals("Dinner at 7?", notif.text)
 
             send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.ACK, messageId = receivedEnv.messageId))))
+        }
+    }
+
+    @Test
+    fun screenRelayForwardsFramedVideoAndDeliveryFeedback() = testApplication {
+        val tmp = File.createTempFile("notisync-screen-relay", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        application { module() }
+
+        val http = createClient { install(WebSockets) }
+        val requester = SoftwareIdentitySigner.generate()
+        val source = SoftwareIdentitySigner.generate()
+        http.register(requester, Hpke.generateKeyPair())
+        http.register(source, Hpke.generateKeyPair())
+        val expiresAt = System.currentTimeMillis() + 60_000
+        val relayId = "abcdefghijklmnopqrstuvwxABCDEFGH"
+        val requesterRegistered = CompletableDeferred<Unit>()
+        val videoHeader = ScreenRelayVideoWire.encodeHeader(
+            flags = ScreenRelayVideoWire.FLAG_DELTA,
+            recordSequence = 0,
+            recordBytes = 1,
+            fragmentOffset = 0,
+            fragmentBytes = 1,
+        )
+        val videoFrame = videoHeader + ByteArray(1 + ScreenRelayVideoWire.AEAD_TAG_BYTES) { 7 }
+
+        coroutineScope {
+            val requesterJob = async {
+                http.webSocket("/v1/screen-relay") {
+                    val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    val signature = Base64.getEncoder()
+                        .encodeToString(requester.sign(challenge.nonce.toByteArray()))
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                WsAuth(requester.clientId, challenge.nonce, signature),
+                            ),
+                        ),
+                    )
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelayJoin(
+                                    relayId,
+                                    requester.clientId,
+                                    source.clientId,
+                                    ScreenRelayRole.REQUESTER,
+                                    ScreenRelayChannel.VIDEO,
+                                    expiresAt,
+                                ),
+                            ),
+                        ),
+                    )
+                    val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.REGISTERED, signal.kind)
+                    requesterRegistered.complete(Unit)
+                    assertArrayEquals(videoFrame, (incoming.receive() as Frame.Binary).data)
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelaySignal(
+                                    kind = ScreenRelaySignalKind.VIDEO_ACK,
+                                    sequence = 0,
+                                    deliveredBytes = 1,
+                                ),
+                            ),
+                        ),
+                    )
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelaySignal(
+                                    kind = ScreenRelaySignalKind.VIDEO_CONGESTED,
+                                    detail = "requester decoder reset",
+                                    sequence = 0,
+                                    deliveredBytes = 1,
+                                ),
+                            ),
+                        ),
+                    )
+                    close(CloseReason(CloseReason.Codes.NORMAL, "done"))
+                }
+            }
+            requesterRegistered.await()
+            val sourceJob = async {
+                http.webSocket("/v1/screen-relay") {
+                    val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    val signature = Base64.getEncoder()
+                        .encodeToString(source.sign(challenge.nonce.toByteArray()))
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                WsAuth(source.clientId, challenge.nonce, signature),
+                            ),
+                        ),
+                    )
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelayJoin(
+                                    relayId,
+                                    requester.clientId,
+                                    source.clientId,
+                                    ScreenRelayRole.SOURCE,
+                                    ScreenRelayChannel.VIDEO,
+                                    expiresAt,
+                                ),
+                            ),
+                        ),
+                    )
+                    val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.REGISTERED, signal.kind)
+                    send(Frame.Binary(true, videoFrame))
+                    val feedback = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.VIDEO_ACK, feedback.kind)
+                    assertEquals(0L, feedback.sequence)
+                    val recovery = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.VIDEO_CONGESTED, recovery.kind)
+                    assertEquals(0L, recovery.sequence)
+                    close(CloseReason(CloseReason.Codes.NORMAL, "done"))
+                }
+            }
+            requesterJob.await()
+            sourceJob.await()
         }
     }
 

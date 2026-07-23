@@ -23,8 +23,14 @@ import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.ScreenMirrorAction
+import net.extrawdw.notisync.protocol.ScreenMirrorCodec
+import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
+import net.extrawdw.notisync.protocol.ScreenMirrorSync
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -167,6 +173,71 @@ class GenericSendResolverTest {
                         scope = validScope.copy(
                             requiredCapabilities = required - Capability.PUSH_FILTERING,
                         ),
+                    ),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `high screen request requires exact source and matching declared features`() {
+        val resolver = GenericSendResolver(applications, ActionOriginPolicy { false })
+        val source = ClientId("screen-source")
+        val mirror = ScreenMirrorSync(
+            action = ScreenMirrorAction.REQUEST,
+            sessionId = "session",
+            requesterPeerId = ClientId("desktop"),
+            sourcePeerId = source,
+            issuedAt = 1_000,
+            expiresAt = 301_000,
+            routingToken = ByteArray(16),
+            masterPsk = ByteArray(32),
+            codec = ScreenMirrorCodec.AV1,
+            requestControl = true,
+            requestClipboard = true,
+            candidates = listOf(
+                ScreenMirrorConnectionCandidate(
+                    ScreenMirrorConnectionCandidate.LAN_TCP,
+                    host = "192.0.2.20",
+                    port = 27_171,
+                ),
+            ),
+        )
+        val body = ProtocolCodec.encodeToCbor(
+            DataSync(DataSyncKind.SCREEN_MIRRORING, screenMirror = mirror),
+        )
+        val scope = Recipients.OnlyCapable(source, mirror.requiredSourceCapabilities())
+
+        val resolved = resolver.resolveAll(
+            listOf(request(MessageType.DATA_SYNC, body, urgency = Urgency.HIGH, scope = scope)),
+        ).single()
+        assertEquals(scope, resolved.scope)
+
+        assertThrows(IllegalArgumentException::class.java) {
+            resolver.resolveAll(
+                listOf(
+                    request(
+                        MessageType.DATA_SYNC,
+                        body,
+                        urgency = Urgency.HIGH,
+                        scope = scope.copy(id = ClientId("another-source")),
+                    ),
+                ),
+            )
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            resolver.resolveAll(
+                listOf(
+                    request(
+                        MessageType.DATA_SYNC,
+                        ProtocolCodec.encodeToCbor(
+                            DataSync(
+                                DataSyncKind.SCREEN_MIRRORING,
+                                screenMirror = mirror.copy(action = ScreenMirrorAction.STATUS),
+                            ),
+                        ),
+                        urgency = Urgency.HIGH,
+                        scope = scope,
                     ),
                 ),
             )

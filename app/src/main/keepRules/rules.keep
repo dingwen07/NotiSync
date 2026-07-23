@@ -23,3 +23,7 @@
 -keepclassmembernames enum net.extrawdw.notisync.protocol.** { *; }
 -keepclassmembernames enum net.extrawdw.apps.notisync.data.** { *; }
 -keepclassmembernames enum net.extrawdw.apps.notisync.assets.** { *; }
+-keep class net.extrawdw.apps.notisync.screen.ScreenMirrorUserService {
+    public <init>();
+    public <init>(android.content.Context);
+}

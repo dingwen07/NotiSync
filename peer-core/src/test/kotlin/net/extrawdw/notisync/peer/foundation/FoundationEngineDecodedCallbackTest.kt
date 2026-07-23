@@ -89,6 +89,7 @@ class FoundationEngineDecodedCallbackTest {
         assertEquals(DeliveryOutcome.HANDLED, channel.deliver(envelope))
         assertEquals(listOf("decoded", "run"), order)
         assertEquals("decoded-once", observedMessage?.messageId)
+        assertEquals(1L, observedMessage?.createdAt)
         assertSame(observedDecoded, handledDecoded)
     }
 

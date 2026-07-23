@@ -203,6 +203,8 @@ data class ReceiveRecord(
     val signerEpoch: Int? = null,
     val deliveryMode: String? = null,
     val receivedAtEpochMillis: Long,
+    /** Sender-signed Envelope.createdAt; null only for heartbeats or a pre-field daemon. */
+    val envelopeCreatedAtEpochMillis: Long? = null,
 )
 
 @Serializable

@@ -243,6 +243,8 @@ extension NotiSyncRuntime {
         // intentionally dropped, and caching would shadow the persistent row once the context arrives.
         guard let modelContext else { return AppSettings() }
         if let existing = try? modelContext.fetch(FetchDescriptor<AppSettings>()).first {
+            let upgradedBrokerURL = NotiSyncConfig.upgradeLegacyDefaultBrokerURL(existing.brokerURL)
+            if upgradedBrokerURL != existing.brokerURL { existing.brokerURL = upgradedBrokerURL }
             cachedSettings = existing
             return existing
         }
@@ -305,6 +307,10 @@ extension NotiSyncRuntime {
     }
 
     private func applyPeerRows(_ peers: [TrustedPeerRecord]) {
+        replaceScreenMirrorSourceIds(Set(peers.compactMap { peer in
+            guard ScreenMirrorSourceRecord.supports(peer) else { return nil }
+            return peer.clientId
+        }))
         for peer in peers where peer.clientId != clientId {
             let status = Self.rowStatus(for: peer)
             if let row = fetchDevice(clientId: peer.clientId) {

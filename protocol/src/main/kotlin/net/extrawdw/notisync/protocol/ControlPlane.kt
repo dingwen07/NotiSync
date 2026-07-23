@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.CborLabel
 
 /**
  * JSON DTOs for the broker's REST control plane. Binary-bearing objects (signed cards/routes,
@@ -21,8 +22,8 @@ data class HealthResponse(
  */
 @Serializable
 data class SendRequest(
-    val envelope: Envelope,
-    val urgency: Urgency,
+    @CborLabel(0) val envelope: Envelope,
+    @CborLabel(1) val urgency: Urgency,
 )
 
 /** Result of /v2/send. Tells the caller which recipients delivered and what the broker is missing. */
@@ -172,6 +173,47 @@ data class WsAuth(
     /** NS2: signing-key selector — 0 = identity key (NS1-compatible), ≥1 = operational [ClientKeyEpoch]. */
     val epoch: Int = 0,
 )
+
+/** Authenticated participant role for one screen Relay channel. */
+@Serializable
+enum class ScreenRelayRole { REQUESTER, SOURCE }
+
+/** The two independent v1 relay channels. Keeping them separate prevents control behind video. */
+@Serializable
+enum class ScreenRelayChannel { VIDEO, CONTROL }
+
+/**
+ * First frame after WebSocket authentication on `/v1/screen-relay`. [relayId] is a random capability
+ * delivered only inside the E2E screen request. The broker additionally binds each role to its authenticated
+ * [ClientId]. CONTROL is an opaque PSK-TLS stream. VIDEO uses authenticated, end-to-end encrypted
+ * records whose clear metadata lets the broker discard stale predictive frames without seeing pixels.
+ */
+@Serializable
+data class ScreenRelayJoin(
+    val relayId: String,
+    val requesterPeerId: ClientId,
+    val sourcePeerId: ClientId,
+    val role: ScreenRelayRole,
+    val channel: ScreenRelayChannel,
+    val expiresAt: Long,
+)
+
+/** Server acknowledgement that the relay slot is registered and may begin buffering its TLS handshake. */
+@Serializable
+data class ScreenRelaySignal(
+    val kind: String,
+    val detail: String? = null,
+    /** VIDEO record sequence acknowledged or discarded by this signal. */
+    val sequence: Long? = null,
+    /** Requester-side cumulative plaintext bytes consumed, for delivery-rate diagnostics. */
+    val deliveredBytes: Long? = null,
+)
+
+object ScreenRelaySignalKind {
+    const val REGISTERED = "registered"
+    const val VIDEO_ACK = "video_ack"
+    const val VIDEO_CONGESTED = "video_congested"
+}
 
 /** Realtime frame over the dev WebSocket transport (flat to avoid polymorphic serialization). */
 @Serializable

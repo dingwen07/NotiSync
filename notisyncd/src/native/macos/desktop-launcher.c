@@ -247,6 +247,7 @@ static char *find_libjvm(void) {
 static const char *main_class_for(const char *name) {
     if (strcmp(name, "notisyncd") == 0) return "net.extrawdw.notisync.daemon.NotisyncdMainKt";
     if (strcmp(name, "nsrun") == 0) return "net.extrawdw.notisync.run.NSRunMainKt";
+    if (strcmp(name, "nsscreen") == 0) return "net.extrawdw.notisync.screen.desktop.NSScreenMainKt";
     if (strcmp(name, "notisync") == 0) return "net.extrawdw.notisync.cli.NotisyncMainKt";
     return NULL;
 }
@@ -254,6 +255,7 @@ static const char *main_class_for(const char *name) {
 static const char *options_variable_for(const char *name) {
     if (strcmp(name, "notisyncd") == 0) return "NOTISYNCD_OPTS";
     if (strcmp(name, "nsrun") == 0) return "NSRUN_OPTS";
+    if (strcmp(name, "nsscreen") == 0) return "NSSCREEN_OPTS";
     return "NOTISYNC_OPTS";
 }
 

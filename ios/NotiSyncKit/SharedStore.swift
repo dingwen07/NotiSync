@@ -594,6 +594,30 @@ nonisolated enum CardStore {
         all()[clientId].flatMap { try? ProtocolCodec.decodeSignedBlob($0) }
     }
 
+    /// Re-verify held material at its point of use. Older app versions could leave a decodable but invalid
+    /// CARD beside a still-valid trust/key record; profile-derived features must not treat that cache entry
+    /// as an authenticated capability declaration.
+    static func verifiedCard(
+        _ clientId: String,
+        pinnedIdentitySpki: Data,
+        now: Int64
+    ) -> ClientCard? {
+        guard let blob = blob(clientId),
+              blob.typ == SignedType.clientCard,
+              blob.signerId == clientId,
+              let card = try? ProtocolCodec.decodeClientCard(blob.payload),
+              card.clientId == clientId,
+              card.identityPublicKey == pinnedIdentitySpki,
+              ClientCardFreshness.accepts(createdAt: card.createdAt, now: now),
+              IdentityVerifier.verifyBound(
+                  expectedSignerId: clientId,
+                  spki: card.identityPublicKey,
+                  data: blob.payload,
+                  signature: blob.sig
+              ) else { return nil }
+        return card
+    }
+
     static func remove(_ clientId: String) {
         AppGroupStore.withLock(name) {
             var m = all()

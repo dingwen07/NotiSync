@@ -29,6 +29,7 @@ import net.extrawdw.notisync.localapi.ApplicationListResponse
 import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
 import net.extrawdw.notisync.localapi.ApplicationView
 import net.extrawdw.notisync.localapi.DaemonStatus
+import net.extrawdw.notisync.localapi.DeviceListResponse
 import net.extrawdw.notisync.localapi.LocalApiJson
 import net.extrawdw.notisync.localapi.ReceiveRecord
 import net.extrawdw.notisync.localapi.ReceiveRequest
@@ -37,6 +38,8 @@ import net.extrawdw.notisync.localapi.SendRequest
 
 interface DaemonLocalApi {
     fun status(): DaemonStatus
+
+    fun devices(): DeviceListResponse = throw UnsupportedOperationException("device listing is not implemented")
 
     fun putApplication(
         applicationId: String,
@@ -104,6 +107,8 @@ class UnixDaemonClient(
     }
 
     override fun status(): DaemonStatus = jsonRequest("GET", "/v1/status")
+
+    override fun devices(): DeviceListResponse = jsonRequest("GET", "/v1/devices")
 
     override fun putApplication(
         applicationId: String,

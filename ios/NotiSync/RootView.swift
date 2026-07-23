@@ -58,6 +58,10 @@ struct RootView: View {
                 runtime.incomingPairing = nil
             }
         }
+        .fullScreenCover(item: $runtime.screenMirrorPresentation) { source in
+            ScreenMirrorPlayerView(sourceId: source.sourceId, sourceName: source.sourceName)
+                .environmentObject(runtime)
+        }
     }
 }
 
@@ -549,7 +553,7 @@ struct InboxIconView: View {
 struct DevicesView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \TrustedDevice.updatedAt, order: .reverse) private var devices: [TrustedDevice]
+    @Query private var devices: [TrustedDevice]
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
@@ -576,7 +580,7 @@ struct DevicesView: View {
                             reachability: settings.brokerReachability, version: settings.brokerVersion))
                     }
                 }
-                let pending = devices.filter { $0.status == .pendingTrust || $0.status == .pendingRevoke }
+                let pending = devicesInNameOrder.filter { $0.status == .pendingTrust || $0.status == .pendingRevoke }
                 if !pending.isEmpty {
                     Section("Pending Approval") {
                         ForEach(pending) { device in
@@ -588,10 +592,19 @@ struct DevicesView: View {
                     }
                 }
                 Section("Trusted Peers") {
-                    ForEach(devices.filter { $0.status == .trusted }) { device in
-                        TrustedPeerRow(device: device, supportsNotificationFilters: !isIosPeer(device)) {
-                            selectedFilterDevice = .android(device)
-                        }
+                    ForEach(devicesInNameOrder.filter { $0.status == .trusted }) { device in
+                        TrustedPeerRow(
+                            device: device,
+                            supportsNotificationFilters: !isIosPeer(device),
+                            canMirrorScreen: runtime.screenMirrorSourceIds.contains(device.clientId),
+                            openFilters: { selectedFilterDevice = .android(device) },
+                            mirrorScreen: {
+                                _ = runtime.presentScreenMirror(
+                                    sourceId: device.clientId,
+                                    fallbackName: device.displayName
+                                )
+                            }
+                        )
                             .swipeActions(edge: .trailing) {
                                 Button(role: .destructive) {
                                     runtime.revokePeer(clientId: device.clientId)
@@ -664,6 +677,16 @@ struct DevicesView: View {
         iosDeviceRows = rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
     }
 
+    private var devicesInNameOrder: [TrustedDevice] {
+        devices.sorted(by: areTrustedDevicesInDisplayOrder)
+    }
+
+    private func areTrustedDevicesInDisplayOrder(_ lhs: TrustedDevice, _ rhs: TrustedDevice) -> Bool {
+        let nameOrder = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return lhs.clientId.localizedCaseInsensitiveCompare(rhs.clientId) == .orderedAscending
+    }
+
     private func areIosDevicesInDisplayOrder(_ lhs: FilteredIosDeviceRecord, _ rhs: FilteredIosDeviceRecord) -> Bool {
         let nameOrder = lhs.deviceName.localizedCaseInsensitiveCompare(rhs.deviceName)
         if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
@@ -686,30 +709,45 @@ private struct TrustedPeerRow: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     let device: TrustedDevice
     let supportsNotificationFilters: Bool
+    let canMirrorScreen: Bool
     let openFilters: () -> Void
+    let mirrorScreen: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            DeviceLabel(device: device)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
-                        openFilters()
+            HStack(alignment: .top, spacing: 12) {
+                DeviceLabel(device: device)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        if supportsNotificationFilters, runtime.androidLocalNotificationsEnabled(for: device.clientId) {
+                            openFilters()
+                        }
                     }
+                if canMirrorScreen {
+                    Button(action: mirrorScreen) {
+                        Image(systemName: "rectangle.inset.filled.and.person.filled")
+                            .font(.body.weight(.semibold))
+                            .frame(width: 28, height: 28)
+                    }
+                    .screenMirrorNativeButton()
+                    .buttonBorderShape(.circle)
+                    .controlSize(.small)
+                    .accessibilityLabel("View Screen")
+                    .accessibilityHint(device.displayName.isEmpty
+                                       ? "Opens this device in the screen viewer"
+                                       : "Opens " + device.displayName + " in the screen viewer")
                 }
+            }
             if supportsNotificationFilters {
-                HStack {
-                    Toggle(isOn: Binding(
-                        get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
-                        set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
-                    )) {
-                        NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
-                    }
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    Spacer()
+                Toggle(isOn: Binding(
+                    get: { runtime.androidLocalNotificationsEnabled(for: device.clientId) },
+                    set: { runtime.setAndroidLocalNotificationsEnabled($0, for: device.clientId) }
+                )) {
+                    NotificationPostingLabel(isEnabled: runtime.androidLocalNotificationsEnabled(for: device.clientId))
                 }
+                .font(.caption)
+                .foregroundStyle(.secondary)
             }
         }
     }

@@ -12,11 +12,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.automirrored.outlined.ScreenShare
 import androidx.compose.material.icons.outlined.Contactless
 import androidx.compose.material.icons.outlined.NotificationsOff
 import androidx.compose.material.icons.outlined.QrCode2
-import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -48,10 +47,10 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
-import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.NotificationFilterRule
@@ -67,6 +66,7 @@ fun DevicesScreen(
     onPair: () -> Unit,
     onRequestPostNotifications: () -> Unit,
     onOpenListenerSettings: () -> Unit,
+    onStartScreenMirror: (ClientId) -> Unit = {},
     pairButtonModifier: Modifier = Modifier,
 ) {
     val graph = rememberGraph()
@@ -74,22 +74,29 @@ fun DevicesScreen(
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
-    // Tick while any revoked tombstone is on screen, so its permanent-delete button enables once the
-    // purge delay elapses without needing to leave and reopen the page.
-    val hasRevoked = roster.any { it.status == TrustStatus.REVOKED }
-    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
-    LaunchedEffect(hasRevoked) {
-        while (hasRevoked) {
-            now = System.currentTimeMillis()
-            delay(1000)
-        }
-    }
+    val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
+    val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
+    val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
     // The own device whose received notification-filters sheet is open (null = closed).
     var filterSheetFor by remember { mutableStateOf<RosterDevice?>(null) }
     // Device details are keyed by id so a live profile/key-epoch update refreshes the open sheet.
     var detailsSheetFor by remember { mutableStateOf<ClientId?>(null) }
+    val showingRevokedDetails = detailsSheetFor?.let { selectedId ->
+        roster.any { it.clientId == selectedId && it.status == TrustStatus.REVOKED }
+    } == true
+    // Tick only while a revoked details sheet is visible, so its permanent-delete countdown and button
+    // update at the safety-window boundary without recomposing the Devices page indefinitely.
+    var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(showingRevokedDetails) {
+        now = System.currentTimeMillis()
+        if (!showingRevokedDetails) return@LaunchedEffect
+        while (true) {
+            delay(1000)
+            now = System.currentTimeMillis()
+        }
+    }
 
     NotiScaffold(stringResource(R.string.tab_devices)) { modifier ->
         LazyColumn(
@@ -183,7 +190,7 @@ fun DevicesScreen(
             } else {
                 item {
                     DeviceListCard(
-                        ownDevices, now, graph, enabled = !quarantined,
+                        ownDevices, graph, enabled = !quarantined,
                         onShowFilters = {
                             detailsSheetFor = null
                             filterSheetFor = it
@@ -192,6 +199,7 @@ fun DevicesScreen(
                             filterSheetFor = null
                             detailsSheetFor = it.clientId
                         },
+                        onStartScreenMirror = { onStartScreenMirror(it.clientId) },
                     )
                 }
             }
@@ -213,7 +221,6 @@ fun DevicesScreen(
                 item {
                     DeviceListCard(
                         otherDevices,
-                        now,
                         graph,
                         enabled = !quarantined,
                         onShowDetails = {
@@ -239,6 +246,51 @@ fun DevicesScreen(
             roster.firstOrNull { it.clientId == clientId }?.let { device ->
                 DeviceDetailsSheet(
                     device = device,
+                    nowMillis = now,
+                    screenMirroringEnabled = screenMirroringEnabled,
+                    screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
+                    screenMirrorRequestEnabled = !quarantined,
+                    trustActionsEnabled = !quarantined,
+                    screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
+                    screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
+                    onScreenControlAuthorizedChange = { authorized ->
+                        graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                    },
+                    onScreenMirrorCodecOverrideChange = { codec ->
+                        graph.scope.launch {
+                            graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
+                        }
+                    },
+                    onStartScreenMirror = {
+                        detailsSheetFor = null
+                        onStartScreenMirror(device.clientId)
+                    },
+                    onRemove = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.revokeLocal(
+                                    device.clientId,
+                                    System.currentTimeMillis(),
+                                )
+                            ) graph.broadcastTrust()
+                        }
+                    },
+                    onRestore = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.restoreTrust(device.clientId, System.currentTimeMillis())) {
+                                graph.broadcastTrust()
+                            }
+                        }
+                    },
+                    onPurge = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            graph.trust.purgeRevoked(device.clientId)
+                            // Forget this peer's filter only after its trust-store removal was durable.
+                            graph.notificationFilters.remove(device.clientId)
+                        }
+                    },
                     onDismiss = { detailsSheetFor = null },
                 )
             }
@@ -249,11 +301,11 @@ fun DevicesScreen(
 @Composable
 private fun DeviceListCard(
     devices: List<RosterDevice>,
-    now: Long,
     graph: net.extrawdw.apps.notisync.AppGraph,
     enabled: Boolean = true,
     onShowFilters: (RosterDevice) -> Unit = {},
     onShowDetails: (RosterDevice) -> Unit = {},
+    onStartScreenMirror: (RosterDevice) -> Unit = {},
 ) {
     val context = LocalContext.current
     val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
@@ -262,12 +314,12 @@ private fun DeviceListCard(
             devices.forEachIndexed { index, device ->
                 DeviceRow(
                     device = device,
-                    now = now,
                     enabled = enabled,
                     onShowFilters = { onShowFilters(device) },
                     onShowDetails = { onShowDetails(device) },
+                    onStartScreenMirror = { onStartScreenMirror(device) },
                     hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
-                    // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
+                    // Overturns (deny / keep) propagate now; agreements ride anti-entropy.
                     onApprove = {
                         graph.launchDurableTrustAction(context) {
                             if (graph.trust.approveTrust(
@@ -302,29 +354,6 @@ private fun DeviceListCard(
                                     System.currentTimeMillis()
                                 )
                             ) graph.broadcastTrust()
-                        }
-                    },
-                    onRemove = {
-                        graph.launchDurableTrustAction(context) {
-                            if (graph.trust.revokeLocal(
-                                    it,
-                                    System.currentTimeMillis()
-                                )
-                            ) graph.broadcastTrust()
-                        }
-                    },
-                    onPurge = {
-                        graph.launchDurableTrustAction(context) {
-                            graph.trust.purgeRevoked(it)
-                            // Forget this peer's filter only after its trust-store removal was durable.
-                            graph.notificationFilters.remove(it)
-                        }
-                    },
-                    onRestore = {
-                        graph.launchDurableTrustAction(context) {
-                            if (graph.trust.restoreTrust(it, System.currentTimeMillis())) {
-                                graph.broadcastTrust()
-                            }
                         }
                     },
                 )
@@ -425,18 +454,15 @@ private fun PermissionCard(title: String, body: String, action: String, onClick:
 @Composable
 private fun DeviceRow(
     device: RosterDevice,
-    now: Long,
     enabled: Boolean = true,
     onShowFilters: () -> Unit = {},
     onShowDetails: () -> Unit = {},
+    onStartScreenMirror: () -> Unit = {},
     hasFilters: Boolean = false,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
     onKeep: (ClientId) -> Unit,
-    onRemove: (ClientId) -> Unit,
-    onPurge: (ClientId) -> Unit,
-    onRestore: (ClientId) -> Unit = {},
 ) {
     val name = device.displayName ?: stringResource(R.string.device_unknown)
     val isRevoked = device.status == TrustStatus.REVOKED
@@ -491,10 +517,20 @@ private fun DeviceRow(
                 )
             }
             when (device.status) {
-                // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
-                // Own devices also expose the notification-filters this device received from them (DATA_SYNC
-                // FILTER) — what this device won't forward to that peer.
+                // Own devices expose the notification-filters this device received from them (DATA_SYNC
+                // FILTER) — what this device won't forward to that peer. Removal lives in device details.
                 TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (device.supportsScreenMirrorRequest()) {
+                        IconButton(onClick = onStartScreenMirror, enabled = enabled) {
+                            Icon(
+                                Icons.AutoMirrored.Outlined.ScreenShare,
+                                contentDescription = stringResource(
+                                    R.string.screen_mirror_device_start_desc,
+                                    name,
+                                ),
+                            )
+                        }
+                    }
                     // Only own devices send filters; disabled when this device is hiding nothing from them.
                     if (device.ownDevice) {
                         IconButton(onClick = onShowFilters, enabled = enabled && hasFilters) {
@@ -503,41 +539,6 @@ private fun DeviceRow(
                                 contentDescription = stringResource(R.string.device_filters_button_desc, name)
                             )
                         }
-                    }
-                    IconButton(
-                        onClick = { onRemove(device.clientId) },
-                        enabled = enabled
-                    ) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = stringResource(R.string.device_remove_desc, name)
-                        )
-                    }
-                }
-
-                TrustStatus.REVOKED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                    // Revert an accidental delete: re-trust the device (peers re-confirm via RE_TRUST).
-                    IconButton(onClick = { onRestore(device.clientId) }, enabled = enabled) {
-                        Icon(
-                            Icons.Outlined.Restore,
-                            contentDescription = stringResource(R.string.device_restore_desc, name)
-                        )
-                    }
-                    // Permanently forgettable only after the tombstone has outlived the stale-trust window.
-                    val revokedAt = device.revokedAt
-                    val canPurge = revokedAt != null &&
-                            now - revokedAt >= TrustStore.REVOKE_PURGE_DELAY_MS
-                    IconButton(
-                        onClick = { onPurge(device.clientId) },
-                        enabled = canPurge && enabled
-                    ) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = stringResource(
-                                R.string.device_permanently_delete_desc,
-                                name
-                            )
-                        )
                     }
                 }
 

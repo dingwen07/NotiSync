@@ -18,6 +18,7 @@ import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.localapi.SendAccepted
 import net.extrawdw.notisync.localapi.SendRequest
 import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.peer.channel.HighDataSyncPolicy
 import net.extrawdw.notisync.peer.channel.SignerSelection
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.Capability
@@ -101,7 +102,7 @@ class GenericSendResolver(
             }
         }
         val urgency = request.urgency ?: defaultUrgency
-        validateHighDataSync(request.messageType, requireNotNull(scope), urgency)
+        validateHighDataSync(request.messageType, body, requireNotNull(scope), urgency)
         return ResolvedSend(
             applicationId = request.applicationId,
             messageType = request.messageType,
@@ -115,24 +116,9 @@ class GenericSendResolver(
         )
     }
 
-    private fun validateHighDataSync(type: MessageType, scope: Recipients, urgency: Urgency) {
+    private fun validateHighDataSync(type: MessageType, body: ByteArray, scope: Recipients, urgency: Urgency) {
         if (type != MessageType.DATA_SYNC || urgency != Urgency.HIGH) return
-        val routed = scope as? Recipients.OwnMeshFiltered
-        require(
-            routed?.requireCapabilityRoutingV1 == true &&
-                routed.requiredCapabilities.containsAll(HIGH_DATA_SYNC_CAPABILITIES),
-        ) {
-            "HIGH DATA_SYNC requires a capability-routed OwnMeshFiltered audience with " +
-                "DISPLAY, BACKGROUND_WAKE, and PUSH_FILTERING"
-        }
-    }
-
-    private companion object {
-        val HIGH_DATA_SYNC_CAPABILITIES = setOf(
-            Capability.DISPLAY,
-            Capability.BACKGROUND_WAKE,
-            Capability.PUSH_FILTERING,
-        )
+        HighDataSyncPolicy.validate(body, scope)
     }
 }
 

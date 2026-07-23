@@ -38,6 +38,17 @@ sealed interface Recipients {
     /** A single own device by id (unicast: card / asset repair). */
     @Serializable
     data class Only(val id: ClientId) : Recipients
+
+    /**
+     * A single own device, only if its complete capability declaration satisfies [requiredCapabilities].
+     * Unlike [OwnMeshFiltered], this selector has no legacy platform fallback: it is for security-sensitive
+     * protocols whose request must never be routed to a peer that did not explicitly advertise support.
+     */
+    @Serializable
+    data class OnlyCapable(
+        val id: ClientId,
+        val requiredCapabilities: Set<Capability>,
+    ) : Recipients
 }
 
 /**

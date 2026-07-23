@@ -137,6 +137,7 @@ class ApplicationReceiveRouter(
         val senderOwnDevice: Boolean,
         val signerEpoch: Int,
         val deliveryMode: String,
+        val envelopeCreatedAtEpochMillis: Long,
         val receivedAtEpochMillis: Long,
         private val decodedDataSync: DataSync?,
     ) {
@@ -165,6 +166,7 @@ class ApplicationReceiveRouter(
             signerEpoch = signerEpoch,
             deliveryMode = deliveryMode,
             receivedAtEpochMillis = receivedAtEpochMillis,
+            envelopeCreatedAtEpochMillis = envelopeCreatedAtEpochMillis,
         )
     }
 
@@ -217,6 +219,7 @@ class ApplicationReceiveRouter(
                 senderOwnDevice = message.senderOwnDevice,
                 signerEpoch = message.signerEpoch,
                 deliveryMode = message.deliveryMode.name,
+                envelopeCreatedAtEpochMillis = message.createdAt,
                 receivedAtEpochMillis = clock.millis(),
                 decodedDataSync = decodedDataSync,
             )

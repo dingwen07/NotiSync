@@ -24,12 +24,24 @@ nonisolated enum MirrorCategory: String, Sendable {
 }
 nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS }
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
-nonisolated enum DataSyncKind: String, Sendable { case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN }
+nonisolated enum DataSyncKind: String, Sendable {
+    case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING
+}
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
+nonisolated enum ScreenMirrorAction: String, Sendable { case REQUEST, STATUS, CANCEL, END }
+nonisolated enum ScreenMirrorCodec: String, Sendable { case H264, H265, AV1 }
+nonisolated enum ScreenMirrorStatus: String, Sendable {
+    case CONNECTING, READY, UNAUTHORIZED, EXPIRED, BUSY, SHIZUKU_UNAVAILABLE
+    case CODEC_UNAVAILABLE, CODEC_START_FAILED, TRANSPORT_FAILED, ENDED
+}
 nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
     case CAPABILITY_ROUTING_V1, PUSH_FILTERING, DISPLAY_NOTIFICATION_UPDATES
     case DISPLAY_ANDROID_GROUP_SUMMARIES, PUBLISH_RUNS, RECEIVE_RUNS
+    case SCREEN_MIRROR_SOURCE_V1, SCREEN_MIRROR_CONTROL_V1, SCREEN_MIRROR_CLIPBOARD_TEXT_V1
+    case SCREEN_MIRROR_ENCODER_H264_HW, SCREEN_MIRROR_ENCODER_H265_HW, SCREEN_MIRROR_ENCODER_AV1_HW
+    case SCREEN_MIRROR_VIDEO_VISIBILITY_V1
+    case SCREEN_MIRROR_BROKER_RELAY_V1
 }
 
 nonisolated enum TransportType: String, Sendable { case FCM, WEBSOCKET, APNS, WEBPUSH }
@@ -349,6 +361,85 @@ nonisolated struct FilterSync: Sendable {
     var updatedAt: Int64
 }
 
+/// One authenticated screen-session listener address carried inside the encrypted rendezvous request.
+nonisolated struct ScreenMirrorConnectionCandidate: Sendable {
+    var kind: String
+    var host: String?
+    var port: Int?
+    var serviceName: String?
+    var interfaceName: String?
+
+    static let lanTCP = "LAN_TCP"
+    static let dnsSD = "DNS_SD"
+    static let brokerRelay = "BROKER_RELAY"
+}
+
+/// Authenticated participant role for one broker screen-Relay channel.
+nonisolated enum ScreenRelayRole: String, Codable, Sendable {
+    case requester = "REQUESTER"
+    case source = "SOURCE"
+}
+
+/// The independent Relay video and control channels. Keeping them separate prevents control input
+/// from queueing behind video frames.
+nonisolated enum ScreenRelayChannel: String, Codable, Sendable {
+    case video = "VIDEO"
+    case control = "CONTROL"
+}
+
+/// First application frame after the broker WebSocket nonce challenge succeeds.
+nonisolated struct ScreenRelayJoin: Codable, Sendable {
+    var relayId: String
+    var requesterPeerId: String
+    var sourcePeerId: String
+    var role: ScreenRelayRole
+    var channel: ScreenRelayChannel
+    var expiresAt: Int64
+}
+
+/// Broker registration and Relay-video flow-control signal.
+nonisolated struct ScreenRelaySignal: Codable, Sendable {
+    var kind: String
+    var detail: String?
+    var sequence: Int64?
+    var deliveredBytes: Int64?
+
+    init(kind: String, detail: String? = nil, sequence: Int64? = nil, deliveredBytes: Int64? = nil) {
+        self.kind = kind
+        self.detail = detail
+        self.sequence = sequence
+        self.deliveredBytes = deliveredBytes
+    }
+}
+
+nonisolated enum ScreenRelaySignalKind {
+    static let registered = "registered"
+    static let videoAck = "video_ack"
+    static let videoCongested = "video_congested"
+}
+
+/// Screen protocol v1 rendezvous/status body. Secrets are present only on REQUEST.
+nonisolated struct ScreenMirrorSync: Sendable {
+    var action: ScreenMirrorAction
+    var protocolVersion: Int = 1
+    var sessionId: String
+    var requesterPeerId: String
+    var sourcePeerId: String
+    var issuedAt: Int64
+    var expiresAt: Int64?
+    var routingToken: Data?
+    var masterPsk: Data?
+    var codec: ScreenMirrorCodec?
+    var requestControl: Bool = false
+    var requestClipboard: Bool = false
+    var maxDimension: Int?
+    var maxFps: Int?
+    var videoBitrateBps: Int?
+    var candidates: [ScreenMirrorConnectionCandidate] = []
+    var status: ScreenMirrorStatus?
+    var detail: String?
+}
+
 nonisolated struct DataSync: Sendable {
     var kind: DataSyncKind
     var asset: AssetSync?
@@ -356,6 +447,7 @@ nonisolated struct DataSync: Sendable {
     var trust: TrustTable?
     var card: CardDelivery?
     var filter: FilterSync?
+    var screenMirror: ScreenMirrorSync?
 }
 
 // MARK: - JSON control-plane DTOs (Decodable; the broker's REST layer)

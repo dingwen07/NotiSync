@@ -11,13 +11,23 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.ScreenShare
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Smartphone
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -33,18 +43,37 @@ import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
+import net.extrawdw.apps.notisync.data.TrustStore
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
+import net.extrawdw.apps.notisync.screen.availableAndroidScreenCodecs
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ScreenMirrorCodec
+import net.extrawdw.notisync.protocol.TrustStatus
 import java.text.DateFormat
 import java.util.Date
 
 /**
- * Read-only details for a paired device. Values come from the individually verified card and key-epoch held
- * by the trust store; no private key material is ever exposed here.
+ * Details for a paired device. Identity values come from the individually verified card and key-epoch held
+ * by the trust store; the only mutable field is the local screen-control grant.
  */
 @Suppress("DEPRECATION") // Stable M3 factory is deprecated only by the Expressive artifact in use.
 @Composable
 internal fun DeviceDetailsSheet(
     device: RosterDevice,
+    nowMillis: Long,
+    screenMirroringEnabled: Boolean,
+    screenControlAuthorized: Boolean,
+    screenMirrorRequestEnabled: Boolean = true,
+    trustActionsEnabled: Boolean = true,
+    screenMirrorCodecOverride: ScreenMirrorCodec?,
+    screenMirrorDecoderSupport: AndroidScreenDecoderSupport,
+    onScreenControlAuthorizedChange: (Boolean) -> Unit,
+    onScreenMirrorCodecOverrideChange: (ScreenMirrorCodec?) -> Unit,
+    onStartScreenMirror: (ClientId) -> Unit = {},
+    onRemove: () -> Unit = {},
+    onRestore: () -> Unit = {},
+    onPurge: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -97,6 +126,234 @@ internal fun DeviceDetailsSheet(
             item {
                 DeviceCapabilities(device.capabilities)
             }
+            if (device.supportsScreenMirrorRequest()) {
+                val availableCodecs = availableAndroidScreenCodecs(
+                    sourceCapabilities = device.capabilities.toSet(),
+                    decoderSupport = screenMirrorDecoderSupport,
+                )
+                item {
+                    ScreenMirrorCodecSelector(
+                        // Preserve and display an unavailable durable override as selected+disabled;
+                        // the requester temporarily falls back to Auto until that codec returns.
+                        selectedCodec = screenMirrorCodecOverride,
+                        availableCodecs = availableCodecs,
+                        enabled = screenMirrorRequestEnabled,
+                        onSelected = onScreenMirrorCodecOverrideChange,
+                    )
+                }
+                item {
+                    Button(
+                        onClick = { onStartScreenMirror(device.clientId) },
+                        enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.ScreenShare,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                        )
+                        androidx.compose.foundation.layout.Spacer(
+                            Modifier.size(ButtonDefaults.IconSpacing)
+                        )
+                        Text(stringResource(R.string.screen_mirror_device_start))
+                    }
+                }
+            }
+            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
+                item {
+                    ScreenControlAuthorization(
+                        masterEnabled = screenMirroringEnabled,
+                        authorized = screenControlAuthorized,
+                        onAuthorizedChange = onScreenControlAuthorizedChange,
+                    )
+                }
+            }
+            if (device.status == TrustStatus.TRUSTED) {
+                item {
+                    Button(
+                        onClick = onRemove,
+                        enabled = trustActionsEnabled,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                        )
+                        androidx.compose.foundation.layout.Spacer(
+                            Modifier.size(ButtonDefaults.IconSpacing)
+                        )
+                        Text(stringResource(R.string.device_remove_desc, name))
+                    }
+                }
+            }
+            if (device.status == TrustStatus.REVOKED) {
+                item {
+                    RevokedDeviceActions(
+                        name = name,
+                        revokedAt = device.revokedAt,
+                        nowMillis = nowMillis,
+                        actionsEnabled = trustActionsEnabled,
+                        onRestore = onRestore,
+                        onPurge = onPurge,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RevokedDeviceActions(
+    name: String,
+    revokedAt: Long?,
+    nowMillis: Long,
+    actionsEnabled: Boolean,
+    onRestore: () -> Unit,
+    onPurge: () -> Unit,
+) {
+    val remainingMillis = revokedAt?.let {
+        (it + TrustStore.REVOKE_PURGE_DELAY_MS - nowMillis).coerceAtLeast(0L)
+    }
+    val purgeEnabled = actionsEnabled && remainingMillis == 0L
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            stringResource(R.string.device_restore_explanation),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = onRestore,
+            enabled = actionsEnabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Outlined.Restore,
+                contentDescription = null,
+                modifier = Modifier.size(ButtonDefaults.IconSize),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(stringResource(R.string.device_restore_desc, name))
+        }
+
+        Text(
+            stringResource(R.string.device_permanently_delete_explanation),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Button(
+            onClick = onPurge,
+            enabled = purgeEnabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = null,
+                modifier = Modifier.size(ButtonDefaults.IconSize),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(stringResource(R.string.device_delete_desc, name))
+        }
+        Text(
+            when {
+                !actionsEnabled -> stringResource(R.string.device_actions_quarantined)
+                remainingMillis == null -> stringResource(R.string.device_purge_timestamp_missing)
+                remainingMillis > 0L -> stringResource(
+                    R.string.device_purge_waiting,
+                    formatDuration(remainingMillis.roundUpToSecond()),
+                )
+                else -> stringResource(R.string.device_purge_ready)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun Long.roundUpToSecond(): Long = ((this + 999L) / 1_000L) * 1_000L
+
+@Composable
+private fun ScreenMirrorCodecSelector(
+    selectedCodec: ScreenMirrorCodec?,
+    availableCodecs: Set<ScreenMirrorCodec>,
+    enabled: Boolean,
+    onSelected: (ScreenMirrorCodec?) -> Unit,
+) {
+    val choices = listOf(
+        null to stringResource(R.string.screen_mirror_codec_auto),
+        ScreenMirrorCodec.AV1 to stringResource(R.string.screen_mirror_codec_av1),
+        ScreenMirrorCodec.H265 to stringResource(R.string.screen_mirror_codec_h265),
+        ScreenMirrorCodec.H264 to stringResource(R.string.screen_mirror_codec_h264),
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            stringResource(R.string.screen_mirror_codec_title),
+            style = MaterialTheme.typography.labelLarge,
+        )
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            choices.forEachIndexed { index, (codec, label) ->
+                SegmentedButton(
+                    selected = codec == selectedCodec,
+                    onClick = { onSelected(codec) },
+                    enabled = enabled && (codec == null || codec in availableCodecs),
+                    shape = SegmentedButtonDefaults.itemShape(index, choices.size),
+                    label = {
+                        Text(label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    },
+                )
+            }
+        }
+        Text(
+            stringResource(R.string.screen_mirror_codec_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ScreenControlAuthorization(
+    masterEnabled: Boolean,
+    authorized: Boolean,
+    onAuthorizedChange: (Boolean) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.screen_mirror_device_title),
+                style = MaterialTheme.typography.labelLarge,
+            )
+            Switch(
+                checked = authorized,
+                onCheckedChange = onAuthorizedChange,
+                enabled = masterEnabled,
+            )
+        }
+        Text(
+            stringResource(R.string.screen_mirror_device_body),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!masterEnabled) {
+            Text(
+                stringResource(R.string.screen_mirror_device_master_off),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -299,6 +556,14 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.DISPLAY_ANDROID_GROUP_SUMMARIES -> R.string.device_capability_android_group_summaries
         Capability.PUBLISH_RUNS -> R.string.device_capability_publish_runs
         Capability.RECEIVE_RUNS -> R.string.device_capability_receive_runs
+        Capability.SCREEN_MIRROR_SOURCE_V1 -> R.string.device_capability_screen_source
+        Capability.SCREEN_MIRROR_CONTROL_V1 -> R.string.device_capability_screen_control
+        Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1 -> R.string.device_capability_screen_clipboard
+        Capability.SCREEN_MIRROR_ENCODER_H264_HW -> R.string.device_capability_screen_h264
+        Capability.SCREEN_MIRROR_ENCODER_H265_HW -> R.string.device_capability_screen_h265
+        Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> R.string.device_capability_screen_av1
+        Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 -> R.string.device_capability_screen_visibility
+        Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> R.string.device_capability_screen_broker_relay
     },
 )
 

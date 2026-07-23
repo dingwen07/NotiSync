@@ -23,11 +23,15 @@ import io.ktor.websocket.readText
 import io.ktor.websocket.send
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.peer.ports.IntegrityEvidenceProvider
@@ -45,6 +49,9 @@ import net.extrawdw.notisync.protocol.RelayPending
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.ScreenRelayJoin
+import net.extrawdw.notisync.protocol.ScreenRelaySignal
+import net.extrawdw.notisync.protocol.ScreenRelaySignalKind
 import net.extrawdw.notisync.protocol.Transport
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.Urgency
@@ -57,10 +64,17 @@ import net.extrawdw.notisync.protocol.crypto.HttpRequestSigning
 import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.notisync.protocol.crypto.ProofOfWork
+import java.io.IOException
 import java.net.URI
 import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okio.ByteString
 
 /**
  * Ktor-based client implementing the transport-neutral [Transport]. The control plane is signed HTTP
@@ -112,6 +126,18 @@ class BrokerClient(
         }
         install(WebSockets)
     }
+    private val relayWebSocketClient = OkHttpClient.Builder()
+        .connectTimeout(HTTP_CONNECT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .writeTimeout(HTTP_SOCKET_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        .pingInterval(webSocketPingSeconds, TimeUnit.SECONDS)
+        // Relay control messages are tiny (a touch is one 32-byte scrcpy frame inside TLS).
+        // OkHttp otherwise leaves TCP_NODELAY at the platform default, so Nagle plus delayed ACKs
+        // can pace MOVE events into visibly slow bursts on both Android relay clients.
+        .socketFactory(TcpNoDelaySocketFactory())
+        // Relay VIDEO is already AES-GCM ciphertext. Deflate cannot reduce it and only adds CPU and
+        // another staging buffer on the latency-sensitive path.
+        .minWebSocketMessageToCompress(Long.MAX_VALUE)
+        .build()
     private val authMutex = Mutex()
 
     @Volatile
@@ -129,9 +155,8 @@ class BrokerClient(
             runCatching { tokenStore.load() }.getOrNull()?.takeIf { it.clientId == signer.clientId }
     }
 
-    private fun wsBase(): String = baseUrlProvider().trimEnd('/')
-    private fun httpBase(): String =
-        wsBase().replaceFirst("ws://", "http://").replaceFirst("wss://", "https://")
+    private fun wsBase(): String = brokerWebSocketBase(baseUrlProvider())
+    private fun httpBase(): String = brokerHttpBase(baseUrlProvider())
 
     override suspend fun publishKeyEpoch(keyEpoch: SignedBlob) {
         // Identity-signed request (signerEpoch 0): the broker pins our identity from the first key-epoch and
@@ -661,7 +686,102 @@ class BrokerClient(
         }
     }
 
-    fun close() = client.close()
+    /** Registers one broker-authenticated v1 screen Relay channel. */
+    suspend fun openScreenRelay(join: ScreenRelayJoin): BrokerRelayConnection {
+        require(join.relayId.matches(Regex("[A-Za-z0-9_-]{32}"))) { "invalid screen relay id" }
+        require(join.expiresAt > System.currentTimeMillis()) { "screen relay request expired" }
+        val connection = BrokerRelayConnection(join.channel, join.role)
+        val registered = CompletableDeferred<Unit>()
+        val url = "${wsBase()}/v1/screen-relay"
+        val token = bearerTokenOrNull()
+        val signed = HttpRequestSigning.sign(signer, "GET", pathAndQuery(url), ByteArray(0))
+        val request = Request.Builder().url(url).apply {
+            token?.let { header(HttpHeaders.Authorization, "Bearer $it") }
+            header(HttpRequestSigning.HEADER_CLIENT_ID, signed.clientId.value)
+            header(HttpRequestSigning.HEADER_TIMESTAMP, signed.timestampMillis.toString())
+            header(HttpRequestSigning.HEADER_NONCE, signed.nonce)
+            header(HttpRequestSigning.HEADER_CONTENT_SHA256, signed.contentSha256)
+            header(HttpRequestSigning.HEADER_SIGNATURE, signed.signature)
+            header(HttpRequestSigning.HEADER_SIGNER_EPOCH, signed.signerEpoch.toString())
+        }.build()
+        val socket = relayWebSocketClient.newWebSocket(request, object : WebSocketListener() {
+            private var challengeHandled = false
+            private var registeredHandled = false
+
+            override fun onMessage(webSocket: WebSocket, text: String) {
+                try {
+                    if (!challengeHandled) {
+                        val challenge = ProtocolCodec.decodeFromJson<WsChallenge>(text)
+                        val signature = Base64.getEncoder()
+                            .encodeToString(signer.sign(challenge.nonce.toByteArray()))
+                        check(
+                            webSocket.send(
+                                ProtocolCodec.encodeToJson(
+                                    WsAuth(signer.clientId, challenge.nonce, signature, epoch = 0),
+                                ),
+                            ),
+                        ) { "broker relay authentication send failed" }
+                        check(webSocket.send(ProtocolCodec.encodeToJson(join))) {
+                            "broker relay join send failed"
+                        }
+                        challengeHandled = true
+                    } else if (!registeredHandled) {
+                        val signal = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(text)
+                        check(signal.kind == ScreenRelaySignalKind.REGISTERED) {
+                            signal.detail ?: "broker relay registration rejected"
+                        }
+                        registeredHandled = true
+                        registered.complete(Unit)
+                    } else {
+                        connection.receiveSignal(ProtocolCodec.decodeFromJson(text))
+                    }
+                } catch (error: Throwable) {
+                    registered.completeExceptionally(error)
+                    webSocket.cancel()
+                    connection.terminate()
+                }
+            }
+
+            override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                try {
+                    connection.receive(bytes.toByteArray())
+                } catch (error: Throwable) {
+                    registered.completeExceptionally(error)
+                    webSocket.cancel()
+                    connection.terminate()
+                }
+            }
+
+            override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                webSocket.close(code, reason)
+            }
+
+            override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                registered.completeExceptionally(IOException("broker relay closed ($code): $reason"))
+                connection.terminate()
+            }
+
+            override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                registered.completeExceptionally(t)
+                connection.terminate()
+            }
+        })
+        connection.attach(socket)
+        try {
+            withTimeout(SCREEN_RELAY_REGISTER_TIMEOUT_MS) { registered.await() }
+            return connection
+        } catch (error: Throwable) {
+            connection.abort()
+            throw error
+        }
+    }
+
+    fun close() {
+        client.close()
+        relayWebSocketClient.dispatcher.cancelAll()
+        relayWebSocketClient.dispatcher.executorService.shutdown()
+        relayWebSocketClient.connectionPool.evictAll()
+    }
 
     private companion object {
         const val AUTH_REFRESH_SKEW_MS = 60_000L
@@ -670,15 +790,15 @@ class BrokerClient(
         // multi-day JWT is renewed in the background long before any request would have to block to re-attest.
         const val AUTH_PROACTIVE_REFRESH_MS = 24L * 60 * 60 * 1000
 
-        // Re-attestation backoff: the nth consecutive failure waits base·2^(n-1), shift- then total-capped,
-        // plus jitter (see [backoffCooldownMs]). Retryable (429/5xx/stale) starts gentle at 5s; a definitive
-        // reject (bad device/app/signature) starts at 60s. Both reset on the next successful attestation.
+        // Re-attestation backoff is exponential with jitter. Retryable errors start at 5s; a definitive
+        // rejection starts at 60s. Both reset after a successful attestation.
         const val AUTH_RETRYABLE_COOLDOWN_BASE_MS = 5_000L
         const val AUTH_FAILURE_COOLDOWN_BASE_MS = 60_000L
         const val AUTH_COOLDOWN_MAX_SHIFT = 4
         const val AUTH_COOLDOWN_MAX_MS = 5L * 60 * 1000
         const val WS_REAUTH_AFTER_FAILURES = 3
         const val DEFAULT_WS_PING_SECONDS = 30L
+        const val SCREEN_RELAY_REGISTER_TIMEOUT_MS = 30_000L
 
         // HTTP timeouts. Connect makes the platform default explicit; socket (per-read/write inactivity,
         // which is also the HTTP/2 per-stream response-header wait) gets headroom over the old implicit 10s
@@ -698,4 +818,26 @@ class BrokerClient(
     )
 
     private class IntegrityException(message: String, val retryable: Boolean) : Exception(message)
+}
+
+/**
+ * A configured broker address is an HTTP base URL because most broker traffic is signed HTTP. Accept the
+ * older ws/wss spelling as input, but canonicalize the scheme at the point where each transport is used.
+ */
+internal fun brokerHttpBase(value: String): String {
+    val normalized = value.trim().trimEnd('/')
+    return when {
+        normalized.startsWith("wss://") -> "https://${normalized.removePrefix("wss://")}"
+        normalized.startsWith("ws://") -> "http://${normalized.removePrefix("ws://")}"
+        else -> normalized
+    }
+}
+
+internal fun brokerWebSocketBase(value: String): String {
+    val normalized = value.trim().trimEnd('/')
+    return when {
+        normalized.startsWith("https://") -> "wss://${normalized.removePrefix("https://")}"
+        normalized.startsWith("http://") -> "ws://${normalized.removePrefix("http://")}"
+        else -> normalized
+    }
 }

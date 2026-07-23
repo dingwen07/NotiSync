@@ -104,7 +104,12 @@ extension NotiSyncRuntime {
                     await removeRemoteDismissal(d)
                 case let .dataSync(ds):
                     span.attribute("inbound_kind", "data_sync")
-                    await handleDataSync(ds, from: opened.env.signerId, signerEpoch: opened.env.signerEpoch)
+                    await handleDataSync(
+                        ds,
+                        from: opened.env.signerId,
+                        signerEpoch: opened.env.signerEpoch,
+                        envelopeCreatedAt: opened.env.createdAt
+                    )
                 case let .unsupported(typ):
                     // ACTION (or a future type) addressed to us by mistake — iOS never performs
                     // actions (it never captures). Ack-and-drop; leaving it unacked would redeliver.
@@ -346,7 +351,12 @@ extension NotiSyncRuntime {
         return plaintext
     }
 
-    private func handleDataSync(_ ds: DataSync, from signerId: String, signerEpoch: Int) async {
+    private func handleDataSync(
+        _ ds: DataSync,
+        from signerId: String,
+        signerEpoch: Int,
+        envelopeCreatedAt: Int64
+    ) async {
         switch ds.kind {
         case .CARD:
             // CARD (a self-authenticating client card and/or key-epoch relay) is own-mesh only — Android's
@@ -425,6 +435,12 @@ extension NotiSyncRuntime {
             // Run state and controls are consumed by PUSH_FILTERING peers (Android). iOS keeps the
             // compatibility NOTIFICATION/ACTION path and deliberately ignores a misrouted RUN sync.
             break
+        case .SCREEN_MIRRORING:
+            // iOS is viewer-only: it consumes lifecycle/status for the locally initiated session and still
+            // acknowledges an inbound REQUEST (a routing error) without ever becoming a screen source.
+            if let status = ds.screenMirror {
+                await handleScreenMirrorStatus(status, from: signerId, envelopeCreatedAt: envelopeCreatedAt)
+            }
         }
     }
 

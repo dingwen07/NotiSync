@@ -28,8 +28,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 45
-        versionName = "2.0.0-rc.1"
+        versionCode = 49
+        versionName = "2.0.0-rc.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -54,6 +54,10 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
+    }
+    packaging {
+        resources.pickFirsts += "META-INF/LICENSE.md"
     }
 }
 
@@ -76,6 +80,8 @@ dependencies {
     implementation(project(":protocol"))
     implementation(project(":protocol-crypto"))
     implementation(project(":peer-core"))
+    implementation(project(":scrcpy-server"))
+    implementation(project(":screen-session"))
     implementation(libs.tink.android)
 
     // Compose / Material 3 Expressive
@@ -115,6 +121,11 @@ dependencies {
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
     implementation(libs.kotlinx.coroutines.android)
+
+    // Privileged screen capture/input runs as a short-lived, non-daemon Shizuku UserService. The provider
+    // artifact only discovers the separately installed Shizuku Manager; it does not bundle or start it.
+    implementation(libs.shizuku.api)
+    implementation(libs.shizuku.provider)
     // Directly used for the small App Store (iTunes Lookup) icon JSON; also exported transitively by :protocol.
     implementation(libs.kotlinx.serialization.json)
 

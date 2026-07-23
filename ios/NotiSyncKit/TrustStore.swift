@@ -145,6 +145,55 @@ nonisolated final class TrustStore {
         return ids
     }
 
+    /// One-time compact-NS2 upgrade hygiene. A stored identity field alone is not proof: require a valid
+    /// identity-signed card or self-contained key epoch, and reject malformed held material just like the
+    /// Kotlin roster's `verified` badge. The caller persists this local deletion and drops held cards.
+    @discardableResult
+    func removeUnverifiedPeers() -> [String] {
+        let cards = CardStore.all()
+        let ids = peers.values
+            .filter { !isCryptographicallyVerified($0, cards: cards) }
+            .map(\.clientId)
+        for id in ids { peers.removeValue(forKey: id) }
+        return ids
+    }
+
+    private func isCryptographicallyVerified(
+        _ peer: TrustedPeerRecord,
+        cards: [String: Data]
+    ) -> Bool {
+        let cardData = cards[peer.clientId]
+        let card: ClientCard? = cardData.flatMap { data in
+            guard let blob = try? ProtocolCodec.decodeSignedBlob(data),
+                  blob.typ == SignedType.clientCard,
+                  blob.signerId == peer.clientId,
+                  let decoded = try? ProtocolCodec.decodeClientCard(blob.payload),
+                  decoded.clientId == peer.clientId,
+                  (peer.identitySpki.isEmpty || decoded.identityPublicKey == peer.identitySpki),
+                  IdentityVerifier.verifyBound(
+                    expectedSignerId: peer.clientId,
+                    spki: decoded.identityPublicKey,
+                    data: blob.payload,
+                    signature: blob.sig
+                  ) else { return nil }
+            return decoded
+        }
+        let newestEpoch = peer.epochs.compactMap { epoch -> (Int, SignedBlob)? in
+            guard epoch.epoch >= (peer.floor ?? 0),
+                  let data = epoch.signedBlob,
+                  let blob = try? ProtocolCodec.decodeSignedBlob(data),
+                  let decoded = try? ProtocolCodec.decodeClientKeyEpoch(blob.payload) else { return nil }
+            return (decoded.epoch, blob)
+        }.max { $0.0 < $1.0 }
+        let verifiedEpoch = newestEpoch.flatMap {
+            KeyEpochs.verify($0.1, pinnedIdentitySpki: card?.identityPublicKey)
+        }
+        let epochIdentity = verifiedEpoch?.identityPublicKey
+        let identity = card?.identityPublicKey ?? epochIdentity.flatMap { $0.isEmpty ? nil : $0 }
+        return identity != nil && (cardData == nil || card != nil) &&
+            (newestEpoch == nil || verifiedEpoch != nil)
+    }
+
     /// Apply a verified key-epoch: enforce the anti-rollback floor + `minEpoch` (#1), record the epoch with
     /// its purposes + validity window, raise the floor and current epoch, and retain the newest `ringSize`
     /// generations (#10). Returns false (no-op) if the epoch — or the bundle's `minEpoch` — is below the floor.

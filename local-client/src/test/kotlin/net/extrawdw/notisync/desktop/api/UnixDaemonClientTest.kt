@@ -22,6 +22,10 @@ import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
 import net.extrawdw.notisync.localapi.ApplicationView
 import net.extrawdw.notisync.localapi.DaemonConnectionState
 import net.extrawdw.notisync.localapi.DaemonStatus
+import net.extrawdw.notisync.localapi.DeviceClassification
+import net.extrawdw.notisync.localapi.DeviceListResponse
+import net.extrawdw.notisync.localapi.DeviceTrustStatus
+import net.extrawdw.notisync.localapi.DeviceView
 import net.extrawdw.notisync.localapi.LocalApiJson
 import net.extrawdw.notisync.localapi.ReceiveRecord
 import net.extrawdw.notisync.localapi.ReceiveRecordType
@@ -37,6 +41,29 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class UnixDaemonClientTest {
+    @Test
+    fun `devices uses existing daemon device endpoint`() {
+        val listing = DeviceListResponse(
+            listOf(
+                DeviceView(
+                    clientId = "android-a",
+                    name = "Phone",
+                    classification = DeviceClassification.OWN,
+                    trustStatus = DeviceTrustStatus.TRUSTED,
+                    platform = "Android",
+                    capabilities = setOf("SCREEN_MIRROR_SOURCE_V1"),
+                    identityFingerprint = "aa",
+                    keyAvailable = true,
+                    verified = true,
+                ),
+            ),
+        )
+        ScriptedServer(Response.json(LocalApiJson.encodeToString(listing))).use { server ->
+            assertEquals(listing, UnixDaemonClient(server.socket).devices())
+            assertEquals("GET /v1/devices HTTP/1.1", server.awaitRequests().single().requestLine)
+        }
+    }
+
     @Test
     fun `status uses one bounded HTTP request over Unix socket`() {
         ScriptedServer(

@@ -2,6 +2,8 @@ import Foundation
 
 private nonisolated struct SharedBrokerConfig: Codable, Sendable {
     var brokerURL: String
+    /// Independent versioned marker; absent in older files and therefore false/pending.
+    var unverifiedDeviceCleanupV1Completed: Bool? = nil
 }
 
 /// Build-wide constants shared by the app and the Notification Service Extension.
@@ -34,12 +36,23 @@ nonisolated enum NotiSyncConfig {
     static func effectiveAPNSEnvironment(_ value: RouteEnvironment) -> RouteEnvironment { .PRODUCTION }
     #endif
 
-    /// Default broker — debug builds use the auth-enforced NS2 test instance; release builds use production.
-    #if DEBUG
-    static let defaultBrokerURL = "https://notisync-api-test.extrawdw.net"
-    #else
-    static let defaultBrokerURL = "https://notisync-api.extrawdw.net"
-    #endif
+    /// Dedicated compact-CBOR NS2 broker. Pre-release field-name-CBOR brokers are intentionally isolated.
+    static let defaultBrokerURL = "https://notisync-api-v2.extrawdw.net"
+
+    /// Migrate only NotiSync's former production default. Test, local, and user-provided brokers are kept.
+    static func upgradeLegacyDefaultBrokerURL(_ value: String) -> String {
+        guard let components = URLComponents(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+              let scheme = components.scheme?.lowercased(),
+              ["http", "https", "ws", "wss"].contains(scheme),
+              components.host?.lowercased() == "notisync-api.extrawdw.net",
+              components.port == nil,
+              components.user == nil,
+              components.password == nil,
+              components.query == nil,
+              components.fragment == nil,
+              components.path.isEmpty || components.path == "/" else { return value }
+        return defaultBrokerURL
+    }
 
     /// Largest inline APNs payload we advertise in our route claim (base64 envelope chars).
     static let inlinePayloadLimitBytes = 3500
@@ -71,12 +84,44 @@ nonisolated enum NotiSyncConfig {
     /// touching the app's SwiftData store.
     static var brokerURL: String {
         get {
-            AppGroupStore.read(SharedBrokerConfig.self, AppGroupStore.Files.brokerConfig)?.brokerURL
-                ?? defaultBrokerURL
+            guard var config = AppGroupStore.read(
+                SharedBrokerConfig.self,
+                AppGroupStore.Files.brokerConfig
+            ) else { return defaultBrokerURL }
+            let stored = config.brokerURL
+            let upgraded = upgradeLegacyDefaultBrokerURL(stored)
+            if upgraded != stored {
+                config.brokerURL = upgraded
+                AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
+            }
+            return upgraded
         }
         set {
-            AppGroupStore.write(SharedBrokerConfig(brokerURL: newValue), AppGroupStore.Files.brokerConfig)
+            var config = AppGroupStore.read(
+                SharedBrokerConfig.self,
+                AppGroupStore.Files.brokerConfig
+            ) ?? SharedBrokerConfig(brokerURL: defaultBrokerURL)
+            config.brokerURL = upgradeLegacyDefaultBrokerURL(newValue)
+            AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
         }
+    }
+
+    /// A separate app-upgrade gate: custom broker users run it too, and broker edits never reset it.
+    static var needsUnverifiedDeviceCleanupV1: Bool {
+        AppGroupStore.read(
+            SharedBrokerConfig.self,
+            AppGroupStore.Files.brokerConfig
+        )?.unverifiedDeviceCleanupV1Completed != true
+    }
+
+    @discardableResult
+    static func markUnverifiedDeviceCleanupV1Completed() -> Bool {
+        var config = AppGroupStore.read(
+            SharedBrokerConfig.self,
+            AppGroupStore.Files.brokerConfig
+        ) ?? SharedBrokerConfig(brokerURL: defaultBrokerURL)
+        config.unverifiedDeviceCleanupV1Completed = true
+        return AppGroupStore.write(config, AppGroupStore.Files.brokerConfig)
     }
 }
 

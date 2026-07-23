@@ -10,10 +10,14 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
 import net.extrawdw.notisync.peer.channel.SecureChannel
+import net.extrawdw.notisync.peer.transport.ifKnown
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
@@ -21,6 +25,8 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunControl
 import net.extrawdw.notisync.protocol.RunControlKind
+import net.extrawdw.notisync.protocol.RunControlResult
+import net.extrawdw.notisync.protocol.RunCommandRequest
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
 import net.extrawdw.notisync.protocol.RunSync
@@ -44,6 +50,9 @@ class RunEngine internal constructor(
     private val presenter: RunStatePresenter,
     private val scope: CoroutineScope,
     private val sendControl: suspend (RunControl) -> Boolean,
+    private val activityLog: ActivityLog? = null,
+    private val activityText: ActivityText? = null,
+    private val deviceNameOf: (ClientId) -> String? = { null },
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
     constructor(
@@ -51,12 +60,18 @@ class RunEngine internal constructor(
         store: RunStore,
         presenter: RunStatePresenter,
         scope: CoroutineScope,
+        activityLog: ActivityLog,
+        activityText: ActivityText,
+        deviceNameOf: (ClientId) -> String?,
         now: () -> Long = { System.currentTimeMillis() },
     ) : this(
         repository = store,
         presenter = presenter,
         scope = scope,
         sendControl = { control -> sendOverChannel(channel, control) },
+        activityLog = activityLog,
+        activityText = activityText,
+        deviceNameOf = deviceNameOf,
         now = now,
     )
 
@@ -80,9 +95,16 @@ class RunEngine internal constructor(
         val run = sync.run ?: return
         when (run.kind) {
             RunSyncKind.STATE -> receiveState(message, run.state ?: return)
-            RunSyncKind.CONTROL_RESULT -> receiveControlResult(message, run.controlResult ?: return)
+            RunSyncKind.CONTROL_RESULT -> {
+                val result = run.controlResult ?: return
+                logReceived(message, result.activitySummary())
+                receiveControlResult(message, result)
+            }
             // Android is a Run display/controller. It never hosts controls or executes command requests.
-            RunSyncKind.CONTROL, RunSyncKind.COMMAND_REQUEST -> Unit
+            // Still record safely summarized traffic: Activity is also the protocol diagnostics feed.
+            RunSyncKind.CONTROL -> logReceived(message, (run.control ?: return).activitySummary())
+            RunSyncKind.COMMAND_REQUEST ->
+                logReceived(message, (run.commandRequest ?: return).activitySummary())
         }
     }
 
@@ -98,6 +120,12 @@ class RunEngine internal constructor(
             }
             dismissRunsNoLongerActive(activeBefore)
             if (result == RunApplyResult.OLDER) return
+            // Match the other application handlers: log a valid, newly-applied inbound update, but not a stale
+            // revision or an equal-revision transport replay. Unlike notification presentation, every semantic
+            // Run update (including PERIODIC, LLM_SUMMARY, and REFRESH) belongs in the diagnostics feed.
+            if (result == RunApplyResult.INSERTED || result == RunApplyResult.UPDATED) {
+                logReceived(message, state.activitySummary())
+            }
 
             // Equal is intentionally re-presented: it is the delivery retry produced by a crash or renderer
             // failure after SQLite committed. An equal row whose checkpoint is already current is instead a
@@ -252,7 +280,38 @@ class RunEngine internal constructor(
     internal suspend fun sendPersistedControl(control: RunControl): Boolean =
         runCatching { send(control) }.getOrDefault(false)
 
-    private suspend fun send(control: RunControl): Boolean = sendControl(control)
+    private suspend fun send(control: RunControl): Boolean {
+        val sent = sendControl(control)
+        // Like notification/action sends, only record an outbound row after the channel accepted a recipient.
+        if (sent) logSent(control)
+        return sent
+    }
+
+    private fun logReceived(message: InboundMessage, summary: String) {
+        val log = activityLog ?: return
+        val text = activityText ?: return
+        log.add(
+            ActivityEvent.Kind.RECEIVED,
+            text.runTitle(),
+            text.runReceived(summary, deviceName(message.senderId)),
+            now(),
+            deliveryMode = message.deliveryMode.ifKnown(),
+        )
+    }
+
+    private fun logSent(control: RunControl) {
+        val log = activityLog ?: return
+        val text = activityText ?: return
+        log.add(
+            ActivityEvent.Kind.SENT,
+            text.runTitle(),
+            text.runSent(control.activitySummary(), deviceName(control.hostClientId)),
+            now(),
+        )
+    }
+
+    private fun deviceName(clientId: ClientId): String =
+        deviceNameOf(clientId) ?: clientId.shortForm()
 
     private fun completeRefresh(requestId: String, key: RunKey) {
         if (!refreshByKey.remove(key, requestId)) return
@@ -301,3 +360,35 @@ class RunEngine internal constructor(
             ) > 0
     }
 }
+
+private fun RunState.activitySummary(): String =
+    "STATE/${updateReason.name} · ${phase.name} · r$revision · run ${runId.diagnosticValue()}"
+
+private fun RunControl.activitySummary(): String =
+    "CONTROL/${kind.name} · req ${requestId.diagnosticRequestId()} · run ${runId.diagnosticValue()}"
+
+private fun RunControlResult.activitySummary(): String =
+    "CONTROL_RESULT/${status.name} · req ${requestId.diagnosticRequestId()} · run ${runId.diagnosticValue()}"
+
+private fun RunCommandRequest.activitySummary(): String =
+    "COMMAND_REQUEST · req ${requestId.diagnosticRequestId()}"
+
+private fun String.diagnosticRequestId(): String = take(8)
+
+/** Bound and neutralize protocol identifiers so a diagnostic row cannot inject controls or become very tall. */
+private fun String.diagnosticValue(): String {
+    val bounded = take(DIAGNOSTIC_VALUE_MAX_CHARS)
+    val safe = buildString(bounded.length) {
+        bounded.forEach { char ->
+            append(
+                if (
+                    char.isISOControl() || char.isSurrogate() ||
+                    Character.getType(char) == Character.FORMAT.toInt()
+                ) '�' else char
+            )
+        }
+    }
+    return if (length <= DIAGNOSTIC_VALUE_MAX_CHARS) safe else "$safe…"
+}
+
+private const val DIAGNOSTIC_VALUE_MAX_CHARS = 64

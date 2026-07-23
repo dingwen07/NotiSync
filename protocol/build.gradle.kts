@@ -32,7 +32,7 @@ kotlin {
     }
 
     sourceSets {
-        val commonMain by getting {
+        getByName("commonMain") {
             kotlin.srcDir("src/main/kotlin")
             dependencies {
                 api(libs.kotlinx.serialization.core)
@@ -43,7 +43,7 @@ kotlin {
         }
         // Existing tests are JUnit (JVM-only) — keep them on the jvmTest source set rather than commonTest
         // so they run unchanged; pure DTO/codec tests can migrate to commonTest later if Native coverage is wanted.
-        val jvmTest by getting {
+        getByName("jvmTest") {
             kotlin.srcDir("src/test/kotlin")
             dependencies {
                 implementation(libs.junit)

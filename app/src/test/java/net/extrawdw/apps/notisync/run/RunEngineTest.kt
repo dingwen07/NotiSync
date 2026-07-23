@@ -6,14 +6,20 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.RunControl
 import net.extrawdw.notisync.protocol.RunControlKind
+import net.extrawdw.notisync.protocol.RunControlResult
+import net.extrawdw.notisync.protocol.RunControlResultStatus
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
 import net.extrawdw.notisync.protocol.RunSync
@@ -392,6 +398,81 @@ class RunEngineTest {
     }
 
     @Test
+    fun everyNewRunStateUpdateIsRecordedAsReceivedDiagnostics() {
+        val repository = FakeRepository()
+        val activity = ActivityLog()
+        val harness = harness(repository, activityLog = activity)
+
+        harness.engine.onRunSync(
+            message(HOST, own = true, deliveryMode = DeliveryMode.FCM_INLINE),
+            stateSync(running()),
+        )
+        harness.engine.onRunSync(
+            message(HOST, own = true, deliveryMode = DeliveryMode.WEBSOCKET),
+            stateSync(running(revision = 2)),
+        )
+
+        assertEquals(2, activity.events.value.size)
+        val periodic = activity.events.value[0]
+        assertEquals(ActivityEvent.Kind.RECEIVED, periodic.kind)
+        assertEquals("NotiSync Run", periodic.title)
+        assertEquals(
+            "STATE/PERIODIC · RUNNING · r2 · run run-1 · from Desktop",
+            periodic.detail,
+        )
+        assertEquals(DeliveryMode.WEBSOCKET, periodic.deliveryMode)
+        assertEquals(
+            "STATE/INITIAL · RUNNING · r1 · run run-1 · from Desktop",
+            activity.events.value[1].detail,
+        )
+        assertEquals(DeliveryMode.FCM_INLINE, activity.events.value[1].deliveryMode)
+        harness.close()
+    }
+
+    @Test
+    fun staleAndEqualRunStateReplaysDoNotDuplicateActivity() {
+        val current = running(revision = 2)
+        val repository = FakeRepository(current)
+        val activity = ActivityLog()
+        val harness = harness(repository, activityLog = activity)
+
+        harness.engine.onRunSync(message(HOST, own = true), stateSync(current))
+        harness.engine.onRunSync(message(HOST, own = true), stateSync(running(revision = 1)))
+
+        assertTrue(activity.events.value.isEmpty())
+        harness.close()
+    }
+
+    @Test
+    fun runControlResultIsRecordedAsReceivedDiagnostics() {
+        val activity = ActivityLog()
+        val harness = harness(FakeRepository(), activityLog = activity)
+        val result = RunControlResult(
+            requestId = "00000000-0000-4000-8000-000000000001",
+            runId = "run-1",
+            status = RunControlResultStatus.APPLIED,
+            respondedAt = 1_500,
+        )
+
+        harness.engine.onRunSync(
+            message(HOST, own = true, deliveryMode = DeliveryMode.FCM_RELAY_FETCH),
+            DataSync(
+                kind = DataSyncKind.RUN,
+                run = RunSync(kind = RunSyncKind.CONTROL_RESULT, controlResult = result),
+            ),
+        )
+
+        val event = activity.events.value.single()
+        assertEquals(ActivityEvent.Kind.RECEIVED, event.kind)
+        assertEquals(
+            "CONTROL_RESULT/APPLIED · req 00000000 · run run-1 · from Desktop",
+            event.detail,
+        )
+        assertEquals(DeliveryMode.FCM_RELAY_FETCH, event.deliveryMode)
+        harness.close()
+    }
+
+    @Test
     fun terminalHistoryCannotBeRefreshed() = runBlocking {
         val terminal = completed()
         val repository = FakeRepository(terminal)
@@ -408,7 +489,12 @@ class RunEngineTest {
     fun inputAndArbitrarySignalBecomeNormalRunControls() = runBlocking {
         val repository = FakeRepository(running())
         val sent = mutableListOf<RunControl>()
-        val harness = harness(repository, send = { control -> sent += control; true })
+        val activity = ActivityLog()
+        val harness = harness(
+            repository,
+            send = { control -> sent += control; true },
+            activityLog = activity,
+        )
         val key = repository.runs.value.single().key
 
         assertTrue(harness.engine.writeInput(key, "yes\n", interactionGeneration = 7))
@@ -420,6 +506,29 @@ class RunEngineTest {
         assertEquals(7L, sent[0].interactionGeneration)
         assertEquals(RunControlKind.SIGNAL, sent[1].kind)
         assertEquals("RTMIN+1", sent[1].signal)
+        assertEquals(2, activity.events.value.size)
+        assertTrue(activity.events.value.all { it.kind == ActivityEvent.Kind.SENT })
+        assertEquals(
+            "CONTROL/SIGNAL · req ${sent[1].requestId.take(8)} · run run-1 · to Desktop",
+            activity.events.value[0].detail,
+        )
+        assertEquals(
+            "CONTROL/WRITE_INPUT · req ${sent[0].requestId.take(8)} · run run-1 · to Desktop",
+            activity.events.value[1].detail,
+        )
+        assertFalse(activity.events.value.any { "yes" in it.detail || "RTMIN" in it.detail })
+        harness.close()
+    }
+
+    @Test
+    fun failedOutboundRunControlIsNotRecordedAsSent() = runBlocking {
+        val repository = FakeRepository(running())
+        val activity = ActivityLog()
+        val harness = harness(repository, send = { false }, activityLog = activity)
+
+        assertFalse(harness.engine.signal(repository.runs.value.single().key, "TERM"))
+
+        assertTrue(activity.events.value.isEmpty())
         harness.close()
     }
 
@@ -439,6 +548,7 @@ class RunEngineTest {
         rendered: MutableList<RunState> = mutableListOf(),
         presenter: RunStatePresenter = RunStatePresenter { state -> rendered.add(state); true },
         send: suspend (RunControl) -> Boolean = { true },
+        activityLog: ActivityLog? = null,
     ): Harness {
         val job = SupervisorJob()
         return Harness(
@@ -447,6 +557,9 @@ class RunEngineTest {
                 presenter = presenter,
                 scope = CoroutineScope(job + Dispatchers.Unconfined),
                 sendControl = send,
+                activityLog = activityLog,
+                activityText = activityLog?.let { TestActivityText },
+                deviceNameOf = { "Desktop" },
                 now = { 2_000 },
             ),
             job,
@@ -507,11 +620,16 @@ class RunEngineTest {
         }
     }
 
-    private fun message(sender: ClientId, own: Boolean) = InboundMessage(
+    private fun message(
+        sender: ClientId,
+        own: Boolean,
+        deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
+    ) = InboundMessage(
         senderId = sender,
         senderOwnDevice = own,
         typ = MessageType.DATA_SYNC,
         body = byteArrayOf(),
+        deliveryMode = deliveryMode,
     )
 
     private fun stateSync(state: RunState) = DataSync(

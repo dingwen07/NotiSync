@@ -1,5 +1,6 @@
 package net.extrawdw.notisync.desktop.config
 
+import java.net.URI
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -10,7 +11,7 @@ import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.PrivateFiles
 
-private const val DEFAULT_BROKER_URL = "wss://notisync-api.extrawdw.net"
+private const val DEFAULT_BROKER_URL = "https://notisync-api-v2.extrawdw.net"
 private const val DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES = false
 private const val DEFAULT_LOG_LEVEL = "WARN"
 private const val DEFAULT_WEBSOCKET_PING_SECONDS = 30
@@ -23,10 +24,14 @@ data class NotisyncdConfig(
     val automaticallyApplyTrustedDeviceTables: Boolean = DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
     val logLevel: String = DEFAULT_LOG_LEVEL,
     val websocketPingSeconds: Int = DEFAULT_WEBSOCKET_PING_SECONDS,
+    val unverifiedDeviceCleanupV1Completed: Boolean = false,
 ) {
     fun validate(): NotisyncdConfig = apply {
-        require(brokerUrl.startsWith("ws://") || brokerUrl.startsWith("wss://")) {
-            "broker-url must use ws:// or wss://"
+        require(
+            brokerUrl.startsWith("http://") || brokerUrl.startsWith("https://") ||
+                brokerUrl.startsWith("ws://") || brokerUrl.startsWith("wss://"),
+        ) {
+            "broker-url must use http://, https://, ws://, or wss://"
         }
         require(deviceName.isNotBlank()) { "device-name must not be blank" }
         require(logLevel.uppercase() in setOf("TRACE", "DEBUG", "INFO", "WARN", "WARNING", "ERROR", "OFF")) {
@@ -45,10 +50,24 @@ interface ConfigStore<T> {
 class NotisyncdConfigStore(
     override val path: Path = DesktopPaths.default().daemonConfig,
 ) : ConfigStore<NotisyncdConfig> {
-    override fun load(): NotisyncdConfig = readConfig(path, ::NotisyncdConfig, NotisyncdConfigCodec::decode).validate()
+    override fun load(): NotisyncdConfig {
+        val loaded = readConfig(path, ::NotisyncdConfig, NotisyncdConfigCodec::decode).validate()
+        val upgraded = loaded.copy(brokerUrl = upgradeLegacyDefaultBrokerUrl(loaded.brokerUrl))
+        if (upgraded != loaded) save(upgraded)
+        return upgraded
+    }
 
     override fun save(value: NotisyncdConfig) {
-        PrivateFiles.atomicWrite(path, NotisyncdConfigCodec.encode(value.validate()).encodeToByteArray())
+        val upgraded = value.copy(brokerUrl = upgradeLegacyDefaultBrokerUrl(value.brokerUrl)).validate()
+        PrivateFiles.atomicWrite(path, NotisyncdConfigCodec.encode(upgraded).encodeToByteArray())
+    }
+
+    /** Independent from broker migration: changing broker-url cannot re-arm this versioned cleanup. */
+    fun markUnverifiedDeviceCleanupV1Completed() {
+        val current = load()
+        if (!current.unverifiedDeviceCleanupV1Completed) {
+            save(current.copy(unverifiedDeviceCleanupV1Completed = true))
+        }
     }
 
     fun loadRecovering(onRecovery: (String) -> Unit = {}): NotisyncdConfig = try {
@@ -56,6 +75,16 @@ class NotisyncdConfigStore(
     } catch (original: Exception) {
         recoverMalformed(path, ::NotisyncdConfig, ::save, original, onRecovery)
     }
+}
+
+/** Upgrade only NotiSync's former production default; test, local, and user-provided brokers are untouched. */
+internal fun upgradeLegacyDefaultBrokerUrl(value: String): String {
+    val uri = runCatching { URI(value.trim()) }.getOrNull() ?: return value
+    val isFormerDefault = uri.scheme?.lowercase() in setOf("http", "https", "ws", "wss") &&
+        uri.host.equals("notisync-api.extrawdw.net", ignoreCase = true) &&
+        uri.port == -1 && uri.userInfo == null && uri.query == null && uri.fragment == null &&
+        (uri.path.isNullOrEmpty() || uri.path == "/")
+    return if (isFormerDefault) DEFAULT_BROKER_URL else value
 }
 
 private fun <T> recoverMalformed(
@@ -101,6 +130,7 @@ internal object NotisyncdConfigCodec {
         "auto-apply-trusted-device-tables",
         "log-level",
         "websocket-ping-seconds",
+        "unverified-device-cleanup-v1-completed",
     )
 
     fun decode(text: String, path: Path): NotisyncdConfig = decodeWithDefaults(
@@ -122,6 +152,8 @@ internal object NotisyncdConfigCodec {
                 ?: DEFAULT_AUTO_APPLY_TRUSTED_DEVICE_TABLES,
             logLevel = values.string("log-level") ?: DEFAULT_LOG_LEVEL,
             websocketPingSeconds = values.int("websocket-ping-seconds") ?: DEFAULT_WEBSOCKET_PING_SECONDS,
+            unverifiedDeviceCleanupV1Completed =
+                values.boolean("unverified-device-cleanup-v1-completed") ?: false,
         ).validate()
     }
 
@@ -133,6 +165,11 @@ internal object NotisyncdConfigCodec {
         option("auto-apply-trusted-device-tables", if (value.automaticallyApplyTrustedDeviceTables) "yes" else "no", false)
         option("log-level", value.logLevel)
         option("websocket-ping-seconds", value.websocketPingSeconds.toString(), false)
+        option(
+            "unverified-device-cleanup-v1-completed",
+            if (value.unverifiedDeviceCleanupV1Completed) "yes" else "no",
+            false,
+        )
     }
 }
 

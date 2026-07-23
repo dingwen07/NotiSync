@@ -31,6 +31,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -96,6 +97,21 @@ import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
+import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
+import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorRequester
+import net.extrawdw.apps.notisync.screen.AndroidScreenRequesterSessionHost
+import net.extrawdw.apps.notisync.screen.AndroidScreenSource
+import net.extrawdw.apps.notisync.screen.AndroidScreenSourceResolver
+import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
+import net.extrawdw.apps.notisync.screen.ScreenMirrorCapabilityProvider
+import net.extrawdw.apps.notisync.screen.ScreenMirrorCodecPreferenceStore
+import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
+import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
+import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
+import net.extrawdw.apps.notisync.screen.ScreenViewerToolbarPreferenceStore
+import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.transport.ifKnown
@@ -120,6 +136,7 @@ import net.extrawdw.notisync.protocol.RouteEnvironment
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.SignedType
 import net.extrawdw.notisync.protocol.TransportType
+import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.time.ZonedDateTime
@@ -245,6 +262,25 @@ class AppGraph(private val app: Application) {
     /** Live iOS bridge status + bonded iPhone name for the iOS tab. */
     val iosDeviceRepo = IosDeviceRepository()
 
+    lateinit var screenMirrorAuthorizations: ScreenMirrorAuthorizationStore
+        private set
+    internal lateinit var screenMirrorCodecPreferences: ScreenMirrorCodecPreferenceStore
+        private set
+    internal lateinit var screenViewerToolbarPreferences: ScreenViewerToolbarPreferenceStore
+        private set
+    internal lateinit var screenMirrorDecoderSupport: AndroidScreenDecoderSupport
+        private set
+    lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
+        private set
+    lateinit var screenMirrorCapabilities: ScreenMirrorCapabilityProvider
+        private set
+    var screenMirrorController: ScreenMirrorSessionController? = null
+        private set
+    internal var screenMirrorRequester: AndroidScreenMirrorRequester? = null
+        private set
+    internal var screenMirrorRequesterHost: AndroidScreenRequesterSessionHost? = null
+        private set
+
     /** NS2 rotation state machine — non-null ONLY when `BuildConfig.ENABLE_ROTATION` is set (else the device
      *  stays at epoch 1 forever and never mints a second epoch). Driven by [tickRotation]. */
     var rotationManager: RotationManager? = null
@@ -275,6 +311,32 @@ class AppGraph(private val app: Application) {
         appSelection = AppSelectionRepository(ds, scope)
         appConfig = AppConfigRepository(ds, scope)
         notificationFilters = NotificationFilterStore(ds, scope)
+        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
+        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds)
+        screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
+        screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
+        screenMirrorShizuku = ScreenMirrorShizukuManager(app)
+        screenMirrorCapabilities = ScreenMirrorCapabilityProvider(
+            settings = settings,
+            authorizations = screenMirrorAuthorizations,
+            scope = scope,
+        )
+        trust.roster
+            .onEach { roster ->
+                screenMirrorAuthorizations.retainTrustedOwnPeers(roster)
+                runCatching { screenMirrorCodecPreferences.retainTrustedOwnPeers(roster) }
+            }
+            .launchIn(scope)
+        if (settings.needsUnverifiedDeviceCleanupV1()) {
+            val removed = trust.removeUnverifiedDevices()
+            if (removed != null) {
+                removed.forEach(notificationFilters::remove)
+                settings.markUnverifiedDeviceCleanupV1Completed()
+                if (removed.isNotEmpty()) {
+                    Log.i("NotiSync", "Removed ${removed.size} unverified device(s) during NS2 upgrade")
+                }
+            }
+        }
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
         // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
         // epoch's TEE operational signing key + HPKE keyset. Rotation (Phase 6) advances the epoch + swaps
@@ -363,6 +425,9 @@ class AppGraph(private val app: Application) {
                 )
             },
             telemetry = peerTelemetry,
+            // Envelope signing and authenticated-request signing synchronously cross Android Keystore.
+            // Compose and lifecycle callers may enter on main; suspend them while the whole send runs on I/O.
+            outboundDispatcher = Dispatchers.IO,
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
             onUnresolvedSender = { id ->
@@ -376,6 +441,81 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        val screenController = ScreenMirrorSessionController(
+            context = app,
+            ownClientId = identity.clientId,
+            channel = channel,
+            settings = settings,
+            authorizations = screenMirrorAuthorizations,
+            capabilities = screenMirrorCapabilities,
+            shizuku = screenMirrorShizuku,
+            scope = scope,
+            transport = AndroidLanScreenSessionTransport(app, transport),
+            peerName = { id -> trust.displayName(id) },
+        )
+        screenMirrorController = screenController
+        val screenSourceResolver = AndroidScreenSourceResolver { clientId ->
+            if (trust.quarantined.value) return@AndroidScreenSourceResolver null
+            trust.roster.value.firstOrNull { device ->
+                device.clientId == clientId &&
+                    device.ownDevice &&
+                    device.status == TrustStatus.TRUSTED &&
+                    device.keyAvailable &&
+                    device.verified &&
+                    device.currentEpoch > 0
+            }?.let { device ->
+                AndroidScreenSource(
+                    clientId = device.clientId,
+                    displayName = device.displayName ?: device.clientId.shortForm(),
+                    capabilities = device.capabilities.toSet(),
+                )
+            }
+        }
+        val screenRequester = AndroidScreenMirrorRequester(
+            context = app,
+            ownClientId = identity.clientId,
+            channel = channel,
+            broker = transport,
+            sourceResolver = screenSourceResolver,
+            scope = scope,
+            decoderSupport = { screenMirrorDecoderSupport },
+            preferredCodec = screenMirrorCodecPreferences::preferredCodec,
+        )
+        screenMirrorRequester = screenRequester
+        screenMirrorRequesterHost = AndroidScreenRequesterSessionHost(
+            requester = screenRequester,
+            scope = scope,
+            hardwareDecoderName = screenMirrorDecoderSupport::hardwareDecoderName,
+        )
+        trust.roster
+            .onEach {
+                screenRequester.state.value.sourceId?.let { sourceId ->
+                    if (screenSourceResolver.resolve(sourceId) == null) {
+                        screenRequester.close()
+                    }
+                }
+            }
+            .launchIn(scope)
+        trust.quarantined
+            .onEach { quarantined -> if (quarantined) screenRequester.close() }
+            .launchIn(scope)
+        settings.screenMirroringEnabled
+            .onEach { enabled ->
+                if (enabled) screenMirrorShizuku.refresh()
+                else {
+                    screenController.onAuthorizationPolicyChanged()
+                    ScreenMirrorForegroundService.stop(app)
+                }
+            }
+            .launchIn(scope)
+        screenMirrorAuthorizations.authorizedPeerIds
+            .onEach { screenController.onAuthorizationPolicyChanged() }
+            .launchIn(scope)
+        screenMirrorShizuku.status
+            .onEach { status ->
+                if (status != ShizukuScreenStatus.READY) screenController.onAuthorizationPolicyChanged()
+            }
+            .launchIn(scope)
         // DATA_SYNC/RUN is a first-class Android application path. It has its own durable history and
         // notification renderer; it must never be adapted into CapturedNotification/MirrorEngine.
         val runsStore = RunStore(app)
@@ -388,6 +528,9 @@ class AppGraph(private val app: Application) {
                 deviceNameOf = { id -> trust.displayName(id) },
             ),
             scope = scope,
+            activityLog = activityLog,
+            activityText = activityText,
+            deviceNameOf = { id -> trust.displayName(id) },
         )
         runEngine = runs
         // Recover notification actions committed before a cold graph was ready, including a process death in the
@@ -462,6 +605,10 @@ class AppGraph(private val app: Application) {
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
+            onScreenMirrorSync = { message, sync ->
+                screenController.onScreenMirrorSync(message, sync)
+                screenRequester.onScreenMirrorSync(message, sync)
+            },
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.
@@ -953,7 +1100,13 @@ class AppGraph(private val app: Application) {
     }
 
     /** This device's advertised capabilities — shared by the published card and profile updates. */
-    private fun selfCapabilities(): List<Capability> = ANDROID_SELF_CAPABILITIES
+    private fun selfCapabilities(): List<Capability> =
+        ANDROID_SELF_CAPABILITIES +
+            if (::screenMirrorCapabilities.isInitialized) {
+                screenMirrorCapabilities.advertisedCapabilities.value
+            } else {
+                emptyList()
+            }
 
     private fun selfProfileFingerprint(): String = buildString {
         append(settings.deviceName.value)
@@ -1068,8 +1221,11 @@ class AppGraph(private val app: Application) {
      */
     @OptIn(FlowPreview::class) // debounce() is a preview API; used only to coalesce rapid renames
     private fun observeProfileChanges() {
-        settings.deviceName
-            .drop(1) // skip the eager StateFlow seed; only react to real edits
+        combine(
+            settings.deviceName,
+            screenMirrorCapabilities.advertisedCapabilities,
+        ) { name, capabilities -> name to capabilities }
+            .drop(1) // skip the eager StateFlow seed; only react to real profile changes
             .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
             .distinctUntilChanged()
             .onEach {
@@ -1202,7 +1358,7 @@ class NotiSyncApp : Application() {
         private set
 
     private val initScope =
-        CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("NotiSyncApp.initScope"))
+        CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard("NotiSyncApp.initScope"))
     private val graphDeferred = CompletableDeferred<AppGraph>()
     private val _graphReady = MutableStateFlow(false)
     val graphReady: StateFlow<Boolean> = _graphReady
