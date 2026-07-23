@@ -654,10 +654,19 @@ private suspend fun DefaultWebSocketServerSession.forwardScreenRelay(
                         }
                         val acknowledgedSequence = signal?.sequence
                         val deliveredBytes = signal?.deliveredBytes
-                        if (signal?.kind != ScreenRelaySignalKind.VIDEO_ACK ||
-                            acknowledgedSequence == null || acknowledgedSequence < 0 ||
-                            deliveredBytes == null || deliveredBytes < 0
-                        ) {
+                        val validFeedback = when (signal?.kind) {
+                            ScreenRelaySignalKind.VIDEO_ACK ->
+                                acknowledgedSequence != null && acknowledgedSequence >= 0 &&
+                                    deliveredBytes != null && deliveredBytes >= 0
+                            // A requester may detect a local decoder reset even when the broker
+                            // delivered every encrypted record. Forward the same authenticated
+                            // congestion signal so the source lowers latency and emits a key frame.
+                            ScreenRelaySignalKind.VIDEO_CONGESTED ->
+                                acknowledgedSequence != null && acknowledgedSequence >= 0 &&
+                                    (deliveredBytes == null || deliveredBytes >= 0)
+                            else -> false
+                        }
+                        if (!validFeedback) {
                             close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "bad_relay_feedback"))
                             return@coroutineScope
                         }

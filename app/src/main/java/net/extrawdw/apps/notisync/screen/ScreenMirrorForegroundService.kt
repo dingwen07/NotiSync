@@ -206,7 +206,7 @@ class ScreenMirrorForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         return NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_notisync_mirror)
+            .setSmallIcon(R.drawable.ic_screen_share)
             .setContentTitle(
                 getString(
                     if (connected) {

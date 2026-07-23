@@ -102,6 +102,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
     private let onFailure: @MainActor @Sendable (Error) -> Void
     private var task: Task<Void, Never>?
     private var formatDescription: CMVideoFormatDescription?
+    private var waitingForKeyFrame = false
 
     init(
         connection: IOSScreenWireConnection,
@@ -171,8 +172,14 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
                 }
                 formatDescription = try makeH264FormatDescription(config: packet)
             } else if let formatDescription {
+                let keyFrame = ptsAndFlags & (UInt64(1) << 61) != 0
                 let ptsMask = (UInt64(1) << 61) - 1
-                try enqueue(packet: packet, ptsUs: Int64(ptsAndFlags & ptsMask), format: formatDescription)
+                try await enqueue(
+                    packet: packet,
+                    ptsUs: Int64(ptsAndFlags & ptsMask),
+                    keyFrame: keyFrame,
+                    format: formatDescription
+                )
             }
         }
     }
@@ -215,7 +222,23 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         return description
     }
 
-    private func enqueue(packet: Data, ptsUs: Int64, format: CMVideoFormatDescription) throws {
+    private func enqueue(
+        packet: Data,
+        ptsUs: Int64,
+        keyFrame: Bool,
+        format: CMVideoFormatDescription
+    ) async throws {
+        let renderer = displayLayer.sampleBufferRenderer
+        if !waitingForKeyFrame,
+           renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
+            renderer.flush()
+            waitingForKeyFrame = true
+            try await connection.requestVideoRecovery()
+        }
+        if waitingForKeyFrame {
+            guard keyFrame else { return }
+            waitingForKeyFrame = false
+        }
         let avcc = annexBToAVCC(packet)
         var blockBuffer: CMBlockBuffer?
         var status = CMBlockBufferCreateWithMemoryBlock(
@@ -279,8 +302,6 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
                 Unmanaged.passUnretained(kCFBooleanTrue).toOpaque()
             )
         }
-        let renderer = displayLayer.sampleBufferRenderer
-        if renderer.status == .failed || renderer.requiresFlushToResumeDecoding { renderer.flush() }
         renderer.enqueue(sample)
     }
 }

@@ -184,6 +184,13 @@ nonisolated final class IOSScreenWireConnection: @unchecked Sendable {
         }
     }
 
+    /// Ask a Relay source for a fresh key frame after the local renderer loses decoder state.
+    /// Direct transports have no framed feedback channel and recover on their next key frame.
+    func requestVideoRecovery() async throws {
+        guard case .relayVideo(let stream) = backend else { return }
+        try await stream.requestRecovery()
+    }
+
     private func timeoutMilliseconds(until deadline: DispatchTime?) throws -> Int32 {
         guard let deadline else { return -1 }
         let now = DispatchTime.now().uptimeNanoseconds
@@ -950,6 +957,19 @@ actor IOSRelayVideoStream {
         let signal = ScreenRelaySignal(
             kind: ScreenRelaySignalKind.videoAck,
             sequence: sequence,
+            deliveredBytes: deliveredBytes
+        )
+        let data = try JSONEncoder().encode(signal)
+        try await connection.sendText(String(decoding: data, as: UTF8.self))
+    }
+
+    func requestRecovery() async throws {
+        guard !closed else { throw IOSScreenTransportError.channelClosed }
+        guard lastSequence >= 0 else { return }
+        let signal = ScreenRelaySignal(
+            kind: ScreenRelaySignalKind.videoCongested,
+            detail: "iOS video renderer requested a fresh key frame",
+            sequence: lastSequence,
             deliveredBytes: deliveredBytes
         )
         let data = try JSONEncoder().encode(signal)

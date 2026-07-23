@@ -9,6 +9,7 @@ import java.io.SequenceInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
+import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
@@ -126,6 +127,7 @@ internal class LatencyFirstVideoForwarder(
     targetBitrateBps: Int,
     private val recoverVideo: (VideoRecoveryDecision) -> Boolean,
     private val nanoTime: () -> Long = System::nanoTime,
+    private val writerJoinTimeoutMillis: Long = NETWORK_WRITER_JOIN_TIMEOUT_MILLIS,
 ) : Closeable {
     constructor(
         input: InputStream,
@@ -148,6 +150,14 @@ internal class LatencyFirstVideoForwarder(
     private val queue = LatestDecodableVideoQueue(nanoTime)
     private val bitrate = AdaptiveVideoBitrateController(targetBitrateBps)
     private val recoveryLock = Any()
+    private val writerThread = AtomicReference<Thread?>()
+    private val recordsRead = AtomicLong()
+    private val keyFramesRead = AtomicLong()
+    private val recordsWritten = AtomicLong()
+
+    fun recordCount(): Long = recordsRead.get()
+    fun keyFrameCount(): Long = keyFramesRead.get()
+    fun writtenRecordCount(): Long = recordsWritten.get()
 
     fun forward() {
         val writerFailure = AtomicReference<Throwable?>()
@@ -164,8 +174,9 @@ internal class LatencyFirstVideoForwarder(
             "notisync-screen-video-network",
         ).apply {
             isDaemon = true
-            start()
         }
+        check(writerThread.compareAndSet(null, writer)) { "screen video forwarder is already running" }
+        writer.start()
 
         val reader = ScrcpyVideoStreamReader(
             SequenceInputStream(ByteArrayInputStream(preamble), input),
@@ -175,6 +186,10 @@ internal class LatencyFirstVideoForwarder(
             reader.readPreamble()
             while (true) {
                 val record = reader.readRecord() ?: break
+                recordsRead.incrementAndGet()
+                if (record is ScrcpyVideoRecord.Packet && record.keyFrame) {
+                    keyFramesRead.incrementAndGet()
+                }
                 val rejected = queue.tryEnqueue(record)
                 if (rejected != null &&
                     !requestRecovery(VideoCongestionReason.QUEUE_FULL, 0, 0L)
@@ -187,14 +202,21 @@ internal class LatencyFirstVideoForwarder(
             queue.fail(error)
             throw error
         } finally {
-            runCatching { writer.join() }
+            runCatching { writer.join(writerJoinTimeoutMillis) }
+            if (writer.isAlive) {
+                writer.interrupt()
+                runCatching { writer.join(NETWORK_WRITER_INTERRUPT_GRACE_MILLIS) }
+            }
+            writerThread.compareAndSet(writer, null)
         }
+        if (writer.isAlive) throw IOException("screen video network writer did not stop")
         writerFailure.get()?.let { throw IOException("screen video network writer failed", it) }
     }
 
     override fun close() {
         queue.finish()
         runCatching { input.close() }
+        writerThread.get()?.interrupt()
     }
 
     private fun writeQueuedRecords() {
@@ -209,6 +231,7 @@ internal class LatencyFirstVideoForwarder(
             }
             val started = nanoTime()
             sink.writeRecord(record)
+            recordsWritten.incrementAndGet()
             val completed = nanoTime()
             val duration = completed - started
             if (duration >= SLOW_WRITE_NANOS) {
@@ -235,6 +258,8 @@ internal class LatencyFirstVideoForwarder(
     private companion object {
         const val SLOW_WRITE_NANOS = 80_000_000L
         const val MAX_QUEUE_AGE_NANOS = 150_000_000L
+        const val NETWORK_WRITER_JOIN_TIMEOUT_MILLIS = 5_000L
+        const val NETWORK_WRITER_INTERRUPT_GRACE_MILLIS = 250L
     }
 }
 

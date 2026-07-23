@@ -268,7 +268,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
             else -> getString(R.string.screen_viewer_service_background, sourceName)
         }
         return NotificationCompat.Builder(this, channelId)
-            .setSmallIcon(R.drawable.ic_notisync_mirror)
+            .setSmallIcon(R.drawable.ic_screen_share)
             .setContentTitle(getString(R.string.screen_viewer_service_title))
             .setContentText(body)
             .setContentIntent(openIntent)

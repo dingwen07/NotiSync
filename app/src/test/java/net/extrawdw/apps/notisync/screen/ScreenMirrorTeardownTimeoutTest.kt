@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.screen
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,6 +20,21 @@ class ScreenMirrorTeardownTimeoutTest {
 
             assertTrue(started.await(1, TimeUnit.SECONDS))
             assertFalse(stopped)
+        } finally {
+            release.countDown()
+        }
+    }
+
+    @Test
+    fun stuckRecoveryOperationCannotHoldRelayWriterForever() {
+        val release = CountDownLatch(1)
+        try {
+            val result = runScreenOperationWithTimeout(50) {
+                release.await(2, TimeUnit.SECONDS)
+                3
+            }
+
+            assertNull(result)
         } finally {
             release.countDown()
         }

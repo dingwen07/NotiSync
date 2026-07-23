@@ -70,7 +70,10 @@ nonisolated final class BrokerScreenRelayConnection: @unchecked Sendable {
     }
 
     func cancel() {
-        task.cancel(with: .goingAway, reason: nil)
+        // Session teardown must not wait for a WebSocket close handshake behind a stalled
+        // video queue. A hard URLSession cancellation makes the broker close the peer slot
+        // immediately, which in turn releases the Android source transport.
+        task.cancel()
     }
 }
 

@@ -25,12 +25,14 @@ import java.net.SocketTimeoutException
 import java.time.Duration
 import java.util.LinkedHashSet
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.coroutines.resume
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -351,6 +353,7 @@ class AndroidLanScreenSessionTransport(
         var videoInput: ParcelFileDescriptor.AutoCloseInputStream? = null
         var deviceMessages: ParcelFileDescriptor.AutoCloseInputStream? = null
         var controls: ParcelFileDescriptor.AutoCloseOutputStream? = null
+        var videoForwarder: LatencyFirstVideoForwarder? = null
         val terminated = CompletableDeferred<Unit>()
         val jobs = mutableListOf<kotlinx.coroutines.Job>()
         try {
@@ -376,28 +379,84 @@ class AndroidLanScreenSessionTransport(
             video.writePreamble(preamble)
             // READY means both authenticated channels and the privileged encoder/control pipes are usable.
             onReady()
+            val relayBitrate = AtomicInteger(request.videoBitrateBps ?: DEFAULT_VIDEO_BITRATE_BPS)
+            val recoveryLock = Any()
+            val forwarder = LatencyFirstVideoForwarder(
+                input = videoSource,
+                sink = video,
+                preamble = preamble,
+                codec = requireNotNull(request.codec),
+                targetBitrateBps = request.videoBitrateBps ?: DEFAULT_VIDEO_BITRATE_BPS,
+                recoverVideo = { decision ->
+                    relayBitrate.set(decision.bitrateBps)
+                    val recovery = synchronized(recoveryLock) {
+                        pipes.recoverVideo(decision.bitrateBps)
+                    }
+                    Log.i(
+                        LOG_TAG,
+                        "Video ${decision.reason.name.lowercase()}: " +
+                            "${decision.previousBitrateBps} -> ${decision.bitrateBps} bps; " +
+                            "bitrate=${if (recovery.bitrateApplied) "applied" else "unavailable"}; " +
+                            "sync=${if (recovery.syncFrameRequested) "requested" else "unavailable"}",
+                    )
+                    recovery.syncFrameRequested
+                },
+            )
+            videoForwarder = forwarder
             jobs += launch(Dispatchers.IO) {
                 try {
-                    LatencyFirstVideoForwarder(
-                        input = videoSource,
-                        sink = video,
-                        preamble = preamble,
-                        codec = requireNotNull(request.codec),
-                        targetBitrateBps = request.videoBitrateBps ?: DEFAULT_VIDEO_BITRATE_BPS,
-                        recoverVideo = { decision ->
-                            val recovery = pipes.recoverVideo(decision.bitrateBps)
-                            Log.i(
-                                LOG_TAG,
-                                "Video ${decision.reason.name.lowercase()}: " +
-                                    "${decision.previousBitrateBps} -> ${decision.bitrateBps} bps; " +
-                                    "bitrate=${if (recovery.bitrateApplied) "applied" else "unavailable"}; " +
-                                    "sync=${if (recovery.syncFrameRequested) "requested" else "unavailable"}",
-                            )
-                            recovery.syncFrameRequested
-                        },
-                    ).forward()
+                    forwarder.forward()
                 } finally {
                     terminated.complete(Unit)
+                }
+            }
+            if (video is RelayVideoRecordSink) {
+                // A periodic sync frame is both a decoder repair point and a video-path heartbeat.
+                // It prevents an otherwise healthy CONTROL stream from masking a wedged encoder
+                // or a requester that lost H.264 reference state indefinitely.
+                jobs += launch(Dispatchers.IO) {
+                    var lastObservedReadCount = forwarder.recordCount()
+                    var lastObservedWrittenCount = forwarder.writtenRecordCount()
+                    var unavailableSyncChecks = 0
+                    while (true) {
+                        delay(RELAY_VIDEO_SYNC_INTERVAL_MS)
+                        val beforeKeyFrames = forwarder.keyFrameCount()
+                        val recovery = synchronized(recoveryLock) {
+                            pipes.recoverVideo(relayBitrate.get())
+                        }
+                        delay(RELAY_VIDEO_SYNC_GRACE_MS)
+                        val afterRead = forwarder.recordCount()
+                        val afterKeyFrames = forwarder.keyFrameCount()
+                        val afterWritten = forwarder.writtenRecordCount()
+                        if (recovery.syncFrameRequested) {
+                            if (afterKeyFrames == beforeKeyFrames) {
+                                Log.w(LOG_TAG, "Relay video encoder did not answer a sync-frame request")
+                                terminated.complete(Unit)
+                                return@launch
+                            }
+                            unavailableSyncChecks = 0
+                        }
+
+                        if (afterRead > lastObservedReadCount &&
+                            afterWritten == lastObservedWrittenCount
+                        ) {
+                            Log.w(LOG_TAG, "Relay video writer made no progress while the encoder remained active")
+                            terminated.complete(Unit)
+                            return@launch
+                        }
+
+                        if (afterRead == lastObservedReadCount && !recovery.syncFrameRequested) {
+                            unavailableSyncChecks++
+                        }
+                        else unavailableSyncChecks = 0
+                        if (unavailableSyncChecks >= RELAY_VIDEO_UNAVAILABLE_SYNC_LIMIT) {
+                            Log.w(LOG_TAG, "Relay video made no progress and sync-frame recovery is unavailable")
+                            terminated.complete(Unit)
+                            return@launch
+                        }
+                        lastObservedReadCount = afterRead
+                        lastObservedWrittenCount = afterWritten
+                    }
                 }
             }
             jobs += launch(Dispatchers.IO) { copyUntilClosed(control.input, controlSink, terminated) }
@@ -406,6 +465,7 @@ class AndroidLanScreenSessionTransport(
         } finally {
             runCatching { video.close() }
             runCatching { control.close() }
+            runCatching { videoForwarder?.close() }
             runCatching { videoInput?.close() }
             runCatching { controls?.close() }
             runCatching { deviceMessages?.close() }
@@ -611,6 +671,9 @@ class AndroidLanScreenSessionTransport(
         const val DNS_SD_TIMEOUT_MS = 5_000L
         const val COPY_BUFFER_BYTES = 64 * 1024
         const val CAPTURE_START_TIMEOUT_MS = 10_000L
+        const val RELAY_VIDEO_SYNC_INTERVAL_MS = 5_000L
+        const val RELAY_VIDEO_SYNC_GRACE_MS = 3_000L
+        const val RELAY_VIDEO_UNAVAILABLE_SYNC_LIMIT = 3
         const val WIFI_AWARE_RESOLVE_TIMEOUT_MS = 10_000L
         const val MAX_ENDPOINT_ATTEMPTS = 8
         const val DEFAULT_VIDEO_BITRATE_BPS = 8_000_000

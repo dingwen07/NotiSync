@@ -382,7 +382,7 @@
     <string name="screen_mirror_service_title">Screen sharing active</string>
     <string name="screen_mirror_service_body">Connected controller: %1$s</string>
     <string name="screen_mirror_service_connecting_title">Preparing screen sharing</string>
-    <string name="screen_mirror_service_connecting_body">Authenticating request from %1$s…</string>
+    <string name="screen_mirror_service_connecting_body">Getting ready to share your screen with %1$s…</string>
     <string name="screen_mirror_stop">Stop</string>
     <string name="screen_viewer_preparing">Preparing secure screen session…</string>
     <string name="screen_viewer_task_title">Screen mirroring</string>

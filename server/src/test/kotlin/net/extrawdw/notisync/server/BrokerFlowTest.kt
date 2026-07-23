@@ -879,6 +879,18 @@ class BrokerFlowTest {
                             ),
                         ),
                     )
+                    send(
+                        Frame.Text(
+                            ProtocolCodec.encodeToJson(
+                                ScreenRelaySignal(
+                                    kind = ScreenRelaySignalKind.VIDEO_CONGESTED,
+                                    detail = "requester decoder reset",
+                                    sequence = 0,
+                                    deliveredBytes = 1,
+                                ),
+                            ),
+                        ),
+                    )
                     close(CloseReason(CloseReason.Codes.NORMAL, "done"))
                 }
             }
@@ -921,6 +933,11 @@ class BrokerFlowTest {
                     )
                     assertEquals(ScreenRelaySignalKind.VIDEO_ACK, feedback.kind)
                     assertEquals(0L, feedback.sequence)
+                    val recovery = ProtocolCodec.decodeFromJson<ScreenRelaySignal>(
+                        (incoming.receive() as Frame.Text).readText(),
+                    )
+                    assertEquals(ScreenRelaySignalKind.VIDEO_CONGESTED, recovery.kind)
+                    assertEquals(0L, recovery.sequence)
                     close(CloseReason(CloseReason.Codes.NORMAL, "done"))
                 }
             }

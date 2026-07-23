@@ -226,12 +226,25 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             videoPair = createdVideoPair
             val createdControlPair = ParcelFileDescriptor.createSocketPair()
             controlPair = createdControlPair
+            // Congestion recovery runs on the Relay network writer. A wedged Binder call must
+            // not freeze that writer (and therefore the whole source session). Once one call
+            // times out, stop issuing recovery calls for this capture generation.
+            val recoveryResponsive = AtomicBoolean(true)
+            val recoverVideo: (Int) -> Int = { bitrateBps ->
+                if (!recoveryResponsive.get()) {
+                    0
+                } else {
+                    val result = runScreenOperationWithTimeout(PRIVILEGED_RECOVERY_TIMEOUT_MS) {
+                        remote.recoverVideo(ownerToken, bitrateBps)
+                    }
+                    if (result == null) recoveryResponsive.set(false)
+                    result ?: 0
+                }
+            }
             val local = PrivilegedSessionPipes(
                 videoRead = createdVideoPair[0],
                 control = createdControlPair[0],
-                recoverVideoCallback = { bitrateBps ->
-                    runCatching { remote.recoverVideo(ownerToken, bitrateBps) }.getOrDefault(0)
-                },
+                recoverVideoCallback = recoverVideo,
             )
             val result = remote.startSession(
                 ownerToken,
@@ -280,12 +293,19 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         service = null
         serviceFlow.value = null
         binding.set(false)
-        connection?.let { runCatching { Shizuku.unbindUserService(userServiceArgs, it, true) } }
-        _status.value = if (runCatching { Shizuku.pingBinder() }.getOrDefault(false)) {
+        val removed = connection == null || runScreenTeardownWithTimeout(PRIVILEGED_REMOVE_TIMEOUT_MS) {
+            Shizuku.unbindUserService(userServiceArgs, connection, true)
+            true
+        }
+        val shizukuReady = runScreenTeardownWithTimeout(PRIVILEGED_REMOVE_TIMEOUT_MS) {
+            Shizuku.pingBinder()
+        }
+        _status.value = if (shizukuReady) {
             ShizukuScreenStatus.READY
         } else {
             ShizukuScreenStatus.NOT_RUNNING
         }
+        check(removed) { "privileged screen service removal timed out" }
     }
 
     override fun close() {
@@ -362,14 +382,16 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
-        const val USER_SERVICE_REVISION = 9
+        const val USER_SERVICE_REVISION = 1
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920
         const val DEFAULT_MAX_FPS = 60
         const val DEFAULT_BITRATE_BPS = 8_000_000
         const val SERVICE_BIND_TIMEOUT_MS = 10_000L
+        const val PRIVILEGED_RECOVERY_TIMEOUT_MS = 750L
         const val PRIVILEGED_STOP_TIMEOUT_MS = 3_000L
+        const val PRIVILEGED_REMOVE_TIMEOUT_MS = 3_000L
     }
 }
 
@@ -377,10 +399,16 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 internal fun runScreenTeardownWithTimeout(
     timeoutMillis: Long,
     teardown: () -> Boolean,
-): Boolean {
+): Boolean = runScreenOperationWithTimeout(timeoutMillis, teardown) ?: false
+
+/** Binder work is not interruptible on every device; abandon its daemon worker after the bound. */
+internal fun <T : Any> runScreenOperationWithTimeout(
+    timeoutMillis: Long,
+    operation: () -> T,
+): T? {
     require(timeoutMillis > 0)
-    val task = FutureTask(teardown)
-    val thread = Thread(task, "notisync-screen-privileged-stop").apply {
+    val task = FutureTask(operation)
+    val thread = Thread(task, "notisync-screen-privileged-operation").apply {
         isDaemon = true
         start()
     }
@@ -388,9 +416,9 @@ internal fun runScreenTeardownWithTimeout(
         task.get(timeoutMillis, TimeUnit.MILLISECONDS)
     } catch (_: TimeoutException) {
         task.cancel(true)
-        false
+        null
     } catch (_: Throwable) {
-        false
+        null
     } finally {
         if (!task.isDone) thread.interrupt()
     }

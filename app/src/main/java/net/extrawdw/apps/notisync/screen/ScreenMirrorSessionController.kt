@@ -144,6 +144,7 @@ class ScreenMirrorSessionController(
         var admissionAnnounced: Boolean = false,
         var foregroundState: ScreenMirrorForegroundState = ScreenMirrorForegroundState.NOT_REQUESTED,
         var foregroundWatchdog: Job? = null,
+        var forcedTakeover: Boolean = false,
     ) : Closeable {
         val teardown = ScreenMirrorTeardownClaim()
 
@@ -166,6 +167,7 @@ class ScreenMirrorSessionController(
     private var sessionJob: Job? = null
     private var expiryJob: Job? = null
     private var replacementExpiryJob: Job? = null
+    private var takeoverWatchdogJob: Job? = null
     private val _state = MutableStateFlow(AndroidScreenSessionState.IDLE)
     val state: StateFlow<AndroidScreenSessionState> = _state.asStateFlow()
     private val statusDeliveries = Channel<StatusDelivery>(Channel.UNLIMITED)
@@ -265,6 +267,9 @@ class ScreenMirrorSessionController(
                     replacementExpiryJob = scheduleReplacementExpiryLocked(incoming, expiry)
 
                     val current = requireNotNull(offer.active)
+                    if (takeoverWatchdogJob?.isActive != true) {
+                        takeoverWatchdogJob = scheduleTakeoverWatchdogLocked(current)
+                    }
                     if (!current.stopRequested) {
                         current.stopRequested = true
                         previousToEnd = current
@@ -353,6 +358,51 @@ class ScreenMirrorSessionController(
         if (removed) {
             sendStatus(holder.request, ScreenMirrorStatus.EXPIRED)
             holder.close()
+        }
+    }
+
+    /**
+     * A cancelled transport normally promotes its queued replacement through `finally`. If an OEM
+     * socket, codec, or Binder call never unwinds, forcibly retire that exact generation after a
+     * bound so a fresh authenticated request is not held behind a permanent ACTIVE notification.
+     */
+    private fun scheduleTakeoverWatchdogLocked(holder: PendingRequest): Job = scope.launch {
+        delay(TAKEOVER_TEARDOWN_TIMEOUT_MILLIS)
+        var running: Job? = null
+        val claimed = synchronized(lock) {
+            if (pending !== holder || sessions.replacement == null || !holder.stopRequested ||
+                holder.forcedTakeover
+            ) {
+                false
+            } else {
+                holder.forcedTakeover = true
+                running = sessionJob
+                takeoverWatchdogJob = null
+                true
+            }
+        }
+        if (!claimed) return@launch
+
+        withContext(Dispatchers.IO) {
+            runCatching { running?.cancel() }
+            runCatching { cancelPendingNotification(holder) }
+            runCatching { holder.close() }
+            val removalFailure = runCatching { shizuku.removeUserService() }.exceptionOrNull()
+            runCatching {
+                ScreenMirrorForegroundService.release(
+                    context,
+                    holder.request.sessionId,
+                    holder.foregroundLeaseId,
+                )
+            }
+            completeAndPromote(
+                holder = holder,
+                forcedPromotionFailure = removalFailure?.let {
+                    ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to
+                        "stale screen session could not release its privileged service"
+                },
+                forcedTakeoverOwner = true,
+            )
         }
     }
 
@@ -458,6 +508,7 @@ class ScreenMirrorSessionController(
         holder: PendingRequest,
         forcedPromotionFailure: Pair<ScreenMirrorStatus, String>? = null,
         removeUserServiceWhenIdle: Boolean = false,
+        forcedTakeoverOwner: Boolean = false,
     ) {
         var next: PendingRequest? = null
         var rejected: Pair<ScreenMirrorStatus, String>? = null
@@ -471,6 +522,8 @@ class ScreenMirrorSessionController(
             expiryJob = null
             replacementExpiryJob?.cancel()
             replacementExpiryJob = null
+            takeoverWatchdogJob?.cancel()
+            takeoverWatchdogJob = null
 
             val candidate = completion.replacement
             if (candidate == null) {
@@ -495,7 +548,7 @@ class ScreenMirrorSessionController(
         var owned = false
         var removeBeforeCompletion = false
         synchronized(lock) {
-            if (pending !== holder) return
+            if (pending !== holder || holder.forcedTakeover && !forcedTakeoverOwner) return
             val candidate = sessions.replacement
             val candidateFailure = candidate?.let {
                 effectiveForcedPromotionFailure ?: runtimeAdmissionFailure(it)
@@ -1061,6 +1114,7 @@ class ScreenMirrorSessionController(
     private companion object {
         const val PENDING_CHANNEL_ID = "notisync.screen.request"
         const val FOREGROUND_START_WATCHDOG_MILLIS = 10_000L
+        const val TAKEOVER_TEARDOWN_TIMEOUT_MILLIS = 10_000L
     }
 }
 

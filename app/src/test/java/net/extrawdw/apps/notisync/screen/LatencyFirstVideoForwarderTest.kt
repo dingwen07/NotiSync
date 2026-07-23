@@ -2,12 +2,17 @@ package net.extrawdw.apps.notisync.screen
 
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.Collections
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -119,6 +124,38 @@ class LatencyFirstVideoForwarderTest {
     }
 
     @Test
+    fun closeDoesNotWaitForeverForStuckNetworkWriter() {
+        val sink = BlockingVideoSink()
+        val forwarder = LatencyFirstVideoForwarder(
+            input = ByteArrayInputStream(
+                packetBytes(codecConfig = false, keyFrame = true, pts = 1, value = 7),
+            ),
+            sink = sink,
+            preamble = h264Preamble(),
+            codec = ScreenMirrorCodec.H264,
+            targetBitrateBps = 8_000_000,
+            recoverVideo = { false },
+            writerJoinTimeoutMillis = 50,
+        )
+        val failure = AtomicReference<Throwable?>()
+        val worker = Thread {
+            runCatching { forwarder.forward() }.onFailure(failure::set)
+        }.apply { start() }
+
+        try {
+            assertTrue(sink.started.await(1, TimeUnit.SECONDS))
+            forwarder.close()
+            worker.join(1_000)
+
+            assertFalse("forwarder remained owned by a stuck network writer", worker.isAlive)
+            assertTrue(failure.get() is IOException)
+        } finally {
+            sink.release.countDown()
+            worker.join(1_000)
+        }
+    }
+
+    @Test
     fun queueDropsPredictiveBacklogUntilFreshKeyFrame() {
         var now = 1L
         val queue = LatestDecodableVideoQueue { now++ }
@@ -179,5 +216,26 @@ class LatencyFirstVideoForwarderTest {
             Thread.sleep(delayMillis)
             super.write(bytes, offset, length)
         }
+    }
+
+    private class BlockingVideoSink : VideoRecordSink {
+        val started = CountDownLatch(1)
+        val release = CountDownLatch(1)
+
+        override fun writePreamble(bytes: ByteArray) = Unit
+
+        override fun writeRecord(record: QueuedVideoRecord) {
+            started.countDown()
+            while (release.count > 0) {
+                try {
+                    release.await(1, TimeUnit.SECONDS)
+                } catch (_: InterruptedException) {
+                    // Model a platform writer that ignores coroutine/thread interruption.
+                }
+            }
+        }
+
+        override fun flush() = Unit
+        override fun close() = Unit
     }
 }

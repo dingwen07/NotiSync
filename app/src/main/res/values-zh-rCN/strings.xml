@@ -368,7 +368,7 @@
     <string name="screen_mirror_service_title">屏幕共享已开启</string>
     <string name="screen_mirror_service_body">已连接的控制设备：%1$s</string>
     <string name="screen_mirror_service_connecting_title">正在准备屏幕共享</string>
-    <string name="screen_mirror_service_connecting_body">正在验证来自 %1$s 的请求…</string>
+    <string name="screen_mirror_service_connecting_body">正在准备与 %1$s 共享您的屏幕…</string>
     <string name="screen_mirror_stop">停止</string>
     <string name="screen_viewer_preparing">正在准备安全屏幕会话…</string>
     <string name="screen_viewer_task_title">屏幕镜像</string>
