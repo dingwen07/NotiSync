@@ -18,11 +18,16 @@ internal enum class MirrorNotificationOpenRoute {
     REMOTE_ONLY,
 }
 
-/** UI actions re-evaluate routing when clicked; reply/non-UI actions remain broadcast-only. */
-internal fun mirrorNotificationActionUsesUiTrampoline(
-    showsUserInterface: Boolean,
-    remoteInput: Boolean,
-): Boolean = showsUserInterface && !remoteInput
+/** Only opening the notification itself may open the source device's screen viewer. */
+internal fun mirrorNotificationInteractionOpensScreen(
+    isContentTap: Boolean,
+    route: MirrorNotificationOpenRoute?,
+    eligibleFallback: Boolean,
+): Boolean =
+    isContentTap && (
+        route == MirrorNotificationOpenRoute.SCREEN_MIRROR ||
+            (route == null && eligibleFallback)
+    )
 
 /**
  * Chooses the local UI fallback without weakening the screen requester's own trust checks.

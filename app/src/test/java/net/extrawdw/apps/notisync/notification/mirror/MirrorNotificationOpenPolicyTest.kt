@@ -10,10 +10,39 @@ import org.junit.Test
 
 class MirrorNotificationOpenPolicyTest {
     @Test
-    fun `every non-reply UI action rechecks screen routing when clicked`() {
-        assertEquals(true, mirrorNotificationActionUsesUiTrampoline(true, false))
-        assertEquals(false, mirrorNotificationActionUsesUiTrampoline(true, true))
-        assertEquals(false, mirrorNotificationActionUsesUiTrampoline(false, false))
+    fun `only a notification content tap opens screen sharing`() {
+        assertEquals(
+            true,
+            mirrorNotificationInteractionOpensScreen(
+                isContentTap = true,
+                route = MirrorNotificationOpenRoute.SCREEN_MIRROR,
+                eligibleFallback = false,
+            ),
+        )
+        assertEquals(
+            true,
+            mirrorNotificationInteractionOpensScreen(
+                isContentTap = true,
+                route = null,
+                eligibleFallback = true,
+            ),
+        )
+        assertEquals(
+            false,
+            mirrorNotificationInteractionOpensScreen(
+                isContentTap = false,
+                route = MirrorNotificationOpenRoute.SCREEN_MIRROR,
+                eligibleFallback = false,
+            ),
+        )
+        assertEquals(
+            false,
+            mirrorNotificationInteractionOpensScreen(
+                isContentTap = false,
+                route = null,
+                eligibleFallback = true,
+            ),
+        )
     }
 
     @Test

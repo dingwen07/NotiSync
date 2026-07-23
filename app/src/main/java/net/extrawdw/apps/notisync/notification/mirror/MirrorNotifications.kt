@@ -1244,8 +1244,8 @@ class RemoteNotificationPoster(
      * Rebuild the source's action row on the mirror. Most presses broadcast to
      * [MirrorActionReceiver], which unicasts a PERFORM
      * [net.extrawdw.notisync.protocol.ActionEvent] to the origin; a remote-input action carries a
-     * reply field whose text rides along. A UI-opening action uses [MirrorTapActivity] only when it
-     * can open the trusted origin's screen locally, otherwise it retains the feedback-only path.
+     * reply field whose text rides along. Actions never open the origin's screen locally. An action
+     * which opens UI on the origin retains the existing "check on device" feedback.
      */
     private fun applyActions(
         builder: NotificationCompat.Builder,
@@ -1257,7 +1257,7 @@ class RemoteNotificationPoster(
             val pi = actionIntent(notif, action, tag, originLabel)
             val ab = NotificationCompat.Action.Builder(0, action.title, pi)
                 .setSemanticAction(action.semanticAction) // same constants as the framework's
-                .setShowsUserInterface(action.showsUserInterface && pi.isActivity)
+                .setShowsUserInterface(false)
                 .setAllowGeneratedReplies(false)
             if (action.remoteInput) {
                 ab.addRemoteInput(
@@ -1342,24 +1342,8 @@ class RemoteNotificationPoster(
         tag: String,
         originLabel: String,
     ): PendingIntent {
-        // Route every non-reply UI action through the notification-started Activity trampoline.
-        // Capability and trust may change after this notification is posted, so the click-time
-        // policy—not this render-time snapshot—decides whether to open the viewer or show feedback.
-        val useUiTrampoline = mirrorNotificationActionUsesUiTrampoline(
-            showsUserInterface = action.showsUserInterface,
-            remoteInput = action.remoteInput,
-        )
-        val screenMirrorFallback = useUiTrampoline &&
-            context.canOpenMirroredNotificationOnScreen(notif.sourceClientId, notif.originPlatform)
-        val intent = Intent(
-            context,
-            if (useUiTrampoline) MirrorTapActivity::class.java else MirrorActionReceiver::class.java,
-        ).apply {
-            this.action = if (useUiTrampoline) {
-                MirrorTapActivity.ACTION_PERFORM_UI
-            } else {
-                MirrorActionReceiver.ACTION_PERFORM
-            }
+        val intent = Intent(context, MirrorActionReceiver::class.java).apply {
+            this.action = MirrorActionReceiver.ACTION_PERFORM
             data = "notisync://action/${action.index}/${Uri.encode(tag)}".toUri()
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_CLIENT, notif.sourceClientId.value)
             putExtra(MirrorActionReceiver.EXTRA_SOURCE_KEY, notif.sourceKey)
@@ -1370,21 +1354,13 @@ class RemoteNotificationPoster(
             putExtra(MirrorActionReceiver.EXTRA_REMOTE_INPUT, action.remoteInput)
             putExtra(MirrorActionReceiver.EXTRA_SHOWS_UI, action.showsUserInterface)
             putExtra(MirrorActionReceiver.EXTRA_DEVICE_NAME, originLabel)
-            putExtra(MirrorTapActivity.EXTRA_ORIGIN_PLATFORM, notif.originPlatform.name)
-            if (useUiTrampoline) {
-                putExtra(MirrorTapActivity.EXTRA_SCREEN_MIRROR_FALLBACK, screenMirrorFallback)
-            }
         }
         // A remote-input action's PendingIntent must be MUTABLE so the OS can attach the typed text.
         val mutability =
             if (action.remoteInput) PendingIntent.FLAG_MUTABLE else PendingIntent.FLAG_IMMUTABLE
         val requestCode = tag.hashCode() * 31 + action.index
         val flags = mutability or PendingIntent.FLAG_UPDATE_CURRENT
-        return if (useUiTrampoline) {
-            PendingIntent.getActivity(context, requestCode, intent, flags)
-        } else {
-            PendingIntent.getBroadcast(context, requestCode, intent, flags)
-        }
+        return PendingIntent.getBroadcast(context, requestCode, intent, flags)
     }
 
     private fun deleteIntent(
@@ -1451,6 +1427,7 @@ class RemoteNotificationPoster(
         private val PACKAGE_SMALL_ICONS: Map<String, Int> = mapOf(
             "net.extrawdw.notisync.run" to R.drawable.ic_terminal_notification,
             "com.google.android.apps.messaging" to R.drawable.ic_google_messages_notification,
+            "com.android.mms" to R.drawable.ic_google_messages_notification,
             "com.google.android.youtube" to R.drawable.ic_youtube_notification,
             "com.google.android.apps.youtube.music" to R.drawable.ic_youtube_music_notification,
             "com.spotify.music" to R.drawable.ic_spotify_notification,
@@ -1683,9 +1660,10 @@ class MirrorActionReceiver : BroadcastReceiver() {
 }
 
 /**
- * Tap/UI-action trampoline. The real PendingIntent is still fired on the origin. When that origin
- * is a trusted own Android screen source, this also opens its authenticated screen viewer so the
- * user can interact with the resulting UI; otherwise it preserves "Check on <origin>" feedback.
+ * Notification-tap trampoline. The real PendingIntent is still fired on the origin. When that
+ * origin is a trusted own Android screen source, a content tap also opens its authenticated screen
+ * viewer. [ACTION_PERFORM_UI] remains accepted only for already-posted notifications created by an
+ * older build; it relays the action without opening screen sharing.
  */
 class MirrorTapActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -1722,8 +1700,12 @@ class MirrorTapActivity : Activity() {
             // A notification can outlive its process. Its immutable eligibility snapshot lets the
             // notification-started trampoline launch immediately during a cold graph start; the
             // viewer/requester performs the authoritative current trust and capability validation.
-            val openScreen = route == MirrorNotificationOpenRoute.SCREEN_MIRROR ||
-                (graph == null && intent.getBooleanExtra(EXTRA_SCREEN_MIRROR_FALLBACK, false))
+            val openScreen = mirrorNotificationInteractionOpensScreen(
+                isContentTap = action == ACTION_TAP,
+                route = route,
+                eligibleFallback = graph == null &&
+                    intent.getBooleanExtra(EXTRA_SCREEN_MIRROR_FALLBACK, false),
+            )
             val opened = openScreen && runCatching {
                 startActivity(AndroidScreenMirrorActivity.intent(this, sourceClientId))
             }.isSuccess
