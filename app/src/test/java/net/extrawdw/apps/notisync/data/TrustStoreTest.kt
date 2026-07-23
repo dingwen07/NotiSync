@@ -214,7 +214,7 @@ class TrustStoreTest {
     fun revokingOtherDevice_keepsItClassifiedAsOther() {
         val self = SoftwareIdentitySigner.generate()
         val other = SoftwareIdentitySigner.generate()
-        val store = newStore(self)
+        val store = newStore(self) { 20L }
 
         assertTrue(store.addLocal(signedCard(other), now = 10L, ownDevice = false))
         val added = store.roster.value.single { it.clientId == other.clientId }
@@ -231,6 +231,31 @@ class TrustStoreTest {
         )
         // ...and it is broadcast as an other-device tombstone, so fresh peers don't miscategorize it.
         assertFalse(store.buildTrustTable().entries.single { it.clientId == other.clientId }.ownDevice)
+    }
+
+    @Test
+    fun buildTrustTable_stopsAnnouncingRevokedDeviceAfterHalfThePurgeDelay() {
+        val self = SoftwareIdentitySigner.generate()
+        val other = SoftwareIdentitySigner.generate()
+        var now = 10L
+        val store = newStore(self) { now }
+
+        assertTrue(store.addLocal(signedCard(other), now = now, ownDevice = true))
+        store.revokeLocal(other.clientId, now = now)
+
+        now += TrustStore.REVOKE_PURGE_DELAY_MS / 2 - 1
+        assertEquals(
+            listOf(other.clientId),
+            store.buildTrustTable().entries.map { it.clientId },
+        )
+
+        now += 1
+        assertTrue(store.buildTrustTable().entries.isEmpty())
+        assertEquals(
+            "the tombstone stays local until the user permanently deletes it",
+            TrustStatus.REVOKED,
+            store.roster.value.single { it.clientId == other.clientId }.status,
+        )
     }
 
     /** Regression: removing a renamed device must keep its live (overlay) name on the still-shown tombstone,

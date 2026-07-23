@@ -262,7 +262,7 @@ private fun RevokedDeviceActions(
                 modifier = Modifier.size(ButtonDefaults.IconSize),
             )
             androidx.compose.foundation.layout.Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-            Text(stringResource(R.string.device_permanently_delete_desc, name))
+            Text(stringResource(R.string.device_delete_desc, name))
         }
         Text(
             when {

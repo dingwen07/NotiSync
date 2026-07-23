@@ -518,16 +518,26 @@ open class TrustStore(
     }
 
     /**
-     * Our broadcast roster, sent only to our own devices: every entry but our self-row, each tagged with
+     * Our broadcast roster, sent only to our own devices: every entry but our self-row and expired revoked
+     * tombstones, each tagged with
      * its [TrustEntry.ownDevice] category and key-availability. Own-mesh rows include both PENDING_* states
      * (informational — a receiver never acts on a peer's pending, only honours keyAvailable=false to repair
      * a keyless one); "other" rows are always TRUSTED/REVOKED and a receiver applies them immediately.
+     *
+     * A tombstone remains in the local Devices UI until [REVOKE_PURGE_DELAY_MS], but stops circulating after
+     * [REVOKE_ANNOUNCE_DELAY_MS]. This leaves another half-window for lagging peers to receive the removal
+     * while preventing old tombstones from normally recreating a device already purged on another peer.
      */
     override fun buildTrustTable(): TrustTable {
         val st = _state.value
+        val now = clock()
         return TrustTable(
             st.entries.values
                 .filter { it.clientId != selfId }
+                .filter {
+                    it.status != TrustStatus.REVOKED || it.updatedAt > now ||
+                        now - it.updatedAt < REVOKE_ANNOUNCE_DELAY_MS
+                }
                 // keyAvailable stays card-based (the existing keyless-repair signal); the NS2 [epoch] column
                 // advertises the highest key-epoch we hold so a peer refetches when it sees a higher one.
                 .map {
@@ -1019,5 +1029,9 @@ open class TrustStore(
         // not eliminate) resurrection — a peer offline longer than the delay can still re-surface the row
         // (silently re-tombstoned, or a re-approval prompt). Set it longer than any realistic peer-offline window.
         const val REVOKE_PURGE_DELAY_MS = 30L * 24 * 60 * 60 * 1000
+
+        // Stop gossiping a removal before it becomes locally purgeable. The remaining half is a convergence
+        // margin for temporarily-offline devices.
+        const val REVOKE_ANNOUNCE_DELAY_MS = REVOKE_PURGE_DELAY_MS / 2
     }
 }

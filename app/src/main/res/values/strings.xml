@@ -297,7 +297,7 @@
     <string name="device_epoch">Epoch %1$d</string>
     <string name="device_introducer_unknown">another device</string>
     <string name="device_remove_desc">Remove %1$s</string>
-    <string name="device_permanently_delete_desc">Permanently delete %1$s</string>
+    <string name="device_delete_desc">Delete %1$s</string>
     <string name="device_restore_desc">Restore %1$s</string>
     <string name="device_restore_explanation">Restore trusts this device again and announces that decision to your other devices.</string>
     <string name="device_permanently_delete_explanation">Permanent deletion forgets this device’s local trust record, saved card and keys, and notification filters.</string>
