@@ -13,6 +13,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ScreenShare
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.outlined.Restore
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -21,6 +22,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
@@ -41,6 +43,7 @@ import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
+import net.extrawdw.apps.notisync.data.TrustStore
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
 import net.extrawdw.apps.notisync.screen.availableAndroidScreenCodecs
 import net.extrawdw.notisync.protocol.Capability
@@ -58,16 +61,19 @@ import java.util.Date
 @Composable
 internal fun DeviceDetailsSheet(
     device: RosterDevice,
+    nowMillis: Long,
     screenMirroringEnabled: Boolean,
     screenControlAuthorized: Boolean,
     screenMirrorRequestEnabled: Boolean = true,
-    removeEnabled: Boolean = true,
+    trustActionsEnabled: Boolean = true,
     screenMirrorCodecOverride: ScreenMirrorCodec?,
     screenMirrorDecoderSupport: AndroidScreenDecoderSupport,
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
     onScreenMirrorCodecOverrideChange: (ScreenMirrorCodec?) -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
     onRemove: () -> Unit = {},
+    onRestore: () -> Unit = {},
+    onPurge: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -166,7 +172,7 @@ internal fun DeviceDetailsSheet(
                 item {
                     Button(
                         onClick = onRemove,
-                        enabled = removeEnabled,
+                        enabled = trustActionsEnabled,
                         colors = ButtonDefaults.buttonColors(
                             containerColor = MaterialTheme.colorScheme.error,
                             contentColor = MaterialTheme.colorScheme.onError,
@@ -185,9 +191,96 @@ internal fun DeviceDetailsSheet(
                     }
                 }
             }
+            if (device.status == TrustStatus.REVOKED) {
+                item {
+                    RevokedDeviceActions(
+                        name = name,
+                        revokedAt = device.revokedAt,
+                        nowMillis = nowMillis,
+                        actionsEnabled = trustActionsEnabled,
+                        onRestore = onRestore,
+                        onPurge = onPurge,
+                    )
+                }
+            }
         }
     }
 }
+
+@Composable
+private fun RevokedDeviceActions(
+    name: String,
+    revokedAt: Long?,
+    nowMillis: Long,
+    actionsEnabled: Boolean,
+    onRestore: () -> Unit,
+    onPurge: () -> Unit,
+) {
+    val remainingMillis = revokedAt?.let {
+        (it + TrustStore.REVOKE_PURGE_DELAY_MS - nowMillis).coerceAtLeast(0L)
+    }
+    val purgeEnabled = actionsEnabled && remainingMillis == 0L
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(
+            stringResource(R.string.device_restore_explanation),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        OutlinedButton(
+            onClick = onRestore,
+            enabled = actionsEnabled,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Outlined.Restore,
+                contentDescription = null,
+                modifier = Modifier.size(ButtonDefaults.IconSize),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(stringResource(R.string.device_restore_desc, name))
+        }
+
+        Text(
+            stringResource(R.string.device_permanently_delete_explanation),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(top = 8.dp),
+        )
+        Button(
+            onClick = onPurge,
+            enabled = purgeEnabled,
+            colors = ButtonDefaults.buttonColors(
+                containerColor = MaterialTheme.colorScheme.error,
+                contentColor = MaterialTheme.colorScheme.onError,
+            ),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Icon(
+                Icons.Filled.Delete,
+                contentDescription = null,
+                modifier = Modifier.size(ButtonDefaults.IconSize),
+            )
+            androidx.compose.foundation.layout.Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+            Text(stringResource(R.string.device_permanently_delete_desc, name))
+        }
+        Text(
+            when {
+                !actionsEnabled -> stringResource(R.string.device_actions_quarantined)
+                remainingMillis == null -> stringResource(R.string.device_purge_timestamp_missing)
+                remainingMillis > 0L -> stringResource(
+                    R.string.device_purge_waiting,
+                    formatDuration(remainingMillis.roundUpToSecond()),
+                )
+                else -> stringResource(R.string.device_purge_ready)
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun Long.roundUpToSecond(): Long = ((this + 999L) / 1_000L) * 1_000L
 
 @Composable
 private fun ScreenMirrorCodecSelector(

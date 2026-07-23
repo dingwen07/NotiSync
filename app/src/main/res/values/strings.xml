@@ -299,6 +299,12 @@
     <string name="device_remove_desc">Remove %1$s</string>
     <string name="device_permanently_delete_desc">Permanently delete %1$s</string>
     <string name="device_restore_desc">Restore %1$s</string>
+    <string name="device_restore_explanation">Restore trusts this device again and announces that decision to your other devices.</string>
+    <string name="device_permanently_delete_explanation">Permanent deletion forgets this device’s local trust record, saved card and keys, and notification filters.</string>
+    <string name="device_purge_waiting">Available in %1$s. Until then, NotiSync keeps the removal record so it can announce that decision to your other devices.</string>
+    <string name="device_purge_ready">The safety period is complete. Deleting now removes the local record and can no longer be reversed with Restore.</string>
+    <string name="device_purge_timestamp_missing">Permanent deletion is unavailable because this removal record has no timestamp.</string>
+    <string name="device_actions_quarantined">Device actions are disabled until the quarantined trust state is resolved.</string>
     <!-- Notification filters a peer device asked this device to apply (DATA_SYNC FILTER). -->
     <string name="device_filters_button_desc">Notifications hidden from %1$s</string>
     <string name="device_filters_title">Hidden from %1$s</string>
