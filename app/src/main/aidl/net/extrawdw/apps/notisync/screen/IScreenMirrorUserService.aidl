@@ -44,4 +44,7 @@ interface IScreenMirrorUserService {
      */
     /** Result flags: bitrate applied=1, sync frame requested=2. */
     int recoverVideo(String ownerToken, int bitrateBps) = 6;
+
+    /** Recreates only the exact owner's video encoder; capture and control remain active. */
+    boolean restartVideo(String ownerToken) = 7;
 }

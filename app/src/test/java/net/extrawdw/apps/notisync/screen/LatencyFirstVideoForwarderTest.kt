@@ -179,6 +179,73 @@ class LatencyFirstVideoForwarderTest {
         assertNull(queue.take())
     }
 
+    @Test
+    fun recoveryWakesReaderBlockedByFullVideoQueue() {
+        var now = 1L
+        val queue = LatestDecodableVideoQueue { now++ }
+        assertNull(queue.tryEnqueue(packet(codecConfig = true, keyFrame = false, value = 1)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = true, value = 2)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = false, value = 3)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = false, value = 4)))
+        val rejected = requireNotNull(
+            queue.tryEnqueue(packet(codecConfig = false, keyFrame = false, value = 5)),
+        )
+        val enqueueStarted = CountDownLatch(1)
+        val enqueueFinished = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val reader = Thread {
+            enqueueStarted.countDown()
+            runCatching { queue.enqueueBlocking(rejected) }
+                .onFailure(failure::set)
+            enqueueFinished.countDown()
+        }.apply { start() }
+
+        try {
+            assertTrue(enqueueStarted.await(1, TimeUnit.SECONDS))
+            assertFalse(enqueueFinished.await(100, TimeUnit.MILLISECONDS))
+            assertTrue(queue.isProducerBlocked())
+
+            queue.dropUntilNextKeyFrame()
+
+            assertTrue("video reader remained blocked after recovery", enqueueFinished.await(1, TimeUnit.SECONDS))
+            assertNull(failure.get())
+            assertTrue(queue.isDroppingUntilKeyFrame())
+            assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = true, value = 6)))
+            assertFalse(queue.isDroppingUntilKeyFrame())
+            assertTrue(requireNotNull(queue.take()).codecConfig)
+            assertTrue(requireNotNull(queue.take()).keyFrame)
+        } finally {
+            queue.finish()
+            reader.join(1_000)
+        }
+    }
+
+    @Test
+    fun encoderSessionBoundaryWaitsForItsOwnKeyFrame() {
+        var now = 1L
+        val queue = LatestDecodableVideoQueue { now++ }
+        assertNull(queue.tryEnqueue(packet(codecConfig = true, keyFrame = false, value = 1)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = true, value = 2)))
+        assertNull(
+            queue.tryEnqueue(
+                ScrcpyVideoRecord.Session(
+                    dimensions = ScrcpySessionDimensions(width = 1080, height = 2400),
+                    clientResize = false,
+                ),
+            ),
+        )
+
+        assertTrue(queue.isDroppingUntilKeyFrame())
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = false, value = 3)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = true, keyFrame = false, value = 4)))
+        assertNull(queue.tryEnqueue(packet(codecConfig = false, keyFrame = true, value = 5)))
+
+        assertFalse(queue.isDroppingUntilKeyFrame())
+        assertTrue(requireNotNull(queue.take()).session)
+        assertTrue(requireNotNull(queue.take()).codecConfig)
+        assertTrue(requireNotNull(queue.take()).keyFrame)
+    }
+
     private fun packet(codecConfig: Boolean, keyFrame: Boolean, value: Int) =
         ScrcpyVideoRecord.Packet(
             data = byteArrayOf(value.toByte()),

@@ -9,7 +9,6 @@ import java.io.SequenceInputStream
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
-import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.math.min
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
@@ -151,13 +150,15 @@ internal class LatencyFirstVideoForwarder(
     private val bitrate = AdaptiveVideoBitrateController(targetBitrateBps)
     private val recoveryLock = Any()
     private val writerThread = AtomicReference<Thread?>()
-    private val recordsRead = AtomicLong()
-    private val keyFramesRead = AtomicLong()
-    private val recordsWritten = AtomicLong()
 
-    fun recordCount(): Long = recordsRead.get()
-    fun keyFrameCount(): Long = keyFramesRead.get()
-    fun writtenRecordCount(): Long = recordsWritten.get()
+    fun isReaderBackpressured(): Boolean = queue.isProducerBlocked()
+    fun isWaitingForRecoveryKeyFrame(): Boolean = queue.isDroppingUntilKeyFrame()
+
+    /**
+     * Discards video that can no longer be delivered with low latency and wakes the encoder-pipe
+     * reader if it is waiting for queue capacity. The next key frame rebuilds a decodable stream.
+     */
+    fun discardBacklogForRecovery() = queue.dropUntilNextKeyFrame()
 
     fun forward() {
         val writerFailure = AtomicReference<Throwable?>()
@@ -186,10 +187,6 @@ internal class LatencyFirstVideoForwarder(
             reader.readPreamble()
             while (true) {
                 val record = reader.readRecord() ?: break
-                recordsRead.incrementAndGet()
-                if (record is ScrcpyVideoRecord.Packet && record.keyFrame) {
-                    keyFramesRead.incrementAndGet()
-                }
                 val rejected = queue.tryEnqueue(record)
                 if (rejected != null &&
                     !requestRecovery(VideoCongestionReason.QUEUE_FULL, 0, 0L)
@@ -231,7 +228,6 @@ internal class LatencyFirstVideoForwarder(
             }
             val started = nanoTime()
             sink.writeRecord(record)
-            recordsWritten.incrementAndGet()
             val completed = nanoTime()
             val duration = completed - started
             if (duration >= SLOW_WRITE_NANOS) {
@@ -251,7 +247,12 @@ internal class LatencyFirstVideoForwarder(
 
     private fun applyRecovery(decision: VideoRecoveryDecision): Boolean {
         val accepted = recoverVideo(decision)
-        if (accepted) queue.dropUntilNextKeyFrame()
+        // Raising bitrate after a healthy interval does not invalidate decoder references. Some
+        // OEM encoders ignore the accompanying advisory key-frame request, so only real congestion
+        // may put delivery into key-frame recovery mode.
+        if (accepted && decision.reason != VideoCongestionReason.RECOVERY) {
+            queue.dropUntilNextKeyFrame()
+        }
         return accepted
     }
 
@@ -287,6 +288,7 @@ internal class LatestDecodableVideoQueue(
     private var latestSession: QueuedVideoRecord? = null
     private var queuedBytes = 0
     private var droppingUntilKeyFrame = false
+    private var producerBlocked = false
     private var closed = false
     private var failure: Throwable? = null
 
@@ -300,7 +302,9 @@ internal class LatestDecodableVideoQueue(
                 latestSession = record
                 codecConfigs.clear()
                 clearLocked()
-                droppingUntilKeyFrame = false
+                // An encoder restart invalidates every prior reference frame. Preserve the session
+                // marker but do not resume predictive delivery until the new encoder's first key.
+                droppingUntilKeyFrame = true
                 addLocked(record)
                 null
             }
@@ -333,29 +337,42 @@ internal class LatestDecodableVideoQueue(
     }
 
     fun enqueueBlocking(record: QueuedVideoRecord) = synchronized(lock) {
-        while (true) {
-            failure?.let { throw IOException("screen video queue failed", it) }
-            if (closed) throw IOException("screen video queue is closed")
-            when {
-                record.codecConfig && droppingUntilKeyFrame -> return@synchronized
-                droppingUntilKeyFrame && !record.keyFrame -> return@synchronized
-                droppingUntilKeyFrame || record.keyFrame && !fitsLocked(record) -> {
-                    rebuildFromKeyFrameLocked(record)
-                    return@synchronized
+        producerBlocked = true
+        try {
+            while (true) {
+                failure?.let { throw IOException("screen video queue failed", it) }
+                if (closed) throw IOException("screen video queue is closed")
+                when {
+                    record.codecConfig && droppingUntilKeyFrame -> return@synchronized
+                    droppingUntilKeyFrame && !record.keyFrame -> return@synchronized
+                    droppingUntilKeyFrame || record.keyFrame && !fitsLocked(record) -> {
+                        rebuildFromKeyFrameLocked(record)
+                        return@synchronized
+                    }
+                    fitsLocked(record) -> {
+                        addLocked(record)
+                        return@synchronized
+                    }
+                    else -> lock.wait()
                 }
-                fitsLocked(record) -> {
-                    addLocked(record)
-                    return@synchronized
-                }
-                else -> lock.wait()
             }
+        } finally {
+            producerBlocked = false
         }
     }
+
+    fun isProducerBlocked(): Boolean = synchronized(lock) { producerBlocked }
+
+    fun isDroppingUntilKeyFrame(): Boolean = synchronized(lock) { droppingUntilKeyFrame }
 
     fun dropUntilNextKeyFrame() = synchronized(lock) {
         if (closed) return@synchronized
         clearLocked()
         droppingUntilKeyFrame = true
+        // enqueueBlocking() may be holding up the encoder pipe while the network writer is stuck.
+        // Clearing the queue alone is insufficient: wake that reader so it can discard its stale
+        // predictive record and resume draining the pipe until the requested key frame arrives.
+        lock.notifyAll()
     }
 
     fun take(): QueuedVideoRecord? = synchronized(lock) {

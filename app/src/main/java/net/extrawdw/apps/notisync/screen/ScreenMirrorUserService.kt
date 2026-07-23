@@ -39,6 +39,7 @@ interface PrivilegedCaptureBackend : Closeable {
     /** Returns only after the exact owner's capture workers and descriptors have been cleaned up. */
     fun stop(ownerToken: String): Boolean
     fun recoverVideo(ownerToken: String, bitrateBps: Int): Int
+    fun restartVideo(ownerToken: String): Boolean
     override fun close()
 }
 
@@ -82,6 +83,7 @@ private class ScrcpyCaptureBackend : PrivilegedCaptureBackend {
     override fun stop(ownerToken: String): Boolean = delegate.stopSession(ownerToken)
     override fun recoverVideo(ownerToken: String, bitrateBps: Int): Int =
         delegate.recoverVideo(ownerToken, bitrateBps)
+    override fun restartVideo(ownerToken: String): Boolean = delegate.restartVideo(ownerToken)
     override fun close() = delegate.destroy()
 }
 
@@ -176,6 +178,10 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         } else {
             0
         }
+
+    override fun restartVideo(ownerToken: String): Boolean =
+        validOwnerToken(ownerToken) &&
+            runCatching { backend.get().restartVideo(ownerToken) }.getOrDefault(false)
 
     /** Reserved Shizuku destroy transaction. Shizuku owns process teardown after unbind. */
     override fun destroy() {

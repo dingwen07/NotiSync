@@ -77,6 +77,15 @@ public class CaptureControl {
         }
     }
 
+    /** Recreate the encoder in-place while preserving the capture and control session. */
+    public synchronized boolean restartVideo() {
+        if (!videoVisible || (reset & RESET_REASON_TERMINATED) != 0) {
+            return false;
+        }
+        reset(RESET_REASON_CLIENT_RESET);
+        return true;
+    }
+
     /**
      * Update whether the authenticated viewer currently has a surface consuming video.
      *

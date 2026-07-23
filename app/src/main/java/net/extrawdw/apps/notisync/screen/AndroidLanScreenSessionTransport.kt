@@ -411,51 +411,54 @@ class AndroidLanScreenSessionTransport(
                 }
             }
             if (video is RelayVideoRecordSink) {
-                // A periodic sync frame is both a decoder repair point and a video-path heartbeat.
-                // It prevents an otherwise healthy CONTROL stream from masking a wedged encoder
-                // or a requester that lost H.264 reference state indefinitely.
+                // Pixel encoders may accept PARAMETER_KEY_REQUEST_SYNC_FRAME without producing a
+                // buffer marked as a key frame. Drive repair only from actual Relay congestion:
+                // healthy sessions must never be reset merely because that advisory request was
+                // ignored. A congestion recovery that remains undecodable gets an in-place encoder
+                // rebuild, preserving the authenticated Relay and CONTROL channels.
                 jobs += launch(Dispatchers.IO) {
-                    var lastObservedReadCount = forwarder.recordCount()
-                    var lastObservedWrittenCount = forwarder.writtenRecordCount()
-                    var unavailableSyncChecks = 0
+                    var waitingSinceMillis: Long? = null
+                    var nextRestartAtMillis = Long.MAX_VALUE
                     while (true) {
-                        delay(RELAY_VIDEO_SYNC_INTERVAL_MS)
-                        val beforeKeyFrames = forwarder.keyFrameCount()
-                        val recovery = synchronized(recoveryLock) {
-                            pipes.recoverVideo(relayBitrate.get())
-                        }
-                        delay(RELAY_VIDEO_SYNC_GRACE_MS)
-                        val afterRead = forwarder.recordCount()
-                        val afterKeyFrames = forwarder.keyFrameCount()
-                        val afterWritten = forwarder.writtenRecordCount()
-                        if (recovery.syncFrameRequested) {
-                            if (afterKeyFrames == beforeKeyFrames) {
-                                Log.w(LOG_TAG, "Relay video encoder did not answer a sync-frame request")
-                                terminated.complete(Unit)
-                                return@launch
+                        delay(RELAY_VIDEO_RECOVERY_POLL_MS)
+                        if (forwarder.isReaderBackpressured()) {
+                            // A rejected record can otherwise hold up the encoder socket before a
+                            // recovery request is accepted. Drain predictive data first, then ask
+                            // for a repair point; the key-frame deadline below handles OEMs that
+                            // acknowledge the request but do not honor it.
+                            forwarder.discardBacklogForRecovery()
+                            val recovery = synchronized(recoveryLock) {
+                                pipes.recoverVideo(relayBitrate.get())
                             }
-                            unavailableSyncChecks = 0
+                            Log.i(
+                                LOG_TAG,
+                                "Relay video queue saturated; sync=" +
+                                    if (recovery.syncFrameRequested) "requested" else "unavailable",
+                            )
                         }
 
-                        if (afterRead > lastObservedReadCount &&
-                            afterWritten == lastObservedWrittenCount
-                        ) {
-                            Log.w(LOG_TAG, "Relay video writer made no progress while the encoder remained active")
-                            terminated.complete(Unit)
-                            return@launch
+                        if (!forwarder.isWaitingForRecoveryKeyFrame()) {
+                            waitingSinceMillis = null
+                            nextRestartAtMillis = Long.MAX_VALUE
+                            continue
                         }
 
-                        if (afterRead == lastObservedReadCount && !recovery.syncFrameRequested) {
-                            unavailableSyncChecks++
+                        val now = SystemClock.elapsedRealtime()
+                        if (waitingSinceMillis == null) {
+                            waitingSinceMillis = now
+                            nextRestartAtMillis = now + RELAY_VIDEO_KEY_FRAME_GRACE_MS
+                        } else if (now >= nextRestartAtMillis) {
+                            // Keep CONTROL and the authenticated Relay session alive. The new
+                            // encoder emits a session boundary, codec config, and initial key frame.
+                            forwarder.discardBacklogForRecovery()
+                            val restarted = pipes.restartVideo()
+                            Log.w(
+                                LOG_TAG,
+                                "Relay congestion did not recover with a key frame; encoder restart=" +
+                                    if (restarted) "requested" else "unavailable",
+                            )
+                            nextRestartAtMillis = now + RELAY_VIDEO_RESTART_RETRY_MS
                         }
-                        else unavailableSyncChecks = 0
-                        if (unavailableSyncChecks >= RELAY_VIDEO_UNAVAILABLE_SYNC_LIMIT) {
-                            Log.w(LOG_TAG, "Relay video made no progress and sync-frame recovery is unavailable")
-                            terminated.complete(Unit)
-                            return@launch
-                        }
-                        lastObservedReadCount = afterRead
-                        lastObservedWrittenCount = afterWritten
                     }
                 }
             }
@@ -671,9 +674,9 @@ class AndroidLanScreenSessionTransport(
         const val DNS_SD_TIMEOUT_MS = 5_000L
         const val COPY_BUFFER_BYTES = 64 * 1024
         const val CAPTURE_START_TIMEOUT_MS = 10_000L
-        const val RELAY_VIDEO_SYNC_INTERVAL_MS = 5_000L
-        const val RELAY_VIDEO_SYNC_GRACE_MS = 3_000L
-        const val RELAY_VIDEO_UNAVAILABLE_SYNC_LIMIT = 3
+        const val RELAY_VIDEO_RECOVERY_POLL_MS = 100L
+        const val RELAY_VIDEO_KEY_FRAME_GRACE_MS = 1_000L
+        const val RELAY_VIDEO_RESTART_RETRY_MS = 2_000L
         const val WIFI_AWARE_RESOLVE_TIMEOUT_MS = 10_000L
         const val MAX_ENDPOINT_ATTEMPTS = 8
         const val DEFAULT_VIDEO_BITRATE_BPS = 8_000_000

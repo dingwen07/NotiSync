@@ -167,7 +167,7 @@ class ScreenMirrorSessionController(
     private var sessionJob: Job? = null
     private var expiryJob: Job? = null
     private var replacementExpiryJob: Job? = null
-    private var takeoverWatchdogJob: Job? = null
+    private var teardownWatchdogJob: Job? = null
     private val _state = MutableStateFlow(AndroidScreenSessionState.IDLE)
     val state: StateFlow<AndroidScreenSessionState> = _state.asStateFlow()
     private val statusDeliveries = Channel<StatusDelivery>(Channel.UNLIMITED)
@@ -267,8 +267,8 @@ class ScreenMirrorSessionController(
                     replacementExpiryJob = scheduleReplacementExpiryLocked(incoming, expiry)
 
                     val current = requireNotNull(offer.active)
-                    if (takeoverWatchdogJob?.isActive != true) {
-                        takeoverWatchdogJob = scheduleTakeoverWatchdogLocked(current)
+                    if (teardownWatchdogJob?.isActive != true) {
+                        teardownWatchdogJob = scheduleTeardownWatchdogLocked(current)
                     }
                     if (!current.stopRequested) {
                         current.stopRequested = true
@@ -362,38 +362,43 @@ class ScreenMirrorSessionController(
     }
 
     /**
-     * A cancelled transport normally promotes its queued replacement through `finally`. If an OEM
-     * socket, codec, or Binder call never unwinds, forcibly retire that exact generation after a
-     * bound so a fresh authenticated request is not held behind a permanent ACTIVE notification.
+     * A cancelled transport normally completes through `finally`. If an OEM socket, codec, or
+     * Binder call never unwinds, forcibly retire that exact generation after a bound. This also
+     * makes the notification Stop action authoritative when no replacement is waiting.
      */
-    private fun scheduleTakeoverWatchdogLocked(holder: PendingRequest): Job = scope.launch {
-        delay(TAKEOVER_TEARDOWN_TIMEOUT_MILLIS)
+    private fun scheduleTeardownWatchdogLocked(holder: PendingRequest): Job = scope.launch {
+        delay(SESSION_TEARDOWN_TIMEOUT_MILLIS)
         var running: Job? = null
         val claimed = synchronized(lock) {
-            if (pending !== holder || sessions.replacement == null || !holder.stopRequested ||
-                holder.forcedTakeover
-            ) {
+            if (pending !== holder || !holder.stopRequested || holder.forcedTakeover) {
                 false
             } else {
                 holder.forcedTakeover = true
                 running = sessionJob
-                takeoverWatchdogJob = null
+                teardownWatchdogJob = null
                 true
             }
         }
         if (!claimed) return@launch
 
         withContext(Dispatchers.IO) {
-            runCatching { running?.cancel() }
-            runCatching { cancelPendingNotification(holder) }
+            runScreenOperationWithTimeout(STALE_PLATFORM_OPERATION_TIMEOUT_MILLIS) {
+                running?.cancel()
+                true
+            }
+            runScreenOperationWithTimeout(STALE_PLATFORM_OPERATION_TIMEOUT_MILLIS) {
+                cancelPendingNotification(holder)
+                true
+            }
             runCatching { holder.close() }
             val removalFailure = runCatching { shizuku.removeUserService() }.exceptionOrNull()
-            runCatching {
+            runScreenOperationWithTimeout(STALE_PLATFORM_OPERATION_TIMEOUT_MILLIS) {
                 ScreenMirrorForegroundService.release(
                     context,
                     holder.request.sessionId,
                     holder.foregroundLeaseId,
                 )
+                true
             }
             completeAndPromote(
                 holder = holder,
@@ -522,8 +527,8 @@ class ScreenMirrorSessionController(
             expiryJob = null
             replacementExpiryJob?.cancel()
             replacementExpiryJob = null
-            takeoverWatchdogJob?.cancel()
-            takeoverWatchdogJob = null
+            teardownWatchdogJob?.cancel()
+            teardownWatchdogJob = null
 
             val candidate = completion.replacement
             if (candidate == null) {
@@ -913,6 +918,9 @@ class ScreenMirrorSessionController(
                     authenticatedStop.permits(current.request, ownClientId)
                 if (matches && exactForegroundLease && permitted) {
                     accepted = true
+                    if (teardownWatchdogJob?.isActive != true) {
+                        teardownWatchdogJob = scheduleTeardownWatchdogLocked(current)
+                    }
                     if (!current.stopRequested) {
                         current.stopRequested = true
                         holder = current
@@ -1114,7 +1122,8 @@ class ScreenMirrorSessionController(
     private companion object {
         const val PENDING_CHANNEL_ID = "notisync.screen.request"
         const val FOREGROUND_START_WATCHDOG_MILLIS = 10_000L
-        const val TAKEOVER_TEARDOWN_TIMEOUT_MILLIS = 10_000L
+        const val SESSION_TEARDOWN_TIMEOUT_MILLIS = 10_000L
+        const val STALE_PLATFORM_OPERATION_TIMEOUT_MILLIS = 1_000L
     }
 }
 

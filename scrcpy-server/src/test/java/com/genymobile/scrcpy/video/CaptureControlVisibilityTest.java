@@ -80,4 +80,16 @@ public final class CaptureControlVisibilityTest {
         control.setVideoVisible(true);
         assertEquals(0, control.consumeReset());
     }
+
+    @Test
+    public void restartRebuildsEncoderWithoutHidingVideo() {
+        CaptureControl control = new CaptureControl();
+
+        assertTrue(control.restartVideo());
+        assertTrue(control.isVideoVisible());
+        assertEquals(CaptureControl.RESET_REASON_CLIENT_RESET, control.consumeReset());
+
+        control.setVideoVisible(false);
+        assertFalse(control.restartVideo());
+    }
 }

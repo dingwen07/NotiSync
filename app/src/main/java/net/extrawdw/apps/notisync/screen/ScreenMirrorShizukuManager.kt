@@ -51,9 +51,12 @@ data class PrivilegedSessionPipes(
     val videoRead: ParcelFileDescriptor,
     val control: ParcelFileDescriptor,
     private val recoverVideoCallback: (Int) -> Int = { 0 },
+    private val restartVideoCallback: () -> Boolean = { false },
 ) : Closeable {
     fun recoverVideo(bitrateBps: Int): VideoEncoderRecoveryResult =
         VideoEncoderRecoveryResult.fromBits(recoverVideoCallback(bitrateBps))
+
+    fun restartVideo(): Boolean = restartVideoCallback()
 
     override fun close() {
         videoRead.closeQuietly()
@@ -230,6 +233,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             // not freeze that writer (and therefore the whole source session). Once one call
             // times out, stop issuing recovery calls for this capture generation.
             val recoveryResponsive = AtomicBoolean(true)
+            val restartResponsive = AtomicBoolean(true)
             val recoverVideo: (Int) -> Int = { bitrateBps ->
                 if (!recoveryResponsive.get()) {
                     0
@@ -245,6 +249,17 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                 videoRead = createdVideoPair[0],
                 control = createdControlPair[0],
                 recoverVideoCallback = recoverVideo,
+                restartVideoCallback = {
+                    if (!restartResponsive.get()) {
+                        false
+                    } else {
+                        val restarted = runScreenOperationWithTimeout(PRIVILEGED_RESTART_TIMEOUT_MS) {
+                            remote.restartVideo(ownerToken)
+                        }
+                        if (restarted == null) restartResponsive.set(false)
+                        restarted ?: false
+                    }
+                },
             )
             val result = remote.startSession(
                 ownerToken,
@@ -382,6 +397,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
+        // Increment per Release Candidate, NOT during development
         const val USER_SERVICE_REVISION = 1
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
@@ -390,6 +406,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         const val DEFAULT_BITRATE_BPS = 8_000_000
         const val SERVICE_BIND_TIMEOUT_MS = 10_000L
         const val PRIVILEGED_RECOVERY_TIMEOUT_MS = 750L
+        const val PRIVILEGED_RESTART_TIMEOUT_MS = 1_500L
         const val PRIVILEGED_STOP_TIMEOUT_MS = 3_000L
         const val PRIVILEGED_REMOVE_TIMEOUT_MS = 3_000L
     }

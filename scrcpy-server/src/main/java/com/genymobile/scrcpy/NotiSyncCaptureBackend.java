@@ -211,6 +211,18 @@ public final class NotiSyncCaptureBackend {
         return current.recoverVideo(bitrateBps);
     }
 
+    /** Rebuilds only the exact active owner's encoder; control and capture ownership stay intact. */
+    public boolean restartVideo(String ownerToken) {
+        Session current;
+        synchronized (this) {
+            current = session;
+            if (current == null || !current.ownerToken.equals(ownerToken)) {
+                return false;
+            }
+        }
+        return current.restartVideo();
+    }
+
     public void destroy() {
         Session current;
         synchronized (this) {
@@ -391,6 +403,12 @@ public final class NotiSyncCaptureBackend {
         int recoverVideo(int bitRate) {
             synchronized (lifecycleLock) {
                 return !stopping.get() && captureControl != null ? captureControl.recoverVideo(bitRate) : 0;
+            }
+        }
+
+        boolean restartVideo() {
+            synchronized (lifecycleLock) {
+                return !stopping.get() && captureControl != null && captureControl.restartVideo();
             }
         }
 
