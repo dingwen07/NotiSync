@@ -70,6 +70,7 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_INJECT_SCROLL_EVENT:
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
             case ControlMessage.TYPE_TOGGLE_POWER:
+            case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
                 return allowControl;
             case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
                 // Flow control changes only this session's encoder resource use. It is available
@@ -104,6 +105,7 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_BACK_OR_SCREEN_ON:
                 return isAction(message.getAction());
             case ControlMessage.TYPE_TOGGLE_POWER:
+            case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
             case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
                 return true;
             case ControlMessage.TYPE_GET_CLIPBOARD:
@@ -146,6 +148,8 @@ public final class ControlChannel implements java.io.Closeable {
             case 20:  // DPAD_DOWN
             case 21:  // DPAD_LEFT
             case 22:  // DPAD_RIGHT
+            case 24:  // VOLUME_UP
+            case 25:  // VOLUME_DOWN
             case 61:  // TAB
             case 66:  // ENTER
             case 67:  // DEL/backspace

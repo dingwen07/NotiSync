@@ -25,6 +25,17 @@ internal data class AndroidScreenTouch(
     val pressure: Float,
 )
 
+private val ANDROID_SCREEN_CONTROL_KEYS = setOf(
+    KeyEvent.KEYCODE_BACK,
+    KeyEvent.KEYCODE_HOME,
+    KeyEvent.KEYCODE_APP_SWITCH,
+    KeyEvent.KEYCODE_ENTER,
+    KeyEvent.KEYCODE_DEL,
+    KeyEvent.KEYCODE_FORWARD_DEL,
+    KeyEvent.KEYCODE_VOLUME_UP,
+    KeyEvent.KEYCODE_VOLUME_DOWN,
+)
+
 /**
  * Serialized scrcpy-v1 control writer. One public operation becomes one OutputStream write so
  * touch batches and key down/up pairs cannot be interleaved by lifecycle and UI callbacks.
@@ -37,7 +48,6 @@ internal class AndroidScreenControlWriter(
 
     @Throws(IOException::class)
     fun sendKeyPress(keyCode: Int) {
-        require(keyCode in ALLOWED_KEYS) { "unsupported screen control key" }
         writeFrames(
             keyFrame(KeyEvent.ACTION_DOWN, keyCode),
             keyFrame(KeyEvent.ACTION_UP, keyCode),
@@ -64,6 +74,11 @@ internal class AndroidScreenControlWriter(
     @Throws(IOException::class)
     fun togglePower() {
         writeFrames(byteArrayOf(TYPE_TOGGLE_POWER.toByte()))
+    }
+
+    @Throws(IOException::class)
+    fun expandNotificationPanel() {
+        writeFrames(byteArrayOf(TYPE_EXPAND_NOTIFICATION_PANEL.toByte()))
     }
 
     /** Pause/resume source video production without closing either authenticated channel. */
@@ -144,6 +159,7 @@ internal class AndroidScreenControlWriter(
         private const val TYPE_INJECT_TOUCH = 2
         private const val TYPE_TOGGLE_POWER = 64
         private const val TYPE_SET_VIDEO_VISIBILITY = 65
+        private const val TYPE_EXPAND_NOTIFICATION_PANEL = 66
         private const val VIDEO_HIDDEN: Byte = 0
         private const val VIDEO_VISIBLE: Byte = 1
         private const val KEY_FRAME_BYTES = 14
@@ -151,14 +167,6 @@ internal class AndroidScreenControlWriter(
         private const val TOUCH_FRAME_BYTES = 32
         private const val MAX_UNSIGNED_SHORT = 0xffff
 
-        private val ALLOWED_KEYS = setOf(
-            KeyEvent.KEYCODE_BACK,
-            KeyEvent.KEYCODE_HOME,
-            KeyEvent.KEYCODE_APP_SWITCH,
-            KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_DEL,
-            KeyEvent.KEYCODE_FORWARD_DEL,
-        )
         private val TOUCH_ACTIONS = setOf(
             MotionEvent.ACTION_DOWN,
             MotionEvent.ACTION_UP,
@@ -210,6 +218,10 @@ internal class AndroidScreenControlDispatcher(
             override fun write(writer: AndroidScreenControlWriter) = writer.togglePower()
         }
 
+        data object ExpandNotificationPanel : Command {
+            override fun write(writer: AndroidScreenControlWriter) = writer.expandNotificationPanel()
+        }
+
         data class VideoVisibility(val visible: Boolean) : Command {
             override fun write(writer: AndroidScreenControlWriter) = writer.setVideoVisible(visible)
         }
@@ -240,7 +252,11 @@ internal class AndroidScreenControlDispatcher(
     private var closed = false
     private var drainScheduled = false
 
-    fun sendKeyPress(keyCode: Int): Boolean = enqueue(Command.Key(keyCode))
+    /** Reject unsupported UI input synchronously without poisoning the control session. */
+    fun sendKeyPress(keyCode: Int): Boolean {
+        if (keyCode !in ANDROID_SCREEN_CONTROL_KEYS) return false
+        return enqueue(Command.Key(keyCode))
+    }
 
     /** Reject malformed/oversized IME commits before they can fail the control session. */
     fun sendText(text: String): Boolean {
@@ -250,6 +266,8 @@ internal class AndroidScreenControlDispatcher(
     }
 
     fun togglePower(): Boolean = enqueue(Command.Power)
+
+    fun expandNotificationPanel(): Boolean = enqueue(Command.ExpandNotificationPanel)
 
     fun setVideoVisible(visible: Boolean): Boolean = enqueue(Command.VideoVisibility(visible))
 

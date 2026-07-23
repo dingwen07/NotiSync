@@ -394,6 +394,7 @@
     <string name="screen_viewer_recents">最近任务</string>
     <string name="screen_viewer_keyboard">键盘</string>
     <string name="screen_viewer_power">电源</string>
+    <string name="screen_viewer_notification_panel">通知面板</string>
     <string name="screen_viewer_more_options">更多选项</string>
     <string name="screen_viewer_customize_controls">自定义控制项</string>
     <string name="screen_viewer_toolbar_controls">固定的控制项</string>

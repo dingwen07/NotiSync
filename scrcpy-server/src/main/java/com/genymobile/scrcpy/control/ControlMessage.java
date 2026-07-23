@@ -19,6 +19,8 @@ public final class ControlMessage {
     public static final int TYPE_TOGGLE_POWER = 64;
     /** NotiSync screen protocol v1 extension: pause/resume video while keeping control alive. */
     public static final int TYPE_SET_VIDEO_VISIBILITY = 65;
+    /** NotiSync screen protocol v1 extension: open the source device's notification shade. */
+    public static final int TYPE_EXPAND_NOTIFICATION_PANEL = 66;
 
     public static final long SEQUENCE_INVALID = 0;
 
@@ -120,6 +122,12 @@ public final class ControlMessage {
         ControlMessage msg = new ControlMessage();
         msg.type = TYPE_SET_VIDEO_VISIBILITY;
         msg.videoVisible = visible;
+        return msg;
+    }
+
+    public static ControlMessage createExpandNotificationPanel() {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_EXPAND_NOTIFICATION_PANEL;
         return msg;
     }
 

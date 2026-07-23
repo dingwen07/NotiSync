@@ -408,6 +408,7 @@
     <string name="screen_viewer_recents">Recents</string>
     <string name="screen_viewer_keyboard">Keyboard</string>
     <string name="screen_viewer_power">Power</string>
+    <string name="screen_viewer_notification_panel">Notification Panel</string>
     <string name="screen_viewer_more_options">More options</string>
     <string name="screen_viewer_customize_controls">Customize controls</string>
     <string name="screen_viewer_toolbar_controls">Pinned controls</string>

@@ -25,6 +25,7 @@ internal enum class ScreenViewerControl {
     RECENTS,
     KEYBOARD,
     POWER,
+    NOTIFICATION_PANEL,
 }
 
 internal data class ScreenViewerToolbarPreferences(

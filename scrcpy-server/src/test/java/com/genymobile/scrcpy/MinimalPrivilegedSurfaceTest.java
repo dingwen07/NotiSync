@@ -25,7 +25,6 @@ public final class MinimalPrivilegedSurfaceTest {
                 "video/NewDisplayCapture.java",
                 "wrappers/ActivityManager.java",
                 "wrappers/ContentProvider.java",
-                "wrappers/StatusBarManager.java",
                 "util/Command.java",
                 "util/Settings.java"
         );
@@ -44,8 +43,7 @@ public final class MinimalPrivilegedSurfaceTest {
                 "createNewVirtualDisplay(",
                 "android.media.Audio",
                 "android.hardware.camera",
-                "getActivityManager(",
-                "getStatusBarManager("
+                "getActivityManager("
         );
         try (var files = Files.walk(sourceRoot)) {
             for (Path file : files.filter(path -> path.toString().endsWith(".java")).toList()) {
@@ -55,6 +53,18 @@ public final class MinimalPrivilegedSurfaceTest {
                 }
             }
         }
+
+        // Notification shade expansion is the only restored panel capability. Keep settings,
+        // collapse, disable, and arbitrary status-bar methods outside the privileged closure.
+        Path statusBarWrapper = sourceRoot.resolve(
+                "com/genymobile/scrcpy/wrappers/StatusBarManager.java"
+        );
+        assertTrue(Files.exists(statusBarWrapper));
+        String statusBarCode = Files.readString(statusBarWrapper);
+        assertTrue(statusBarCode.contains("expandNotificationsPanel"));
+        assertFalse(statusBarCode.contains("expandSettingsPanel"));
+        assertFalse(statusBarCode.contains("collapsePanels"));
+        assertFalse(statusBarCode.contains("disable("));
     }
 
     private static Path locateSourceRoot() {

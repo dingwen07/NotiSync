@@ -39,6 +39,22 @@ class AndroidScreenControlWriterTest {
     }
 
     @Test
+    fun `volume presses use the same bounded remote key framing`() {
+        val output = ByteArrayOutputStream()
+        val writer = AndroidScreenControlWriter(output)
+
+        writer.sendKeyPress(KeyEvent.KEYCODE_VOLUME_UP)
+        writer.sendKeyPress(KeyEvent.KEYCODE_VOLUME_DOWN)
+
+        val bytes = output.toByteArray()
+        assertEquals(56, bytes.size)
+        assertKeyFrame(bytes.copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_UP)
+        assertKeyFrame(bytes.copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_UP)
+        assertKeyFrame(bytes.copyOfRange(28, 42), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_VOLUME_DOWN)
+        assertKeyFrame(bytes.copyOfRange(42, 56), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_VOLUME_DOWN)
+    }
+
+    @Test
     fun `committed text uses pinned scrcpy utf8 framing`() {
         val output = ByteArrayOutputStream()
         val text = "paßwørd"
@@ -122,6 +138,17 @@ class AndroidScreenControlWriterTest {
         assertArrayEquals(byteArrayOf(64), output.toByteArray())
         writer.close()
         assertThrows(IOException::class.java) { writer.togglePower() }
+    }
+
+    @Test
+    fun `notification panel is a payload-free bounded extension`() {
+        val output = ByteArrayOutputStream()
+
+        AndroidScreenControlWriter(output).expandNotificationPanel()
+
+        assertArrayEquals(byteArrayOf(66), output.toByteArray())
+        val parsed = ControlMessageReader(ByteArrayInputStream(output.toByteArray())).read { true }
+        assertEquals(ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL, parsed.type)
     }
 
     @Test
@@ -243,6 +270,21 @@ class AndroidScreenControlWriterTest {
         assertKeyFrame(writes[1].copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_DEL)
         assertKeyFrame(writes[2].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_ENTER)
         assertKeyFrame(writes[2].copyOfRange(14, 28), KeyEvent.ACTION_UP, KeyEvent.KEYCODE_ENTER)
+    }
+
+    @Test
+    fun `dispatcher rejects unsupported keys without throwing or writing`() {
+        val output = ByteArrayOutputStream()
+        val failure = AtomicReference<Throwable>()
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) {
+            failure.compareAndSet(null, it)
+        }
+
+        assertFalse(dispatcher.sendKeyPress(KeyEvent.KEYCODE_POWER))
+        dispatcher.close()
+
+        assertEquals(0, output.size())
+        assertEquals(null, failure.get())
     }
 
     @Test

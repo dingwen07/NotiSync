@@ -51,6 +51,8 @@ public class ControlMessageReader {
                 return ControlMessage.createTogglePower();
             case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
                 return parseSetVideoVisibility();
+            case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
+                return ControlMessage.createExpandNotificationPanel();
             default:
                 throw new ControlProtocolException("Unsupported NotiSync control message type: " + type);
         }

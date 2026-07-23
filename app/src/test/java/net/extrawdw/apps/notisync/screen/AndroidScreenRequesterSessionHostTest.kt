@@ -59,6 +59,23 @@ class AndroidScreenRequesterSessionHostTest {
     }
 
     @Test
+    fun volumeKeysPassThroughTheHostBoundary() {
+        val fixture = HostFixture(emptySet())
+        try {
+            fixture.host.start(SOURCE)
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+
+            assertTrue(fixture.host.sendKeyPress(KeyEvent.KEYCODE_VOLUME_UP))
+            assertTrue(fixture.host.sendKeyPress(KeyEvent.KEYCODE_VOLUME_DOWN))
+            assertFalse(fixture.host.sendKeyPress(KeyEvent.KEYCODE_POWER))
+
+            waitUntil { fixture.control.size() == KEY_PRESS_BYTES * 2 }
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
     fun sourceVisibilityCommandIsSentOnlyWhenAdvertised() {
         val capable = HostFixture(setOf(Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1))
         try {

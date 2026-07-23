@@ -24,6 +24,7 @@ public final class ServiceManager {
     private static InputManager inputManager;
     private static PowerManager powerManager;
     private static ClipboardManager clipboardManager;
+    private static StatusBarManager statusBarManager;
 
     private ServiceManager() {
         /* not instantiable */
@@ -74,6 +75,13 @@ public final class ServiceManager {
             clipboardManager = ClipboardManager.create();
         }
         return clipboardManager;
+    }
+
+    public static StatusBarManager getStatusBarManager() {
+        if (statusBarManager == null) {
+            statusBarManager = StatusBarManager.create();
+        }
+        return statusBarManager;
     }
 
 }

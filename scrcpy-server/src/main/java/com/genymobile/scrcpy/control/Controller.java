@@ -30,8 +30,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Only direct input, primary-display power control, session-local video flow control, and text
  * clipboard synchronization are compiled into the privileged process. Generic scrcpy actions
- * (UHID, app launch, panels, display mutation, camera, file scan, and arbitrary commands) have no
- * handler here.</p>
+ * (UHID, app launch, settings-panel/collapse actions, display mutation, camera, file scan, and
+ * arbitrary commands) have no handler here. Notification-panel expansion is the sole bounded panel
+ * action.</p>
  */
 public final class Controller implements AsyncProcessor, CaptureDisplayListener {
 
@@ -253,6 +254,11 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             case ControlMessage.TYPE_TOGGLE_POWER:
                 if (!Device.togglePrimaryDisplayPower()) {
                     Ln.w("Could not toggle primary display power");
+                }
+                return true;
+            case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
+                if (!ServiceManager.getStatusBarManager().expandNotificationsPanel()) {
+                    Ln.w("Could not expand notification panel");
                 }
                 return true;
             case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:

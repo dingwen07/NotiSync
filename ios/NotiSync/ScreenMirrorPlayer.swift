@@ -46,6 +46,8 @@ actor IOSScreenControlWriter {
 
     func togglePower() async throws { try await connection.send(Data([64])) }
 
+    func expandNotificationPanel() async throws { try await connection.send(Data([66])) }
+
     func setVideoVisible(_ visible: Bool) async throws {
         try await connection.send(Data([65, visible ? 1 : 0]))
     }
@@ -710,6 +712,11 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         Task { try? await control.togglePower() }
     }
 
+    func expandNotificationPanel() {
+        guard let control else { return }
+        Task { try? await control.expandNotificationPanel() }
+    }
+
     func sendInputText(returnAfter: Bool = false) {
         let text = inputText
         let byteCount = Data(text.utf8).count
@@ -833,11 +840,46 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 }
 
+private enum IOSScreenViewerControl: String, CaseIterable, Identifiable {
+    case back
+    case home
+    case recents
+    case keyboard
+    case power
+    case notificationPanel
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .back: "Back"
+        case .home: "Home"
+        case .recents: "Recent Apps"
+        case .keyboard: "Type"
+        case .power: "Power"
+        case .notificationPanel: "Notification Panel"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .back: "chevron.backward"
+        case .home: "circle"
+        case .recents: "square.on.square"
+        case .keyboard: "keyboard"
+        case .power: "power"
+        case .notificationPanel: "bell.badge"
+        }
+    }
+}
+
 struct ScreenMirrorPlayerView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var model = IOSScreenMirrorPlayerModel()
+    @AppStorage("screenMirrorViewerVisibleControlsV1")
+    private var visibleControlsStorage = "back,home,recents"
     @FocusState private var inputIsFocused: Bool
     let sourceId: String
     let sourceName: String
@@ -987,12 +1029,7 @@ struct ScreenMirrorPlayerView: View {
                 viewerControl("Close screen viewer", systemImage: "xmark") { dismiss() }
                 Spacer()
                 if model.connected {
-                    viewerControl(
-                        model.zoomedOut ? "Fill Screen" : "Zoom Out",
-                        systemImage: model.zoomedOut
-                            ? "plus.magnifyingglass"
-                            : "minus.magnifyingglass"
-                    ) { model.toggleDisplayZoom() }
+                    viewerOverflowMenu
                 }
             }
         }
@@ -1015,25 +1052,46 @@ struct ScreenMirrorPlayerView: View {
             Text(sourceName)
                 .font(.subheadline.weight(.semibold))
                 .lineLimit(1)
-                .padding(.horizontal, model.connected && model.pictureInPictureSupported ? 42 : 14)
+                .padding(.leading, 14)
+                .padding(
+                    .trailing,
+                    model.connected ? (model.pictureInPictureSupported ? 72 : 42) : 14
+                )
 
-            if model.connected && model.pictureInPictureSupported {
+            if model.connected {
                 HStack {
                     Spacer()
-                    Button { model.togglePictureInPicture() } label: {
-                        Image(systemName: model.pictureInPictureActive ? "pip.exit" : "pip.enter")
+                    Button { model.toggleDisplayZoom() } label: {
+                        Image(
+                            systemName: model.zoomedOut
+                                ? "plus.magnifyingglass"
+                                : "minus.magnifyingglass"
+                        )
                             .font(.subheadline.weight(.semibold))
                             .frame(width: 28, height: 28)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
-                    .disabled(!model.pictureInPicturePossible && !model.pictureInPictureActive)
-                    .opacity(model.pictureInPicturePossible || model.pictureInPictureActive ? 1 : 0.45)
                     .accessibilityLabel(
-                        model.pictureInPictureActive
-                            ? "Stop Picture in Picture"
-                            : "Start Picture in Picture"
+                        model.zoomedOut ? "Enlarge" : "Shrink"
                     )
+
+                    if model.pictureInPictureSupported {
+                        Button { model.togglePictureInPicture() } label: {
+                            Image(systemName: model.pictureInPictureActive ? "pip.exit" : "pip.enter")
+                                .font(.subheadline.weight(.semibold))
+                                .frame(width: 28, height: 28)
+                                .contentShape(Circle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(!model.pictureInPicturePossible && !model.pictureInPictureActive)
+                        .opacity(model.pictureInPicturePossible || model.pictureInPictureActive ? 1 : 0.45)
+                        .accessibilityLabel(
+                            model.pictureInPictureActive
+                                ? "Stop Picture in Picture"
+                                : "Start Picture in Picture"
+                        )
+                    }
                 }
                 .padding(.trailing, 6)
             }
@@ -1054,14 +1112,93 @@ struct ScreenMirrorPlayerView: View {
 
     private var viewerControlButtons: some View {
         HStack(spacing: 2) {
-            viewerControl("Type", systemImage: "keyboard") { model.beginTextInput() }
-            viewerControl("Back", systemImage: "chevron.backward") { model.sendKey(4) }
-            viewerControl("Home", systemImage: "circle") { model.sendKey(3) }
-            viewerControl("Recent Apps", systemImage: "square.on.square") { model.sendKey(187) }
-            viewerControl("Power", systemImage: "power") { model.togglePower() }
+            ForEach(visibleControls) { control in
+                viewerControl(control.title, systemImage: control.systemImage) {
+                    performViewerControl(control)
+                }
+            }
         }
         .foregroundStyle(.white)
     }
+
+    private var viewerOverflowMenu: some View {
+        Menu {
+            ForEach(overflowControls) { control in
+                Button { performViewerControl(control) } label: {
+                    Label(control.title, systemImage: control.systemImage)
+                }
+            }
+            if !overflowControls.isEmpty { Divider() }
+            Menu {
+                ForEach(IOSScreenViewerControl.allCases) { control in
+                    Toggle(isOn: visibilityBinding(for: control)) {
+                        Label(control.title, systemImage: control.systemImage)
+                    }
+                    .disabled(
+                        !visibleControlSet.contains(control) &&
+                        visibleControls.count >= Self.maximumVisibleControls
+                    )
+                }
+            } label: {
+                Label("Customize Controls", systemImage: "slider.horizontal.3")
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.title3.weight(.medium))
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
+        }
+        .screenMirrorNativeButton()
+        .buttonBorderShape(.circle)
+        .controlSize(.small)
+        .accessibilityLabel("More options")
+    }
+
+    private var visibleControlSet: Set<IOSScreenViewerControl> {
+        Set(visibleControlsStorage.split(separator: ",").compactMap {
+            IOSScreenViewerControl(rawValue: String($0))
+        })
+    }
+
+    private var visibleControls: [IOSScreenViewerControl] {
+        IOSScreenViewerControl.allCases.filter(visibleControlSet.contains)
+    }
+
+    private var overflowControls: [IOSScreenViewerControl] {
+        IOSScreenViewerControl.allCases.filter { !visibleControlSet.contains($0) }
+    }
+
+    private func visibilityBinding(for control: IOSScreenViewerControl) -> Binding<Bool> {
+        Binding(
+            get: { visibleControlSet.contains(control) },
+            set: { visible in
+                var selected = visibleControlSet
+                if visible {
+                    guard selected.count < Self.maximumVisibleControls else { return }
+                    selected.insert(control)
+                } else {
+                    selected.remove(control)
+                }
+                visibleControlsStorage = IOSScreenViewerControl.allCases
+                    .filter(selected.contains)
+                    .map(\.rawValue)
+                    .joined(separator: ",")
+            }
+        )
+    }
+
+    private func performViewerControl(_ control: IOSScreenViewerControl) {
+        switch control {
+        case .back: model.sendKey(4)
+        case .home: model.sendKey(3)
+        case .recents: model.sendKey(187)
+        case .keyboard: model.beginTextInput()
+        case .power: model.togglePower()
+        case .notificationPanel: model.expandNotificationPanel()
+        }
+    }
+
+    private static let maximumVisibleControls = 5
 
     private func viewerControl(
         _ title: String,

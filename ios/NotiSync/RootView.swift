@@ -553,7 +553,7 @@ struct InboxIconView: View {
 struct DevicesView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.modelContext) private var modelContext
-    @Query(sort: \TrustedDevice.updatedAt, order: .reverse) private var devices: [TrustedDevice]
+    @Query private var devices: [TrustedDevice]
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
@@ -580,7 +580,7 @@ struct DevicesView: View {
                             reachability: settings.brokerReachability, version: settings.brokerVersion))
                     }
                 }
-                let pending = devices.filter { $0.status == .pendingTrust || $0.status == .pendingRevoke }
+                let pending = devicesInNameOrder.filter { $0.status == .pendingTrust || $0.status == .pendingRevoke }
                 if !pending.isEmpty {
                     Section("Pending Approval") {
                         ForEach(pending) { device in
@@ -592,7 +592,7 @@ struct DevicesView: View {
                     }
                 }
                 Section("Trusted Peers") {
-                    ForEach(devices.filter { $0.status == .trusted }) { device in
+                    ForEach(devicesInNameOrder.filter { $0.status == .trusted }) { device in
                         TrustedPeerRow(
                             device: device,
                             supportsNotificationFilters: !isIosPeer(device),
@@ -675,6 +675,16 @@ struct DevicesView: View {
                 updatedAt: Int64(notification.receivedAt.timeIntervalSince1970 * 1000))
         }
         iosDeviceRows = rowsByKey.values.sorted(by: areIosDevicesInDisplayOrder)
+    }
+
+    private var devicesInNameOrder: [TrustedDevice] {
+        devices.sorted(by: areTrustedDevicesInDisplayOrder)
+    }
+
+    private func areTrustedDevicesInDisplayOrder(_ lhs: TrustedDevice, _ rhs: TrustedDevice) -> Bool {
+        let nameOrder = lhs.displayName.localizedCaseInsensitiveCompare(rhs.displayName)
+        if nameOrder != .orderedSame { return nameOrder == .orderedAscending }
+        return lhs.clientId.localizedCaseInsensitiveCompare(rhs.clientId) == .orderedAscending
     }
 
     private func areIosDevicesInDisplayOrder(_ lhs: FilteredIosDeviceRecord, _ rhs: FilteredIosDeviceRecord) -> Bool {

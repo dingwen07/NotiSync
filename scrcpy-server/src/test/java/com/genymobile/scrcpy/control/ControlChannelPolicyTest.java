@@ -44,6 +44,23 @@ public final class ControlChannelPolicyTest {
     }
 
     @Test
+    public void notificationPanelRequiresControlAuthority() throws Exception {
+        ControlChannel allowed = channel(
+                new byte[]{ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL},
+                true,
+                false
+        );
+        assertEquals(ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL, allowed.recv().getType());
+
+        ControlChannel denied = channel(
+                new byte[]{ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL},
+                false,
+                true
+        );
+        assertThrows(ControlProtocolException.class, denied::recv);
+    }
+
+    @Test
     public void acceptsVideoVisibilityForViewOnlySession() throws Exception {
         ControlChannel channel = channel(
                 new byte[]{ControlMessage.TYPE_SET_VIDEO_VISIBILITY, 0,
@@ -168,6 +185,12 @@ public final class ControlChannelPolicyTest {
     public void acceptsSystemHomeAndRecentsNavigationKeys() throws Exception {
         assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(3), true, false).recv().getType());
         assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(187), true, false).recv().getType());
+    }
+
+    @Test
+    public void acceptsVolumeKeys() throws Exception {
+        assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(24), true, false).recv().getType());
+        assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(25), true, false).recv().getType());
     }
 
     @Test

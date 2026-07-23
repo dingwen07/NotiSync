@@ -70,6 +70,7 @@ import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.MoreVert
+import androidx.compose.material.icons.outlined.Notifications
 import androidx.compose.material.icons.outlined.PowerSettingsNew
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.VerticalAlignBottom
@@ -192,6 +193,21 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         // Transient system bars can reappear after dialogs or the software keyboard. Restore the
         // viewer's selected status-bar visibility and always-hidden navigation chrome.
         if (hasFocus) applySystemChrome()
+    }
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+        if (!::sourceId.isInitialized || !isVolumeKey) return super.dispatchKeyEvent(event)
+
+        val host = (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequesterHost
+        val state = host?.state?.value
+        if (state?.sourceId == sourceId && state.phase == AndroidScreenHostPhase.CONNECTED) {
+            if (event.action == KeyEvent.ACTION_DOWN) host.sendKeyPress(event.keyCode)
+            // Consume both halves so the viewer's own media volume does not change mid-session.
+            if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) return true
+        }
+        return super.dispatchKeyEvent(event)
     }
 
     private fun applySystemChrome() {
@@ -1096,6 +1112,7 @@ private fun ScreenViewerControl.icon(): androidx.compose.ui.graphics.vector.Imag
     ScreenViewerControl.RECENTS -> Icons.Outlined.Apps
     ScreenViewerControl.KEYBOARD -> Icons.Outlined.Keyboard
     ScreenViewerControl.POWER -> Icons.Outlined.PowerSettingsNew
+    ScreenViewerControl.NOTIFICATION_PANEL -> Icons.Outlined.Notifications
 }
 
 private fun ScreenViewerControl.labelResource(): Int = when (this) {
@@ -1104,6 +1121,7 @@ private fun ScreenViewerControl.labelResource(): Int = when (this) {
     ScreenViewerControl.RECENTS -> R.string.screen_viewer_recents
     ScreenViewerControl.KEYBOARD -> R.string.screen_viewer_keyboard
     ScreenViewerControl.POWER -> R.string.screen_viewer_power
+    ScreenViewerControl.NOTIFICATION_PANEL -> R.string.screen_viewer_notification_panel
 }
 
 private fun performScreenViewerControl(
@@ -1117,6 +1135,7 @@ private fun performScreenViewerControl(
         ScreenViewerControl.RECENTS -> control?.sendKeyPress(KeyEvent.KEYCODE_APP_SWITCH)
         ScreenViewerControl.KEYBOARD -> if (control != null) onShowKeyboard()
         ScreenViewerControl.POWER -> control?.togglePower()
+        ScreenViewerControl.NOTIFICATION_PANEL -> control?.expandNotificationPanel()
     }
 }
 

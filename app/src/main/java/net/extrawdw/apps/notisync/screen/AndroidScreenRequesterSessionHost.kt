@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.screen
 
-import android.view.KeyEvent
 import android.view.Surface
 import java.io.Closeable
 import java.util.UUID
@@ -198,10 +197,8 @@ internal class AndroidScreenRequesterSessionHost(
         active?.takeUnless { it.stopping }?.dispatcher
     }
 
-    fun sendKeyPress(keyCode: Int): Boolean {
-        require(keyCode in HOST_ALLOWED_KEYS) { "unsupported screen control key" }
-        return controlDispatcher()?.sendKeyPress(keyCode) == true
-    }
+    fun sendKeyPress(keyCode: Int): Boolean =
+        controlDispatcher()?.sendKeyPress(keyCode) == true
 
     fun sendText(text: String): Boolean = controlDispatcher()?.sendText(text) == true
 
@@ -572,14 +569,6 @@ internal class AndroidScreenRequesterSessionHost(
         const val RELAY_REMOTE_TERMINAL_GRACE_MS = 750L
         const val RELAY_STABLE_RESET_NANOS = 30_000_000_000L
         val TERMINAL_PHASES = setOf(AndroidScreenHostPhase.ENDED, AndroidScreenHostPhase.ERROR)
-        val HOST_ALLOWED_KEYS = setOf(
-            KeyEvent.KEYCODE_BACK,
-            KeyEvent.KEYCODE_HOME,
-            KeyEvent.KEYCODE_APP_SWITCH,
-            KeyEvent.KEYCODE_ENTER,
-            KeyEvent.KEYCODE_DEL,
-            KeyEvent.KEYCODE_FORWARD_DEL,
-        )
     }
 }
 

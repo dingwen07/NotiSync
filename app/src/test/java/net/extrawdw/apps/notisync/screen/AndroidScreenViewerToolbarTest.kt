@@ -16,7 +16,7 @@ class AndroidScreenViewerToolbarTest {
         assertEquals(2, screenViewerDirectControlSlots(320f))
         assertEquals(3, screenViewerDirectControlSlots(360f))
         assertEquals(4, screenViewerDirectControlSlots(425f))
-        assertEquals(5, screenViewerDirectControlSlots(600f))
+        assertEquals(6, screenViewerDirectControlSlots(600f))
     }
 
     @Test
@@ -35,7 +35,11 @@ class AndroidScreenViewerToolbarTest {
             layout.direct,
         )
         assertEquals(
-            listOf(ScreenViewerControl.KEYBOARD, ScreenViewerControl.POWER),
+            listOf(
+                ScreenViewerControl.KEYBOARD,
+                ScreenViewerControl.POWER,
+                ScreenViewerControl.NOTIFICATION_PANEL,
+            ),
             layout.overflow,
         )
     }
