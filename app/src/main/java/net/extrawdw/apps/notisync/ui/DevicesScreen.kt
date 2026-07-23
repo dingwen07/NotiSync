@@ -249,6 +249,7 @@ fun DevicesScreen(
                     screenMirroringEnabled = screenMirroringEnabled,
                     screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
                     screenMirrorRequestEnabled = !quarantined,
+                    removeEnabled = !quarantined,
                     screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
                     screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
                     onScreenControlAuthorizedChange = { authorized ->
@@ -262,6 +263,16 @@ fun DevicesScreen(
                     onStartScreenMirror = {
                         detailsSheetFor = null
                         onStartScreenMirror(device.clientId)
+                    },
+                    onRemove = {
+                        detailsSheetFor = null
+                        graph.launchDurableTrustAction(context) {
+                            if (graph.trust.revokeLocal(
+                                    device.clientId,
+                                    System.currentTimeMillis(),
+                                )
+                            ) graph.broadcastTrust()
+                        }
                     },
                     onDismiss = { detailsSheetFor = null },
                 )
@@ -293,7 +304,7 @@ private fun DeviceListCard(
                     onShowDetails = { onShowDetails(device) },
                     onStartScreenMirror = { onStartScreenMirror(device) },
                     hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
-                    // Overturns (deny / keep) and removals propagate now; agreements ride anti-entropy.
+                    // Overturns (deny / keep) propagate now; agreements ride anti-entropy.
                     onApprove = {
                         graph.launchDurableTrustAction(context) {
                             if (graph.trust.approveTrust(
@@ -324,15 +335,6 @@ private fun DeviceListCard(
                     onKeep = {
                         graph.launchDurableTrustAction(context) {
                             if (graph.trust.keepTrusted(
-                                    it,
-                                    System.currentTimeMillis()
-                                )
-                            ) graph.broadcastTrust()
-                        }
-                    },
-                    onRemove = {
-                        graph.launchDurableTrustAction(context) {
-                            if (graph.trust.revokeLocal(
                                     it,
                                     System.currentTimeMillis()
                                 )
@@ -461,7 +463,6 @@ private fun DeviceRow(
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
     onKeep: (ClientId) -> Unit,
-    onRemove: (ClientId) -> Unit,
     onPurge: (ClientId) -> Unit,
     onRestore: (ClientId) -> Unit = {},
 ) {
@@ -518,9 +519,8 @@ private fun DeviceRow(
                 )
             }
             when (device.status) {
-                // Own and other devices alike: delete revokes (tombstone) and announces a new trust table.
-                // Own devices also expose the notification-filters this device received from them (DATA_SYNC
-                // FILTER) — what this device won't forward to that peer.
+                // Own devices expose the notification-filters this device received from them (DATA_SYNC
+                // FILTER) — what this device won't forward to that peer. Removal lives in device details.
                 TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (device.supportsScreenMirrorRequest()) {
                         IconButton(onClick = onStartScreenMirror, enabled = enabled) {
@@ -541,15 +541,6 @@ private fun DeviceRow(
                                 contentDescription = stringResource(R.string.device_filters_button_desc, name)
                             )
                         }
-                    }
-                    IconButton(
-                        onClick = { onRemove(device.clientId) },
-                        enabled = enabled
-                    ) {
-                        Icon(
-                            Icons.Filled.Delete,
-                            contentDescription = stringResource(R.string.device_remove_desc, name)
-                        )
                     }
                 }
 

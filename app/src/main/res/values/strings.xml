@@ -411,6 +411,7 @@
     <string name="screen_viewer_notification_panel">Notification Panel</string>
     <string name="screen_viewer_more_options">More options</string>
     <string name="screen_viewer_customize_controls">Customize controls</string>
+    <string name="screen_viewer_reorder_control">Reorder control</string>
     <string name="screen_viewer_toolbar_controls">Pinned controls</string>
     <plurals name="screen_viewer_toolbar_control_limit">
         <item quantity="one">This layout has room for %1$d pinned control. Extra pinned controls stay in the overflow menu.</item>

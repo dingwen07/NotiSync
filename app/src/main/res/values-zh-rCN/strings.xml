@@ -397,6 +397,7 @@
     <string name="screen_viewer_notification_panel">通知面板</string>
     <string name="screen_viewer_more_options">更多选项</string>
     <string name="screen_viewer_customize_controls">自定义控制项</string>
+    <string name="screen_viewer_reorder_control">重新排列控制项</string>
     <string name="screen_viewer_toolbar_controls">固定的控制项</string>
     <plurals name="screen_viewer_toolbar_control_limit">
         <item quantity="other">当前布局可直接显示 %1$d 个固定的控制项。多出的控制项仍会保留在更多选项菜单中。</item>

@@ -103,6 +103,42 @@ class ScreenViewerToolbarPreferenceStoreTest {
         )
     }
 
+    @Test
+    fun `custom control order persists and appends future or omitted controls`() = runBlocking {
+        val dataStore = dataStore("toolbar-custom-order")
+        val preferences = ScreenViewerToolbarPreferenceStore(dataStore)
+        val customOrder = listOf(
+            ScreenViewerControl.POWER,
+            ScreenViewerControl.BACK,
+            ScreenViewerControl.NOTIFICATION_PANEL,
+            ScreenViewerControl.HOME,
+            ScreenViewerControl.RECENTS,
+            ScreenViewerControl.KEYBOARD,
+        )
+
+        preferences.setControlOrder(customOrder)
+
+        assertEquals(
+            customOrder,
+            ScreenViewerToolbarPreferenceStore(dataStore).preferences.value.controlOrder,
+        )
+
+        dataStore.edit {
+            it[stringPreferencesKey(ORDER_KEY)] = "keyboard,unknown_future,back"
+        }
+        assertEquals(
+            listOf(
+                ScreenViewerControl.KEYBOARD,
+                ScreenViewerControl.BACK,
+                ScreenViewerControl.HOME,
+                ScreenViewerControl.RECENTS,
+                ScreenViewerControl.POWER,
+                ScreenViewerControl.NOTIFICATION_PANEL,
+            ),
+            ScreenViewerToolbarPreferenceStore(dataStore).preferences.value.controlOrder,
+        )
+    }
+
     private fun dataStore(name: String): DataStore<Preferences> {
         val file = File.createTempFile("$name-${System.nanoTime()}", ".preferences_pb")
             .also(File::delete)
@@ -112,5 +148,6 @@ class ScreenViewerToolbarPreferenceStoreTest {
     private companion object {
         const val EDGE_KEY = "screen_viewer_toolbar_edge_v1"
         const val CONTROLS_KEY = "screen_viewer_toolbar_controls_v1"
+        const val ORDER_KEY = "screen_viewer_toolbar_order_v1"
     }
 }

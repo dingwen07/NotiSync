@@ -43,4 +43,38 @@ class AndroidScreenViewerToolbarTest {
             layout.overflow,
         )
     }
+
+    @Test
+    fun `custom order drives direct controls and keeps unpinned controls in overflow`() {
+        val layout = screenViewerControlLayout(
+            selectedControls = setOf(
+                ScreenViewerControl.BACK,
+                ScreenViewerControl.HOME,
+                ScreenViewerControl.POWER,
+            ),
+            directControlSlots = 2,
+            controlOrder = listOf(
+                ScreenViewerControl.POWER,
+                ScreenViewerControl.HOME,
+                ScreenViewerControl.BACK,
+                ScreenViewerControl.KEYBOARD,
+                ScreenViewerControl.RECENTS,
+                ScreenViewerControl.NOTIFICATION_PANEL,
+            ),
+        )
+
+        assertEquals(
+            listOf(ScreenViewerControl.POWER, ScreenViewerControl.HOME),
+            layout.direct,
+        )
+        assertEquals(
+            listOf(
+                ScreenViewerControl.BACK,
+                ScreenViewerControl.KEYBOARD,
+                ScreenViewerControl.RECENTS,
+                ScreenViewerControl.NOTIFICATION_PANEL,
+            ),
+            layout.overflow,
+        )
+    }
 }

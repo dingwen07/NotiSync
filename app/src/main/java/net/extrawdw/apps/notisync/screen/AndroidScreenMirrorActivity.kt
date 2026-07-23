@@ -37,6 +37,7 @@ import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.animateTo
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.snapTo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -67,6 +68,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.DragHandle
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Keyboard
 import androidx.compose.material.icons.outlined.MoreVert
@@ -96,6 +98,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -106,6 +110,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
@@ -115,6 +120,7 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -790,6 +796,7 @@ private fun AndroidScreenMirrorViewer(
                 connectionType = connectionType,
                 dragState = toolbarDragState,
                 selectedControls = toolbarPreferences.pinnedControls,
+                controlOrder = toolbarPreferences.controlOrder,
                 enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
                 control = control,
                 onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
@@ -804,6 +811,11 @@ private fun AndroidScreenMirrorViewer(
                         graph?.scope?.launch {
                             toolbarPreferenceStore.setControlPinned(viewerControl, visible)
                         }
+                    }
+                },
+                onControlOrderChanged = { controls ->
+                    if (controls != toolbarPreferences.controlOrder && toolbarPreferenceStore != null) {
+                        graph?.scope?.launch { toolbarPreferenceStore.setControlOrder(controls) }
                     }
                 },
                 modifier = Modifier
@@ -842,6 +854,7 @@ private fun AndroidScreenViewerToolbar(
     connectionType: AndroidScreenConnectionType?,
     dragState: AnchoredDraggableState<ScreenViewerToolbarEdge>,
     selectedControls: Set<ScreenViewerControl>,
+    controlOrder: List<ScreenViewerControl>,
     enabled: Boolean,
     control: AndroidScreenControlDispatcher?,
     onShowKeyboard: () -> Unit,
@@ -849,6 +862,7 @@ private fun AndroidScreenViewerToolbar(
     statusBarVisible: Boolean,
     onStatusBarVisibilityChanged: (Boolean) -> Unit,
     onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
+    onControlOrderChanged: (List<ScreenViewerControl>) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     var menuExpanded by remember { mutableStateOf(false) }
@@ -859,7 +873,11 @@ private fun AndroidScreenViewerToolbar(
 
     BoxWithConstraints(modifier = modifier.widthIn(max = 720.dp).fillMaxWidth()) {
         val directControlSlots = screenViewerDirectControlSlots(maxWidth.value)
-        val controlLayout = screenViewerControlLayout(selectedControls, directControlSlots)
+        val controlLayout = screenViewerControlLayout(
+            selectedControls,
+            directControlSlots,
+            controlOrder,
+        )
         val directControls = controlLayout.direct
         val overflowControls = controlLayout.overflow
 
@@ -1039,8 +1057,10 @@ private fun AndroidScreenViewerToolbar(
         if (customizeControls) {
             ScreenViewerControlDialog(
                 selectedControls = selectedControls,
+                controlOrder = controlOrder,
                 maximumControls = directControlSlots,
                 onControlVisibilityChanged = onControlVisibilityChanged,
+                onControlOrderChanged = onControlOrderChanged,
                 onDismissRequest = { customizeControls = false },
             )
         }
@@ -1050,10 +1070,17 @@ private fun AndroidScreenViewerToolbar(
 @Composable
 private fun ScreenViewerControlDialog(
     selectedControls: Set<ScreenViewerControl>,
+    controlOrder: List<ScreenViewerControl>,
     maximumControls: Int,
     onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
+    onControlOrderChanged: (List<ScreenViewerControl>) -> Unit,
     onDismissRequest: () -> Unit,
 ) {
+    var orderedControls by remember(controlOrder) { mutableStateOf(controlOrder) }
+    var draggedControl by remember { mutableStateOf<ScreenViewerControl?>(null) }
+    var draggedOffset by remember { mutableFloatStateOf(0f) }
+    val rowStepPx = with(LocalDensity.current) { 48.dp.toPx() }
+
     AlertDialog(
         onDismissRequest = onDismissRequest,
         title = { Text(stringResource(R.string.screen_viewer_toolbar_controls)) },
@@ -1069,31 +1096,91 @@ private fun ScreenViewerControlDialog(
                     style = MaterialTheme.typography.bodySmall,
                     modifier = Modifier.padding(bottom = 8.dp),
                 )
-                ScreenViewerControl.entries.forEach { viewerControl ->
-                    val checked = viewerControl in selectedControls
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .toggleable(
-                                value = checked,
-                                role = Role.Checkbox,
-                                onValueChange = { selected ->
-                                    onControlVisibilityChanged(viewerControl, selected)
-                                },
+                orderedControls.forEach { viewerControl ->
+                    // Preserve this row's pointer-input node while its list position changes; otherwise the
+                    // first swap restarts the drag detector and terminates the gesture.
+                    key(viewerControl) {
+                        val checked = viewerControl in selectedControls
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .offset {
+                                    IntOffset(
+                                        x = 0,
+                                        y = if (draggedControl == viewerControl) {
+                                            draggedOffset.roundToInt()
+                                        } else {
+                                            0
+                                        },
+                                    )
+                                }
+                                .zIndex(if (draggedControl == viewerControl) 1f else 0f)
+                                .toggleable(
+                                    value = checked,
+                                    role = Role.Checkbox,
+                                    onValueChange = { selected ->
+                                        onControlVisibilityChanged(viewerControl, selected)
+                                    },
+                                )
+                                .padding(horizontal = 4.dp, vertical = 7.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(viewerControl.icon(), contentDescription = null)
+                            Spacer(Modifier.width(16.dp))
+                            Text(
+                                stringResource(viewerControl.labelResource()),
+                                modifier = Modifier.weight(1f),
                             )
-                            .padding(horizontal = 4.dp, vertical = 7.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Icon(viewerControl.icon(), contentDescription = null)
-                        Spacer(Modifier.width(16.dp))
-                        Text(
-                            stringResource(viewerControl.labelResource()),
-                            modifier = Modifier.weight(1f),
-                        )
-                        Checkbox(
-                            checked = checked,
-                            onCheckedChange = null,
-                        )
+                            Checkbox(
+                                checked = checked,
+                                onCheckedChange = null,
+                            )
+                            Icon(
+                                Icons.Outlined.DragHandle,
+                                contentDescription = stringResource(
+                                    R.string.screen_viewer_reorder_control,
+                                ),
+                                modifier = Modifier
+                                    .size(40.dp)
+                                    .padding(8.dp)
+                                    .pointerInput(viewerControl) {
+                                        detectDragGesturesAfterLongPress(
+                                            onDragStart = {
+                                                draggedControl = viewerControl
+                                                draggedOffset = 0f
+                                            },
+                                            onDragCancel = {
+                                                orderedControls = controlOrder
+                                                draggedControl = null
+                                                draggedOffset = 0f
+                                            },
+                                            onDragEnd = {
+                                                draggedControl = null
+                                                draggedOffset = 0f
+                                                onControlOrderChanged(orderedControls)
+                                            },
+                                            onDrag = { change, dragAmount ->
+                                                change.consume()
+                                                draggedOffset += dragAmount.y
+                                                val fromIndex = orderedControls.indexOf(viewerControl)
+                                                val direction = when {
+                                                    draggedOffset > rowStepPx / 2 -> 1
+                                                    draggedOffset < -rowStepPx / 2 -> -1
+                                                    else -> 0
+                                                }
+                                                val targetIndex = fromIndex + direction
+                                                if (direction != 0 && targetIndex in orderedControls.indices) {
+                                                    val reordered = orderedControls.toMutableList()
+                                                    reordered.removeAt(fromIndex)
+                                                    reordered.add(targetIndex, viewerControl)
+                                                    orderedControls = reordered
+                                                    draggedOffset -= direction * rowStepPx
+                                                }
+                                            },
+                                        )
+                                    },
+                            )
+                        }
                     }
                 }
             }
@@ -1157,13 +1244,18 @@ internal data class ScreenViewerControlLayout(
 internal fun screenViewerControlLayout(
     selectedControls: Set<ScreenViewerControl>,
     directControlSlots: Int,
+    controlOrder: List<ScreenViewerControl> = ScreenViewerControl.entries,
 ): ScreenViewerControlLayout {
-    val direct = ScreenViewerControl.entries
+    val ordered = buildList {
+        controlOrder.forEach { control -> if (control !in this) add(control) }
+        ScreenViewerControl.entries.forEach { control -> if (control !in this) add(control) }
+    }
+    val pinned = ordered
         .filter(selectedControls::contains)
-        .take(directControlSlots.coerceAtLeast(0))
+    val direct = pinned.take(directControlSlots.coerceAtLeast(0))
     return ScreenViewerControlLayout(
         direct = direct,
-        overflow = ScreenViewerControl.entries.filterNot(direct::contains),
+        overflow = pinned.drop(direct.size) + ordered.filterNot(selectedControls::contains),
     )
 }
 

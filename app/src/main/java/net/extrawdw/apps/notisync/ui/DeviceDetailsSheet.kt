@@ -12,6 +12,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ScreenShare
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.outlined.Smartphone
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -60,11 +61,13 @@ internal fun DeviceDetailsSheet(
     screenMirroringEnabled: Boolean,
     screenControlAuthorized: Boolean,
     screenMirrorRequestEnabled: Boolean = true,
+    removeEnabled: Boolean = true,
     screenMirrorCodecOverride: ScreenMirrorCodec?,
     screenMirrorDecoderSupport: AndroidScreenDecoderSupport,
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
     onScreenMirrorCodecOverrideChange: (ScreenMirrorCodec?) -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
+    onRemove: () -> Unit = {},
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -157,6 +160,29 @@ internal fun DeviceDetailsSheet(
                         authorized = screenControlAuthorized,
                         onAuthorizedChange = onScreenControlAuthorizedChange,
                     )
+                }
+            }
+            if (device.status == TrustStatus.TRUSTED) {
+                item {
+                    Button(
+                        onClick = onRemove,
+                        enabled = removeEnabled,
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.error,
+                            contentColor = MaterialTheme.colorScheme.onError,
+                        ),
+                        modifier = Modifier.fillMaxWidth(),
+                    ) {
+                        Icon(
+                            Icons.Filled.Delete,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize),
+                        )
+                        androidx.compose.foundation.layout.Spacer(
+                            Modifier.size(ButtonDefaults.IconSpacing)
+                        )
+                        Text(stringResource(R.string.device_remove_desc, name))
+                    }
                 }
             }
         }
