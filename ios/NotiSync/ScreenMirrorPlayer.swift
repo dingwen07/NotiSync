@@ -1134,6 +1134,7 @@ struct ScreenMirrorPlayerView: View {
                     Toggle(isOn: visibilityBinding(for: control)) {
                         Label(control.title, systemImage: control.systemImage)
                     }
+                    .menuActionDismissBehavior(.disabled)
                     .disabled(
                         !visibleControlSet.contains(control) &&
                         visibleControls.count >= Self.maximumVisibleControls
@@ -1155,13 +1156,16 @@ struct ScreenMirrorPlayerView: View {
     }
 
     private var visibleControlSet: Set<IOSScreenViewerControl> {
-        Set(visibleControlsStorage.split(separator: ",").compactMap {
-            IOSScreenViewerControl(rawValue: String($0))
-        })
+        Set(visibleControls)
     }
 
     private var visibleControls: [IOSScreenViewerControl] {
-        IOSScreenViewerControl.allCases.filter(visibleControlSet.contains)
+        var seen: Set<IOSScreenViewerControl> = []
+        return visibleControlsStorage.split(separator: ",").compactMap { rawValue in
+            guard let control = IOSScreenViewerControl(rawValue: String(rawValue)),
+                  seen.insert(control).inserted else { return nil }
+            return control
+        }.prefix(Self.maximumVisibleControls).map { $0 }
     }
 
     private var overflowControls: [IOSScreenViewerControl] {
@@ -1172,16 +1176,15 @@ struct ScreenMirrorPlayerView: View {
         Binding(
             get: { visibleControlSet.contains(control) },
             set: { visible in
-                var selected = visibleControlSet
+                var ordered = visibleControls
                 if visible {
-                    guard selected.count < Self.maximumVisibleControls else { return }
-                    selected.insert(control)
+                    guard ordered.count < Self.maximumVisibleControls,
+                          !ordered.contains(control) else { return }
+                    ordered.append(control)
                 } else {
-                    selected.remove(control)
+                    ordered.removeAll { $0 == control }
                 }
-                visibleControlsStorage = IOSScreenViewerControl.allCases
-                    .filter(selected.contains)
-                    .map(\.rawValue)
+                visibleControlsStorage = ordered.map(\.rawValue)
                     .joined(separator: ",")
             }
         )

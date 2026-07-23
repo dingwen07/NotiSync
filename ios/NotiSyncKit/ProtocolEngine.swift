@@ -112,10 +112,34 @@ nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
     var displayName: String
     var capabilities: Set<Capability>
 
-    static func supports(_ peer: TrustedPeerRecord) -> Bool {
-        peer.isTrusted
-            && peer.ownDevice
-            && requiredCapabilities.isSubset(of: Set(peer.announcedCapabilities))
+    static func sourceCapabilities(
+        for peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Set<Capability>? {
+        guard peer.isTrusted,
+              peer.ownDevice,
+              peer.sealable(now: now) != nil,
+              let card = CardStore.verifiedCard(
+                  peer.clientId,
+                  pinnedIdentitySpki: peer.identitySpki,
+                  now: now
+              ) else { return nil }
+
+        // A newer authenticated PROFILE supersedes the pairing CARD's mutable platform/capability snapshot.
+        // Otherwise use the re-verified CARD, not possibly stale fields cached in the roster.
+        let hasNewerProfile = peer.profileRevision > card.createdAt
+        let platform = hasNewerProfile ? peer.platform : card.platform
+        let capabilities = Set(hasNewerProfile ? peer.announcedCapabilities : card.capabilities)
+        guard platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "android",
+              requiredCapabilities.isSubset(of: capabilities) else { return nil }
+        return capabilities
+    }
+
+    static func supports(
+        _ peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Bool {
+        sourceCapabilities(for: peer, now: now) != nil
     }
 }
 
@@ -380,17 +404,12 @@ nonisolated final class NotiSyncEngine: Sendable {
               let peer = store.peers[sync.sourcePeerId], peer.isTrusted, peer.ownDevice,
               let epoch = peer.sealable(now: Self.nowMillis()) else { return nil }
         if sync.action == .REQUEST {
-            var required: Set<Capability> = [
-                .CAPABILITY_ROUTING_V1,
-                .SCREEN_MIRROR_SOURCE_V1,
-                .SCREEN_MIRROR_CONTROL_V1,
-                .SCREEN_MIRROR_CLIPBOARD_TEXT_V1,
-                .SCREEN_MIRROR_ENCODER_H264_HW,
-            ]
-            if sync.candidates.contains(where: { $0.kind == ScreenMirrorConnectionCandidate.brokerRelay }) {
-                required.insert(.SCREEN_MIRROR_BROKER_RELAY_V1)
-            }
-            guard required.isSubset(of: Set(peer.announcedCapabilities)), sync.codec == .H264 else { return nil }
+            guard let capabilities = ScreenMirrorSourceRecord.sourceCapabilities(
+                for: peer,
+                now: Self.nowMillis()
+            ), sync.codec == .H264 else { return nil }
+            if sync.candidates.contains(where: { $0.kind == ScreenMirrorConnectionCandidate.brokerRelay }),
+               !capabilities.contains(.SCREEN_MIRROR_BROKER_RELAY_V1) { return nil }
         }
         let body = ProtocolCodec.encode(DataSync(kind: .SCREEN_MIRRORING, screenMirror: sync))
         let recipient = EnvelopeCrypto.RecipientKey(
@@ -792,8 +811,9 @@ nonisolated final class NotiSyncEngine: Sendable {
 
     func screenMirrorSources() -> [ScreenMirrorSourceRecord] {
         return trust().peers.values.compactMap { peer in
-            let capabilities = Set(peer.announcedCapabilities)
-            guard ScreenMirrorSourceRecord.supports(peer) else { return nil }
+            guard let capabilities = ScreenMirrorSourceRecord.sourceCapabilities(for: peer) else {
+                return nil
+            }
             return ScreenMirrorSourceRecord(
                 clientId: peer.clientId,
                 displayName: peer.displayName,
