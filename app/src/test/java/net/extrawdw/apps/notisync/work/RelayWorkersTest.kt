@@ -40,6 +40,43 @@ class RelayWorkersTest {
     }
 
     @Test
+    fun durablyDeferredRelayIsImmediatelyAckable() = runBlocking {
+        val acked = mutableListOf<List<String>>()
+
+        val result = finishRelayDelivery(
+            messageId = "message-deferred",
+            outcome = DeliveryOutcome.DEFERRED,
+            ack = { ids -> acked += ids; true },
+            queueAck = {},
+        )
+
+        assertEquals(RelayHandleResult.COMPLETE, result)
+        assertEquals(listOf(listOf("message-deferred")), acked)
+    }
+
+    @Test
+    fun deferredQuietDelayResetsFromTheLastDistinctArrival() {
+        val now = 1_000_000L
+
+        assertEquals(
+            120_000L,
+            RelayDrainWorker.remainingDeferredQuietDelay(lastDeferredAt = now, now = now),
+        )
+        assertEquals(
+            30_000L,
+            RelayDrainWorker.remainingDeferredQuietDelay(lastDeferredAt = now - 90_000L, now = now),
+        )
+        assertEquals(
+            0L,
+            RelayDrainWorker.remainingDeferredQuietDelay(
+                lastDeferredAt = now - 120_000L,
+                now = now,
+                allowImmediate = true,
+            ),
+        )
+    }
+
+    @Test
     fun retryableDeliveryRemainsUnacked() = runBlocking {
         var ackCalled = false
         val queued = mutableListOf<String>()

@@ -97,6 +97,15 @@ class NotiSyncDb(private val database: Database) {
             runCatching {
                 transaction(database) { exec("ALTER TABLE ${Relay.tableName} ADD COLUMN typ VARCHAR(12) DEFAULT ''") }
             }
+            // The batch relay drain pages one recipient's finite accepted-at snapshot by id. Create the
+            // covering lookup index explicitly because SchemaUtils.create does not retrofit indexes on an
+            // already-existing SQLite table.
+            transaction(database) {
+                exec(
+                    "CREATE INDEX IF NOT EXISTS relay_recipient_created_id_idx " +
+                        "ON ${Relay.tableName} (recipient_id, created_at, id)"
+                )
+            }
             return NotiSyncDb(database)
         }
     }

@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.protocol
 
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import kotlinx.serialization.cbor.CborLabel
 
 /**
@@ -69,6 +70,36 @@ data class RelayAck(
          *  under SQLite's 999-variable limit. The client batches by this; the server chunks by it. */
         const val MAX_BATCH = 500
     }
+}
+
+/**
+ * One frame in the finite, streaming `/v2/relay/batch` response. Frames are CBOR encoded and prefixed
+ * by a four-byte big-endian length. The explicit START/END pair lets a client stage a large snapshot
+ * incrementally while refusing to reconcile a truncated response.
+ */
+@Serializable
+data class RelayBatchFrame(
+    @CborLabel(0) val kind: String,
+    @CborLabel(1) val snapshotAt: Long? = null,
+    @CborLabel(2) val cutoff: Long? = null,
+    @CborLabel(3) val messageId: String? = null,
+    @CborLabel(4) val acceptedAt: Long? = null,
+    @CborLabel(5) val messageType: MessageType? = null,
+    @CborLabel(6) @ByteString val envelope: ByteArray? = null,
+    @CborLabel(7) val itemCount: Long? = null,
+)
+
+object RelayBatchKind {
+    const val START = "start"
+    const val ITEM = "item"
+    const val END = "end"
+}
+
+object RelayWire {
+    const val ACCEPTED_AT_HEADER = "Relay-Accepted-At"
+    const val ACCEPTED_AT_PUSH_KEY = "bat"
+    const val BATCH_CONTENT_TYPE = "application/x-notisync-relay-batch"
+    const val MAX_BATCH_FRAME_BYTES = 16 * 1024 * 1024
 }
 
 /**
@@ -223,6 +254,8 @@ data class WsMessage(
     val envelopeB64: String? = null,
     /** Message id being acknowledged (kind=ack). */
     val messageId: String? = null,
+    /** Broker acceptance time for kind=deliver. Optional so older peers keep decoding unchanged. */
+    val acceptedAt: Long? = null,
 )
 
 object WsKind {

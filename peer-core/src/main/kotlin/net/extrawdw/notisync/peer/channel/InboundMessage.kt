@@ -24,6 +24,8 @@ import net.extrawdw.notisync.protocol.MessageType
  *
  * [createdAt] is the signed envelope creation time. A handler may compare it with a body timestamp for
  * expiry/replay policy without trusting transport arrival time.
+ * [acceptedAt] is broker metadata (not sender-signed) used only for delivery-age policy. [forceSilent]
+ * is a receiver-local replay hint used after stale relay reconciliation.
  */
 class InboundMessage(
     val senderId: ClientId,
@@ -34,4 +36,6 @@ class InboundMessage(
     val messageId: String = "",
     val deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
     val createdAt: Long = 0,
+    val acceptedAt: Long? = null,
+    val forceSilent: Boolean = false,
 )

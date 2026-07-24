@@ -23,6 +23,18 @@ class OutboundItem(
     val body: ByteArray,
 )
 
+/** Authenticated and decrypted envelope that has not yet been dispatched or marked handled. */
+class PreparedInbound internal constructor(
+    val envelope: Envelope,
+    val message: InboundMessage,
+)
+
+sealed interface PreparationOutcome {
+    data class Ready(val prepared: PreparedInbound) : PreparationOutcome
+    data object Duplicate : PreparationOutcome
+    data object Dropped : PreparationOutcome
+}
+
 /**
  * A generic, feature-agnostic end-to-end secure group-messaging substrate over a [Transport].
  *
@@ -294,95 +306,127 @@ class SecureChannel(
      */
     fun deliver(
         envelope: Envelope,
-        deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN
-    ): DeliveryOutcome {
+        deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
+        acceptedAt: Long? = null,
+        forceSilent: Boolean = false,
+    ): DeliveryOutcome = when (val prepared = prepare(envelope, deliveryMode, acceptedAt)) {
+        PreparationOutcome.Duplicate -> DeliveryOutcome.DUPLICATE
+        PreparationOutcome.Dropped -> DeliveryOutcome.DROPPED
+        is PreparationOutcome.Ready -> deliverPrepared(prepared.prepared, forceSilent)
+    }
+
+    /** Verify and decrypt without dispatching or recording dedup state. */
+    fun prepare(
+        envelope: Envelope,
+        deliveryMode: DeliveryMode = DeliveryMode.UNKNOWN,
+        acceptedAt: Long? = null,
+    ): PreparationOutcome {
         val id = envelope.messageId
-        if (id in recent) return DeliveryOutcome.DUPLICATE
+        if (id in recent) return PreparationOutcome.Duplicate
         if (dedup?.seen(id) == true) {
             recent.add(id)
-            return DeliveryOutcome.DUPLICATE
+            return PreparationOutcome.Duplicate
         }
-        // Collapse a concurrent double-delivery: only the first thread for this id handles it; the
-        // other backs off as IN_FLIGHT — not yet durably recorded, so its caller must NOT ack it (the
-        // winning handler may still fail). Released in `finally` so a DROPPED id can be retried later.
-        if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
-        // Trace the verified-receive pipeline for EVERY envelope type (post-dedup, so high-volume duplicates
-        // don't flood it). `type` (notification/dismissal/data_sync) and `delivery_mode` are the segmentation
-        // axes — e.g. e2e latency for notifications over the live socket vs the relay-drain backstop; `result`
-        // pins down WHY a drop happened (verify vs key vs decrypt).
-        val span = telemetry.trace("envelope_delivery")
+        val span = telemetry.trace("envelope_prepare")
         span.attr("type", envelope.typ.name.lowercase())
         span.attr("delivery_mode", deliveryMode.name.lowercase())
         var result = "dropped"
         try {
-            // Resolve the verify key for the CLAIMED signerEpoch. For an operational epoch this is the
-            // anti-rollback gate: a retired/floored/non-ENVELOPE_SIGN epoch resolves to null and we drop
-            // BEFORE any signature check, so a replayed stale-epoch envelope can never open (§8 #1).
             val sender = directory.resolveSender(envelope.signerId, envelope.signerEpoch)
             if (sender == null) {
                 log.warn("dropping envelope from unresolvable sender ${envelope.signerId.shortForm()} epoch ${envelope.signerEpoch}")
-                // We hold no usable key-epoch for this sender (none, or not the epoch it signed with) — ask the
-                // handler to fetch it so the relayed copy can be re-delivered + verified once we converge.
                 onUnresolvedSender(envelope.signerId)
                 result = "sender_unresolved"
-                return DeliveryOutcome.DROPPED
+                return PreparationOutcome.Dropped
             }
             val verifyStartNanos = System.nanoTime()
             if (!EnvelopeCrypto.verify(envelope, sender.verifySpki)) {
                 log.warn("signature verification failed for $id")
                 onBadSignature(envelope.signerId, now(), deliveryMode)
                 result = "verify_failed"
-                return DeliveryOutcome.DROPPED
+                return PreparationOutcome.Dropped
             }
             span.metric("verify_ms", (System.nanoTime() - verifyStartNanos) / 1_000_000)
-            // Open with the private HPKE keyset for the epoch the sender sealed to us (selected from our
-            // retained ring). A missing keyset (we no longer retain that epoch) is an undecryptable DROPPED —
-            // deliberately left unacked (matching a decrypt failure) so the relay redelivers once we re-converge;
-            // HPKE retention ≥ relay TTL (RotationManager) makes this rare. A faster pull-on-demand path
-            // (EnvelopeResendRequest, §8 #10) is a Phase-6 optimization, not required for correctness.
-            val myEpoch =
-                envelope.recipients.firstOrNull { it.recipientId == signer.clientId }?.recipientEpoch
-            val myKeyset = myEpoch?.let { myHpkePrivate(it) }
+            val myEpoch = envelope.recipients
+                .firstOrNull { it.recipientId == signer.clientId }
+                ?.recipientEpoch
+            val myKeyset = myEpoch?.let(myHpkePrivate)
             if (myKeyset == null) {
                 log.warn("no retained HPKE keyset for recipient epoch $myEpoch to open $id — dropping unacked for relay redelivery")
                 result = "key_missing"
-                return DeliveryOutcome.DROPPED
+                return PreparationOutcome.Dropped
             }
             val decryptStartNanos = System.nanoTime()
-            val body = runCatching {
-                EnvelopeCrypto.open(envelope, signer.clientId, myKeyset)
-            }.getOrElse {
-                log.warn("decrypt failed for $id: ${it.message}")
-                result = "decrypt_failed"
-                return DeliveryOutcome.DROPPED
-            }
+            val body = runCatching { EnvelopeCrypto.open(envelope, signer.clientId, myKeyset) }
+                .getOrElse {
+                    log.warn("decrypt failed for $id: ${it.message}")
+                    result = "decrypt_failed"
+                    return PreparationOutcome.Dropped
+                }
             span.metric("decrypt_ms", (System.nanoTime() - decryptStartNanos) / 1_000_000)
-            val handler = handlers[envelope.typ] ?: run {
+            if (handlers[envelope.typ] == null) {
                 result = "no_handler"
-                return DeliveryOutcome.DROPPED
+                return PreparationOutcome.Dropped
             }
-            // Report which key-kind signed (0 = identity, ≥1 = operational) so the handler can enforce the
-            // per-message signer policy (§2.3) — the channel verified the signature but is body-agnostic.
-            // handler_ms spans the inline handler dispatch (for NOTIFICATION that includes the immediate render).
-            val handlerStartNanos = System.nanoTime()
-            // Inbound handlers run INLINE on the FCM service / socket thread, so one must never crash
-            // delivery. A poison message — an unknown enum value from a newer peer (kotlinx throws on an
-            // unknown enum name even with ignoreUnknownKeys), a decode failure, or a render bug — is caught,
-            // logged, and marked handled below so it is acked and NOT redelivered into a crash loop, rather
-            // than propagating out of onMessageReceived and taking down the process.
-            try {
-                handler(
+            result = "ready"
+            return PreparationOutcome.Ready(
+                PreparedInbound(
+                    envelope,
                     InboundMessage(
-                        envelope.signerId,
-                        sender.ownDevice,
-                        envelope.typ,
-                        body,
-                        envelope.signerEpoch,
-                        id,
-                        deliveryMode,
-                        envelope.createdAt,
+                        senderId = envelope.signerId,
+                        senderOwnDevice = sender.ownDevice,
+                        typ = envelope.typ,
+                        body = body,
+                        signerEpoch = envelope.signerEpoch,
+                        messageId = id,
+                        deliveryMode = deliveryMode,
+                        createdAt = envelope.createdAt,
+                        acceptedAt = acceptedAt,
                     )
                 )
+            )
+        } finally {
+            span.attr("result", result)
+            span.stop()
+        }
+    }
+
+    /** Dispatch a previously verified/decrypted message, preserving the normal race and dedup contract. */
+    fun deliverPrepared(prepared: PreparedInbound, forceSilent: Boolean = false): DeliveryOutcome {
+        val envelope = prepared.envelope
+        val id = envelope.messageId
+        if (id in recent) return DeliveryOutcome.DUPLICATE
+        if (dedup?.seen(id) == true) {
+            recent.add(id)
+            return DeliveryOutcome.DUPLICATE
+        }
+        if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
+        val handler = handlers[envelope.typ] ?: run {
+            inFlight.remove(id)
+            return DeliveryOutcome.DROPPED
+        }
+        val span = telemetry.trace("envelope_delivery")
+        span.attr("type", envelope.typ.name.lowercase())
+        span.attr("delivery_mode", prepared.message.deliveryMode.name.lowercase())
+        var result = "dropped"
+        try {
+            val msg = prepared.message.let {
+                InboundMessage(
+                    senderId = it.senderId,
+                    senderOwnDevice = it.senderOwnDevice,
+                    typ = it.typ,
+                    body = it.body,
+                    signerEpoch = it.signerEpoch,
+                    messageId = it.messageId,
+                    deliveryMode = it.deliveryMode,
+                    createdAt = it.createdAt,
+                    acceptedAt = it.acceptedAt,
+                    forceSilent = forceSilent,
+                )
+            }
+            val handlerStartNanos = System.nanoTime()
+            try {
+                handler(msg)
                 result = "handled"
             } catch (e: RetryableDeliveryException) {
                 log.warn("inbound ${envelope.typ} durable handling failed; retaining message $id: ${e.message}")
@@ -393,13 +437,7 @@ class SecureChannel(
                 result = "handler_error"
             }
             span.metric("handler_ms", (System.nanoTime() - handlerStartNanos) / 1_000_000)
-            // Mark handled either way (after the handler ran): in-memory for the hot path, then durably. A
-            // message that reliably throws is acked so the relay stops redelivering it.
-            recent.add(id)
-            dedup?.record(id)
-            // Approximate cross-device delivery latency: this receiver's clock minus the sender's sealed-at
-            // stamp. Clock skew between devices makes this a distribution signal (watch P50/P90), not an
-            // exact per-event value; clamp skew-induced negatives to 0.
+            markHandled(id)
             span.metric("e2e_latency_ms", (now() - envelope.createdAt).coerceAtLeast(0))
             return DeliveryOutcome.HANDLED
         } finally {
@@ -407,6 +445,27 @@ class SecureChannel(
             span.stop()
             inFlight.remove(id)
         }
+    }
+
+    /** Mark an authenticated prepared item superseded by batch reconciliation without invoking its handler. */
+    fun completePreparedWithoutDispatch(prepared: PreparedInbound): DeliveryOutcome {
+        val id = prepared.envelope.messageId
+        if (id in recent || dedup?.seen(id) == true) {
+            recent.add(id)
+            return DeliveryOutcome.DUPLICATE
+        }
+        if (!inFlight.add(id)) return DeliveryOutcome.IN_FLIGHT
+        return try {
+            markHandled(id)
+            DeliveryOutcome.HANDLED
+        } finally {
+            inFlight.remove(id)
+        }
+    }
+
+    private fun markHandled(id: String) {
+        recent.add(id)
+        dedup?.record(id)
     }
 
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */

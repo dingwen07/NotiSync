@@ -3,6 +3,7 @@ package net.extrawdw.notisync.peer.transport
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
+import io.ktor.client.plugins.timeout
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.webSocket
 import io.ktor.client.request.HttpRequestBuilder
@@ -12,6 +13,7 @@ import io.ktor.client.request.post
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
+import io.ktor.client.statement.bodyAsChannel
 import io.ktor.client.statement.readRawBytes
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
@@ -21,6 +23,8 @@ import io.ktor.http.isSuccess
 import io.ktor.websocket.Frame
 import io.ktor.websocket.readText
 import io.ktor.websocket.send
+import io.ktor.utils.io.readFully
+import io.ktor.utils.io.readInt
 import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
@@ -45,7 +49,10 @@ import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
+import net.extrawdw.notisync.protocol.RelayBatchFrame
+import net.extrawdw.notisync.protocol.RelayBatchKind
 import net.extrawdw.notisync.protocol.RelayPending
+import net.extrawdw.notisync.protocol.RelayWire
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
@@ -75,6 +82,23 @@ import okhttp3.Response
 import okhttp3.WebSocket
 import okhttp3.WebSocketListener
 import okio.ByteString
+
+data class RelayDelivery(
+    val envelope: Envelope,
+    val acceptedAt: Long?,
+)
+
+data class RelayBatchDownload(
+    val snapshotAt: Long,
+    val cutoff: Long,
+    val itemCount: Long,
+)
+
+sealed interface RelayBatchFetchResult {
+    data class Complete(val download: RelayBatchDownload) : RelayBatchFetchResult
+    data object Unsupported : RelayBatchFetchResult
+    data object Failed : RelayBatchFetchResult
+}
 
 /**
  * Ktor-based client implementing the transport-neutral [Transport]. The control plane is signed HTTP
@@ -224,7 +248,7 @@ class BrokerClient(
      * root on a 401 if the broker hasn't ingested our current epoch yet (a rotation/convergence race).
      * `Peek: true` keeps the relay item queued until the caller durably handles it and explicitly acks it.
      */
-    suspend fun fetchRelayMessage(messageId: String): Envelope? {
+    suspend fun fetchRelayDelivery(messageId: String): RelayDelivery? {
         val url = "${httpBase()}/v2/relay/$messageId"
         var resp = runCatching {
             client.get(url) {
@@ -249,23 +273,106 @@ class BrokerClient(
             }.getOrNull() ?: return null
         }
         if (!resp.status.isSuccess()) return null
-        return runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
+        val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
+            ?: return null
+        return RelayDelivery(
+            envelope = envelope,
+            acceptedAt = resp.headers[RelayWire.ACCEPTED_AT_HEADER]?.toLongOrNull(),
+        )
     }
+
+    /** Compatibility helper for callers that do not need broker acceptance metadata. */
+    suspend fun fetchRelayMessage(messageId: String): Envelope? = fetchRelayDelivery(messageId)?.envelope
 
     /**
      * List the message ids the broker currently has queued for us (signed-only GET, never triggers
-     * attestation). The WorkManager drain backstop then pulls + acks each via [fetchRelayMessage].
-     * Returns empty on any failure — the backstop simply tries again on its next run.
+     * attestation). Null distinguishes a failed legacy fallback request from a genuinely empty relay.
      */
-    suspend fun fetchPendingRelayIds(): List<String> {
+    suspend fun fetchPendingRelayIdsOrNull(): List<String>? {
         val url = "${httpBase()}/v2/relay"
         val resp = runCatching {
             client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
-        }.getOrNull() ?: return emptyList()
-        if (!resp.status.isSuccess()) return emptyList()
-        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrDefault(
-            emptyList()
-        )
+        }.getOrNull() ?: return null
+        if (!resp.status.isSuccess()) return null
+        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrNull()
+    }
+
+    suspend fun fetchPendingRelayIds(): List<String> = fetchPendingRelayIdsOrNull().orEmpty()
+
+    /**
+     * Stream one finite relay snapshot. [onItem] is invoked once per validated ITEM frame, allowing
+     * Android to persist each envelope without buffering the whole 48-hour backlog in memory. Only a
+     * 404 is `Unsupported`; rejected, malformed, truncated, and network-failed responses are `Failed`.
+     */
+    suspend fun fetchRelayBatch(
+        before: Long? = null,
+        onItem: (RelayBatchFrame) -> Unit,
+    ): RelayBatchFetchResult {
+        val suffix = before?.let { "?before=$it" }.orEmpty()
+        val url = "${httpBase()}/v2/relay/batch$suffix"
+
+        suspend fun request(operational: Boolean): HttpResponse? = runCatching {
+            client.get(url) {
+                signedHeaders(
+                    "GET",
+                    url,
+                    ByteArray(0),
+                    cachedBearerOrNull(),
+                    operational = operational,
+                )
+                // A large backlog is bounded by socket-idle timeout, not by the ordinary whole-request cap.
+                timeout { requestTimeoutMillis = Long.MAX_VALUE }
+            }
+        }.getOrNull()
+
+        var response = request(operational = true) ?: return RelayBatchFetchResult.Failed
+        if (response.status == HttpStatusCode.Unauthorized) {
+            response = request(operational = false) ?: return RelayBatchFetchResult.Failed
+        }
+        if (response.status == HttpStatusCode.NotFound) return RelayBatchFetchResult.Unsupported
+        if (!response.status.isSuccess()) return RelayBatchFetchResult.Failed
+
+        return runCatching<RelayBatchFetchResult> {
+            val channel = response.bodyAsChannel()
+            var snapshotAt: Long? = null
+            var cutoff: Long? = null
+            var seen = 0L
+            while (true) {
+                val size = channel.readInt()
+                require(size in 1..RelayWire.MAX_BATCH_FRAME_BYTES) { "invalid relay batch frame size" }
+                val bytes = ByteArray(size)
+                channel.readFully(bytes)
+                val frame = ProtocolCodec.decodeFromCbor<RelayBatchFrame>(bytes)
+                when (frame.kind) {
+                    RelayBatchKind.START -> {
+                        require(snapshotAt == null && seen == 0L)
+                        snapshotAt = requireNotNull(frame.snapshotAt)
+                        cutoff = requireNotNull(frame.cutoff)
+                    }
+                    RelayBatchKind.ITEM -> {
+                        require(snapshotAt != null)
+                        require(!frame.messageId.isNullOrBlank())
+                        require(frame.acceptedAt != null && frame.messageType != null && frame.envelope != null)
+                        onItem(frame)
+                        seen++
+                    }
+                    RelayBatchKind.END -> {
+                        require(snapshotAt != null)
+                        require(frame.itemCount == seen)
+                        return@runCatching RelayBatchFetchResult.Complete(
+                            RelayBatchDownload(
+                                snapshotAt = snapshotAt!!,
+                                cutoff = requireNotNull(cutoff),
+                                itemCount = seen,
+                            )
+                        )
+                    }
+                    else -> error("unknown relay batch frame kind")
+                }
+            }
+            @Suppress("UNREACHABLE_CODE")
+            error("relay batch ended without END frame")
+        }.getOrDefault(RelayBatchFetchResult.Failed)
     }
 
     /**
@@ -597,7 +704,13 @@ class BrokerClient(
      * This replaces the old `Flow` that ACKed on enqueue, which could lose a message to a buffer
      * overflow or process death between buffering and handling.
      */
-    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> LiveDeliveryDisposition) {
+    override suspend fun runLiveDelivery(onEnvelope: (Envelope) -> LiveDeliveryDisposition) =
+        runLiveDeliveryWithMetadata { envelope, _ -> onEnvelope(envelope) }
+
+    /** Android receive path with broker acceptance metadata; the transport-neutral API remains compatible. */
+    suspend fun runLiveDeliveryWithMetadata(
+        onEnvelope: (Envelope, acceptedAt: Long?) -> LiveDeliveryDisposition,
+    ) {
         var backoffMs = 1_000L
         var consecutiveFailures = 0
         while (currentCoroutineContext().isActive) {
@@ -649,7 +762,7 @@ class BrokerClient(
                             }.getOrNull() ?: continue
                             // A dropped/in-flight message stays queued: trust/key convergence or the winning
                             // concurrent handler may make a later redelivery succeed.
-                            if (onEnvelope(env) == LiveDeliveryDisposition.ACK) {
+                            if (onEnvelope(env, msg.acceptedAt) == LiveDeliveryDisposition.ACK) {
                                 send(
                                     Frame.Text(
                                         ProtocolCodec.encodeToJson(

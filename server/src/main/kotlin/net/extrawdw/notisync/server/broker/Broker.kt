@@ -13,6 +13,7 @@ import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.Base32
 import net.extrawdw.notisync.protocol.WsKind
 import net.extrawdw.notisync.protocol.WsMessage
+import net.extrawdw.notisync.protocol.RelayWire
 import net.extrawdw.notisync.server.ServerConfig
 import net.extrawdw.notisync.server.crypto.Verification
 import net.extrawdw.notisync.server.delivery.PushOutcome
@@ -21,6 +22,8 @@ import net.extrawdw.notisync.server.delivery.WebSocketHub
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.PrivateAssetStore
 import net.extrawdw.notisync.server.data.RelayStore
+import net.extrawdw.notisync.server.data.RelayItem
+import net.extrawdw.notisync.server.data.RelaySnapshot
 import net.extrawdw.notisync.server.data.RouteStore
 import net.extrawdw.notisync.server.data.StoredEpoch
 import net.extrawdw.notisync.server.data.StoredRoute
@@ -163,7 +166,14 @@ class Broker(
             val recipientBytes = envelopeFor(recipient, envelope, envelopeBytes)
 
             // Persist for store-and-forward (removed on explicit ack), regardless of live state.
-            relay.add(recipient, envelope.messageId, recipientBytes, urgency.name, envelope.typ.name, expiresAt)
+            val relayItem = relay.add(
+                recipient,
+                envelope.messageId,
+                recipientBytes,
+                urgency.name,
+                envelope.typ.name,
+                expiresAt,
+            )
 
             // Pending-dismissal hint for the iOS NSE's piggyback drain. A dismissal must never ride its
             // own alert push — an NSE miss (BFU after reboot, memory kill, timeout) falls back to
@@ -176,7 +186,11 @@ class Broker(
 
             if (hub.isOnline(recipient)) {
                 val frame = ProtocolCodec.encodeToJson(
-                    WsMessage(kind = WsKind.DELIVER, envelopeB64 = b64.encodeToString(recipientBytes))
+                    WsMessage(
+                        kind = WsKind.DELIVER,
+                        envelopeB64 = b64.encodeToString(recipientBytes),
+                        acceptedAt = relayItem.createdAt,
+                    )
                 )
                 if (hub.deliverText(recipient, frame)) {
                     delivered.add(recipient)
@@ -196,7 +210,14 @@ class Broker(
             var pushed = false
             for (route in candidates) {
                 val budget = inlineBudgetFor(route)
-                val payload = buildPushData(envelope.messageId, envelope.typ, recipientBytes, budget, pendingDismissals)
+                val payload = buildPushData(
+                    envelope.messageId,
+                    envelope.typ,
+                    recipientBytes,
+                    budget,
+                    pendingDismissals,
+                    relayItem.createdAt,
+                )
                 val outcome = push.wake(route, payload.data, urgency)
                 log.info(
                     "push wake transport={} recipient={} mid={} inline={} ctChars={} budget={} urgency={} outcome={}",
@@ -267,6 +288,7 @@ class Broker(
         envelopeBytes: ByteArray,
         inlineBudget: Int,
         pendingDismissals: Long = 0,
+        acceptedAt: Long,
     ): PushPayload {
         val b64env = b64.encodeToString(envelopeBytes)
         // "mtyp" carries the E2E message type (broker-visible on the envelope) so APNs can branch
@@ -275,6 +297,7 @@ class Broker(
         // computed in [send]; capped so the value can't grow the payload past its accounted overhead.
         val base = buildMap {
             put("mtyp", messageType.name)
+            put(RelayWire.ACCEPTED_AT_PUSH_KEY, acceptedAt.toString())
             if (pendingDismissals > 0) put("pnc", pendingDismissals.coerceAtMost(999).toString())
         }
         // ctChars is the base64 envelope length on BOTH branches (the size the budget gates), so the log
@@ -343,14 +366,31 @@ class Broker(
         for (item in relay.pending(clientId)) {
             sendFrame(
                 ProtocolCodec.encodeToJson(
-                    WsMessage(kind = WsKind.DELIVER, envelopeB64 = b64.encodeToString(item.envelope))
+                    WsMessage(
+                        kind = WsKind.DELIVER,
+                        envelopeB64 = b64.encodeToString(item.envelope),
+                        acceptedAt = item.createdAt,
+                    )
                 )
             )
         }
     }
 
-    /** The single queued envelope addressed to [clientId] with [messageId], or null. */
-    suspend fun relayMessage(clientId: ClientId, messageId: String): ByteArray? = relay.getByMessage(clientId, messageId)
+    /** The single queued item addressed to [clientId] with [messageId], or null. */
+    suspend fun relayItem(clientId: ClientId, messageId: String): RelayItem? = relay.getByMessage(clientId, messageId)
+
+    /** Backward-compatible raw-envelope accessor. */
+    suspend fun relayMessage(clientId: ClientId, messageId: String): ByteArray? =
+        relayItem(clientId, messageId)?.envelope
+
+    suspend fun relaySnapshot(clientId: ClientId, before: Long?): RelaySnapshot = relay.snapshot(clientId, before)
+
+    suspend fun relaySnapshotPage(
+        clientId: ClientId,
+        snapshot: RelaySnapshot,
+        afterId: Long,
+        limit: Int,
+    ): List<RelayItem> = relay.snapshotPage(clientId, snapshot, afterId, limit)
 
     /** Message ids currently queued for [clientId] — the background-drain backstop lists then pulls each.
      *  [typ] narrows to one message type (the NSE's piggyback drain lists queued DISMISSALs exactly). */
@@ -380,7 +420,7 @@ class Broker(
         // Per-transport hard ceiling for the inline ct, in base64 chars (see [hardInlineCtBudget]).
         const val PUSH_INLINE_HARD_LIMIT = 4096 // FCM data-message limit & APNs alert-payload limit (4 KB)
         const val PUSH_INLINE_MARGIN = 160      // slack for push-service framing / future envelope fields
-        const val FCM_INLINE_OVERHEAD = 88      // mtyp/typ/mid/pnc keys+values + the "ct" key (~77 B, rounded up)
-        const val APNS_INLINE_OVERHEAD = 256    // aps alert/category dict + JSON data keys incl. pnc (~238 B, rounded up)
+        const val FCM_INLINE_OVERHEAD = 112     // includes broker accepted-at (`bat`) metadata
+        const val APNS_INLINE_OVERHEAD = 280    // includes aps plus broker accepted-at (`bat`) metadata
     }
 }

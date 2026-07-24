@@ -41,10 +41,15 @@ enum class DeliveryOutcome {
      *  safe to ack — that thread's handler may yet fail, so leaving the item queued lets it redeliver. */
     IN_FLIGHT,
 
+    /** Authenticated envelope was durably staged in the receiver's local relay inbox. Safe to ack. */
+    DEFERRED,
+
     /** Dropped before handling: unknown sender, bad signature, decrypt failure, or no handler. NOT
      *  safe to ack — leaving it queued lets a later delivery (once trust/keys converge) still land. */
     DROPPED,
 }
 
 val DeliveryOutcome.safeToAck: Boolean
-    get() = this == DeliveryOutcome.HANDLED || this == DeliveryOutcome.DUPLICATE
+    get() = this == DeliveryOutcome.HANDLED ||
+        this == DeliveryOutcome.DUPLICATE ||
+        this == DeliveryOutcome.DEFERRED

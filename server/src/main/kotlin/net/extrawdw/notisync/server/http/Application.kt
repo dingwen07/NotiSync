@@ -14,6 +14,7 @@ import io.ktor.server.plugins.statuspages.StatusPages
 import io.ktor.server.request.receiveStream
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondBytesWriter
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.post
@@ -35,6 +36,8 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import io.ktor.utils.io.writeFully
+import io.ktor.utils.io.writeInt
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.ErrorResponse
@@ -43,7 +46,10 @@ import net.extrawdw.notisync.protocol.IntegrityVerificationRequest
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
+import net.extrawdw.notisync.protocol.RelayBatchFrame
+import net.extrawdw.notisync.protocol.RelayBatchKind
 import net.extrawdw.notisync.protocol.RelayPending
+import net.extrawdw.notisync.protocol.RelayWire
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.SendRequest
 import net.extrawdw.notisync.protocol.ScreenRelayJoin
@@ -91,10 +97,12 @@ import java.util.Base64
 import kotlin.time.Duration.Companion.seconds
 
 private val CBOR = ContentType("application", "cbor")
+private val RELAY_BATCH = ContentType.parse(RelayWire.BATCH_CONTENT_TYPE)
 private val random = SecureRandom()
 
 private const val MAX_VERIFY_BODY_BYTES = 64 * 1024
 private const val MAX_CONTROL_BODY_BYTES = 1024 * 1024
+private const val RELAY_BATCH_PAGE_SIZE = 64
 
 /**
  * Read the request body, refusing (returning null) if it exceeds [maxBytes] — bounds pre-auth memory
@@ -408,6 +416,62 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             call.respond(RelayPending(broker.pendingMessageIds(principal.clientId, typ)))
         }
 
+        // Stream one finite relay snapshot. Live rows inserted after the captured high-water id wait for
+        // the next drain; the explicit END frame lets a client distinguish success from truncation.
+        get("/relay/batch") {
+            val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
+            val beforeText = call.request.queryParameters["before"]
+            val before = beforeText?.toLongOrNull()
+            if (beforeText != null && before == null) {
+                return@get call.respond(HttpStatusCode.BadRequest, ErrorResponse("invalid_before"))
+            }
+            val snapshot = broker.relaySnapshot(principal.clientId, before)
+            call.respondBytesWriter(RELAY_BATCH) {
+                suspend fun writeFrame(frame: RelayBatchFrame) {
+                    val bytes = ProtocolCodec.encodeToCbor(frame)
+                    require(bytes.size <= RelayWire.MAX_BATCH_FRAME_BYTES)
+                    writeInt(bytes.size)
+                    writeFully(bytes)
+                }
+
+                writeFrame(
+                    RelayBatchFrame(
+                        kind = RelayBatchKind.START,
+                        snapshotAt = snapshot.snapshotAt,
+                        cutoff = snapshot.cutoff,
+                    )
+                )
+                var afterId = 0L
+                var count = 0L
+                while (afterId < snapshot.maxId) {
+                    val page = broker.relaySnapshotPage(
+                        principal.clientId,
+                        snapshot,
+                        afterId,
+                        RELAY_BATCH_PAGE_SIZE,
+                    )
+                    if (page.isEmpty()) break
+                    for (item in page) {
+                        val typ = runCatching { MessageType.valueOf(item.typ) }.getOrNull()
+                            ?: runCatching { ProtocolCodec.decodeFromCbor<Envelope>(item.envelope).typ }.getOrNull()
+                            ?: continue
+                        writeFrame(
+                            RelayBatchFrame(
+                                kind = RelayBatchKind.ITEM,
+                                messageId = item.messageId,
+                                acceptedAt = item.createdAt,
+                                messageType = typ,
+                                envelope = item.envelope,
+                            )
+                        )
+                        count++
+                    }
+                    afterId = page.last().id
+                }
+                writeFrame(RelayBatchFrame(kind = RelayBatchKind.END, itemCount = count))
+            }
+        }
+
         // Single-message relay pull for background-wake paths. When a message is too large to inline, the
         // broker sends a wake pointer ("mid") and the client fetches exactly that one envelope here.
         // Default/legacy behavior is ack-on-fetch; clients that need ack-after-handle can send Peek: true and
@@ -417,11 +481,12 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             val messageId = call.parameters["messageId"].orEmpty()
             val ackOnFetch = call.request.headers["Peek"]?.equals("true", ignoreCase = true) != true
             val principal = auth.requireSigned(call, ByteArray(0), broker) ?: return@get
-            val envelope = broker.relayMessage(principal.clientId, messageId)
-            if (envelope == null) {
+            val item = broker.relayItem(principal.clientId, messageId)
+            if (item == null) {
                 call.respond(HttpStatusCode.NotFound, ErrorResponse("unknown_message"))
             } else {
-                call.respondBytes(envelope, CBOR)
+                call.response.headers.append(RelayWire.ACCEPTED_AT_HEADER, item.createdAt.toString())
+                call.respondBytes(item.envelope, CBOR)
                 if (ackOnFetch) {
                     // Ack only after the bytes are flushed; a failed send leaves the item for the next WS
                     // flush. Best-effort — a failed ack just re-delivers later (the client dedups by id).

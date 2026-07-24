@@ -1435,6 +1435,7 @@ class RemoteNotificationPoster(
             "com.tencent.mobileqq" to R.drawable.ic_qq_notification,
             "com.tencent.mm" to R.drawable.ic_wechat_notification,
             "com.google.android.dialer" to R.drawable.ic_phone_notification,
+            "com.android.phone" to R.drawable.ic_phone_notification,
             "tv.danmaku.bili" to R.drawable.ic_bilibili_notification,
             // The iPhone now-playing bridge's synthetic package (AMS exposes no bundle id to resolve).
             "ios.media" to R.drawable.ic_music_note_notification,

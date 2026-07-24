@@ -36,7 +36,10 @@ import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.VerificationStatusResponse
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RelayAck
+import net.extrawdw.notisync.protocol.RelayBatchFrame
+import net.extrawdw.notisync.protocol.RelayBatchKind
 import net.extrawdw.notisync.protocol.RelayPending
+import net.extrawdw.notisync.protocol.RelayWire
 import net.extrawdw.notisync.protocol.RouteCapabilities
 import net.extrawdw.notisync.protocol.RouteClaim
 import net.extrawdw.notisync.protocol.RouteEnvironment
@@ -96,6 +99,8 @@ import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.File
+import java.io.ByteArrayInputStream
+import java.io.DataInputStream
 import java.security.KeyPairGenerator
 import java.security.Signature
 import java.security.interfaces.RSAPublicKey
@@ -146,6 +151,43 @@ class BrokerFlowTest {
         )
         val payload = ProtocolCodec.encodeToCbor(claim)
         return SignedBlob(SignedType.ROUTE_CLAIM, signerId = signer.clientId, payload = payload, sig = signer.sign(payload))
+    }
+
+    @Test
+    fun relaySnapshotUsesInclusiveCutoffAndExcludesRowsBeyondCapturedHighWater() = runBlocking {
+        val tmp = File.createTempFile("notisync-relay-snapshot", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        val store = RelayStore(NotiSyncDb.connect(ServerConfig.fromEnv()))
+        val recipient = ClientId("snapshot-recipient")
+        val first = store.add(
+            recipientId = recipient,
+            messageId = "snapshot-first",
+            envelope = byteArrayOf(1),
+            urgency = Urgency.NORMAL.name,
+            typ = MessageType.DATA_SYNC.name,
+            expiresAt = Long.MAX_VALUE,
+        )
+
+        val snapshot = store.snapshot(recipient, before = Long.MAX_VALUE)
+        val inclusive = store.snapshot(recipient, before = first.createdAt)
+        store.add(
+            recipientId = recipient,
+            messageId = "snapshot-late",
+            envelope = byteArrayOf(2),
+            urgency = Urgency.NORMAL.name,
+            typ = MessageType.DATA_SYNC.name,
+            expiresAt = Long.MAX_VALUE,
+        )
+
+        assertEquals(snapshot.snapshotAt, snapshot.cutoff) // future `before` is capped at request time
+        assertEquals(
+            listOf("snapshot-first"),
+            store.snapshotPage(recipient, snapshot, afterId = 0L, limit = 10).map { it.messageId },
+        )
+        assertEquals(
+            listOf("snapshot-first"),
+            store.snapshotPage(recipient, inclusive, afterId = 0L, limit = 10).map { it.messageId },
+        )
     }
 
     private fun keyEpochBlob(
@@ -796,6 +838,7 @@ class BrokerFlowTest {
 
             val delivered = ProtocolCodec.decodeFromJson<WsMessage>((incoming.receive() as Frame.Text).readText())
             assertEquals(WsKind.DELIVER, delivered.kind)
+            assertNotNull(delivered.acceptedAt)
             val receivedEnv = ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(delivered.envelopeB64!!))
 
             // 6. Source authenticity + E2E decryption succeed on the recipient.
@@ -1186,6 +1229,7 @@ class BrokerFlowTest {
         val first = sealed(MessageType.NOTIFICATION, "01J0PNCN001", 3L, notifBody)
         broker.send(ProtocolCodec.encodeToCbor(first), first, Urgency.HIGH)
         assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
+        assertNotNull(captured.last()[RelayWire.ACCEPTED_AT_PUSH_KEY])
         assertEquals("1", captured.last()["pnc"])
 
         // Once the dismissal is drained (acked), the hint disappears — the DATA_SYNC alone never re-arms it.
@@ -1403,6 +1447,69 @@ class BrokerFlowTest {
             client.get("/v2/relay") { signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0)) }.bodyAsText()
         )
         assertTrue(pendingAfterAck.messageIds.isEmpty())
+    }
+
+    @Test
+    fun relayBatch_streamsFiniteSnapshotWithAcceptedAt_withoutAcking() = testApplication {
+        val tmp = File.createTempFile("notisync-relaybatch", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        application { module() }
+
+        val sender = SoftwareIdentitySigner.generate()
+        val senderHpke = Hpke.generateKeyPair()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        client.register(sender, senderHpke)
+        client.register(recipient, recipientHpke)
+
+        val envelope = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.DISMISSAL,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(
+                DismissEvent(sender.clientId, "0|com.example.chat|9|null", 1_750_000_000_000L)
+            ),
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = "01J0BATCH001",
+            seq = 1L,
+            createdAt = 1_750_000_000_000L,
+        )
+        client.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(envelope)) }
+
+        val exactPath = "/v2/relay/${envelope.messageId}"
+        val exact = client.get(exactPath) {
+            signedHeaders(recipient, "GET", exactPath, ByteArray(0))
+            header("Peek", "true")
+        }
+        val acceptedAt = exact.headers[RelayWire.ACCEPTED_AT_HEADER]?.toLongOrNull()
+        assertNotNull(acceptedAt)
+
+        val path = "/v2/relay/batch"
+        val response = client.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }
+        assertEquals(HttpStatusCode.OK, response.status)
+        val frames = decodeRelayBatch(response.readRawBytes())
+        assertEquals(listOf(RelayBatchKind.START, RelayBatchKind.ITEM, RelayBatchKind.END), frames.map { it.kind })
+        assertEquals(envelope.messageId, frames[1].messageId)
+        assertEquals(acceptedAt, frames[1].acceptedAt)
+        assertEquals(MessageType.DISMISSAL, frames[1].messageType)
+        assertEquals(1L, frames.last().itemCount)
+
+        val cutoffPath = "/v2/relay/batch?before=0"
+        val cutoffFrames = decodeRelayBatch(
+            client.get(cutoffPath) {
+                signedHeaders(recipient, "GET", cutoffPath, ByteArray(0))
+            }.readRawBytes()
+        )
+        assertEquals(listOf(RelayBatchKind.START, RelayBatchKind.END), cutoffFrames.map { it.kind })
+        assertEquals(0L, cutoffFrames.last().itemCount)
+
+        val pending = ProtocolCodec.decodeFromJson<RelayPending>(
+            client.get("/v2/relay") {
+                signedHeaders(recipient, "GET", "/v2/relay", ByteArray(0))
+            }.bodyAsText()
+        )
+        assertEquals(listOf(envelope.messageId), pending.messageIds)
     }
 
     @Test
@@ -1683,6 +1790,17 @@ class BrokerFlowTest {
             pubFile.delete()
         }
     }
+
+    private fun decodeRelayBatch(bytes: ByteArray): List<RelayBatchFrame> =
+        DataInputStream(ByteArrayInputStream(bytes)).use { input ->
+            buildList {
+                while (input.available() > 0) {
+                    val size = input.readInt()
+                    require(size in 1..RelayWire.MAX_BATCH_FRAME_BYTES)
+                    add(ProtocolCodec.decodeFromCbor(input.readNBytes(size)))
+                }
+            }
+        }
 
     private fun io.ktor.client.request.HttpRequestBuilder.signedHeaders(
         signer: IdentitySigner,

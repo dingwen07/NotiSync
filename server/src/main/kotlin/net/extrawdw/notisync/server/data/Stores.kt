@@ -9,8 +9,11 @@ import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TransportType
 import org.jetbrains.exposed.v1.core.and
 import org.jetbrains.exposed.v1.core.eq
+import org.jetbrains.exposed.v1.core.greater
 import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.less
+import org.jetbrains.exposed.v1.core.lessEq
+import org.jetbrains.exposed.v1.core.SortOrder
 import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.insertIgnore
@@ -207,32 +210,88 @@ class RouteStore(private val db: NotiSyncDb) {
     }
 }
 
-data class RelayItem(val id: Long, val messageId: String, val envelope: ByteArray, val urgency: String)
+data class RelayItem(
+    val id: Long,
+    val messageId: String,
+    val envelope: ByteArray,
+    val urgency: String,
+    val typ: String,
+    val createdAt: Long,
+)
+
+data class RelaySnapshot(
+    val snapshotAt: Long,
+    val cutoff: Long,
+    val maxId: Long,
+)
 
 class RelayStore(private val db: NotiSyncDb) {
-    suspend fun add(recipientId: ClientId, messageId: String, envelope: ByteArray, urgency: String, typ: String, expiresAt: Long) = db.tx {
-        Relay.insert {
+    suspend fun add(
+        recipientId: ClientId,
+        messageId: String,
+        envelope: ByteArray,
+        urgency: String,
+        typ: String,
+        expiresAt: Long,
+    ): RelayItem = db.tx {
+        val acceptedAt = System.currentTimeMillis()
+        val inserted = Relay.insert {
             it[Relay.recipientId] = recipientId.value
             it[Relay.messageId] = messageId
             it[envelopeB64] = b64e.encodeToString(envelope)
             it[Relay.urgency] = urgency
             it[Relay.typ] = typ
-            it[createdAt] = System.currentTimeMillis()
+            it[createdAt] = acceptedAt
             it[Relay.expiresAt] = expiresAt
         }
-        Unit
+        RelayItem(inserted[Relay.id], messageId, envelope, urgency, typ, acceptedAt)
     }
 
     suspend fun pending(recipientId: ClientId): List<RelayItem> = db.tx {
-        Relay.selectAll().where { Relay.recipientId eq recipientId.value }.map {
-            RelayItem(it[Relay.id], it[Relay.messageId], b64d.decode(it[Relay.envelopeB64]), it[Relay.urgency])
-        }
+        Relay.selectAll().where { Relay.recipientId eq recipientId.value }
+            .orderBy(Relay.id to SortOrder.ASC)
+            .map(::relayItem)
     }
 
-    /** The single queued envelope for ([recipientId], [messageId]), or null — the background-wake pull path. */
-    suspend fun getByMessage(recipientId: ClientId, messageId: String): ByteArray? = db.tx {
+    /** The single queued item for ([recipientId], [messageId]), or null — the background-wake pull path. */
+    suspend fun getByMessage(recipientId: ClientId, messageId: String): RelayItem? = db.tx {
         Relay.selectAll().where { (Relay.recipientId eq recipientId.value) and (Relay.messageId eq messageId) }
-            .firstOrNull()?.let { b64d.decode(it[Relay.envelopeB64]) }
+            .firstOrNull()?.let(::relayItem)
+    }
+
+    /** Capture a finite high-water snapshot before streaming any rows. */
+    suspend fun snapshot(recipientId: ClientId, before: Long?): RelaySnapshot = db.tx {
+        // Make the maximum recipient row id the transaction's first read. Rows committed after this
+        // point cannot leak into the finite snapshot even if the broker wall clock moves backwards.
+        val maxId = Relay.selectAll()
+            .where { Relay.recipientId eq recipientId.value }
+            .orderBy(Relay.id to SortOrder.DESC)
+            .limit(1)
+            .firstOrNull()
+            ?.get(Relay.id)
+            ?: 0L
+        val snapshotAt = System.currentTimeMillis()
+        val cutoff = before?.coerceAtMost(snapshotAt) ?: snapshotAt
+        RelaySnapshot(snapshotAt, cutoff, maxId)
+    }
+
+    /** One bounded page inside [snapshot], ordered by the relay row id for stable keyset pagination. */
+    suspend fun snapshotPage(
+        recipientId: ClientId,
+        snapshot: RelaySnapshot,
+        afterId: Long,
+        limit: Int,
+    ): List<RelayItem> = db.tx {
+        Relay.selectAll()
+            .where {
+                (Relay.recipientId eq recipientId.value) and
+                    (Relay.id greater afterId) and
+                    (Relay.id lessEq snapshot.maxId) and
+                    (Relay.createdAt lessEq snapshot.cutoff)
+            }
+            .orderBy(Relay.id to SortOrder.ASC)
+            .limit(limit)
+            .map(::relayItem)
     }
 
     /** Just the message ids queued for [recipientId] — the background-drain backstop lists then pulls each.
@@ -279,6 +338,15 @@ class RelayStore(private val db: NotiSyncDb) {
     suspend fun purgeExpired(now: Long): Int = db.tx {
         Relay.deleteWhere { Relay.expiresAt less now }
     }
+
+    private fun relayItem(row: org.jetbrains.exposed.v1.core.ResultRow): RelayItem = RelayItem(
+        id = row[Relay.id],
+        messageId = row[Relay.messageId],
+        envelope = b64d.decode(row[Relay.envelopeB64]),
+        urgency = row[Relay.urgency],
+        typ = row[Relay.typ],
+        createdAt = row[Relay.createdAt],
+    )
 }
 
 class PrivateAssetStore(private val db: NotiSyncDb) {

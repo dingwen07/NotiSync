@@ -74,12 +74,16 @@ import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
 import net.extrawdw.notisync.peer.channel.DeliveryOutcome
+import net.extrawdw.notisync.peer.channel.PreparationOutcome
+import net.extrawdw.notisync.peer.channel.PreparedInbound
 import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
+import net.extrawdw.apps.notisync.domain.isFreshCall
+import net.extrawdw.apps.notisync.domain.isRingingCall
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.notisync.peer.foundation.RotationManager
 import net.extrawdw.notisync.peer.foundation.TrustPeerDirectory
@@ -119,12 +123,17 @@ import net.extrawdw.apps.notisync.trust.DurableTrustMutations
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
+import net.extrawdw.apps.notisync.data.InboxInsertResult
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
+import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
+import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
@@ -142,6 +151,16 @@ import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.time.ZonedDateTime
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
+
+internal const val STALE_RELAY_AGE_MS = 2L * 60 * 60 * 1000
+
+internal fun shouldDeferRelayNotification(
+    acceptedAt: Long?,
+    now: Long,
+    notificationProducing: Boolean,
+    rejectedByCallFreshnessGuard: Boolean = false,
+): Boolean = notificationProducing && !rejectedByCallFreshnessGuard &&
+    acceptedAt != null && acceptedAt <= now - STALE_RELAY_AGE_MS
 
 /** Manual dependency graph. Built once in [NotiSyncApp.onCreate]; everything hangs off this. */
 /**
@@ -550,6 +569,7 @@ class AppGraph(private val app: Application) {
             peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
             activityText = activityText,
             ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
+            lifecycleStore = messageStore,
             notificationFilters = notificationFilters, // honor peers' suppression requests when forwarding
         )
         mirrorEngine = mirror
@@ -703,6 +723,12 @@ class AppGraph(private val app: Application) {
         // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
         // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
         RelayDrainWorker.schedulePeriodic(app)
+        if (messageStore.hasInbox()) {
+            val delay = if (messageStore.hasDeferredInbox()) {
+                RelayDrainWorker.remainingDeferredQuietDelay(messageStore.lastDeferredAt())
+            } else 1L
+            RelayDrainWorker.scheduleAfterDeferredQuiet(app, delay)
+        }
         // Time-driven epoch upkeep (converge peer key-epochs; with ENABLE_ROTATION also initiate + advance
         // rotation) — the message-independent guarantee a quiet device still rotates. See the worker doc.
         EpochMaintenanceWorker.schedulePeriodic(app)
@@ -763,6 +789,77 @@ class AppGraph(private val app: Application) {
         }
     }
 
+    /**
+     * Shared FCM/WebSocket/worker receive gate. Broker-old notification payloads are authenticated and
+     * decrypted first, then persisted without dispatch; all other messages keep the normal inline path.
+     */
+    fun deliverInbound(
+        envelope: Envelope,
+        deliveryMode: DeliveryMode,
+        acceptedAt: Long? = null,
+    ): DeliveryOutcome {
+        val channel = secureChannel ?: return DeliveryOutcome.DROPPED
+        return when (val outcome = channel.prepare(envelope, deliveryMode, acceptedAt)) {
+            PreparationOutcome.Duplicate -> DeliveryOutcome.DUPLICATE
+            PreparationOutcome.Dropped -> DeliveryOutcome.DROPPED
+            is PreparationOutcome.Ready -> {
+                val now = System.currentTimeMillis()
+                val notification = notificationPayload(outcome.prepared)
+                val staleRingingCall = notification?.let { it.isRingingCall() && !it.isFreshCall(now) } == true
+                if (!shouldDeferRelayNotification(
+                        acceptedAt = acceptedAt,
+                        now = now,
+                        notificationProducing = notification != null,
+                        rejectedByCallFreshnessGuard = staleRingingCall,
+                    )
+                ) {
+                    channel.deliverPrepared(outcome.prepared)
+                } else {
+                    when (
+                        messageStore.stageDeferred(
+                            messageId = envelope.messageId,
+                            envelope = ProtocolCodec.encodeToCbor(envelope),
+                            acceptedAt = requireNotNull(acceptedAt),
+                            deliveryMode = deliveryMode,
+                        )
+                    ) {
+                        InboxInsertResult.INSERTED -> {
+                            RelayDrainWorker.scheduleAfterDeferredQuiet(app)
+                            // The cache commit and pending-ack insert are already durable. Try the broker now;
+                            // failure leaves the id in pending_ack for the drain/periodic recovery path.
+                            scope.launch { flushOnePendingAckBatch() }
+                            DeliveryOutcome.DEFERRED
+                        }
+                        InboxInsertResult.EXISTS -> DeliveryOutcome.DEFERRED
+                        InboxInsertResult.FAILED -> DeliveryOutcome.DROPPED
+                    }
+                }
+            }
+        }
+    }
+
+    private fun notificationPayload(prepared: PreparedInbound): CapturedNotification? {
+        val msg = prepared.message
+        if (!msg.senderOwnDevice) return null
+        return when (msg.typ) {
+            MessageType.NOTIFICATION -> runCatching {
+                ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
+            }.getOrNull()
+            MessageType.DATA_SYNC -> runCatching {
+                ProtocolCodec.decodeFromCbor<DataSync>(msg.body)
+            }.getOrNull()?.takeIf { it.kind == DataSyncKind.NOTIFICATION }?.notification
+            MessageType.DISMISSAL, MessageType.ACTION -> null
+        }
+    }
+
+    private suspend fun flushOnePendingAckBatch() {
+        val ids = messageStore.pendingAcks()
+        if (ids.isEmpty()) return
+        if (runCatching { transport.ackRelayMessages(ids) }.getOrDefault(false)) {
+            messageStore.clearAcks(ids)
+        }
+    }
+
     /** Foreground only: refresh our key-epoch on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
         // Also retry after notification permission is granted while the process remains alive.
@@ -776,10 +873,11 @@ class AppGraph(private val app: Application) {
             // Between rotations anti-entropy includes our own epoch; while staged, RotationManager owns that
             // certificate. Material for third peers is returned by targeted CARD.
             runCatching { foundationEngine?.broadcastTrust() }
-            transport.runLiveDelivery {
-                when (secureChannel?.deliver(it, DeliveryMode.WEBSOCKET)) {
-                    DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> LiveDeliveryDisposition.ACK
-                    DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED, null -> LiveDeliveryDisposition.RETRY
+            transport.runLiveDeliveryWithMetadata { envelope, acceptedAt ->
+                when (deliverInbound(envelope, DeliveryMode.WEBSOCKET, acceptedAt)) {
+                    DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE, DeliveryOutcome.DEFERRED ->
+                        LiveDeliveryDisposition.ACK
+                    DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED -> LiveDeliveryDisposition.RETRY
                 }
             }
         }
@@ -1302,7 +1400,7 @@ class AppGraph(private val app: Application) {
      */
     fun onInlineDelivered(messageId: String, outcome: DeliveryOutcome) {
         val ackable = when (outcome) {
-            DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE -> true
+            DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE, DeliveryOutcome.DEFERRED -> true
             DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED -> false
         }
         if (ackable) runCatching { messageStore.enqueueAck(messageId) }

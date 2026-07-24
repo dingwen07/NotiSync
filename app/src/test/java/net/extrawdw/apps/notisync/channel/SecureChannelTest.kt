@@ -276,6 +276,45 @@ class SecureChannelTest {
     }
 
     @Test
+    fun prepareAuthenticatesWithoutDispatchOrDedup_untilPreparedDeliveryCommits() {
+        val me = newSigner()
+        val myHpke = newHpke()
+        val sender = newSigner()
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset))
+        }
+        val dedup = FakeDedup()
+        val channel = testChannel(me, myHpke.privateKeyset, trust, dedup = dedup)
+        var handled = 0
+        var deliveredSilently = false
+        channel.onMessage(MessageType.NOTIFICATION) {
+            handled++
+            deliveredSilently = it.forceSilent
+        }
+        val envelope = seal(
+            sender,
+            MessageType.NOTIFICATION,
+            byteArrayOf(4, 2),
+            me.clientId,
+            myHpke.publicKeyset,
+            "prepared-message",
+        )
+
+        val result = channel.prepare(envelope, acceptedAt = 123L)
+        assertTrue(result is net.extrawdw.notisync.peer.channel.PreparationOutcome.Ready)
+        val prepared = (result as net.extrawdw.notisync.peer.channel.PreparationOutcome.Ready).prepared
+        assertEquals(0, handled)
+        assertFalse(dedup.seen(envelope.messageId))
+        assertEquals(123L, prepared.message.acceptedAt)
+
+        assertEquals(DeliveryOutcome.HANDLED, channel.deliverPrepared(prepared, forceSilent = true))
+        assertEquals(1, handled)
+        assertTrue(deliveredSilently)
+        assertTrue(dedup.seen(envelope.messageId))
+    }
+
+    @Test
     fun retryableHandlerFailure_isNotAcknowledgedOrDeduplicated() {
         val me = newSigner()
         val myHpke = newHpke()
