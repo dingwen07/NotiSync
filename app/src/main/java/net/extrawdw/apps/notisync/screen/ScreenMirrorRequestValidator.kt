@@ -33,11 +33,9 @@ object ScreenMirrorRequestValidator {
 
         val expiresAt = request.expiresAt ?: return invalid("missing expiry")
         if (
-            request.issuedAt <= 0 || envelopeCreatedAt <= 0 || expiresAt <= request.issuedAt ||
-            expiresAt - request.issuedAt > MAX_REQUEST_LIFETIME_MS ||
+            !validRequestTimeWindow(request.issuedAt, expiresAt, now) || envelopeCreatedAt <= 0 ||
             abs(envelopeCreatedAt - request.issuedAt) > MAX_ENVELOPE_TIMESTAMP_DELTA_MS ||
-            abs(envelopeCreatedAt - now) > MAX_CLOCK_SKEW_MS ||
-            request.issuedAt > now + MAX_CLOCK_SKEW_MS || now >= expiresAt
+            abs(envelopeCreatedAt - now) > MAX_CLOCK_SKEW_MS
         ) {
             return ScreenMirrorValidationFailure(ScreenMirrorStatus.EXPIRED, "expired or invalid timestamp")
         }
@@ -62,6 +60,14 @@ object ScreenMirrorRequestValidator {
         }
         return null
     }
+
+    /** Shared signed-lifetime check used by validation and durable replay consumption. */
+    internal fun validRequestTimeWindow(issuedAt: Long, expiresAt: Long, now: Long): Boolean =
+        issuedAt > 0 &&
+            expiresAt > issuedAt &&
+            expiresAt - issuedAt <= MAX_REQUEST_LIFETIME_MS &&
+            issuedAt <= now + MAX_CLOCK_SKEW_MS &&
+            now < expiresAt
 
     internal fun validCandidate(candidate: ScreenMirrorConnectionCandidate): Boolean = when (candidate.kind) {
         ScreenMirrorConnectionCandidate.LAN_TCP ->

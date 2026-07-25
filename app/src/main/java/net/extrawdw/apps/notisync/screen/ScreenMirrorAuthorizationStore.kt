@@ -101,12 +101,14 @@ class ScreenMirrorAuthorizationStore(
     fun consumeRequest(
         sessionId: String,
         routingToken: ByteArray,
+        issuedAt: Long,
         expiresAt: Long,
         now: Long,
     ): Boolean = synchronized(lock) {
         if (
             sessionId.isBlank() || sessionId.length > 128 || sessionId.any(Char::isISOControl) ||
-            routingToken.size != 16 || expiresAt <= now || expiresAt - now > MAX_REQUEST_LIFETIME_MS
+            routingToken.size != 16 ||
+            !ScreenMirrorRequestValidator.validRequestTimeWindow(issuedAt, expiresAt, now)
         ) return@synchronized false
         if (_replayStateHealth.value != ScreenReplayStateHealth.HEALTHY) {
             throw ScreenReplayStateUnavailableException("screen replay state is quarantined")
@@ -265,7 +267,6 @@ class ScreenMirrorAuthorizationStore(
     private companion object {
         const val MAX_REPLAY_ROWS = 512
         const val ROWS_PER_REQUEST = 2
-        const val MAX_REQUEST_LIFETIME_MS = 5L * 60 * 1000
         const val SHA256_BASE64URL_LENGTH = 43
         const val BASE64URL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         val SESSION_REPLAY_DOMAIN = "notisync-screen/replay/v1/session\u0000".toByteArray(Charsets.UTF_8)

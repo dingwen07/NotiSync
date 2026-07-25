@@ -36,19 +36,34 @@ class ScreenMirrorAuthorizationStoreTest {
         assertFalse(repository.isAuthorized(peer))
         repository.setAuthorized(peer, true)
         assertTrue(repository.isAuthorized(peer))
-        assertTrue(repository.consumeRequest("session-secret-name", token, 20_000L, 10_000L))
-        assertFalse(repository.consumeRequest("session-secret-name", token, 20_000L, 10_001L))
-        assertFalse(repository.consumeRequest("session-secret-name", ByteArray(16) { 8 }, 20_000L, 10_002L))
-        assertFalse(repository.consumeRequest("different-session", token, 20_000L, 10_003L))
-        assertTrue(
-            repository.consumeRequest("fresh-session", ByteArray(16) { 9 }, 20_000L, 10_004L),
+        assertTrue(repository.consumeRequest("session-secret-name", token, 10_000L, 20_000L, 10_000L))
+        assertFalse(repository.consumeRequest("session-secret-name", token, 10_000L, 20_000L, 10_001L))
+        assertFalse(
+            repository.consumeRequest(
+                "session-secret-name",
+                ByteArray(16) { 8 },
+                10_000L,
+                20_000L,
+                10_002L,
+            ),
         )
-        assertFalse(repository.consumeRequest("expired", ByteArray(16), 10_004L, 10_004L))
-        assertFalse(repository.consumeRequest("bad-token", ByteArray(15), 20_000L, 10_004L))
+        assertFalse(repository.consumeRequest("different-session", token, 10_000L, 20_000L, 10_003L))
+        assertTrue(
+            repository.consumeRequest(
+                "fresh-session",
+                ByteArray(16) { 9 },
+                10_000L,
+                20_000L,
+                10_004L,
+            ),
+        )
+        assertFalse(repository.consumeRequest("expired", ByteArray(16), 10_000L, 10_004L, 10_004L))
+        assertFalse(repository.consumeRequest("bad-token", ByteArray(15), 10_000L, 20_000L, 10_004L))
         assertFalse(
             repository.consumeRequest(
                 "too-far",
                 ByteArray(16) { 3 },
+                10_004L,
                 10_004L + 5L * 60 * 1000 + 1,
                 10_004L,
             ),
@@ -87,12 +102,12 @@ class ScreenMirrorAuthorizationStoreTest {
         assertNull(quarantined[replayKey])
         assertNotNull(quarantined[stringPreferencesKey("screen_mirror_request_replay_v1_quarantine_digest")])
         assertThrows(ScreenReplayStateUnavailableException::class.java) {
-            repository.consumeRequest("session", ByteArray(16) { 1 }, 20_000, 10_000)
+            repository.consumeRequest("session", ByteArray(16) { 1 }, 10_000, 20_000, 10_000)
         }
 
         repository.repairReplayState()
         assertEquals(ScreenReplayStateHealth.HEALTHY, repository.replayStateHealth.value)
-        assertTrue(repository.consumeRequest("session", ByteArray(16) { 1 }, 20_000, 10_000))
+        assertTrue(repository.consumeRequest("session", ByteArray(16) { 1 }, 10_000, 20_000, 10_000))
     }
 
     @Test
@@ -106,11 +121,43 @@ class ScreenMirrorAuthorizationStoreTest {
         failing.failUpdates = true
 
         assertThrows(ScreenReplayStateUnavailableException::class.java) {
-            repository.consumeRequest("session", ByteArray(16) { 2 }, 20_000, 10_000)
+            repository.consumeRequest("session", ByteArray(16) { 2 }, 10_000, 20_000, 10_000)
         }
 
         failing.failUpdates = false
-        assertTrue(repository.consumeRequest("session", ByteArray(16) { 2 }, 20_000, 10_001))
+        assertTrue(repository.consumeRequest("session", ByteArray(16) { 2 }, 10_000, 20_000, 10_001))
+    }
+
+    @Test
+    fun requesterClockAheadWithinValidatorSkew_isConsumedOnce() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val file = File.createTempFile("screen-auth-skew-${System.nanoTime()}", ".preferences_pb")
+            .also { it.delete() }
+        val dataStore: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
+        val repository = ScreenMirrorAuthorizationStore(dataStore)
+        val sourceNow = 10_000L
+        val requesterIssuedAt = sourceNow + 1_700L
+        val expiresAt = requesterIssuedAt + ScreenMirrorRequestValidator.MAX_REQUEST_LIFETIME_MS
+        val token = ByteArray(16) { 3 }
+
+        assertTrue(
+            repository.consumeRequest(
+                "clock-skewed-session",
+                token,
+                requesterIssuedAt,
+                expiresAt,
+                sourceNow,
+            ),
+        )
+        assertFalse(
+            repository.consumeRequest(
+                "clock-skewed-session",
+                token,
+                requesterIssuedAt,
+                expiresAt,
+                sourceNow + 1,
+            ),
+        )
     }
 
     @Test

@@ -55,6 +55,26 @@ class ScreenMirrorRequestValidatorTest {
     }
 
     @Test
+    fun requesterClockAheadWithinAllowedSkew_isAccepted() {
+        val requesterIssuedAt = now + 1_700L
+        assertNull(
+            ScreenMirrorRequestValidator.validate(
+                request(
+                    issuedAt = requesterIssuedAt,
+                    expiresAt = requesterIssuedAt +
+                        ScreenMirrorRequestValidator.MAX_REQUEST_LIFETIME_MS,
+                ),
+                requester,
+                source,
+                requesterIssuedAt,
+                now,
+                authorized = true,
+                codecAvailable = true,
+            ),
+        )
+    }
+
+    @Test
     fun authenticatedSenderMustMatchRequest() {
         val failure = ScreenMirrorRequestValidator.validate(
             request(), ClientId("different"), source, now, now,

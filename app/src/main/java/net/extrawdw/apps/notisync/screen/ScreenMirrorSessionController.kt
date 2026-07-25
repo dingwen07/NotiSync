@@ -233,7 +233,7 @@ class ScreenMirrorSessionController(
         val token = requireNotNull(request.routingToken)
         val expiry = requireNotNull(request.expiresAt)
         val consumed = try {
-            authorizations.consumeRequest(request.sessionId, token, expiry, now())
+            authorizations.consumeRequest(request.sessionId, token, request.issuedAt, expiry, now())
         } catch (error: ScreenReplayStateUnavailableException) {
             request.destroySecrets()
             throw RetryableDeliveryException("screen replay state is unavailable", error)
