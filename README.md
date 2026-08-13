@@ -20,14 +20,14 @@ Kotlin/Ktor broker, so the wire format and signature verification can never drif
                   derivation. Shared verbatim by client and server.
 :peer-core        Shared JVM peer engine: secure channel, signed trust store and convergence,
                   pairing, key rotation, broker HTTP/WebSocket client, and platform ports.
-:protocol-local   JVM-only JSON DTOs for the local Unix-socket API.
-:local-client     Reusable Unix-socket client, streaming, autostart, platform paths, and private
+:protocol-local   JVM-only JSON DTOs for the local AF_UNIX API.
+:local-client     Reusable AF_UNIX client, streaming, autostart, platform paths, and private
                   file helpers for desktop applications.
 :nsrun            Standalone NotiSync Run client: command supervision, terminal integration,
                   private Run configuration/logs, and daemon reporting.
-:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon
-                  and the `notisync` peer-management CLI; its runtime distribution also composes
-                  the standalone `:nsrun` launcher.
+:notisyncd        JVM 21 desktop distribution containing the `notisyncd` peer daemon and the
+                  `notisync` peer-management CLI; POSIX distributions also compose `:nsrun` and
+                  `nsscreen`.
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
@@ -116,8 +116,13 @@ bounded delivery feedback, and broker-side stale-delta dropping. It does not dep
 
 ### Desktop daemon and NotiSync Run
 
-NotiSync Desktop supports Linux and macOS and requires JDK 21. On macOS, install Xcode Command Line
-Tools as well. Install the `notisyncd`, `notisync`, and `nsrun` commands for the current user:
+NotiSync Desktop supports Linux, macOS, and Windows and requires JDK 21. On macOS, install Xcode
+Command Line Tools as well. The `notisyncd` daemon and `notisync` CLI use the local AF_UNIX API on
+all three platforms. `nsrun` and `nsscreen` remain POSIX-only and are not included in Windows
+distributions. Windows supports the administrative and send endpoints; process-leased local
+`/v1/receive` registration remains unavailable because Windows AF_UNIX does not expose verified peer
+credentials. This does not affect the daemon's encrypted broker receive path. On POSIX, install the
+desktop commands for the current user:
 
 ```bash
 git clone https://github.com/dingwen07/NotiSync.git
@@ -189,10 +194,12 @@ notisync applications remove nsrun   # remove a stale local-app registration
 notisync daemon stop
 ```
 
-Configuration and private daemon data live in `~/.notisync/`. Daemon logs use the platform's user log
-location: `~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
+Configuration and private daemon data live in `~/.notisync/` on POSIX and under the user's local
+application-data directory on Windows. Daemon logs use the platform's user log location:
+`~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
 `$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
-`~/.local/state/notisync/log/notisyncd.log`. Use `notisync applications list` to inspect persistent
+`~/.local/state/notisync/log/notisyncd.log`; Windows keeps them under the daemon data directory.
+Use `notisync applications list` to inspect persistent
 local-application registrations and `notisync applications remove APPLICATION_ID` to clean up one
 that is no longer used. Log lines include an ISO-8601
 timestamp, severity, and thread name; the default level is `WARN` and can be changed with

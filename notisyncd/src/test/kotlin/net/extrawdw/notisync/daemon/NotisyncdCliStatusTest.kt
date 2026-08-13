@@ -45,7 +45,7 @@ class NotisyncdCliStatusTest {
     }
 
     private fun withTemporaryRoot(block: (Path) -> Unit) {
-        val root = Files.createTempDirectory(Path.of("/private/tmp"), "notisyncd-status-")
+        val root = Files.createTempDirectory(Path.of(System.getProperty("java.io.tmpdir")).toRealPath(), "notisyncd-status-")
         try {
             block(root)
         } finally {

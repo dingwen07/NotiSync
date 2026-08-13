@@ -18,7 +18,7 @@ class DaemonAutostarter(
         val executable = executableResolver()
             ?: throw IllegalStateException("notisyncd is not running and its executable was not found")
         val process = ProcessBuilder(executable.toString(), "start")
-            .redirectInput(ProcessBuilder.Redirect.from(Path.of("/dev/null").toFile()))
+            .redirectInput(ProcessBuilder.Redirect.from(nullDevice()))
             .redirectOutput(ProcessBuilder.Redirect.DISCARD)
             .redirectError(ProcessBuilder.Redirect.DISCARD)
             .start()
@@ -41,10 +41,10 @@ class DaemonAutostarter(
 
 private fun resolveNotisyncdExecutable(): Path? {
     System.getProperty("notisyncd.executable")?.let { configured ->
-        Path.of(configured).takeIf(Files::isExecutable)?.let { return it }
+        Path.of(configured).takeIf(::isLauncherFile)?.let { return it }
     }
     ProcessHandle.current().info().command().orElse(null)?.let { current ->
-        Path.of(current).parent?.resolve("notisyncd")?.takeIf(Files::isExecutable)?.let { return it }
+        Path.of(current).parent?.let(::findLauncher)?.let { return it }
     }
     // Gradle's application scripts exec java, so ProcessHandle points at the JVM rather than bin/nsrun.
     // In an installed distribution the code source is lib/<jar>; resolve the sibling bin launcher.
@@ -52,12 +52,24 @@ private fun resolveNotisyncdExecutable(): Path? {
         val location = DaemonAutostarter::class.java.protectionDomain.codeSource.location.toURI()
         val codeSource = Path.of(location)
         val distribution = if (Files.isDirectory(codeSource)) codeSource else codeSource.parent?.parent
-        distribution?.resolve("bin/notisyncd")?.takeIf(Files::isExecutable)
+        distribution?.resolve("bin")?.let(::findLauncher)
     }.getOrNull()?.let { return it }
     val path = System.getenv("PATH").orEmpty()
     for (directory in path.split(java.io.File.pathSeparatorChar)) {
         if (directory.isBlank()) continue
-        Path.of(directory).resolve("notisyncd").takeIf(Files::isExecutable)?.let { return it }
+        findLauncher(Path.of(directory))?.let { return it }
     }
     return null
 }
+
+private fun findLauncher(directory: Path): Path? = listOf("notisyncd", "notisyncd.bat", "notisyncd.cmd")
+    .asSequence()
+    .map(directory::resolve)
+    .firstOrNull(::isLauncherFile)
+
+private fun isLauncherFile(path: Path): Boolean =
+    Files.isRegularFile(path) && (Files.isExecutable(path) || isWindows())
+
+private fun isWindows(): Boolean = System.getProperty("os.name").contains("windows", ignoreCase = true)
+
+private fun nullDevice(): java.io.File = if (isWindows()) Path.of("NUL").toFile() else Path.of("/dev/null").toFile()

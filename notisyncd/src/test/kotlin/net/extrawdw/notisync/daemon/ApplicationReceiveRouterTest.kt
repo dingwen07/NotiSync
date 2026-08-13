@@ -372,7 +372,7 @@ class ApplicationReceiveRouterTest {
         assertEquals(7, record.signerEpoch)
         assertEquals(DeliveryMode.WEBSOCKET.name, record.deliveryMode)
         assertEquals(1_234, record.receivedAtEpochMillis)
-        assertEquals(777, record.envelopeCreatedAtEpochMillis)
+        assertEquals(777L, record.envelopeCreatedAtEpochMillis)
     }
 
     @Test

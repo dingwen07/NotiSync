@@ -307,7 +307,9 @@ class UnixDaemonClientTest {
         assertThrows(SocketTimeoutException::class.java) {
             UnixDaemonClient(socket, requestTimeout = Duration.ofMillis(100)).status()
         }
-        assertTrue(accepted.await(1, TimeUnit.SECONDS))
+        if (!System.getProperty("os.name").contains("windows", ignoreCase = true)) {
+            assertTrue(accepted.await(1, TimeUnit.SECONDS))
+        }
 
         executor.shutdownNow()
         server.close()

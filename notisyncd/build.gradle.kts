@@ -15,6 +15,10 @@ kotlin {
     jvmToolchain(21)
 }
 
+private val hostOsName = System.getProperty("os.name").lowercase()
+private val isMacOs = hostOsName.let { it.contains("mac") || it.contains("darwin") }
+private val isWindows = hostOsName.contains("windows")
+
 dependencies {
     implementation(project(":protocol-local"))
     implementation(project(":local-client"))
@@ -27,14 +31,16 @@ dependencies {
     implementation(libs.zxing.core)
 
     implementation(libs.jna)
-    runtimeOnly(project(":nsrun"))
-    runtimeOnly(project(":nsscreen"))
+    if (!isWindows) {
+        // nsrun and nsscreen remain POSIX-only; the Windows distribution is daemon/CLI only.
+        runtimeOnly(project(":nsrun"))
+        runtimeOnly(project(":nsscreen"))
+    }
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
 }
 
-private val isMacOs = System.getProperty("os.name").lowercase().let { it.contains("mac") || it.contains("darwin") }
 private val launcherDirectory = if (isMacOs) "libexec" else "bin"
 private val defaultJvmOptions = listOf("--enable-native-access=ALL-UNNAMED")
 private val daemonJvmOptions = defaultJvmOptions + listOf(
@@ -57,10 +63,15 @@ private data class DesktopLauncher(
 )
 
 private val additionalLaunchers = listOf(
-    DesktopLauncher("nsrun", "net.extrawdw.notisync.run.NSRunMainKt"),
-    DesktopLauncher("nsscreen", "net.extrawdw.notisync.screen.desktop.NSScreenMainKt"),
     DesktopLauncher("notisync", "net.extrawdw.notisync.cli.NotisyncMainKt"),
-)
+) + if (isWindows) {
+    emptyList()
+} else {
+    listOf(
+        DesktopLauncher("nsrun", "net.extrawdw.notisync.run.NSRunMainKt"),
+        DesktopLauncher("nsscreen", "net.extrawdw.notisync.screen.desktop.NSScreenMainKt"),
+    )
+}
 
 private val screenHelperBinary = project(":nsscreen").layout.buildDirectory.file("native/notisync-screen-helper")
 private val screenReleaseRuntime = project(":nsscreen").layout.buildDirectory.dir("release-runtime/current")
@@ -121,10 +132,12 @@ distributions {
                     }
                 }
             }
-            from(screenHelperBinary) {
-                into("bin")
-                filePermissions {
-                    unix("rwxr-xr-x")
+            if (!isWindows) {
+                from(screenHelperBinary) {
+                    into("bin")
+                    filePermissions {
+                        unix("rwxr-xr-x")
+                    }
                 }
             }
             from(rootProject.layout.projectDirectory.file("SCREEN_MIRRORING_THIRD_PARTY.md")) {
@@ -162,7 +175,11 @@ distributions {
 // They never compile against or copy multimedia packages from the host. The nsscreen release task
 // consumes a validated immutable cache, building it from explicitly supplied source archives only
 // on a cache miss.
-private val screenReleaseOs = if (isMacOs) "macos" else "linux"
+private val screenReleaseOs = when {
+    isMacOs -> "macos"
+    isWindows -> "windows"
+    else -> "linux"
+}
 private val screenReleaseArch = System.getProperty("os.arch").lowercase().let { architecture ->
     when (architecture) {
         "aarch64", "arm64" -> "arm64"
@@ -288,11 +305,15 @@ private val installDirectory = layout.buildDirectory.dir("install/notisyncd").ge
 
 listOf("installDist", "distZip", "distTar").forEach { taskName ->
     tasks.named(taskName) {
-        dependsOn(":nsscreen:compileScreenHelper")
+        if (!isWindows) dependsOn(":nsscreen:compileScreenHelper")
     }
 }
 
-private val launcherSmokeTasks = listOf("notisyncd", "nsrun", "nsscreen", "notisync").map { launcher ->
+private val launcherSmokeTasks = (listOf("notisyncd", "notisync") + if (isWindows) {
+    emptyList()
+} else {
+    listOf("nsrun", "nsscreen")
+}).map { launcher ->
     val installedExecutable = installDirectory.resolve("bin/$launcher")
     val smokeDataDirectory = layout.buildDirectory.dir("tmp/launcher-smoke/$launcher").get().asFile
     tasks.register<Exec>("smoke${launcher.replaceFirstChar(Char::uppercaseChar)}Launcher") {
@@ -326,7 +347,7 @@ val smokeScreenHelper = tasks.register<Exec>("smokeScreenHelper") {
 }
 
 tasks.named("smokeInstallDist") {
-    dependsOn(smokeScreenHelper)
+    if (!isWindows) dependsOn(smokeScreenHelper)
 }
 
 tasks.test {

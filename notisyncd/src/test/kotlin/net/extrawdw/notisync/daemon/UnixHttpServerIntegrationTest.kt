@@ -47,6 +47,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeFalse
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class UnixHttpServerIntegrationTest {
@@ -78,11 +80,12 @@ class UnixHttpServerIntegrationTest {
             val accessLines = fixture.logs.lines()
             val patchAccess = accessLines.single { it.contains("\"PATCH /v1/config HTTP/1.1\"") }
             assertTrue(patchAccess.contains("INFO [notisyncd-http-"))
-            assertTrue(
-                patchAccess.contains(
-                    "pid=${ProcessHandle.current().pid()} process=",
-                ),
-            )
+            val expectedPid = if (System.getProperty("os.name").contains("windows", ignoreCase = true)) {
+                "unknown"
+            } else {
+                ProcessHandle.current().pid().toString()
+            }
+            assertTrue(patchAccess.contains("pid=$expectedPid process="))
             assertTrue(patchAccess.contains(" executable="))
             assertTrue(Regex(".* \\\"PATCH /v1/config HTTP/1\\.1\\\" 200 \\d+ms$").matches(patchAccess))
             assertFalse(patchAccess.contains("->"))
@@ -310,7 +313,11 @@ class UnixHttpServerIntegrationTest {
         }
 
     @Test
-    fun `receive sockets fan out while ack completion and interest deletion are application scoped`() =
+    fun `receive sockets fan out while ack completion and interest deletion are application scoped`() {
+        assumeFalse(
+            "Windows AF_UNIX does not expose verified peer PIDs",
+            System.getProperty("os.name").contains("windows", ignoreCase = true),
+        )
         ServerFixture().use { fixture ->
             fixture.start()
             val client = UnixDaemonClient(fixture.paths.socket)
@@ -353,6 +360,26 @@ class UnixHttpServerIntegrationTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun `Windows receive registration fails closed without kernel verified peer credentials`() {
+        assumeTrue(
+            "Windows-only AF_UNIX credential boundary",
+            System.getProperty("os.name").contains("windows", ignoreCase = true),
+        )
+        ServerFixture().use { fixture ->
+            fixture.start()
+            val client = UnixDaemonClient(fixture.paths.socket)
+            client.putApplication("receiver", ApplicationRegistrationRequest("Windows receiver"))
+
+            val failure = assertThrows(LocalApiException::class.java) {
+                client.openReceive(ReceiveRequest("receiver")).use { }
+            }
+            assertEquals(400, failure.status)
+            assertTrue(failure.message.orEmpty().contains("kernel-verified pid and process start time"))
+        }
+    }
 
     @Test
     fun `shutdown response closes listener without waiting on its own request worker`() =
@@ -385,7 +412,10 @@ class UnixHttpServerIntegrationTest {
 
     private class ServerFixture(
         // macOS limits sockaddr_un paths to 104 bytes; the Gradle temp root is much longer.
-        val root: Path = Files.createTempDirectory(Path.of("/private/tmp"), "nsuds-").toRealPath(),
+        val root: Path = Files.createTempDirectory(
+            Path.of(System.getProperty("java.io.tmpdir")).toRealPath(),
+            "nsuds-",
+        ).toRealPath(),
         private val maxHeaderBytes: Int = 64 * 1024,
         private val maxBodyBytes: Int = 1024 * 1024,
     ) : AutoCloseable {
