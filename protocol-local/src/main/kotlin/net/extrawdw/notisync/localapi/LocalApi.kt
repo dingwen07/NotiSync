@@ -179,7 +179,7 @@ data class MessageFilter(
     val acceptedValues: List<JsonElement>,
 )
 
-/** A canonical interest is associated with the caller's OS process lease, not a client-supplied id. */
+/** A canonical interest is associated with the caller's platform lease, not a client-supplied id. */
 @Serializable
 data class ReceiveRequest(
     val applicationId: String,

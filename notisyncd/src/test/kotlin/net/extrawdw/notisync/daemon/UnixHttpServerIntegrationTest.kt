@@ -47,7 +47,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
-import org.junit.Assume.assumeFalse
 import org.junit.Assume.assumeTrue
 import org.junit.Test
 
@@ -314,10 +313,6 @@ class UnixHttpServerIntegrationTest {
 
     @Test
     fun `receive sockets fan out while ack completion and interest deletion are application scoped`() {
-        assumeFalse(
-            "Windows AF_UNIX does not expose verified peer PIDs",
-            System.getProperty("os.name").contains("windows", ignoreCase = true),
-        )
         ServerFixture().use { fixture ->
             fixture.start()
             val client = UnixDaemonClient(fixture.paths.socket)
@@ -363,7 +358,7 @@ class UnixHttpServerIntegrationTest {
     }
 
     @Test
-    fun `Windows receive registration fails closed without kernel verified peer credentials`() {
+    fun `Windows receive trusts the owner-only socket without peer process verification`() {
         assumeTrue(
             "Windows-only AF_UNIX credential boundary",
             System.getProperty("os.name").contains("windows", ignoreCase = true),
@@ -372,12 +367,17 @@ class UnixHttpServerIntegrationTest {
             fixture.start()
             val client = UnixDaemonClient(fixture.paths.socket)
             client.putApplication("receiver", ApplicationRegistrationRequest("Windows receiver"))
+            val interest = ReceiveRequest("receiver", messageTypes = listOf(MessageType.NOTIFICATION))
 
-            val failure = assertThrows(LocalApiException::class.java) {
-                client.openReceive(ReceiveRequest("receiver")).use { }
+            client.openReceive(interest).use { stream ->
+                assertEquals(1, fixture.receiver.interestCount("receiver"))
+                assertTrue(fixture.receiver.accept(fixture.inbound("windows-receive", byteArrayOf(7))))
+                assertEquals("windows-receive", stream.next()?.envelopeId)
+                client.ack("receiver", "windows-receive")
             }
-            assertEquals(400, failure.status)
-            assertTrue(failure.message.orEmpty().contains("kernel-verified pid and process start time"))
+            assertEquals(1, fixture.receiver.interestCount("receiver"))
+            client.unregisterReceive(interest)
+            assertEquals(0, fixture.receiver.interestCount("receiver"))
         }
     }
 

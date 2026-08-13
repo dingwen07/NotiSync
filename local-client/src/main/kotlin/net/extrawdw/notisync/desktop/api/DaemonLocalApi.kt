@@ -60,7 +60,7 @@ interface DaemonLocalApi {
 
     fun openReceive(request: ReceiveRequest): ReceiveStream
 
-    /** Removes this process's exact canonical interest without requiring a stream identifier. */
+    /** Removes this local principal's exact canonical interest without requiring a stream identifier. */
     fun unregisterReceive(request: ReceiveRequest)
 
     fun ack(applicationId: String, envelopeId: String)

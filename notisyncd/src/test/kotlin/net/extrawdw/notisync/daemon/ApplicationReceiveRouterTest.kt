@@ -122,6 +122,33 @@ class ApplicationReceiveRouterTest {
     }
 
     @Test
+    fun `unverified receive is allowed only for the Windows same-user boundary`() {
+        val unverifiedPeer = LocalPeer(uid = -1, pid = null, startTime = null)
+        val livenessChecks = AtomicInteger()
+        val windowsRouter = router(
+            identityResolver = ProcessIdentityResolver(osName = "windows 11"),
+            processStillMatches = {
+                livenessChecks.incrementAndGet()
+                false
+            },
+        )
+        val request = ReceiveRequest("app", messageTypes = listOf(MessageType.DATA_SYNC))
+        val handle = windowsRouter.open(unverifiedPeer, request)
+
+        assertEquals(0, windowsRouter.cleanupDeadProcesses())
+        assertEquals(0, livenessChecks.get())
+        assertEquals(1, windowsRouter.interestCount("app"))
+        assertTrue(windowsRouter.accept(dataSyncInbound("windows", DataSync(DataSyncKind.PROFILE))))
+        assertEquals("windows", handle.pollRecord()?.envelopeId)
+        assertTrue(windowsRouter.unregister(unverifiedPeer, request))
+
+        val posixRouter = router(identityResolver = ProcessIdentityResolver(osName = "Linux"))
+        assertThrows(IllegalArgumentException::class.java) {
+            posixRouter.open(unverifiedPeer, request)
+        }
+    }
+
+    @Test
     fun `message type target allows every notification but filters data sync`() {
         val router = router()
         val handle = router.open(
@@ -498,9 +525,10 @@ class ApplicationReceiveRouterTest {
         maximumPending: Int = ApplicationReceiveRouter.DEFAULT_MAXIMUM_PENDING_PER_APPLICATION,
         projector: InboundBodyProjector = ProtocolInboundBodyProjector,
         processStillMatches: (LocalPeer) -> Boolean = { true },
+        identityResolver: ProcessIdentityResolver = resolver,
     ) = ApplicationReceiveRouter(
         applications = RegisteredApplicationLookup { it in registered },
-        identityResolver = resolver,
+        identityResolver = identityResolver,
         clock = clock,
         maximumPendingPerApplication = maximumPending,
         projector = projector,
