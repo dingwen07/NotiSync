@@ -107,7 +107,17 @@ class NotisyncGpgCommand(
                 if (runCatching { GitCommitPayloadParser.parse(payload) }.isFailure) {
                     return ProcessExecution.delegate(config.realGpgPath, arguments, payload)
                 }
-                when (val outcome = RemoteSigningClient(paths, config).sign(payload, certificate)) {
+                val notice = SigningRequestNotice()
+                when (
+                    val outcome = RemoteSigningClient(
+                        paths,
+                        config,
+                        onRequestSubmitted = {
+                            notice.show(it)
+                            Unit
+                        },
+                    ).sign(payload, certificate)
+                ) {
                     is RemoteSigningOutcome.Rejected -> throw IllegalStateException(
                         "signing request rejected (${outcome.reason})"
                     )

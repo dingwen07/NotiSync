@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.sign
+package net.extrawdw.apps.notisync.seal
 
 import org.junit.Assert.assertEquals
 import org.junit.Test

@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.sign
+package net.extrawdw.apps.notisync.seal
 
 import android.app.Activity
 import android.content.Intent

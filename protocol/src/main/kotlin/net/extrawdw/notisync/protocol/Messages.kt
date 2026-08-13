@@ -479,12 +479,14 @@ object OpenPgpSignLimits {
     const val CLOCK_SKEW_MILLIS = 30_000L
     const val MAX_PAYLOAD_BYTES = 512 * 1024
     const val MAX_SIGNATURE_ARMOR_BYTES = 128 * 1024
+    const val MAX_WORKING_DIRECTORY_UTF8_BYTES = 1_024
 }
 
 /**
  * Flat, action-discriminated OpenPGP signing message. Every field is inside the authenticated,
- * end-to-end encrypted DATA_SYNC body. Provider details and unverified repository context never
- * cross this boundary.
+ * end-to-end encrypted DATA_SYNC body. [workingDirectory] is optional, requester-reported review
+ * context: it is authenticated as coming from the trusted device but is not part of the signed Git
+ * commit payload.
  */
 @Serializable
 data class OpenPgpSignSync(
@@ -501,6 +503,7 @@ data class OpenPgpSignSync(
     @CborLabel(10) val signatureArmor: String? = null,
     @CborLabel(11) val rejectReason: OpenPgpRejectReason? = null,
     @CborLabel(12) val actionAt: Long? = null,
+    @CborLabel(13) val workingDirectory: String? = null,
 ) {
     fun requiredSignerCapabilities(): Set<Capability> = OPENPGP_SIGNER_CAPABILITIES
 
@@ -516,6 +519,13 @@ data class OpenPgpSignSync(
         if (!UPPER_HEX_64.matches(primaryKeyId)) return "primaryKeyId must be 64-bit uppercase hexadecimal"
         if (payloadSha256.size != OpenPgpSignLimits.PAYLOAD_SHA256_BYTES) return "invalid payload digest length"
         if (objectKind != OpenPgpObjectKind.GIT_COMMIT) return "unsupported object kind"
+        if (workingDirectory != null && (
+                workingDirectory.isBlank() ||
+                    workingDirectory.encodeToByteArray().size >
+                    OpenPgpSignLimits.MAX_WORKING_DIRECTORY_UTF8_BYTES ||
+                    workingDirectory.any(Char::isISOControl)
+            )
+        ) return "workingDirectory is outside the allowed bounds"
 
         return when (action) {
             OpenPgpSignAction.REQUEST -> when {
@@ -527,7 +537,8 @@ data class OpenPgpSignSync(
                 else -> null
             }
             OpenPgpSignAction.RESULT -> when {
-                payload != null || rejectReason != null -> "RESULT contains non-result fields"
+                payload != null || rejectReason != null || workingDirectory != null ->
+                    "RESULT contains non-result fields"
                 actionAt == null || actionAt <= 0 -> "RESULT requires actionAt"
                 signatureArmor == null || signatureArmor.isEmpty() ||
                     signatureArmor.encodeToByteArray().size > OpenPgpSignLimits.MAX_SIGNATURE_ARMOR_BYTES ->
@@ -535,13 +546,14 @@ data class OpenPgpSignSync(
                 else -> null
             }
             OpenPgpSignAction.REJECT -> when {
-                payload != null || signatureArmor != null -> "REJECT contains non-rejection fields"
+                payload != null || signatureArmor != null || workingDirectory != null ->
+                    "REJECT contains non-rejection fields"
                 actionAt == null || actionAt <= 0 -> "REJECT requires actionAt"
                 rejectReason == null -> "REJECT requires a reason"
                 else -> null
             }
             OpenPgpSignAction.CANCEL -> when {
-                payload != null || signatureArmor != null || rejectReason != null ->
+                payload != null || signatureArmor != null || rejectReason != null || workingDirectory != null ->
                     "CANCEL contains action-specific fields"
                 actionAt == null || actionAt <= 0 -> "CANCEL requires actionAt"
                 else -> null

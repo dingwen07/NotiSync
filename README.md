@@ -152,7 +152,7 @@ notisync status
 notisync applications list
 ```
 
-### Remote Git commit signing (Android)
+### NotiSync Seal: remote Git commit signing (Android)
 
 NotiSync can use a trusted Android device and OpenKeychain to approve ordinary OpenPGP-signed Git
 commits. The desktop still needs the public certificate and a real GPG installation: the
@@ -177,7 +177,7 @@ OpenPGP key is required on the desktop for the remotely selected certificate.
    ```
 
 2. Install OpenKeychain on the Android device, import the private certificate there, then open
-   **Features > Sign** in NotiSync and select that certificate. OpenKeychain remains responsible for
+   **Tools > Seal** in NotiSync and select that certificate. OpenKeychain remains responsible for
    private-key storage, passphrases, and its approval interaction.
 
 3. Keep the matching public certificate in the desktop GPG keyring. Configure Git with the adapter's
@@ -195,11 +195,18 @@ OpenPGP key is required on the desktop for the remotely selected certificate.
    command. A 16-digit primary or signing-subkey long ID is also accepted, but a full fingerprint is
    less ambiguous. Git's `-S` override is honored because the adapter uses Git's final selector.
 
-The first version signs commit objects only. Annotated tags, exact-subkey selectors ending in `!`,
+Seal signs commit objects only. Annotated tags, exact-subkey selectors ending in `!`,
 short IDs, email selectors, verification, encryption, and all other GPG invocations go directly to the
 configured real GPG. A recognized remote request fails closed on timeout, rejection, provider failure,
 or an invalid response; it never silently falls back to local signing. The phone review shows the exact
-commit headers/message and payload hash, but it does not contain or claim to show the code diff.
+commit headers/message and payload hash, but it does not contain or claim to show the code diff. It also
+shows the desktop process's working directory as requester-reported context; that path is authenticated
+as coming from the trusted device but is not part of the Git commit or its OpenPGP signature.
+
+When Git is run from an interactive terminal, `notisync-gpg` prints a seven-character verification code
+directly to that controlling terminal. Compare it with the code in Seal before approving. The adapter
+never adds this message to stdout, which remains reserved for the detached signature required by Git;
+headless and IDE invocations without a controlling terminal simply omit the message.
 
 To roll back, restore the previous `gpg.openpgp.program` value (or run
 `git config --global --unset gpg.openpgp.program`) and leave `user.signingKey` pointing at the desired

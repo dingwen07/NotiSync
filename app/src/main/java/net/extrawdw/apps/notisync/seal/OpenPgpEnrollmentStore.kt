@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.sign
+package net.extrawdw.apps.notisync.seal
 
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences

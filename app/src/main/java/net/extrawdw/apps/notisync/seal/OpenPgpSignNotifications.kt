@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.sign
+package net.extrawdw.apps.notisync.seal
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -30,8 +30,8 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
         )
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
-            .setContentTitle("Git signing request")
-            .setContentText("Request from $requesterName")
+            .setContentTitle(context.getString(R.string.seal_notification_title))
+            .setContentText(context.getString(R.string.seal_notification_body, requesterName))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -50,8 +50,12 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
     private fun ensureChannel() {
         val manager = context.getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(
-            NotificationChannel(CHANNEL_ID, "Git signing requests", NotificationManager.IMPORTANCE_HIGH).apply {
-                description = "Approval requests for Git commit signatures"
+            NotificationChannel(
+                CHANNEL_ID,
+                context.getString(R.string.seal_notification_channel),
+                NotificationManager.IMPORTANCE_HIGH,
+            ).apply {
+                description = context.getString(R.string.seal_notification_channel_description)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
             }
         )

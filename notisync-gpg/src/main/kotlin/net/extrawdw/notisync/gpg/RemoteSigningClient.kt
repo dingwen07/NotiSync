@@ -39,13 +39,15 @@ class RemoteSigningClient(
     private val api: DaemonLocalApi = UnixDaemonClient(paths.socket),
     private val random: SecureRandom = SecureRandom(),
     private val now: () -> Long = System::currentTimeMillis,
+    private val onRequestSubmitted: (OpenPgpSignSync) -> Unit = {},
+    private val workingDirectory: () -> String? = ::currentWorkingDirectoryContext,
 ) {
     fun sign(payload: ByteArray, certificate: ResolvedOpenPgpCertificate): RemoteSigningOutcome {
         val status = api.status()
         val requesterId = ClientId(requireNotNull(status.clientId) { "notisyncd has no local client identity" })
         api.putApplication(
             APPLICATION_ID,
-            ApplicationRegistrationRequest("NotiSync Git Signing", version = "1", capabilities = emptySet()),
+            ApplicationRegistrationRequest("NotiSync Seal", version = "1", capabilities = emptySet()),
         )
 
         val requestId = ByteArray(16).also(random::nextBytes).toLowerHex()
@@ -64,6 +66,7 @@ class RemoteSigningClient(
             payloadSha256 = sha256(payload),
             objectKind = OpenPgpObjectKind.GIT_COMMIT,
             payload = payload,
+            workingDirectory = workingDirectory(),
         )
         require(request.validationError(::sha256) == null) { "refusing to send an invalid signing request" }
         val interest = ReceiveRequest(
@@ -79,6 +82,7 @@ class RemoteSigningClient(
         try {
             api.send(request.toSendRequest(Urgency.HIGH))
             submitted = true
+            runCatching { onRequestSubmitted(request) }
             while (true) {
                 val remaining = expiresAt - now()
                 if (remaining <= 0) throw SocketTimeoutException("remote signing request expired")
@@ -158,6 +162,7 @@ class RemoteSigningClient(
         signatureArmor = null,
         rejectReason = null,
         actionAt = actionAt,
+        workingDirectory = null,
     )
 
     private fun OpenPgpSignSync.toSendRequest(urgency: Urgency): SendRequest = SendRequest(
@@ -181,3 +186,12 @@ class RemoteSigningClient(
         const val APPLICATION_ID = "notisync-gpg"
     }
 }
+
+internal fun currentWorkingDirectoryContext(): String? = runCatching {
+    Path.of("").toAbsolutePath().normalize().toString()
+        .takeIf { path ->
+            path.isNotBlank() &&
+                path.encodeToByteArray().size <= OpenPgpSignLimits.MAX_WORKING_DIRECTORY_UTF8_BYTES &&
+                path.none(Char::isISOControl)
+        }
+}.getOrNull()

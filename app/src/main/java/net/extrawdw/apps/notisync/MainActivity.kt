@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.provider.Settings
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -17,15 +18,16 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -86,7 +88,7 @@ import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.RunScreen
-import net.extrawdw.apps.notisync.ui.SignScreen
+import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -101,6 +103,7 @@ class MainActivity : ComponentActivity() {
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
         enableEdgeToEdge()
+        window.isNavigationBarContrastEnforced = false
         setContent {
             val app = applicationContext as NotiSyncApp
             val graphReady by app.graphReady.collectAsStateWithLifecycle()
@@ -206,7 +209,7 @@ private sealed interface Route {
     data object Run : Route
 
     @Serializable
-    data object Sign : Route
+    data object Seal : Route
 
     @Serializable
     data object Activity : Route
@@ -240,7 +243,7 @@ private enum class FeatureDestination(
     override val icon: ImageVector,
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
-    SIGN(Route.Sign, R.string.tab_sign, Icons.Outlined.Key),
+    SEAL(Route.Seal, R.string.tab_seal, Icons.Outlined.VerifiedUser),
 }
 
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
@@ -313,7 +316,7 @@ fun NotiSyncRoot(
             drawerState = featureDrawerState,
             gesturesEnabled = !suiteIsDrawer,
             drawerContent = {
-                ModalDrawerSheet {
+                ModalDrawerSheet(modifier = Modifier.width(296.dp)) {
                     Text(
                         stringResource(R.string.features_title),
                         style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
@@ -324,8 +327,12 @@ fun NotiSyncRoot(
                         NavigationDrawerItem(
                             selected = currentDestination.isOn(dest),
                             onClick = {
-                                navController.navigateToTopLevel(dest)
-                                drawerScope.launch { featureDrawerState.close() }
+                                drawerScope.launch {
+                                    // Keep the current destination behind the retracting sheet, then
+                                    // swap content only after the drawer close animation completes.
+                                    featureDrawerState.close()
+                                    navController.navigateToTopLevel(dest)
+                                }
                             },
                             icon = { TopLevelNavIcon(dest) },
                             label = { TopLevelNavLabel(dest) },
@@ -401,12 +408,18 @@ fun NotiSyncRoot(
                         onInitialSelectionConsumed = latestOnOpenRunConsumed.value,
                     )
                 }
-                composable<Route.Sign> { SignScreen() }
+                composable<Route.Seal> { SealScreen() }
                 composable<Route.Activity> { ActivityScreen() }
                 composable<Route.Settings> { SettingsScreen() }
             }
         }
         }
+        }
+
+        // Compose this after the drawer so it takes precedence over Material 3's internal predictive
+        // handler. On affected devices that handler lets a completed Back escape to app navigation.
+        BackHandler(enabled = !suiteIsDrawer && featureDrawerState.isOpen) {
+            drawerScope.launch { featureDrawerState.close() }
         }
 
         if (showPairing) {

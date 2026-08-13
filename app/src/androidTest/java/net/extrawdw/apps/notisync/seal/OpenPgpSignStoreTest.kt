@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.sign
+package net.extrawdw.apps.notisync.seal
 
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
@@ -12,6 +12,7 @@ import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -47,8 +48,13 @@ class OpenPgpSignStoreTest {
         assertEquals(1, reopened.pendingResponses().size)
         assertEquals(OpenPgpAcceptResult.DUPLICATE, reopened.accept(request, sender, 1_400))
         assertTrue(reopened.markSent(request.requestId, 1_500))
-        assertNull(reopened.find(request.requestId)?.request?.payload)
-        assertNull(reopened.find(request.requestId)?.encodedResponse)
+        val sent = reopened.find(request.requestId)
+        assertNull(sent?.request?.payload)
+        assertNull(sent?.encodedResponse)
+        assertEquals(OpenPgpRequestResult.APPROVED, sent?.result)
+        assertEquals("Store test\n", sent?.commit?.message)
+        assertEquals(request.payload?.size, sent?.commit?.payloadBytes)
+        assertEquals("C:\\work\\NotiSync", sent?.request?.workingDirectory)
         reopened.close()
     }
 
@@ -65,7 +71,10 @@ class OpenPgpSignStoreTest {
         assertTrue(store.markProviderInteraction(request.requestId, 1_400))
         assertTrue(store.cancel(request.requestId, request.requesterClientId, 1_500))
         assertFalse(store.storeResult(request.requestId, ARMOR, 1_600))
-        assertEquals(OpenPgpRequestState.CANCELLED, store.find(request.requestId)?.state)
+        val canceled = store.find(request.requestId)
+        assertEquals(OpenPgpRequestState.CANCELLED, canceled?.state)
+        assertEquals(OpenPgpRequestResult.CANCELED, canceled?.result)
+        assertNotNull(canceled?.commit)
         store.close()
     }
 
@@ -77,11 +86,17 @@ class OpenPgpSignStoreTest {
         store.accept(rejected, rejected.requesterClientId, 1_100)
         store.accept(expired, expired.requesterClientId, 1_100)
         assertTrue(store.storeReject(rejected.requestId, OpenPgpRejectReason.USER_REJECTED, 1_200))
-        assertEquals(OpenPgpRequestState.REJECTED_PENDING_SEND, store.find(rejected.requestId)?.state)
+        val rejectedStored = store.find(rejected.requestId)
+        assertEquals(OpenPgpRequestState.REJECTED_PENDING_SEND, rejectedStored?.state)
+        assertEquals(OpenPgpRequestResult.REJECTED, rejectedStored?.result)
+        assertNotNull(rejectedStored?.commit)
 
         assertTrue(store.markExpired(expired.requestId, expired.expiresAt + 1))
-        assertEquals(OpenPgpRequestState.EXPIRED, store.find(expired.requestId)?.state)
-        assertNull(store.find(expired.requestId)?.request?.payload)
+        val expiredStored = store.find(expired.requestId)
+        assertEquals(OpenPgpRequestState.EXPIRED, expiredStored?.state)
+        assertEquals(OpenPgpRequestResult.EXPIRED, expiredStored?.result)
+        assertNull(expiredStored?.request?.payload)
+        assertNotNull(expiredStored?.commit)
         store.close()
     }
 
@@ -102,6 +117,7 @@ class OpenPgpSignStoreTest {
             payloadSha256 = MessageDigest.getInstance("SHA-256").digest(payload),
             objectKind = OpenPgpObjectKind.GIT_COMMIT,
             payload = payload,
+            workingDirectory = "C:\\work\\NotiSync",
         )
     }
 

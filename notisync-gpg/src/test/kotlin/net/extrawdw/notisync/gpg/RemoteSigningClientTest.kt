@@ -38,7 +38,13 @@ class RemoteSigningClientTest {
             selectorNamedSubkey = false,
         )
 
-        val outcome = RemoteSigningClient(paths, config, api = api, now = { 1_000 }).sign(
+        val outcome = RemoteSigningClient(
+            paths,
+            config,
+            api = api,
+            now = { 1_000 },
+            workingDirectory = { "C:\\work\\NotiSync" },
+        ).sign(
             validCommit(),
             certificate,
         )
@@ -49,6 +55,7 @@ class RemoteSigningClientTest {
         )
         assertEquals(listOf("status", "register", "open", "send", "next", "complete", "send", "close", "unregister"), api.calls)
         assertEquals(Urgency.HIGH, api.sends.first().urgency)
+        assertEquals("C:\\work\\NotiSync", api.decodeRequest(api.sends.first()).workingDirectory)
         assertEquals(Urgency.NORMAL, api.sends.last().urgency)
         assertTrue(api.sends.last().submissionId!!.endsWith("-cancel"))
     }
@@ -93,6 +100,7 @@ class RemoteSigningClientTest {
                         payload = null,
                         rejectReason = OpenPgpRejectReason.USER_REJECTED,
                         actionAt = 1_100,
+                        workingDirectory = null,
                     )
                     return ReceiveRecord(
                         recordType = ReceiveRecordType.MESSAGE,
@@ -136,6 +144,8 @@ class RemoteSigningClientTest {
         override fun deleteApplication(applicationId: String) = Unit
         override fun sendAll(requests: List<SendRequest>) = requests.map(::send)
         override fun ack(applicationId: String, envelopeId: String) = Unit
+
+        fun decodeRequest(request: SendRequest) = decode(request).openPgpSign!!
 
         private fun decode(request: SendRequest): DataSync = ProtocolCodec.decodeFromCbor(
             Base64.getDecoder().decode(request.body)

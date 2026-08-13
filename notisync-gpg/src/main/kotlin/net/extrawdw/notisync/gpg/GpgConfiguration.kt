@@ -84,7 +84,7 @@ class NotisyncGpgConfigStore(
     }
 
     internal fun encode(config: NotisyncGpgConfig): String = buildString {
-        appendLine("# NotiSync Git signing adapter configuration")
+        appendLine("# NotiSync Seal Git signing adapter configuration")
         appendLine("# Private desktop state; permissions must remain owner-only.")
         append("real-gpg-path \"").append(escape(config.realGpgPath.toString())).appendLine("\"")
         appendLine("timeout-seconds ${config.timeoutSeconds}")

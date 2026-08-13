@@ -21,14 +21,26 @@ class OpenPgpSignProtocolTest {
         val request = request()
         val actions = listOf(
             request,
-            request.copy(action = OpenPgpSignAction.RESULT, payload = null, signatureArmor = armor(), actionAt = 1_050),
+            request.copy(
+                action = OpenPgpSignAction.RESULT,
+                payload = null,
+                signatureArmor = armor(),
+                actionAt = 1_050,
+                workingDirectory = null,
+            ),
             request.copy(
                 action = OpenPgpSignAction.REJECT,
                 payload = null,
                 rejectReason = OpenPgpRejectReason.USER_REJECTED,
                 actionAt = 1_050,
+                workingDirectory = null,
             ),
-            request.copy(action = OpenPgpSignAction.CANCEL, payload = null, actionAt = 1_050),
+            request.copy(
+                action = OpenPgpSignAction.CANCEL,
+                payload = null,
+                actionAt = 1_050,
+                workingDirectory = null,
+            ),
         )
 
         actions.forEach { value ->
@@ -42,6 +54,7 @@ class OpenPgpSignProtocolTest {
             assertArrayEquals(value.payload, decoded.payload)
             assertEquals(value.signatureArmor, decoded.signatureArmor)
             assertEquals(value.rejectReason, decoded.rejectReason)
+            assertEquals(value.workingDirectory, decoded.workingDirectory)
         }
     }
 
@@ -62,8 +75,18 @@ class OpenPgpSignProtocolTest {
         assertTrue(request().copy(primaryKeyId = "abcdef0123456789").validationError(::sha256)!!.contains("primaryKeyId"))
         assertTrue(request().copy(expiresAt = 121_001).validationError(::sha256)!!.contains("lifetime"))
         assertTrue(request().copy(payloadSha256 = ByteArray(32)).validationError(::sha256)!!.contains("mismatch"))
+        assertTrue(request().copy(workingDirectory = "bad\npath").validationError(::sha256)!!.contains("workingDirectory"))
         assertTrue(
-            request().copy(action = OpenPgpSignAction.RESULT, payload = null, actionAt = 1_100)
+            request().copy(workingDirectory = "x".repeat(OpenPgpSignLimits.MAX_WORKING_DIRECTORY_UTF8_BYTES + 1))
+                .validationError(::sha256)!!.contains("workingDirectory")
+        )
+        assertTrue(
+            request().copy(
+                action = OpenPgpSignAction.RESULT,
+                payload = null,
+                actionAt = 1_100,
+                workingDirectory = null,
+            )
                 .validationError(::sha256)!!.contains("signature")
         )
     }
@@ -106,6 +129,7 @@ class OpenPgpSignProtocolTest {
         payloadSha256 = sha256(commit),
         objectKind = OpenPgpObjectKind.GIT_COMMIT,
         payload = commit,
+        workingDirectory = "/work/notisync",
     )
 
     private fun armor() = "-----BEGIN PGP SIGNATURE-----\nAA==\n-----END PGP SIGNATURE-----\n"

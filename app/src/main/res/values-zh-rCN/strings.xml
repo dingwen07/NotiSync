@@ -6,8 +6,7 @@
     <string name="tab_apps">应用</string>
     <string name="tab_ios">iPhone</string>
     <string name="tab_run">Run</string>
-    <string name="tab_sign">签名</string>
-    <string name="features_title">功能</string>
+    <string name="features_title">工具</string>
     <string name="open_features">打开功能菜单</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
@@ -21,6 +20,66 @@
     <string name="action_cancel">取消</string>
     <string name="action_back">返回</string>
     <string name="error_unknown">未知错误</string>
+
+    <!-- NotiSync Seal：远程 Git 提交审批与 OpenPGP 签名 -->
+    <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任电脑的 Git 提交。</string>
+    <string name="seal_identity_title">签名身份</string>
+    <string name="seal_openpgp_identity">OpenPGP</string>
+    <string name="seal_identity_key">OpenPGP 密钥 %1$s</string>
+    <string name="seal_identity_change">更换密钥</string>
+    <string name="seal_identity_remove">移除</string>
+    <string name="seal_identity_setup">设置签名</string>
+    <string name="seal_provider_unavailable">请安装或启用 OpenKeychain，以便在此设备上批准提交。</string>
+    <string name="seal_section_active">进行中</string>
+    <string name="seal_section_history">历史</string>
+    <string name="seal_empty_title">暂无提交请求</string>
+    <string name="seal_empty_body">来自受信任电脑的请求会显示在这里。</string>
+    <string name="seal_commit_untitled">无标题提交</string>
+    <string name="seal_commit_initial">初始提交</string>
+    <string name="seal_status_waiting">等待批准</string>
+    <string name="seal_status_signing">正在签名</string>
+    <string name="seal_result_approved">已批准</string>
+    <string name="seal_result_rejected">已拒绝</string>
+    <string name="seal_result_canceled">已取消</string>
+    <string name="seal_result_expired">已过期</string>
+    <string name="seal_result_failed">失败</string>
+    <string name="seal_result_legacy">结果不可用</string>
+    <string name="seal_review_title">审核提交</string>
+    <string name="seal_review_guidance">您是否识别此签名请求？批准前，请确认提交消息、身份和基础版本。此处不显示具体的文件更改。</string>
+    <string name="seal_verification_code">验证码 %1$s</string>
+    <string name="seal_commit_section">提交</string>
+    <string name="seal_author">作者</string>
+    <string name="seal_committer">提交者</string>
+    <string name="seal_tree">树 %1$s</string>
+    <string name="seal_parent">父提交 %1$s</string>
+    <string name="seal_extra_header">%1$s</string>
+    <string name="seal_approval_section">审批</string>
+    <string name="seal_requested_by">请求设备</string>
+    <string name="seal_working_directory">工作目录</string>
+    <string name="seal_signing_key">签名密钥</string>
+    <string name="seal_request_section">请求记录</string>
+    <string name="seal_requested_at">请求时间</string>
+    <string name="seal_updated_at">更新时间</string>
+    <string name="seal_request_id">请求 ID</string>
+    <string name="seal_payload">负载</string>
+    <plurals name="seal_payload_value">
+        <item quantity="other">%1$d 字节 · SHA-256 %2$s</item>
+    </plurals>
+    <plurals name="seal_expires_in">
+        <item quantity="other">将在 %1$d 秒后过期</item>
+    </plurals>
+    <string name="seal_signing_action">正在签名…</string>
+    <string name="seal_close">关闭</string>
+    <string name="seal_back_to_history">返回 Seal 历史</string>
+    <string name="seal_details_unavailable">此较早请求的提交详情不可用。</string>
+    <string name="seal_request_unavailable">此提交请求不可用。</string>
+    <string name="seal_request_invalid">无法显示此提交请求。</string>
+    <string name="seal_request_changed">OpenKeychain 打开期间，请求发生了变化。</string>
+    <string name="seal_not_ready">NotiSync Seal 尚未就绪。</string>
+    <string name="seal_notification_title">提交审批</string>
+    <string name="seal_notification_body">%1$s 请求为一个 Git 提交签名</string>
+    <string name="seal_notification_channel">NotiSync Seal</string>
+    <string name="seal_notification_channel_description">来自受信任电脑的 Git 提交审批请求</string>
 
     <string name="run_notification_channel_description">来自 %1$s 的运行状态和警报</string>
     <string name="run_command_fallback">命令</string>
