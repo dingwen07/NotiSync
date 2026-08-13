@@ -73,6 +73,10 @@
         <package android:name="com.google.android.gms" />           <!-- Google Play services -->
         <package android:name="net.extrawdw.notifly" />             <!-- Notifly diagnostic source -->
         <package android:name="moe.shizuku.privileged.api" />       <!-- External Shizuku Manager setup -->
+        <package android:name="org.sufficientlysecure.keychain" />  <!-- OpenKeychain signing provider -->
+        <intent>
+            <action android:name="org.openintents.openpgp.IOpenPgpService2" />
+        </intent>
     </queries>
 
     <application
@@ -133,6 +137,20 @@
             android:taskAffinity="${applicationId}.screen_viewer"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".sign.OpenPgpEnrollmentActivity"
+            android:exported="false"
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sign.OpenPgpSignReviewActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains

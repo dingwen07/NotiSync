@@ -20,6 +20,7 @@ class AppCapabilityAnnouncementTest {
                 Capability.DISPLAY_NOTIFICATION_UPDATES,
                 Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
                 Capability.RECEIVE_RUNS,
+                Capability.OPENPGP_SIGN_V1,
             ),
             ANDROID_SELF_CAPABILITIES,
         )

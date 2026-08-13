@@ -10,6 +10,7 @@ data class DesktopPaths(
     val socket: Path = dataDirectory.resolve("S.notisyncd")
     val daemonConfig: Path = dataDirectory.resolve("notisyncd.conf")
     val nsrunConfig: Path = dataDirectory.resolve("nsrun.conf")
+    val notisyncGpgConfig: Path = dataDirectory.resolve("notisync-gpg.conf")
     val runsDirectory: Path = dataDirectory.resolve("runs")
 
     companion object {

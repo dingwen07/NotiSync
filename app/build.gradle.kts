@@ -126,6 +126,7 @@ dependencies {
     // artifact only discovers the separately installed Shizuku Manager; it does not bundle or start it.
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    implementation(libs.openpgp.api)
     // Directly used for the small App Store (iTunes Lookup) icon JSON; also exported transitively by :protocol.
     implementation(libs.kotlinx.serialization.json)
 

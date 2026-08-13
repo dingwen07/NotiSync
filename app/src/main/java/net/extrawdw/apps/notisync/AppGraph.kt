@@ -101,6 +101,12 @@ import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
 import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.apps.notisync.sign.OpenKeychainSigningProvider
+import net.extrawdw.apps.notisync.sign.OpenPgpEnrollmentStore
+import net.extrawdw.apps.notisync.sign.OpenPgpSignEngine
+import net.extrawdw.apps.notisync.sign.OpenPgpSignNotificationPresenter
+import net.extrawdw.apps.notisync.sign.OpenPgpSignStore
+import net.extrawdw.apps.notisync.sign.OpenPgpSigningProvider
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
@@ -198,6 +204,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.DISPLAY_NOTIFICATION_UPDATES,
     Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
     Capability.RECEIVE_RUNS,
+    Capability.OPENPGP_SIGN_V1,
 )
 
 class AppGraph(private val app: Application) {
@@ -263,6 +270,16 @@ class AppGraph(private val app: Application) {
         private set
     var runEngine: RunEngine? = null
         private set
+    lateinit var openPgpProvider: OpenPgpSigningProvider
+        private set
+    lateinit var openPgpEnrollment: OpenPgpEnrollmentStore
+        private set
+    lateinit var openPgpSignStore: OpenPgpSignStore
+        private set
+    lateinit var openPgpSignNotifications: OpenPgpSignNotificationPresenter
+        private set
+    var openPgpSignEngine: OpenPgpSignEngine? = null
+        private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
 
@@ -315,6 +332,10 @@ class AppGraph(private val app: Application) {
         val vault = KeyVault()
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
+        openPgpProvider = OpenKeychainSigningProvider(app)
+        openPgpEnrollment = OpenPgpEnrollmentStore(ds, scope)
+        openPgpSignStore = OpenPgpSignStore(app)
+        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
         // eager `true` default), then re-apply on every toggle — DataStore stays the single source of
@@ -558,6 +579,16 @@ class AppGraph(private val app: Application) {
         // A process can die after a Run snapshot commits but before its stable notification posts. The store's
         // presentation checkpoint makes this startup reconciliation precise and idempotent.
         scope.launch { runs.reconcilePendingPresentations() }
+        val openPgpSigning = OpenPgpSignEngine(
+            context = app,
+            channel = channel,
+            enrollmentStore = openPgpEnrollment,
+            store = openPgpSignStore,
+            notifications = openPgpSignNotifications,
+            deviceNameOf = { id -> trust.displayName(id) },
+        )
+        openPgpSignEngine = openPgpSigning
+        scope.launch { openPgpSigning.reconcile() }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
             channel = channel,
@@ -625,6 +656,7 @@ class AppGraph(private val app: Application) {
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
+            onOpenPgpSignSync = openPgpSigning::onOpenPgpSignSync,
             onScreenMirrorSync = { message, sync ->
                 screenController.onScreenMirrorSync(message, sync)
                 screenRequester.onScreenMirrorSync(message, sync)

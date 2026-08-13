@@ -31,6 +31,7 @@ dependencies {
     implementation(libs.zxing.core)
 
     implementation(libs.jna)
+    runtimeOnly(project(":notisync-gpg"))
     if (!isWindows) {
         // nsrun and nsscreen remain POSIX-only; the Windows distribution is daemon/CLI only.
         runtimeOnly(project(":nsrun"))
@@ -64,6 +65,7 @@ private data class DesktopLauncher(
 
 private val additionalLaunchers = listOf(
     DesktopLauncher("notisync", "net.extrawdw.notisync.cli.NotisyncMainKt"),
+    DesktopLauncher("notisync-gpg", "net.extrawdw.notisync.gpg.NotisyncGpgMainKt"),
 ) + if (isWindows) {
     emptyList()
 } else {
@@ -157,7 +159,7 @@ distributions {
                 into("licenses")
             }
             if (isMacOs) {
-                listOf("notisyncd", "nsrun", "nsscreen", "notisync").forEach { launcher ->
+                listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg").forEach { launcher ->
                     from(compileMacLauncher) {
                         into("bin")
                         rename("notisync-launcher", launcher)
@@ -250,7 +252,7 @@ private val stageScreenReleaseDist = tasks.register<Sync>("stageScreenReleaseDis
     }
 
     if (isMacOs) {
-        listOf("notisyncd", "nsrun", "nsscreen", "notisync").forEach { launcher ->
+        listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg").forEach { launcher ->
             from(compileMacLauncher) {
                 into("bin")
                 rename("notisync-launcher", launcher)
@@ -309,12 +311,12 @@ listOf("installDist", "distZip", "distTar").forEach { taskName ->
     }
 }
 
-private val launcherSmokeTasks = (listOf("notisyncd", "notisync") + if (isWindows) {
+private val launcherSmokeTasks = (listOf("notisyncd", "notisync", "notisync-gpg") + if (isWindows) {
     emptyList()
 } else {
     listOf("nsrun", "nsscreen")
 }).map { launcher ->
-    val installedExecutable = installDirectory.resolve("bin/$launcher")
+    val installedExecutable = installDirectory.resolve("bin/$launcher${if (isWindows) ".bat" else ""}")
     val smokeDataDirectory = layout.buildDirectory.dir("tmp/launcher-smoke/$launcher").get().asFile
     tasks.register<Exec>("smoke${launcher.replaceFirstChar(Char::uppercaseChar)}Launcher") {
         group = "verification"

@@ -6,6 +6,9 @@
     <string name="tab_apps">应用</string>
     <string name="tab_ios">iPhone</string>
     <string name="tab_run">Run</string>
+    <string name="tab_sign">签名</string>
+    <string name="features_title">功能</string>
+    <string name="open_features">打开功能菜单</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
@@ -418,6 +421,7 @@
     <string name="device_capability_android_group_summaries">Android 分组摘要</string>
     <string name="device_capability_publish_runs">发布 NotiSync Run</string>
     <string name="device_capability_receive_runs">接收 NotiSync Run</string>
+    <string name="device_capability_openpgp_sign">批准 OpenPGP 签名</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>

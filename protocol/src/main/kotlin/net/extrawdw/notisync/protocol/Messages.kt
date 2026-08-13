@@ -448,7 +448,117 @@ data class AssetSyncItem(
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable (the wire encodes
  *  the serial NAME; an unknown value throws on decode and is dropped by the peer's guarded DataSync decode). */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING }
+enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING, OPENPGP_SIGN }
+
+/** Lifecycle operation for one byte-exact remote OpenPGP signing request. Append-only. */
+@Serializable
+enum class OpenPgpSignAction { REQUEST, RESULT, REJECT, CANCEL }
+
+/** The signed object grammar understood and rendered by protocol v1. Append-only. */
+@Serializable
+enum class OpenPgpObjectKind { GIT_COMMIT }
+
+/** Stable, non-sensitive terminal reason returned to the requesting desktop. Append-only. */
+@Serializable
+enum class OpenPgpRejectReason {
+    USER_REJECTED,
+    EXPIRED,
+    PROVIDER_UNAVAILABLE,
+    PROVIDER_CANCELLED,
+    UNSUPPORTED_KEY,
+    PROVIDER_FAILURE,
+}
+
+/** Canonical bounds for the first remote OpenPGP signing protocol. */
+object OpenPgpSignLimits {
+    const val PROTOCOL_VERSION = 1
+    const val REQUEST_ID_HEX_LENGTH = 32
+    const val PRIMARY_KEY_ID_HEX_LENGTH = 16
+    const val PAYLOAD_SHA256_BYTES = 32
+    const val MAX_REQUEST_LIFETIME_MILLIS = 120_000L
+    const val CLOCK_SKEW_MILLIS = 30_000L
+    const val MAX_PAYLOAD_BYTES = 512 * 1024
+    const val MAX_SIGNATURE_ARMOR_BYTES = 128 * 1024
+}
+
+/**
+ * Flat, action-discriminated OpenPGP signing message. Every field is inside the authenticated,
+ * end-to-end encrypted DATA_SYNC body. Provider details and unverified repository context never
+ * cross this boundary.
+ */
+@Serializable
+data class OpenPgpSignSync(
+    @CborLabel(0) val action: OpenPgpSignAction,
+    @CborLabel(1) @EncodeDefault(ALWAYS) val protocolVersion: Int = OpenPgpSignLimits.PROTOCOL_VERSION,
+    @CborLabel(2) val requestId: String,
+    @CborLabel(3) val requesterClientId: ClientId,
+    @CborLabel(4) val issuedAt: Long,
+    @CborLabel(5) val expiresAt: Long,
+    @CborLabel(6) val primaryKeyId: String,
+    @CborLabel(7) @ByteString val payloadSha256: ByteArray,
+    @CborLabel(8) val objectKind: OpenPgpObjectKind,
+    @CborLabel(9) @ByteString val payload: ByteArray? = null,
+    @CborLabel(10) val signatureArmor: String? = null,
+    @CborLabel(11) val rejectReason: OpenPgpRejectReason? = null,
+    @CborLabel(12) val actionAt: Long? = null,
+) {
+    fun requiredSignerCapabilities(): Set<Capability> = OPENPGP_SIGNER_CAPABILITIES
+
+    /** Returns null only for the canonical v1 action shape. */
+    fun validationError(sha256: (ByteArray) -> ByteArray): String? {
+        if (protocolVersion != OpenPgpSignLimits.PROTOCOL_VERSION) return "unsupported protocol version"
+        if (!LOWER_HEX_128.matches(requestId)) return "requestId must be 128-bit lowercase hexadecimal"
+        if (requesterClientId.value.isBlank()) return "requesterClientId must not be blank"
+        if (
+            issuedAt <= 0 || expiresAt <= issuedAt ||
+            expiresAt - issuedAt > OpenPgpSignLimits.MAX_REQUEST_LIFETIME_MILLIS
+        ) return "invalid request lifetime"
+        if (!UPPER_HEX_64.matches(primaryKeyId)) return "primaryKeyId must be 64-bit uppercase hexadecimal"
+        if (payloadSha256.size != OpenPgpSignLimits.PAYLOAD_SHA256_BYTES) return "invalid payload digest length"
+        if (objectKind != OpenPgpObjectKind.GIT_COMMIT) return "unsupported object kind"
+
+        return when (action) {
+            OpenPgpSignAction.REQUEST -> when {
+                actionAt != null -> "REQUEST must omit actionAt"
+                signatureArmor != null || rejectReason != null -> "REQUEST contains terminal fields"
+                payload == null || payload.isEmpty() || payload.size > OpenPgpSignLimits.MAX_PAYLOAD_BYTES ->
+                    "REQUEST payload is outside the allowed bounds"
+                !payloadSha256.contentEquals(sha256(payload)) -> "REQUEST payload digest mismatch"
+                else -> null
+            }
+            OpenPgpSignAction.RESULT -> when {
+                payload != null || rejectReason != null -> "RESULT contains non-result fields"
+                actionAt == null || actionAt <= 0 -> "RESULT requires actionAt"
+                signatureArmor == null || signatureArmor.isEmpty() ||
+                    signatureArmor.encodeToByteArray().size > OpenPgpSignLimits.MAX_SIGNATURE_ARMOR_BYTES ->
+                    "RESULT signature armor is outside the allowed bounds"
+                else -> null
+            }
+            OpenPgpSignAction.REJECT -> when {
+                payload != null || signatureArmor != null -> "REJECT contains non-rejection fields"
+                actionAt == null || actionAt <= 0 -> "REJECT requires actionAt"
+                rejectReason == null -> "REJECT requires a reason"
+                else -> null
+            }
+            OpenPgpSignAction.CANCEL -> when {
+                payload != null || signatureArmor != null || rejectReason != null ->
+                    "CANCEL contains action-specific fields"
+                actionAt == null || actionAt <= 0 -> "CANCEL requires actionAt"
+                else -> null
+            }
+        }
+    }
+
+    companion object {
+        private val LOWER_HEX_128 = Regex("[0-9a-f]{${OpenPgpSignLimits.REQUEST_ID_HEX_LENGTH}}")
+        private val UPPER_HEX_64 = Regex("[0-9A-F]{${OpenPgpSignLimits.PRIMARY_KEY_ID_HEX_LENGTH}}")
+        private val OPENPGP_SIGNER_CAPABILITIES = setOf(
+            Capability.OPENPGP_SIGN_V1,
+            Capability.BACKGROUND_WAKE,
+            Capability.PUSH_FILTERING,
+        )
+    }
+}
 
 /** Lifecycle operation carried by [ScreenMirrorSync]. */
 @Serializable
@@ -637,6 +747,8 @@ data class DataSync(
     @CborLabel(7) val run: RunSync? = null,
     /** Android screen-session rendezvous/status traffic — iff [kind] == [DataSyncKind.SCREEN_MIRRORING]. */
     @CborLabel(8) val screenMirror: ScreenMirrorSync? = null,
+    /** Byte-exact Git commit signing traffic, populated iff [kind] is [DataSyncKind.OPENPGP_SIGN]. */
+    @CborLabel(9) val openPgpSign: OpenPgpSignSync? = null,
 )
 
 /**

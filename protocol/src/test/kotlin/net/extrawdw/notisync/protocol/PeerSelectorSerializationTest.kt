@@ -56,7 +56,8 @@ class PeerSelectorSerializationTest {
                 Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1,
                 Capability.SCREEN_MIRROR_BROKER_RELAY_V1,
             ),
-            Capability.entries.drop(12),
+            Capability.entries.drop(12).take(8),
         )
+        assertEquals(Capability.OPENPGP_SIGN_V1, Capability.entries[20])
     }
 }

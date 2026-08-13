@@ -113,7 +113,12 @@ fun RunScreen(
 
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text(stringResource(R.string.run_screen_title)) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(stringResource(R.string.run_screen_title)) },
+                navigationIcon = { FeatureDrawerNavigationIcon() },
+            )
+        },
     ) { padding ->
         RunList(
             runs = runs,

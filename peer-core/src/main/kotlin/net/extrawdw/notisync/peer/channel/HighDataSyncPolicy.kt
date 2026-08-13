@@ -1,9 +1,11 @@
 package net.extrawdw.notisync.peer.channel
 
+import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
 
@@ -15,10 +17,40 @@ object HighDataSyncPolicy {
      */
     fun validate(body: ByteArray, scope: Recipients, requesterId: ClientId? = null) {
         val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull()
-        if (sync?.kind == DataSyncKind.SCREEN_MIRRORING || scope is Recipients.OnlyCapable) {
+        if (sync?.kind == DataSyncKind.OPENPGP_SIGN) {
+            validateOpenPgpRequest(sync, scope, requesterId)
+        } else if (sync?.kind == DataSyncKind.SCREEN_MIRRORING || scope is Recipients.OnlyCapable) {
             validateScreenRequest(sync, scope, requesterId)
         } else {
             validateLegacyRouted(scope)
+        }
+    }
+
+    private fun validateOpenPgpRequest(sync: DataSync, scope: Recipients, requesterId: ClientId?) {
+        val request = requireNotNull(sync.openPgpSign) {
+            "HIGH OPENPGP_SIGN requires an openPgpSign body"
+        }
+        require(request.action == OpenPgpSignAction.REQUEST) {
+            "only an OPENPGP_SIGN REQUEST may use HIGH urgency"
+        }
+        val validationError = request.validationError(::sha256)
+        require(validationError == null) { validationError ?: "invalid OpenPGP request" }
+        requesterId?.let {
+            require(request.requesterClientId == it) {
+                "OpenPGP requesterClientId must be the envelope signer"
+            }
+        }
+        val filtered = scope as? Recipients.OwnMeshFiltered
+        require(
+            filtered != null &&
+                filtered.excluded.isEmpty() &&
+                filtered.excludedPlatforms.isEmpty() &&
+                filtered.legacyExcludedPlatforms.isEmpty() &&
+                filtered.forbiddenCapabilities.isEmpty() &&
+                filtered.requireCapabilityRoutingV1 &&
+                filtered.requiredCapabilities == request.requiredSignerCapabilities()
+        ) {
+            "HIGH OpenPGP request requires the exact capability-routed own-mesh audience"
         }
     }
 
@@ -94,4 +126,7 @@ object HighDataSyncPolicy {
         Capability.BACKGROUND_WAKE,
         Capability.PUSH_FILTERING,
     )
+
+    private fun sha256(bytes: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
 }

@@ -8,6 +8,9 @@ import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.OpenPgpObjectKind
+import net.extrawdw.notisync.protocol.OpenPgpSignAction
+import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
@@ -25,8 +28,70 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Assert.fail
 import org.junit.Test
+import java.security.MessageDigest
 
 class SecureChannelPolicyTest {
+    @Test
+    fun highOpenPgpRequestRequiresExactCapabilityRoutedOwnMesh() = runBlocking {
+        val requester = ClientId("a".repeat(52))
+        val payload = (
+            "tree ${"0".repeat(40)}\n" +
+                "author A <a@example.com> 1 +0000\n" +
+                "committer A <a@example.com> 1 +0000\n\nmessage\n"
+            ).encodeToByteArray()
+        val request = OpenPgpSignSync(
+            action = OpenPgpSignAction.REQUEST,
+            requestId = "0123456789abcdef0123456789abcdef",
+            requesterClientId = requester,
+            issuedAt = 1_000,
+            expiresAt = 121_000,
+            primaryKeyId = "89ABCDEF01234567",
+            payloadSha256 = MessageDigest.getInstance("SHA-256").digest(payload),
+            objectKind = OpenPgpObjectKind.GIT_COMMIT,
+            payload = payload,
+        )
+        val body = ProtocolCodec.encodeToCbor(
+            DataSync(DataSyncKind.OPENPGP_SIGN, openPgpSign = request)
+        )
+        val exact = Recipients.OwnMeshFiltered(
+            requiredCapabilities = request.requiredSignerCapabilities(),
+            requireCapabilityRoutingV1 = true,
+        )
+
+        assertEquals(0, channel().send(MessageType.DATA_SYNC, body, exact, Urgency.HIGH))
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                channel().send(
+                    MessageType.DATA_SYNC,
+                    body,
+                    exact.copy(requiredCapabilities = exact.requiredCapabilities - Capability.OPENPGP_SIGN_V1),
+                    Urgency.HIGH,
+                )
+            }
+        }
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                channel().send(
+                    MessageType.DATA_SYNC,
+                    ProtocolCodec.encodeToCbor(
+                        DataSync(
+                            DataSyncKind.OPENPGP_SIGN,
+                            openPgpSign = request.copy(
+                                action = OpenPgpSignAction.REJECT,
+                                payload = null,
+                                rejectReason = net.extrawdw.notisync.protocol.OpenPgpRejectReason.USER_REJECTED,
+                                actionAt = 2_000,
+                            ),
+                        )
+                    ),
+                    exact,
+                    Urgency.HIGH,
+                )
+            }
+        }
+        Unit
+    }
+
     @Test
     fun highScreenRequestRequiresBodyBoundExactCapableSource() = runBlocking {
         val requester = ClientId("a".repeat(52))

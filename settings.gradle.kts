@@ -19,6 +19,10 @@ dependencyResolutionManagement {
     repositories {
         google()
         mavenCentral()
+        maven {
+            url = uri("https://jitpack.io")
+            content { includeGroup("com.github.open-keychain.open-keychain") }
+        }
     }
 }
 
@@ -34,6 +38,7 @@ include(":screen-session")
 include(":nsscreen")
 include(":scrcpy-server")
 include(":nsrun")
+include(":notisync-gpg")
 include(":notisyncd")
 include(":server")
 

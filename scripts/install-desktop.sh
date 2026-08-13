@@ -13,7 +13,7 @@ fi
 install_dir="${NOTISYNC_INSTALL_DIR:-$HOME/.local/share/notisync}"
 bin_dir="${NOTISYNC_BIN_DIR:-$HOME/.local/bin}"
 distribution_dir="$project_dir/notisyncd/build/install/notisyncd"
-launchers=(notisyncd notisync nsrun nsscreen)
+launchers=(notisyncd notisync notisync-gpg nsrun nsscreen)
 
 if [[ "$install_dir" != /* || "$bin_dir" != /* ]]; then
     echo "install-desktop: install directories must be absolute paths" >&2

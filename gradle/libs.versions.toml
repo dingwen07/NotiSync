@@ -1,8 +1,8 @@
 [versions]
 # Build toolchain
-agp = "9.3.0"
+agp = "9.3.1"
 kotlin = "2.2.10"
-ksp = "2.3.2"
+ksp = "2.3.6"
 jvmTarget = "21"
 
 # Shared (protocol + server + app)
@@ -48,6 +48,7 @@ room = "2.8.4"
 datastore = "1.2.1"
 work = "2.11.2"
 shizuku = "13.1.5"
+openpgpApi = "v5.7.1"
 
 # Pairing (QR)
 playServicesCodeScanner = "16.1.0"
@@ -153,6 +154,7 @@ androidx-work-runtime = { group = "androidx.work", name = "work-runtime", versio
 kotlinx-coroutines-android = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-android", version.ref = "coroutines" }
 shizuku-api = { group = "dev.rikka.shizuku", name = "api", version.ref = "shizuku" }
 shizuku-provider = { group = "dev.rikka.shizuku", name = "provider", version.ref = "shizuku" }
+openpgp-api = { group = "com.github.open-keychain.open-keychain", name = "openpgp-api", version.ref = "openpgpApi" }
 
 # --- Android: transport (Ktor client) ---
 ktor-client-core = { group = "io.ktor", name = "ktor-client-core" }

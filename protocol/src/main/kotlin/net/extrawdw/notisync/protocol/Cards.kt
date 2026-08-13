@@ -38,6 +38,7 @@ enum class Capability {
     SCREEN_MIRROR_ENCODER_AV1_HW,     // has a probed hardware AV1 encoder
     SCREEN_MIRROR_VIDEO_VISIBILITY_V1, // can pause/resume video without ending authenticated channels
     SCREEN_MIRROR_BROKER_RELAY_V1,    // can tunnel the E2E screen byte streams through the broker
+    OPENPGP_SIGN_V1,                   // can validate and handle remote OpenPGP commit-sign requests
 }
 
 /**
@@ -93,6 +94,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         Capability.SCREEN_MIRROR_ENCODER_AV1_HW -> 17
         Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 -> 18
         Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> 19
+        Capability.OPENPGP_SIGN_V1 -> 20
     }
 
     private fun capabilityForWireId(id: Int): Capability? = when (id) {
@@ -116,6 +118,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         17 -> Capability.SCREEN_MIRROR_ENCODER_AV1_HW
         18 -> Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1
         19 -> Capability.SCREEN_MIRROR_BROKER_RELAY_V1
+        20 -> Capability.OPENPGP_SIGN_V1
         else -> null
     }
 }
