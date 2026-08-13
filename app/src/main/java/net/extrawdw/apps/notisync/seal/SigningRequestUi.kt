@@ -173,7 +173,7 @@ internal fun SigningRequestListItem(
 internal fun SigningRequestDetail(
     stored: StoredOpenPgpRequest,
     requesterName: String,
-    requesterFingerprint: String,
+    requesterIdentityKeyFingerprint: String?,
     signingIdentity: String,
     modifier: Modifier = Modifier,
     contentPadding: PaddingValues = PaddingValues(horizontal = 20.dp, vertical = 8.dp),
@@ -222,7 +222,7 @@ internal fun SigningRequestDetail(
                     workingDirectory = stored.request.workingDirectory,
                     reference = commit?.parentIds?.firstOrNull()?.shortObjectId()
                         ?: commit?.treeId?.shortObjectId(),
-                    verificationCode = stored.request.payloadSha256.toHex().take(7),
+                    shortHash = stored.request.payloadSha256.toHex().take(7),
                 )
             }
         }
@@ -279,12 +279,10 @@ internal fun SigningRequestDetail(
                     title = stringResource(R.string.seal_approval_section),
                     icon = Icons.Outlined.VerifiedUser,
                 ) {
-                    SealDetailLine(
-                        icon = Icons.Outlined.Laptop,
-                        label = stringResource(R.string.seal_requested_by),
-                        value = requesterName,
-                        supporting = requesterFingerprint,
-                        supportingMonospace = true,
+                    RequestingDeviceLine(
+                        name = requesterName,
+                        safetyNumber = stored.senderClientId.value,
+                        identityKeyFingerprint = requesterIdentityKeyFingerprint,
                     )
                     stored.request.workingDirectory?.let { workingDirectory ->
                         HorizontalDivider()
@@ -327,12 +325,16 @@ internal fun SigningRequestDetail(
                         monospace = true,
                     )
                     SealRecordLine(
+                        stringResource(R.string.seal_sha256),
+                        stored.request.payloadSha256.toHex(),
+                        monospace = true,
+                    )
+                    SealRecordLine(
                         stringResource(R.string.seal_payload),
                         pluralStringResource(
                             R.plurals.seal_payload_value,
                             commit?.payloadBytes ?: 0,
                             commit?.payloadBytes ?: 0,
-                            stored.request.payloadSha256.toHex().take(12),
                         ),
                         monospace = true,
                     )
@@ -349,7 +351,7 @@ private fun SealHero(
     requesterName: String,
     workingDirectory: String?,
     reference: String?,
-    verificationCode: String,
+    shortHash: String,
 ) {
     val container = sealStatusContainer(status)
     val content = sealStatusContent(status)
@@ -377,12 +379,14 @@ private fun SealHero(
                     sealStatusLabel(status),
                     style = MaterialTheme.typography.labelLarge,
                 )
-                Text(
-                    subject,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                SelectionContainer {
+                    Text(
+                        subject,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
                     listOfNotNull(
                         requesterName,
@@ -392,7 +396,7 @@ private fun SealHero(
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
-                    stringResource(R.string.seal_verification_code, verificationCode),
+                    stringResource(R.string.seal_hash, shortHash),
                     style = MaterialTheme.typography.labelLarge,
                     fontFamily = FontFamily.Monospace,
                 )
@@ -411,16 +415,20 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
         title = stringResource(R.string.seal_commit_section),
         icon = Icons.Outlined.AccountTree,
     ) {
-        Text(
-            subject,
-            style = MaterialTheme.typography.titleLarge,
-        )
-        if (body.isNotEmpty()) {
+        SelectionContainer {
             Text(
-                body,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                subject,
+                style = MaterialTheme.typography.titleLarge,
             )
+        }
+        if (body.isNotEmpty()) {
+            SelectionContainer {
+                Text(
+                    body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         HorizontalDivider()
         IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_author), commit.author)
@@ -460,6 +468,60 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
                     monospace = true,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun RequestingDeviceLine(
+    name: String,
+    safetyNumber: String,
+    identityKeyFingerprint: String?,
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            Icons.Outlined.Laptop,
+            contentDescription = null,
+            modifier = Modifier.padding(top = 2.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(
+                stringResource(R.string.seal_requested_by),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Text(name)
+            DeviceIdentityValue(
+                label = stringResource(R.string.pair_field_verification_number),
+                value = safetyNumber,
+            )
+            DeviceIdentityValue(
+                label = stringResource(R.string.pair_field_identity_key),
+                value = identityKeyFingerprint ?: EM_DASH,
+            )
+        }
+    }
+}
+
+@Composable
+private fun DeviceIdentityValue(label: String, value: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SelectionContainer {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }
@@ -666,7 +728,7 @@ internal fun String.shortObjectId(): String = take(7)
 
 private fun String.formattedKeyId(): String = "0x" + chunked(4).joinToString(" ")
 
-private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
+private const val EM_DASH = "—"
 
 @Composable
 private fun rememberShortTimeFormatter(): DateFormat = remember {

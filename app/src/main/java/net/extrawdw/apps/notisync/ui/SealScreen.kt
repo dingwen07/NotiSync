@@ -121,7 +121,7 @@ fun SealScreen() {
     selected?.takeUnless { it.opensSealReview() }?.let { stored ->
         val peer = roster.firstOrNull { it.clientId == stored.senderClientId }
         val requesterName = peer?.displayName ?: stored.senderClientId.shortForm()
-        val requesterFingerprint = peer?.identityKeyFingerprint ?: stored.senderClientId.value
+        val requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint
         val identity = enrollment.displayIdentity
             ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
             ?: stringResource(R.string.seal_openpgp_identity)
@@ -129,7 +129,7 @@ fun SealScreen() {
             SigningRequestDetail(
                 stored = stored,
                 requesterName = requesterName,
-                requesterFingerprint = requesterFingerprint,
+                requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
                 signingIdentity = identity,
                 modifier = Modifier.fillMaxWidth(),
                 contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),

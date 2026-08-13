@@ -135,7 +135,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             screen = ReviewScreenState.Details(
                 request = if (stored.commit == null) stored.copy(commit = commit) else stored,
                 requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
-                requesterFingerprint = peer?.identityKeyFingerprint ?: stored.senderClientId.value,
+                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
             )
             if (approveFromNotification) {
@@ -298,7 +298,7 @@ private sealed interface ReviewScreenState {
     data class Details(
         val request: StoredOpenPgpRequest,
         val requesterName: String,
-        val requesterFingerprint: String,
+        val requesterIdentityKeyFingerprint: String?,
         val signingIdentity: String,
         val signing: Boolean = false,
     ) : ReviewScreenState
@@ -360,7 +360,7 @@ private fun ReviewContent(
             is ReviewScreenState.Details -> SigningRequestDetail(
                 stored = state.request,
                 requesterName = state.requesterName,
-                requesterFingerprint = state.requesterFingerprint,
+                requesterIdentityKeyFingerprint = state.requesterIdentityKeyFingerprint,
                 signingIdentity = state.signingIdentity,
                 contentPadding = PaddingValues(
                     start = 20.dp,

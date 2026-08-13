@@ -21,7 +21,7 @@ internal class SigningRequestNotice(
 }
 
 internal fun comparisonLine(request: OpenPgpSignSync): String =
-    "NotiSync Seal: compare verification code ${request.payloadSha256.toLowerHex().take(7)} " +
+    "NotiSync Seal: compare hash ${request.payloadSha256.toLowerHex().take(7)} " +
         "on your phone (request ${request.requestId.take(8)})"
 
 private fun openControllingTerminal(): OutputStream? {

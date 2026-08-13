@@ -38,9 +38,15 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             ?.takeIf(String::isNotBlank)
             ?.take(MAX_CONTEXT_CHARS)
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
-        val contentText = repositoryName?.let {
+        val requestText = repositoryName?.let {
             context.getString(R.string.seal_notification_body_with_repository, safeRequesterName, it)
         } ?: context.getString(R.string.seal_notification_body, safeRequesterName)
+        val identifiersText = context.getString(
+            R.string.seal_notification_identifiers,
+            requestId.take(8),
+            stored.request.payloadSha256.toHex().take(7),
+        )
+        val expandedText = "$requestText\n$identifiersText"
         val contentTitle = context.getString(R.string.seal_notification_title_with_commit, commitTitle)
         val intent = OpenPgpSignReviewActivity.intent(context, requestId)
         val pendingIntent = PendingIntent.getActivity(
@@ -74,7 +80,8 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
             .setContentTitle(contentTitle)
-            .setContentText(contentText)
+            .setContentText(requestText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
             .setSubText(context.getString(R.string.seal_name))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)

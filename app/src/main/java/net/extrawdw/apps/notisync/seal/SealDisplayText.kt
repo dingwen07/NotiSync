@@ -7,3 +7,5 @@ internal fun String.commitBody(): String = lineSequence().drop(1).joinToString("
 
 internal fun String.workingDirectoryName(): String =
     trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\').ifBlank { this }
+
+internal fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

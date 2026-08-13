@@ -203,8 +203,8 @@ commit headers/message and payload hash, but it does not contain or claim to sho
 shows the desktop process's working directory as requester-reported context; that path is authenticated
 as coming from the trusted device but is not part of the Git commit or its OpenPGP signature.
 
-When Git is run from an interactive terminal, `notisync-gpg` prints a seven-character verification code
-directly to that controlling terminal. Compare it with the code in Seal before approving. The adapter
+When Git is run from an interactive terminal, `notisync-gpg` prints a seven-character hash directly to
+that controlling terminal. Compare it with the hash in Seal before approving. The adapter
 never adds this message to stdout, which remains reserved for the detached signature required by Git;
 headless and IDE invocations without a controlling terminal simply omit the message.
 

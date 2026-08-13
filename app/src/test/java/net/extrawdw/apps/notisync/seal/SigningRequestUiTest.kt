@@ -49,6 +49,11 @@ class SigningRequestUiTest {
         assertEquals("Show repository context.\nKeep approval clear.", message.commitBody())
     }
 
+    @Test
+    fun payloadDigestProducesTheSharedVerificationCode() {
+        assertEquals("0123456", byteArrayOf(0x01, 0x23, 0x45, 0x67).toHex().take(7))
+    }
+
     private fun stored(
         state: OpenPgpRequestState,
         result: OpenPgpRequestResult?,

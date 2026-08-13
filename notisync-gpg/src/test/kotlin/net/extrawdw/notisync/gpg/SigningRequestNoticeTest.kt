@@ -27,7 +27,7 @@ class SigningRequestNoticeTest {
 
         assertTrue(SigningRequestNotice { terminal }.show(request))
         assertEquals(
-            "NotiSync Seal: compare verification code 6648f0d on your phone (request 01234567)\n",
+            "NotiSync Seal: compare hash 6648f0d on your phone (request 01234567)\n",
             terminal.toString(Charsets.UTF_8),
         )
     }
