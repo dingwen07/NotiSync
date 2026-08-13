@@ -24,10 +24,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.History
+import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -243,7 +243,7 @@ private enum class FeatureDestination(
     override val icon: ImageVector,
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
-    SEAL(Route.Seal, R.string.tab_seal, Icons.Outlined.VerifiedUser),
+    SEAL(Route.Seal, R.string.tab_seal, Icons.Outlined.Key),
 }
 
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20

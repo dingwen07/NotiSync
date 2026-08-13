@@ -23,6 +23,7 @@ import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
 import androidx.compose.material.icons.outlined.ChevronRight
+import androidx.compose.material.icons.outlined.Commit
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Folder
@@ -378,7 +379,7 @@ private fun SealHero(
                 )
                 Text(
                     subject,
-                    style = MaterialTheme.typography.headlineSmall,
+                    style = MaterialTheme.typography.titleLarge,
                     maxLines = 3,
                     overflow = TextOverflow.Ellipsis,
                 )
@@ -402,14 +403,25 @@ private fun SealHero(
 
 @Composable
 private fun CommitCard(commit: GitCommitDisplaySnapshot) {
+    val subject = commit.message.commitSubject().ifBlank {
+        stringResource(R.string.seal_commit_untitled)
+    }
+    val body = commit.message.commitBody()
     SealCard(
         title = stringResource(R.string.seal_commit_section),
         icon = Icons.Outlined.AccountTree,
     ) {
         Text(
-            commit.message.trimEnd().ifBlank { stringResource(R.string.seal_commit_untitled) },
+            subject,
             style = MaterialTheme.typography.titleLarge,
         )
+        if (body.isNotEmpty()) {
+            Text(
+                body,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         HorizontalDivider()
         IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_author), commit.author)
         HorizontalDivider()
@@ -419,12 +431,23 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
             horizontalArrangement = Arrangement.spacedBy(8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            ReferencePill(stringResource(R.string.seal_tree, commit.treeId.shortObjectId()))
+            ReferencePill(
+                label = commit.treeId.shortObjectId(),
+                icon = Icons.Outlined.AccountTree,
+                iconContentDescription = stringResource(R.string.seal_tree),
+            )
             if (commit.parentIds.isEmpty()) {
-                ReferencePill(stringResource(R.string.seal_commit_initial))
+                ReferencePill(
+                    label = stringResource(R.string.seal_commit_initial),
+                    icon = Icons.Outlined.Commit,
+                )
             } else {
                 commit.parentIds.forEach { parent ->
-                    ReferencePill(stringResource(R.string.seal_parent, parent.shortObjectId()))
+                    ReferencePill(
+                        label = parent.shortObjectId(),
+                        icon = Icons.Outlined.Commit,
+                        iconContentDescription = stringResource(R.string.seal_parent),
+                    )
                 }
             }
         }
@@ -483,18 +506,34 @@ private fun SealCard(
 }
 
 @Composable
-private fun ReferencePill(label: String) {
+private fun ReferencePill(
+    label: String,
+    icon: ImageVector? = null,
+    iconContentDescription: String? = null,
+) {
     Surface(
         shape = CircleShape,
         color = MaterialTheme.colorScheme.surfaceContainerHighest,
         contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
     ) {
-        Text(
-            label,
+        Row(
             modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
-            style = MaterialTheme.typography.labelLarge,
-            fontFamily = FontFamily.Monospace,
-        )
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            icon?.let {
+                Icon(
+                    imageVector = it,
+                    contentDescription = iconContentDescription,
+                    modifier = Modifier.size(16.dp),
+                )
+            }
+            Text(
+                label,
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = FontFamily.Monospace,
+            )
+        }
     }
 }
 
@@ -624,11 +663,6 @@ private data class GitIdentity(val name: String, val email: String, val timestam
 }
 
 internal fun String.shortObjectId(): String = take(7)
-
-internal fun String.commitSubject(): String = lineSequence().firstOrNull().orEmpty().trim()
-
-internal fun String.workingDirectoryName(): String =
-    trimEnd('/', '\\').substringAfterLast('/').substringAfterLast('\\').ifBlank { this }
 
 private fun String.formattedKeyId(): String = "0x" + chunked(4).joinToString(" ")
 

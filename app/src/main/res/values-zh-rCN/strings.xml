@@ -44,14 +44,14 @@
     <string name="seal_result_expired">已过期</string>
     <string name="seal_result_failed">失败</string>
     <string name="seal_result_legacy">结果不可用</string>
-    <string name="seal_review_title">审核提交</string>
-    <string name="seal_review_guidance">您是否识别此签名请求？批准前，请确认提交消息、身份和基础版本。此处不显示具体的文件更改。</string>
+    <string name="seal_review_title">审核 Git 提交</string>
+    <string name="seal_review_guidance">您是否识别此签名请求？批准前，请确认 Git 提交消息、身份和基础版本。此处不显示具体的文件更改。</string>
     <string name="seal_verification_code">验证码 %1$s</string>
-    <string name="seal_commit_section">提交</string>
+    <string name="seal_commit_section">Git 提交</string>
     <string name="seal_author">作者</string>
     <string name="seal_committer">提交者</string>
-    <string name="seal_tree">树 %1$s</string>
-    <string name="seal_parent">父提交 %1$s</string>
+    <string name="seal_tree">树</string>
+    <string name="seal_parent">父提交</string>
     <string name="seal_extra_header">%1$s</string>
     <string name="seal_approval_section">审批</string>
     <string name="seal_requested_by">请求设备</string>
@@ -76,8 +76,10 @@
     <string name="seal_request_invalid">无法显示此提交请求。</string>
     <string name="seal_request_changed">OpenKeychain 打开期间，请求发生了变化。</string>
     <string name="seal_not_ready">NotiSync Seal 尚未就绪。</string>
-    <string name="seal_notification_title">提交审批</string>
+    <string name="seal_notification_title">Git 提交签名</string>
+    <string name="seal_notification_title_with_commit">Git 提交签名：%1$s</string>
     <string name="seal_notification_body">%1$s 请求为一个 Git 提交签名</string>
+    <string name="seal_notification_body_with_repository">%1$s 请求为 %2$s 中的 Git 提交签名</string>
     <string name="seal_notification_channel">NotiSync Seal</string>
     <string name="seal_notification_channel_description">来自受信任电脑的 Git 提交审批请求</string>
 

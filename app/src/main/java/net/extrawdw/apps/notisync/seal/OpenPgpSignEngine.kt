@@ -66,11 +66,8 @@ class OpenPgpSignEngine(
         }
         when (accepted) {
             OpenPgpAcceptResult.STORED -> {
-                runCatching {
-                    notifications.post(
-                        request.requestId,
-                        deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
-                    )
+                store.find(request.requestId)?.let { stored ->
+                    postNotification(stored)
                 }
                 OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
             }
@@ -78,12 +75,7 @@ class OpenPgpSignEngine(
                 val stored = store.find(request.requestId)
                 when (stored?.state) {
                     OpenPgpRequestState.PENDING_REVIEW -> {
-                        runCatching {
-                            notifications.post(
-                                request.requestId,
-                                deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
-                            )
-                        }
+                        postNotification(stored)
                         OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
                     }
                     in OUTBOX_STATES -> OpenPgpSignResponseWorker.enqueue(context, request.requestId)
@@ -152,12 +144,7 @@ class OpenPgpSignEngine(
         store.requests.value.forEach { stored ->
             when (stored.state) {
                 OpenPgpRequestState.PENDING_REVIEW -> {
-                    runCatching {
-                        notifications.post(
-                            stored.request.requestId,
-                            deviceNameOf(stored.senderClientId) ?: stored.senderClientId.shortForm(),
-                        )
-                    }
+                    postNotification(stored)
                     OpenPgpSignExpiryWorker.enqueue(
                         context,
                         stored.request.requestId,
@@ -174,6 +161,15 @@ class OpenPgpSignEngine(
                 }
                 else -> Unit
             }
+        }
+    }
+
+    private fun postNotification(stored: StoredOpenPgpRequest) {
+        runCatching {
+            notifications.post(
+                stored,
+                deviceNameOf(stored.senderClientId) ?: stored.senderClientId.shortForm(),
+            )
         }
     }
 

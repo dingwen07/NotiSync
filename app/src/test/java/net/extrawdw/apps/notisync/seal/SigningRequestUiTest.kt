@@ -35,9 +35,18 @@ class SigningRequestUiTest {
         requireNotNull(snapshot)
         assertEquals("6648f0d", snapshot.parentIds.single().shortObjectId())
         assertEquals("Polish Seal review", snapshot.message.commitSubject())
+        assertEquals("", snapshot.message.commitBody())
         assertEquals(payload.size, snapshot.payloadBytes)
         assertEquals("NotiSync", "C:\\work\\NotiSync".workingDirectoryName())
         assertEquals("NotiSync", "/work/NotiSync/".workingDirectoryName())
+    }
+
+    @Test
+    fun commitMessageSeparatesSubjectFromBody() {
+        val message = "Polish Seal notification\n\nShow repository context.\nKeep approval clear.\n"
+
+        assertEquals("Polish Seal notification", message.commitSubject())
+        assertEquals("Show repository context.\nKeep approval clear.", message.commitBody())
     }
 
     private fun stored(
