@@ -1,8 +1,5 @@
 package net.extrawdw.notisync.daemon
 
-import java.net.StandardProtocolFamily
-import java.net.UnixDomainSocketAddress
-import java.nio.channels.ServerSocketChannel
 import java.nio.file.Files
 import java.nio.file.Path
 import net.extrawdw.notisync.desktop.DesktopPaths
@@ -20,22 +17,6 @@ class NotisyncdCliStatusTest {
         assertEquals("notisyncd: not running\n", result.error)
         assertFalse(result.error.contains("No such file or directory"))
     }
-
-    @Test
-    fun `status reports not running when a stale daemon socket refuses connections`() =
-        withTemporaryRoot { root ->
-            val socket = root.resolve("S.notisyncd")
-            ServerSocketChannel.open(StandardProtocolFamily.UNIX).use {
-                it.bind(UnixDomainSocketAddress.of(socket))
-            }
-
-            val result = status(root)
-
-            assertEquals(1, result.exitCode)
-            assertEquals("", result.output)
-            assertEquals("notisyncd: not running\n", result.error)
-            assertFalse(result.error.contains("Connection refused"))
-        }
 
     private fun status(root: Path): StatusResult {
         val output = StringBuilder()

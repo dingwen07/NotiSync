@@ -142,7 +142,7 @@ Set-Location NotiSync
 The POSIX installation defaults to `~/.local/share/notisync`; add the `~/.local/bin` `PATH` export
 to the shell's startup file. Windows installs under `%LOCALAPPDATA%\Programs\NotiSync` and places
 command shims in `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is normally already on `PATH`. Both
-installers honor `NOTISYNC_INSTALL_DIR` and `NOTISYNC_BIN_DIR` overrides. The Windows shims remember
+installers honor `NOTISYNC_INSTALL_DIR` and `NOTISYNC_BIN_DIR` overrides. Their command shims remember
 the verified JDK 21+ used for installation and use it whenever the current shell has no valid
 `JAVA_HOME`. Operational `notisync` commands and `nsrun` start the daemon automatically when needed:
 
