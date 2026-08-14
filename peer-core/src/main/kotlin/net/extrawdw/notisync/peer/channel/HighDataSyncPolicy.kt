@@ -17,12 +17,28 @@ object HighDataSyncPolicy {
      */
     fun validate(body: ByteArray, scope: Recipients, requesterId: ClientId? = null) {
         val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull()
-        if (sync?.kind == DataSyncKind.OPENPGP_SIGN) {
+        if (scope is Recipients.OnlyCapableSet) {
+            validateExactPush(scope)
+        } else if (sync?.kind == DataSyncKind.OPENPGP_SIGN) {
             validateOpenPgpRequest(sync, scope, requesterId)
         } else if (sync?.kind == DataSyncKind.SCREEN_MIRRORING || scope is Recipients.OnlyCapable) {
             validateScreenRequest(sync, scope, requesterId)
         } else {
             validateLegacyRouted(scope)
+        }
+    }
+
+    /**
+     * Exact-set HIGH routing is intentionally application agnostic. The submitting application is
+     * responsible for binding its signed body to this audience; the daemon only requires the
+     * capabilities needed for exact routing and filtered push delivery.
+     */
+    private fun validateExactPush(scope: Recipients.OnlyCapableSet) {
+        require(
+            scope.requiredCapabilities.contains(Capability.CAPABILITY_ROUTING_V1) &&
+                scope.requiredCapabilities.contains(Capability.PUSH_FILTERING),
+        ) {
+            "HIGH exact-set DATA_SYNC requires capability routing and push filtering"
         }
     }
 
@@ -56,8 +72,8 @@ object HighDataSyncPolicy {
 
     /** Preserve validation of an empty strict batch without manufacturing an unauthenticated body. */
     fun validateEmpty(scope: Recipients) {
-        require(scope !is Recipients.OnlyCapable) {
-            "HIGH screen DATA_SYNC requires a SCREEN_MIRRORING REQUEST body"
+        require(scope !is Recipients.OnlyCapable && scope !is Recipients.OnlyCapableSet) {
+            "HIGH exact-capability DATA_SYNC requires a matching request body"
         }
         validateLegacyRouted(scope)
     }
@@ -129,4 +145,5 @@ object HighDataSyncPolicy {
 
     private fun sha256(bytes: ByteArray): ByteArray =
         MessageDigest.getInstance("SHA-256").digest(bytes)
+
 }

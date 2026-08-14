@@ -35,6 +35,39 @@ import java.util.EnumSet
 class SecureFileSystem(
     private val expectedOwnerName: String? = System.getProperty("user.name")?.takeIf(String::isNotBlank),
 ) {
+    /** Verifies an existing owner-only directory without changing an arbitrary caller-selected path. */
+    fun validatePrivateDirectory(path: Path): Path {
+        val absolute = normalized(path)
+        rejectSymbolicLinkComponents(absolute)
+        require(Files.isDirectory(absolute, LinkOption.NOFOLLOW_LINKS)) { "$absolute is not a directory" }
+        verifyOwner(absolute)
+        val posix = Files.getFileAttributeView(
+            absolute,
+            PosixFileAttributeView::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+        if (posix != null) {
+            require(posix.readAttributes().permissions() == DIRECTORY_PERMISSIONS) {
+                "$absolute is not an owner-only directory"
+            }
+        } else {
+            val view = Files.getFileAttributeView(
+                absolute,
+                AclFileAttributeView::class.java,
+                LinkOption.NOFOLLOW_LINKS,
+            ) ?: throw IOException("$absolute has neither POSIX permissions nor an ACL security view")
+            val owner = Files.getOwner(absolute, LinkOption.NOFOLLOW_LINKS)
+            val expectedFlags = EnumSet.of(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
+            require(view.acl.size == 1 && view.acl.single().let { candidate ->
+                candidate.type() == AclEntryType.ALLOW &&
+                    candidate.principal() == owner &&
+                    candidate.permissions() == ALL_ACL_PERMISSIONS &&
+                    candidate.flags() == expectedFlags
+            }) { "$absolute does not have a private ACL for ${owner.name}" }
+        }
+        return absolute
+    }
+
     fun ensurePrivateDirectory(path: Path): Path {
         val absolute = normalized(path)
         rejectSymbolicLinkComponents(absolute)

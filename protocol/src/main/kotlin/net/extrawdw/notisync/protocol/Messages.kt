@@ -448,7 +448,10 @@ data class AssetSyncItem(
 /** Selects which sub-body a [DataSync] carries. Append-only — keep CBOR ordinals stable (the wire encodes
  *  the serial NAME; an unknown value throws on decode and is dropped by the peer's guarded DataSync decode). */
 @Serializable
-enum class DataSyncKind { ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING, OPENPGP_SIGN }
+enum class DataSyncKind {
+    ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING, OPENPGP_SIGN,
+    SSH_AGENT,
+}
 
 /** Lifecycle operation for one byte-exact remote OpenPGP signing request. Append-only. */
 @Serializable
@@ -761,6 +764,8 @@ data class DataSync(
     @CborLabel(8) val screenMirror: ScreenMirrorSync? = null,
     /** Byte-exact Git commit signing traffic, populated iff [kind] is [DataSyncKind.OPENPGP_SIGN]. */
     @CborLabel(9) val openPgpSign: OpenPgpSignSync? = null,
+    /** SSH key inventory, signing, import, cancellation, and authorization traffic. */
+    @CborLabel(10) val sshAgent: SshAgentSync? = null,
 )
 
 /**

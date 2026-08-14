@@ -19,9 +19,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -52,7 +54,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.screen.ScreenMirrorProbeBits
 import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SettingsScreen() {
@@ -115,6 +119,8 @@ fun SettingsScreen() {
     var benchmark by remember { mutableStateOf<BenchmarkState>(BenchmarkState.Idle) }
     var oversizedTest by remember { mutableStateOf<OversizedTestState>(OversizedTestState.Idle) }
     var rotateNow by remember { mutableStateOf<RotateNowState>(RotateNowState.Idle) }
+    var sshKeyStoreReset by remember { mutableStateOf<SshKeyStoreResetState>(SshKeyStoreResetState.Idle) }
+    var confirmSshKeyStoreReset by remember { mutableStateOf(false) }
     LaunchedEffect(advanced, probeKey) {
         if (!advanced) {
             probe = ServerProbe.Idle
@@ -234,6 +240,7 @@ fun SettingsScreen() {
                         benchmark = benchmark,
                         oversizedTest = oversizedTest,
                         rotateNow = rotateNow,
+                        sshKeyStoreReset = sshKeyStoreReset,
                         onRefresh = {
                             graph.transport.resetVerificationBackoff()
                             probeKey++
@@ -269,6 +276,7 @@ fun SettingsScreen() {
                             }
                         },
                         onResetChannels = { graph.resetNotificationChannels() },
+                        onResetSshKeyStore = { confirmSshKeyStoreReset = true },
                         onTamperSignature = {
                             graph.launchDurableTrustAction(context) {
                                 graph.trust.simulateSignatureTamper()
@@ -278,6 +286,46 @@ fun SettingsScreen() {
                 }
             }
         }
+    }
+
+    if (confirmSshKeyStoreReset) {
+        AlertDialog(
+            onDismissRequest = { confirmSshKeyStoreReset = false },
+            title = { Text(stringResource(R.string.diag_ssh_key_store_reset_title)) },
+            text = { Text(stringResource(R.string.diag_ssh_key_store_reset_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        confirmSshKeyStoreReset = false
+                        sshKeyStoreReset = SshKeyStoreResetState.Running
+                        scope.launch {
+                            val requestIds = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.requests().map { it.requestId }
+                                }
+                            }.getOrDefault(emptyList())
+                            val outcome = runCatching {
+                                withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.resetAllSshStorage()
+                                }
+                            }
+                            val removedRequestIds = outcome.getOrNull()?.removedRequestIds ?: requestIds
+                            removedRequestIds.forEach(graph.sshAgentNotifications::dismiss)
+                            graph.sshAgentProviderEngine?.publishInventory()
+                            sshKeyStoreReset = outcome.fold(
+                                onSuccess = { SshKeyStoreResetState.Done(it.removedKeyCount) },
+                                onFailure = { SshKeyStoreResetState.Failed(it.message ?: it.javaClass.simpleName) },
+                            )
+                        }
+                    },
+                ) { Text(stringResource(R.string.diag_ssh_key_store_reset_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmSshKeyStoreReset = false }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
     }
 }
 

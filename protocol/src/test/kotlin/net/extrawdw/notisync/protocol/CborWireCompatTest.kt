@@ -220,6 +220,21 @@ class CborWireCompatTest {
     }
 
     @Test
+    fun sshCapabilitiesUsePermanentIds21And22() {
+        val profile = ProfileUpdate(
+            ClientId("ssh"),
+            "SSH",
+            "android",
+            listOf(Capability.SSH_KEY_PROVIDER_V1, Capability.SSH_AGENT_V1),
+            1L,
+        )
+
+        val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
+
+        assertEquals(listOf(21, 22), raw.capabilities)
+    }
+
+    @Test
     fun preScreenReadersDropNewCapabilitiesWithoutDroppingTheirContainers() {
         val capabilities = listOf(
             Capability.CAPTURE,

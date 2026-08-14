@@ -18,6 +18,17 @@ import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
 import net.extrawdw.notisync.protocol.SendResult
 import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.SshAgentLimits
+import net.extrawdw.notisync.protocol.SshAgentSync
+import net.extrawdw.notisync.protocol.SshAgentSyncKind
+import net.extrawdw.notisync.protocol.SshConnectionDirection
+import net.extrawdw.notisync.protocol.SshDestinationContext
+import net.extrawdw.notisync.protocol.SshDestinationProvenance
+import net.extrawdw.notisync.protocol.SshKeysRequest
+import net.extrawdw.notisync.protocol.SshProcessContext
+import net.extrawdw.notisync.protocol.SshProcessContextSource
+import net.extrawdw.notisync.protocol.SshSignRequest
+import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.Transport
 import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.Urgency
@@ -31,6 +42,93 @@ import org.junit.Test
 import java.security.MessageDigest
 
 class SecureChannelPolicyTest {
+    @Test
+    fun highSshStartupInventoryRequiresBodyBoundExactProviderSet() = runBlocking {
+        val requester = ClientId("a".repeat(52))
+        val first = ClientId("b".repeat(52))
+        val second = ClientId("c".repeat(52))
+        val request = SshKeysRequest(
+            requestId = "1".repeat(32),
+            requesterClientId = requester,
+            requestedAt = 1_000,
+            expiresAt = 61_000,
+            startup = true,
+            targetProviderClientIds = listOf(first, second),
+            requesterInventoryNonce = ByteArray(32),
+        )
+        val body = ProtocolCodec.encodeToCbor(
+            DataSync(
+                DataSyncKind.SSH_AGENT,
+                sshAgent = SshAgentSync(kind = SshAgentSyncKind.KEYS_REQUEST, keysRequest = request),
+            ),
+        )
+        val exact = Recipients.OnlyCapableSet(setOf(first, second), SshAgentLimits.HIGH_PROVIDER_CAPABILITIES)
+
+        assertEquals(0, channel().send(MessageType.DATA_SYNC, body, exact, Urgency.HIGH))
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                channel().send(
+                    MessageType.DATA_SYNC,
+                    body,
+                    Recipients.OnlyCapableSet(
+                        setOf(first),
+                        setOf(Capability.CAPABILITY_ROUTING_V1, Capability.SSH_KEY_PROVIDER_V1),
+                    ),
+                    Urgency.HIGH,
+                )
+            }
+        }
+        Unit
+    }
+
+    @Test
+    fun highSshSignAllowsOnlyAnExactHighPartitionOfEligibleProviders() = runBlocking {
+        val requester = ClientId("a".repeat(52))
+        val highProvider = ClientId("b".repeat(52))
+        val normalProvider = ClientId("c".repeat(52))
+        val request = SshSignRequest(
+            requestId = "2".repeat(32),
+            requesterClientId = requester,
+            requestedAt = 1_000,
+            expiresAt = 121_000,
+            publicKeyBlob = byteArrayOf(1),
+            data = byteArrayOf(2),
+            flags = 0,
+            requestedSignatureAlgorithm = SshSignatureAlgorithm.SSH_ED25519,
+            eligibleProviderClientIds = listOf(highProvider, normalProvider),
+            authorizationGeneration = "3".repeat(32),
+            authorizationEpoch = 0,
+            processContext = SshProcessContext(SshProcessContextSource.UNAVAILABLE),
+            destinationContext = SshDestinationContext(
+                SshDestinationProvenance.UNKNOWN,
+                SshConnectionDirection.UNKNOWN,
+            ),
+            connectionId = "4".repeat(32),
+        )
+        val body = ProtocolCodec.encodeToCbor(
+            DataSync(
+                DataSyncKind.SSH_AGENT,
+                sshAgent = SshAgentSync(kind = SshAgentSyncKind.SIGN_REQUEST, signRequest = request),
+            ),
+        )
+        val exact = Recipients.OnlyCapableSet(setOf(highProvider), SshAgentLimits.HIGH_PROVIDER_CAPABILITIES)
+
+        assertEquals(0, channel().send(MessageType.DATA_SYNC, body, exact, Urgency.HIGH))
+        assertEquals(
+            0,
+            channel().send(
+                MessageType.DATA_SYNC,
+                body,
+                Recipients.OnlyCapableSet(
+                    setOf(ClientId("d".repeat(52))),
+                    SshAgentLimits.HIGH_PROVIDER_CAPABILITIES,
+                ),
+                Urgency.HIGH,
+            ),
+        )
+        Unit
+    }
+
     @Test
     fun highOpenPgpRequestRequiresExactCapabilityRoutedOwnMesh() = runBlocking {
         val requester = ClientId("a".repeat(52))

@@ -169,6 +169,14 @@ class SecureFileSystemTest : StorageTestSupport() {
         assertEquals("unchanged", Files.readString(outside))
     }
 
+    @Test
+    fun `private directory validation accepts an owner-only directory without mutation`() {
+        val directory = fileSystem.ensurePrivateDirectory(temporaryDirectory.resolve("private-existing"))
+
+        assertEquals(directory.toAbsolutePath().normalize(), fileSystem.validatePrivateDirectory(directory))
+        assertPrivateSecurity(directory, SecureFileSystem.DIRECTORY_PERMISSIONS)
+    }
+
     private fun assertPrivateSecurity(path: Path, expected: Set<java.nio.file.attribute.PosixFilePermission>) {
         val posix = Files.getFileAttributeView(path, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
         if (posix != null) {

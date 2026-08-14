@@ -15,6 +15,7 @@ pty4j = "0.13.4"
 jna = "5.14.0"
 slf4j = "2.0.18"
 bouncyCastle = "1.85"
+apacheSshd = "2.19.0"
 jmdns = "3.6.3"
 
 # Server
@@ -77,6 +78,10 @@ pty4j = { group = "org.jetbrains.pty4j", name = "pty4j", version.ref = "pty4j" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
 slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 bouncycastle-tls = { group = "org.bouncycastle", name = "bctls-jdk18on", version.ref = "bouncyCastle" }
+bouncycastle-provider = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncyCastle" }
+bouncycastle-pkix = { group = "org.bouncycastle", name = "bcpkix-jdk18on", version.ref = "bouncyCastle" }
+apache-sshd-common = { group = "org.apache.sshd", name = "sshd-common", version.ref = "apacheSshd" }
+apache-sshd-putty = { group = "org.apache.sshd", name = "sshd-putty", version.ref = "apacheSshd" }
 jmdns = { group = "org.jmdns", name = "jmdns", version.ref = "jmdns" }
 
 # --- Crypto (Tink): tink (JVM) for server, tink-android for app; shared module uses compileOnly ---

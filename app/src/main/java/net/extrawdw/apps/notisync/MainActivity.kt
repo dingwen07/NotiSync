@@ -89,6 +89,7 @@ import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
+import net.extrawdw.apps.notisync.ui.SshAgentScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -212,6 +213,9 @@ private sealed interface Route {
     data object Seal : Route
 
     @Serializable
+    data object SshAgent : Route
+
+    @Serializable
     data object Activity : Route
 
     @Serializable
@@ -244,6 +248,7 @@ private enum class FeatureDestination(
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
     SEAL(Route.Seal, R.string.tab_seal, Icons.Outlined.Key),
+    SSH_AGENT(Route.SshAgent, R.string.tab_ssh_agent, Icons.Outlined.Key),
 }
 
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
@@ -409,6 +414,7 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Seal> { SealScreen() }
+                composable<Route.SshAgent> { SshAgentScreen() }
                 composable<Route.Activity> { ActivityScreen() }
                 composable<Route.Settings> { SettingsScreen() }
             }

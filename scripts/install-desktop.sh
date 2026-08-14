@@ -12,7 +12,7 @@ fi
 
 resolve_java_home() {
     local java_executable
-    if [[ -n "${JAVA_HOME:-}" ]]; then
+    if [[ -n "${JAVA_HOME:-}" && "$JAVA_HOME" == /* && -x "$JAVA_HOME/bin/java" ]]; then
         if [[ "$JAVA_HOME" != /* ]]; then
             echo "install-desktop: JAVA_HOME must be an absolute path" >&2
             return 1
@@ -23,7 +23,13 @@ resolve_java_home() {
             return 1
         fi
     else
+        if [[ -n "${JAVA_HOME:-}" ]]; then
+            echo "install-desktop: ignoring invalid JAVA_HOME: $JAVA_HOME" >&2
+        fi
         java_executable="$(command -v java 2>/dev/null || true)"
+        if [[ -z "$java_executable" && -d "$HOME/.jdks" ]]; then
+            java_executable="$(find "$HOME/.jdks" -mindepth 2 -maxdepth 2 -type f -path '*/bin/java' -perm -u+x -print 2>/dev/null | sort -r | head -n 1)"
+        fi
         if [[ -z "$java_executable" || ! -x "$java_executable" ]]; then
             echo "install-desktop: JDK 21 or newer is required; set JAVA_HOME or add java to PATH" >&2
             return 1
@@ -67,8 +73,9 @@ resolve_java_home() {
 install_dir="${NOTISYNC_INSTALL_DIR:-$HOME/.local/share/notisync}"
 bin_dir="${NOTISYNC_BIN_DIR:-$HOME/.local/bin}"
 distribution_dir="$project_dir/notisyncd/build/install/notisyncd"
-launchers=(notisyncd notisync notisync-gpg nsrun nsscreen)
+launchers=(notisyncd notisync notisync-gpg notisync-ssh-agent nsrun nsscreen)
 remembered_java_home="$(resolve_java_home)"
+export JAVA_HOME="$remembered_java_home"
 
 if [[ "$install_dir" != /* || "$bin_dir" != /* ]]; then
     echo "install-desktop: install directories must be absolute paths" >&2
@@ -104,6 +111,8 @@ stage_dir="$(mktemp -d "$(dirname -- "$install_dir")/.notisync-install.XXXXXX")"
 shim_stage_dir="$(mktemp -d "$bin_dir/.notisync-shims.XXXXXX")"
 backup_dir=""
 daemon_was_running=false
+agent_was_running=false
+agent_bind_addresses=()
 
 cleanup() {
     if [[ -n "$stage_dir" && -d "$stage_dir" ]]; then
@@ -141,6 +150,19 @@ for launcher in "${launchers[@]}"; do
     chmod 0755 "$shim_stage_dir/$launcher"
 done
 
+if agent_status="$("$distribution_dir/bin/notisync-ssh-agent" status 2>/dev/null)"; then
+    agent_was_running=true
+    if printf '%s\n' "$agent_status" | grep -qx 'Endpoint selection: explicit'; then
+        while IFS= read -r address; do
+            [[ -n "$address" ]] && agent_bind_addresses+=("$address")
+        done < <(printf '%s\n' "$agent_status" | sed -n 's/^Endpoint: //p')
+    fi
+    echo "Stopping the running NotiSync SSH Agent..."
+    "$distribution_dir/bin/notisync-ssh-agent" stop
+else
+    echo "NotiSync SSH Agent is not running."
+fi
+
 if "$distribution_dir/bin/notisyncd" status >/dev/null 2>&1; then
     daemon_was_running=true
     echo "Stopping the running NotiSync daemon..."
@@ -172,6 +194,15 @@ if [[ "$daemon_was_running" == true ]]; then
     echo "Starting the updated NotiSync daemon..."
     "$install_dir/bin/notisyncd" start
 fi
+if [[ "$agent_was_running" == true ]]; then
+    echo "Starting the updated NotiSync SSH Agent..."
+    agent_start_arguments=()
+    for address in "${agent_bind_addresses[@]}"; do
+        agent_start_arguments+=(-a "$address")
+    done
+    agent_start_arguments+=(start)
+    "$install_dir/bin/notisync-ssh-agent" "${agent_start_arguments[@]}"
+fi
 
 trap - EXIT HUP INT TERM
 
@@ -179,6 +210,9 @@ echo "Installed NotiSync in $install_dir"
 printf 'Installed commands:'
 printf ' %s' "${launchers[@]}"
 printf '\n'
+echo 'Start the SSH Agent with: notisync-ssh-agent start'
+echo 'Override its endpoint with: notisync-ssh-agent -a /absolute/path/to/S.ssh-agent start'
+echo 'Then print SSH_AUTH_SOCK setup with: notisync-ssh-agent env'
 
 case ":${PATH:-}:" in
     *":$bin_dir:"*) ;;

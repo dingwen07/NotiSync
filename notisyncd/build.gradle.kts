@@ -32,6 +32,7 @@ dependencies {
 
     implementation(libs.jna)
     runtimeOnly(project(":notisync-gpg"))
+    runtimeOnly(project(":notisync-ssh-agent"))
     if (!isWindows) {
         // nsrun and nsscreen remain POSIX-only; the Windows distribution is daemon/CLI only.
         runtimeOnly(project(":nsrun"))
@@ -66,6 +67,7 @@ private data class DesktopLauncher(
 private val additionalLaunchers = listOf(
     DesktopLauncher("notisync", "net.extrawdw.notisync.cli.NotisyncMainKt"),
     DesktopLauncher("notisync-gpg", "net.extrawdw.notisync.gpg.NotisyncGpgMainKt"),
+    DesktopLauncher("notisync-ssh-agent", "net.extrawdw.notisync.sshagent.NotisyncSshAgentMainKt"),
 ) + if (isWindows) {
     emptyList()
 } else {
@@ -159,7 +161,7 @@ distributions {
                 into("licenses")
             }
             if (isMacOs) {
-                listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg").forEach { launcher ->
+                listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg", "notisync-ssh-agent").forEach { launcher ->
                     from(compileMacLauncher) {
                         into("bin")
                         rename("notisync-launcher", launcher)
@@ -252,7 +254,7 @@ private val stageScreenReleaseDist = tasks.register<Sync>("stageScreenReleaseDis
     }
 
     if (isMacOs) {
-        listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg").forEach { launcher ->
+        listOf("notisyncd", "nsrun", "nsscreen", "notisync", "notisync-gpg", "notisync-ssh-agent").forEach { launcher ->
             from(compileMacLauncher) {
                 into("bin")
                 rename("notisync-launcher", launcher)
@@ -311,7 +313,7 @@ listOf("installDist", "distZip", "distTar").forEach { taskName ->
     }
 }
 
-private val launcherSmokeTasks = (listOf("notisyncd", "notisync", "notisync-gpg") + if (isWindows) {
+private val launcherSmokeTasks = (listOf("notisyncd", "notisync", "notisync-gpg", "notisync-ssh-agent") + if (isWindows) {
     emptyList()
 } else {
     listOf("nsrun", "nsscreen")
@@ -323,6 +325,7 @@ private val launcherSmokeTasks = (listOf("notisyncd", "notisync", "notisync-gpg"
         description = "Runs the installed $launcher launcher with --help."
         dependsOn(tasks.installDist)
         commandLine(installedExecutable, "--help")
+        environment("JAVA_HOME", System.getProperty("java.home"))
         environment(
             "JAVA_OPTS",
             "-Xms32m -Xmx128m -Dnotisync.dataDir=${smokeDataDirectory.absolutePath}",

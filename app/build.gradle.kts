@@ -58,6 +58,7 @@ android {
     }
     packaging {
         resources.pickFirsts += "META-INF/LICENSE.md"
+        resources.pickFirsts += "META-INF/DEPENDENCIES"
     }
 }
 
@@ -80,9 +81,14 @@ dependencies {
     implementation(project(":protocol"))
     implementation(project(":protocol-crypto"))
     implementation(project(":peer-core"))
+    implementation(project(":ssh-agent-core"))
     implementation(project(":scrcpy-server"))
     implementation(project(":screen-session"))
     implementation(libs.tink.android)
+    implementation(libs.apache.sshd.common)
+    implementation(libs.apache.sshd.putty)
+    implementation(libs.bouncycastle.provider)
+    implementation(libs.bouncycastle.pkix)
 
     // Compose / Material 3 Expressive
     implementation(platform(libs.androidx.compose.bom))

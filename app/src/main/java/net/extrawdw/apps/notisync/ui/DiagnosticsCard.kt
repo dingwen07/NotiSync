@@ -91,6 +91,13 @@ sealed interface RotateNowState {
     data object Failed : RotateNowState
 }
 
+sealed interface SshKeyStoreResetState {
+    data object Idle : SshKeyStoreResetState
+    data object Running : SshKeyStoreResetState
+    data class Done(val removedKeyCount: Int) : SshKeyStoreResetState
+    data class Failed(val message: String) : SshKeyStoreResetState
+}
+
 /** One round-trip to the broker, off the main thread. Returns a Result even when calls fail (nulls). */
 suspend fun probeServer(graph: AppGraph): ServerProbe = withContext(Dispatchers.IO) {
     val health = runCatching { graph.transport.fetchHealth() }.getOrNull()
@@ -123,12 +130,14 @@ fun DiagnosticsCard(
     benchmark: BenchmarkState,
     oversizedTest: OversizedTestState,
     rotateNow: RotateNowState,
+    sshKeyStoreReset: SshKeyStoreResetState,
     onRefresh: () -> Unit,
     onClearToken: () -> Unit,
     onBenchmark: () -> Unit,
     onSendOversizedTest: () -> Unit,
     onRotateNow: () -> Unit,
     onResetChannels: () -> Int,
+    onResetSshKeyStore: () -> Unit,
     onTamperSignature: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -274,6 +283,42 @@ fun DiagnosticsCard(
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
+            }
+
+            HorizontalDivider()
+            Text(
+                stringResource(R.string.diag_ssh_key_store),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
+                stringResource(R.string.diag_ssh_key_store_hint),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            OutlinedButton(
+                onClick = onResetSshKeyStore,
+                enabled = sshKeyStoreReset !is SshKeyStoreResetState.Running,
+            ) {
+                Text(
+                    if (sshKeyStoreReset is SshKeyStoreResetState.Running) {
+                        stringResource(R.string.diag_ssh_key_store_resetting)
+                    } else {
+                        stringResource(R.string.diag_ssh_key_store_reset)
+                    },
+                )
+            }
+            when (sshKeyStoreReset) {
+                is SshKeyStoreResetState.Done -> Text(
+                    stringResource(R.string.diag_ssh_key_store_reset_done, sshKeyStoreReset.removedKeyCount),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                is SshKeyStoreResetState.Failed -> Text(
+                    stringResource(R.string.diag_ssh_key_store_reset_failed, sshKeyStoreReset.message),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error,
+                )
+                else -> Unit
             }
 
             // Key epoch — always shown in advanced diagnostics: the operational (signing) + HPKE (encryption)

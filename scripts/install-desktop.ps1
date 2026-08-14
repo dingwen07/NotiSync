@@ -29,22 +29,37 @@ function Resolve-InstallPath {
 
 function Resolve-JavaHome {
     $configuredJavaHome = $env:JAVA_HOME
+    $javaExecutable = $null
     if (-not [string]::IsNullOrWhiteSpace($configuredJavaHome)) {
         $candidate = [Environment]::ExpandEnvironmentVariables($configuredJavaHome.Trim().Trim('"'))
-        if (-not [IO.Path]::IsPathRooted($candidate)) {
-            throw 'install-desktop: JAVA_HOME must be an absolute path'
+        if ([IO.Path]::IsPathRooted($candidate)) {
+            $configuredJava = Join-Path ([IO.Path]::GetFullPath($candidate)) 'bin\java.exe'
+            if (Test-Path -LiteralPath $configuredJava -PathType Leaf) {
+                $javaExecutable = $configuredJava
+            } else {
+                Write-Warning "install-desktop: ignoring invalid JAVA_HOME: $candidate"
+            }
+        } else {
+            Write-Warning 'install-desktop: ignoring non-absolute JAVA_HOME'
         }
-        $javaExecutable = Join-Path ([IO.Path]::GetFullPath($candidate)) 'bin\java.exe'
-        if (-not (Test-Path -LiteralPath $javaExecutable -PathType Leaf)) {
-            throw "install-desktop: JAVA_HOME does not contain bin\java.exe: $candidate"
-        }
-    } else {
+    }
+    if ($null -eq $javaExecutable) {
         $javaCommand = Get-Command java.exe -CommandType Application -ErrorAction SilentlyContinue |
             Select-Object -First 1
-        if ($null -eq $javaCommand) {
-            throw 'install-desktop: JDK 21 or newer is required; set JAVA_HOME or add java.exe to PATH'
+        if ($null -ne $javaCommand) {
+            $javaExecutable = $javaCommand.Source
         }
-        $javaExecutable = $javaCommand.Source
+    }
+    if ($null -eq $javaExecutable -and -not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        $jdkRoot = Join-Path $env:USERPROFILE '.jdks'
+        $javaExecutable = Get-ChildItem -LiteralPath $jdkRoot -Directory -ErrorAction SilentlyContinue |
+            Sort-Object Name -Descending |
+            ForEach-Object { Join-Path $_.FullName 'bin\java.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
+            Select-Object -First 1
+    }
+    if ($null -eq $javaExecutable) {
+        throw 'install-desktop: JDK 21 or newer is required; set JAVA_HOME, add java.exe to PATH, or install under %USERPROFILE%\.jdks'
     }
 
     # Ask Java for its real home so PATH shims and symbolic links do not get recorded as a JDK root.
@@ -146,8 +161,9 @@ $scriptDirectory = $PSScriptRoot
 $projectDirectory = [IO.Path]::GetFullPath((Join-Path $scriptDirectory '..'))
 $gradleWrapper = Join-Path $projectDirectory 'gradlew.bat'
 $distributionDirectory = Join-Path $projectDirectory 'notisyncd\build\install\notisyncd'
-$launchers = @('notisyncd', 'notisync', 'notisync-gpg')
+$launchers = @('notisyncd', 'notisync', 'notisync-gpg', 'notisync-ssh-agent')
 $rememberedJavaHome = Resolve-JavaHome
+$env:JAVA_HOME = $rememberedJavaHome
 
 $localAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 if ([string]::IsNullOrWhiteSpace($localAppData) -or -not [IO.Path]::IsPathRooted($localAppData)) {
@@ -204,6 +220,9 @@ $installedNewDistribution = $false
 $hadPreviousInstallation = $false
 $daemonWasRunning = $false
 $daemonWasStopped = $false
+$agentWasRunning = $false
+$agentWasStopped = $false
+$agentBindAddresses = @()
 $installedShimPaths = New-Object System.Collections.Generic.List[string]
 $backedUpShimPaths = @{}
 
@@ -213,6 +232,7 @@ try {
         Copy-Item -Destination $stageDirectory -Recurse -Force
 
     $builtDaemon = Join-Path $distributionDirectory 'bin\notisyncd.bat'
+    $builtAgent = Join-Path $distributionDirectory 'bin\notisync-ssh-agent.bat'
     $previousErrorActionPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue'
@@ -227,6 +247,37 @@ try {
         $statusExitCode = if ($statusSucceeded) { 0 } else { 1 }
     }
     $daemonWasRunning = $statusExitCode -eq 0
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue'
+        $LASTEXITCODE = $null
+        $agentStatusOutput = @(& $builtAgent status 2>&1)
+        $agentStatusSucceeded = $?
+        $agentStatusExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($null -eq $agentStatusExitCode) {
+        $agentStatusExitCode = if ($agentStatusSucceeded) { 0 } else { 1 }
+    }
+    $agentWasRunning = $agentStatusExitCode -eq 0
+    $agentHadExplicitAddresses = $agentWasRunning -and
+        ($agentStatusOutput | ForEach-Object { $_.ToString() }) -contains 'Endpoint selection: explicit'
+    if ($agentHadExplicitAddresses) {
+        $agentBindAddresses = @(
+            $agentStatusOutput |
+                ForEach-Object { $_.ToString() } |
+                Where-Object { $_.StartsWith('Endpoint: ') } |
+                ForEach-Object { $_.Substring('Endpoint: '.Length) }
+        )
+    }
+    if ($agentWasRunning) {
+        Write-Host 'Stopping the running NotiSync SSH Agent...'
+        Invoke-CheckedCommand $builtAgent 'stop'
+        $agentWasStopped = $true
+    } else {
+        Write-Host 'NotiSync SSH Agent is not running.'
+    }
     if ($daemonWasRunning) {
         Write-Host 'Stopping the running NotiSync daemon...'
         Invoke-CheckedCommand $builtDaemon 'stop'
@@ -277,6 +328,16 @@ exit /b %ERRORLEVEL%
         Invoke-CheckedCommand (Join-Path $installDirectory 'bin\notisyncd.bat') 'start'
         $daemonWasStopped = $false
     }
+    if ($agentWasRunning) {
+        Write-Host 'Starting the updated NotiSync SSH Agent...'
+        $agentStartArguments = @()
+        foreach ($address in $agentBindAddresses) {
+            $agentStartArguments += @('-a', $address)
+        }
+        $agentStartArguments += 'start'
+        Invoke-CheckedCommand (Join-Path $installDirectory 'bin\notisync-ssh-agent.bat') @agentStartArguments
+        $agentWasStopped = $false
+    }
 } catch {
     $failure = $_
 
@@ -324,6 +385,25 @@ exit /b %ERRORLEVEL%
             Write-Warning "install-desktop: could not restart the previous daemon: $($_.Exception.Message)"
         }
     }
+    if ($agentWasRunning -and $agentWasStopped) {
+        $restoredAgent = Join-Path $installDirectory 'bin\notisync-ssh-agent.bat'
+        if (-not (Test-Path -LiteralPath $restoredAgent -PathType Leaf)) {
+            $restoredAgent = Join-Path $backupDirectory 'bin\notisync-ssh-agent.bat'
+        }
+        if (-not (Test-Path -LiteralPath $restoredAgent -PathType Leaf)) {
+            $restoredAgent = Join-Path $distributionDirectory 'bin\notisync-ssh-agent.bat'
+        }
+        try {
+            $agentStartArguments = @()
+            foreach ($address in $agentBindAddresses) {
+                $agentStartArguments += @('-a', $address)
+            }
+            $agentStartArguments += 'start'
+            Invoke-CheckedCommand $restoredAgent @agentStartArguments
+        } catch {
+            Write-Warning "install-desktop: could not restart the previous SSH Agent: $($_.Exception.Message)"
+        }
+    }
 
     throw $failure
 } finally {
@@ -344,6 +424,9 @@ foreach ($obsoletePath in @($backupDirectory, $shimBackupDirectory)) {
 
 Write-Host "Installed NotiSync in $installDirectory"
 Write-Host "Installed commands: $($launchers -join ' ')"
+Write-Host 'Start the SSH Agent with: notisync-ssh-agent start'
+Write-Host 'Override its endpoint with: notisync-ssh-agent -a \\.\pipe\my-ssh-agent start'
+Write-Host 'Then print shell/OpenSSH endpoint configuration with: notisync-ssh-agent env'
 
 $pathEntries = $env:Path -split ';' | ForEach-Object { $_.TrimEnd('\', '/') }
 if ($pathEntries -notcontains $binDirectory.TrimEnd('\', '/')) {

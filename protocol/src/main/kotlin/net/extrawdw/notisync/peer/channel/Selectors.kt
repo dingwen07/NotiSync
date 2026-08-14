@@ -49,6 +49,31 @@ sealed interface Recipients {
         val id: ClientId,
         val requiredCapabilities: Set<Capability>,
     ) : Recipients
+
+    /**
+     * An exact allow-list of own devices whose complete capability declarations satisfy every requirement.
+     * This avoids the time-of-check/time-of-use expansion possible when callers approximate an allow-list by
+     * excluding the current complement from [OwnMeshFiltered]. Security-sensitive bodies must also repeat
+     * their authorized peer ids inside the signed encrypted payload.
+     */
+    @Serializable
+    data class OnlyCapableSet(
+        val ids: Set<ClientId>,
+        val requiredCapabilities: Set<Capability>,
+    ) : Recipients {
+        init {
+            require(ids.isNotEmpty() && ids.size <= MAX_IDS) {
+                "OnlyCapableSet ids must contain 1..$MAX_IDS entries"
+            }
+            require(requiredCapabilities.isNotEmpty()) {
+                "OnlyCapableSet requires at least one capability"
+            }
+        }
+
+        private companion object {
+            const val MAX_IDS = 64
+        }
+    }
 }
 
 /**

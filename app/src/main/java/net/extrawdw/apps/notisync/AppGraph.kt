@@ -107,6 +107,9 @@ import net.extrawdw.apps.notisync.seal.OpenPgpSignEngine
 import net.extrawdw.apps.notisync.seal.OpenPgpSignNotificationPresenter
 import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpSigningProvider
+import net.extrawdw.apps.notisync.sshagent.SshAgentNotificationPresenter
+import net.extrawdw.apps.notisync.sshagent.SshAgentProviderEngine
+import net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
@@ -205,6 +208,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
     Capability.RECEIVE_RUNS,
     Capability.OPENPGP_SIGN_V1,
+    Capability.SSH_KEY_PROVIDER_V1,
 )
 
 class AppGraph(private val app: Application) {
@@ -280,6 +284,12 @@ class AppGraph(private val app: Application) {
         private set
     var openPgpSignEngine: OpenPgpSignEngine? = null
         private set
+    lateinit var sshKeyProviderStore: SshKeyProviderStore
+        private set
+    lateinit var sshAgentNotifications: SshAgentNotificationPresenter
+        private set
+    var sshAgentProviderEngine: SshAgentProviderEngine? = null
+        private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
 
@@ -336,6 +346,8 @@ class AppGraph(private val app: Application) {
         openPgpEnrollment = OpenPgpEnrollmentStore(ds, scope)
         openPgpSignStore = OpenPgpSignStore(app)
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
+        sshKeyProviderStore = SshKeyProviderStore(app)
+        sshAgentNotifications = SshAgentNotificationPresenter(app)
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
         // eager `true` default), then re-apply on every toggle — DataStore stays the single source of
@@ -589,6 +601,17 @@ class AppGraph(private val app: Application) {
         )
         openPgpSignEngine = openPgpSigning
         scope.launch { openPgpSigning.reconcile() }
+        val sshProvider = SshAgentProviderEngine(
+            context = app,
+            providerClientId = identity.clientId,
+            channel = channel,
+            store = sshKeyProviderStore,
+            notifications = sshAgentNotifications,
+            scope = scope,
+            deviceNameOf = { id -> trust.displayName(id) },
+        )
+        sshAgentProviderEngine = sshProvider
+        scope.launch { sshProvider.reconcile() }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
             channel = channel,
@@ -657,6 +680,7 @@ class AppGraph(private val app: Application) {
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
             onOpenPgpSignSync = openPgpSigning::onOpenPgpSignSync,
+            onSshAgentSync = sshProvider::onSshAgentSync,
             onScreenMirrorSync = { message, sync ->
                 screenController.onScreenMirrorSync(message, sync)
                 screenRequester.onScreenMirrorSync(message, sync)

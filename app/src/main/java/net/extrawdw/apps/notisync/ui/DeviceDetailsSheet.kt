@@ -565,6 +565,8 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1 -> R.string.device_capability_screen_visibility
         Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> R.string.device_capability_screen_broker_relay
         Capability.OPENPGP_SIGN_V1 -> R.string.device_capability_openpgp_sign
+        Capability.SSH_KEY_PROVIDER_V1 -> R.string.device_capability_ssh_key_provider
+        Capability.SSH_AGENT_V1 -> R.string.device_capability_ssh_agent
     },
 )
 

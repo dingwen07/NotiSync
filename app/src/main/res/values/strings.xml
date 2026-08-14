@@ -7,6 +7,7 @@
     <string name="tab_ios">iPhone</string>
     <string name="tab_run">Run</string>
     <string name="tab_seal" translatable="false">Seal</string>
+    <string name="tab_ssh_agent" translatable="false">SSH Agent</string>
     <string name="features_title">Tools</string>
     <string name="open_features">Open features</string>
     <string name="tab_activity">Activity</string>
@@ -19,8 +20,98 @@
     <string name="action_remove">Remove</string>
     <string name="action_keep">Keep</string>
     <string name="action_cancel">Cancel</string>
+    <string name="action_continue">Continue</string>
+    <string name="action_save">Save</string>
     <string name="action_back">Back</string>
+    <string name="action_paste">Paste</string>
     <string name="error_unknown">Unknown error</string>
+
+    <!-- SSH Agent key provider -->
+    <string name="ssh_agent_name" translatable="false">NotiSync SSH Agent</string>
+    <string name="ssh_agent_provider_title">SSH key provider</string>
+    <string name="ssh_agent_provider_ready">Ready · %1$d keys available to your trusted computers</string>
+    <string name="ssh_agent_provider_unavailable">The SSH key provider is not ready.</string>
+    <string name="ssh_agent_generate">Generate key</string>
+    <string name="ssh_agent_generate_title">Generate SSH key</string>
+    <string name="ssh_agent_import_file">Import file</string>
+    <string name="ssh_agent_import_title">Import SSH private key</string>
+    <string name="ssh_agent_passphrase">Passphrase</string>
+    <string name="ssh_agent_import_storage_help">OpenSSH and PuTTY PPK v2/v3 keys are supported. Choose device-bound Android Keystore storage or an encrypted exportable key.</string>
+    <string name="ssh_agent_import_text">Paste key</string>
+    <string name="ssh_agent_export">Export private key</string>
+    <string name="ssh_agent_export_title">Export SSH private key</string>
+    <string name="ssh_agent_export_password">Export password (optional)</string>
+    <string name="ssh_agent_export_password_confirm">Confirm export password</string>
+    <string name="ssh_agent_export_password_help">A password encrypts the exported PKCS#8 PEM independently of this device. Enter the same password when importing it later.</string>
+    <string name="ssh_agent_export_password_mismatch">Passwords do not match.</string>
+    <string name="ssh_agent_export_plaintext_warning">Leaving both fields blank exports the private key as plaintext.</string>
+    <string name="ssh_agent_export_choose_location">Choose where to save the private key</string>
+    <string name="ssh_agent_export_preparing">Preparing biometric-protected export</string>
+    <string name="ssh_agent_export_prepare_failed">Unable to prepare SSH key export</string>
+    <string name="ssh_agent_export_not_exportable">This SSH key is not exportable</string>
+    <string name="ssh_agent_export_auth_title">Export SSH private key</string>
+    <string name="ssh_agent_export_auth_subtitle">Authenticate to decrypt one private-key export</string>
+    <string name="ssh_agent_export_auth_lost">Biometric export operation was lost</string>
+    <string name="ssh_agent_export_writing">Writing private key</string>
+    <string name="ssh_agent_export_key_changed">SSH key changed before export completed</string>
+    <string name="ssh_agent_export_complete">SSH private key exported</string>
+    <string name="ssh_agent_export_failed">SSH private-key export failed</string>
+    <string name="ssh_agent_export_open_failed">The selected export file could not be opened</string>
+    <string name="ssh_agent_import_text_title">Paste SSH private key</string>
+    <string name="ssh_agent_private_key_text">Private-key text</string>
+    <string name="ssh_agent_clipboard_key_too_large">The clipboard is too large to import as an SSH private key.</string>
+    <string name="ssh_agent_key_name">Key name</string>
+    <string name="ssh_agent_rsa_key_size">RSA key size</string>
+    <string name="ssh_agent_storage">Private-key storage</string>
+    <string name="ssh_agent_export_settings">Export</string>
+    <string name="ssh_agent_keep_export_backup">Keep a biometric-protected export backup</string>
+    <string name="ssh_agent_prefer_strongbox">Prefer StrongBox when available</string>
+    <string name="ssh_agent_require_biometric_each_use">Require strong biometric for every signature</string>
+    <string name="ssh_agent_strong_biometric_unavailable">Per-use authentication is unavailable until a strong biometric is enrolled.</string>
+    <string name="ssh_agent_storage_auth_title">Protect SSH private key</string>
+    <string name="ssh_agent_storage_auth_subtitle">Authenticate once to store the encrypted SSH key</string>
+    <string name="ssh_agent_storage_auth_unavailable">Biometric key storage is unavailable from this screen.</string>
+    <string name="ssh_agent_storage_auth_failed">Unable to store the biometric-protected SSH key.</string>
+    <string name="ssh_agent_sign_failed">The selected SSH key could not complete this signature.</string>
+    <string name="ssh_agent_request_unavailable">This SSH signature request is no longer available.</string>
+    <string name="ssh_agent_storage_auth_cancelled">SSH key storage was cancelled.</string>
+    <string name="ssh_agent_storage_auth_lost">The authenticated SSH key-storage operation was lost.</string>
+    <string name="ssh_agent_generated_device_bound">The private key is generated inside Android Keystore and cannot be exported. The actual security level is checked after generation.</string>
+    <string name="ssh_agent_generated_exportable">A biometric-gated export copy is encrypted separately. Signing uses a non-exportable Android Keystore copy when supported, with an encrypted software fallback.</string>
+    <string name="ssh_agent_exportability_summary">Exportability: %1$s</string>
+    <string name="ssh_agent_exportable">Exportable</string>
+    <string name="ssh_agent_non_exportable">Non-exportable</string>
+    <string name="ssh_agent_storage_summary">Storage: %1$s · %2$s</string>
+    <string name="ssh_agent_storage_android_keystore">Android Keystore signing key</string>
+    <string name="ssh_agent_storage_wrapped">Wrapped software key</string>
+    <string name="ssh_agent_security_strongbox" translatable="false">StrongBox</string>
+    <string name="ssh_agent_security_tee" translatable="false">TEE</string>
+    <string name="ssh_agent_security_software">System software security</string>
+    <string name="ssh_agent_security_unknown">Security level unavailable</string>
+    <string name="ssh_agent_biometric_each_use_enabled">Strong biometric required for every signature</string>
+    <string name="ssh_agent_rename">Rename</string>
+    <string name="ssh_agent_key_settings_title">SSH key settings</string>
+    <string name="ssh_agent_approval_policy">Approval policy</string>
+    <string name="ssh_agent_approval_always">Ask every time</string>
+    <string name="ssh_agent_approval_remember">Allow remembered authorization</string>
+    <string name="ssh_agent_approval_help">Remembered access is created only after a separate device authentication and is invalidated when the desktop agent locks.</string>
+    <string name="ssh_agent_section_keys">Keys</string>
+    <string name="ssh_agent_section_active">Active requests</string>
+    <string name="ssh_agent_section_history">History</string>
+    <string name="ssh_agent_no_keys">No SSH keys yet. Generate one here or import one with ssh-add from a trusted computer.</string>
+    <string name="ssh_agent_no_history">SSH signature and import requests will appear here.</string>
+    <string name="ssh_agent_copy_public">Copy public key</string>
+    <string name="ssh_agent_delete_title">Remove SSH key?</string>
+    <string name="ssh_agent_delete_body">%1$s will no longer be available to any connected SSH Agent.</string>
+    <string name="ssh_agent_request_sign">SSH signature</string>
+    <string name="ssh_agent_request_import">SSH key import</string>
+    <string name="ssh_agent_review">Review</string>
+    <string name="ssh_agent_state_pending">Awaiting approval</string>
+    <string name="ssh_agent_state_sending">Sending response</string>
+    <string name="ssh_agent_state_sent">Completed</string>
+    <string name="ssh_agent_state_cancelled">Canceled</string>
+    <string name="ssh_agent_state_expired">Expired</string>
+    <string name="ssh_agent_error">SSH Agent: %1$s</string>
 
     <!-- NotiSync Seal: remote Git commit approval and OpenPGP signing -->
     <string name="seal_name" translatable="false">NotiSync Seal</string>
@@ -330,6 +421,15 @@
     <string name="diag_channels">Notification channels</string>
     <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
     <string name="diag_channels_reset">Reset notification channels</string>
+    <string name="diag_ssh_key_store">SSH Agent key store</string>
+    <string name="diag_ssh_key_store_hint">Recovery action for the SSH Agent feature. This removes all SSH keys, pending requests, request history, and remembered SSH approvals from this device. Other NotiSync keys and data are not affected.</string>
+    <string name="diag_ssh_key_store_reset">Reset SSH Key Store</string>
+    <string name="diag_ssh_key_store_resetting">Resetting SSH Key Store…</string>
+    <string name="diag_ssh_key_store_reset_title">Reset SSH Key Store?</string>
+    <string name="diag_ssh_key_store_reset_body">All SSH Agent keys, pending requests, request history, and remembered approvals on this device will be permanently deleted. This cannot be undone.</string>
+    <string name="diag_ssh_key_store_reset_confirm">Reset SSH Key Store</string>
+    <string name="diag_ssh_key_store_reset_done">SSH Key Store reset. Removed %1$d keys.</string>
+    <string name="diag_ssh_key_store_reset_failed">SSH Key Store reset failed: %1$s</string>
     <plurals name="diag_channels_reset_done">
         <item quantity="one">Deleted %1$d channel.</item>
         <item quantity="other">Deleted %1$d channels.</item>
@@ -652,4 +752,6 @@
     <string name="onboarding_iphone_pair">Pair iPhone</string>
     <string name="onboarding_pair_title">Connect your other devices</string>
     <string name="onboarding_pair_body">Install NotiSync on your other devices, then pair them from the Devices tab.</string>
+    <string name="device_capability_ssh_key_provider">SSH key provider</string>
+    <string name="device_capability_ssh_agent">SSH agent client</string>
 </resources>

@@ -11,6 +11,12 @@ data class DesktopPaths(
     val daemonConfig: Path = dataDirectory.resolve("notisyncd.conf")
     val nsrunConfig: Path = dataDirectory.resolve("nsrun.conf")
     val notisyncGpgConfig: Path = dataDirectory.resolve("notisync-gpg.conf")
+    val sshAgentSocket: Path = dataDirectory.resolve("S.ssh-agent")
+    val sshAgentConfig: Path = dataDirectory.resolve("notisync-ssh-agent.conf")
+    val sshAgentDatabase: Path = dataDirectory.resolve("notisync-ssh-agent.sqlite3")
+    val sshAgentPid: Path = dataDirectory.resolve("notisync-ssh-agent.pid")
+    val sshAgentLock: Path = dataDirectory.resolve("notisync-ssh-agent.lock")
+    val sshAgentLog: Path = logDirectory.resolve("notisync-ssh-agent.log")
     val runsDirectory: Path = dataDirectory.resolve("runs")
 
     companion object {
@@ -71,6 +77,8 @@ object PrivateFiles {
     private val secure = SecureFileSystem()
 
     fun ensureDirectory(path: Path): Path = secure.ensurePrivateDirectory(path)
+
+    fun validatePrivateDirectory(path: Path): Path = secure.validatePrivateDirectory(path)
 
     fun validatePrivateFile(path: Path) {
         secure.validatePrivateFile(path)

@@ -15,6 +15,7 @@
     <!-- Runtime permission for LAN sockets and DNS-SD when targeting Android 17 / SDK 37. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Android 16 promoted ongoing notifications (Live Updates). The sender still has to request
          promotion on each eligible notification; the system/user remains the final arbiter. -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
@@ -152,6 +153,22 @@
             android:exported="false"
             android:launchMode="singleTask"
             android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sshagent.SshAgentReviewActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sshagent.SshKeyExportActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
             android:theme="@style/Theme.NotiSync" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
@@ -315,6 +332,10 @@
         <!-- Rejects a pending Seal request directly from its notification. -->
         <receiver
             android:name=".seal.OpenPgpSignActionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".sshagent.SshAgentActionReceiver"
             android:exported="false" />
 
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's
