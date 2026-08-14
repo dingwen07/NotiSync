@@ -8,7 +8,6 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshAgentSync
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshConnectionDirection
@@ -108,9 +107,8 @@ class SignCoordinator(
             connectionId = connectionId,
             confirmationRequired = confirmationRequired,
         )
-        val digest = sha256(ProtocolCodec.encodeToCbor(request))
-        val operation = SignOperation(request, digest, method)
-        journal.begin(request, digest)
+        val operation = SignOperation(request, method)
+        journal.begin(request)
         if (!accepting.get()) {
             val decision = SignDecision.Failed("SSH agent is locked")
             journal.terminal(request.requestId, decision, null, now())
@@ -206,7 +204,6 @@ class SignCoordinator(
                     kind = SshAgentSyncKind.SIGN_REQUEST_CANCELLED,
                     signRequestCancelled = SshSignRequestCancelled(
                         operation.request.requestId,
-                        operation.requestDigest,
                         requesterClientId,
                         now(),
                         reason,
@@ -220,7 +217,6 @@ class SignCoordinator(
 
     private class SignOperation(
         val request: SshSignRequest,
-        val requestDigest: ByteArray,
         val method: SshSignatureMethod,
     ) {
         val future = CompletableFuture<SignDecision>()
@@ -231,7 +227,6 @@ class SignCoordinator(
             provider in request.eligibleProviderClientIds &&
                 result.providerClientId == provider &&
                 result.requesterClientId == request.requesterClientId &&
-                result.requestDigest.contentEquals(requestDigest) &&
                 result.publicKeyBlobSha256.contentEquals(sha256(request.publicKeyBlob)) &&
                 (result.signature?.let { signature ->
                     signature.authorizationGeneration == request.authorizationGeneration &&
@@ -289,20 +284,19 @@ class SignCoordinator(
     }
 
     private class SignOperationJournal(private val database: AgentDatabase) {
-        fun begin(request: SshSignRequest, digest: ByteArray) = database.transaction { connection ->
+        fun begin(request: SshSignRequest) = database.transaction { connection ->
             connection.prepareStatement(
                 """
                 INSERT INTO sign_operation_log(
-                    request_id, request_digest, public_blob_hash, data_sha256, eligible_provider_ids, created_at
-                ) VALUES(?,?,?,?,?,?)
+                    request_id, public_blob_hash, data_sha256, eligible_provider_ids, created_at
+                ) VALUES(?,?,?,?,?)
                 """.trimIndent(),
             ).use { statement ->
                 statement.setString(1, request.requestId)
-                statement.setBytes(2, digest)
-                statement.setBytes(3, sha256(request.publicKeyBlob))
-                statement.setBytes(4, sha256(request.data))
-                statement.setString(5, request.eligibleProviderClientIds.joinToString(",", transform = ClientId::value))
-                statement.setLong(6, request.requestedAt)
+                statement.setBytes(2, sha256(request.publicKeyBlob))
+                statement.setBytes(3, sha256(request.data))
+                statement.setString(4, request.eligibleProviderClientIds.joinToString(",", transform = ClientId::value))
+                statement.setLong(5, request.requestedAt)
                 statement.executeUpdate()
             }
         }

@@ -431,19 +431,17 @@ data class SshProviderFailure(
 @Serializable
 data class SshSignResult(
     @CborLabel(0) val requestId: String,
-    @CborLabel(1) @ByteString val requestDigest: ByteArray,
-    @CborLabel(2) val requesterClientId: ClientId,
-    @CborLabel(3) @ByteString val publicKeyBlobSha256: ByteArray,
-    @CborLabel(4) val kind: SshSignResultKind,
-    @CborLabel(5) val resultAt: Long,
-    @CborLabel(6) val providerClientId: ClientId,
-    @CborLabel(7) val signature: SshSignatureResult? = null,
-    @CborLabel(8) val rejection: SshUserRejection? = null,
-    @CborLabel(9) val failure: SshProviderFailure? = null,
+    @CborLabel(1) val requesterClientId: ClientId,
+    @CborLabel(2) @ByteString val publicKeyBlobSha256: ByteArray,
+    @CborLabel(3) val kind: SshSignResultKind,
+    @CborLabel(4) val resultAt: Long,
+    @CborLabel(5) val providerClientId: ClientId,
+    @CborLabel(6) val signature: SshSignatureResult? = null,
+    @CborLabel(7) val rejection: SshUserRejection? = null,
+    @CborLabel(8) val failure: SshProviderFailure? = null,
 ) {
     fun validationError(): String? {
         if (!requestId.isSshOperationId()) return "invalid sign result request id"
-        if (requestDigest.size != SshAgentLimits.DIGEST_BYTES) return "invalid request digest"
         if (requesterClientId.value.isBlank()) return "result requesterClientId must not be blank"
         if (publicKeyBlobSha256.size != SshAgentLimits.DIGEST_BYTES) return "invalid public key digest"
         if (resultAt <= 0) return "resultAt must be positive"
@@ -469,15 +467,13 @@ data class SshSignResult(
 @Serializable
 data class SshSignRequestCancelled(
     @CborLabel(0) val requestId: String,
-    @CborLabel(1) @ByteString val requestDigest: ByteArray,
-    @CborLabel(2) val requesterClientId: ClientId,
-    @CborLabel(3) val cancelledAt: Long,
-    @CborLabel(4) val reason: SshSignCancellationReason,
-    @CborLabel(5) val targetProviderClientIds: List<ClientId>,
+    @CborLabel(1) val requesterClientId: ClientId,
+    @CborLabel(2) val cancelledAt: Long,
+    @CborLabel(3) val reason: SshSignCancellationReason,
+    @CborLabel(4) val targetProviderClientIds: List<ClientId>,
 ) {
     fun validationError(): String? = when {
         !requestId.isSshOperationId() -> "invalid cancelled request id"
-        requestDigest.size != SshAgentLimits.DIGEST_BYTES -> "invalid cancelled request digest"
         requesterClientId.value.isBlank() -> "cancel requesterClientId must not be blank"
         cancelledAt <= 0 -> "cancelledAt must be positive"
         !targetProviderClientIds.isCanonicalProviderList(requesterClientId) ->
@@ -488,8 +484,8 @@ data class SshSignRequestCancelled(
 
 @Serializable
 data class SshImportConstraints(
-    @CborLabel(0) val lifetimeSeconds: Long? = null,
-    @CborLabel(1) val confirmationRequired: Boolean = false,
+    @CborLabel(0) val lifetimeSeconds: Long?,
+    @CborLabel(1) val confirmationRequired: Boolean,
 ) {
     fun validationError(): String? =
         if (lifetimeSeconds != null && lifetimeSeconds !in 1..SshAgentLimits.MAX_AGENT_ADD_LIFETIME_SECONDS) {
@@ -539,18 +535,16 @@ data class SshImportRequest(
 @Serializable
 data class SshImportResult(
     @CborLabel(0) val requestId: String,
-    @CborLabel(1) @ByteString val requestDigest: ByteArray,
-    @CborLabel(2) val requesterClientId: ClientId,
-    @CborLabel(3) val providerClientId: ClientId,
-    @CborLabel(4) val resultAt: Long,
-    @CborLabel(5) val kind: SshImportResultKind,
-    @CborLabel(6) val providerKeyId: String? = null,
-    @CborLabel(7) @ByteString val publicKeyBlob: ByteArray? = null,
-    @CborLabel(8) val message: String? = null,
+    @CborLabel(1) val requesterClientId: ClientId,
+    @CborLabel(2) val providerClientId: ClientId,
+    @CborLabel(3) val resultAt: Long,
+    @CborLabel(4) val kind: SshImportResultKind,
+    @CborLabel(5) val providerKeyId: String? = null,
+    @CborLabel(6) @ByteString val publicKeyBlob: ByteArray? = null,
+    @CborLabel(7) val message: String? = null,
 ) {
     fun validationError(): String? {
         if (!requestId.isSshOperationId()) return "invalid import result request id"
-        if (requestDigest.size != SshAgentLimits.DIGEST_BYTES) return "invalid import result request digest"
         if (requesterClientId.value.isBlank()) return "import result requesterClientId must not be blank"
         if (providerClientId.value.isBlank() || providerClientId == requesterClientId) return "invalid import provider"
         if (resultAt <= 0) return "import resultAt must be positive"
@@ -595,16 +589,14 @@ data class SshForgetAuthorization(
 @Serializable
 data class SshForgetResult(
     @CborLabel(0) val requestId: String,
-    @CborLabel(1) @ByteString val requestDigest: ByteArray,
-    @CborLabel(2) val requesterClientId: ClientId,
-    @CborLabel(3) val providerClientId: ClientId,
-    @CborLabel(4) val resultAt: Long,
-    @CborLabel(5) val kind: SshForgetResultKind,
-    @CborLabel(6) val invalidatedThroughEpoch: Long,
+    @CborLabel(1) val requesterClientId: ClientId,
+    @CborLabel(2) val providerClientId: ClientId,
+    @CborLabel(3) val resultAt: Long,
+    @CborLabel(4) val kind: SshForgetResultKind,
+    @CborLabel(5) val invalidatedThroughEpoch: Long,
 ) {
     fun validationError(): String? = when {
         !requestId.isSshOperationId() -> "invalid forget result request id"
-        requestDigest.size != SshAgentLimits.DIGEST_BYTES -> "invalid forget result request digest"
         requesterClientId.value.isBlank() -> "forget result requesterClientId must not be blank"
         providerClientId.value.isBlank() || providerClientId == requesterClientId -> "invalid forget result provider"
         resultAt <= 0 -> "forget resultAt must be positive"

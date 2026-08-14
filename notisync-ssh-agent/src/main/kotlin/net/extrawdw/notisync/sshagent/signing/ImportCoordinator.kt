@@ -1,11 +1,9 @@
 package net.extrawdw.notisync.sshagent.signing
 
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshAgentSync
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshImportConstraints
@@ -13,6 +11,7 @@ import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshImportResult
 import net.extrawdw.notisync.protocol.SshImportResultKind
 import net.extrawdw.notisync.protocol.SshImportSourceType
+import net.extrawdw.notisync.ssh.core.AgentAddConstraints
 import net.extrawdw.notisync.ssh.core.ParsedAgentIdentity
 import net.extrawdw.notisync.sshagent.AgentConfig
 import net.extrawdw.notisync.sshagent.bridge.ProviderRoster
@@ -29,7 +28,6 @@ class ImportCoordinator(
 ) : IdentityImporter, SshInboundHandler {
     private data class Pending(
         val provider: ClientId,
-        val requestDigest: ByteArray,
         val future: CompletableFuture<Boolean>,
     )
 
@@ -46,15 +44,11 @@ class ImportCoordinator(
             expiresAt = requestedAt + TimeUnit.MINUTES.toMillis(5),
             sourceType = SshImportSourceType.AGENT_IDENTITY,
             agentIdentity = identityPayload,
-            constraints = SshImportConstraints(
-                lifetimeSeconds = parsed.constraints.lifetimeSeconds,
-                confirmationRequired = parsed.constraints.confirm,
-            ),
+            constraints = importConstraints(parsed.constraints),
             suggestedName = parsed.comment.takeIf(String::isNotBlank),
         )
         val operation = Pending(
             configured,
-            sha256(ProtocolCodec.encodeToCbor(request)),
             CompletableFuture(),
         )
         check(pending.putIfAbsent(request.requestId, operation) == null)
@@ -76,7 +70,7 @@ class ImportCoordinator(
     override fun onImportResult(authenticatedProvider: ClientId, result: SshImportResult) {
         val operation = pending[result.requestId] ?: return
         if (authenticatedProvider != operation.provider || result.providerClientId != operation.provider ||
-            result.requesterClientId != requesterClientId || !result.requestDigest.contentEquals(operation.requestDigest)
+            result.requesterClientId != requesterClientId
         ) return
         operation.future.complete(
             result.kind == SshImportResultKind.IMPORTED || result.kind == SshImportResultKind.ALREADY_PRESENT,
@@ -84,12 +78,17 @@ class ImportCoordinator(
     }
 
     private fun randomId(): String = ByteArray(16).also(RANDOM::nextBytes).joinToString("") { "%02x".format(it) }
-    private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
-
     private companion object {
         val RANDOM = SecureRandom()
     }
 }
+
+/** Omits the optional protocol object when ssh-add supplied no constraints. */
+internal fun importConstraints(constraints: AgentAddConstraints): SshImportConstraints? =
+    if (constraints.lifetimeSeconds == null && !constraints.confirm) null else SshImportConstraints(
+        lifetimeSeconds = constraints.lifetimeSeconds,
+        confirmationRequired = constraints.confirm,
+    )
 
 class CompositeSshInboundHandler(private vararg val handlers: SshInboundHandler) : SshInboundHandler {
     override fun onSignResult(authenticatedProvider: ClientId, result: net.extrawdw.notisync.protocol.SshSignResult) =

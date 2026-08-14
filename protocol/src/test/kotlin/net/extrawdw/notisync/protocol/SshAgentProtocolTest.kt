@@ -77,7 +77,6 @@ class SshAgentProtocolTest {
     fun signResultKeepsUserRejectionDistinctFromProviderFailure() {
         val base = SshSignResult(
             requestId = id('3'),
-            requestDigest = ByteArray(32),
             requesterClientId = requester,
             publicKeyBlobSha256 = ByteArray(32) { 1 },
             kind = SshSignResultKind.REJECTED_BY_USER,

@@ -25,28 +25,10 @@ class SshKeyStoragePolicyTest {
     }
 
     @Test
-    fun onlyFrameworkRejectedEd25519ImportUsesWrappedOperationalFallback() {
-        val frameworkFailure = java.security.KeyStoreException(
-            "java.lang.IllegalArgumentException: Unsupported key algorithm: Ed25519",
-        )
-        assertTrue(
-            SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(
-                SshKeyAlgorithm.SSH_ED25519,
-                frameworkFailure,
-            ),
-        )
-        assertFalse(
-            SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(
-                SshKeyAlgorithm.SSH_RSA,
-                frameworkFailure,
-            ),
-        )
-        assertFalse(
-            SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(
-                SshKeyAlgorithm.SSH_ED25519,
-                IllegalStateException("detached public key mismatch"),
-            ),
-        )
+    fun anyRejectedEd25519DirectImportUsesWrappedOperationalFallback() {
+        assertTrue(SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(SshKeyAlgorithm.SSH_ED25519))
+        assertFalse(SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(SshKeyAlgorithm.SSH_RSA))
+        assertFalse(SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(SshKeyAlgorithm.ECDSA_NISTP256))
     }
 
     @Test

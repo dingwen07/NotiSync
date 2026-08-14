@@ -8,14 +8,23 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.security.InvalidKeyException
+import java.security.Key
+import java.security.KeyFactory
+import java.security.KeyFactorySpi
 import java.security.KeyPair
 import java.security.KeyPairGenerator
+import java.security.PrivateKey
+import java.security.Provider
 import java.security.PublicKey
+import java.security.Security
 import java.security.Signature
 import java.security.interfaces.ECPrivateKey
 import java.security.interfaces.EdECPrivateKey
 import java.security.interfaces.RSAPrivateCrtKey
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.InvalidKeySpecException
+import java.security.spec.KeySpec
 
 class SshCoreTest {
     @Test
@@ -232,6 +241,30 @@ class SshCoreTest {
         }
     }
 
+    @Test
+    fun agentAddParserDoesNotUseTheDefaultEd25519KeyFactory() {
+        val edPublicBlob = SshPublicKeyCodec.encode(ed25519.public)
+        val edPublic = SshWireReader(edPublicBlob).run { readUtf8(); readString() }
+        val edSeed = (ed25519.private as EdECPrivateKey).bytes.orElseThrow()
+        val payload = SshWireWriter()
+            .writeUtf8(SshKeyType.ED25519.wireName)
+            .writeString(edPublic)
+            .writeString(edSeed + edPublic)
+            .writeUtf8("Ed25519")
+            .toByteArray()
+        val rejectingProvider = RejectingEd25519KeyFactoryProvider()
+
+        synchronized(PROVIDER_ORDER_TEST_LOCK) {
+            assertEquals(1, Security.insertProviderAt(rejectingProvider, 1))
+            try {
+                assertEquals(rejectingProvider.name, KeyFactory.getInstance("Ed25519").provider.name)
+                assertEquals(SshKeyType.ED25519, AgentAddIdentityParser.parse(payload, false).type)
+            } finally {
+                Security.removeProvider(rejectingProvider.name)
+            }
+        }
+    }
+
     private fun sign(method: SshSignatureMethod, keyPair: KeyPair, data: ByteArray): ByteArray =
         Signature.getInstance(method.jcaName).run {
             initSign(keyPair.private)
@@ -240,6 +273,7 @@ class SshCoreTest {
         }
 
     private companion object {
+        val PROVIDER_ORDER_TEST_LOCK = Any()
         val ed25519: KeyPair by lazy { KeyPairGenerator.getInstance("Ed25519").generateKeyPair() }
         val rsa: KeyPair by lazy {
             KeyPairGenerator.getInstance("RSA").apply { initialize(2048) }.generateKeyPair()
@@ -248,4 +282,29 @@ class SshCoreTest {
             KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         }
     }
+}
+
+@Suppress("DEPRECATION")
+class RejectingEd25519KeyFactoryProvider : Provider(
+    "RejectingEd25519KeyFactory",
+    1.0,
+    "Test provider that models an OEM-owned default Ed25519 KeyFactory",
+) {
+    init {
+        put("KeyFactory.Ed25519", RejectingEd25519KeyFactorySpi::class.java.name)
+    }
+}
+
+class RejectingEd25519KeyFactorySpi : KeyFactorySpi() {
+    override fun engineGeneratePublic(keySpec: KeySpec): PublicKey =
+        throw InvalidKeySpecException("default provider must not reconstruct SSH software keys")
+
+    override fun engineGeneratePrivate(keySpec: KeySpec): PrivateKey =
+        throw InvalidKeySpecException("default provider must not reconstruct SSH software keys")
+
+    override fun <T : KeySpec> engineGetKeySpec(key: Key, keySpec: Class<T>): T =
+        throw InvalidKeySpecException("default provider must not reconstruct SSH software keys")
+
+    override fun engineTranslateKey(key: Key): Key =
+        throw InvalidKeyException("default provider must not reconstruct SSH software keys")
 }

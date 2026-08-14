@@ -48,7 +48,7 @@ class SshAgentProviderEngine(
             SshAgentSyncKind.SIGN_REQUEST_CANCELLED -> {
                 val cancel = requireNotNull(sync.signRequestCancelled)
                 if (cancel.requesterClientId == message.senderId && providerClientId in cancel.targetProviderClientIds &&
-                    store.cancelSign(cancel.requestId, message.senderId, cancel.requestDigest, now())
+                    store.cancelSign(cancel.requestId, message.senderId, now())
                 ) notifications.dismiss(cancel.requestId)
             }
             SshAgentSyncKind.IMPORT_REQUEST -> receiveImportRequest(message, requireNotNull(sync.importRequest))
@@ -66,7 +66,6 @@ class SshAgentProviderEngine(
                 outcome.cancelledRequestIds.forEach(notifications::dismiss)
                 val result = SshForgetResult(
                     forget.requestId,
-                    sha256(ProtocolCodec.encodeToCbor(forget)),
                     forget.requesterClientId,
                     providerClientId,
                     now(),
@@ -261,7 +260,6 @@ class SshAgentProviderEngine(
         if (!store.owns(request.publicKeyBlob, now())) {
             val result = SshSignResult(
                 request.requestId,
-                sha256(ProtocolCodec.encodeToCbor(request)),
                 request.requesterClientId,
                 sha256(request.publicKeyBlob),
                 SshSignResultKind.PROVIDER_FAILURE,

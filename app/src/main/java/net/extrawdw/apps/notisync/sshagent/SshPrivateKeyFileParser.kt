@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.sshagent
 
 import java.io.ByteArrayInputStream
 import java.io.InputStreamReader
+import java.nio.CharBuffer
 import java.nio.charset.StandardCharsets
 import java.security.KeyPair
 import java.security.Signature
@@ -13,15 +14,16 @@ import net.extrawdw.notisync.ssh.core.SshKeyType
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import org.apache.sshd.common.NamedResource
 import org.apache.sshd.common.config.keys.FilePasswordProvider
-import org.apache.sshd.common.config.keys.loader.KeyPairResourceParser
-import org.apache.sshd.common.config.keys.loader.openssh.OpenSSHKeyPairResourceParser
 import org.apache.sshd.putty.PuttyKeyUtils
 import org.bouncycastle.asn1.pkcs.PrivateKeyInfo
+import org.bouncycastle.crypto.params.AsymmetricKeyParameter
 import org.bouncycastle.crypto.params.ECPrivateKeyParameters
 import org.bouncycastle.crypto.params.ECPublicKeyParameters
 import org.bouncycastle.crypto.params.Ed25519PrivateKeyParameters
 import org.bouncycastle.crypto.params.RSAKeyParameters
 import org.bouncycastle.crypto.params.RSAPrivateCrtKeyParameters
+import org.bouncycastle.crypto.util.OpenSSHPrivateKeyUtil
+import org.bouncycastle.crypto.util.PrivateKeyInfoFactory
 import org.bouncycastle.crypto.util.PrivateKeyFactory
 import org.bouncycastle.crypto.util.SubjectPublicKeyInfoFactory
 import org.bouncycastle.jce.provider.BouncyCastleProvider
@@ -29,6 +31,7 @@ import org.bouncycastle.openssl.PEMParser
 import org.bouncycastle.openssl.jcajce.JcaPEMKeyConverter
 import org.bouncycastle.openssl.jcajce.JceOpenSSLPKCS8DecryptorProviderBuilder
 import org.bouncycastle.pkcs.PKCS8EncryptedPrivateKeyInfo
+import org.bouncycastle.util.io.pem.PemReader
 
 data class ParsedSshPrivateKeyFile(
     val algorithm: SshKeyAlgorithm,
@@ -38,32 +41,28 @@ data class ParsedSshPrivateKeyFile(
 
 /** Bounded OpenSSH, PPK v2-v3, and PKCS#8 parser with a signing consistency check. */
 object SshPrivateKeyFileParser {
-    private val parser: KeyPairResourceParser by lazy {
-        KeyPairResourceParser.aggregate(
-            OpenSSHKeyPairResourceParser.INSTANCE,
-            PuttyKeyUtils.DEFAULT_INSTANCE,
-        )
-    }
-
     fun parse(fileBytes: ByteArray, passphrase: CharArray?): ParsedSshPrivateKeyFile {
         require(fileBytes.isNotEmpty() && fileBytes.size <= SshAgentLimits.MAX_IMPORT_BYTES) {
             "SSH private-key file is outside the allowed size limit"
         }
-        require(!detectEncryption(fileBytes) || (passphrase != null && passphrase.isNotEmpty())) {
+        val encrypted = detectEncryption(fileBytes)
+        require(!encrypted || (passphrase != null && passphrase.isNotEmpty())) {
             "A passphrase is required for this encrypted SSH private key"
         }
         val pairs = try {
-            if (isPkcs8Pem(fileBytes)) {
-                listOf(parsePkcs8(fileBytes, passphrase))
-            } else {
-                val password = passphrase?.concatToString().orEmpty()
-                ByteArrayInputStream(fileBytes).use { input ->
-                    parser.loadKeyPairs(
-                        null,
-                        NamedResource.ofName("selected-private-key"),
-                        FilePasswordProvider.of(password),
-                        input,
-                    ).toList()
+            when {
+                isPkcs8Pem(fileBytes) -> listOf(parsePkcs8(fileBytes, passphrase))
+                isOpenSshPem(fileBytes) -> listOf(parseOpenSsh(fileBytes, passphrase.takeIf { encrypted }))
+                else -> {
+                    val password = passphrase?.concatToString().orEmpty()
+                    ByteArrayInputStream(fileBytes).use { input ->
+                        PuttyKeyUtils.DEFAULT_INSTANCE.loadKeyPairs(
+                            null,
+                            NamedResource.ofName("selected-private-key"),
+                            FilePasswordProvider.of(password),
+                            input,
+                        ).toList()
+                    }
                 }
             }
         } catch (failure: Exception) {
@@ -134,6 +133,28 @@ object SshPrivateKeyFileParser {
         return PKCS8_BEGIN in text || PKCS8_ENCRYPTED_BEGIN in text
     }
 
+    private fun isOpenSshPem(fileBytes: ByteArray): Boolean =
+        OPENSSH_BEGIN in fileBytes.toString(StandardCharsets.ISO_8859_1)
+
+    private fun parseOpenSsh(fileBytes: ByteArray, passphrase: CharArray?): KeyPair {
+        val pemObject = ByteArrayInputStream(fileBytes).use { input ->
+            PemReader(InputStreamReader(input, StandardCharsets.US_ASCII)).use { pem ->
+                val parsed = requireNotNull(pem.readPemObject()) { "OpenSSH PEM is empty" }
+                require(parsed.type == OPENSSH_PEM_TYPE) { "Unexpected OpenSSH PEM type" }
+                require(pem.readPemObject() == null) { "OpenSSH PEM must contain exactly one object" }
+                parsed
+            }
+        }
+        val passphraseBytes = passphrase?.let(::utf8Bytes)
+        val privateParameter = try {
+            OpenSSHPrivateKeyUtil.parsePrivateKeyBlob(pemObject.content, passphraseBytes)
+        } finally {
+            passphraseBytes?.fill(0)
+            pemObject.content.fill(0)
+        }
+        return keyPair(privateParameter)
+    }
+
     private fun parsePkcs8(fileBytes: ByteArray, passphrase: CharArray?): KeyPair {
         val privateKeyInfo = ByteArrayInputStream(fileBytes).use { input ->
             PEMParser(InputStreamReader(input, StandardCharsets.US_ASCII)).use { pem ->
@@ -152,7 +173,13 @@ object SshPrivateKeyFileParser {
                 }
             }
         }
-        val privateParameter = PrivateKeyFactory.createKey(privateKeyInfo)
+        return keyPair(PrivateKeyFactory.createKey(privateKeyInfo), privateKeyInfo)
+    }
+
+    private fun keyPair(
+        privateParameter: AsymmetricKeyParameter,
+        privateKeyInfo: PrivateKeyInfo = PrivateKeyInfoFactory.createPrivateKeyInfo(privateParameter),
+    ): KeyPair {
         val publicParameter = when (privateParameter) {
             is RSAPrivateCrtKeyParameters -> RSAKeyParameters(
                 false,
@@ -171,6 +198,15 @@ object SshPrivateKeyFileParser {
             converter.getPublicKey(SubjectPublicKeyInfoFactory.createSubjectPublicKeyInfo(publicParameter)),
             converter.getPrivateKey(privateKeyInfo),
         )
+    }
+
+    private fun utf8Bytes(chars: CharArray): ByteArray {
+        val encoded = StandardCharsets.UTF_8.newEncoder().encode(CharBuffer.wrap(chars))
+        return try {
+            ByteArray(encoded.remaining()).also(encoded::get)
+        } finally {
+            if (encoded.hasArray()) encoded.array().fill(0)
+        }
     }
 
     private fun validate(pair: KeyPair): ParsedSshPrivateKeyFile {
@@ -215,6 +251,7 @@ object SshPrivateKeyFileParser {
     private const val MAX_CIPHER_NAME_BYTES = 64
     private const val OPENSSH_BEGIN = "-----BEGIN OPENSSH PRIVATE KEY-----"
     private const val OPENSSH_END = "-----END OPENSSH PRIVATE KEY-----"
+    private const val OPENSSH_PEM_TYPE = "OPENSSH PRIVATE KEY"
     private const val PKCS8_BEGIN = "-----BEGIN PRIVATE KEY-----"
     private const val PKCS8_ENCRYPTED_BEGIN = "-----BEGIN ENCRYPTED PRIVATE KEY-----"
     private val OPENSSH_MAGIC = "openssh-key-v1\u0000".encodeToByteArray()

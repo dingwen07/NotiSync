@@ -10,17 +10,8 @@ internal object SshKeyStoragePolicy {
         algorithm: SshKeyAlgorithm,
     ): Boolean = strongBoxAvailable && algorithm != SshKeyAlgorithm.SSH_ED25519
 
-    fun shouldUseWrappedOperationalFallback(
-        algorithm: SshKeyAlgorithm,
-        failure: Throwable,
-    ): Boolean = algorithm == SshKeyAlgorithm.SSH_ED25519 &&
-        generateSequence(failure) { it.cause }.any { cause ->
-            val message = cause.message.orEmpty()
-            message.contains("Unsupported key algorithm:", ignoreCase = true) &&
-                (message.contains("Ed25519", ignoreCase = true) ||
-                    message.contains("EdDSA", ignoreCase = true) ||
-                    message.contains("1.3.101.112"))
-        }
+    fun shouldUseWrappedOperationalFallback(algorithm: SshKeyAlgorithm): Boolean =
+        algorithm == SshKeyAlgorithm.SSH_ED25519
 
     fun shouldAttemptWrappedOperationalStrongBox(strongBoxAvailable: Boolean): Boolean =
         strongBoxAvailable

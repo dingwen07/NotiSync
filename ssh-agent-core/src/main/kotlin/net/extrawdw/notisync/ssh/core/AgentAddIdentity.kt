@@ -69,7 +69,7 @@ object AgentAddIdentityParser {
         val publicBlob = SshWireWriter().writeUtf8(SshKeyType.ED25519.wireName).writeString(public).toByteArray()
         val publicKey = SshPublicKeyCodec.decode(publicBlob).publicKey
         val pkcs8 = ED25519_PKCS8_PREFIX + privateAndPublic.copyOfRange(0, 32)
-        val privateKey = KeyFactory.getInstance("Ed25519").generatePrivate(PKCS8EncodedKeySpec(pkcs8))
+        val privateKey = softwareKeyFactory("Ed25519").generatePrivate(PKCS8EncodedKeySpec(pkcs8))
         return KeyParts(SshKeyType.ED25519, publicBlob, publicKey, privateKey)
     }
 
@@ -95,7 +95,7 @@ object AgentAddIdentityParser {
             .writeMpInt(modulus)
             .toByteArray()
         val publicKey = SshPublicKeyCodec.decode(publicBlob).publicKey
-        val privateKey = KeyFactory.getInstance("RSA").generatePrivate(
+        val privateKey = softwareKeyFactory("RSA").generatePrivate(
             RSAPrivateCrtKeySpec(
                 modulus,
                 exponent,
@@ -125,7 +125,7 @@ object AgentAddIdentityParser {
         if (scalar.signum() <= 0 || scalar >= parameters.order) {
             throw SshWireException("ECDSA private scalar is outside the curve order")
         }
-        val privateKey = KeyFactory.getInstance("EC").generatePrivate(ECPrivateKeySpec(scalar, parameters))
+        val privateKey = softwareKeyFactory("EC").generatePrivate(ECPrivateKeySpec(scalar, parameters))
         return KeyParts(SshKeyType.ECDSA_NISTP256, publicBlob, publicKey, privateKey)
     }
 
@@ -160,18 +160,25 @@ object AgentAddIdentityParser {
             SshKeyType.ECDSA_NISTP256 -> "SHA256withECDSA"
         }
         val challenge = ByteArray(32) { index -> (index * 13 + 7).toByte() }
-        val signature = Signature.getInstance(algorithm).run {
+        val signature = softwareSignature(algorithm).run {
             initSign(privateKey)
             update(challenge)
             sign()
         }
-        val verified = Signature.getInstance(algorithm).run {
+        val verified = softwareSignature(algorithm).run {
             initVerify(publicKey)
             update(challenge)
             verify(signature)
         }
         if (!verified) throw SshWireException("SSH private/public key components do not match")
     }
+
+    /** Agent identity payloads contain ordinary software key material, never Android Keystore handles. */
+    private fun softwareKeyFactory(algorithm: String): KeyFactory =
+        KeyFactory.getInstance(algorithm, SSH_BOUNCY_CASTLE_PROVIDER)
+
+    private fun softwareSignature(algorithm: String): Signature =
+        Signature.getInstance(algorithm, SSH_BOUNCY_CASTLE_PROVIDER)
 
     private data class KeyParts(
         val type: SshKeyType,

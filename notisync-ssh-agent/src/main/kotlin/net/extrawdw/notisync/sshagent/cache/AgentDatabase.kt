@@ -102,7 +102,6 @@ class AgentDatabase(path: Path) : AutoCloseable {
                     """
                     CREATE TABLE sign_operation_log(
                         request_id TEXT PRIMARY KEY,
-                        request_digest BLOB NOT NULL,
                         public_blob_hash BLOB NOT NULL,
                         data_sha256 BLOB NOT NULL,
                         eligible_provider_ids TEXT NOT NULL,

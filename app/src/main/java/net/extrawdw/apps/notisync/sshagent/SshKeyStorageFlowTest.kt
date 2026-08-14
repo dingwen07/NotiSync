@@ -4,7 +4,6 @@ import android.app.Activity
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
-import java.security.MessageDigest
 import java.security.SecureRandom
 import java.security.Signature
 import java.util.concurrent.atomic.AtomicBoolean
@@ -17,7 +16,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshAgentLimits
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
@@ -191,7 +189,6 @@ class SshKeyStorageFlowTest(
             ),
             connectionId = randomHexId(),
         )
-        val requestDigest = sha256(ProtocolCodec.encodeToCbor(request))
         val accepted = withContext(Dispatchers.IO) { store.acceptSign(request, now) }
         check(
             accepted == SshProviderAcceptResult.STORED || accepted == SshProviderAcceptResult.DUPLICATE,
@@ -246,7 +243,7 @@ class SshKeyStorageFlowTest(
                     runCatching {
                         when (store.find(request.requestId)?.state) {
                             SshProviderRequestState.PENDING_REVIEW ->
-                                store.cancelSign(request.requestId, FLOW_TEST_REQUESTER, requestDigest, now)
+                                store.cancelSign(request.requestId, FLOW_TEST_REQUESTER, now)
 
                             SshProviderRequestState.RESPONSE_PENDING_SEND -> store.markSent(request.requestId, now)
                             else -> Unit
@@ -410,5 +407,4 @@ class SshKeyStorageFlowTest(
 
     private fun randomHexId(): String = ByteArray(16).also(random::nextBytes).joinToString("") { "%02x".format(it) }
 
-    private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 }

@@ -276,7 +276,9 @@ fun SshAgentScreen() {
                     },
                     onImport = {
                         error = null
-                        importLauncher.launch(arrayOf("application/octet-stream", "text/plain"))
+                        // Key files are commonly exposed by document providers with vendor-specific,
+                        // extension-derived, or no MIME type. The bounded parser is the authority.
+                        importLauncher.launch(arrayOf("*/*"))
                     },
                     onPaste = {
                         error = null

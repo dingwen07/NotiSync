@@ -87,10 +87,7 @@ object SshPublicKeyCodec {
     private fun decodeEd25519(reader: SshWireReader): Pair<SshKeyType, PublicKey> {
         val encoded = reader.readString(32)
         if (encoded.size != 32) throw SshWireException("Ed25519 public key must be 32 bytes")
-        // Some Android builds route the default Ed25519 KeyFactory to AndroidKeyStore, which cannot import
-        // ordinary public-key specs. The RFC 8410 SubjectPublicKeyInfo is portable; use the bundled provider as
-        // an explicit fallback without registering it globally or changing provider order for the application.
-        val key = generatePublicKey("Ed25519", X509EncodedKeySpec(ED25519_SPKI_PREFIX + encoded))
+        val key = generateSoftwarePublicKey("Ed25519", X509EncodedKeySpec(ED25519_SPKI_PREFIX + encoded))
         return SshKeyType.ED25519 to key
     }
 
@@ -103,7 +100,7 @@ object SshPublicKeyCodec {
         if (modulus.bitLength() !in MINIMUM_RSA_BITS..MAXIMUM_RSA_BITS) {
             throw SshWireException("RSA modulus is outside $MINIMUM_RSA_BITS..$MAXIMUM_RSA_BITS bits")
         }
-        val key = generatePublicKey("RSA", RSAPublicKeySpec(modulus, exponent))
+        val key = generateSoftwarePublicKey("RSA", RSAPublicKeySpec(modulus, exponent))
         return SshKeyType.RSA to key
     }
 
@@ -119,7 +116,7 @@ object SshPublicKeyCodec {
         val parameters = p256Parameters()
         val point = ECPoint(x, y)
         if (!isPointOnCurve(point, parameters)) throw SshWireException("P-256 public point is not on the curve")
-        val key = generatePublicKey("EC", ECPublicKeySpec(point, parameters))
+        val key = generateSoftwarePublicKey("EC", ECPublicKeySpec(point, parameters))
         return SshKeyType.ECDSA_NISTP256 to key
     }
 
@@ -203,16 +200,9 @@ object SshPublicKeyCodec {
         return ByteArray(length - encoded.size) + encoded
     }
 
-    private fun generatePublicKey(algorithm: String, spec: KeySpec): PublicKey {
-        val platform = runCatching { KeyFactory.getInstance(algorithm).generatePublic(spec) }
-        platform.getOrNull()?.let { return it }
-        return try {
-            KeyFactory.getInstance(algorithm, SSH_BOUNCY_CASTLE_PROVIDER).generatePublic(spec)
-        } catch (fallbackFailure: Exception) {
-            platform.exceptionOrNull()?.let(fallbackFailure::addSuppressed)
-            throw fallbackFailure
-        }
-    }
+    /** SSH wire blobs always reconstruct software public keys; OEM provider ordering must not affect decoding. */
+    private fun generateSoftwarePublicKey(algorithm: String, spec: KeySpec): PublicKey =
+        KeyFactory.getInstance(algorithm, SSH_BOUNCY_CASTLE_PROVIDER).generatePublic(spec)
 
     private val ED25519_SPKI_PREFIX = byteArrayOf(
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
