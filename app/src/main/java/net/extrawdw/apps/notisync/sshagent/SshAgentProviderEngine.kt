@@ -20,7 +20,7 @@ import net.extrawdw.notisync.protocol.SshForgetResult
 import net.extrawdw.notisync.protocol.SshForgetResultKind
 import net.extrawdw.notisync.protocol.SshProviderFailure
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
-import net.extrawdw.notisync.protocol.SshExportability
+import net.extrawdw.notisync.protocol.SshExportCopyBackendPolicy
 import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
@@ -100,8 +100,8 @@ class SshAgentProviderEngine(
 
     fun approveImport(
         requestId: String,
-        exportability: SshExportability,
-        preferStrongBox: Boolean,
+        allowExport: Boolean,
+        exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
         passphrase: CharArray? = null,
     ): SshImportApprovalOutcome? {
@@ -109,8 +109,8 @@ class SshAgentProviderEngine(
             requestId,
             providerClientId,
             now(),
-            exportability,
-            preferStrongBox,
+            allowExport,
+            exportCopyBackendPolicy,
             userVerificationPolicy,
             passphrase,
         ) ?: return null
@@ -124,21 +124,34 @@ class SshAgentProviderEngine(
 
     fun completePreparedImport(
         prepared: PreparedSshImportStorage,
-        authenticatedCipher: javax.crypto.Cipher,
-    ): Boolean {
-        val completed = store.completePreparedImport(prepared, authenticatedCipher, providerClientId, now())
-        if (completed) {
+        authenticatedCipher: javax.crypto.Cipher?,
+        authenticatedSignature: java.security.Signature?,
+    ): SshImportApprovalOutcome? {
+        val outcome = store.completePreparedImport(
+            prepared,
+            authenticatedCipher,
+            authenticatedSignature,
+            providerClientId,
+            now(),
+        )
+        if (outcome == SshImportApprovalOutcome.Completed) {
             notifications.dismiss(prepared.requestId)
             SshAgentResponseWorker.enqueue(context, prepared.requestId)
             publishInventory()
         }
-        return completed
+        return outcome
     }
 
     fun cancelPreparedImport(prepared: PreparedSshImportStorage) = store.cancelPreparedImport(prepared)
 
-    fun prepareUserVerifiedSignature(requestId: String): PreparedSshSignature? =
-        store.prepareUserVerifiedSignature(requestId, providerClientId, now())
+    fun prepareUserVerifiedSignature(requestId: String): PreparedSshSignature? {
+        val prepared = store.prepareUserVerifiedSignature(requestId, providerClientId, now())
+        if (prepared == null && store.find(requestId)?.state == SshProviderRequestState.RESPONSE_PENDING_SEND) {
+            notifications.dismiss(requestId)
+            SshAgentResponseWorker.enqueue(context, requestId)
+        }
+        return prepared
+    }
 
     fun completeUserVerifiedSignature(
         prepared: PreparedSshSignature,
@@ -153,10 +166,13 @@ class SshAgentProviderEngine(
         return result
     }
 
-    fun failUserVerification(requestId: String, code: SshProviderFailureCode) {
-        if (store.failUserVerification(requestId, providerClientId, now(), code)) {
-            notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+    fun cancelPreparedSignature(prepared: PreparedSshSignature) = store.cancelPreparedSignature(prepared)
+
+    fun failUserVerification(prepared: PreparedSshSignature, code: SshProviderFailureCode) {
+        store.cancelPreparedSignature(prepared)
+        if (store.failUserVerification(prepared.requestId, providerClientId, now(), code)) {
+            notifications.dismiss(prepared.requestId)
+            SshAgentResponseWorker.enqueue(context, prepared.requestId)
         }
     }
 

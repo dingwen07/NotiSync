@@ -197,7 +197,7 @@ fi
 if [[ "$agent_was_running" == true ]]; then
     echo "Starting the updated NotiSync SSH Agent..."
     agent_start_arguments=()
-    for address in "${agent_bind_addresses[@]}"; do
+    for address in "${agent_bind_addresses[@]+"${agent_bind_addresses[@]}"}"; do
         agent_start_arguments+=(-a "$address")
     done
     agent_start_arguments+=(start)

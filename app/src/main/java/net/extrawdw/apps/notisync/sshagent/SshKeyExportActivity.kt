@@ -116,62 +116,62 @@ class SshKeyExportActivity : ComponentActivity() {
         target: Uri,
     ) {
         val handled = AtomicBoolean(false)
+        fun cancelPrepared(message: String) {
+            store.cancelExport(prepared)
+            fail(message)
+        }
         val prompt = BiometricPrompt.Builder(this)
             .setTitle(getString(R.string.ssh_agent_export_auth_title))
             .setSubtitle(getString(R.string.ssh_agent_export_auth_subtitle))
-            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButton(getString(R.string.action_cancel), mainExecutor) { _, _ ->
-                if (handled.compareAndSet(false, true)) finish()
-            }
+            .setAllowedAuthenticators(
+                BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                    BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+            )
             .build()
         val cancellationSignal = CancellationSignal()
         val callback = object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    val cipher = if (prepared.requiresCryptoAuthentication) {
-                        result.cryptoObject?.cipher
-                            ?: return fail(getString(R.string.ssh_agent_export_auth_lost))
-                    } else {
-                        // This biometric is an explicit export gate. The per-key wrapping key itself was created
-                        // without an auth requirement, so do not route its StrongBox operation through CryptoObject.
-                        prepared.cipher
-                    }
-                    if (!handled.compareAndSet(false, true)) return
-                    status = getString(R.string.ssh_agent_export_writing)
-                    lifecycleScope.launch {
-                        val outcome = runCatching {
-                            withContext(Dispatchers.IO) {
-                                val privateBytes = store.completeExport(prepared, cipher)
-                                    ?: error(getString(R.string.ssh_agent_export_key_changed))
-                                try {
-                                    writePkcs8Pem(target, privateBytes, exportPassword)
-                                } finally {
-                                    privateBytes.fill(0)
-                                }
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                val cipher = result.cryptoObject?.cipher
+                    ?: return cancelPrepared(getString(R.string.ssh_agent_export_auth_lost))
+                if (!handled.compareAndSet(false, true)) return
+                status = getString(R.string.ssh_agent_export_writing)
+                lifecycleScope.launch {
+                    val outcome = runCatching {
+                        withContext(Dispatchers.IO) {
+                            val privateBytes = store.completeExport(prepared, cipher)
+                                ?: error(getString(R.string.ssh_agent_export_key_changed))
+                            try {
+                                writePkcs8Pem(target, privateBytes, exportPassword)
+                            } finally {
+                                privateBytes.fill(0)
                             }
                         }
-                        clearExportPassword()
-                        outcome.onSuccess {
-                            status = getString(R.string.ssh_agent_export_complete)
-                            finish()
-                        }.onFailure {
-                            fail(it.message ?: getString(R.string.ssh_agent_export_failed))
-                        }
+                    }
+                    clearExportPassword()
+                    outcome.onSuccess {
+                        status = getString(R.string.ssh_agent_export_complete)
+                        finish()
+                    }.onFailure {
+                        fail(it.message ?: getString(R.string.ssh_agent_export_failed))
                     }
                 }
-
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    if (handled.compareAndSet(false, true)) fail(errString.toString())
-                }
             }
-        if (prepared.requiresCryptoAuthentication) {
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                if (handled.compareAndSet(false, true)) cancelPrepared(errString.toString())
+            }
+        }
+        try {
             prompt.authenticate(
                 BiometricPrompt.CryptoObject(prepared.cipher),
                 cancellationSignal,
                 mainExecutor,
                 callback,
             )
-        } else {
-            prompt.authenticate(cancellationSignal, mainExecutor, callback)
+        } catch (failure: Exception) {
+            if (handled.compareAndSet(false, true)) {
+                cancelPrepared(failure.message ?: getString(R.string.ssh_agent_export_prepare_failed))
+            }
         }
     }
 

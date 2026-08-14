@@ -57,11 +57,19 @@ enum class SshSignatureAlgorithm { SSH_ED25519, RSA_SHA2_256, RSA_SHA2_512, ECDS
 @Serializable
 enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD }
 @Serializable
-enum class SshExportability { EXPORTABLE, NON_EXPORTABLE }
+enum class SshOperationalKeyProvider {
+    /** The non-exportable private key signs entirely through Android Keystore. */
+    ANDROID_KEYSTORE_PRIVATE_KEY,
+
+    /** Android Keystore AES protects PKCS#8 at rest; each signature briefly unwraps it in the app process. */
+    ANDROID_KEYSTORE_AES_WRAPPED,
+}
 @Serializable
-enum class SshStorageBackend { ANDROID_KEYSTORE, WRAPPED_SOFTWARE }
+enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT }
 @Serializable
-enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT, SOFTWARE, UNKNOWN }
+enum class SshExportCopyBackendPolicy { BEST_AVAILABLE, TEE_ONLY }
+@Serializable
+enum class SshExportCopyAuthentication { STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE }
 @Serializable
 enum class SshApprovalPolicy { ALWAYS_ASK, ALLOW_REMEMBER }
 @Serializable
@@ -122,6 +130,57 @@ data class SshRememberedNamespace(
 }
 
 @Serializable
+data class SshOperationalKeyProtection(
+    @CborLabel(0) val provider: SshOperationalKeyProvider,
+    @CborLabel(1) val securityLevel: SshStorageSecurityLevel,
+    @CborLabel(2) val userVerificationPolicy: SshUserVerificationPolicy,
+    @CborLabel(3) val strongBoxAttempted: Boolean,
+    @CborLabel(4) val strongBoxFallback: Boolean,
+) {
+    fun validationError(): String? = when {
+        securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "operational key must be hardware-backed"
+        securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
+            "operational StrongBox storage requires an attempt"
+        strongBoxFallback && !strongBoxAttempted -> "operational StrongBox fallback requires an attempt"
+        strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "operational StrongBox fallback must end in TEE"
+        strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
+            "successful operational StrongBox attempt must report StrongBox"
+        else -> null
+    }
+}
+
+@Serializable
+data class SshExportCopyProtection(
+    @CborLabel(0) val securityLevel: SshStorageSecurityLevel,
+    @CborLabel(1) val backendPolicy: SshExportCopyBackendPolicy,
+    @CborLabel(2) val authentication: SshExportCopyAuthentication,
+    @CborLabel(3) val strongBoxAttempted: Boolean,
+    @CborLabel(4) val strongBoxFallback: Boolean,
+) {
+    fun validationError(): String? = when {
+        securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "export copy must be hardware-encrypted"
+        securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
+            "export-copy StrongBox storage requires an attempt"
+        backendPolicy == SshExportCopyBackendPolicy.TEE_ONLY && strongBoxAttempted ->
+            "TEE-only export copy cannot attempt StrongBox"
+        backendPolicy == SshExportCopyBackendPolicy.TEE_ONLY &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "TEE-only export copy must use TEE"
+        strongBoxFallback && !strongBoxAttempted -> "export-copy StrongBox fallback requires an attempt"
+        strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "export-copy StrongBox fallback must end in TEE"
+        strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
+            "successful export-copy StrongBox attempt must report StrongBox"
+        else -> null
+    }
+}
+
+@Serializable
 data class SshKeyDescriptor(
     @CborLabel(0) val providerKeyId: String,
     @CborLabel(1) @ByteString val publicKeyBlob: ByteArray,
@@ -129,13 +188,11 @@ data class SshKeyDescriptor(
     @CborLabel(3) val algorithm: SshKeyAlgorithm,
     @CborLabel(4) val displayName: String,
     @CborLabel(5) val origin: SshKeyOrigin,
-    @CborLabel(6) val exportability: SshExportability,
-    @CborLabel(7) val storageBackend: SshStorageBackend,
-    @CborLabel(8) val storageSecurityLevel: SshStorageSecurityLevel,
-    @CborLabel(9) val approvalPolicy: SshApprovalPolicy,
-    @CborLabel(10) val userVerificationPolicy: SshUserVerificationPolicy,
-    @CborLabel(11) val rememberedNamespaces: List<SshRememberedNamespace> = emptyList(),
-    @CborLabel(12) val createdAt: Long,
+    @CborLabel(6) val operationalKey: SshOperationalKeyProtection,
+    @CborLabel(7) val exportCopy: SshExportCopyProtection?,
+    @CborLabel(8) val approvalPolicy: SshApprovalPolicy,
+    @CborLabel(9) val rememberedNamespaces: List<SshRememberedNamespace> = emptyList(),
+    @CborLabel(10) val createdAt: Long,
 ) {
     fun validationError(sha256: ((ByteArray) -> ByteArray)? = null): String? = when {
         !providerKeyId.isSshOperationId() -> "invalid provider key id"
@@ -149,7 +206,12 @@ data class SshKeyDescriptor(
         rememberedNamespaces.any { it.validationError() != null } -> "invalid remembered namespace"
         rememberedNamespaces.map { Triple(it.requesterClientId, it.authorizationGeneration, it.authorizationEpoch) }
             .distinct().size != rememberedNamespaces.size -> "duplicate remembered namespace"
-        userVerificationPolicy == SshUserVerificationPolicy.PER_USE &&
+        operationalKey.validationError() != null -> operationalKey.validationError()
+        exportCopy?.validationError() != null -> exportCopy.validationError()
+        operationalKey.provider == SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED &&
+            algorithm != SshKeyAlgorithm.SSH_ED25519 ->
+            "wrapped operational storage is allowed only for Ed25519"
+        operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE &&
             approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER -> "per-use verification cannot allow remember"
         createdAt <= 0 -> "createdAt must be positive"
         else -> null

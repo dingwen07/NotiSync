@@ -122,11 +122,15 @@ class SshAgentProtocolTest {
             algorithm = SshKeyAlgorithm.SSH_ED25519,
             displayName = "Phone key",
             origin = SshKeyOrigin.GENERATED,
-            exportability = SshExportability.NON_EXPORTABLE,
-            storageBackend = SshStorageBackend.ANDROID_KEYSTORE,
-            storageSecurityLevel = SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+            operationalKey = SshOperationalKeyProtection(
+                provider = SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+                securityLevel = SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+                userVerificationPolicy = SshUserVerificationPolicy.PER_USE,
+                strongBoxAttempted = false,
+                strongBoxFallback = false,
+            ),
+            exportCopy = null,
             approvalPolicy = SshApprovalPolicy.ALWAYS_ASK,
-            userVerificationPolicy = SshUserVerificationPolicy.PER_USE,
             createdAt = 1_000,
         )
         val snapshot = SshKeysSnapshot(
@@ -139,10 +143,53 @@ class SshAgentProtocolTest {
         )
 
         assertNull(snapshot.validationError(::sha256))
+        val wrappedSnapshot = snapshot.copy(
+            keys = listOf(
+                key.copy(
+                    operationalKey = key.operationalKey.copy(
+                        provider = SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+                    ),
+                ),
+            ),
+        )
+        assertNull(wrappedSnapshot.validationError(::sha256))
+        assertEquals(
+            SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+            ProtocolCodec.decodeFromCbor<SshKeysSnapshot>(
+                ProtocolCodec.encodeToCbor(wrappedSnapshot),
+            ).keys.single().operationalKey.provider,
+        )
         assertNotNull(snapshot.copy(keys = listOf(key.copy(publicKeyBlobSha256 = ByteArray(32)))).validationError(::sha256))
         assertNotNull(
             snapshot.copy(
                 keys = listOf(key.copy(approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER)),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    securityLevel = SshStorageSecurityLevel.STRONGBOX,
+                    strongBoxAttempted = false,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                algorithm = SshKeyAlgorithm.SSH_RSA,
+                operationalKey = key.operationalKey.copy(
+                    provider = SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                exportCopy = SshExportCopyProtection(
+                    securityLevel = SshStorageSecurityLevel.STRONGBOX,
+                    backendPolicy = SshExportCopyBackendPolicy.TEE_ONLY,
+                    authentication = SshExportCopyAuthentication.STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE,
+                    strongBoxAttempted = false,
+                    strongBoxFallback = false,
+                ),
             ).validationError(::sha256),
         )
     }

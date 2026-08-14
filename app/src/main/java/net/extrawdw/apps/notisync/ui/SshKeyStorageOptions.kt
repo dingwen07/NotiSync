@@ -18,12 +18,12 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.notisync.protocol.SshExportability
+import net.extrawdw.notisync.protocol.SshExportCopyBackendPolicy
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 
 data class SshKeyStorageSelection(
-    val exportability: SshExportability = SshExportability.NON_EXPORTABLE,
-    val preferStrongBox: Boolean = true,
+    val allowExport: Boolean = false,
+    val exportCopyBackendPolicy: SshExportCopyBackendPolicy = SshExportCopyBackendPolicy.BEST_AVAILABLE,
     val userVerificationPolicy: SshUserVerificationPolicy = SshUserVerificationPolicy.NONE,
 )
 
@@ -42,28 +42,48 @@ fun SshKeyStorageOptions(
     val strongBiometricAvailable = allowPerUseAuthentication &&
         context.getSystemService(BiometricManager::class.java)
             .canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_STRONG) == BiometricManager.BIOMETRIC_SUCCESS
-    val keepExportBackup = selection.exportability == SshExportability.EXPORTABLE
+    val exportAuthenticationAvailable = context.getSystemService(BiometricManager::class.java)
+        .canAuthenticate(
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+        ) == BiometricManager.BIOMETRIC_SUCCESS
+    val keepExportCopy = selection.allowExport
     Column {
         Text(stringResource(R.string.ssh_agent_export_settings), style = MaterialTheme.typography.labelLarge)
         ToggleRow(
-            checked = keepExportBackup,
-            enabled = allowExportable,
+            checked = keepExportCopy,
+            enabled = allowExportable && exportAuthenticationAvailable,
             label = stringResource(R.string.ssh_agent_keep_export_backup),
             onCheckedChange = {
                 onSelectionChange(
-                    selection.copy(
-                        exportability = if (it) SshExportability.EXPORTABLE else SshExportability.NON_EXPORTABLE,
-                    ),
+                    selection.copy(allowExport = it),
                 )
             },
         )
-        Text(stringResource(R.string.ssh_agent_storage), style = MaterialTheme.typography.labelLarge)
-        ToggleRow(
-            checked = selection.preferStrongBox,
-            enabled = strongBoxAvailable,
-            label = stringResource(R.string.ssh_agent_prefer_strongbox),
-            onCheckedChange = { onSelectionChange(selection.copy(preferStrongBox = it)) },
-        )
+        if (keepExportCopy) {
+            ToggleRow(
+                checked = selection.exportCopyBackendPolicy == SshExportCopyBackendPolicy.TEE_ONLY,
+                enabled = strongBoxAvailable,
+                label = stringResource(R.string.ssh_agent_export_copy_force_tee),
+                onCheckedChange = {
+                    onSelectionChange(
+                        selection.copy(
+                            exportCopyBackendPolicy = if (it) {
+                                SshExportCopyBackendPolicy.TEE_ONLY
+                            } else {
+                                SshExportCopyBackendPolicy.BEST_AVAILABLE
+                            },
+                        ),
+                    )
+                },
+            )
+            Text(
+                stringResource(R.string.ssh_agent_export_copy_auth_help),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Text(stringResource(R.string.ssh_agent_signing_storage), style = MaterialTheme.typography.labelLarge)
         ToggleRow(
             checked = selection.userVerificationPolicy == SshUserVerificationPolicy.PER_USE,
             enabled = strongBiometricAvailable,
@@ -83,6 +103,13 @@ fun SshKeyStorageOptions(
         if (!strongBiometricAvailable) {
             Text(
                 stringResource(R.string.ssh_agent_strong_biometric_unavailable),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (!exportAuthenticationAvailable) {
+            Text(
+                stringResource(R.string.ssh_agent_export_auth_unavailable),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -53,6 +53,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -84,9 +85,8 @@ import net.extrawdw.apps.notisync.sshagent.SshKeyStorageResult
 import net.extrawdw.apps.notisync.sshagent.StoredSshProviderRequest
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
-import net.extrawdw.notisync.protocol.SshExportability
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
-import net.extrawdw.notisync.protocol.SshStorageBackend
+import net.extrawdw.notisync.protocol.SshOperationalKeyProvider
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshFingerprint
@@ -102,6 +102,8 @@ import javax.crypto.Cipher
 fun SshAgentScreen() {
     val graph = rememberGraph()
     val context = LocalContext.current
+    val storageAuthUnavailable = stringResource(R.string.ssh_agent_storage_auth_unavailable)
+    val storageAuthFailed = stringResource(R.string.ssh_agent_storage_auth_failed)
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val changeVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle()
@@ -114,6 +116,7 @@ fun SshAgentScreen() {
     var pasteError by remember { mutableStateOf<String?>(null) }
     var validatingPaste by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<PendingSshKeyImport?>(null) }
+    val latestPendingImport by rememberUpdatedState(pendingImport)
     var importError by remember { mutableStateOf<String?>(null) }
     var importingKey by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<SshKeyDescriptor?>(null) }
@@ -175,7 +178,7 @@ fun SshAgentScreen() {
                         withContext(Dispatchers.IO) {
                             graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
                         }
-                        error = context.getString(R.string.ssh_agent_storage_auth_unavailable)
+                        error = storageAuthUnavailable
                         loading = false
                     }
                     return
@@ -184,23 +187,27 @@ fun SshAgentScreen() {
                 authenticatePreparedStorage(
                     activity,
                     result.prepared,
-                    onAuthenticated = { cipher ->
+                    onAuthenticated = { cipher, signature ->
                         if (pendingStorageAuthentication !== result.prepared) return@authenticatePreparedStorage
                         scope.launch {
                             runCatching {
                                 withContext(Dispatchers.IO) {
-                                    graph.sshKeyProviderStore.completePreparedKeyStorage(result.prepared, cipher)
+                                    graph.sshKeyProviderStore.completePreparedKeyStorage(
+                                        result.prepared,
+                                        cipher,
+                                        signature,
+                                    )
                                 }
-                            }.onSuccess {
+                            }.onSuccess { next ->
                                 pendingStorageAuthentication = null
-                                committed()
+                                finishStorage(next)
                             }
                                 .onFailure {
                                     withContext(Dispatchers.IO) {
                                         graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
                                     }
                                     pendingStorageAuthentication = null
-                                    error = it.message ?: context.getString(R.string.ssh_agent_storage_auth_failed)
+                                    error = it.message ?: storageAuthFailed
                                     loading = false
                                 }
                         }
@@ -223,6 +230,7 @@ fun SshAgentScreen() {
 
     DisposableEffect(Unit) {
         onDispose {
+            latestPendingImport?.bytes?.fill(0)
             latestPendingStorageAuthentication?.let { prepared ->
                 graph.scope.launch(Dispatchers.IO) {
                     graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared)
@@ -301,7 +309,7 @@ fun SshAgentScreen() {
                 SshKeyCard(
                     key = key,
                     onCopy = { copyPublicKey(context, key) },
-                    onExport = if (key.exportability == SshExportability.EXPORTABLE) {
+                    onExport = if (key.exportCopy != null) {
                         { context.startActivity(SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName)) }
                     } else {
                         null
@@ -351,8 +359,8 @@ fun SshAgentScreen() {
                                 algorithm = algorithm,
                                 displayName = name,
                                 now = System.currentTimeMillis(),
-                                exportability = storage.exportability,
-                                preferStrongBox = storage.preferStrongBox,
+                                allowExport = storage.allowExport,
+                                exportCopyBackendPolicy = storage.exportCopyBackendPolicy,
                                 userVerificationPolicy = storage.userVerificationPolicy,
                                 rsaKeySizeBits = rsaKeySizeBits,
                             )
@@ -391,8 +399,8 @@ fun SshAgentScreen() {
                                     passphrase,
                                     name,
                                     System.currentTimeMillis(),
-                                    storage.exportability,
-                                    storage.preferStrongBox,
+                                    storage.allowExport,
+                                    storage.exportCopyBackendPolicy,
                                     storage.userVerificationPolicy,
                                 )
                             } finally {
@@ -593,7 +601,7 @@ private fun SshKeyCard(
                 stringResource(
                     R.string.ssh_agent_exportability_summary,
                     stringResource(
-                        if (key.exportability == SshExportability.EXPORTABLE) {
+                        if (key.exportCopy != null) {
                             R.string.ssh_agent_exportable
                         } else {
                             R.string.ssh_agent_non_exportable
@@ -608,7 +616,31 @@ private fun SshKeyCard(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            if (key.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+            key.exportCopy?.securityLevel?.let { securityLevel ->
+                Text(
+                    stringResource(
+                        R.string.ssh_agent_export_backup_summary,
+                        stringResource(securityLevel.labelResource()),
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (key.operationalKey.strongBoxFallback) {
+                Text(
+                    stringResource(R.string.ssh_agent_operational_strongbox_fallback),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (key.exportCopy?.strongBoxFallback == true) {
+                Text(
+                    stringResource(R.string.ssh_agent_export_strongbox_fallback),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            if (key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
                 Text(
                     stringResource(R.string.ssh_agent_biometric_each_use_enabled),
                     style = MaterialTheme.typography.bodySmall,
@@ -657,7 +689,7 @@ private fun GenerateKeyDialog(
     onGenerate: (SshKeyAlgorithm, Int, String, SshKeyStorageSelection) -> Unit,
 ) {
     var algorithm by remember { mutableStateOf(SshKeyAlgorithm.SSH_ED25519) }
-    var rsaKeySizeBits by remember { mutableStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
+    var rsaKeySizeBits by remember { mutableIntStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
     var name by remember { mutableStateOf("NotiSync SSH key") }
     var storage by remember { mutableStateOf(SshKeyStorageSelection()) }
     AlertDialog(
@@ -697,7 +729,7 @@ private fun GenerateKeyDialog(
                 SshKeyStorageOptions(storage, { storage = it })
                 Text(
                     stringResource(
-                        if (storage.exportability == SshExportability.NON_EXPORTABLE) {
+                        if (!storage.allowExport) {
                             R.string.ssh_agent_generated_device_bound
                         } else {
                             R.string.ssh_agent_generated_exportable
@@ -750,7 +782,7 @@ private fun RenameKeyDialog(
                             selected = approvalPolicy == candidate,
                             onClick = { approvalPolicy = candidate },
                             enabled = candidate == SshApprovalPolicy.ALWAYS_ASK ||
-                                key.userVerificationPolicy == SshUserVerificationPolicy.NONE,
+                                key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.NONE,
                             shape = SegmentedButtonDefaults.itemShape(index, choices.size),
                             label = { Text(label) },
                         )
@@ -782,7 +814,7 @@ private fun ImportKeyDialog(
 ) {
     var name by remember { mutableStateOf("Imported SSH key") }
     var passphrase by remember { mutableStateOf("") }
-    var storage by remember { mutableStateOf(SshKeyStorageSelection()) }
+    var storage by remember { mutableStateOf(SshKeyStorageSelection(allowExport = true)) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ssh_agent_import_title)) },
@@ -849,12 +881,13 @@ private fun PastePrivateKeyDialog(
     onContinue: (String) -> Unit,
 ) {
     val context = LocalContext.current
+    val clipboardKeyTooLarge = stringResource(R.string.ssh_agent_clipboard_key_too_large)
     var text by remember { mutableStateOf("") }
     var clipboardError by remember { mutableStateOf<String?>(null) }
     fun pasteClipboard(requirePrivateKey: Boolean) {
         val candidate = clipboardText(context) ?: return
         if (candidate.length > net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES) {
-            clipboardError = context.getString(R.string.ssh_agent_clipboard_key_too_large)
+            clipboardError = clipboardKeyTooLarge
         } else if (!requirePrivateKey || looksLikePrivateKey(candidate)) {
             clipboardError = null
             text = candidate
@@ -997,20 +1030,20 @@ private val RSA_KEY_SIZE_BITS = listOf(2048, DEFAULT_RSA_KEY_SIZE_BITS, 4096)
 private fun SshKeyDescriptor.storageLabel(): String = stringResource(
     R.string.ssh_agent_storage_summary,
     stringResource(
-        when (storageBackend) {
-            SshStorageBackend.ANDROID_KEYSTORE -> R.string.ssh_agent_storage_android_keystore
-            SshStorageBackend.WRAPPED_SOFTWARE -> R.string.ssh_agent_storage_wrapped
+        when (operationalKey.provider) {
+            SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY ->
+                R.string.ssh_agent_storage_android_keystore
+            SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED ->
+                R.string.ssh_agent_storage_android_keystore_wrapped
         },
     ),
-    stringResource(
-        when (storageSecurityLevel) {
-            SshStorageSecurityLevel.STRONGBOX -> R.string.ssh_agent_security_strongbox
-            SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> R.string.ssh_agent_security_tee
-            SshStorageSecurityLevel.SOFTWARE -> R.string.ssh_agent_security_software
-            SshStorageSecurityLevel.UNKNOWN -> R.string.ssh_agent_security_unknown
-        },
-    ),
+    stringResource(operationalKey.securityLevel.labelResource()),
 )
+
+private fun SshStorageSecurityLevel.labelResource(): Int = when (this) {
+    SshStorageSecurityLevel.STRONGBOX -> R.string.ssh_agent_security_strongbox
+    SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> R.string.ssh_agent_security_tee
+}
 
 private fun copyPublicKey(context: Context, key: SshKeyDescriptor) {
     val wireName = SshPublicKeyCodec.decode(key.publicKeyBlob).wireName
@@ -1042,41 +1075,55 @@ private fun readBoundedPrivateKey(input: java.io.InputStream): ByteArray {
 private fun authenticatePreparedStorage(
     activity: Activity,
     prepared: PreparedSshKeyStorage,
-    onAuthenticated: (Cipher) -> Unit,
+    onAuthenticated: (Cipher?, java.security.Signature?) -> Unit,
     onCancelled: (String) -> Unit,
 ) {
     val handled = AtomicBoolean(false)
-    val prompt = BiometricPrompt.Builder(activity)
+    val allowsDeviceCredential = prepared.promptAuthenticators and
+        BiometricManager.Authenticators.DEVICE_CREDENTIAL != 0
+    val builder = BiometricPrompt.Builder(activity)
         .setTitle(activity.getString(R.string.ssh_agent_storage_auth_title))
         .setSubtitle(activity.getString(R.string.ssh_agent_storage_auth_subtitle))
-        .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-        .setNegativeButton(activity.getString(R.string.action_cancel), activity.mainExecutor) { _, _ ->
+        .setAllowedAuthenticators(prepared.promptAuthenticators)
+    if (!allowsDeviceCredential) {
+        builder.setNegativeButton(activity.getString(R.string.action_cancel), activity.mainExecutor) { _, _ ->
             if (handled.compareAndSet(false, true)) {
                 onCancelled(activity.getString(R.string.ssh_agent_storage_auth_cancelled))
             }
         }
-        .build()
-    prompt.authenticate(
-        BiometricPrompt.CryptoObject(prepared.cipher),
-        CancellationSignal(),
-        activity.mainExecutor,
-        object : BiometricPrompt.AuthenticationCallback() {
-            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                val cipher = result.cryptoObject?.cipher
-                if (cipher == null) {
-                    if (handled.compareAndSet(false, true)) {
-                        onCancelled(activity.getString(R.string.ssh_agent_storage_auth_lost))
+    }
+    val prompt = builder.build()
+    val cryptoObject = prepared.signature?.let(BiometricPrompt::CryptoObject)
+        ?: BiometricPrompt.CryptoObject(requireNotNull(prepared.cipher))
+    try {
+        prompt.authenticate(
+            cryptoObject,
+            CancellationSignal(),
+            activity.mainExecutor,
+            object : BiometricPrompt.AuthenticationCallback() {
+                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                    val authenticated = result.cryptoObject
+                    if (authenticated == null) {
+                        if (handled.compareAndSet(false, true)) {
+                            onCancelled(activity.getString(R.string.ssh_agent_storage_auth_lost))
+                        }
+                        return
                     }
-                    return
+                    if (handled.compareAndSet(false, true)) {
+                        onAuthenticated(authenticated.cipher, authenticated.signature)
+                    }
                 }
-                if (handled.compareAndSet(false, true)) onAuthenticated(cipher)
-            }
 
-            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                if (handled.compareAndSet(false, true)) onCancelled(errString.toString())
-            }
-        },
-    )
+                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                    if (handled.compareAndSet(false, true)) onCancelled(errString.toString())
+                }
+            },
+        )
+    } catch (failure: Exception) {
+        if (handled.compareAndSet(false, true)) {
+            onCancelled(failure.message ?: activity.getString(R.string.ssh_agent_storage_auth_failed))
+        }
+    }
 }
 
 private data class PendingSshKeyImport(val bytes: ByteArray, val encrypted: Boolean)

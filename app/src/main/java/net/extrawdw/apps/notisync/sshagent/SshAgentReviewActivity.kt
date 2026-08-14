@@ -62,9 +62,10 @@ import net.extrawdw.notisync.protocol.SshSignResultKind
 class SshAgentReviewActivity : ComponentActivity() {
     private var requestId = ""
     private var screen by mutableStateOf<SshReviewScreenState>(SshReviewScreenState.Loading)
-    private var storage by mutableStateOf(SshKeyStorageSelection())
+    private var storage by mutableStateOf(SshKeyStorageSelection(allowExport = true))
     private var passphrase by mutableStateOf("")
     private var busy by mutableStateOf(false)
+    private var pendingSignature: Pair<SshAgentProviderEngine, PreparedSshSignature>? = null
     private var pendingImportStorage: Pair<SshAgentProviderEngine, PreparedSshImportStorage>? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -94,6 +95,13 @@ class SshAgentReviewActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        val signature = pendingSignature
+        pendingSignature = null
+        if (signature != null) {
+            (application as? NotiSyncApp)?.graphIfReady?.scope?.launch(Dispatchers.IO) {
+                signature.first.cancelPreparedSignature(signature.second)
+            }
+        }
         val pending = pendingImportStorage
         pendingImportStorage = null
         if (pending != null) {
@@ -148,8 +156,8 @@ class SshAgentReviewActivity : ComponentActivity() {
                             withContext(Dispatchers.IO) {
                                 engine.approveImport(
                                     requestId,
-                                    storage.exportability,
-                                    storage.preferStrongBox,
+                                    storage.allowExport,
+                                    storage.exportCopyBackendPolicy,
                                     storage.userVerificationPolicy,
                                     secret,
                                 )
@@ -194,54 +202,65 @@ class SshAgentReviewActivity : ComponentActivity() {
     }
 
     private fun authenticateSignature(engine: SshAgentProviderEngine, prepared: PreparedSshSignature) {
+        pendingSignature = engine to prepared
         val handled = AtomicBoolean(false)
         fun fail(code: SshProviderFailureCode) {
             if (!handled.compareAndSet(false, true)) return
             lifecycleScope.launch {
-                withContext(Dispatchers.IO) { engine.failUserVerification(requestId, code) }
+                withContext(Dispatchers.IO) { engine.failUserVerification(prepared, code) }
+                pendingSignature = null
                 finish()
             }
         }
         val prompt = BiometricPrompt.Builder(this)
             .setTitle("Authorize SSH signature")
-            .setSubtitle("Use the selected device-bound SSH key once")
+            .setSubtitle("Use the selected protected SSH key once")
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
             .setNegativeButton("Cancel", mainExecutor) { _, _ ->
                 fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
             }
             .build()
-        val cryptoObject = prepared.signature?.let { BiometricPrompt.CryptoObject(it) }
-            ?: BiometricPrompt.CryptoObject(requireNotNull(prepared.keyUnwrap).cipher)
-        prompt.authenticate(
-            cryptoObject,
-            CancellationSignal(),
-            mainExecutor,
-            object : BiometricPrompt.AuthenticationCallback() {
-                override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                    val authenticated = result.cryptoObject
-                        ?: return fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
-                    if (!handled.compareAndSet(false, true)) return
-                    lifecycleScope.launch {
-                        val signResult = withContext(Dispatchers.IO) {
-                            engine.completeUserVerifiedSignature(prepared, authenticated.signature, authenticated.cipher)
+        try {
+            val cryptoObject = prepared.signature?.let(BiometricPrompt::CryptoObject)
+                ?: BiometricPrompt.CryptoObject(requireNotNull(prepared.cipher))
+            prompt.authenticate(
+                cryptoObject,
+                CancellationSignal(),
+                mainExecutor,
+                object : BiometricPrompt.AuthenticationCallback() {
+                    override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                        val authenticated = result.cryptoObject
+                            ?: return fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
+                        if (!handled.compareAndSet(false, true)) return
+                        lifecycleScope.launch {
+                            val signResult = withContext(Dispatchers.IO) {
+                                engine.completeUserVerifiedSignature(
+                                    prepared,
+                                    authenticated.signature,
+                                    authenticated.cipher,
+                                )
+                            }
+                            pendingSignature = null
+                            showSignResult(signResult)
                         }
-                        showSignResult(signResult)
                     }
-                }
 
-                override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
-                    fail(
-                        if (errorCode == BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT ||
-                            errorCode == BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT
-                        ) {
-                            SshProviderFailureCode.USER_VERIFICATION_LOCKOUT
-                        } else {
-                            SshProviderFailureCode.USER_VERIFICATION_CANCELLED
-                        },
-                    )
-                }
-            },
-        )
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        fail(
+                            if (errorCode == BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT ||
+                                errorCode == BiometricPrompt.BIOMETRIC_ERROR_LOCKOUT_PERMANENT
+                            ) {
+                                SshProviderFailureCode.USER_VERIFICATION_LOCKOUT
+                            } else {
+                                SshProviderFailureCode.USER_VERIFICATION_CANCELLED
+                            },
+                        )
+                    }
+                },
+            )
+        } catch (_: Exception) {
+            fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
+        }
     }
 
     private fun authenticateImportStorage(
@@ -260,38 +279,59 @@ class SshAgentReviewActivity : ComponentActivity() {
                 screen = details.copy(errorMessage = message)
             }
         }
-        BiometricPrompt.Builder(this)
+        val storage = prepared.keyStorage
+        val allowsDeviceCredential = storage.promptAuthenticators and
+            BiometricManager.Authenticators.DEVICE_CREDENTIAL != 0
+        val builder = BiometricPrompt.Builder(this)
             .setTitle(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_title))
             .setSubtitle(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_subtitle))
-            .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButton(getString(net.extrawdw.apps.notisync.R.string.action_cancel), mainExecutor) { _, _ ->
+            .setAllowedAuthenticators(storage.promptAuthenticators)
+        if (!allowsDeviceCredential) {
+            builder.setNegativeButton(
+                getString(net.extrawdw.apps.notisync.R.string.action_cancel),
+                mainExecutor,
+            ) { _, _ ->
                 cancel(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_cancelled))
             }
-            .build()
-            .authenticate(
-                BiometricPrompt.CryptoObject(prepared.cipher),
+        }
+        val cryptoObject = storage.signature?.let(BiometricPrompt::CryptoObject)
+            ?: BiometricPrompt.CryptoObject(requireNotNull(storage.cipher))
+        try {
+            builder.build().authenticate(
+                cryptoObject,
                 CancellationSignal(),
                 mainExecutor,
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
-                        val cipher = result.cryptoObject?.cipher
-                            ?: return cancel(
-                                getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_lost),
+                        val authenticated = result.cryptoObject ?: return cancel(
+                            getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_lost),
                         )
                         if (!handled.compareAndSet(false, true)) return
                         lifecycleScope.launch {
                             runCatching {
-                                withContext(Dispatchers.IO) { engine.completePreparedImport(prepared, cipher) }
-                            }.onSuccess { completed ->
-                                if (completed) {
-                                    pendingImportStorage = null
-                                    finish()
+                                withContext(Dispatchers.IO) {
+                                    engine.completePreparedImport(
+                                        prepared,
+                                        authenticated.cipher,
+                                        authenticated.signature,
+                                    )
                                 }
-                                else {
-                                    withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
-                                    pendingImportStorage = null
-                                    busy = false
-                                    screen = details.copy(errorMessage = "This SSH import is no longer available")
+                            }.onSuccess { outcome ->
+                                when (outcome) {
+                                    SshImportApprovalOutcome.Completed -> {
+                                        pendingImportStorage = null
+                                        finish()
+                                    }
+                                    is SshImportApprovalOutcome.AuthenticationRequired -> {
+                                        pendingImportStorage = null
+                                        authenticateImportStorage(engine, outcome.prepared, details)
+                                    }
+                                    null -> {
+                                        withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
+                                        pendingImportStorage = null
+                                        busy = false
+                                        screen = details.copy(errorMessage = "This SSH import is no longer available")
+                                    }
                                 }
                             }.onFailure {
                                 withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
@@ -309,6 +349,9 @@ class SshAgentReviewActivity : ComponentActivity() {
                     }
                 },
             )
+        } catch (failure: Exception) {
+            cancel(failure.message ?: getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_failed))
+        }
     }
 
     private fun reject() {

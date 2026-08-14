@@ -127,6 +127,8 @@ class DesktopPeerRuntime(
     private val trustState: TrustState = FoundationTrustState(trustStore, trustMutationLock)
     private val directory = TrustPeerDirectory(trustState)
     private val pairing = PairingPayloadCodec(keyMaterial.identity.clientId)
+    /** Construction-time card creation floor; [buildClientCard] reads the live floor from [profileState],
+     *  which advances on every pairing request so a re-scanned QR always supersedes peer-held state. */
     private val createdAt: Long = profileState.updateProfilePublicationState { current ->
         if (current.cardCreatedAtFloorEpochMillis != null) current
         else current.copy(cardCreatedAtFloorEpochMillis = clock.millis())
@@ -239,6 +241,32 @@ class DesktopPeerRuntime(
     }
 
     override fun pairingPayload(): PairingPayloadResponse {
+        // A re-scanned QR must supersede the card/profile state a peer already holds: applyCard and
+        // putCard reject a card whose createdAt is not strictly newer, and applyProfile rejects an
+        // update whose updatedAt is not strictly newer than the peer's floor. Advance both stamps on
+        // every pairing request and re-announce so a stale peer converges instead of rejecting the
+        // refreshed card/profile as "not newer".
+        profileState.updateProfilePublicationState { current ->
+            val now = clock.millis()
+            val cardFloor = maxOf(
+                now,
+                (current.cardCreatedAtFloorEpochMillis ?: Long.MIN_VALUE).let {
+                    if (it == Long.MAX_VALUE) it else it + 1
+                },
+            )
+            val updatedAt = maxOf(
+                cardFloor,
+                (current.profileUpdatedAtEpochMillis ?: Long.MIN_VALUE).let {
+                    if (it == Long.MAX_VALUE) it else it + 1
+                },
+            )
+            current.copy(
+                cardCreatedAtFloorEpochMillis = cardFloor,
+                profileUpdatedAtEpochMillis = updatedAt,
+                pendingPublicationRevision = current.publicationRevision,
+            )
+        }
+        requestProfilePublication()
         val payload = pairing.encode(buildClientCard(), keyMaterial.currentKeyEpoch())
         return PairingPayloadResponse(payload, PairingDeepLinks.create(payload))
     }
@@ -470,7 +498,7 @@ class DesktopPeerRuntime(
             displayName = config.deviceName,
             platform = NOTISYNCD_PLATFORM_NAME,
             capabilities = capabilitiesProvider(),
-            createdAt = createdAt,
+            createdAt = profileState.profilePublicationState().cardCreatedAtFloorEpochMillis ?: createdAt,
         )
         val payload = ProtocolCodec.encodeToCbor(card)
         return SignedBlob(

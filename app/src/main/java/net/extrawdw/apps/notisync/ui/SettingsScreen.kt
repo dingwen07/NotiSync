@@ -284,6 +284,8 @@ fun SettingsScreen() {
                         },
                     )
                 }
+                // SSH Agent key-storage flow test — one self-contained item; see SshKeyStorageFlowTestCard.
+                item { SshKeyStorageFlowTestCard() }
             }
         }
     }

@@ -337,6 +337,6 @@ class NotisyncSshAgentCommand(
         .take(512)
 
     private companion object {
-        val CLIENT_ID = Regex("[a-z2-7]{52}")
+        val CLIENT_ID = Regex("[a-z2-7]{32}")
     }
 }

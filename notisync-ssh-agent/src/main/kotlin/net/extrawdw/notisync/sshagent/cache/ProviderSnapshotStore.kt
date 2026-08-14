@@ -156,7 +156,7 @@ class ProviderSnapshotStore(private val database: AgentDatabase) {
                 }
                 val canRemember = stable.any {
                     it.descriptor.approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER &&
-                        it.descriptor.userVerificationPolicy == SshUserVerificationPolicy.NONE
+                        it.descriptor.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.NONE
                 }
                 AggregateIdentity(
                     key.publicKeyBlob.copyOf(),

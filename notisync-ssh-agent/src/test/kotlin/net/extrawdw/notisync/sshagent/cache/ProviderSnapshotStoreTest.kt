@@ -1,17 +1,18 @@
 package net.extrawdw.notisync.sshagent.cache
 
 import java.nio.file.Files
+import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.KeyPairGenerator
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
-import net.extrawdw.notisync.protocol.SshExportability
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshKeyOrigin
 import net.extrawdw.notisync.protocol.SshKeysSnapshot
+import net.extrawdw.notisync.protocol.SshOperationalKeyProtection
+import net.extrawdw.notisync.protocol.SshOperationalKeyProvider
 import net.extrawdw.notisync.protocol.SshProviderHealth
-import net.extrawdw.notisync.protocol.SshStorageBackend
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
@@ -71,16 +72,24 @@ class ProviderSnapshotStoreTest {
         SshKeyAlgorithm.SSH_ED25519,
         name,
         SshKeyOrigin.GENERATED,
-        SshExportability.NON_EXPORTABLE,
-        SshStorageBackend.ANDROID_KEYSTORE,
-        SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+        SshOperationalKeyProtection(
+            SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+            SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+            SshUserVerificationPolicy.NONE,
+            strongBoxAttempted = false,
+            strongBoxFallback = false,
+        ),
+        null,
         SshApprovalPolicy.ALWAYS_ASK,
-        SshUserVerificationPolicy.NONE,
         createdAt = 1_000,
     )
 
     private fun withDatabase(block: (AgentDatabase) -> Unit) {
-        val directory = Files.createTempDirectory("notisync-ssh-agent-test-")
+        // macOS exposes /var as a symlink to /private/var. These tests deliberately exercise a database
+        // implementation that rejects symlink path components, so keep their temporary files under the build.
+        val testRoot = Path.of("build", "tmp", "provider-snapshot-store-test").toAbsolutePath()
+        Files.createDirectories(testRoot)
+        val directory = Files.createTempDirectory(testRoot, "notisync-ssh-agent-test-")
         try {
             AgentDatabase(directory.resolve("agent.sqlite3")).use(block)
         } finally {
