@@ -10,8 +10,8 @@
       SSH2_AGENTC_SIGN_REQUEST      (13) -> SSH2_AGENT_SIGN_RESPONSE   (14)
 
     Signatures are verified locally afterwards (.NET for RSA/ECDSA,
-    ssh-keygen SSHSIG envelope for Ed25519) to prove the agent really
-    signed the data with the private key.
+    OpenSSL for Ed25519) to prove the agent really signed the data with
+    the private key.
 
     The agent socket defaults to $env:SSH_AUTH_SOCK when set, otherwise to
     the Windows OpenSSH agent pipe \\.\pipe\openssh-ssh-agent. Use
@@ -27,6 +27,10 @@
     List candidate agent sockets and exit.
 .PARAMETER Choose
     Select the agent socket interactively from the discovered candidates.
+.PARAMETER DebugKeep
+    On Ed25519 verification failure, keep the temporary signature/key files
+    in a repo-local agent-debug-* folder and dump the raw blob structure
+    instead of deleting them.
 #>
 [CmdletBinding()]
 param(
@@ -37,7 +41,10 @@ param(
     # socket selection
     [string]$Socket = '',
     [switch]$ListSockets,
-    [switch]$Choose
+    [switch]$Choose,
+
+    # diagnostics
+    [switch]$DebugKeep
 )
 
 $ErrorActionPreference = 'Stop'
@@ -278,48 +285,77 @@ function Test-EcdsaSignature {
     } finally { $ecdsa.Dispose() }
 }
 
-function Build-SshSigEnvelope {
-    param([byte[]]$KeyBlob, [byte[]]$SignatureBlob, [string]$Namespace, [byte[]]$Data)
-    $sha = [Security.Cryptography.SHA256]::Create()
-    $hash = $sha.ComputeHash($Data)
-    $parts = @(
-        (New-StringPart ([Text.Encoding]::ASCII.GetBytes('SSHSIG'))),
-        (New-StringPart ([Text.Encoding]::ASCII.GetBytes('1'))),
-        (New-StringPart $KeyBlob),
-        (New-StringPart ([Text.Encoding]::ASCII.GetBytes($Namespace))),
-        (New-StringPart ([byte[]]@())),                                   # reserved
-        (New-StringPart ([Text.Encoding]::ASCII.GetBytes('sha256'))),
-        (New-StringPart $hash),
-        (New-StringPart $SignatureBlob)
-    )
-    $total = 0
-    foreach ($p in $parts) { $total += $p.Length }
-    $env = New-Object byte[] $total
-    $off = 0
-    foreach ($p in $parts) {
-        [Array]::Copy($p, 0, $env, $off, $p.Length)
-        $off += $p.Length
-    }
-    return ,$env
+
+function Save-Ed25519Debug {
+    param([string]$TmpDir, [byte[]]$KeyBlob, [byte[]]$SignatureBlob, [byte[]]$Data, [string]$DataPath)
+    $keepDir = Join-Path (Split-Path $PSScriptRoot -Parent) ('agent-debug-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $keepDir -Force | Out-Null
+    Copy-Item -Path (Join-Path $TmpDir '*') -Destination $keepDir -Force -ErrorAction SilentlyContinue
+    Write-Host ("  debug files kept in : {0}" -f $keepDir) -ForegroundColor DarkYellow
+    Write-Host ("  keyblob {0}B head: {1}  tail: {2}" -f $KeyBlob.Length,
+        (($KeyBlob[0..15] | ForEach-Object { $_.ToString('x2') }) -join ' '),
+        (($KeyBlob[($KeyBlob.Length - 8)..($KeyBlob.Length - 1)] | ForEach-Object { $_.ToString('x2') }) -join ' ')) -ForegroundColor DarkYellow
+    Write-Host ("  sigblob {0}B head: {1}  tail: {2}" -f $SignatureBlob.Length,
+        (($SignatureBlob[0..15] | ForEach-Object { $_.ToString('x2') }) -join ' '),
+        (($SignatureBlob[($SignatureBlob.Length - 8)..($SignatureBlob.Length - 1)] | ForEach-Object { $_.ToString('x2') }) -join ' ')) -ForegroundColor DarkYellow
+    Write-Host ("  keyblob b64 : {0}" -f [Convert]::ToBase64String($KeyBlob)) -ForegroundColor DarkYellow
+    Write-Host ("  sigblob b64 : {0}" -f [Convert]::ToBase64String($SignatureBlob)) -ForegroundColor DarkYellow
+    Write-Host ("  data sha256 : {0}" -f (([Security.Cryptography.SHA256]::Create().ComputeHash($Data) | ForEach-Object { $_.ToString('x2') }) -join '')) -ForegroundColor DarkYellow
 }
 
-function Test-Ed25519WithSshKeygen {
-    param([byte[]]$KeyBlob, [byte[]]$SignatureBlob, [byte[]]$Data, [string]$Namespace, [string]$KeyType, [string]$Principal)
-    if (-not (Get-Command ssh-keygen -ErrorAction SilentlyContinue)) { return 'skipped (ssh-keygen not on PATH)' }
+function Find-OpenSsl {
+    $c = Get-Command openssl -ErrorAction SilentlyContinue
+    if ($c) { return $c.Source }
+    foreach ($p in @('C:\Program Files\Git\usr\bin\openssl.exe', 'C:\Program Files\Git\mingw64\bin\openssl.exe', 'C:\Program Files\Git\bin\openssl.exe')) {
+        if (Test-Path $p) { return $p }
+    }
+    return $null
+}
+
+function Test-Ed25519WithOpenSsl {
+    param([byte[]]$KeyBlob, [byte[]]$SignatureBlob, [byte[]]$DataDigest, [switch]$DebugKeep)
+    # Verifies an Ed25519 signature with OpenSSL (Git for Windows). ssh-keygen -Y
+    # verify is NOT usable here: this Win32-OpenSSH build hangs in the signature
+    # verification step on any valid signature (observed for RSA and Ed25519).
+    $openssl = Find-OpenSsl
+    if (-not $openssl) { return 'unverified (openssl not found - Git for Windows is needed to verify Ed25519)' }
     $tmp = Join-Path $env:TEMP ('agent-demo-' + [guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $tmp | Out-Null
     try {
-        $dataPath = Join-Path $tmp 'data.bin'
-        $sigPath = Join-Path $tmp 'sig.sig'
-        $allowedPath = Join-Path $tmp 'allowed_signers'
-        [IO.File]::WriteAllBytes($dataPath, $Data)
-        [IO.File]::WriteAllBytes($sigPath, (Build-SshSigEnvelope $KeyBlob $SignatureBlob $Namespace $Data))
-        Set-Content -LiteralPath $allowedPath -Value "$Principal $KeyType $([Convert]::ToBase64String($KeyBlob))" -Encoding ascii
-        $out = & ssh-keygen -Y verify -f $allowedPath -I $Principal -n $Namespace -s $sigPath $dataPath 2>&1
-        if ($LASTEXITCODE -eq 0) { return 'True (ssh-keygen SSHSIG)' }
-        return "False ($($out -join ' '))"
+        # extract the 32-byte public key and 64-byte signature from the SSH blobs
+        $pos = 0
+        $null = Read-StringPart $KeyBlob ([ref]$pos)          # 'ssh-ed25519'
+        $pub32 = Read-StringPart $KeyBlob ([ref]$pos)
+        $spos = 0
+        $null = Read-StringPart $SignatureBlob ([ref]$spos)   # 'ssh-ed25519'
+        $sig64 = Read-StringPart $SignatureBlob ([ref]$spos)
+        if ($pub32.Length -ne 32 -or $sig64.Length -ne 64) { return "unverified (unexpected blob sizes: pub=$($pub32.Length), sig=$($sig64.Length))" }
+        # SPKI PEM for the Ed25519 public key (RFC 8410): SEQUENCE{SEQUENCE{OID 1.3.101.112},BIT STRING{00,key}}
+        $der = [byte[]](0x30,0x2A,0x30,0x05,0x06,0x03,0x2B,0x65,0x70,0x03,0x21,0x00) + $pub32
+        $b64 = [Convert]::ToBase64String($der) -replace '(.{64})', "`$1`n"
+        $pubPath = Join-Path $tmp 'pub.pem'
+        [IO.File]::WriteAllText($pubPath, "-----BEGIN PUBLIC KEY-----`n$b64`n-----END PUBLIC KEY-----`n", (New-Object System.Text.ASCIIEncoding))
+        $msgPath = Join-Path $tmp 'msg.bin'
+        [IO.File]::WriteAllBytes($msgPath, $DataDigest)       # the agent signed this digest
+        $sigPath = Join-Path $tmp 'sig.bin'
+        [IO.File]::WriteAllBytes($sigPath, $sig64)
+        $outPath = Join-Path $tmp 'verify.out'
+        $errPath = Join-Path $tmp 'verify.err'
+        $args = @('pkeyutl','-verify','-pubin','-inkey',('"' + $pubPath + '"'),'-rawin','-in',('"' + $msgPath + '"'),'-sigfile',('"' + $sigPath + '"'))
+        $proc = Start-Process -FilePath $openssl -ArgumentList $args -NoNewWindow -RedirectStandardOutput $outPath -RedirectStandardError $errPath -PassThru
+        if (-not $proc.WaitForExit(10000)) {
+            $proc.Kill()
+            $proc.WaitForExit()
+            if ($DebugKeep) { Save-Ed25519Debug $tmp $KeyBlob $SignatureBlob $DataDigest $msgPath }
+            return 'unverified (openssl verify did not finish in 10s)'
+        }
+        $out = ([IO.File]::ReadAllText($outPath) + [IO.File]::ReadAllText($errPath)).Trim()
+        $ok = $proc.ExitCode -eq 0 -or $out -match 'Signature Verified'
+        if ($ok) { return 'True (openssl Ed25519)' }
+        if ($DebugKeep) { Save-Ed25519Debug $tmp $KeyBlob $SignatureBlob $DataDigest $msgPath }
+        return "False ($out)"
     } finally {
-        Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
+        if (-not $DebugKeep) { Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue }
     }
 }
 
@@ -421,50 +457,62 @@ try {
         Write-Host ("[{0}] {1}  {2}  ({3})" -f ($i + 1), $keyType, $fp, $comment)
     }
 
-    # 2) sign with every key
+    # 2) sign with every key (a per-key failure is reported and we move on)
     $i = 0
     $allOk = $true
     foreach ($key in $keys) {
         $i++
         Write-Host ''
         Write-Host ("--- Signing with key #{0} ({1}) ---" -f $i, $key.Type)
-        switch ($key.Type) {
-            'ssh-rsa' {
-                # flag 2 forces rsa-sha2-256: agent signs DigestInfo(SHA256(data)) with PKCS#1 v1.5
-                $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes $AGENT_RSA_SHA2_256
-                $parsed = Parse-SignatureBlob $sigBlob
-                $verdict = Test-RsaSignature $key.Blob $parsed.Signature $dataBytes $parsed.Format
+        try {
+            switch ($key.Type) {
+                'ssh-rsa' {
+                    # flag 2 forces rsa-sha2-256: agent signs DigestInfo(SHA256(data)) with PKCS#1 v1.5;
+                    # some agents/keys refuse the explicit SHA2 flag, so fall back to the agent default
+                    try {
+                        $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes $AGENT_RSA_SHA2_256
+                    } catch {
+                        if ($_.Exception.Message -notmatch 'SSH_AGENT_FAILURE') { throw }
+                        Write-Host '  (agent refused rsa-sha2-256 flag, retrying with default flags)' -ForegroundColor DarkYellow
+                        $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes 0
+                    }
+                    $parsed = Parse-SignatureBlob $sigBlob
+                    $verdict = Test-RsaSignature $key.Blob $parsed.Signature $dataBytes $parsed.Format
+                }
+                { $_ -like 'ecdsa-sha2-*' } {
+                    # agent hashes data with SHA-256/384/512 per curve before signing
+                    $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes 0
+                    $parsed = Parse-SignatureBlob $sigBlob
+                    $verdict = Test-EcdsaSignature $key.Blob $parsed.Signature $dataBytes
+                }
+                'ssh-ed25519' {
+                    # agent signs exactly the bytes given; sign the SHA-256 digest,
+                    # then verify it with OpenSSL (ssh-keygen -Y verify hangs on
+                    # this Win32-OpenSSH build)
+                    $sigBlob = Invoke-AgentSign $client $key.Blob $digest 0
+                    $parsed = Parse-SignatureBlob $sigBlob
+                    $verdict = Test-Ed25519WithOpenSsl $key.Blob $sigBlob $digest -DebugKeep:$DebugKeep
+                }
+                default {
+                    $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes 0
+                    $parsed = Parse-SignatureBlob $sigBlob
+                    $verdict = 'n/a (no verifier for this key type)'
+                }
             }
-            { $_ -like 'ecdsa-sha2-*' } {
-                # agent hashes data with SHA-256/384/512 per curve before signing
-                $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes 0
-                $parsed = Parse-SignatureBlob $sigBlob
-                $verdict = Test-EcdsaSignature $key.Blob $parsed.Signature $dataBytes
-            }
-            'ssh-ed25519' {
-                # agent signs exactly the bytes given; sign the SHA-256 digest so the
-                # result fits the SSHSIG envelope that ssh-keygen -Y verify expects
-                $sigBlob = Invoke-AgentSign $client $key.Blob $digest 0
-                $parsed = Parse-SignatureBlob $sigBlob
-                $principal = $key.Comment -replace '\s+', '_'
-                if (-not $principal) { $principal = 'agent-demo' }
-                $verdict = Test-Ed25519WithSshKeygen $key.Blob $sigBlob $dataBytes $Namespace $key.Type $principal
-            }
-            default {
-                $sigBlob = Invoke-AgentSign $client $key.Blob $dataBytes 0
-                $parsed = Parse-SignatureBlob $sigBlob
-                $verdict = 'n/a (no verifier for this key type)'
-            }
+            Write-Host ("  signature format : {0}" -f $parsed.Format)
+            Write-Host ("  signature (b64)  : {0}" -f [Convert]::ToBase64String($parsed.Signature))
+            Write-Host ("  verified         : {0}" -f $verdict)
+            if ($verdict -isnot [bool] -or -not $verdict) { $allOk = $false }
+        } catch {
+            Write-Host ("  signature format : FAILED - {0}" -f $_.Exception.Message) -ForegroundColor Red
+            if ($_.Exception.InnerException) { Write-Host ("                     -> " + $_.Exception.InnerException.Message) -ForegroundColor DarkRed }
+            $allOk = $false
         }
-        Write-Host ("  signature format : {0}" -f $parsed.Format)
-        Write-Host ("  signature (b64)  : {0}" -f [Convert]::ToBase64String($parsed.Signature))
-        Write-Host ("  verified         : {0}" -f $verdict)
-        if ($verdict -isnot [bool] -or -not $verdict) { $allOk = $false }
     }
 
     Write-Host ''
     if ($allOk) { Write-Host 'All signatures verified OK.' -ForegroundColor Green }
-    else { Write-Host 'Some signatures could not be verified (see above).' -ForegroundColor Yellow }
+    else { Write-Host 'Some keys failed to sign or could not be verified (see above).' -ForegroundColor Yellow }
 }
 catch {
     Write-Host ''

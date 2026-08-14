@@ -22,7 +22,6 @@ internal data class PreparedSshKeyUnwrap(
     internal val wrappedDek: ByteArray,
     internal val nonce: ByteArray,
     internal val ciphertext: ByteArray,
-    internal val wrapAad: ByteArray,
     internal val dataAad: ByteArray,
 ) {
     internal var consumed = false
@@ -39,7 +38,6 @@ internal class PreparedSshKeyProtection internal constructor(
     internal val wrapNonce: ByteArray,
     internal val dataNonce: ByteArray,
     internal val dataCiphertext: ByteArray,
-    internal val wrapAad: ByteArray,
     internal val dataAad: ByteArray,
     internal val securityLevel: SshStorageSecurityLevel,
 ) {
@@ -52,7 +50,6 @@ internal class PreparedSshKeyProtection internal constructor(
         wrapNonce.fill(0)
         dataNonce.fill(0)
         dataCiphertext.fill(0)
-        wrapAad.fill(0)
         dataAad.fill(0)
     }
 }
@@ -61,6 +58,16 @@ internal sealed interface SshKeyProtectionResult {
     data class Complete(val material: ProtectedSshKeyMaterial) : SshKeyProtectionResult
     data class AuthenticationRequired(val prepared: PreparedSshKeyProtection) : SshKeyProtectionResult
 }
+
+internal fun shouldRequestStrongBoxAesWrapping(
+    preferStrongBox: Boolean,
+    strongBoxAvailable: Boolean,
+    userVerificationPolicy: SshUserVerificationPolicy,
+    exactOperationWorks: () -> Boolean,
+): Boolean = preferStrongBox &&
+    userVerificationPolicy == SshUserVerificationPolicy.NONE &&
+    strongBoxAvailable &&
+    exactOperationWorks()
 
 internal data class SshAesWrappedKeyEnvelope(
     val wrapNonce: ByteArray,
@@ -134,7 +141,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         val securityLevel = inspect(key, userVerificationPolicy)
         val dek = ByteArray(DEK_BYTES).also(RANDOM::nextBytes)
         val dataAad = domain(DATA_AAD_DOMAIN, aad)
-        val wrapAad = domain(WRAP_AAD_DOMAIN, aad)
         var dataNonce: ByteArray? = null
         var dataCiphertext: ByteArray? = null
         try {
@@ -144,6 +150,9 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             }
             dataCiphertext = dataCipher.doFinal(plaintext)
             dataNonce = dataCipher.iv.copyOf()
+            // KeyMint only authenticates the random DEK. The software data layer below already binds the full
+            // SSH key identity through dataAad, so repeating that metadata as hardware GCM AAD is redundant and
+            // exposes the envelope to device-specific StrongBox AAD bugs.
             val wrappingCipher = Cipher.getInstance(AES_TRANSFORMATION).apply {
                 init(Cipher.ENCRYPT_MODE, key)
             }
@@ -152,10 +161,9 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             val prepared = PreparedSshKeyProtection(
                 wrappingCipher,
                 dek,
-                wrappingCipher.iv.copyOf(),
+                requireNotNull(wrappingCipher.iv).copyOf(),
                 dataNonce,
                 dataCiphertext,
-                wrapAad,
                 dataAad,
                 securityLevel,
             )
@@ -171,7 +179,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             dataNonce?.fill(0)
             dataCiphertext?.fill(0)
             dataAad.fill(0)
-            wrapAad.fill(0)
             throw failure
         }
     }
@@ -185,8 +192,11 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         prepared.consumed = true
         return try {
             val wrappedDek = try {
-                authenticatedCipher.updateAAD(prepared.wrapAad)
-                authenticatedCipher.doFinal(prepared.dek)
+                authenticatedCipher.doFinal(prepared.dek).also {
+                    check(MessageDigest.isEqual(prepared.wrapNonce, requireNotNull(authenticatedCipher.iv))) {
+                        "Android Keystore changed the SSH wrapping nonce while finalizing"
+                    }
+                }
             } catch (failure: Exception) {
                 throw IllegalStateException("Android Keystore could not finish authenticated SSH key wrapping", failure)
             }
@@ -208,7 +218,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             prepared.wrapNonce.fill(0)
             prepared.dataNonce.fill(0)
             prepared.dataCiphertext.fill(0)
-            prepared.wrapAad.fill(0)
             prepared.dataAad.fill(0)
         }
     }
@@ -220,7 +229,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         val key = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             .getKey(alias, null) as? SecretKey
             ?: error("SSH key wrapping alias is unavailable")
-        val wrapAad = domain(WRAP_AAD_DOMAIN, aad)
         val dataAad = domain(DATA_AAD_DOMAIN, aad)
         val cipher = Cipher.getInstance(AES_TRANSFORMATION).apply {
             init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, parsed.wrapNonce))
@@ -230,7 +238,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             parsed.wrappedDek,
             parsed.dataNonce,
             parsed.dataCiphertext,
-            wrapAad,
             dataAad,
         )
     }
@@ -242,7 +249,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         var dek: ByteArray? = null
         return try {
             dek = try {
-                authenticatedCipher.updateAAD(prepared.wrapAad)
                 authenticatedCipher.doFinal(prepared.wrappedDek)
             } catch (failure: Exception) {
                 throw IllegalStateException("Android Keystore could not finish authenticated SSH key unwrapping", failure)
@@ -257,7 +263,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             prepared.wrappedDek.fill(0)
             prepared.nonce.fill(0)
             prepared.ciphertext.fill(0)
-            prepared.wrapAad.fill(0)
             prepared.dataAad.fill(0)
         }
     }
@@ -276,7 +281,18 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         check(!store.containsAlias(alias)) {
             "SSH key store uses an incompatible wrapping key; reset it from Advanced diagnostics"
         }
-        val requestStrongBox = preferStrongBox && strongBoxAvailable && strongBoxAesGcmWorks()
+        // A StrongBox feature declaration covers AES-256-GCM, but does not let us safely preflight the
+        // per-operation biometric combination: a faithful probe would itself need two user-authenticated
+        // operations (encrypt, then decrypt). At least one shipping KeyMint accepts both operations and their
+        // auth tokens yet emits ciphertext that later fails with VERIFICATION_FAILED. Never persist private-key
+        // material behind an unverified combination. PER_USE wrappers therefore use authenticated TEE; direct
+        // StrongBox SSH signing keys and non-authenticated StrongBox wrappers remain eligible.
+        val requestStrongBox = shouldRequestStrongBoxAesWrapping(
+            preferStrongBox,
+            strongBoxAvailable,
+            userVerificationPolicy,
+            ::strongBoxAesGcmWorks,
+        )
         try {
             generate(alias, requestStrongBox, userVerificationPolicy)
             val generated = requireNotNull(store.getKey(alias, null) as? SecretKey)
@@ -358,7 +374,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
     private fun probeStrongBoxAesGcm(): Boolean {
         val store = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
         val probePlaintext = ByteArray(DEK_BYTES).also(RANDOM::nextBytes)
-        val probeAad = "notisync:ssh:aes-gcm-probe:v2".encodeToByteArray()
         var ciphertext: ByteArray? = null
         var nonce: ByteArray? = null
         var recovered: ByteArray? = null
@@ -375,12 +390,13 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             check(inspect(key, SshUserVerificationPolicy.NONE) == SshStorageSecurityLevel.STRONGBOX)
             ciphertext = Cipher.getInstance(AES_TRANSFORMATION).run {
                 init(Cipher.ENCRYPT_MODE, key)
-                updateAAD(probeAad)
-                doFinal(probePlaintext).also { nonce = iv.copyOf() }
+                nonce = requireNotNull(iv).copyOf()
+                doFinal(probePlaintext).also {
+                    check(MessageDigest.isEqual(requireNotNull(nonce), requireNotNull(iv)))
+                }
             }
             recovered = Cipher.getInstance(AES_TRANSFORMATION).run {
                 init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, requireNotNull(nonce)))
-                updateAAD(probeAad)
                 doFinal(requireNotNull(ciphertext))
             }
             MessageDigest.isEqual(probePlaintext, requireNotNull(recovered))
@@ -388,7 +404,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
             false
         } finally {
             probePlaintext.fill(0)
-            probeAad.fill(0)
             ciphertext?.fill(0)
             nonce?.fill(0)
             recovered?.fill(0)
@@ -406,7 +421,6 @@ internal class SshAesKeyWrapper(private val strongBoxAvailable: Boolean) {
         private const val GCM_NONCE_BYTES = 12
         private const val GCM_TAG_BITS = 128
         private const val STRONGBOX_PROBE_ALIAS = "notisync_ssh_aes_gcm_probe_v1"
-        private const val WRAP_AAD_DOMAIN = "notisync:ssh:dek-wrap:v2"
         private const val DATA_AAD_DOMAIN = "notisync:ssh:key-data:v2"
         private val RANDOM = SecureRandom()
         private val STRONGBOX_PROBE_LOCK = Any()
