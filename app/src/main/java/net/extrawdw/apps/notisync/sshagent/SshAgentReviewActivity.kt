@@ -10,39 +10,10 @@ import android.os.CancellationSignal
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
-import java.security.MessageDigest
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -50,7 +21,6 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
-import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.SshImportSourceType
@@ -83,7 +53,8 @@ class SshAgentReviewActivity : ComponentActivity() {
                     passphrase = passphrase,
                     busy = busy,
                     onStorageChange = { storage = it },
-                    onPassphraseChange = { passphrase = it },
+                    onPassphraseChange = ::changePassphrase,
+                    onPreviewImport = ::previewImport,
                     onApprove = ::approve,
                     onReject = ::reject,
                     onRemember = ::chooseRememberScope,
@@ -91,7 +62,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                 )
             }
         }
-        load(intent.getBooleanExtra(EXTRA_APPROVE, false))
+        load()
     }
 
     override fun onDestroy() {
@@ -112,41 +83,138 @@ class SshAgentReviewActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun load(approveFromNotification: Boolean) {
+    private fun load() {
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showError("SSH key provider is not ready")
+                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
             val stored = withContext(Dispatchers.IO) { graph.sshKeyProviderStore.find(requestId) }
-                ?: return@launch showError("This SSH request is no longer available")
+                ?: return@launch showError(getString(R.string.ssh_agent_review_unavailable))
             val rememberScopes = withContext(Dispatchers.IO) {
                 graph.sshKeyProviderStore.availableRememberScopes(requestId)
             }
-            val encrypted = runCatching {
+            val importInspection = runCatching {
                 withContext(Dispatchers.Default) {
-                    stored.importRequest?.takeIf { it.sourceType == SshImportSourceType.PRIVATE_KEY_FILE }
-                        ?.fileBytes
-                        ?.let(SshPrivateKeyFileParser::inspect)
-                        ?: false
+                    stored.importRequest?.takeIf { it.sourceType == SshImportSourceType.PRIVATE_KEY_FILE }?.let {
+                        SshPrivateKeyFileParser.inspect(requireNotNull(it.fileBytes))
+                    }
                 }
             }.getOrElse {
-                return@launch showError(it.message ?: "The SSH private key is invalid")
+                return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_private_key))
             }
-            screen = SshReviewScreenState.Details(stored, rememberScopes, encrypted)
-            // Import notifications always land on this choice screen. Signature quick-approve remains available.
-            if (approveFromNotification && stored.kind == SshProviderRequestKind.SIGN) approve()
+            val keyPreview = runCatching {
+                withContext(Dispatchers.Default) {
+                    stored.history.publicKeyBlob?.let(SshImportPreviewParser::preview) ?: when (stored.kind) {
+                        SshProviderRequestKind.SIGN -> stored.signRequest?.let {
+                            SshImportPreviewParser.preview(it.publicKeyBlob)
+                        }
+                        SshProviderRequestKind.IMPORT -> stored.importRequest?.let { request ->
+                            if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
+                                SshImportPreviewParser.parse(request, null)
+                            } else {
+                                importInspection?.preview
+                            }
+                        }
+                    }
+                }
+            }.getOrElse {
+                return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_key))
+            }
+            if (stored.kind == SshProviderRequestKind.IMPORT && keyPreview != null &&
+                stored.state == SshProviderRequestState.PENDING_REVIEW
+            ) {
+                val recorded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        graph.sshKeyProviderStore.recordImportPreview(requestId, keyPreview.publicKeyBlob)
+                    }
+                }.getOrElse {
+                    return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_key))
+                }
+                if (!recorded) return@launch showError(getString(R.string.ssh_agent_review_unavailable))
+            }
+            val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.requesterClientId }
+            val currentKeyName = keyPreview?.let { preview ->
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.keyDisplayName(preview.publicKeyBlob)
+                }
+            }
+            val keyName = when (stored.kind) {
+                SshProviderRequestKind.SIGN -> currentKeyName ?: stored.history.keyName
+                SshProviderRequestKind.IMPORT -> stored.history.keyName ?: currentKeyName
+            } ?: stored.history.suggestedName ?: getString(R.string.ssh_agent_imported_key_default)
+            screen = SshReviewScreenState.Details(
+                request = stored,
+                rememberScopes = rememberScopes,
+                encryptedImport = importInspection?.encrypted ?: stored.history.encryptedImport,
+                keyPreview = keyPreview,
+                keyName = keyName,
+                requesterName = peer?.displayName ?: stored.requesterClientId.shortForm(),
+                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+            )
+        }
+    }
+
+    private fun changePassphrase(value: String) {
+        passphrase = value
+        val details = screen as? SshReviewScreenState.Details ?: return
+        if (details.encryptedImport && details.keyPreview != null) {
+            screen = details.copy(keyPreview = null, errorMessage = null)
+        }
+    }
+
+    private fun previewImport() {
+        if (busy) return
+        val details = screen as? SshReviewScreenState.Details ?: return
+        val request = details.request.importRequest ?: return
+        if (details.encryptedImport && passphrase.isBlank()) return
+        busy = true
+        val secret = if (details.encryptedImport) passphrase.toCharArray() else null
+        lifecycleScope.launch {
+            val result = try {
+                runCatching {
+                    withContext(Dispatchers.Default) { SshImportPreviewParser.parse(request, secret) }
+                }
+            } finally {
+                secret?.fill('\u0000')
+            }
+            busy = false
+            result.onSuccess { preview ->
+                val recorded = runCatching {
+                    withContext(Dispatchers.IO) {
+                        (application as? NotiSyncApp)?.awaitGraphReady()?.sshKeyProviderStore
+                            ?.recordImportPreview(requestId, preview.publicKeyBlob) == true
+                    }
+                }.getOrElse {
+                    screen = details.copy(errorMessage = it.message ?: getString(R.string.ssh_agent_invalid_key))
+                    return@onSuccess
+                }
+                if (!recorded) {
+                    screen = details.copy(errorMessage = getString(R.string.ssh_agent_review_unavailable))
+                    return@onSuccess
+                }
+                screen = details.copy(keyPreview = preview, errorMessage = null)
+            }.onFailure { failure ->
+                screen = details.copy(
+                    errorMessage = failure.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                )
+            }
         }
     }
 
     private fun approve() {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
+        if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
         if (details.encryptedImport && passphrase.isBlank()) return
+        if (details.request.kind == SshProviderRequestKind.IMPORT && details.keyPreview == null) {
+            previewImport()
+            return
+        }
         busy = true
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showError("SSH key provider is not ready")
+                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
             val engine = graph.sshAgentProviderEngine
-                ?: return@launch showError("SSH key provider is not ready")
+                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
             when (details.request.kind) {
                 SshProviderRequestKind.IMPORT -> {
                     val secret = if (details.encryptedImport) passphrase.toCharArray() else null
@@ -173,12 +241,14 @@ class SshAgentReviewActivity : ComponentActivity() {
                                 authenticateImportStorage(engine, outcome.prepared, details)
                             null -> {
                                 busy = false
-                                screen = details.copy(errorMessage = "This SSH import is no longer available")
+                                screen = details.copy(errorMessage = getString(R.string.ssh_agent_import_unavailable))
                             }
                         }
                     }.onFailure {
                         busy = false
-                        screen = details.copy(errorMessage = it.message ?: "The SSH private key is invalid")
+                        screen = details.copy(
+                            errorMessage = it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                        )
                     }
                 }
                 SshProviderRequestKind.SIGN -> {
@@ -191,9 +261,9 @@ class SshAgentReviewActivity : ComponentActivity() {
                         val prepared = runCatching {
                             withContext(Dispatchers.IO) { engine.prepareUserVerifiedSignature(requestId) }
                         }.getOrElse {
-                            showError(it.message ?: "Unable to prepare biometric signing")
+                            showError(it.message ?: getString(R.string.ssh_agent_prepare_auth_failed))
                             return@launch
-                        } ?: return@launch showError("This SSH signature request is no longer available")
+                        } ?: return@launch showError(getString(R.string.ssh_agent_request_unavailable))
                         authenticateSignature(engine, prepared)
                     }
                 }
@@ -213,10 +283,10 @@ class SshAgentReviewActivity : ComponentActivity() {
             }
         }
         val prompt = BiometricPrompt.Builder(this)
-            .setTitle("Authorize SSH signature")
-            .setSubtitle("Use the selected protected SSH key once")
+            .setTitle(getString(R.string.ssh_agent_sign_auth_title))
+            .setSubtitle(getString(R.string.ssh_agent_sign_auth_subtitle))
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
-            .setNegativeButton("Cancel", mainExecutor) { _, _ ->
+            .setNegativeButton(getString(R.string.action_cancel), mainExecutor) { _, _ ->
                 fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
             }
             .build()
@@ -330,7 +400,9 @@ class SshAgentReviewActivity : ComponentActivity() {
                                         withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
                                         pendingImportStorage = null
                                         busy = false
-                                        screen = details.copy(errorMessage = "This SSH import is no longer available")
+                                        screen = details.copy(
+                                            errorMessage = getString(R.string.ssh_agent_import_unavailable),
+                                        )
                                     }
                                 }
                             }.onFailure {
@@ -338,7 +410,10 @@ class SshAgentReviewActivity : ComponentActivity() {
                                 pendingImportStorage = null
                                 busy = false
                                 screen = details.copy(
-                                    errorMessage = it.message ?: "Unable to store the SSH private key",
+                                    errorMessage = it.sshKeyStorageUserMessage(
+                                        this@SshAgentReviewActivity,
+                                        R.string.ssh_agent_store_private_key_failed,
+                                    ),
                                 )
                             }
                         }
@@ -371,24 +446,26 @@ class SshAgentReviewActivity : ComponentActivity() {
         if (scopes.size == 1) return authenticateRemember(scopes.single())
         val choices = buildList {
             if (SshRememberScope.PARENT_PROCESS_SESSION in scopes) {
-                add("This parent process session" to SshRememberScope.PARENT_PROCESS_SESSION)
+                add(getString(R.string.ssh_agent_remember_parent) to SshRememberScope.PARENT_PROCESS_SESSION)
             }
-            if (SshRememberScope.PEER in scopes) add("This trusted computer" to SshRememberScope.PEER)
+            if (SshRememberScope.PEER in scopes) {
+                add(getString(R.string.ssh_agent_remember_peer) to SshRememberScope.PEER)
+            }
         }
         AlertDialog.Builder(this)
-            .setTitle("Remember authorization for")
+            .setTitle(getString(R.string.ssh_agent_remember_title))
             .setItems(choices.map { it.first }.toTypedArray()) { _, which -> authenticateRemember(choices[which].second) }
             .show()
     }
 
     private fun authenticateRemember(scope: SshRememberScope) {
         val subtitle = if (scope == SshRememberScope.PARENT_PROCESS_SESSION) {
-            "Allow this parent process session to use the key without another approval"
+            getString(R.string.ssh_agent_remember_parent_subtitle)
         } else {
-            "Allow this trusted computer to use the key without another approval"
+            getString(R.string.ssh_agent_remember_peer_subtitle)
         }
         BiometricPrompt.Builder(this)
-            .setTitle("Authorize remembered SSH access")
+            .setTitle(getString(R.string.ssh_agent_remember_auth_title))
             .setSubtitle(subtitle)
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
@@ -429,123 +506,22 @@ class SshAgentReviewActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
-        private const val EXTRA_APPROVE = "ssh_agent_approve"
         fun intent(context: Context, requestId: String) = Intent(context, SshAgentReviewActivity::class.java)
             .putExtra(EXTRA_REQUEST_ID, requestId)
-        fun approveIntent(context: Context, requestId: String) = intent(context, requestId).putExtra(EXTRA_APPROVE, true)
     }
 }
 
-@Composable
-private fun SshReviewContent(
-    state: SshReviewScreenState,
-    storage: SshKeyStorageSelection,
-    passphrase: String,
-    busy: Boolean,
-    onStorageChange: (SshKeyStorageSelection) -> Unit,
-    onPassphraseChange: (String) -> Unit,
-    onApprove: () -> Unit,
-    onReject: () -> Unit,
-    onRemember: () -> Unit,
-    onClose: () -> Unit,
-) {
-    val details = state as? SshReviewScreenState.Details
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Text(if (details?.request?.kind == SshProviderRequestKind.IMPORT) "SSH key import" else "SSH signature")
-                },
-                navigationIcon = {
-                    IconButton(onClick = onClose) { Icon(Icons.Outlined.Close, contentDescription = "Close") }
-                },
-            )
-        },
-    ) { padding ->
-        when (state) {
-            SshReviewScreenState.Loading -> Column(
-                Modifier.fillMaxSize().padding(padding),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) { CircularProgressIndicator() }
-            is SshReviewScreenState.Error -> Column(
-                Modifier.fillMaxSize().padding(padding).padding(24.dp),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text(state.message, color = MaterialTheme.colorScheme.error)
-                TextButton(onClick = onClose) { Text("Close") }
-            }
-            is SshReviewScreenState.Details -> Column(
-                Modifier.fillMaxSize().padding(padding).padding(24.dp).verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(16.dp),
-            ) {
-                Text("Requested by ${state.request.requesterClientId.shortForm()}", style = MaterialTheme.typography.titleMedium)
-                when (state.request.kind) {
-                    SshProviderRequestKind.SIGN -> {
-                        val request = requireNotNull(state.request.signRequest)
-                        request.processContext.directParent?.let {
-                            Text("Process: ${it.displayName ?: it.executablePath} (PID ${it.pid})")
-                        }
-                        request.destinationContext.hostAliases.firstOrNull()?.value?.let { Text("Destination: $it") }
-                        Text("Key: ${MessageDigest.getInstance("SHA-256").digest(request.publicKeyBlob).toHex().take(16)}")
-                    }
-                    SshProviderRequestKind.IMPORT -> {
-                        val request = requireNotNull(state.request.importRequest)
-                        Text(request.suggestedName ?: "Imported SSH key")
-                        Text(
-                            if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
-                                "Remote ssh-add identity"
-                            } else {
-                                "Remote private-key file"
-                            },
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        if (state.encryptedImport) {
-                            OutlinedTextField(
-                                value = passphrase,
-                                onValueChange = onPassphraseChange,
-                                label = { Text("Passphrase") },
-                                singleLine = true,
-                                visualTransformation = PasswordVisualTransformation(),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        SshKeyStorageOptions(storage, onStorageChange)
-                        state.errorMessage?.let { message ->
-                            Text(message, color = MaterialTheme.colorScheme.error)
-                        }
-                    }
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    OutlinedButton(onClick = onReject, enabled = !busy, modifier = Modifier.weight(1f)) {
-                        Text("Reject")
-                    }
-                    Button(
-                        onClick = onApprove,
-                        enabled = !busy && (!state.encryptedImport || passphrase.isNotBlank()),
-                        modifier = Modifier.weight(1f),
-                    ) { Text(if (state.request.kind == SshProviderRequestKind.IMPORT) "Import" else "Approve") }
-                }
-                if (state.rememberScopes.isNotEmpty()) {
-                    TextButton(onClick = onRemember, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                        Text("Approve and remember")
-                    }
-                }
-            }
-        }
-    }
-}
-
-private sealed interface SshReviewScreenState {
+internal sealed interface SshReviewScreenState {
     data object Loading : SshReviewScreenState
     data class Error(val message: String) : SshReviewScreenState
     data class Details(
         val request: StoredSshProviderRequest,
         val rememberScopes: Set<SshRememberScope>,
         val encryptedImport: Boolean,
+        val keyPreview: SshKeyPreview?,
+        val keyName: String,
+        val requesterName: String,
+        val requesterIdentityKeyFingerprint: String?,
         val errorMessage: String? = null,
     ) : SshReviewScreenState
 }
-
-private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

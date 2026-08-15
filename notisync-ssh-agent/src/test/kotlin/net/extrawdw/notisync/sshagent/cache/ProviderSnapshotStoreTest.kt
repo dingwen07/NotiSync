@@ -4,6 +4,7 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.KeyPairGenerator
+import java.sql.DriverManager
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
@@ -17,9 +18,26 @@ import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertThrows
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ProviderSnapshotStoreTest {
+    @Test
+    fun newDatabaseUsesReleaseSchemaOne() {
+        withDatabase { database ->
+            val version = database.read { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("PRAGMA user_version").use { result ->
+                        assertTrue(result.next())
+                        result.getInt(1)
+                    }
+                }
+            }
+            assertEquals(1, version)
+        }
+    }
+
     @Test
     fun aggregatesDuplicatePublicBlobsAndReplacesFullSnapshots() {
         withDatabase { database ->
@@ -58,6 +76,35 @@ class ProviderSnapshotStoreTest {
         }
     }
 
+    @Test
+    fun incompatibleDatabaseFailsClosedWithoutDeletingOrRewritingIt() {
+        withTemporaryDatabasePath { path ->
+            DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE TABLE retained_marker(value TEXT NOT NULL)")
+                    statement.execute("INSERT INTO retained_marker(value) VALUES('keep')")
+                    statement.execute("PRAGMA user_version=2")
+                }
+            }
+
+            val failure = assertThrows(IllegalStateException::class.java) { AgentDatabase(path) }
+
+            assertTrue(failure.message.orEmpty().contains("database was not modified"))
+            DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.executeQuery("PRAGMA user_version").use { result ->
+                        assertTrue(result.next())
+                        assertEquals(2, result.getInt(1))
+                    }
+                    statement.executeQuery("SELECT value FROM retained_marker").use { result ->
+                        assertTrue(result.next())
+                        assertEquals("keep", result.getString(1))
+                    }
+                }
+            }
+        }
+    }
+
     private fun snapshot(
         provider: ClientId,
         generation: String,
@@ -85,13 +132,17 @@ class ProviderSnapshotStoreTest {
     )
 
     private fun withDatabase(block: (AgentDatabase) -> Unit) {
+        withTemporaryDatabasePath { path -> AgentDatabase(path).use(block) }
+    }
+
+    private fun withTemporaryDatabasePath(block: (Path) -> Unit) {
         // macOS exposes /var as a symlink to /private/var. These tests deliberately exercise a database
         // implementation that rejects symlink path components, so keep their temporary files under the build.
         val testRoot = Path.of("build", "tmp", "provider-snapshot-store-test").toAbsolutePath()
         Files.createDirectories(testRoot)
         val directory = Files.createTempDirectory(testRoot, "notisync-ssh-agent-test-")
         try {
-            AgentDatabase(directory.resolve("agent.sqlite3")).use(block)
+            block(directory.resolve("agent.sqlite3"))
         } finally {
             Files.walk(directory).use { paths -> paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists) }
         }

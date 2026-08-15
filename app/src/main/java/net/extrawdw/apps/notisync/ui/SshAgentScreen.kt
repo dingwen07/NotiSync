@@ -7,11 +7,14 @@ import android.content.Context
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.os.CancellationSignal
+import android.util.Log
+import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -28,6 +31,8 @@ import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.outlined.ContentCopy
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
+import androidx.compose.material.icons.outlined.Close
+import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
 import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.UploadFile
@@ -39,6 +44,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -59,9 +65,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -78,11 +86,14 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshagent.SshAgentReviewActivity
 import net.extrawdw.apps.notisync.sshagent.SshKeyExportActivity
 import net.extrawdw.apps.notisync.sshagent.PreparedSshKeyStorage
-import net.extrawdw.apps.notisync.sshagent.SshProviderRequestKind
-import net.extrawdw.apps.notisync.sshagent.SshProviderRequestState
+import net.extrawdw.apps.notisync.sshagent.SshRequestListItem
 import net.extrawdw.apps.notisync.sshagent.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshagent.SshKeyStorageResult
+import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
+import net.extrawdw.apps.notisync.sshagent.SshHistoryRequestDetail
 import net.extrawdw.apps.notisync.sshagent.StoredSshProviderRequest
+import net.extrawdw.apps.notisync.sshagent.isActiveRequest
+import net.extrawdw.apps.notisync.sshagent.sshKeyStorageUserMessage
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
@@ -103,12 +114,12 @@ fun SshAgentScreen() {
     val graph = rememberGraph()
     val context = LocalContext.current
     val storageAuthUnavailable = stringResource(R.string.ssh_agent_storage_auth_unavailable)
-    val storageAuthFailed = stringResource(R.string.ssh_agent_storage_auth_failed)
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val changeVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle()
     var keys by remember { mutableStateOf<List<SshKeyDescriptor>>(emptyList()) }
     var requests by remember { mutableStateOf<List<StoredSshProviderRequest>>(emptyList()) }
+    var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
     var generating by remember { mutableStateOf(false) }
@@ -118,6 +129,7 @@ fun SshAgentScreen() {
     var pendingImport by remember { mutableStateOf<PendingSshKeyImport?>(null) }
     val latestPendingImport by rememberUpdatedState(pendingImport)
     var importError by remember { mutableStateOf<String?>(null) }
+    var previewingImport by remember { mutableStateOf(false) }
     var importingKey by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<SshKeyDescriptor?>(null) }
     var deleting by remember { mutableStateOf<SshKeyDescriptor?>(null) }
@@ -132,7 +144,8 @@ fun SshAgentScreen() {
                         val bytes = context.contentResolver.openInputStream(uri)?.use(::readBoundedPrivateKey)
                             ?: error("The selected private-key file could not be opened")
                         try {
-                            PendingSshKeyImport(bytes, SshPrivateKeyFileParser.inspect(bytes))
+                            val inspected = SshPrivateKeyFileParser.inspect(bytes)
+                            PendingSshKeyImport(bytes, inspected.encrypted, inspected.preview)
                         } catch (failure: Exception) {
                             bytes.fill(0)
                             throw failure
@@ -207,7 +220,10 @@ fun SshAgentScreen() {
                                         graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
                                     }
                                     pendingStorageAuthentication = null
-                                    error = it.message ?: storageAuthFailed
+                                    error = context.reportSshKeyStorageFailure(
+                                        it,
+                                        R.string.ssh_agent_storage_auth_failed,
+                                    )
                                     loading = false
                                 }
                         }
@@ -245,6 +261,15 @@ fun SshAgentScreen() {
     }
     LaunchedEffect(changeVersion) { refresh() }
 
+    val selectedHistory = selectedHistoryRequestId?.let { requestId ->
+        requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
+    }
+    LaunchedEffect(selectedHistoryRequestId, selectedHistory, loading) {
+        if (!loading && selectedHistoryRequestId != null && selectedHistory == null) {
+            selectedHistoryRequestId = null
+        }
+    }
+
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -254,46 +279,43 @@ fun SshAgentScreen() {
             )
         },
     ) { padding ->
-        val active = requests.filter { it.state == SshProviderRequestState.PENDING_REVIEW }
-        val history = requests.filterNot { it.state == SshProviderRequestState.PENDING_REVIEW }
+        val active = requests.filter(StoredSshProviderRequest::isActiveRequest)
+        val history = requests.filterNot(StoredSshProviderRequest::isActiveRequest)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
-                start = 20.dp,
-                end = 20.dp,
                 top = padding.calculateTopPadding() + 12.dp,
                 bottom = padding.calculateBottomPadding() + 96.dp,
             ),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                ProviderCard(
-                    ready = graph.sshAgentProviderEngine != null,
-                    keyCount = keys.size,
-                    onGenerate = {
-                        error = null
-                        generating = true
-                    },
-                    onImport = {
-                        error = null
-                        // Key files are commonly exposed by document providers with vendor-specific,
-                        // extension-derived, or no MIME type. The bounded parser is the authority.
-                        importLauncher.launch(arrayOf("*/*"))
-                    },
-                    onPaste = {
-                        error = null
-                        pasteError = null
-                        pastingKey = true
-                    },
-                )
+                CenteredSshItem(padded = true) {
+                    ProviderCard(
+                        ready = graph.sshAgentProviderEngine != null,
+                        keyCount = keys.size,
+                        onGenerate = {
+                            error = null
+                            generating = true
+                        },
+                        onImport = {
+                            error = null
+                            // Key files are commonly exposed by document providers with vendor-specific,
+                            // extension-derived, or no MIME type. The bounded parser is the authority.
+                            importLauncher.launch(arrayOf("*/*"))
+                        },
+                        onPaste = {
+                            error = null
+                            pasteError = null
+                            pastingKey = true
+                        },
+                    )
+                }
             }
             error?.let { message ->
                 item {
-                    Text(
-                        stringResource(R.string.ssh_agent_error, message),
-                        color = MaterialTheme.colorScheme.error,
-                        style = MaterialTheme.typography.bodyMedium,
-                    )
+                    CenteredSshItem(padded = true) {
+                        SshAgentErrorCard(message, onDismiss = { error = null })
+                    }
                 }
             }
             if (loading) {
@@ -303,48 +325,68 @@ fun SshAgentScreen() {
                     }
                 }
             }
-            item { SectionTitle(stringResource(R.string.ssh_agent_section_keys)) }
+            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_keys)) } }
             if (!loading && keys.isEmpty()) {
-                item { EmptyCard(stringResource(R.string.ssh_agent_no_keys)) }
+                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_keys)) } }
             }
             items(keys, key = SshKeyDescriptor::providerKeyId) { key ->
-                SshKeyCard(
-                    key = key,
-                    onCopy = { copyPublicKey(context, key) },
-                    onExport = if (key.exportCopy != null) {
-                        { context.startActivity(SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName)) }
-                    } else {
-                        null
-                    },
-                    onRename = { renaming = key },
-                    onDelete = { deleting = key },
-                )
+                CenteredSshItem(padded = true) {
+                    SshKeyCard(
+                        key = key,
+                        onCopy = { copyPublicKey(context, key) },
+                        onExport = if (key.exportCopy != null) {
+                            { context.startActivity(SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName)) }
+                        } else {
+                            null
+                        },
+                        onRename = { renaming = key },
+                        onDelete = { deleting = key },
+                    )
+                }
             }
             if (active.isNotEmpty()) {
-                item { SectionTitle(stringResource(R.string.ssh_agent_section_active)) }
+                item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_active)) } }
                 items(active, key = StoredSshProviderRequest::requestId) { request ->
-                    RequestCard(
+                    CenteredSshItem {
+                        SshRequestListItem(
+                            request = request,
+                            requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
+                                ?: request.requesterClientId.shortForm(),
+                            onClick = {
+                                context.startActivity(SshAgentReviewActivity.intent(context, request.requestId))
+                            },
+                        )
+                    }
+                }
+            }
+            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_history)) } }
+            if (!loading && history.isEmpty()) {
+                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_history)) } }
+            }
+            items(history, key = StoredSshProviderRequest::requestId) { request ->
+                CenteredSshItem {
+                    SshRequestListItem(
                         request = request,
                         requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
                             ?: request.requesterClientId.shortForm(),
-                        onReview = {
-                            context.startActivity(SshAgentReviewActivity.intent(context, request.requestId))
+                        onClick = {
+                            selectedHistoryRequestId = request.requestId
                         },
                     )
                 }
             }
-            item { SectionTitle(stringResource(R.string.ssh_agent_section_history)) }
-            if (!loading && history.isEmpty()) {
-                item { EmptyCard(stringResource(R.string.ssh_agent_no_history)) }
-            }
-            items(history, key = StoredSshProviderRequest::requestId) { request ->
-                RequestCard(
-                    request = request,
-                    requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
-                        ?: request.requesterClientId.shortForm(),
-                    onReview = null,
-                )
-            }
+        }
+    }
+
+    selectedHistory?.let { request ->
+        val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
+        ModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
+            SshHistoryRequestDetail(
+                request = request,
+                requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
+                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                onBack = { selectedHistoryRequestId = null },
+            )
         }
     }
 
@@ -369,7 +411,7 @@ fun SshAgentScreen() {
                         }
                     }.onSuccess(::finishStorage)
                         .onFailure {
-                            error = it.message ?: it.javaClass.simpleName
+                            error = context.reportSshKeyStorageFailure(it)
                             loading = false
                         }
                 }
@@ -381,13 +423,40 @@ fun SshAgentScreen() {
         val bytes = pending.bytes
         ImportKeyDialog(
             encrypted = pending.encrypted,
+            preview = pending.preview,
             error = importError,
+            previewing = previewingImport,
             importing = importingKey,
             onDismiss = {
-                if (importingKey) return@ImportKeyDialog
+                if (importingKey || previewingImport) return@ImportKeyDialog
                 bytes.fill(0)
                 importError = null
+                previewingImport = false
                 pendingImport = null
+            },
+            onPreviewInvalidated = {
+                if (pendingImport?.bytes === bytes) pendingImport = pendingImport?.copy(preview = null)
+            },
+            onPreview = { passphrase ->
+                previewingImport = true
+                importError = null
+                scope.launch {
+                    val result = runCatching {
+                        withContext(Dispatchers.Default) {
+                            try {
+                                SshPrivateKeyFileParser.preview(bytes, passphrase)
+                            } finally {
+                                passphrase?.fill('\u0000')
+                            }
+                        }
+                    }
+                    previewingImport = false
+                    result.onSuccess { preview ->
+                        if (pendingImport?.bytes === bytes) {
+                            pendingImport = pendingImport?.copy(preview = preview)
+                        }
+                    }.onFailure { importError = it.message ?: it.javaClass.simpleName }
+                }
             },
             onImport = { name, passphrase, storage ->
                 importingKey = true
@@ -417,7 +486,10 @@ fun SshAgentScreen() {
                         finishStorage(it)
                     }.onFailure {
                         importingKey = false
-                        importError = it.message ?: it.javaClass.simpleName
+                        importError = context.reportSshKeyStorageFailure(
+                            it,
+                            R.string.ssh_agent_invalid_private_key,
+                        )
                     }
                 }
             },
@@ -445,7 +517,8 @@ fun SshAgentScreen() {
                                 bytes.isNotEmpty() &&
                                     bytes.size <= net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES,
                             ) { "SSH private-key text is outside the 256 KiB limit" }
-                            PendingSshKeyImport(bytes, SshPrivateKeyFileParser.inspect(bytes))
+                            val inspected = SshPrivateKeyFileParser.inspect(bytes)
+                            PendingSshKeyImport(bytes, inspected.encrypted, inspected.preview)
                         }
                     }
                     validatingPaste = false
@@ -526,32 +599,65 @@ private fun ProviderCard(
     onImport: () -> Unit,
     onPaste: () -> Unit,
 ) {
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+    Card(
+        shape = MaterialTheme.shapes.extraLarge,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
         Column(
             Modifier.fillMaxWidth().padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             Text(stringResource(R.string.ssh_agent_provider_title), style = MaterialTheme.typography.titleMedium)
             Text(
-                if (ready) stringResource(R.string.ssh_agent_provider_ready, keyCount)
+                if (ready) pluralStringResource(
+                    R.plurals.ssh_agent_provider_ready,
+                    keyCount,
+                    keyCount,
+                )
                 else stringResource(R.string.ssh_agent_provider_unavailable),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
             )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onGenerate, enabled = ready) {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Button(onClick = onGenerate, enabled = ready, modifier = Modifier.widthIn(min = 136.dp)) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_generate))
                 }
-                OutlinedButton(onClick = onImport, enabled = ready) {
+                OutlinedButton(onClick = onImport, enabled = ready, modifier = Modifier.widthIn(min = 128.dp)) {
                     Icon(Icons.Outlined.UploadFile, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_import_file))
                 }
-                OutlinedButton(onClick = onPaste, enabled = ready) {
+                OutlinedButton(onClick = onPaste, enabled = ready, modifier = Modifier.widthIn(min = 112.dp)) {
                     Text(stringResource(R.string.ssh_agent_import_text))
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SshAgentErrorCard(message: String, onDismiss: () -> Unit) {
+    Card(
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.errorContainer,
+            contentColor = MaterialTheme.colorScheme.onErrorContainer,
+        ),
+        shape = MaterialTheme.shapes.large,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, top = 8.dp, bottom = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
+            Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
+            IconButton(onClick = onDismiss) {
+                Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.ssh_agent_close))
             }
         }
     }
@@ -565,10 +671,11 @@ private fun SshKeyCard(
     onRename: () -> Unit,
     onDelete: () -> Unit,
 ) {
-    Card {
+    val exportCopy = key.exportCopy
+    Card(shape = MaterialTheme.shapes.extraLarge) {
         Column(
-            Modifier.fillMaxWidth().padding(start = 18.dp, top = 16.dp, end = 8.dp, bottom = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+            Modifier.fillMaxWidth().padding(18.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
@@ -576,20 +683,6 @@ private fun SshKeyCard(
                 Column(Modifier.weight(1f)) {
                     Text(key.displayName, style = MaterialTheme.typography.titleMedium)
                     Text(key.algorithmDisplayLabel(), style = MaterialTheme.typography.bodySmall)
-                }
-                IconButton(onClick = onCopy) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = stringResource(R.string.ssh_agent_copy_public))
-                }
-                if (onExport != null) {
-                    IconButton(onClick = onExport) {
-                        Icon(Icons.Outlined.FileDownload, contentDescription = stringResource(R.string.ssh_agent_export))
-                    }
-                }
-                IconButton(onClick = onRename) {
-                    Icon(Icons.Outlined.Edit, contentDescription = stringResource(R.string.ssh_agent_rename))
-                }
-                IconButton(onClick = onDelete) {
-                    Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.action_remove))
                 }
             }
             Text(
@@ -600,48 +693,25 @@ private fun SshKeyCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                stringResource(
-                    R.string.ssh_agent_exportability_summary,
-                    stringResource(
-                        if (key.exportCopy != null) {
-                            R.string.ssh_agent_exportable
-                        } else {
-                            R.string.ssh_agent_non_exportable
-                        },
-                    ),
-                ),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(
                 key.storageLabel(),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            key.exportCopy?.securityLevel?.let { securityLevel ->
-                Text(
+            Text(
+                if (exportCopy != null) {
                     stringResource(
                         R.string.ssh_agent_export_backup_summary,
-                        stringResource(securityLevel.labelResource()),
-                    ),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (key.operationalKey.strongBoxFallback) {
-                Text(
-                    stringResource(R.string.ssh_agent_operational_strongbox_fallback),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
-            if (key.exportCopy?.strongBoxFallback == true) {
-                Text(
-                    stringResource(R.string.ssh_agent_export_strongbox_fallback),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+                        stringResource(exportCopy.securityLevel.labelResource()),
+                    )
+                } else {
+                    stringResource(
+                        R.string.ssh_agent_exportability_summary,
+                        stringResource(R.string.ssh_agent_non_exportable),
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
                 Text(
                     stringResource(R.string.ssh_agent_biometric_each_use_enabled),
@@ -649,37 +719,32 @@ private fun SshKeyCard(
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun RequestCard(
-    request: StoredSshProviderRequest,
-    requesterName: String,
-    onReview: (() -> Unit)?,
-) {
-    Card {
-        Row(
-            Modifier.fillMaxWidth().padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(
-                    stringResource(
-                        if (request.kind == SshProviderRequestKind.SIGN) {
-                            R.string.ssh_agent_request_sign
-                        } else {
-                            R.string.ssh_agent_request_import
-                        },
-                    ),
-                    style = MaterialTheme.typography.titleSmall,
-                )
-                Text(requesterName, style = MaterialTheme.typography.bodyMedium)
-                Text(request.state.displayLabel(), style = MaterialTheme.typography.bodySmall)
-            }
-            if (onReview != null) {
-                OutlinedButton(onClick = onReview) { Text(stringResource(R.string.ssh_agent_review)) }
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                TextButton(onClick = onCopy) {
+                    Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.ssh_agent_copy_public))
+                }
+                if (onExport != null) {
+                    TextButton(onClick = onExport) {
+                        Icon(Icons.Outlined.FileDownload, contentDescription = null)
+                        Spacer(Modifier.width(6.dp))
+                        Text(stringResource(R.string.ssh_agent_export))
+                    }
+                }
+                TextButton(onClick = onRename) {
+                    Icon(Icons.Outlined.Edit, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.ssh_agent_rename))
+                }
+                TextButton(onClick = onDelete) {
+                    Icon(Icons.Outlined.Delete, contentDescription = null)
+                    Spacer(Modifier.width(6.dp))
+                    Text(stringResource(R.string.action_remove))
+                }
             }
         }
     }
@@ -809,16 +874,20 @@ private fun RenameKeyDialog(
 @Composable
 private fun ImportKeyDialog(
     encrypted: Boolean,
+    preview: SshKeyPreview?,
     error: String?,
+    previewing: Boolean,
     importing: Boolean,
     onDismiss: () -> Unit,
+    onPreviewInvalidated: () -> Unit,
+    onPreview: (CharArray?) -> Unit,
     onImport: (String, CharArray?, SshKeyStorageSelection) -> Unit,
 ) {
     var name by remember { mutableStateOf("Imported SSH key") }
     var passphrase by remember { mutableStateOf("") }
     var storage by remember { mutableStateOf(SshKeyStorageSelection(allowExport = true)) }
     AlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!previewing && !importing) onDismiss() },
         title = { Text(stringResource(R.string.ssh_agent_import_title)) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -831,10 +900,20 @@ private fun ImportKeyDialog(
                 if (encrypted) {
                     OutlinedTextField(
                         value = passphrase,
-                        onValueChange = { passphrase = it },
+                        onValueChange = {
+                            passphrase = it
+                            if (preview != null) onPreviewInvalidated()
+                        },
                         label = { Text(stringResource(R.string.ssh_agent_passphrase)) },
                         singleLine = true,
                         visualTransformation = PasswordVisualTransformation(),
+                    )
+                }
+                preview?.let {
+                    SshKeyPreviewCard(
+                        name = name,
+                        preview = it,
+                        showFullPublicKey = true,
                     )
                 }
                 SshKeyStorageOptions(storage, { storage = it })
@@ -850,7 +929,7 @@ private fun ImportKeyDialog(
                         color = MaterialTheme.colorScheme.error,
                     )
                 }
-                if (importing) {
+                if (previewing || importing) {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         CircularProgressIndicator()
                     }
@@ -861,14 +940,24 @@ private fun ImportKeyDialog(
             TextButton(
                 onClick = {
                     val secret = if (encrypted) passphrase.toCharArray() else null
-                    passphrase = ""
-                    onImport(name.trim(), secret, storage)
+                    if (preview == null) {
+                        onPreview(secret)
+                    } else {
+                        passphrase = ""
+                        onImport(name.trim(), secret, storage)
+                    }
                 },
-                enabled = !importing && name.isNotBlank() && (!encrypted || passphrase.isNotBlank()),
-            ) { Text(stringResource(R.string.ssh_agent_import_file)) }
+                enabled = !previewing && !importing && name.isNotBlank() && (!encrypted || passphrase.isNotBlank()),
+            ) {
+                Text(
+                    stringResource(
+                        if (preview == null) R.string.ssh_agent_review_key else R.string.ssh_agent_import_file,
+                    ),
+                )
+            }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !importing) {
+            TextButton(onClick = onDismiss, enabled = !previewing && !importing) {
                 Text(stringResource(R.string.action_cancel))
             }
         },
@@ -1001,15 +1090,15 @@ private fun EmptyCard(message: String) {
 }
 
 @Composable
-private fun SshProviderRequestState.displayLabel(): String = stringResource(
-    when (this) {
-        SshProviderRequestState.PENDING_REVIEW -> R.string.ssh_agent_state_pending
-        SshProviderRequestState.RESPONSE_PENDING_SEND -> R.string.ssh_agent_state_sending
-        SshProviderRequestState.SENT -> R.string.ssh_agent_state_sent
-        SshProviderRequestState.CANCELLED -> R.string.ssh_agent_state_cancelled
-        SshProviderRequestState.EXPIRED -> R.string.ssh_agent_state_expired
-    },
-)
+private fun CenteredSshItem(padded: Boolean = false, content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+        Box(
+            Modifier.fillMaxWidth()
+                .widthIn(max = 720.dp)
+                .then(if (padded) Modifier.padding(horizontal = 20.dp, vertical = 6.dp) else Modifier),
+        ) { content() }
+    }
+}
 
 private fun SshKeyDescriptor.algorithmDisplayLabel(): String = when (algorithm) {
     SshKeyAlgorithm.SSH_ED25519 -> "Ed25519"
@@ -1045,6 +1134,14 @@ private fun SshKeyDescriptor.storageLabel(): String = stringResource(
 private fun SshStorageSecurityLevel.labelResource(): Int = when (this) {
     SshStorageSecurityLevel.STRONGBOX -> R.string.ssh_agent_security_strongbox
     SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> R.string.ssh_agent_security_tee
+}
+
+private fun Context.reportSshKeyStorageFailure(
+    failure: Throwable,
+    @StringRes fallback: Int = R.string.error_unknown,
+): String {
+    Log.w("SshAgentScreen", "SSH key storage failed", failure)
+    return failure.sshKeyStorageUserMessage(this, fallback)
 }
 
 private fun copyPublicKey(context: Context, key: SshKeyDescriptor) {
@@ -1128,4 +1225,8 @@ private fun authenticatePreparedStorage(
     }
 }
 
-private data class PendingSshKeyImport(val bytes: ByteArray, val encrypted: Boolean)
+private data class PendingSshKeyImport(
+    val bytes: ByteArray,
+    val encrypted: Boolean,
+    val preview: SshKeyPreview?,
+)

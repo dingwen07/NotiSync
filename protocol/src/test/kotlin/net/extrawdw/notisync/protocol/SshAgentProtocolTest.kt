@@ -14,6 +14,11 @@ class SshAgentProtocolTest {
     private val providerB = ClientId("c".repeat(52))
 
     @Test
+    fun unshippedProtocolRemainsVersionOne() {
+        assertEquals(1, SshAgentLimits.PROTOCOL_VERSION)
+    }
+
+    @Test
     fun keysRequestRoundTripsAtDataSyncLabel10() {
         val request = SshKeysRequest(
             requestId = id('1'),

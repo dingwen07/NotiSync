@@ -62,7 +62,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     private var interactionRequestId: String? = null
     private var interactionPayloadDigest: ByteArray? = null
     private var providerContinuation: Intent? = null
-    private var approveFromNotification = false
 
     private val providerInteraction = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -81,7 +80,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestId = intent.getStringExtra(EXTRA_REQUEST_ID).orEmpty()
-        approveFromNotification = savedInstanceState == null && intent.action == ACTION_APPROVE
         awaitingInteraction = savedInstanceState?.getBoolean(STATE_AWAITING_INTERACTION) == true
         interactionRequestId = savedInstanceState?.getString(STATE_INTERACTION_REQUEST_ID)
         interactionPayloadDigest = savedInstanceState?.getByteArray(STATE_INTERACTION_DIGEST)
@@ -109,7 +107,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         requestId = intent.getStringExtra(EXTRA_REQUEST_ID).orEmpty()
-        approveFromNotification = intent.action == ACTION_APPROVE
         providerRunning = false
         load()
     }
@@ -138,14 +135,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
             )
-            if (approveFromNotification) {
-                approveFromNotification = false
-                this@OpenPgpSignReviewActivity.intent.action = null
-                if (stored.state == OpenPgpRequestState.PENDING_REVIEW) {
-                    approve()
-                    return@launch
-                }
-            }
             if (
                 stored.state in setOf(
                     OpenPgpRequestState.USER_APPROVED,
@@ -276,7 +265,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     }
 
     companion object {
-        private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SEAL_APPROVE"
         private const val EXTRA_REQUEST_ID = "openpgp_request_id"
         private const val STATE_AWAITING_INTERACTION = "awaiting_provider_interaction"
         private const val STATE_INTERACTION_REQUEST_ID = "provider_interaction_request_id"
@@ -287,9 +275,6 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             Intent(context, OpenPgpSignReviewActivity::class.java)
                 .putExtra(EXTRA_REQUEST_ID, requestId)
                 .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-
-        fun approveIntent(context: Context, requestId: String): Intent =
-            intent(context, requestId).setAction(ACTION_APPROVE)
     }
 }
 

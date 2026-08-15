@@ -235,7 +235,7 @@ internal class SshWrappedOperationalKeyVault(private val strongBoxAvailable: Boo
         val level = when (info.securityLevel) {
             KeyProperties.SECURITY_LEVEL_STRONGBOX -> SshStorageSecurityLevel.STRONGBOX
             KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
-            else -> error("Wrapped SSH operational key is not hardware-backed")
+            else -> throw SshHardwareBackedKeystoreUnavailableException("Wrapped SSH operational key")
         }
         val expected = if (expectedStrongBox) {
             SshStorageSecurityLevel.STRONGBOX

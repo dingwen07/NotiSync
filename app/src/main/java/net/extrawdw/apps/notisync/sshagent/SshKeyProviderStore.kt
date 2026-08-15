@@ -34,6 +34,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.cbor.ByteString
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
@@ -81,6 +83,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 enum class SshProviderRequestState { PENDING_REVIEW, RESPONSE_PENDING_SEND, SENT, CANCELLED, EXPIRED }
 enum class SshProviderRequestKind { SIGN, IMPORT }
+enum class SshProviderRequestOutcome { SIGNED, IMPORTED, ALREADY_PRESENT, REJECTED, FAILED, CANCELLED, EXPIRED }
 enum class SshProviderAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED, AUTHORIZATION_INVALIDATED }
 
 data class SshAuthorizationForgetOutcome(
@@ -95,9 +98,30 @@ data class StoredSshProviderRequest(
     val requestFingerprint: ByteArray,
     val signRequest: SshSignRequest? = null,
     val importRequest: SshImportRequest? = null,
+    val history: SshRequestHistorySnapshot,
     val state: SshProviderRequestState,
+    val outcome: SshProviderRequestOutcome? = null,
+    val resultAt: Long? = null,
     val encodedResponse: ByteArray? = null,
     val updatedAt: Long,
+)
+
+@Serializable
+data class SshRequestHistorySnapshot(
+    val requestedAt: Long,
+    val expiresAt: Long,
+    @ByteString val publicKeyBlob: ByteArray? = null,
+    val keyName: String? = null,
+    val suggestedName: String? = null,
+    val importSourceType: SshImportSourceType? = null,
+    val encryptedImport: Boolean = false,
+    val signatureAlgorithm: SshSignatureAlgorithm? = null,
+    val processDisplayName: String? = null,
+    val processExecutablePath: String? = null,
+    val processPid: Long? = null,
+    val destinationUsername: String? = null,
+    val destinationHost: String? = null,
+    val payloadSize: Int,
 )
 
 class PreparedSshSignature internal constructor(
@@ -254,6 +278,12 @@ internal enum class SshOperationalCandidateStage {
     DIRECT_PRIVATE_KEY_IMPORT,
     OTHER,
 }
+
+internal class SshHardwareBackedKeystoreUnavailableException(keyPurpose: String) :
+    IllegalStateException("$keyPurpose is not hardware-backed")
+
+internal fun Throwable.isHardwareBackedSshKeystoreUnavailable(): Boolean =
+    generateSequence(this) { it.cause }.any { it is SshHardwareBackedKeystoreUnavailableException }
 
 internal class SshOperationalOperationException(cause: Exception) :
     Exception("Android Keystore SSH signing operation failed: ${cause.failureSummary()}", cause)
@@ -423,19 +453,36 @@ class SshKeyProviderStore(context: Context) :
             """
             CREATE TABLE provider_requests(
               request_id TEXT PRIMARY KEY,
-              kind TEXT NOT NULL,
+              kind TEXT NOT NULL CHECK(kind IN ('SIGN', 'IMPORT')),
               requester_client_id TEXT NOT NULL,
               request_fingerprint BLOB NOT NULL,
-              request_cbor BLOB NOT NULL,
-              request_nonce BLOB NOT NULL,
-              state TEXT NOT NULL,
+              request_cbor BLOB,
+              request_nonce BLOB,
+              history_cbor BLOB NOT NULL,
+              history_nonce BLOB NOT NULL,
+              state TEXT NOT NULL CHECK(state IN
+                ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND', 'SENT', 'CANCELLED', 'EXPIRED')),
+              outcome TEXT CHECK(outcome IS NULL OR outcome IN
+                ('SIGNED', 'IMPORTED', 'ALREADY_PRESENT', 'REJECTED', 'FAILED', 'CANCELLED', 'EXPIRED')),
+              result_at INTEGER,
               response_cbor BLOB,
               response_nonce BLOB,
               updated_at INTEGER NOT NULL,
+              CHECK((outcome IS NULL AND result_at IS NULL) OR (outcome IS NOT NULL AND result_at IS NOT NULL)),
+              CHECK(state!='PENDING_REVIEW' OR outcome IS NULL),
+              CHECK(state='PENDING_REVIEW' OR outcome IS NOT NULL),
+              CHECK(
+                (request_cbor IS NULL AND request_nonce IS NULL)
+                OR (request_cbor IS NOT NULL AND request_nonce IS NOT NULL)
+              ),
+              CHECK(state!='PENDING_REVIEW' OR request_cbor IS NOT NULL),
+              CHECK(state='PENDING_REVIEW' OR request_cbor IS NULL),
               CHECK(
                 (response_cbor IS NULL AND response_nonce IS NULL)
                 OR (response_cbor IS NOT NULL AND response_nonce IS NOT NULL)
-              )
+              ),
+              CHECK(state='RESPONSE_PENDING_SEND' OR response_cbor IS NULL),
+              CHECK(state!='RESPONSE_PENDING_SEND' OR response_cbor IS NOT NULL)
             )
             """.trimIndent(),
         )
@@ -447,14 +494,45 @@ class SshKeyProviderStore(context: Context) :
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
-        error("SSH key database migrations are prohibited during unshipped development ($oldVersion -> $newVersion)")
+        error("Unsupported SSH key database schema $oldVersion; expected $newVersion. No data was modified.")
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
-        error("SSH key database downgrades are prohibited during unshipped development ($oldVersion -> $newVersion)")
+        error("Unsupported SSH key database schema $oldVersion; expected $newVersion. No data was modified.")
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
+        validateDatabaseSchema(db)
         reconcileLifecycle(db)
+    }
+
+    private fun validateDatabaseSchema(db: SQLiteDatabase) {
+        check(db.version == VERSION) {
+            "Unsupported SSH key database schema ${db.version}; expected $VERSION. No data was modified."
+        }
+        val actualTables = db.rawQuery(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' " +
+                "AND name!='android_metadata' ORDER BY name",
+            emptyArray(),
+        ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+        check(actualTables == EXPECTED_DATABASE_SCHEMA.keys) {
+            "SSH key database schema $VERSION has an unexpected table set. No data was modified."
+        }
+        EXPECTED_DATABASE_SCHEMA.forEach { (table, expectedColumns) ->
+            val actualColumns = db.rawQuery("PRAGMA table_info($table)", emptyArray()).use { cursor ->
+                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
+            }
+            check(actualColumns == expectedColumns) {
+                "SSH key database schema $VERSION has incompatible columns in $table. No data was modified."
+            }
+        }
+        val integrity = db.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
+            check(cursor.moveToFirst())
+            cursor.getString(0)
+        }
+        check(integrity == "ok") { "SSH key database integrity check failed: $integrity" }
+        db.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { cursor ->
+            check(!cursor.moveToFirst()) { "SSH key database contains foreign-key violations" }
+        }
     }
 
     @Synchronized
@@ -1607,7 +1685,7 @@ class SshKeyProviderStore(context: Context) :
     /** Explicit diagnostics recovery for the SSH Agent feature only. */
     @Synchronized
     fun resetAllSshStorage(): SshKeyStoreResetResult {
-        // Both reads are best effort so this action can recover an incomplete/corrupt development schema.
+        // Both reads are best effort because this is the user-confirmed recovery path for an unreadable schema.
         val removedRequestIds = runCatching {
             readableDatabase.rawQuery(
                 "SELECT request_id FROM provider_requests",
@@ -1691,6 +1769,7 @@ class SshKeyProviderStore(context: Context) :
             request.requestId,
             request.requesterClientId,
             ProtocolCodec.encodeToCbor(request),
+            request.historySnapshot(keyDisplayName(request.publicKeyBlob)),
             now,
         )
     }
@@ -1701,13 +1780,14 @@ class SshKeyProviderStore(context: Context) :
         request.requestId,
         request.requesterClientId,
         ProtocolCodec.encodeToCbor(request),
+        request.historySnapshot(),
         now,
     )
 
     @Synchronized
     fun find(requestId: String): StoredSshProviderRequest? = readableDatabase.rawQuery(
         "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-            "state, response_cbor, response_nonce, updated_at " +
+            "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
             "FROM provider_requests WHERE request_id=?",
         arrayOf(requestId),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.readRequest() else null }
@@ -1721,10 +1801,50 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun requests(): List<StoredSshProviderRequest> = readableDatabase.rawQuery(
         "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-            "state, response_cbor, response_nonce, updated_at " +
-            "FROM provider_requests ORDER BY updated_at DESC",
+            "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
+        "FROM provider_requests ORDER BY updated_at DESC",
         emptyArray(),
-    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest()) } }
+    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(decodeActiveRequest = false)) } }
+
+    /** Persists only the parsed public identity; private import material remains in the active request only. */
+    @Synchronized
+    fun recordImportPreview(requestId: String, publicKeyBlob: ByteArray): Boolean {
+        SshPublicKeyCodec.decode(publicKeyBlob)
+        val stored = find(requestId) ?: return false
+        if (stored.kind != SshProviderRequestKind.IMPORT ||
+            stored.state != SshProviderRequestState.PENDING_REVIEW
+        ) return false
+        stored.history.publicKeyBlob?.let { existing ->
+            check(MessageDigest.isEqual(existing, publicKeyBlob)) { "SSH import public-key preview changed" }
+            return true
+        }
+        val historyBytes = ProtocolCodec.encodeToCbor(
+            stored.history.copy(publicKeyBlob = publicKeyBlob.copyOf()),
+        )
+        val encrypted = try {
+            auditWrapping.encrypt(historyBytes, auditAad(requestId, AUDIT_HISTORY))
+        } finally {
+            historyBytes.fill(0)
+        }
+        val values = ContentValues().apply {
+            put("history_cbor", encrypted.first)
+            put("history_nonce", encrypted.second)
+        }
+        val changed = writableDatabase.update(
+            "provider_requests",
+            values,
+            "request_id=? AND state=?",
+            arrayOf(requestId, SshProviderRequestState.PENDING_REVIEW.name),
+        ) == 1
+        if (changed) notifyChanged()
+        return changed
+    }
+
+    @Synchronized
+    fun keyDisplayName(publicKeyBlob: ByteArray): String? = readableDatabase.rawQuery(
+        "SELECT display_name FROM ssh_keys WHERE hex(public_hash)=?",
+        arrayOf(sha256(publicKeyBlob).toHex().uppercase()),
+    ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
     @Synchronized
     fun availableRememberScopes(requestId: String): Set<SshRememberScope> {
@@ -2121,6 +2241,10 @@ class SshKeyProviderStore(context: Context) :
             if (cancelled.isNotEmpty()) {
                 val values = ContentValues().apply {
                     put("state", SshProviderRequestState.CANCELLED.name)
+                    put("outcome", SshProviderRequestOutcome.CANCELLED.name)
+                    put("result_at", now)
+                    putNull("request_cbor")
+                    putNull("request_nonce")
                     put("updated_at", now)
                 }
                 cancelled.forEach { requestId ->
@@ -2180,6 +2304,10 @@ class SshKeyProviderStore(context: Context) :
         ) return false
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.CANCELLED.name)
+            put("outcome", SshProviderRequestOutcome.CANCELLED.name)
+            put("result_at", now)
+            putNull("request_cbor")
+            putNull("request_nonce")
             put("updated_at", now)
         }
         val changed = writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(requestId)) == 1
@@ -2213,6 +2341,10 @@ class SshKeyProviderStore(context: Context) :
         }.map(StoredSshProviderRequest::requestId)
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.EXPIRED.name)
+            put("outcome", SshProviderRequestOutcome.EXPIRED.name)
+            put("result_at", now)
+            putNull("request_cbor")
+            putNull("request_nonce")
             put("updated_at", now)
         }
         expired.forEach { writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(it)) }
@@ -2232,6 +2364,10 @@ class SshKeyProviderStore(context: Context) :
         if (cancelled.isEmpty()) return emptyList()
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.CANCELLED.name)
+            put("outcome", SshProviderRequestOutcome.CANCELLED.name)
+            put("result_at", now)
+            putNull("request_cbor")
+            putNull("request_nonce")
             put("updated_at", now)
         }
         cancelled.forEach { requestId ->
@@ -2251,6 +2387,7 @@ class SshKeyProviderStore(context: Context) :
         requestId: String,
         requester: ClientId,
         cbor: ByteArray,
+        history: SshRequestHistorySnapshot,
         now: Long,
     ): SshProviderAcceptResult {
         return try {
@@ -2270,12 +2407,20 @@ class SshKeyProviderStore(context: Context) :
                 } else {
                     val values = ContentValues().apply {
                         val encrypted = auditWrapping.encrypt(cbor, auditAad(requestId, AUDIT_REQUEST))
+                        val historyBytes = ProtocolCodec.encodeToCbor(history)
+                        val encryptedHistory = try {
+                            auditWrapping.encrypt(historyBytes, auditAad(requestId, AUDIT_HISTORY))
+                        } finally {
+                            historyBytes.fill(0)
+                        }
                         put("request_id", requestId)
                         put("kind", kind.name)
                         put("requester_client_id", requester.value)
                         put("request_fingerprint", fingerprint)
                         put("request_cbor", encrypted.first)
                         put("request_nonce", encrypted.second)
+                        put("history_cbor", encryptedHistory.first)
+                        put("history_nonce", encryptedHistory.second)
                         put("state", SshProviderRequestState.PENDING_REVIEW.name)
                         put("updated_at", now)
                     }
@@ -2487,9 +2632,57 @@ class SshKeyProviderStore(context: Context) :
             is SshImportResult -> ProtocolCodec.encodeToCbor(response)
             else -> error("unsupported SSH provider response")
         }
+        val outcome = when (response) {
+            is SshSignResult -> when (response.kind) {
+                SshSignResultKind.SIGNED -> SshProviderRequestOutcome.SIGNED
+                SshSignResultKind.REJECTED_BY_USER -> SshProviderRequestOutcome.REJECTED
+                SshSignResultKind.PROVIDER_FAILURE -> SshProviderRequestOutcome.FAILED
+            }
+            is SshImportResult -> when (response.kind) {
+                SshImportResultKind.IMPORTED -> SshProviderRequestOutcome.IMPORTED
+                SshImportResultKind.ALREADY_PRESENT -> SshProviderRequestOutcome.ALREADY_PRESENT
+                SshImportResultKind.USER_DECLINED -> SshProviderRequestOutcome.REJECTED
+                SshImportResultKind.EXPIRED -> SshProviderRequestOutcome.EXPIRED
+                SshImportResultKind.UNSUPPORTED,
+                SshImportResultKind.FAILED,
+                -> SshProviderRequestOutcome.FAILED
+            }
+            else -> error("unsupported SSH provider response")
+        }
+        val resultAt = when (response) {
+            is SshSignResult -> response.resultAt
+            is SshImportResult -> response.resultAt
+            else -> error("unsupported SSH provider response")
+        }
         val encrypted = auditWrapping.encrypt(encoded, auditAad(stored.requestId, AUDIT_RESPONSE))
+        val responsePublicKey = (response as? SshImportResult)?.publicKeyBlob
+        val updatedHistory = if (responsePublicKey != null) {
+            stored.history.publicKeyBlob?.let { previewed ->
+                check(MessageDigest.isEqual(previewed, responsePublicKey)) {
+                    "SSH import result does not match the reviewed public key"
+                }
+            }
+            stored.history.copy(
+                publicKeyBlob = responsePublicKey.copyOf(),
+                keyName = keyDisplayName(responsePublicKey) ?: stored.history.keyName,
+            )
+        } else {
+            stored.history
+        }
+        val historyBytes = ProtocolCodec.encodeToCbor(updatedHistory)
+        val encryptedHistory = try {
+            auditWrapping.encrypt(historyBytes, auditAad(stored.requestId, AUDIT_HISTORY))
+        } finally {
+            historyBytes.fill(0)
+        }
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.RESPONSE_PENDING_SEND.name)
+            put("outcome", outcome.name)
+            put("result_at", resultAt)
+            putNull("request_cbor")
+            putNull("request_nonce")
+            put("history_cbor", encryptedHistory.first)
+            put("history_nonce", encryptedHistory.second)
             put("response_cbor", encrypted.first)
             put("response_nonce", encrypted.second)
             put("updated_at", now)
@@ -2522,18 +2715,19 @@ class SshKeyProviderStore(context: Context) :
     private fun requestsIn(state: SshProviderRequestState): List<StoredSshProviderRequest> =
         readableDatabase.rawQuery(
             "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-                "state, response_cbor, response_nonce, updated_at " +
+                "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
                 "FROM provider_requests WHERE state=? ORDER BY updated_at",
             arrayOf(state.name),
         ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest()) } }
 
-    private fun android.database.Cursor.readRequest(): StoredSshProviderRequest {
+    private fun android.database.Cursor.readRequest(decodeActiveRequest: Boolean = true): StoredSshProviderRequest {
         val kind = SshProviderRequestKind.valueOf(getString(1))
         val requestId = getString(0)
-        val requestBytes = auditWrapping.decrypt(
-            getBlob(4),
-            getBlob(5),
-            auditAad(requestId, AUDIT_REQUEST),
+        val requestBytes = if (!decodeActiveRequest || isNull(4)) null else auditWrapping.decrypt(
+            getBlob(4), getBlob(5), auditAad(requestId, AUDIT_REQUEST),
+        )
+        val historyBytes = auditWrapping.decrypt(
+            getBlob(6), getBlob(7), auditAad(requestId, AUDIT_HISTORY),
         )
         return try {
             StoredSshProviderRequest(
@@ -2541,27 +2735,31 @@ class SshKeyProviderStore(context: Context) :
                 kind = kind,
                 requesterClientId = ClientId(getString(2)),
                 requestFingerprint = getBlob(3),
-                signRequest = if (kind == SshProviderRequestKind.SIGN) {
+                signRequest = if (kind == SshProviderRequestKind.SIGN && requestBytes != null) {
                     ProtocolCodec.decodeFromCbor(requestBytes)
                 } else null,
-                importRequest = if (kind == SshProviderRequestKind.IMPORT) {
+                importRequest = if (kind == SshProviderRequestKind.IMPORT && requestBytes != null) {
                     ProtocolCodec.decodeFromCbor(requestBytes)
                 } else null,
-                state = SshProviderRequestState.valueOf(getString(6)),
-                encodedResponse = if (isNull(7)) null else auditWrapping.decrypt(
-                    getBlob(7),
-                    getBlob(8),
+                history = ProtocolCodec.decodeFromCbor(historyBytes),
+                state = SshProviderRequestState.valueOf(getString(8)),
+                outcome = if (isNull(9)) null else SshProviderRequestOutcome.valueOf(getString(9)),
+                resultAt = if (isNull(10)) null else getLong(10),
+                encodedResponse = if (isNull(11)) null else auditWrapping.decrypt(
+                    getBlob(11),
+                    getBlob(12),
                     auditAad(requestId, AUDIT_RESPONSE),
                 ),
-                updatedAt = getLong(9),
+                updatedAt = getLong(13),
             )
         } finally {
-            requestBytes.fill(0)
+            requestBytes?.fill(0)
+            historyBytes.fill(0)
         }
     }
 
     private fun StoredSshProviderRequest.expiresAt(): Long =
-        signRequest?.expiresAt ?: importRequest?.expiresAt ?: Long.MIN_VALUE
+        signRequest?.expiresAt ?: importRequest?.expiresAt ?: history.expiresAt
 
     private fun findKeyPolicy(publicKeyBlob: ByteArray): StoredKeyPolicy? = readableDatabase.rawQuery(
         "SELECT k.provider_key_id, k.approval_policy, o.user_verification_policy FROM ssh_keys k " +
@@ -2996,7 +3194,7 @@ class SshKeyProviderStore(context: Context) :
         return when (info.securityLevel) {
             KeyProperties.SECURITY_LEVEL_STRONGBOX -> SshStorageSecurityLevel.STRONGBOX
             KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
-            else -> error("Android Keystore SSH signing key is not hardware-backed")
+            else -> throw SshHardwareBackedKeystoreUnavailableException("Android Keystore SSH signing key")
         }
     }
 
@@ -3024,27 +3222,9 @@ class SshKeyProviderStore(context: Context) :
             }
             db.delete("ssh_key_lifecycle", "provider_key_id=?", arrayOf(providerKeyId))
         }
-        val operationalRows = db.rawQuery(
-            "SELECT provider_key_id, key_alias FROM ssh_operational_keys",
-            emptyArray(),
-        ).use { cursor ->
-            buildList { while (cursor.moveToNext()) add(cursor.getString(0) to cursor.getString(1)) }
-        }
-        operationalRows.filterNot { store.containsAlias(it.second) }.forEach { (providerKeyId, _) ->
-            exportVault.deleteAll(providerKeyId)
-            inventoryChanged = db.delete("ssh_keys", "provider_key_id=?", arrayOf(providerKeyId)) > 0 ||
-                inventoryChanged
-        }
-        val exportRows = db.rawQuery(
-            "SELECT provider_key_id, key_alias FROM ssh_export_copies",
-            emptyArray(),
-        ).use { cursor ->
-            buildList { while (cursor.moveToNext()) add(cursor.getString(0) to cursor.getString(1)) }
-        }
-        exportRows.filterNot { store.containsAlias(it.second) }.forEach { (providerKeyId, _) ->
-            inventoryChanged = db.delete("ssh_export_copies", "provider_key_id=?", arrayOf(providerKeyId)) > 0 ||
-                inventoryChanged
-        }
+        // A missing Android Keystore alias can mean permanent invalidation, an OS restore, or a provider
+        // failure. None of those authorizes silently deleting the key record or its independent export copy.
+        // Keep the record and fail the requested operation; destructive recovery remains an explicit action.
         val referenced = linkedSetOf<String>()
         db.rawQuery("SELECT key_alias FROM ssh_operational_keys", emptyArray()).use { cursor ->
             while (cursor.moveToNext()) referenced += cursor.getString(0)
@@ -3237,6 +3417,32 @@ class SshKeyProviderStore(context: Context) :
             "Imported SSH key"
         }
     }
+    private fun SshSignRequest.historySnapshot(keyName: String?): SshRequestHistorySnapshot {
+        val process = processContext.directParent ?: processContext.leaf
+        return SshRequestHistorySnapshot(
+            requestedAt = requestedAt,
+            expiresAt = expiresAt,
+            publicKeyBlob = publicKeyBlob.copyOf(),
+            keyName = keyName,
+            signatureAlgorithm = requestedSignatureAlgorithm,
+            processDisplayName = process?.displayName,
+            processExecutablePath = process?.executablePath,
+            processPid = process?.pid,
+            destinationUsername = destinationContext.username,
+            destinationHost = destinationContext.hostAliases.firstOrNull()?.value,
+            payloadSize = data.size,
+        )
+    }
+    private fun SshImportRequest.historySnapshot() = SshRequestHistorySnapshot(
+        requestedAt = requestedAt,
+        expiresAt = expiresAt,
+        keyName = boundedImportName(suggestedName),
+        suggestedName = suggestedName,
+        importSourceType = sourceType,
+        encryptedImport = sourceType == SshImportSourceType.PRIVATE_KEY_FILE &&
+            runCatching { SshPrivateKeyFileParser.isEncrypted(requireNotNull(fileBytes)) }.getOrDefault(false),
+        payloadSize = fileBytes?.size ?: agentIdentity?.size ?: 0,
+    )
     private fun auditAad(requestId: String, purpose: String): ByteArray =
         "notisync:ssh-provider-audit:v1:$purpose:$requestId".encodeToByteArray()
     private data class StoredKeyMaterial(
@@ -3308,6 +3514,7 @@ class SshKeyProviderStore(context: Context) :
         const val ED25519_PUBLIC_KEY_BYTES = 32
         const val AUDIT_REQUEST = "request"
         const val AUDIT_RESPONSE = "response"
+        const val AUDIT_HISTORY = "history"
         const val MAX_PENDING_GLOBAL = 128
         const val MAX_PENDING_PER_REQUESTER = 16
         const val MAX_REMEMBER_RULES_GLOBAL = 1_024L
@@ -3319,6 +3526,40 @@ class SshKeyProviderStore(context: Context) :
         const val MAX_REMEMBER_RULES_PER_KEY = 128L
         val EMPTY_BYTES = ByteArray(0)
         val RANDOM = SecureRandom()
+        val EXPECTED_DATABASE_SCHEMA = mapOf(
+            "provider_state" to setOf("singleton", "inventory_generation", "revision"),
+            "ssh_keys" to setOf(
+                "provider_key_id", "public_blob", "public_hash", "algorithm", "display_name", "origin",
+                "approval_policy", "created_at", "expires_at",
+            ),
+            "ssh_operational_keys" to setOf(
+                "provider_key_id", "provider_kind", "key_alias", "ciphertext", "nonce", "security_level",
+                "user_verification_policy", "strongbox_attempted", "strongbox_fallback",
+            ),
+            "ssh_export_copies" to setOf(
+                "provider_key_id", "key_alias", "ciphertext", "nonce", "security_level", "backend_policy",
+                "authentication", "strongbox_attempted", "strongbox_fallback", "last_verified_at",
+            ),
+            "ssh_key_lifecycle" to setOf(
+                "provider_key_id", "operational_alias", "state", "created_at",
+                "operational_candidate_ciphertext", "operational_candidate_nonce",
+                "operational_candidate_security_level", "export_candidate_ciphertext", "export_candidate_nonce",
+                "export_candidate_security_level",
+            ),
+            "authorization_floors" to setOf(
+                "requester_client_id", "authorization_generation", "invalidated_through_epoch", "updated_at",
+            ),
+            "remember_rules" to setOf(
+                "rule_id", "provider_key_id", "requester_client_id", "authorization_generation",
+                "authorization_epoch", "scope", "leaf_executable_path", "parent_pid",
+                "parent_start_epoch_millis", "parent_executable_path", "created_at",
+            ),
+            "provider_requests" to setOf(
+                "request_id", "kind", "requester_client_id", "request_fingerprint", "request_cbor",
+                "request_nonce", "history_cbor", "history_nonce", "state", "outcome", "result_at",
+                "response_cbor", "response_nonce", "updated_at",
+            ),
+        )
     }
 }
 

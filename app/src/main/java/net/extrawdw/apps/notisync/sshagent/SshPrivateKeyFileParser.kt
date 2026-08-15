@@ -74,13 +74,22 @@ object SshPrivateKeyFileParser {
 
     fun isEncrypted(fileBytes: ByteArray): Boolean = detectEncryption(fileBytes)
 
-    /** Validates unencrypted keys immediately; encrypted keys are fully validated after password entry. */
-    fun inspect(fileBytes: ByteArray): Boolean {
+    /** Validates unencrypted keys immediately; encrypted keys require a passphrase before a preview is available. */
+    fun inspect(fileBytes: ByteArray): InspectedSshPrivateKeyFile {
         val encrypted = detectEncryption(fileBytes)
-        if (!encrypted) {
-            parse(fileBytes, null).pkcs8PrivateKey.fill(0)
+        return InspectedSshPrivateKeyFile(
+            encrypted = encrypted,
+            preview = if (encrypted) null else preview(fileBytes, null),
+        )
+    }
+
+    fun preview(fileBytes: ByteArray, passphrase: CharArray?): SshKeyPreview {
+        val parsed = parse(fileBytes, passphrase)
+        return try {
+            SshImportPreviewParser.preview(parsed.algorithm, parsed.publicKeyBlob)
+        } finally {
+            parsed.pkcs8PrivateKey.fill(0)
         }
-        return encrypted
     }
 
     private fun detectEncryption(fileBytes: ByteArray): Boolean {

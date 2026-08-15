@@ -308,7 +308,7 @@ internal object SshKeyMaterialAad {
 private fun Int.toSshSecurityLevel(): SshStorageSecurityLevel = when (this) {
     KeyProperties.SECURITY_LEVEL_STRONGBOX -> SshStorageSecurityLevel.STRONGBOX
     KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
-    else -> error("SSH export-copy key is not hardware-backed")
+    else -> throw SshHardwareBackedKeystoreUnavailableException("SSH export-copy key")
 }
 
 private fun Exception.exportFailureSummary(): String =

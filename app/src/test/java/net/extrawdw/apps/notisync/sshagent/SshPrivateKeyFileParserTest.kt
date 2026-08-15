@@ -27,6 +27,17 @@ class SshPrivateKeyFileParserTest {
     }
 
     @Test
+    fun inspectionReturnsPublicOnlyPreviewForUnencryptedKey() {
+        val inspection = SshPrivateKeyFileParser.inspect(fixture("id_ed25519_unencrypted"))
+
+        assertFalse(inspection.encrypted)
+        val preview = requireNotNull(inspection.preview)
+        assertEquals(SshKeyAlgorithm.SSH_ED25519, preview.algorithm)
+        assertTrue(preview.authorizedKey.startsWith("ssh-ed25519 "))
+        assertTrue(preview.fingerprint.startsWith("SHA256:"))
+    }
+
+    @Test
     fun parsesEncryptedP256WithCorrectPassphrase() {
         val passphrase = "fixture-passphrase".toCharArray()
         val parsed = try {
@@ -39,6 +50,24 @@ class SshPrivateKeyFileParserTest {
         } finally {
             parsed.pkcs8PrivateKey.fill(0)
         }
+    }
+
+    @Test
+    fun encryptedInspectionRequiresPassphraseBeforePublicPreview() {
+        val bytes = fixture("id_ecdsa_encrypted")
+        val inspection = SshPrivateKeyFileParser.inspect(bytes)
+        assertTrue(inspection.encrypted)
+        assertEquals(null, inspection.preview)
+
+        val passphrase = "fixture-passphrase".toCharArray()
+        val preview = try {
+            SshPrivateKeyFileParser.preview(bytes, passphrase)
+        } finally {
+            passphrase.fill('\u0000')
+        }
+        assertEquals(SshKeyAlgorithm.ECDSA_NISTP256, preview.algorithm)
+        assertTrue(preview.authorizedKey.startsWith("ecdsa-sha2-nistp256 "))
+        assertTrue(preview.fingerprint.startsWith("SHA256:"))
     }
 
     @Test

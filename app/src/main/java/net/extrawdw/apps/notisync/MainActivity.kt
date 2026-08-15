@@ -87,6 +87,7 @@ import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
+import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshAgentScreen
@@ -247,7 +248,7 @@ private enum class FeatureDestination(
     override val icon: ImageVector,
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
-    SEAL(Route.Seal, R.string.tab_seal, Icons.Outlined.Key),
+    SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
     SSH_AGENT(Route.SshAgent, R.string.tab_ssh_agent, Icons.Outlined.Key),
 }
 
