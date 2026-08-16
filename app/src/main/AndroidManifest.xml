@@ -148,19 +148,21 @@
 
         <activity
             android:name=".seal.OpenPgpSignReviewActivity"
+            android:documentLaunchMode="intoExisting"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:launchMode="singleTask"
+            android:launchMode="standard"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 
         <activity
             android:name=".sshagent.SshAgentReviewActivity"
+            android:documentLaunchMode="intoExisting"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:launchMode="singleTask"
+            android:launchMode="standard"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 

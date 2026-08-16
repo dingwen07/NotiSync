@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.seal
 import android.app.Activity
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -79,7 +80,9 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestId = intent.getStringExtra(EXTRA_REQUEST_ID).orEmpty()
+        requestId = requestIdFrom(intent) ?: return finish()
+        val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        intent.action = null
         awaitingInteraction = savedInstanceState?.getBoolean(STATE_AWAITING_INTERACTION) == true
         interactionRequestId = savedInstanceState?.getString(STATE_INTERACTION_REQUEST_ID)
         interactionPayloadDigest = savedInstanceState?.getByteArray(STATE_INTERACTION_DIGEST)
@@ -100,15 +103,18 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 )
             }
         }
-        load()
+        load(approveAfterLoad)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        val reopenedRequestId = requestIdFrom(intent) ?: return finish()
+        if (reopenedRequestId != requestId) return finish()
+        val approveAfterLoad = intent.action == ACTION_APPROVE
+        intent.action = null
         setIntent(intent)
-        requestId = intent.getStringExtra(EXTRA_REQUEST_ID).orEmpty()
-        providerRunning = false
-        load()
+        screen = ReviewScreenState.Loading
+        load(approveAfterLoad)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -119,7 +125,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
-    private fun load() {
+    private fun load(approveAfterLoad: Boolean = false) {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                 ?: return@launch showError(getString(R.string.seal_not_ready))
@@ -135,6 +141,10 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
             )
+            if (approveAfterLoad && stored.state == OpenPgpRequestState.PENDING_REVIEW) {
+                approve()
+                return@launch
+            }
             if (
                 stored.state in setOf(
                     OpenPgpRequestState.USER_APPROVED,
@@ -265,16 +275,34 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SEAL_APPROVE"
         private const val EXTRA_REQUEST_ID = "openpgp_request_id"
         private const val STATE_AWAITING_INTERACTION = "awaiting_provider_interaction"
         private const val STATE_INTERACTION_REQUEST_ID = "provider_interaction_request_id"
         private const val STATE_INTERACTION_DIGEST = "provider_interaction_payload_digest"
         private const val STATE_PROVIDER_CONTINUATION = "provider_continuation"
+        private const val REVIEW_SCHEME = "notisync"
+        private const val REVIEW_AUTHORITY = "seal-review"
 
         fun intent(context: Context, requestId: String): Intent =
             Intent(context, OpenPgpSignReviewActivity::class.java)
+                .setData(reviewUri(requestId))
                 .putExtra(EXTRA_REQUEST_ID, requestId)
-                .addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+
+        fun approveIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_APPROVE)
+
+        private fun requestIdFrom(intent: Intent): String? {
+            if (intent.action != null && intent.action != ACTION_APPROVE) return null
+            val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
+            return requestId.takeIf { intent.data == reviewUri(it) }
+        }
+
+        private fun reviewUri(requestId: String): Uri = Uri.Builder()
+            .scheme(REVIEW_SCHEME)
+            .authority(REVIEW_AUTHORITY)
+            .appendPath(requestId)
+            .build()
     }
 }
 

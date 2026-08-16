@@ -61,16 +61,22 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             OpenPgpSignActionReceiver.rejectIntent(context, requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        val approveIntent = PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            OpenPgpSignReviewActivity.approveIntent(context, requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val rejectAction = NotificationCompat.Action.Builder(
             0,
             context.getString(R.string.action_reject),
             rejectIntent,
         ).build()
-        val reviewAction = NotificationCompat.Action.Builder(
+        val approveAction = NotificationCompat.Action.Builder(
             0,
             context.getString(R.string.action_approve),
-            pendingIntent,
-        ).build()
+            approveIntent,
+        ).setAuthenticationRequired(true).build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
             .setContentTitle(contentTitle)
@@ -84,7 +90,7 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
             .addAction(rejectAction)
-            .addAction(reviewAction)
+            .addAction(approveAction)
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(requestId), notification)
         return true

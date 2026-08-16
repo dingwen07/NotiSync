@@ -201,7 +201,9 @@ internal fun SshReviewContent(
         bottomBar = {
             when {
                 details == null -> Unit
-                pending -> BottomAppBar {
+                pending -> BottomAppBar(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                ) {
                     Column(Modifier.weight(1f)) {
                         Text(
                             stringResource(
@@ -242,7 +244,9 @@ internal fun SshReviewContent(
                         )
                     }
                 }
-                else -> BottomAppBar {
+                else -> BottomAppBar(
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
+                ) {
                     Spacer(Modifier.weight(1f))
                     Button(onClick = onClose) { Text(stringResource(R.string.ssh_agent_close)) }
                 }

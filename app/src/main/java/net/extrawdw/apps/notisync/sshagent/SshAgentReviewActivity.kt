@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
+import android.net.Uri
 import android.os.Bundle
 import android.os.CancellationSignal
 import androidx.activity.ComponentActivity
@@ -40,8 +41,7 @@ class SshAgentReviewActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        requestId = intent.getStringExtra(EXTRA_REQUEST_ID).orEmpty()
-        if (requestId.isEmpty()) return finish()
+        requestId = requestIdFrom(intent) ?: return finish()
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         enableTapjackingProtection()
@@ -62,6 +62,15 @@ class SshAgentReviewActivity : ComponentActivity() {
                 )
             }
         }
+        load()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        val reopenedRequestId = requestIdFrom(intent) ?: return finish()
+        if (reopenedRequestId != requestId) return finish()
+        setIntent(intent)
+        screen = SshReviewScreenState.Loading
         load()
     }
 
@@ -506,8 +515,23 @@ class SshAgentReviewActivity : ComponentActivity() {
 
     companion object {
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
+        private const val REVIEW_SCHEME = "notisync"
+        private const val REVIEW_AUTHORITY = "ssh-agent-review"
+
         fun intent(context: Context, requestId: String) = Intent(context, SshAgentReviewActivity::class.java)
+            .setData(reviewUri(requestId))
             .putExtra(EXTRA_REQUEST_ID, requestId)
+
+        private fun requestIdFrom(intent: Intent): String? {
+            val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
+            return requestId.takeIf { intent.data == reviewUri(it) }
+        }
+
+        private fun reviewUri(requestId: String): Uri = Uri.Builder()
+            .scheme(REVIEW_SCHEME)
+            .authority(REVIEW_AUTHORITY)
+            .appendPath(requestId)
+            .build()
     }
 }
 
