@@ -99,6 +99,7 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="true"
             android:launchMode="singleTask"
+            android:screenOrientation="fullUser"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -136,6 +137,7 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="false"
             android:label="@string/screen_viewer_task_title"
+            android:screenOrientation="fullUser"
             android:supportsPictureInPicture="true"
             android:taskAffinity="${applicationId}.screen_viewer"
             android:theme="@style/Theme.NotiSync"
@@ -144,6 +146,7 @@
         <activity
             android:name=".seal.OpenPgpEnrollmentActivity"
             android:exported="false"
+            android:screenOrientation="fullUser"
             android:theme="@style/Theme.NotiSync" />
 
         <activity
@@ -153,6 +156,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="standard"
+            android:screenOrientation="fullUser"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 
@@ -163,6 +167,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="standard"
+            android:screenOrientation="fullUser"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 
@@ -171,6 +176,7 @@
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
+            android:screenOrientation="fullUser"
             android:theme="@style/Theme.NotiSync" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
@@ -221,6 +227,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTask"
+            android:screenOrientation="fullUser"
             android:showWhenLocked="true"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync.CallScreen"

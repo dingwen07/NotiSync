@@ -22,7 +22,7 @@ class LocalCallerResolver {
         val leaf = identity(handle) ?: return unavailable()
         val parentHandle = handle.parent().orElse(null)
         val parent = parentHandle?.let(::identity)
-        val ancestry = buildList {
+        val processLineage = buildList {
             var current: ProcessHandle? = handle
             repeat(16) {
                 val value = current ?: return@repeat
@@ -30,7 +30,7 @@ class LocalCallerResolver {
                 current = value.parent().orElse(null)
             }
         }
-        return SshProcessContext(source, leaf, parent, ancestry)
+        return SshProcessContext(source, leaf, parent, processLineage)
     }
 
     /** Re-resolve the accepted client and reject PID reuse before each sensitive operation. */

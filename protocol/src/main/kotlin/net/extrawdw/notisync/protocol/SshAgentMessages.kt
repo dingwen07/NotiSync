@@ -15,7 +15,7 @@ object SshAgentLimits {
     const val MAX_PROVIDERS = 64
     const val MAX_KEYS_PER_SNAPSHOT = 512
     const val MAX_REMEMBERED_NAMESPACES = 64
-    const val MAX_ANCESTRY = 16
+    const val MAX_PROCESS_LINEAGE = 16
     const val MAX_BINDING_CHAIN = 16
     const val MAX_HOST_ALIASES = 32
     const val MAX_PUBLIC_KEY_BLOB_BYTES = 16 * 1024
@@ -287,16 +287,17 @@ data class SshProcessContext(
     @CborLabel(0) val source: SshProcessContextSource,
     @CborLabel(1) val leaf: SshProcessIdentity? = null,
     @CborLabel(2) val directParent: SshProcessIdentity? = null,
-    @CborLabel(3) val ancestry: List<SshProcessIdentity> = emptyList(),
+    @CborLabel(3) val processLineage: List<SshProcessIdentity> = emptyList(),
 ) {
     fun validationError(): String? = when {
-        source == SshProcessContextSource.UNAVAILABLE && (leaf != null || directParent != null || ancestry.isNotEmpty()) ->
+        source == SshProcessContextSource.UNAVAILABLE &&
+            (leaf != null || directParent != null || processLineage.isNotEmpty()) ->
             "unavailable process context must not carry identities"
         source != SshProcessContextSource.UNAVAILABLE && leaf == null -> "available process context requires a leaf"
-        ancestry.size > SshAgentLimits.MAX_ANCESTRY -> "too many process ancestors"
+        processLineage.size > SshAgentLimits.MAX_PROCESS_LINEAGE -> "process lineage is too long"
         listOfNotNull(leaf, directParent).any { it.validationError() != null } ||
-            ancestry.any { it.validationError() != null } -> "invalid process identity"
-        ancestry.map { Pair(it.pid, it.startEpochMillis) }.distinct().size != ancestry.size ->
+            processLineage.any { it.validationError() != null } -> "invalid process identity"
+        processLineage.map { Pair(it.pid, it.startEpochMillis) }.distinct().size != processLineage.size ->
             "duplicate process identity"
         else -> null
     }

@@ -56,6 +56,7 @@ import net.extrawdw.notisync.protocol.SshKeysSnapshot
 import net.extrawdw.notisync.protocol.SshProviderFailure
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
 import net.extrawdw.notisync.protocol.SshProviderHealth
+import net.extrawdw.notisync.protocol.SshProcessIdentity
 import net.extrawdw.notisync.protocol.SshRememberDisposition
 import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshRememberedNamespace
@@ -116,9 +117,7 @@ data class SshRequestHistorySnapshot(
     val importSourceType: SshImportSourceType? = null,
     val encryptedImport: Boolean = false,
     val signatureAlgorithm: SshSignatureAlgorithm? = null,
-    val processDisplayName: String? = null,
-    val processExecutablePath: String? = null,
-    val processPid: Long? = null,
+    val processLineage: List<SshProcessIdentity> = emptyList(),
     val destinationUsername: String? = null,
     val destinationHost: String? = null,
     val payloadSize: Int,
@@ -3418,16 +3417,13 @@ class SshKeyProviderStore(context: Context) :
         }
     }
     private fun SshSignRequest.historySnapshot(keyName: String?): SshRequestHistorySnapshot {
-        val process = processContext.directParent ?: processContext.leaf
         return SshRequestHistorySnapshot(
             requestedAt = requestedAt,
             expiresAt = expiresAt,
             publicKeyBlob = publicKeyBlob.copyOf(),
             keyName = keyName,
             signatureAlgorithm = requestedSignatureAlgorithm,
-            processDisplayName = process?.displayName,
-            processExecutablePath = process?.executablePath,
-            processPid = process?.pid,
+            processLineage = processContext.processLineage,
             destinationUsername = destinationContext.username,
             destinationHost = destinationContext.hostAliases.firstOrNull()?.value,
             payloadSize = data.size,

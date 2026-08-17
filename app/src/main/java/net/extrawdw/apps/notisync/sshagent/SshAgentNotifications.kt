@@ -34,7 +34,7 @@ class SshAgentNotificationPresenter(private val context: Context) {
                 val request = requireNotNull(stored.signRequest)
                 val host = request.destinationContext.hostAliases.firstOrNull()?.value
                 val destination = host?.let { request.destinationContext.username?.let { user -> "$user@$it" } ?: it }
-                destination ?: request.processContext.directParent?.displayName
+                destination ?: request.processContext.processLineage.mainCallerLabel()
                     ?: context.getString(R.string.ssh_agent_notification_unknown_destination)
             }
             SshProviderRequestKind.IMPORT -> stored.importRequest?.suggestedName

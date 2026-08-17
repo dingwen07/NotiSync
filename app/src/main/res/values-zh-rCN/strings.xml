@@ -128,7 +128,9 @@
     <string name="ssh_agent_back_to_history">返回 SSH Agent 历史记录</string>
     <string name="ssh_agent_destination">目标</string>
     <string name="ssh_agent_process">进程</string>
-    <string name="ssh_agent_process_pid">PID %1$d</string>
+    <string name="ssh_agent_process_reported_by_requester">由发起请求的计算机报告</string>
+    <string name="ssh_agent_process_show_full_paths">点按显示完整路径</string>
+    <string name="ssh_agent_process_show_names">点按显示进程名称</string>
     <string name="ssh_agent_signature_algorithm">签名算法</string>
     <string name="ssh_agent_unavailable">不可用</string>
     <string name="ssh_agent_imported_key_default">导入的 SSH 密钥</string>

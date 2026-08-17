@@ -134,7 +134,9 @@
     <string name="ssh_agent_back_to_history">Back to SSH Agent history</string>
     <string name="ssh_agent_destination">Destination</string>
     <string name="ssh_agent_process">Process</string>
-    <string name="ssh_agent_process_pid">PID %1$d</string>
+    <string name="ssh_agent_process_reported_by_requester">Reported by the requesting computer</string>
+    <string name="ssh_agent_process_show_full_paths">Tap to show full paths</string>
+    <string name="ssh_agent_process_show_names">Tap to show process names</string>
     <string name="ssh_agent_signature_algorithm">Signature algorithm</string>
     <string name="ssh_agent_unavailable">Unavailable</string>
     <string name="ssh_agent_imported_key_default">Imported SSH key</string>

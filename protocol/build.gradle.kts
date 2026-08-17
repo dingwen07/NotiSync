@@ -1,11 +1,6 @@
 import org.jetbrains.kotlin.gradle.plugin.mpp.apple.XCFramework
 
-val isWindowsArm64Host =
-    providers.systemProperty("os.name").get().startsWith("Windows", ignoreCase = true) &&
-        providers.systemProperty("os.arch").get().let { architecture ->
-            architecture.equals("aarch64", ignoreCase = true) ||
-                architecture.equals("arm64", ignoreCase = true)
-        }
+val isMacOsHost = providers.systemProperty("os.name").get().startsWith("Mac", ignoreCase = true)
 
 // :protocol is the shared wire model + CBOR/JSON codec. It is Kotlin Multiplatform so the SAME types
 // and the SAME kotlinx-serialization CBOR encoder compile to both the JVM (consumed unchanged by
@@ -25,7 +20,8 @@ kotlin {
 
     // iOS device + Apple-silicon simulator, bundled into one XCFramework (iosX64/Intel-sim omitted —
     // add only if an Intel CI runner ever needs it). assemble with :protocol:assembleNotiSyncProtocolXCFramework.
-    if (!isWindowsArm64Host) {
+    // Apple targets and XCFramework packaging are macOS-only; non-macOS builds keep only the JVM target.
+    if (isMacOsHost) {
         val xcframework = XCFramework("NotiSyncProtocol")
         listOf(iosArm64(), iosSimulatorArm64()).forEach { target ->
             target.binaries.framework {

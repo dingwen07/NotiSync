@@ -63,7 +63,7 @@ class UnixAgentEndpointTest {
                 assertEquals(SshProcessContextSource.UNAVAILABLE, context.source)
                 assertNull(context.leaf)
                 assertNull(context.directParent)
-                assertTrue(context.ancestry.isEmpty())
+                assertTrue(context.processLineage.isEmpty())
             }
         } finally {
             endpoint.close()

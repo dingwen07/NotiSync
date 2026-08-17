@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.sshagent
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -49,7 +51,10 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -67,6 +72,7 @@ import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
 import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.notisync.protocol.SshImportSourceType
+import net.extrawdw.notisync.protocol.SshProcessIdentity
 
 internal enum class SshRequestDisplayStatus {
     WAITING,
@@ -504,6 +510,7 @@ private fun SshRequestHero(
 @Composable
 private fun SignRequestCard(request: StoredSshProviderRequest) {
     val history = request.history
+    val processLineage = request.processLineageForDisplay()
     RequestCard(stringResource(R.string.ssh_agent_request_sign), Icons.Outlined.Terminal) {
         DetailLine(
             Icons.Outlined.Computer,
@@ -512,12 +519,10 @@ private fun SignRequestCard(request: StoredSshProviderRequest) {
             true,
         )
         HorizontalDivider()
-        DetailLine(
-            Icons.Outlined.Terminal,
-            stringResource(R.string.ssh_agent_process),
-            history.processDisplayName ?: history.processExecutablePath ?: stringResource(R.string.ssh_agent_unavailable),
-            true,
-            history.processPid?.let { stringResource(R.string.ssh_agent_process_pid, it) },
+        ProcessLineageLine(
+            processLineage = processLineage,
+            unavailable = stringResource(R.string.ssh_agent_unavailable),
+            reportedByRequester = stringResource(R.string.ssh_agent_process_reported_by_requester),
         )
         HorizontalDivider()
         DetailLine(
@@ -526,6 +531,62 @@ private fun SignRequestCard(request: StoredSshProviderRequest) {
             history.signatureAlgorithm?.name ?: stringResource(R.string.ssh_agent_unavailable),
             true,
         )
+    }
+}
+
+@Composable
+private fun ProcessLineageLine(
+    processLineage: List<SshProcessIdentity>,
+    unavailable: String,
+    reportedByRequester: String,
+) {
+    var showFullPaths by remember(processLineage) { mutableStateOf(false) }
+    Row(
+        Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Icon(
+            Icons.Outlined.Terminal,
+            contentDescription = null,
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+            Text(
+                stringResource(R.string.ssh_agent_process),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            SelectionContainer {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .clickable(enabled = processLineage.isNotEmpty()) { showFullPaths = !showFullPaths },
+                ) {
+                    Text(
+                        text = processLineage.toProcessTreeText(showFullPaths).ifEmpty { unavailable },
+                        fontFamily = FontFamily.Monospace,
+                        softWrap = false,
+                    )
+                }
+            }
+            Text(
+                if (processLineage.isEmpty()) {
+                    reportedByRequester
+                } else {
+                    "$reportedByRequester · " + stringResource(
+                        if (showFullPaths) {
+                            R.string.ssh_agent_process_show_names
+                        } else {
+                            R.string.ssh_agent_process_show_full_paths
+                        },
+                    )
+                },
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -727,8 +788,7 @@ private fun StoredSshProviderRequest.headline(): String = when (kind) {
 
 private fun StoredSshProviderRequest.contextLabel(): String? = when (kind) {
     SshProviderRequestKind.SIGN -> destinationLabel()
-        ?: history.processDisplayName
-        ?: history.processExecutablePath
+        ?: processLineageLeafFirst().mainCallerLabel()
     SshProviderRequestKind.IMPORT -> if (history.importSourceType == SshImportSourceType.AGENT_IDENTITY) {
         "ssh-add"
     } else null
@@ -738,6 +798,21 @@ private fun StoredSshProviderRequest.destinationLabel(): String? {
     val host = history.destinationHost ?: return null
     return history.destinationUsername?.let { "$it@$host" } ?: host
 }
+
+/** Returns the available caller chain from the system root to the SSH client process. */
+internal fun StoredSshProviderRequest.processLineageForDisplay(): List<SshProcessIdentity> {
+    return processLineageLeafFirst().asReversed()
+}
+
+private fun StoredSshProviderRequest.processLineageLeafFirst(): List<SshProcessIdentity> =
+    signRequest?.processContext?.processLineage ?: history.processLineage
+
+internal fun List<SshProcessIdentity>.toProcessTreeText(showFullPaths: Boolean = false): String =
+    mapIndexed { index, process ->
+    val branch = if (index == 0) "" else "  ".repeat(index - 1) + "└─ "
+    val name = if (showFullPaths) process.executablePath else process.shortProcessName()
+    "$branch$name (${process.pid})"
+}.joinToString("\n")
 
 private fun StoredSshProviderRequest.requestedAt(): Long = history.requestedAt
 private fun StoredSshProviderRequest.expiresAt(): Long = history.expiresAt
