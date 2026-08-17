@@ -151,7 +151,7 @@ class AgentConnectionHandler(
         }
     }
 
-    private class ConnectionDestinationState {
+    internal class ConnectionDestinationState {
         private val bindings = mutableListOf<VerifiedSessionBind>()
 
         @Synchronized

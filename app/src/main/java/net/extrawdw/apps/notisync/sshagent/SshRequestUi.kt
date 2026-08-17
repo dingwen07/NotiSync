@@ -30,10 +30,10 @@ import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -68,6 +68,8 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
+import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
 import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
@@ -397,6 +399,7 @@ internal fun SshRequestDetail(
                     name = details.keyName,
                     preview = details.keyPreview,
                     showFullPublicKey = request.kind == SshProviderRequestKind.IMPORT,
+                    titleIcon = Icons.Outlined.Key,
                     emptyContent = {
                         if (pending && request.kind == SshProviderRequestKind.IMPORT) {
                             OutlinedButton(
@@ -432,23 +435,14 @@ internal fun SshRequestDetail(
         item {
             CenteredRequestItem {
                 RequestCard(
-                    title = stringResource(R.string.ssh_agent_approval_section),
-                    icon = Icons.Outlined.VerifiedUser,
-                ) {
-                    RequestDeviceLine(
-                        details.requesterName,
-                        request.requesterClientId.value,
-                        details.requesterIdentityKeyFingerprint,
-                    )
-                }
-            }
-        }
-        item {
-            CenteredRequestItem {
-                RequestCard(
-                    title = stringResource(R.string.ssh_agent_request_record),
+                    title = stringResource(R.string.ssh_agent_request_section),
                     icon = Icons.Outlined.Fingerprint,
                 ) {
+                    RequestDeviceSubCard(
+                        deviceName = details.requesterName,
+                        verificationNumber = request.requesterClientId.value,
+                        identityKeyFingerprint = details.requesterIdentityKeyFingerprint,
+                    )
                     RecordLine(stringResource(R.string.ssh_agent_requested_at), formatter.format(Date(request.requestedAt())))
                     RecordLine(stringResource(R.string.ssh_agent_updated_at), formatter.format(Date(request.resultAt ?: request.updatedAt)))
                     RecordLine(stringResource(R.string.ssh_agent_request_id), request.requestId.take(8), monospace = true)
@@ -519,6 +513,20 @@ private fun SignRequestCard(request: StoredSshProviderRequest) {
             true,
         )
         HorizontalDivider()
+        DetailLine(
+            Icons.Outlined.Person,
+            stringResource(R.string.ssh_agent_destination_username),
+            history.destinationUsername ?: stringResource(R.string.ssh_agent_unavailable),
+            true,
+        )
+        HorizontalDivider()
+        DetailLine(
+            Icons.Outlined.Fingerprint,
+            stringResource(R.string.ssh_agent_destination_host_key_fingerprint),
+            history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_agent_unavailable),
+            true,
+        )
+        HorizontalDivider()
         ProcessLineageLine(
             processLineage = processLineage,
             unavailable = stringResource(R.string.ssh_agent_unavailable),
@@ -526,7 +534,7 @@ private fun SignRequestCard(request: StoredSshProviderRequest) {
         )
         HorizontalDivider()
         DetailLine(
-            Icons.Outlined.Key,
+            SignatureIcon,
             stringResource(R.string.ssh_agent_signature_algorithm),
             history.signatureAlgorithm?.name ?: stringResource(R.string.ssh_agent_unavailable),
             true,
@@ -572,17 +580,7 @@ private fun ProcessLineageLine(
                 }
             }
             Text(
-                if (processLineage.isEmpty()) {
-                    reportedByRequester
-                } else {
-                    "$reportedByRequester · " + stringResource(
-                        if (showFullPaths) {
-                            R.string.ssh_agent_process_show_names
-                        } else {
-                            R.string.ssh_agent_process_show_full_paths
-                        },
-                    )
-                },
+                reportedByRequester,
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -634,23 +632,6 @@ private fun ImportRequestCard(
         }
         details.errorMessage?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun RequestDeviceLine(name: String, verificationNumber: String, identityFingerprint: String?) {
-    DetailLine(Icons.Outlined.Computer, stringResource(R.string.ssh_agent_requested_by), name)
-    DeviceValue(stringResource(R.string.pair_field_verification_number), verificationNumber)
-    DeviceValue(stringResource(R.string.pair_field_identity_key), identityFingerprint ?: "—")
-}
-
-@Composable
-private fun DeviceValue(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(label, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        SelectionContainer {
-            Text(value, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
         }
     }
 }
@@ -782,19 +763,18 @@ private fun statusContainer(status: SshRequestDisplayStatus): Color = when (stat
 
 @Composable
 private fun StoredSshProviderRequest.headline(): String = when (kind) {
-    SshProviderRequestKind.SIGN -> stringResource(R.string.ssh_agent_request_sign)
+    SshProviderRequestKind.SIGN -> destinationLabel() ?: stringResource(R.string.ssh_agent_request_sign)
     SshProviderRequestKind.IMPORT -> history.suggestedName ?: stringResource(R.string.ssh_agent_imported_key_default)
 }
 
 private fun StoredSshProviderRequest.contextLabel(): String? = when (kind) {
-    SshProviderRequestKind.SIGN -> destinationLabel()
-        ?: processLineageLeafFirst().mainCallerLabel()
+    SshProviderRequestKind.SIGN -> processLineageLeafFirst().mainCallerLabel()
     SshProviderRequestKind.IMPORT -> if (history.importSourceType == SshImportSourceType.AGENT_IDENTITY) {
         "ssh-add"
     } else null
 }
 
-private fun StoredSshProviderRequest.destinationLabel(): String? {
+internal fun StoredSshProviderRequest.destinationLabel(): String? {
     val host = history.destinationHost ?: return null
     return history.destinationUsername?.let { "$it@$host" } ?: host
 }

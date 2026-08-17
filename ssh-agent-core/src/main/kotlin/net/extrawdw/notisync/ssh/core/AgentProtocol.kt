@@ -18,6 +18,7 @@ object AgentNumbers {
     const val SSH_AGENTC_ADD_SMARTCARD_KEY_CONSTRAINED = 26
     const val SSH_AGENTC_EXTENSION = 27
     const val SSH_AGENT_EXTENSION_FAILURE = 28
+    const val SSH_AGENT_EXTENSION_RESPONSE = 29
 
     const val SSH_AGENT_CONSTRAIN_LIFETIME = 1
     const val SSH_AGENT_CONSTRAIN_CONFIRM = 2
@@ -117,9 +118,11 @@ object AgentMessageCodec {
         return SshWireWriter().writeByte(AgentNumbers.SSH_AGENT_SIGN_RESPONSE).writeString(signatureBlob).toByteArray()
     }
 
-    /** OpenSSH `query` response: success followed by zero or more extension-name strings. */
+    /** RFC 9987 `query` response: response type, `query`, then zero or more extension-name strings. */
     fun extensionQueryResponse(extensionNames: List<String>): ByteArray {
-        val writer = SshWireWriter().writeByte(AgentNumbers.SSH_AGENT_SUCCESS)
+        val writer = SshWireWriter()
+            .writeByte(AgentNumbers.SSH_AGENT_EXTENSION_RESPONSE)
+            .writeUtf8("query")
         extensionNames.forEach { writer.writeUtf8(it) }
         return writer.toByteArray()
     }

@@ -26,9 +26,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.ContentPaste
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Close
@@ -41,6 +44,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -119,6 +123,7 @@ fun SshAgentScreen() {
     val changeVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle()
     var keys by remember { mutableStateOf<List<SshKeyDescriptor>>(emptyList()) }
     var requests by remember { mutableStateOf<List<StoredSshProviderRequest>>(emptyList()) }
+    var selectedKeyId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
     var error by remember { mutableStateOf<String?>(null) }
@@ -261,6 +266,14 @@ fun SshAgentScreen() {
     }
     LaunchedEffect(changeVersion) { refresh() }
 
+    val selectedKey = selectedKeyId?.let { keyId ->
+        keys.firstOrNull { it.providerKeyId == keyId }
+    }
+    LaunchedEffect(selectedKeyId, selectedKey, loading) {
+        if (!loading && selectedKeyId != null && selectedKey == null) {
+            selectedKeyId = null
+        }
+    }
     val selectedHistory = selectedHistoryRequestId?.let { requestId ->
         requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
     }
@@ -333,14 +346,7 @@ fun SshAgentScreen() {
                 CenteredSshItem(padded = true) {
                     SshKeyCard(
                         key = key,
-                        onCopy = { copyPublicKey(context, key) },
-                        onExport = if (key.exportCopy != null) {
-                            { context.startActivity(SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName)) }
-                        } else {
-                            null
-                        },
-                        onRename = { renaming = key },
-                        onDelete = { deleting = key },
+                        onClick = { selectedKeyId = key.providerKeyId },
                     )
                 }
             }
@@ -375,6 +381,32 @@ fun SshAgentScreen() {
                     )
                 }
             }
+        }
+    }
+
+    selectedKey?.let { key ->
+        ModalBottomSheet(onDismissRequest = { selectedKeyId = null }) {
+            SshKeyDetailSheet(
+                key = key,
+                onCopy = { copyPublicKey(context, key) },
+                onExport = if (key.exportCopy != null) {
+                    {
+                        context.startActivity(
+                            SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName),
+                        )
+                    }
+                } else {
+                    null
+                },
+                onRename = {
+                    selectedKeyId = null
+                    renaming = key
+                },
+                onDelete = {
+                    selectedKeyId = null
+                    deleting = key
+                },
+            )
         }
     }
 
@@ -622,18 +654,26 @@ private fun ProviderCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Button(onClick = onGenerate, enabled = ready, modifier = Modifier.widthIn(min = 136.dp)) {
+                Button(onClick = onGenerate, enabled = ready) {
                     Icon(Icons.Outlined.Add, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_generate))
                 }
-                OutlinedButton(onClick = onImport, enabled = ready, modifier = Modifier.widthIn(min = 128.dp)) {
-                    Icon(Icons.Outlined.UploadFile, contentDescription = null)
+                OutlinedButton(onClick = onImport, enabled = ready) {
+                    Icon(
+                        Icons.Outlined.UploadFile,
+                        contentDescription = null,
+                    )
                     Spacer(Modifier.width(8.dp))
-                    Text(stringResource(R.string.ssh_agent_import_file))
+                    Text(stringResource(R.string.ssh_agent_import_action))
                 }
-                OutlinedButton(onClick = onPaste, enabled = ready, modifier = Modifier.widthIn(min = 112.dp)) {
-                    Text(stringResource(R.string.ssh_agent_import_text))
+                OutlinedButton(onClick = onPaste, enabled = ready) {
+                    Icon(
+                        Icons.Outlined.ContentPaste,
+                        contentDescription = null,
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.action_paste))
                 }
             }
         }
@@ -666,13 +706,12 @@ private fun SshAgentErrorCard(message: String, onDismiss: () -> Unit) {
 @Composable
 private fun SshKeyCard(
     key: SshKeyDescriptor,
-    onCopy: () -> Unit,
-    onExport: (() -> Unit)?,
-    onRename: () -> Unit,
-    onDelete: () -> Unit,
+    onClick: () -> Unit,
 ) {
-    val exportCopy = key.exportCopy
-    Card(shape = MaterialTheme.shapes.extraLarge) {
+    Card(
+        onClick = onClick,
+        shape = MaterialTheme.shapes.extraLarge,
+    ) {
         Column(
             Modifier.fillMaxWidth().padding(18.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
@@ -681,9 +720,19 @@ private fun SshKeyCard(
                 Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
-                    Text(key.displayName, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        key.displayName,
+                        style = MaterialTheme.typography.titleMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
                     Text(key.algorithmDisplayLabel(), style = MaterialTheme.typography.bodySmall)
                 }
+                Icon(
+                    Icons.Outlined.ChevronRight,
+                    contentDescription = stringResource(R.string.ssh_agent_key_details),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
             Text(
                 SshFingerprint.sha256(key.publicKeyBlob),
@@ -693,59 +742,173 @@ private fun SshKeyCard(
                 overflow = TextOverflow.Ellipsis,
             )
             Text(
-                key.storageLabel(),
+                key.authorizedPublicKey(),
                 style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
-            Text(
-                if (exportCopy != null) {
-                    stringResource(
-                        R.string.ssh_agent_export_backup_summary,
-                        stringResource(exportCopy.securityLevel.labelResource()),
+        }
+    }
+}
+
+@Composable
+private fun SshKeyDetailSheet(
+    key: SshKeyDescriptor,
+    onCopy: () -> Unit,
+    onExport: (() -> Unit)?,
+    onRename: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
+        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        key.displayName,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
                     )
-                } else {
-                    stringResource(
-                        R.string.ssh_agent_exportability_summary,
-                        stringResource(R.string.ssh_agent_non_exportable),
+                    Text(
+                        key.algorithmDisplayLabel(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                }
+                if (onExport != null) {
+                    IconButton(onClick = onExport) {
+                        Icon(
+                            Icons.Outlined.FileDownload,
+                            contentDescription = stringResource(R.string.ssh_agent_export),
+                        )
+                    }
+                }
+                IconButton(onClick = onRename) {
+                    Icon(
+                        Icons.Outlined.Edit,
+                        contentDescription = stringResource(R.string.ssh_agent_rename),
+                    )
+                }
+                IconButton(onClick = onDelete) {
+                    Icon(
+                        Icons.Outlined.Delete,
+                        contentDescription = stringResource(R.string.action_remove),
+                    )
+                }
+            }
+        }
+        item {
+            SshKeyDetailValue(
+                label = stringResource(R.string.ssh_agent_fingerprint),
+                value = SshFingerprint.sha256(key.publicKeyBlob),
+                monospace = true,
             )
-            if (key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+        }
+        item {
+            SshPublicKeyCodeBlock(
+                value = key.authorizedPublicKey(),
+                onCopy = onCopy,
+            )
+        }
+        item { HorizontalDivider() }
+        item {
+            SshKeyDetailValue(
+                label = stringResource(R.string.ssh_agent_key_storage),
+                value = key.storageLabel(),
+            )
+        }
+        item {
+            SshKeyDetailValue(
+                label = stringResource(R.string.ssh_agent_export_details),
+                value = key.exportCopy?.let { exportCopy ->
+                    stringResource(R.string.ssh_agent_export_available) + "\n" +
+                        stringResource(
+                            R.string.ssh_agent_export_copy_protection,
+                            stringResource(exportCopy.securityLevel.labelResource()),
+                        )
+                } ?: stringResource(R.string.ssh_agent_non_exportable),
+            )
+        }
+        if (key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+            item {
                 Text(
                     stringResource(R.string.ssh_agent_biometric_each_use_enabled),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
                 )
             }
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                verticalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                TextButton(onClick = onCopy) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.ssh_agent_copy_public))
-                }
-                if (onExport != null) {
-                    TextButton(onClick = onExport) {
-                        Icon(Icons.Outlined.FileDownload, contentDescription = null)
-                        Spacer(Modifier.width(6.dp))
-                        Text(stringResource(R.string.ssh_agent_export))
+        }
+    }
+}
+
+@Composable
+private fun SshPublicKeyCodeBlock(
+    value: String,
+    onCopy: () -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            stringResource(R.string.ssh_agent_public_key),
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Surface(
+            shape = MaterialTheme.shapes.medium,
+            color = MaterialTheme.colorScheme.surfaceVariant,
+        ) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(end = 4.dp),
+                    horizontalArrangement = Arrangement.End,
+                ) {
+                    IconButton(onClick = onCopy) {
+                        Icon(
+                            Icons.Outlined.ContentCopy,
+                            contentDescription = stringResource(R.string.ssh_agent_copy_public),
+                        )
                     }
                 }
-                TextButton(onClick = onRename) {
-                    Icon(Icons.Outlined.Edit, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.ssh_agent_rename))
-                }
-                TextButton(onClick = onDelete) {
-                    Icon(Icons.Outlined.Delete, contentDescription = null)
-                    Spacer(Modifier.width(6.dp))
-                    Text(stringResource(R.string.action_remove))
+                SelectionContainer(
+                    modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                ) {
+                    Text(
+                        value,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontFamily = FontFamily.Monospace,
+                    )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun SshKeyDetailValue(
+    label: String,
+    value: String,
+    monospace: Boolean = false,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        SelectionContainer {
+            Text(
+                value,
+                style = MaterialTheme.typography.bodyMedium,
+                fontFamily = if (monospace) FontFamily.Monospace else FontFamily.Default,
+            )
         }
     }
 }
@@ -1119,17 +1282,13 @@ private val RSA_KEY_SIZE_BITS = listOf(2048, DEFAULT_RSA_KEY_SIZE_BITS, 4096)
 
 @Composable
 private fun SshKeyDescriptor.storageLabel(): String = stringResource(
-    R.string.ssh_agent_storage_summary,
-    stringResource(
-        when (operationalKey.provider) {
-            SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY ->
-                R.string.ssh_agent_storage_android_keystore
-            SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED ->
-                R.string.ssh_agent_storage_android_keystore_wrapped
-        },
-    ),
-    stringResource(operationalKey.securityLevel.labelResource()),
-)
+    when (operationalKey.provider) {
+        SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY ->
+            R.string.ssh_agent_storage_android_keystore
+        SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED ->
+            R.string.ssh_agent_storage_android_keystore_wrapped
+    },
+) + " · " + stringResource(operationalKey.securityLevel.labelResource())
 
 private fun SshStorageSecurityLevel.labelResource(): Int = when (this) {
     SshStorageSecurityLevel.STRONGBOX -> R.string.ssh_agent_security_strongbox
@@ -1145,10 +1304,13 @@ private fun Context.reportSshKeyStorageFailure(
 }
 
 private fun copyPublicKey(context: Context, key: SshKeyDescriptor) {
-    val wireName = SshPublicKeyCodec.decode(key.publicKeyBlob).wireName
-    val value = "$wireName ${Base64.getEncoder().encodeToString(key.publicKeyBlob)} ${key.displayName}"
     context.getSystemService(ClipboardManager::class.java)
-        .setPrimaryClip(ClipData.newPlainText(key.displayName, value))
+        .setPrimaryClip(ClipData.newPlainText(key.displayName, key.authorizedPublicKey()))
+}
+
+private fun SshKeyDescriptor.authorizedPublicKey(): String {
+    val wireName = SshPublicKeyCodec.decode(publicKeyBlob).wireName
+    return "$wireName ${Base64.getEncoder().encodeToString(publicKeyBlob)} $displayName"
 }
 
 private fun readBoundedPrivateKey(input: java.io.InputStream): ByteArray {

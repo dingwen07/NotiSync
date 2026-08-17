@@ -71,6 +71,7 @@ import net.extrawdw.notisync.protocol.SshUserRejectionReason
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.AgentAddIdentityParser
 import net.extrawdw.notisync.ssh.core.EcdsaSignatureTranscoder
+import net.extrawdw.notisync.ssh.core.SshFingerprint
 import net.extrawdw.notisync.ssh.core.SshKeyType
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import net.extrawdw.notisync.ssh.core.SshSignatureCodec
@@ -120,6 +121,7 @@ data class SshRequestHistorySnapshot(
     val processLineage: List<SshProcessIdentity> = emptyList(),
     val destinationUsername: String? = null,
     val destinationHost: String? = null,
+    val destinationHostKeyFingerprint: String? = null,
     val payloadSize: Int,
 )
 
@@ -3426,6 +3428,9 @@ class SshKeyProviderStore(context: Context) :
             processLineage = processContext.processLineage,
             destinationUsername = destinationContext.username,
             destinationHost = destinationContext.hostAliases.firstOrNull()?.value,
+            destinationHostKeyFingerprint = destinationContext.serverHostKeyBlob?.let { hostKey ->
+                runCatching { SshFingerprint.sha256(hostKey) }.getOrNull()
+            },
             payloadSize = data.size,
         )
     }

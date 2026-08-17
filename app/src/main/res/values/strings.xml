@@ -28,20 +28,20 @@
 
     <!-- SSH Agent key provider -->
     <string name="ssh_agent_name" translatable="false">NotiSync SSH Agent</string>
-    <string name="ssh_agent_provider_title">SSH key provider</string>
+    <string name="ssh_agent_provider_title">SSH Key Provider</string>
     <plurals name="ssh_agent_provider_ready">
         <item quantity="one">Ready · %1$d key available to your trusted computers</item>
         <item quantity="other">Ready · %1$d keys available to your trusted computers</item>
     </plurals>
     <string name="ssh_agent_provider_unavailable">The SSH key provider is not ready.</string>
-    <string name="ssh_agent_generate">Generate key</string>
+    <string name="ssh_agent_generate">Generate</string>
     <string name="ssh_agent_generate_title">Generate SSH key</string>
     <string name="ssh_agent_import_file">Import file</string>
     <string name="ssh_agent_import_title">Import SSH private key</string>
     <string name="ssh_agent_review_key">Review key</string>
-    <string name="ssh_agent_ssh_key">SSH key</string>
+    <string name="ssh_agent_ssh_key">SSH Key</string>
     <string name="ssh_agent_algorithm">Algorithm</string>
-    <string name="ssh_agent_public_key">Public key</string>
+    <string name="ssh_agent_public_key">Public Key</string>
     <string name="ssh_agent_fingerprint">Fingerprint</string>
     <string name="ssh_agent_passphrase">Passphrase</string>
     <string name="ssh_agent_import_storage_help">OpenSSH and PuTTY PPK v2/v3 keys are supported. Signing always uses a non-exportable Android Keystore key; the export copy is separate and optional.</string>
@@ -68,7 +68,7 @@
     <string name="ssh_agent_import_text_title">Paste SSH private key</string>
     <string name="ssh_agent_private_key_text">Private-key text</string>
     <string name="ssh_agent_clipboard_key_too_large">The clipboard is too large to import as an SSH private key.</string>
-    <string name="ssh_agent_key_name">Key name</string>
+    <string name="ssh_agent_key_name">Key Name</string>
     <string name="ssh_agent_rsa_key_size">RSA key size</string>
     <string name="ssh_agent_export_settings">Export</string>
     <string name="ssh_agent_keep_export_backup">Keep an export copy</string>
@@ -88,10 +88,12 @@
     <string name="ssh_agent_storage_auth_lost">The authenticated SSH key-storage operation was lost.</string>
     <string name="ssh_agent_generated_device_bound">Generated in Android Keystore. This key cannot be exported.</string>
     <string name="ssh_agent_generated_exportable">Briefly handled by the app during setup, then protected for signing and export.</string>
-    <string name="ssh_agent_exportability_summary">Export: %1$s</string>
     <string name="ssh_agent_non_exportable">Unavailable</string>
-    <string name="ssh_agent_storage_summary">Storage: %1$s · %2$s</string>
-    <string name="ssh_agent_export_backup_summary">Export: Available · Protected with Android Keystore · %1$s</string>
+    <string name="ssh_agent_key_details">Key details</string>
+    <string name="ssh_agent_key_storage">Key Storage</string>
+    <string name="ssh_agent_export_details">Export</string>
+    <string name="ssh_agent_export_available">Available</string>
+    <string name="ssh_agent_export_copy_protection">Protected by Android Keystore · %1$s</string>
     <string name="ssh_agent_storage_android_keystore">Android Keystore</string>
     <string name="ssh_agent_storage_android_keystore_wrapped">Software Wrapped</string>
     <string name="ssh_agent_security_strongbox" translatable="false">StrongBox</string>
@@ -112,8 +114,8 @@
     <string name="ssh_agent_copy_public">Copy public key</string>
     <string name="ssh_agent_delete_title">Remove SSH key?</string>
     <string name="ssh_agent_delete_body">%1$s will no longer be available to any connected SSH Agent.</string>
-    <string name="ssh_agent_request_sign">SSH signature</string>
-    <string name="ssh_agent_request_import">SSH key import</string>
+    <string name="ssh_agent_request_sign">SSH Signature</string>
+    <string name="ssh_agent_request_import">SSH Key Import</string>
     <string name="ssh_agent_state_pending">Awaiting approval</string>
     <string name="ssh_agent_state_sending">Sending response</string>
     <string name="ssh_agent_state_cancelled">Canceled</string>
@@ -124,8 +126,8 @@
     <string name="ssh_agent_result_rejected">Rejected</string>
     <string name="ssh_agent_result_failed">Failed</string>
     <string name="ssh_agent_result_unknown">Outcome unavailable</string>
-    <string name="ssh_agent_review_sign_title">Review SSH signature</string>
-    <string name="ssh_agent_review_import_title">Review SSH key import</string>
+    <string name="ssh_agent_review_sign_title">Review SSH Signature</string>
+    <string name="ssh_agent_review_import_title">Review SSH Key Import</string>
     <string name="ssh_agent_sign_guidance">Did you recognize this signing request? Confirm the requesting device, destination, process, signature algorithm, and exact public-key fingerprint before approving.</string>
     <string name="ssh_agent_import_guidance">This request contains private key material. Confirm the requesting device, parsed public key, fingerprint, and storage choices before importing it.</string>
     <string name="ssh_agent_expiry_time">Expires at %1$s</string>
@@ -133,19 +135,17 @@
     <string name="ssh_agent_close">Close</string>
     <string name="ssh_agent_back_to_history">Back to SSH Agent history</string>
     <string name="ssh_agent_destination">Destination</string>
+    <string name="ssh_agent_destination_username">Username</string>
+    <string name="ssh_agent_destination_host_key_fingerprint">Host Key Fingerprint</string>
     <string name="ssh_agent_process">Process</string>
     <string name="ssh_agent_process_reported_by_requester">Reported by the requesting computer</string>
-    <string name="ssh_agent_process_show_full_paths">Tap to show full paths</string>
-    <string name="ssh_agent_process_show_names">Tap to show process names</string>
-    <string name="ssh_agent_signature_algorithm">Signature algorithm</string>
+    <string name="ssh_agent_signature_algorithm">Signature Algorithm</string>
     <string name="ssh_agent_unavailable">Unavailable</string>
     <string name="ssh_agent_imported_key_default">Imported SSH key</string>
-    <string name="ssh_agent_import_source">Import source</string>
+    <string name="ssh_agent_import_source">Import Source</string>
     <string name="ssh_agent_import_source_agent">Remote ssh-add identity</string>
     <string name="ssh_agent_import_source_file">Remote private-key file</string>
-    <string name="ssh_agent_approval_section">Approval</string>
-    <string name="ssh_agent_requested_by">Requested by</string>
-    <string name="ssh_agent_request_record">Request record</string>
+    <string name="ssh_agent_request_section">Request</string>
     <string name="ssh_agent_requested_at">Requested</string>
     <string name="ssh_agent_updated_at">Updated</string>
     <string name="ssh_agent_request_id">Request ID</string>
@@ -193,8 +193,8 @@
     <string name="seal_section_history">History</string>
     <string name="seal_empty_title">No commit requests yet</string>
     <string name="seal_empty_body">Requests from your trusted computers will appear here.</string>
-    <string name="seal_commit_untitled">Untitled commit</string>
-    <string name="seal_commit_initial">Initial commit</string>
+    <string name="seal_commit_untitled">Untitled Commit</string>
+    <string name="seal_commit_initial">Initial Commit</string>
     <string name="seal_status_waiting">Awaiting approval</string>
     <string name="seal_status_signing">Signing</string>
     <string name="seal_result_approved">Approved</string>
@@ -203,20 +203,19 @@
     <string name="seal_result_expired">Expired</string>
     <string name="seal_result_failed">Failed</string>
     <string name="seal_result_legacy">Outcome unavailable</string>
-    <string name="seal_review_title">Review commit</string>
-    <string name="seal_review_guidance">Did you recognize this signing request? Confirm the commit message, identity, and base revision before approving. The file diff isn’t shown. </string>
+    <string name="seal_review_title">Review Commit</string>
+    <string name="seal_review_guidance">Did you recognize this signing request? Confirm the commit message, identity, and base revision before approving. The file diff isn’t shown.</string>
     <string name="seal_hash">Hash %1$s</string>
     <string name="seal_commit_section">Commit</string>
     <string name="seal_author">Author</string>
     <string name="seal_committer">Committer</string>
     <string name="seal_tree">Tree</string>
-    <string name="seal_parent">Parent commit</string>
+    <string name="seal_parent">Parent Commit</string>
     <string name="seal_extra_header">%1$s</string>
     <string name="seal_approval_section">Approval</string>
-    <string name="seal_requested_by">Requested by</string>
-    <string name="seal_working_directory">Working directory</string>
-    <string name="seal_signing_key">Signing key</string>
-    <string name="seal_request_section">Request record</string>
+    <string name="seal_working_directory">Working Directory</string>
+    <string name="seal_signing_key">Signing Key</string>
+    <string name="seal_request_section">Request</string>
     <string name="seal_requested_at">Requested</string>
     <string name="seal_updated_at">Updated</string>
     <string name="seal_request_id">Request ID</string>

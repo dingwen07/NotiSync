@@ -2,16 +2,20 @@ package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
@@ -29,6 +33,7 @@ internal fun SshKeyPreviewCard(
     preview: SshKeyPreview?,
     showFullPublicKey: Boolean,
     modifier: Modifier = Modifier,
+    titleIcon: ImageVector? = null,
     emptyContent: (@Composable () -> Unit)? = null,
 ) {
     Card(
@@ -40,10 +45,16 @@ internal fun SshKeyPreviewCard(
             Modifier.fillMaxWidth().padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
-                stringResource(R.string.ssh_agent_ssh_key),
-                style = MaterialTheme.typography.titleSmall,
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                titleIcon?.let { Icon(it, contentDescription = null) }
+                Text(
+                    stringResource(R.string.ssh_agent_ssh_key),
+                    style = MaterialTheme.typography.titleSmall,
+                )
+            }
             PreviewValue(
                 label = stringResource(R.string.ssh_agent_key_name),
                 value = name,

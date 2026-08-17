@@ -54,6 +54,21 @@ class SshProcessLineageUiTest {
     }
 
     @Test
+    fun destinationCombinesSignedUsernameWithAvailableHost() {
+        val request = storedRequest(
+            SshRequestHistorySnapshot(
+                requestedAt = 1_000,
+                expiresAt = 2_000,
+                destinationUsername = "git",
+                destinationHost = "code.example",
+                payloadSize = 16,
+            ),
+        )
+
+        assertEquals("git@code.example", request.destinationLabel())
+    }
+
+    @Test
     fun processTreeShowsEveryExecutableFromRootToLeaf() {
         val root = process(10, "/usr/lib/systemd/systemd", "systemd")
         val shell = process(20, "/usr/bin/zsh", "zsh")
@@ -83,5 +98,15 @@ class SshProcessLineageUiTest {
         startEpochMillis = pid * 1_000,
         executablePath = path,
         displayName = name,
+    )
+
+    private fun storedRequest(history: SshRequestHistorySnapshot) = StoredSshProviderRequest(
+        requestId = "1".repeat(32),
+        kind = SshProviderRequestKind.SIGN,
+        requesterClientId = ClientId("a".repeat(52)),
+        requestFingerprint = ByteArray(32),
+        history = history,
+        state = SshProviderRequestState.SENT,
+        updatedAt = 2_000,
     )
 }

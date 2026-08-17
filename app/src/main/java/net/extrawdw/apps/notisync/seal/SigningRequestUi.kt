@@ -29,7 +29,6 @@ import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.Info
 import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.Laptop
 import androidx.compose.material.icons.outlined.Person
 import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Sync
@@ -57,6 +56,7 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 
 internal enum class SealDisplayStatus {
     WAITING,
@@ -279,21 +279,15 @@ internal fun SigningRequestDetail(
                     title = stringResource(R.string.seal_approval_section),
                     icon = Icons.Outlined.VerifiedUser,
                 ) {
-                    RequestingDeviceLine(
-                        name = requesterName,
-                        safetyNumber = stored.senderClientId.value,
-                        identityKeyFingerprint = requesterIdentityKeyFingerprint,
-                    )
                     stored.request.workingDirectory?.let { workingDirectory ->
-                        HorizontalDivider()
                         SealDetailLine(
                             icon = Icons.Outlined.Folder,
                             label = stringResource(R.string.seal_working_directory),
                             value = workingDirectory,
                             valueMonospace = true,
                         )
+                        HorizontalDivider()
                     }
-                    HorizontalDivider()
                     SealDetailLine(
                         icon = Icons.Outlined.Key,
                         label = stringResource(R.string.seal_signing_key),
@@ -311,6 +305,11 @@ internal fun SigningRequestDetail(
                     title = stringResource(R.string.seal_request_section),
                     icon = Icons.Outlined.Fingerprint,
                 ) {
+                    RequestDeviceSubCard(
+                        deviceName = requesterName,
+                        verificationNumber = stored.senderClientId.value,
+                        identityKeyFingerprint = requesterIdentityKeyFingerprint,
+                    )
                     SealRecordLine(
                         stringResource(R.string.seal_requested_at),
                         formatter.format(Date(stored.request.issuedAt)),
@@ -468,60 +467,6 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
                     monospace = true,
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun RequestingDeviceLine(
-    name: String,
-    safetyNumber: String,
-    identityKeyFingerprint: String?,
-) {
-    Row(
-        Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-        verticalAlignment = Alignment.Top,
-    ) {
-        Icon(
-            Icons.Outlined.Laptop,
-            contentDescription = null,
-            modifier = Modifier.padding(top = 2.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text(
-                stringResource(R.string.seal_requested_by),
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Text(name)
-            DeviceIdentityValue(
-                label = stringResource(R.string.pair_field_verification_number),
-                value = safetyNumber,
-            )
-            DeviceIdentityValue(
-                label = stringResource(R.string.pair_field_identity_key),
-                value = identityKeyFingerprint ?: EM_DASH,
-            )
-        }
-    }
-}
-
-@Composable
-private fun DeviceIdentityValue(label: String, value: String) {
-    Column(verticalArrangement = Arrangement.spacedBy(1.dp)) {
-        Text(
-            label,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        SelectionContainer {
-            Text(
-                value,
-                style = MaterialTheme.typography.bodySmall,
-                fontFamily = FontFamily.Monospace,
-            )
         }
     }
 }
@@ -728,7 +673,6 @@ internal fun String.shortObjectId(): String = take(7)
 
 private fun String.formattedKeyId(): String = "0x" + chunked(4).joinToString(" ")
 
-private const val EM_DASH = "—"
 
 @Composable
 private fun rememberShortTimeFormatter(): DateFormat = remember {

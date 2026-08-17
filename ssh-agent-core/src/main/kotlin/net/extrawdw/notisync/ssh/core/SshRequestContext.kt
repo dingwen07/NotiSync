@@ -15,6 +15,7 @@ data class SshUserAuthData(
 /** Conservative parser for the exact SSH user-authentication preimage passed to an agent. */
 object SshUserAuthParser {
     private const val SSH_MSG_USERAUTH_REQUEST = 50
+    private const val SSH_CONNECTION_SERVICE = "ssh-connection"
     const val PUBLIC_KEY_METHOD = "publickey"
     const val HOST_BOUND_METHOD = "publickey-hostbound-v00@openssh.com"
 
@@ -25,13 +26,16 @@ object SshUserAuthParser {
         if (sessionIdentifier.isEmpty() || reader.readByte() != SSH_MSG_USERAUTH_REQUEST) return null
         val username = reader.readUtf8(1024)
         val service = reader.readUtf8(1024)
+        if (service != SSH_CONNECTION_SERVICE) return null
         val method = reader.readUtf8(128)
         if (method != PUBLIC_KEY_METHOD && method != HOST_BOUND_METHOD) return null
         if (!reader.readBoolean()) return null
         val publicKeyAlgorithm = reader.readUtf8(128)
         val publicKeyBlob = reader.readString(SshPublicKeyCodec.MAXIMUM_PUBLIC_KEY_BLOB_SIZE)
         val decoded = SshPublicKeyCodec.decode(publicKeyBlob)
-        if (decoded.wireName != publicKeyAlgorithm) return null
+        val signatureMethod = SshSignatureMethod.entries.firstOrNull { it.wireName == publicKeyAlgorithm }
+            ?: return null
+        if (!SshSignatureVerifier.methodMatchesKey(signatureMethod, decoded.type)) return null
         val serverHostKeyBlob = if (method == HOST_BOUND_METHOD) {
             reader.readString(SshPublicKeyCodec.MAXIMUM_PUBLIC_KEY_BLOB_SIZE).also(SshPublicKeyCodec::decode)
         } else null

@@ -166,7 +166,7 @@ object SshSignatureVerifier {
         }.getOrDefault(false)
     }
 
-    private fun methodMatchesKey(method: SshSignatureMethod, keyType: SshKeyType): Boolean = when (keyType) {
+    internal fun methodMatchesKey(method: SshSignatureMethod, keyType: SshKeyType): Boolean = when (keyType) {
         SshKeyType.ED25519 -> method == SshSignatureMethod.ED25519
         SshKeyType.ECDSA_NISTP256 -> method == SshSignatureMethod.ECDSA_NISTP256
         SshKeyType.RSA -> method in setOf(

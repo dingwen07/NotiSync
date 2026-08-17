@@ -70,6 +70,14 @@ class SshCoreTest {
             AgentNumbers.SSH_AGENT_IDENTITIES_ANSWER,
             AgentMessageCodec.identitiesAnswer(listOf(AgentIdentity(keyBlob, "test"))).first().toInt() and 0xff,
         )
+
+        val queryResponse = SshWireReader(
+            AgentMessageCodec.extensionQueryResponse(listOf(OpenSshSessionBind.EXTENSION_NAME)),
+        )
+        assertEquals(AgentNumbers.SSH_AGENT_EXTENSION_RESPONSE, queryResponse.readByte())
+        assertEquals("query", queryResponse.readUtf8())
+        assertEquals(OpenSshSessionBind.EXTENSION_NAME, queryResponse.readUtf8())
+        queryResponse.requireEnd()
     }
 
     @Test
@@ -188,6 +196,52 @@ class SshCoreTest {
             OpenSshSessionBind.parseAndVerify(
                 OpenSshSessionBind.encodeContents(hostBlob, sessionId + byteArrayOf(1), hostSignature, forwarded = false),
             )
+        }
+    }
+
+    @Test
+    fun ordinarySignedUserAuthPayloadExposesUsername() {
+        val userBlob = SshPublicKeyCodec.encode(ed25519.public)
+        val signData = SshWireWriter()
+            .writeString(ByteArray(32) { it.toByte() })
+            .writeByte(50)
+            .writeUtf8("deploy")
+            .writeUtf8("ssh-connection")
+            .writeUtf8(SshUserAuthParser.PUBLIC_KEY_METHOD)
+            .writeBoolean(true)
+            .writeUtf8(SshKeyType.ED25519.wireName)
+            .writeString(userBlob)
+            .toByteArray()
+
+        val parsed = requireNotNull(SshUserAuthParser.parse(signData))
+
+        assertEquals("deploy", parsed.username)
+        assertEquals("ssh-connection", parsed.service)
+        assertEquals(SshUserAuthParser.PUBLIC_KEY_METHOD, parsed.method)
+        assertArrayEquals(userBlob, parsed.publicKeyBlob)
+    }
+
+    @Test
+    fun rsaSha2SignedUserAuthPayloadExposesUsername() {
+        val userBlob = SshPublicKeyCodec.encode(rsa.public)
+
+        listOf(SshSignatureMethod.RSA_SHA2_256, SshSignatureMethod.RSA_SHA2_512).forEach { method ->
+            val signData = SshWireWriter()
+                .writeString(ByteArray(32) { it.toByte() })
+                .writeByte(50)
+                .writeUtf8("deploy")
+                .writeUtf8("ssh-connection")
+                .writeUtf8(SshUserAuthParser.PUBLIC_KEY_METHOD)
+                .writeBoolean(true)
+                .writeUtf8(method.wireName)
+                .writeString(userBlob)
+                .toByteArray()
+
+            val parsed = requireNotNull(SshUserAuthParser.parse(signData))
+
+            assertEquals(method.wireName, parsed.publicKeyAlgorithm)
+            assertEquals("deploy", parsed.username)
+            assertArrayEquals(userBlob, parsed.publicKeyBlob)
         }
     }
 
