@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.notisync.protocol.SshImportSourceType
 
 class SshAgentNotificationPresenter(private val context: Context) {
     fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
@@ -22,24 +23,64 @@ class SshAgentNotificationPresenter(private val context: Context) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
         }
-        val title = context.getString(
-            if (stored.kind == SshProviderRequestKind.SIGN) {
-                R.string.ssh_agent_notification_sign_title
-            } else {
-                R.string.ssh_agent_notification_import_title
-            },
-        )
-        val detail = when (stored.kind) {
-            SshProviderRequestKind.SIGN -> {
-                val request = requireNotNull(stored.signRequest)
-                val host = request.destinationContext.hostAliases.firstOrNull()?.value
-                val destination = host?.let { request.destinationContext.username?.let { user -> "$user@$it" } ?: it }
-                destination ?: request.processContext.processLineage.mainCallerLabel()
-                    ?: context.getString(R.string.ssh_agent_notification_unknown_destination)
-            }
+        val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
+        val destination = stored.destinationLabel()?.take(MAX_CONTEXT_CHARS)
+        val process = stored.signRequest?.processContext?.processLineage?.mainCallerLabel()
+        val keyName = when (stored.kind) {
+            SshProviderRequestKind.SIGN -> stored.history.keyName
+                ?: context.getString(R.string.ssh_agent_notification_unknown_key)
             SshProviderRequestKind.IMPORT -> stored.importRequest?.suggestedName
+                ?: stored.history.suggestedName
                 ?: context.getString(R.string.ssh_agent_imported_key_default)
-        }.take(160)
+        }.take(MAX_CONTEXT_CHARS)
+        val title = when (stored.kind) {
+            SshProviderRequestKind.SIGN -> destination?.let {
+                context.getString(R.string.ssh_agent_notification_sign_title_with_destination, it)
+            } ?: context.getString(R.string.ssh_agent_notification_sign_title)
+            SshProviderRequestKind.IMPORT -> context.getString(
+                R.string.ssh_agent_notification_import_title,
+                keyName,
+            )
+        }
+        val content = when (stored.kind) {
+            SshProviderRequestKind.SIGN -> context.getString(
+                R.string.ssh_agent_notification_sign_content,
+                safeRequesterName,
+                keyName,
+            )
+            SshProviderRequestKind.IMPORT -> context.getString(
+                R.string.ssh_agent_notification_import_content,
+                safeRequesterName,
+                keyName,
+            )
+        }
+        val expandedDetails = when (stored.kind) {
+            SshProviderRequestKind.SIGN -> {
+                listOfNotNull(
+                    destination?.let {
+                        context.getString(R.string.ssh_agent_notification_destination, it)
+                    },
+                    process?.take(MAX_CONTEXT_CHARS)?.let {
+                        context.getString(R.string.ssh_agent_notification_process, it)
+                    },
+                    context.getString(R.string.ssh_agent_notification_key, keyName),
+                )
+            }
+            SshProviderRequestKind.IMPORT -> listOfNotNull(
+                when (stored.history.importSourceType ?: stored.importRequest?.sourceType) {
+                    SshImportSourceType.AGENT_IDENTITY ->
+                        context.getString(R.string.ssh_agent_import_source_agent)
+                    SshImportSourceType.PRIVATE_KEY_FILE ->
+                        context.getString(R.string.ssh_agent_import_source_file)
+                    null -> null
+                }?.let { context.getString(R.string.ssh_agent_notification_source, it) },
+            )
+        }
+        val expandedText = buildList {
+            add(content)
+            addAll(expandedDetails)
+            add(context.getString(R.string.ssh_agent_notification_request, stored.requestId.take(8)))
+        }.joinToString("\n")
         val review = PendingIntent.getActivity(
             context,
             notificationId(stored.requestId),
@@ -61,17 +102,9 @@ class SshAgentNotificationPresenter(private val context: Context) {
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_terminal_notification)
             .setContentTitle(title)
-            .setContentText(context.getString(R.string.ssh_agent_notification_content, requesterName, detail))
-            .setStyle(
-                NotificationCompat.BigTextStyle().bigText(
-                    context.getString(
-                        R.string.ssh_agent_notification_details,
-                        requesterName,
-                        detail,
-                        stored.requestId.take(8),
-                    ),
-                ),
-            )
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
+            .setSubText(context.getString(R.string.ssh_agent_name))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
@@ -108,6 +141,7 @@ class SshAgentNotificationPresenter(private val context: Context) {
 
     private companion object {
         const val CHANNEL_ID = "ssh_agent_requests"
+        const val MAX_CONTEXT_CHARS = 160
         fun notificationId(requestId: String) = requestId.hashCode() and 0x7fffffff
     }
 }

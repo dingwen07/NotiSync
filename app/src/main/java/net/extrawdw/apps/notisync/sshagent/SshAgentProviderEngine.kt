@@ -257,7 +257,7 @@ class SshAgentProviderEngine(
         if (request.requesterClientId != message.senderId || providerClientId !in request.eligibleProviderClientIds ||
             !fresh(request.requestedAt, request.expiresAt, message.createdAt)
         ) return
-        if (!store.owns(request.publicKeyBlob, now())) {
+        fun sendKeyNotFound() {
             val result = SshSignResult(
                 request.requestId,
                 request.requesterClientId,
@@ -273,7 +273,6 @@ class SshAgentProviderEngine(
                     SshAgentSync(kind = SshAgentSyncKind.SIGN_RESULT, signResult = result),
                 )
             }
-            return
         }
         when (store.acceptSign(request, now())) {
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {
@@ -298,6 +297,7 @@ class SshAgentProviderEngine(
             SshProviderAcceptResult.RATE_LIMITED,
             SshProviderAcceptResult.AUTHORIZATION_INVALIDATED,
             -> Unit
+            SshProviderAcceptResult.KEY_NOT_FOUND -> sendKeyNotFound()
         }
     }
 
@@ -318,6 +318,7 @@ class SshAgentProviderEngine(
             SshProviderAcceptResult.CONFLICT,
             SshProviderAcceptResult.RATE_LIMITED,
             SshProviderAcceptResult.AUTHORIZATION_INVALIDATED,
+            SshProviderAcceptResult.KEY_NOT_FOUND,
             -> Unit
         }
     }

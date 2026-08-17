@@ -920,7 +920,7 @@ private fun GenerateKeyDialog(
 ) {
     var algorithm by remember { mutableStateOf(SshKeyAlgorithm.ECDSA_NISTP256) }
     var rsaKeySizeBits by remember { mutableIntStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
-    var name by remember { mutableStateOf("NotiSync SSH key") }
+    var name by remember { mutableStateOf("NotiSync SSH Key") }
     var storage by remember { mutableStateOf(SshKeyStorageSelection()) }
     AlertDialog(
         onDismissRequest = onDismiss,

@@ -46,7 +46,12 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             requestId.take(8),
             stored.request.payloadSha256.toHex().take(7),
         )
-        val expandedText = "$requestText\n$identifiersText"
+        val authorText = stored.commit?.author
+            ?.trim()
+            ?.takeIf(String::isNotBlank)
+            ?.take(MAX_CONTEXT_CHARS)
+            ?.let { context.getString(R.string.seal_notification_author, it) }
+        val expandedText = listOfNotNull(requestText, authorText, identifiersText).joinToString("\n")
         val contentTitle = context.getString(R.string.seal_notification_title_with_commit, commitTitle)
         val intent = OpenPgpSignReviewActivity.intent(context, requestId)
         val pendingIntent = PendingIntent.getActivity(

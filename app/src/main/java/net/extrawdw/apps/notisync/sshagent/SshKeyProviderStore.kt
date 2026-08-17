@@ -86,7 +86,14 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 enum class SshProviderRequestState { PENDING_REVIEW, RESPONSE_PENDING_SEND, SENT, CANCELLED, EXPIRED }
 enum class SshProviderRequestKind { SIGN, IMPORT }
 enum class SshProviderRequestOutcome { SIGNED, IMPORTED, ALREADY_PRESENT, REJECTED, FAILED, CANCELLED, EXPIRED }
-enum class SshProviderAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED, AUTHORIZATION_INVALIDATED }
+enum class SshProviderAcceptResult {
+    STORED,
+    DUPLICATE,
+    CONFLICT,
+    RATE_LIMITED,
+    AUTHORIZATION_INVALIDATED,
+    KEY_NOT_FOUND,
+}
 
 data class SshAuthorizationForgetOutcome(
     val inventoryChanged: Boolean,
@@ -1765,12 +1772,14 @@ class SshKeyProviderStore(context: Context) :
         if (request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)) {
             return SshProviderAcceptResult.AUTHORIZATION_INVALIDATED
         }
+        pruneExpiredKeys(now)
+        val keyName = keyDisplayName(request.publicKeyBlob) ?: return SshProviderAcceptResult.KEY_NOT_FOUND
         return accept(
             SshProviderRequestKind.SIGN,
             request.requestId,
             request.requesterClientId,
             ProtocolCodec.encodeToCbor(request),
-            request.historySnapshot(keyDisplayName(request.publicKeyBlob)),
+            request.historySnapshot(keyName),
             now,
         )
     }
