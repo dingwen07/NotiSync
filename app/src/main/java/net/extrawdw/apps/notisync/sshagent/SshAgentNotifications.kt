@@ -46,8 +46,12 @@ class SshAgentNotificationPresenter(private val context: Context) {
             SshAgentReviewActivity.intent(context, stored.requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
-        // Approval is deliberately not encoded in a PendingIntent. Android ignores extras when comparing
-        // PendingIntent identity, so a same-identity "approve" intent can rewrite the notification tap intent.
+        val approve = PendingIntent.getActivity(
+            context,
+            notificationId(stored.requestId),
+            SshAgentReviewActivity.approveIntent(context, stored.requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
         val reject = PendingIntent.getBroadcast(
             context,
             notificationId(stored.requestId),
@@ -79,8 +83,8 @@ class SshAgentNotificationPresenter(private val context: Context) {
                 NotificationCompat.Action.Builder(
                     0,
                     context.getString(R.string.action_approve),
-                    review,
-                ).build(),
+                    approve,
+                ).setAuthenticationRequired(true).build(),
             )
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)

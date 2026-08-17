@@ -42,6 +42,8 @@ class SshAgentReviewActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestId = requestIdFrom(intent) ?: return finish()
+        val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        intent.action = null
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         enableTapjackingProtection()
@@ -62,16 +64,18 @@ class SshAgentReviewActivity : ComponentActivity() {
                 )
             }
         }
-        load()
+        load(approveAfterLoad)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val reopenedRequestId = requestIdFrom(intent) ?: return finish()
         if (reopenedRequestId != requestId) return finish()
+        val approveAfterLoad = intent.action == ACTION_APPROVE
+        intent.action = null
         setIntent(intent)
         screen = SshReviewScreenState.Loading
-        load()
+        load(approveAfterLoad)
     }
 
     override fun onDestroy() {
@@ -92,7 +96,7 @@ class SshAgentReviewActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun load() {
+    private fun load(approveAfterLoad: Boolean = false) {
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
                 ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
@@ -159,6 +163,9 @@ class SshAgentReviewActivity : ComponentActivity() {
                 requesterName = peer?.displayName ?: stored.requesterClientId.shortForm(),
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
             )
+            if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
+                approve()
+            }
         }
     }
 
@@ -514,6 +521,7 @@ class SshAgentReviewActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SSH_AGENT_APPROVE"
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "ssh-agent-review"
@@ -522,7 +530,11 @@ class SshAgentReviewActivity : ComponentActivity() {
             .setData(reviewUri(requestId))
             .putExtra(EXTRA_REQUEST_ID, requestId)
 
+        fun approveIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_APPROVE)
+
         private fun requestIdFrom(intent: Intent): String? {
+            if (intent.action != null && intent.action != ACTION_APPROVE) return null
             val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
             return requestId.takeIf { intent.data == reviewUri(it) }
         }
