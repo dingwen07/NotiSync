@@ -99,6 +99,14 @@ class SshAgentNotificationPresenter(private val context: Context) {
             SshAgentActionReceiver.rejectIntent(context, stored.requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
+        // Keep lock-screen content useful without exposing requester, key, destination, process, or request ID.
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_terminal_notification)
+            .setContentTitle(context.getString(R.string.ssh_agent_name))
+            .setContentText(context.getString(R.string.ssh_agent_notification_public_content))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_terminal_notification)
             .setContentTitle(title)
@@ -107,6 +115,7 @@ class SshAgentNotificationPresenter(private val context: Context) {
             .setSubText(context.getString(R.string.ssh_agent_name))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(review)
             .setOnlyAlertOnce(true)

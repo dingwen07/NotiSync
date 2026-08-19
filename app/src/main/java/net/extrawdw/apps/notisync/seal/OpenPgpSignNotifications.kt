@@ -82,6 +82,14 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             context.getString(R.string.action_approve),
             approveIntent,
         ).setAuthenticationRequired(true).build()
+        // Keep lock-screen content useful without exposing commit, repository, requester, author, or hash details.
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_notisync_mirror)
+            .setContentTitle(context.getString(R.string.seal_name))
+            .setContentText(context.getString(R.string.seal_notification_public_content))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
             .setContentTitle(contentTitle)
@@ -90,6 +98,7 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             .setSubText(context.getString(R.string.seal_name))
             .setCategory(NotificationCompat.CATEGORY_STATUS)
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setContentIntent(pendingIntent)
             .setAutoCancel(false)
