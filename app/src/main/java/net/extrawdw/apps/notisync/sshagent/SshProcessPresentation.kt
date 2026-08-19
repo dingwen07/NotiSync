@@ -1,21 +1,21 @@
 package net.extrawdw.apps.notisync.sshagent
 
-import net.extrawdw.notisync.protocol.SshProcessIdentity
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 
 /** Selects the user-meaningful caller from a leaf-first process lineage. */
-internal fun List<SshProcessIdentity>.mainCallerLabel(): String? {
+internal fun List<DesktopProcessIdentity>.mainCallerLabel(): String? {
     val leaf = firstOrNull() ?: return null
     val caller = if (leaf.isTrivialProcess()) getOrNull(1) ?: leaf else leaf
     return caller.shortProcessName()
 }
 
-private fun SshProcessIdentity.isTrivialProcess(): Boolean =
+private fun DesktopProcessIdentity.isTrivialProcess(): Boolean =
     executableFileName().lowercase() in TRIVIAL_PROCESS_NAMES
 
-internal fun SshProcessIdentity.shortProcessName(): String =
+internal fun DesktopProcessIdentity.shortProcessName(): String =
     displayName?.takeIf(String::isNotBlank) ?: executableFileName()
 
-private fun SshProcessIdentity.executableFileName(): String =
+private fun DesktopProcessIdentity.executableFileName(): String =
     executablePath.substringAfterLast('/').substringAfterLast('\\').ifBlank { executablePath }
 
 private val TRIVIAL_PROCESS_NAMES = setOf("ssh", "ssh.exe")

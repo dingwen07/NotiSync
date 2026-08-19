@@ -81,8 +81,8 @@ import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
 import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.SshImportSourceType
-import net.extrawdw.notisync.protocol.SshProcessIdentity
 import net.extrawdw.notisync.protocol.SshRememberScope
 
 internal enum class SshRequestDisplayStatus {
@@ -682,7 +682,7 @@ private fun SignRequestCard(
 
 @Composable
 private fun ProcessLineageLine(
-    processLineage: List<SshProcessIdentity>,
+    processLineage: List<DesktopProcessIdentity>,
     unavailable: String,
     reportedByRequester: String,
 ) {
@@ -960,14 +960,14 @@ internal fun StoredSshProviderRequest.approvalDestinationLabel(knownHostname: St
 }
 
 /** Returns the available caller chain from the system root to the SSH client process. */
-internal fun StoredSshProviderRequest.processLineageForDisplay(): List<SshProcessIdentity> {
+internal fun StoredSshProviderRequest.processLineageForDisplay(): List<DesktopProcessIdentity> {
     return processLineageLeafFirst().asReversed()
 }
 
-private fun StoredSshProviderRequest.processLineageLeafFirst(): List<SshProcessIdentity> =
+private fun StoredSshProviderRequest.processLineageLeafFirst(): List<DesktopProcessIdentity> =
     signRequest?.processContext?.processLineage ?: history.processLineage
 
-internal fun List<SshProcessIdentity>.toProcessTreeText(showFullPaths: Boolean = false): String =
+internal fun List<DesktopProcessIdentity>.toProcessTreeText(showFullPaths: Boolean = false): String =
     mapIndexed { index, process ->
     val branch = if (index == 0) "" else "  ".repeat(index - 1) + "└─ "
     val name = if (showFullPaths) process.executablePath else process.shortProcessName()

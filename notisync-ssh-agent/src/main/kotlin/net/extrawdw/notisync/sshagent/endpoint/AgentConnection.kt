@@ -49,7 +49,7 @@ class AgentConnectionHandler(
     fun handle(
         input: InputStream,
         output: OutputStream,
-        processContext: net.extrawdw.notisync.protocol.SshProcessContext,
+        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
     ) {
         val connectionId = randomId()
         val destination = ConnectionDestinationState()
@@ -70,7 +70,7 @@ class AgentConnectionHandler(
     private fun dispatch(
         request: AgentRequest,
         connectionId: String,
-        processContext: net.extrawdw.notisync.protocol.SshProcessContext,
+        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
         destination: ConnectionDestinationState,
     ): ByteArray {
         return when (request) {

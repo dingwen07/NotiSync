@@ -16,6 +16,8 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.protocol.SshAgentLimits
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
@@ -23,8 +25,6 @@ import net.extrawdw.notisync.protocol.SshDestinationProvenance
 import net.extrawdw.notisync.protocol.SshExportCopyBackendPolicy
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
-import net.extrawdw.notisync.protocol.SshProcessContext
-import net.extrawdw.notisync.protocol.SshProcessContextSource
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.SshSignRequest
 import net.extrawdw.notisync.protocol.SshSignResultKind
@@ -182,7 +182,7 @@ class SshKeyStorageFlowTest(
             eligibleProviderClientIds = listOf(providerClientId),
             authorizationGeneration = randomHexId(),
             authorizationEpoch = 1,
-            processContext = SshProcessContext(source = SshProcessContextSource.UNAVAILABLE),
+            processContext = DesktopProcessContext(source = DesktopProcessContextSource.UNAVAILABLE),
             destinationContext = SshDestinationContext(
                 provenance = SshDestinationProvenance.UNKNOWN,
                 connectionDirection = SshConnectionDirection.UNKNOWN,

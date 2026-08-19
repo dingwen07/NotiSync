@@ -15,7 +15,6 @@ object SshAgentLimits {
     const val MAX_PROVIDERS = 64
     const val MAX_KEYS_PER_SNAPSHOT = 512
     const val MAX_REMEMBERED_NAMESPACES = 64
-    const val MAX_PROCESS_LINEAGE = 16
     const val MAX_BINDING_CHAIN = 16
     const val MAX_HOST_ALIASES = 32
     const val MAX_PUBLIC_KEY_BLOB_BYTES = 16 * 1024
@@ -23,7 +22,6 @@ object SshAgentLimits {
     const val MAX_SIGN_DATA_BYTES = 256 * 1024
     const val MAX_IMPORT_BYTES = 256 * 1024
     const val MAX_DISPLAY_NAME_UTF8_BYTES = 256
-    const val MAX_PATH_UTF8_BYTES = 1024
     const val MAX_CONTEXT_TEXT_UTF8_BYTES = 1024
     const val MAX_FAILURE_MESSAGE_UTF8_BYTES = 2048
     const val MAX_SIGN_LIFETIME_MILLIS = 5 * 60_000L
@@ -90,8 +88,6 @@ enum class SshRememberScope {
 }
 @Serializable
 enum class SshProviderHealth { HEALTHY, DEGRADED, DISABLED }
-@Serializable
-enum class SshProcessContextSource { PEER_CREDENTIALS, NAMED_PIPE_CLIENT_PID, BRIDGE_REPORTED, UNAVAILABLE }
 @Serializable
 enum class SshDestinationProvenance {
     VERIFIED_SESSION_BIND, SIGNED_USERAUTH, KNOWN_HOSTS_MATCH, PROCESS_HINT, UNKNOWN,
@@ -285,44 +281,6 @@ data class SshKeysSnapshot(
 }
 
 @Serializable
-data class SshProcessIdentity(
-    @CborLabel(0) val pid: Long,
-    @CborLabel(1) val startEpochMillis: Long,
-    @CborLabel(2) val executablePath: String,
-    @CborLabel(3) val displayName: String? = null,
-) {
-    fun validationError(): String? = when {
-        pid <= 0 -> "process pid must be positive"
-        startEpochMillis <= 0 -> "process start time must be positive"
-        !executablePath.isBoundedSshPath() -> "process executable path is invalid"
-        displayName != null && !displayName.isBoundedSshDisplayText(SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) ->
-            "process display name is invalid"
-        else -> null
-    }
-}
-
-@Serializable
-data class SshProcessContext(
-    @CborLabel(0) val source: SshProcessContextSource,
-    @CborLabel(1) val leaf: SshProcessIdentity? = null,
-    @CborLabel(2) val directParent: SshProcessIdentity? = null,
-    @CborLabel(3) val processLineage: List<SshProcessIdentity> = emptyList(),
-) {
-    fun validationError(): String? = when {
-        source == SshProcessContextSource.UNAVAILABLE &&
-            (leaf != null || directParent != null || processLineage.isNotEmpty()) ->
-            "unavailable process context must not carry identities"
-        source != SshProcessContextSource.UNAVAILABLE && leaf == null -> "available process context requires a leaf"
-        processLineage.size > SshAgentLimits.MAX_PROCESS_LINEAGE -> "process lineage is too long"
-        listOfNotNull(leaf, directParent).any { it.validationError() != null } ||
-            processLineage.any { it.validationError() != null } -> "invalid process identity"
-        processLineage.map { Pair(it.pid, it.startEpochMillis) }.distinct().size != processLineage.size ->
-            "duplicate process identity"
-        else -> null
-    }
-}
-
-@Serializable
 data class SshHostAlias(
     @CborLabel(0) val value: String,
     @CborLabel(1) val source: SshHostAliasSource,
@@ -392,7 +350,7 @@ data class SshSignRequest(
     @CborLabel(8) val eligibleProviderClientIds: List<ClientId>,
     @CborLabel(9) val authorizationGeneration: String,
     @CborLabel(10) val authorizationEpoch: Long,
-    @CborLabel(11) val processContext: SshProcessContext,
+    @CborLabel(11) val processContext: DesktopProcessContext,
     @CborLabel(12) val destinationContext: SshDestinationContext,
     @CborLabel(13) val connectionId: String,
     @CborLabel(14) val confirmationRequired: Boolean = false,
@@ -679,14 +637,6 @@ private fun String.isSshOperationId(): Boolean = SSH_OPERATION_ID.matches(this)
 
 private fun String.isBoundedSshDisplayText(maxUtf8Bytes: Int): Boolean =
     encodeToByteArray().size <= maxUtf8Bytes && none { it.isISOControl() }
-
-private fun String.isBoundedSshPath(): Boolean {
-    if (isBlank() || encodeToByteArray().size > SshAgentLimits.MAX_PATH_UTF8_BYTES || any(Char::isISOControl)) {
-        return false
-    }
-    val windowsDrive = length >= 3 && this[0].isLetter() && this[1] == ':' && (this[2] == '\\' || this[2] == '/')
-    return startsWith('/') || startsWith("\\\\") || windowsDrive
-}
 
 private fun List<ClientId>.isCanonicalProviderList(requesterClientId: ClientId): Boolean =
     isNotEmpty() && size <= SshAgentLimits.MAX_PROVIDERS && requesterClientId !in this &&

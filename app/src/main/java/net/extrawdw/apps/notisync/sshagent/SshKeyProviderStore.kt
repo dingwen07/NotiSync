@@ -37,6 +37,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.cbor.ByteString
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshExportCopyAuthentication
@@ -56,7 +57,6 @@ import net.extrawdw.notisync.protocol.SshKeysSnapshot
 import net.extrawdw.notisync.protocol.SshProviderFailure
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
 import net.extrawdw.notisync.protocol.SshProviderHealth
-import net.extrawdw.notisync.protocol.SshProcessIdentity
 import net.extrawdw.notisync.protocol.SshRememberDisposition
 import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshRememberedNamespace
@@ -126,7 +126,7 @@ data class SshRequestHistorySnapshot(
     val importSourceType: SshImportSourceType? = null,
     val encryptedImport: Boolean = false,
     val signatureAlgorithm: SshSignatureAlgorithm? = null,
-    val processLineage: List<SshProcessIdentity> = emptyList(),
+    val processLineage: List<DesktopProcessIdentity> = emptyList(),
     val destinationUsername: String? = null,
     val destinationHost: String? = null,
     val destinationHostKeyFingerprint: String? = null,

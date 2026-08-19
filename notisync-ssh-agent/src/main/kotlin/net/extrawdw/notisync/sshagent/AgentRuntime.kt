@@ -5,7 +5,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
-import net.extrawdw.notisync.protocol.SshProcessContextSource
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.sshagent.bridge.InboundSshSyncLoop
 import net.extrawdw.notisync.sshagent.bridge.ProviderRoster
 import net.extrawdw.notisync.sshagent.bridge.SshApplicationBridge
@@ -180,7 +180,7 @@ class AgentRuntime(
                 connection.handle(
                     input,
                     output,
-                    callerResolver.resolve(pid, SshProcessContextSource.NAMED_PIPE_CLIENT_PID),
+                    callerResolver.resolve(pid, DesktopProcessContextSource.NAMED_PIPE_CLIENT_PID),
                 )
             },
             config.maximumConnections,

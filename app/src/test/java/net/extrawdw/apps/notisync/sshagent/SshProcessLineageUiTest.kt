@@ -1,8 +1,8 @@
 package net.extrawdw.apps.notisync.sshagent
 
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.notisync.protocol.SshProcessIdentity
 import net.extrawdw.notisync.protocol.SshRememberScope
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -181,7 +181,7 @@ class SshProcessLineageUiTest {
         )
     }
 
-    private fun process(pid: Long, path: String, name: String) = SshProcessIdentity(
+    private fun process(pid: Long, path: String, name: String) = DesktopProcessIdentity(
         pid = pid,
         startEpochMillis = pid * 1_000,
         executablePath = path,

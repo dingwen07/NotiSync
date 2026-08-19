@@ -7,8 +7,8 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import net.extrawdw.notisync.desktop.SecureFileSystem
-import net.extrawdw.notisync.protocol.SshProcessContext
-import net.extrawdw.notisync.protocol.SshProcessContextSource
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.ssh.core.AgentMessageCodec
 import net.extrawdw.notisync.ssh.core.AgentNumbers
 import net.extrawdw.notisync.ssh.core.SshAgentFrameCodec
@@ -30,7 +30,7 @@ class UnixAgentEndpointTest {
         val socketPath = directory.resolve("S")
         val ready = CountDownLatch(1)
         val failure = AtomicReference<Throwable?>()
-        val processContext = AtomicReference<SshProcessContext?>()
+        val processContext = AtomicReference<DesktopProcessContext?>()
         val response = AgentMessageCodec.identitiesAnswer(emptyList())
         val endpoint = UnixAgentEndpoint(
             socketPath,
@@ -60,9 +60,8 @@ class UnixAgentEndpointTest {
             }
             if (isWindows()) {
                 val context = requireNotNull(processContext.get())
-                assertEquals(SshProcessContextSource.UNAVAILABLE, context.source)
+                assertEquals(DesktopProcessContextSource.UNAVAILABLE, context.source)
                 assertNull(context.leaf)
-                assertNull(context.directParent)
                 assertTrue(context.processLineage.isEmpty())
             }
         } finally {

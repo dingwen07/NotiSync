@@ -5,6 +5,8 @@ import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MessageType
@@ -25,8 +27,6 @@ import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
 import net.extrawdw.notisync.protocol.SshKeysRequest
-import net.extrawdw.notisync.protocol.SshProcessContext
-import net.extrawdw.notisync.protocol.SshProcessContextSource
 import net.extrawdw.notisync.protocol.SshSignRequest
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.Transport
@@ -98,7 +98,7 @@ class SecureChannelPolicyTest {
             eligibleProviderClientIds = listOf(highProvider, normalProvider),
             authorizationGeneration = "3".repeat(32),
             authorizationEpoch = 0,
-            processContext = SshProcessContext(SshProcessContextSource.UNAVAILABLE),
+            processContext = DesktopProcessContext(DesktopProcessContextSource.UNAVAILABLE),
             destinationContext = SshDestinationContext(
                 SshDestinationProvenance.UNKNOWN,
                 SshConnectionDirection.UNKNOWN,

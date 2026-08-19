@@ -8,13 +8,13 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.protocol.SshAgentSync
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
-import net.extrawdw.notisync.protocol.SshProcessContext
-import net.extrawdw.notisync.protocol.SshProcessContextSource
 import net.extrawdw.notisync.protocol.SshSignCancellationReason
 import net.extrawdw.notisync.protocol.SshSignRequest
 import net.extrawdw.notisync.protocol.SshSignRequestCancelled
@@ -70,7 +70,7 @@ class SignCoordinator(
         data: ByteArray,
         flags: Long,
         connectionId: String,
-        processContext: SshProcessContext = SshProcessContext(SshProcessContextSource.UNAVAILABLE),
+        processContext: DesktopProcessContext = DesktopProcessContext(DesktopProcessContextSource.UNAVAILABLE),
         destinationContext: SshDestinationContext = SshDestinationContext(
             SshDestinationProvenance.UNKNOWN,
             SshConnectionDirection.UNKNOWN,
