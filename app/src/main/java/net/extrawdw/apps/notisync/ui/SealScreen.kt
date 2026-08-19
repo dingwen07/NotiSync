@@ -154,8 +154,7 @@ private fun SealRequestList(
     onRemoveEnrollment: () -> Unit,
     onSelect: (StoredOpenPgpRequest) -> Unit,
 ) {
-    val active = requests.filter(StoredOpenPgpRequest::isSealActive)
-    val history = requests.filterNot(StoredOpenPgpRequest::isSealActive)
+    val (active, history) = remember(requests) { requests.partition(StoredOpenPgpRequest::isSealActive) }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),

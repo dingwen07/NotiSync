@@ -75,7 +75,19 @@ enum class SshApprovalPolicy { ALWAYS_ASK, ALLOW_REMEMBER }
 @Serializable
 enum class SshUserVerificationPolicy { NONE, PER_USE }
 @Serializable
-enum class SshRememberScope { PEER, PARENT_PROCESS_SESSION }
+enum class SshRememberScope {
+    /** Persisted authorization for this key and requesting NotiSync peer. */
+    PEER,
+
+    /** Persisted authorization additionally constrained to a verified SSH server host-key fingerprint. */
+    PEER_HOST_KEY,
+
+    /**
+     * Reserved for a future requester-reported process-tree heuristic. Providers must keep this scope in memory;
+     * process identity is convenience context, not a security boundary.
+     */
+    APPLICATION_PROCESS,
+}
 @Serializable
 enum class SshProviderHealth { HEALTHY, DEGRADED, DISABLED }
 @Serializable
@@ -90,7 +102,14 @@ enum class SshConnectionDirection { DIRECT, FORWARDED, UNKNOWN }
 enum class SshHostAliasSource { KNOWN_HOSTS_PLAIN, KNOWN_HOSTS_HASH_CONFIRMED, PROCESS_ARGUMENT }
 @Serializable
 enum class SshRememberDisposition {
-    NONE, MATCHED_PEER, MATCHED_PARENT_PROCESS, CREATED_PEER, CREATED_PARENT_PROCESS, NOT_ALLOWED_FOR_KEY,
+    NONE,
+    MATCHED_PEER,
+    MATCHED_PEER_HOST_KEY,
+    MATCHED_APPLICATION_PROCESS,
+    CREATED_PEER,
+    CREATED_PEER_HOST_KEY,
+    CREATED_APPLICATION_PROCESS,
+    NOT_ALLOWED_FOR_KEY,
 }
 @Serializable
 enum class SshSignResultKind { SIGNED, REJECTED_BY_USER, PROVIDER_FAILURE }

@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync
 
 import net.extrawdw.notisync.protocol.Capability
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class AppCapabilityAnnouncementTest {
@@ -25,5 +26,6 @@ class AppCapabilityAnnouncementTest {
             ),
             ANDROID_SELF_CAPABILITIES,
         )
+        assertFalse(ANDROID_SELF_CAPABILITIES.contains(Capability.SSH_AGENT_V1))
     }
 }

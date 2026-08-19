@@ -37,7 +37,9 @@ import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Close
 import androidx.compose.material.icons.outlined.ErrorOutline
 import androidx.compose.material.icons.outlined.FileDownload
+import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.automirrored.outlined.Send
 import androidx.compose.material.icons.outlined.UploadFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
@@ -89,15 +91,21 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshagent.SshAgentReviewActivity
 import net.extrawdw.apps.notisync.sshagent.SshKeyExportActivity
+import net.extrawdw.apps.notisync.sshagent.SshKeySendActivity
 import net.extrawdw.apps.notisync.sshagent.PreparedSshKeyStorage
 import net.extrawdw.apps.notisync.sshagent.SshRequestListItem
 import net.extrawdw.apps.notisync.sshagent.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshagent.SshKeyStorageResult
 import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
 import net.extrawdw.apps.notisync.sshagent.SshHistoryRequestDetail
+import net.extrawdw.apps.notisync.sshagent.SshKnownHost
+import net.extrawdw.apps.notisync.sshagent.SshRememberedAuthorization
 import net.extrawdw.apps.notisync.sshagent.StoredSshProviderRequest
 import net.extrawdw.apps.notisync.sshagent.isActiveRequest
+import net.extrawdw.apps.notisync.sshagent.fingerprint
+import net.extrawdw.apps.notisync.sshagent.toSshHostKeyFingerprint
 import net.extrawdw.apps.notisync.sshagent.sshKeyStorageUserMessage
+import net.extrawdw.apps.notisync.sshagent.eligibleSshKeyTransferPeers
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
@@ -114,15 +122,21 @@ import javax.crypto.Cipher
 
 /** In-app SSH key-provider management and durable request history. */
 @Composable
-fun SshAgentScreen() {
+fun SshAgentScreen(
+    initialHistoryRequestId: String? = null,
+    onInitialHistoryRequestConsumed: () -> Unit = {},
+) {
     val graph = rememberGraph()
     val context = LocalContext.current
     val storageAuthUnavailable = stringResource(R.string.ssh_agent_storage_auth_unavailable)
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
+    val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
     val changeVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle()
     var keys by remember { mutableStateOf<List<SshKeyDescriptor>>(emptyList()) }
     var requests by remember { mutableStateOf<List<StoredSshProviderRequest>>(emptyList()) }
+    var knownHosts by remember { mutableStateOf<List<SshKnownHost>>(emptyList()) }
+    var rememberedAuthorizations by remember { mutableStateOf<List<SshRememberedAuthorization>>(emptyList()) }
     var selectedKeyId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var loading by remember { mutableStateOf(true) }
@@ -137,6 +151,9 @@ fun SshAgentScreen() {
     var previewingImport by remember { mutableStateOf(false) }
     var importingKey by remember { mutableStateOf(false) }
     var renaming by remember { mutableStateOf<SshKeyDescriptor?>(null) }
+    var selectedKnownHost by remember { mutableStateOf<SshKnownHost?>(null) }
+    var deletingHost by remember { mutableStateOf<SshKnownHost?>(null) }
+    var deletingAuthorization by remember { mutableStateOf<SshRememberedAuthorization?>(null) }
     var deleting by remember { mutableStateOf<SshKeyDescriptor?>(null) }
     var pendingStorageAuthentication by remember { mutableStateOf<PreparedSshKeyStorage?>(null) }
     val latestPendingStorageAuthentication by rememberUpdatedState(pendingStorageAuthentication)
@@ -170,13 +187,20 @@ fun SshAgentScreen() {
         scope.launch {
             val result = runCatching {
                 withContext(Dispatchers.IO) {
-                    graph.sshKeyProviderStore.snapshot(graph.identity.clientId, null, System.currentTimeMillis()).keys to
-                        graph.sshKeyProviderStore.requests()
+                    SshAgentUiSnapshot(
+                        keys = graph.sshKeyProviderStore
+                            .snapshot(graph.identity.clientId, null, System.currentTimeMillis()).keys,
+                        requests = graph.sshKeyProviderStore.requests(),
+                        knownHosts = graph.sshKeyProviderStore.knownHosts(),
+                        rememberedAuthorizations = graph.sshKeyProviderStore.rememberedAuthorizations(),
+                    )
                 }
             }
             result.onSuccess {
-                keys = it.first
-                requests = it.second
+                keys = it.keys
+                requests = it.requests
+                knownHosts = it.knownHosts
+                rememberedAuthorizations = it.rememberedAuthorizations
             }.onFailure { error = it.message ?: it.javaClass.simpleName }
             loading = false
         }
@@ -277,10 +301,25 @@ fun SshAgentScreen() {
     val selectedHistory = selectedHistoryRequestId?.let { requestId ->
         requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
     }
+    val knownHostnames = knownHosts.mapNotNull { host ->
+        host.hostname?.let { host.fingerprint() to it }
+    }.toMap()
+    val transferPeers = eligibleSshKeyTransferPeers(activePeers)
     LaunchedEffect(selectedHistoryRequestId, selectedHistory, loading) {
         if (!loading && selectedHistoryRequestId != null && selectedHistory == null) {
             selectedHistoryRequestId = null
         }
+    }
+    LaunchedEffect(initialHistoryRequestId, requests, loading) {
+        if (initialHistoryRequestId != null && !loading) {
+            selectedHistoryRequestId = requests.firstOrNull {
+                it.requestId == initialHistoryRequestId && !it.isActiveRequest()
+            }?.requestId
+            onInitialHistoryRequestConsumed()
+        }
+    }
+    val (activeRequests, historyRequests) = remember(requests) {
+        requests.partition(StoredSshProviderRequest::isActiveRequest)
     }
 
     Scaffold(
@@ -292,8 +331,6 @@ fun SshAgentScreen() {
             )
         },
     ) { padding ->
-        val active = requests.filter(StoredSshProviderRequest::isActiveRequest)
-        val history = requests.filterNot(StoredSshProviderRequest::isActiveRequest)
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
@@ -350,14 +387,28 @@ fun SshAgentScreen() {
                     )
                 }
             }
-            if (active.isNotEmpty()) {
+            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_hosts)) } }
+            if (!loading && knownHosts.isEmpty()) {
+                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_hosts)) } }
+            }
+            items(knownHosts, key = { it.fingerprint() }) { host ->
+                CenteredSshItem(padded = true) {
+                    SshKnownHostCard(
+                        host = host,
+                        onEdit = { selectedKnownHost = host },
+                        onDelete = { deletingHost = host },
+                    )
+                }
+            }
+            if (activeRequests.isNotEmpty()) {
                 item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_active)) } }
-                items(active, key = StoredSshProviderRequest::requestId) { request ->
+                items(activeRequests, key = StoredSshProviderRequest::requestId) { request ->
                     CenteredSshItem {
                         SshRequestListItem(
                             request = request,
                             requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
                                 ?: request.requesterClientId.shortForm(),
+                            knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
                             onClick = {
                                 context.startActivity(SshAgentReviewActivity.intent(context, request.requestId))
                             },
@@ -366,15 +417,16 @@ fun SshAgentScreen() {
                 }
             }
             item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_history)) } }
-            if (!loading && history.isEmpty()) {
+            if (!loading && historyRequests.isEmpty()) {
                 item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_history)) } }
             }
-            items(history, key = StoredSshProviderRequest::requestId) { request ->
+            items(historyRequests, key = StoredSshProviderRequest::requestId) { request ->
                 CenteredSshItem {
                     SshRequestListItem(
                         request = request,
                         requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
                             ?: request.requesterClientId.shortForm(),
+                        knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
                         onClick = {
                             selectedHistoryRequestId = request.requestId
                         },
@@ -388,6 +440,13 @@ fun SshAgentScreen() {
         ModalBottomSheet(onDismissRequest = { selectedKeyId = null }) {
             SshKeyDetailSheet(
                 key = key,
+                rememberedAuthorizations = rememberedAuthorizations.filter {
+                    it.providerKeyId == key.providerKeyId
+                },
+                requesterName = { requester ->
+                    roster.firstOrNull { it.clientId == requester }?.displayName ?: requester.shortForm()
+                },
+                policyChangeBusy = loading,
                 onCopy = { copyPublicKey(context, key) },
                 onExport = if (key.exportCopy != null) {
                     {
@@ -398,10 +457,36 @@ fun SshAgentScreen() {
                 } else {
                     null
                 },
+                onSend = if (key.exportCopy != null && transferPeers.isNotEmpty()) {
+                    {
+                        context.startActivity(
+                            SshKeySendActivity.intent(context, key.providerKeyId, key.displayName),
+                        )
+                    }
+                } else {
+                    null
+                },
                 onRename = {
-                    selectedKeyId = null
                     renaming = key
                 },
+                onApprovalPolicyChange = { approvalPolicy ->
+                    loading = true
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                graph.sshKeyProviderStore.updateKeyMetadata(
+                                    key.providerKeyId,
+                                    key.displayName,
+                                    approvalPolicy,
+                                )
+                            }
+                        }.onSuccess { changed ->
+                            if (changed) graph.sshAgentProviderEngine?.publishInventory()
+                        }.onFailure { error = it.message ?: it.javaClass.simpleName }
+                        refresh()
+                    }
+                },
+                onDeleteAuthorization = { deletingAuthorization = it },
                 onDelete = {
                     selectedKeyId = null
                     deleting = key
@@ -417,6 +502,7 @@ fun SshAgentScreen() {
                 request = request,
                 requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
                 onBack = { selectedHistoryRequestId = null },
             )
         }
@@ -572,7 +658,7 @@ fun SshAgentScreen() {
         RenameKeyDialog(
             key = key,
             onDismiss = { renaming = null },
-            onSave = { name, approvalPolicy ->
+            onSave = { name ->
                 renaming = null
                 loading = true
                 scope.launch {
@@ -581,13 +667,114 @@ fun SshAgentScreen() {
                             graph.sshKeyProviderStore.updateKeyMetadata(
                                 key.providerKeyId,
                                 name,
-                                approvalPolicy,
+                                key.approvalPolicy,
                             )
                         }
                     }.onSuccess { changed ->
                         if (changed) graph.sshAgentProviderEngine?.publishInventory()
                     }.onFailure { error = it.message ?: it.javaClass.simpleName }
                     refresh()
+                }
+            },
+        )
+    }
+
+    selectedKnownHost?.let { host ->
+        ModalBottomSheet(onDismissRequest = { selectedKnownHost = null }) {
+            SshKnownHostDetailSheet(
+                host = host,
+                onDelete = {
+                    selectedKnownHost = null
+                    deletingHost = host
+                },
+                onSaveHostname = { hostname ->
+                    selectedKnownHost = null
+                    loading = true
+                    scope.launch {
+                        runCatching {
+                            withContext(Dispatchers.IO) {
+                                graph.sshKeyProviderStore.updateKnownHostHostname(host.hostKeySha256, hostname)
+                            }
+                        }.onSuccess { changed ->
+                            if (changed) graph.sshAgentProviderEngine?.refreshPendingNotifications()
+                        }.onFailure { error = it.message ?: it.javaClass.simpleName }
+                        refresh()
+                    }
+                },
+            )
+        }
+    }
+
+    deletingHost?.let { host ->
+        AlertDialog(
+            onDismissRequest = { deletingHost = null },
+            title = { Text(stringResource(R.string.ssh_agent_host_delete_title)) },
+            text = {
+                Text(
+                    stringResource(
+                        R.string.ssh_agent_host_delete_body,
+                        host.hostname ?: host.fingerprint(),
+                    ),
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deletingHost = null
+                        loading = true
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.deleteKnownHost(host.hostKeySha256)
+                                }
+                            }.onSuccess { changed ->
+                                if (changed) graph.sshAgentProviderEngine?.refreshPendingNotifications()
+                            }.onFailure { error = it.message ?: it.javaClass.simpleName }
+                            refresh()
+                        }
+                    },
+                ) { Text(stringResource(R.string.ssh_agent_host_delete_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingHost = null }) {
+                    Text(stringResource(R.string.action_cancel))
+                }
+            },
+        )
+    }
+
+    deletingAuthorization?.let { authorization ->
+        val peerName = roster.firstOrNull { it.clientId == authorization.requesterClientId }?.displayName
+            ?: authorization.requesterClientId.shortForm()
+        AlertDialog(
+            onDismissRequest = { deletingAuthorization = null },
+            title = { Text(stringResource(R.string.ssh_agent_remembered_delete_title)) },
+            text = {
+                Text(stringResource(R.string.ssh_agent_remembered_delete_body, peerName))
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deletingAuthorization = null
+                        loading = true
+                        scope.launch {
+                            runCatching {
+                                withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.deleteRememberedAuthorization(
+                                        authorization.authorizationId,
+                                    )
+                                }
+                            }.onSuccess { changed ->
+                                if (changed) graph.sshAgentProviderEngine?.publishInventory()
+                            }.onFailure { error = it.message ?: it.javaClass.simpleName }
+                            refresh()
+                        }
+                    },
+                ) { Text(stringResource(R.string.ssh_agent_remembered_delete_confirm)) }
+            },
+            dismissButton = {
+                TextButton(onClick = { deletingAuthorization = null }) {
+                    Text(stringResource(R.string.action_cancel))
                 }
             },
         )
@@ -620,6 +807,59 @@ fun SshAgentScreen() {
                 TextButton(onClick = { deleting = null }) { Text(stringResource(R.string.action_cancel)) }
             },
         )
+    }
+}
+
+private data class SshAgentUiSnapshot(
+    val keys: List<SshKeyDescriptor>,
+    val requests: List<StoredSshProviderRequest>,
+    val knownHosts: List<SshKnownHost>,
+    val rememberedAuthorizations: List<SshRememberedAuthorization>,
+)
+
+@Composable
+private fun SshKnownHostDetailSheet(
+    host: SshKnownHost,
+    onDelete: () -> Unit,
+    onSaveHostname: (String) -> Unit,
+) {
+    var hostname by remember(host.fingerprint()) { mutableStateOf(host.hostname.orEmpty()) }
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        Text(stringResource(R.string.ssh_agent_host_set_hostname), style = MaterialTheme.typography.titleLarge)
+        Text(
+            host.fingerprint(),
+            fontFamily = FontFamily.Monospace,
+            style = MaterialTheme.typography.bodySmall,
+        )
+        OutlinedTextField(
+            value = hostname,
+            onValueChange = { hostname = it },
+            label = { Text(stringResource(R.string.ssh_agent_host_hostname)) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        Text(
+            stringResource(R.string.ssh_agent_host_hostname_help),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = onDelete) {
+                Icon(Icons.Outlined.Delete, contentDescription = null)
+                Spacer(Modifier.width(4.dp))
+                Text(stringResource(R.string.ssh_agent_host_delete_confirm))
+            }
+            Button(onClick = { onSaveHostname(hostname) }) {
+                Text(stringResource(R.string.action_save))
+            }
+        }
     }
 }
 
@@ -754,11 +994,58 @@ private fun SshKeyCard(
 }
 
 @Composable
+private fun SshKnownHostCard(
+    host: SshKnownHost,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit,
+) {
+    Card(
+        onClick = onEdit,
+        shape = MaterialTheme.shapes.extraLarge,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(18.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Outlined.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(
+                    host.hostname ?: stringResource(R.string.ssh_agent_host_no_hostname),
+                    style = MaterialTheme.typography.titleMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    host.fingerprint(),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            IconButton(onClick = onEdit) {
+                Icon(Icons.Outlined.Edit, contentDescription = stringResource(R.string.ssh_agent_host_set_hostname))
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.ssh_agent_host_delete_confirm))
+            }
+        }
+    }
+}
+
+@Composable
 private fun SshKeyDetailSheet(
     key: SshKeyDescriptor,
+    rememberedAuthorizations: List<SshRememberedAuthorization>,
+    requesterName: (net.extrawdw.notisync.protocol.ClientId) -> String,
+    policyChangeBusy: Boolean,
     onCopy: () -> Unit,
     onExport: (() -> Unit)?,
+    onSend: (() -> Unit)?,
     onRename: () -> Unit,
+    onApprovalPolicyChange: (SshApprovalPolicy) -> Unit,
+    onDeleteAuthorization: (SshRememberedAuthorization) -> Unit,
     onDelete: () -> Unit,
 ) {
     LazyColumn(
@@ -789,6 +1076,14 @@ private fun SshKeyDetailSheet(
                         Icon(
                             Icons.Outlined.FileDownload,
                             contentDescription = stringResource(R.string.ssh_agent_export),
+                        )
+                    }
+                }
+                if (onSend != null) {
+                    IconButton(onClick = onSend) {
+                        Icon(
+                            Icons.AutoMirrored.Outlined.Send,
+                            contentDescription = stringResource(R.string.ssh_agent_send),
                         )
                     }
                 }
@@ -838,12 +1133,136 @@ private fun SshKeyDetailSheet(
                 } ?: stringResource(R.string.ssh_agent_non_exportable),
             )
         }
+        item { HorizontalDivider() }
+        item {
+            SshKeyApprovalPolicy(
+                key = key,
+                busy = policyChangeBusy,
+                onChange = onApprovalPolicyChange,
+            )
+        }
+        item {
+            Text(
+                stringResource(R.string.ssh_agent_remembered_authorizations),
+                style = MaterialTheme.typography.titleMedium,
+            )
+        }
+        if (rememberedAuthorizations.isEmpty()) {
+            item {
+                Text(
+                    stringResource(R.string.ssh_agent_no_remembered_authorizations),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        } else {
+            items(rememberedAuthorizations, key = SshRememberedAuthorization::authorizationId) { authorization ->
+                SshRememberedAuthorizationRow(
+                    authorization = authorization,
+                    requesterName = requesterName(authorization.requesterClientId),
+                    onDelete = { onDeleteAuthorization(authorization) },
+                )
+            }
+        }
         if (key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
             item {
                 Text(
                     stringResource(R.string.ssh_agent_biometric_each_use_enabled),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.primary,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SshKeyApprovalPolicy(
+    key: SshKeyDescriptor,
+    busy: Boolean,
+    onChange: (SshApprovalPolicy) -> Unit,
+) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(stringResource(R.string.ssh_agent_approval_policy), style = MaterialTheme.typography.titleMedium)
+        SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
+            val choices = listOf(
+                SshApprovalPolicy.ALWAYS_ASK to stringResource(R.string.ssh_agent_approval_always),
+                SshApprovalPolicy.ALLOW_REMEMBER to stringResource(R.string.ssh_agent_approval_remember),
+            )
+            choices.forEachIndexed { index, (candidate, label) ->
+                SegmentedButton(
+                    selected = key.approvalPolicy == candidate,
+                    onClick = { if (key.approvalPolicy != candidate) onChange(candidate) },
+                    enabled = !busy && (
+                        candidate == SshApprovalPolicy.ALWAYS_ASK ||
+                            key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.NONE
+                        ),
+                    shape = SegmentedButtonDefaults.itemShape(index, choices.size),
+                    label = { Text(label) },
+                )
+            }
+        }
+        Text(
+            stringResource(R.string.ssh_agent_approval_help),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun SshRememberedAuthorizationRow(
+    authorization: SshRememberedAuthorization,
+    requesterName: String,
+    onDelete: () -> Unit,
+) {
+    Surface(
+        shape = MaterialTheme.shapes.large,
+        color = MaterialTheme.colorScheme.surfaceContainerLow,
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 16.dp, top = 12.dp, bottom = 12.dp, end = 4.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(requesterName, style = MaterialTheme.typography.titleSmall)
+                Text(
+                    stringResource(
+                        R.string.pair_verification_number,
+                        authorization.requesterClientId.value,
+                    ),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                when (authorization.scope) {
+                    net.extrawdw.notisync.protocol.SshRememberScope.PEER -> Text(
+                        stringResource(R.string.ssh_agent_remembered_peer_scope),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    net.extrawdw.notisync.protocol.SshRememberScope.PEER_HOST_KEY -> {
+                        Text(
+                            authorization.hostname
+                                ?: authorization.hostKeySha256?.toSshHostKeyFingerprint()
+                                ?: stringResource(R.string.ssh_agent_unavailable),
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = if (authorization.hostname == null) FontFamily.Monospace else FontFamily.Default,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                    net.extrawdw.notisync.protocol.SshRememberScope.APPLICATION_PROCESS -> Unit
+                }
+            }
+            IconButton(onClick = onDelete) {
+                Icon(
+                    Icons.Outlined.Delete,
+                    contentDescription = stringResource(R.string.ssh_agent_remembered_delete_confirm),
                 )
             }
         }
@@ -986,10 +1405,9 @@ private fun GenerateKeyDialog(
 private fun RenameKeyDialog(
     key: SshKeyDescriptor,
     onDismiss: () -> Unit,
-    onSave: (String, SshApprovalPolicy) -> Unit,
+    onSave: (String) -> Unit,
 ) {
     var name by remember(key.providerKeyId) { mutableStateOf(key.displayName) }
-    var approvalPolicy by remember(key.providerKeyId) { mutableStateOf(key.approvalPolicy) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ssh_agent_key_settings_title)) },
@@ -1001,32 +1419,10 @@ private fun RenameKeyDialog(
                     label = { Text(stringResource(R.string.ssh_agent_key_name)) },
                     singleLine = true,
                 )
-                Text(stringResource(R.string.ssh_agent_approval_policy), style = MaterialTheme.typography.labelLarge)
-                SingleChoiceSegmentedButtonRow(Modifier.fillMaxWidth()) {
-                    val choices = listOf(
-                        SshApprovalPolicy.ALWAYS_ASK to stringResource(R.string.ssh_agent_approval_always),
-                        SshApprovalPolicy.ALLOW_REMEMBER to stringResource(R.string.ssh_agent_approval_remember),
-                    )
-                    choices.forEachIndexed { index, (candidate, label) ->
-                        SegmentedButton(
-                            selected = approvalPolicy == candidate,
-                            onClick = { approvalPolicy = candidate },
-                            enabled = candidate == SshApprovalPolicy.ALWAYS_ASK ||
-                                key.operationalKey.userVerificationPolicy == SshUserVerificationPolicy.NONE,
-                            shape = SegmentedButtonDefaults.itemShape(index, choices.size),
-                            label = { Text(label) },
-                        )
-                    }
-                }
-                Text(
-                    stringResource(R.string.ssh_agent_approval_help),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onSave(name.trim(), approvalPolicy) }, enabled = name.isNotBlank()) {
+            TextButton(onClick = { onSave(name.trim()) }, enabled = name.isNotBlank()) {
                 Text(stringResource(R.string.action_save))
             }
         },

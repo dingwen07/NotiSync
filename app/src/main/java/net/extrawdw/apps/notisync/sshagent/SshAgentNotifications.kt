@@ -8,23 +8,29 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.SshImportSourceType
 
-class SshAgentNotificationPresenter(private val context: Context) {
+class SshAgentNotificationPresenter(
+    private val context: Context,
+    private val store: SshKeyProviderStore,
+) {
     fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
         }
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
-        val destination = stored.destinationLabel()?.take(MAX_CONTEXT_CHARS)
+        val knownHostname = stored.signRequest?.destinationContext?.let(store::knownHostHostname)
+        val destination = stored.destinationLabel(knownHostname)?.take(MAX_CONTEXT_CHARS)
         val process = stored.signRequest?.processContext?.processLineage?.mainCallerLabel()
         val keyName = when (stored.kind) {
             SshProviderRequestKind.SIGN -> stored.history.keyName
@@ -133,6 +139,82 @@ class SshAgentNotificationPresenter(private val context: Context) {
         return true
     }
 
+    fun postAutoApproved(stored: StoredSshProviderRequest, requesterName: String): Boolean {
+        ensureChannel()
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            return false
+        }
+        val authorizationId = stored.history.rememberedAuthorizationId ?: return false
+        if (stored.history.approvalKind != SshRequestApprovalKind.REMEMBERED_AUTHORIZATION ||
+            stored.outcome != SshProviderRequestOutcome.SIGNED
+        ) return false
+        val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
+        val knownHostname = stored.signRequest?.destinationContext?.let(store::knownHostHostname)
+            ?: stored.history.destinationHostKeyFingerprint?.let { fingerprint ->
+                store.knownHosts().firstOrNull { it.fingerprint() == fingerprint }?.hostname
+            }
+        val destination = stored.destinationLabel(knownHostname)?.take(MAX_CONTEXT_CHARS)
+        val process = stored.history.processLineage.mainCallerLabel()?.take(MAX_CONTEXT_CHARS)
+        val keyName = (stored.history.keyName
+            ?: context.getString(R.string.ssh_agent_notification_unknown_key)).take(MAX_CONTEXT_CHARS)
+        val content = context.getString(
+            R.string.ssh_agent_notification_auto_approved_content,
+            safeRequesterName,
+            keyName,
+        )
+        val expandedText = buildList {
+            add(content)
+            destination?.let { add(context.getString(R.string.ssh_agent_notification_destination, it)) }
+            process?.let { add(context.getString(R.string.ssh_agent_notification_process, it)) }
+            add(context.getString(R.string.ssh_agent_notification_key, keyName))
+            add(context.getString(R.string.ssh_agent_notification_request, stored.requestId.take(8)))
+        }.joinToString("\n")
+        val reviewIntent = Intent(context, MainActivity::class.java).apply {
+            action = MainActivity.ACTION_OPEN_SSH_HISTORY
+            data = Uri.parse("notisync://ssh-history/${stored.requestId}")
+            putExtra(MainActivity.EXTRA_SSH_REQUEST_ID, stored.requestId)
+        }
+        val review = PendingIntent.getActivity(
+            context,
+            notificationId(stored.requestId),
+            reviewIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val forget = PendingIntent.getBroadcast(
+            context,
+            notificationId(stored.requestId),
+            SshAgentActionReceiver.forgetAuthorizationIntent(
+                context,
+                stored.requestId,
+                authorizationId,
+            ),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+        val publicVersion = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_terminal_notification)
+            .setContentTitle(context.getString(R.string.ssh_agent_name))
+            .setContentText(context.getString(R.string.ssh_agent_notification_auto_approved_public_content))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .build()
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_terminal_notification)
+            .setContentTitle(context.getString(R.string.ssh_agent_notification_auto_approved_title))
+            .setContentText(content)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(expandedText))
+            .setSubText(context.getString(R.string.ssh_agent_name))
+            .setCategory(NotificationCompat.CATEGORY_STATUS)
+            .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+            .setPublicVersion(publicVersion)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setContentIntent(review)
+            .setAutoCancel(true)
+            .addAction(0, context.getString(R.string.ssh_agent_remembered_delete_confirm), forget)
+            .build()
+        NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)
+        return true
+    }
+
     fun dismiss(requestId: String) = NotificationManagerCompat.from(context).cancel(notificationId(requestId))
 
     private fun ensureChannel() {
@@ -144,6 +226,7 @@ class SshAgentNotificationPresenter(private val context: Context) {
             ).apply {
                 description = context.getString(R.string.ssh_agent_notification_channel_description)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+                enableVibration(true)
             },
         )
     }
@@ -157,13 +240,23 @@ class SshAgentNotificationPresenter(private val context: Context) {
 
 class SshAgentActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        if (intent.action != ACTION_REJECT) return
+        if (intent.action !in setOf(ACTION_REJECT, ACTION_FORGET_AUTHORIZATION)) return
         val requestId = intent.getStringExtra(EXTRA_REQUEST_ID) ?: return
         val app = context.applicationContext as? NotiSyncApp ?: return
         val pending = goAsync()
         kotlinx.coroutines.CoroutineScope(Dispatchers.IO).launch {
             try {
-                app.awaitGraphReady()?.sshAgentProviderEngine?.reject(requestId)
+                val graph = app.awaitGraphReady() ?: return@launch
+                when (intent.action) {
+                    ACTION_REJECT -> graph.sshAgentProviderEngine?.reject(requestId)
+                    ACTION_FORGET_AUTHORIZATION -> {
+                        val authorizationId = intent.getStringExtra(EXTRA_AUTHORIZATION_ID) ?: return@launch
+                        if (graph.sshKeyProviderStore.deleteRememberedAuthorization(authorizationId)) {
+                            graph.sshAgentProviderEngine?.publishInventory()
+                        }
+                        graph.sshAgentNotifications.dismiss(requestId)
+                    }
+                }
             } finally {
                 pending.finish()
             }
@@ -172,9 +265,22 @@ class SshAgentActionReceiver : BroadcastReceiver() {
 
     companion object {
         private const val ACTION_REJECT = "net.extrawdw.apps.notisync.action.SSH_AGENT_REJECT"
+        private const val ACTION_FORGET_AUTHORIZATION =
+            "net.extrawdw.apps.notisync.action.SSH_AGENT_FORGET_AUTHORIZATION"
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
+        private const val EXTRA_AUTHORIZATION_ID = "ssh_agent_authorization_id"
         fun rejectIntent(context: Context, requestId: String) = Intent(context, SshAgentActionReceiver::class.java)
             .setAction(ACTION_REJECT)
             .putExtra(EXTRA_REQUEST_ID, requestId)
+
+        fun forgetAuthorizationIntent(
+            context: Context,
+            requestId: String,
+            authorizationId: String,
+        ) = Intent(context, SshAgentActionReceiver::class.java)
+            .setAction(ACTION_FORGET_AUTHORIZATION)
+            .setData(Uri.parse("notisync://ssh-authorization/$authorizationId"))
+            .putExtra(EXTRA_REQUEST_ID, requestId)
+            .putExtra(EXTRA_AUTHORIZATION_ID, authorizationId)
     }
 }

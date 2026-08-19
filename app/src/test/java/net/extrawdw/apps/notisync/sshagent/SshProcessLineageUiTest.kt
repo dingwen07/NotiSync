@@ -1,8 +1,11 @@
 package net.extrawdw.apps.notisync.sshagent
 
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshProcessIdentity
+import net.extrawdw.notisync.protocol.SshRememberScope
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class SshProcessLineageUiTest {
@@ -66,6 +69,91 @@ class SshProcessLineageUiTest {
         )
 
         assertEquals("git@code.example", request.destinationLabel())
+    }
+
+    @Test
+    fun userAssignedHostnameTakesPrecedenceOverRequesterAlias() {
+        val request = storedRequest(
+            SshRequestHistorySnapshot(
+                requestedAt = 1_000,
+                expiresAt = 2_000,
+                destinationUsername = "git",
+                destinationHost = "requester-alias.example",
+                destinationHostKeyFingerprint = "SHA256:host-key",
+                payloadSize = 16,
+            ),
+        )
+
+        assertEquals("git@Production Git", request.destinationLabel("Production Git"))
+    }
+
+    @Test
+    fun fingerprintIsNeverUsedAsTheCombinedDestinationFallback() {
+        val request = storedRequest(
+            SshRequestHistorySnapshot(
+                requestedAt = 1_000,
+                expiresAt = 2_000,
+                destinationUsername = "git",
+                destinationHostKeyFingerprint = "SHA256:host-key",
+                payloadSize = 16,
+            ),
+        )
+
+        assertNull(request.destinationLabel())
+    }
+
+    @Test
+    fun approvalDestinationIsUnknownUntilTheFingerprintHasASavedHostname() {
+        val request = storedRequest(
+            SshRequestHistorySnapshot(
+                requestedAt = 1_000,
+                expiresAt = 2_000,
+                destinationUsername = "git",
+                destinationHost = "requester-alias.example",
+                destinationHostKeyFingerprint = "SHA256:host-key",
+                payloadSize = 16,
+            ),
+        )
+
+        assertNull(request.approvalDestinationLabel(null))
+        assertEquals("Production Git", request.approvalDestinationLabel("Production Git"))
+    }
+
+    @Test
+    fun ordinaryDestinationKeepsTheRequesterAliasForUnseenHosts() {
+        val request = storedRequest(
+            SshRequestHistorySnapshot(
+                requestedAt = 1_000,
+                expiresAt = 2_000,
+                destinationUsername = "git",
+                destinationHost = "requester-alias.example",
+                destinationHostKeyFingerprint = "SHA256:host-key",
+                payloadSize = 16,
+            ),
+        )
+
+        assertEquals("git@requester-alias.example", request.destinationLabel())
+    }
+
+    @Test
+    fun historyAuditDistinguishesRememberedAuthorizationFromManualApproval() {
+        val remembered = SshRequestHistorySnapshot(
+            requestedAt = 1_000,
+            expiresAt = 2_000,
+            payloadSize = 16,
+            approvalKind = SshRequestApprovalKind.REMEMBERED_AUTHORIZATION,
+            rememberedAuthorizationId = "authorization-id",
+            rememberedScope = SshRememberScope.PEER_HOST_KEY,
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<SshRequestHistorySnapshot>(
+            ProtocolCodec.encodeToCbor(remembered),
+        )
+
+        assertEquals(SshRequestApprovalKind.REMEMBERED_AUTHORIZATION, decoded.approvalKind)
+        assertEquals("authorization-id", decoded.rememberedAuthorizationId)
+        assertEquals(SshRememberScope.PEER_HOST_KEY, decoded.rememberedScope)
+        assertEquals(SshRequestApprovalKind.MANUAL, remembered.copy(approvalKind = SshRequestApprovalKind.MANUAL).approvalKind)
     }
 
     @Test

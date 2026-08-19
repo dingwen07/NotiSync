@@ -6,6 +6,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -41,6 +42,9 @@ class SshKeyProviderDatabaseTest {
         }
         assertTrue("history_cbor" in columns)
         assertTrue("history_nonce" in columns)
+        assertTrue(database.hasTable("ssh_remembered_authorizations"))
+        assertTrue(database.hasTable("ssh_known_hosts"))
+        assertFalse(database.hasTable("remember_rules"))
         assertThrows(SQLiteConstraintException::class.java) {
             database.execSQL(
                 """
@@ -53,6 +57,85 @@ class SshKeyProviderDatabaseTest {
                 arrayOf("terminal-request", byteArrayOf(1), byteArrayOf(2), byteArrayOf(3), byteArrayOf(4), byteArrayOf(5)),
             )
         }
+    }
+
+    @Test
+    fun knownHostHostnameIsStoredAsAnUnvalidatedString() {
+        store = SshKeyProviderStore(context)
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        requireNotNull(store).writableDatabase.execSQL(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, NULL, 1, 1)",
+            arrayOf(hostKeySha256),
+        )
+        val hostname = "not a DNS hostname / deliberately unvalidated\n"
+
+        assertTrue(requireNotNull(store).updateKnownHostHostname(hostKeySha256, hostname))
+        assertEquals(hostname, requireNotNull(store).knownHostHostname(hostKeySha256))
+    }
+
+    @Test
+    fun knownHostEntryCanBeDeleted() {
+        store = SshKeyProviderStore(context)
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        requireNotNull(store).writableDatabase.execSQL(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, 'development host', 1, 1)",
+            arrayOf(hostKeySha256),
+        )
+
+        assertTrue(requireNotNull(store).deleteKnownHost(hostKeySha256))
+        assertFalse(requireNotNull(store).deleteKnownHost(hostKeySha256))
+        assertEquals(null, requireNotNull(store).knownHostHostname(hostKeySha256))
+    }
+
+    @Test
+    fun rememberedPeerAndHostAuthorizationsPersistButProcessScopeCannotReachDisk() {
+        store = SshKeyProviderStore(context)
+        val database = requireNotNull(store).writableDatabase
+        database.execSQL(
+            "INSERT INTO ssh_keys(provider_key_id, public_blob, public_hash, algorithm, display_name, origin, " +
+                "approval_policy, created_at) VALUES ('key', ?, ?, 'SSH_ED25519', 'Test', 'GENERATED', " +
+                "'ALLOW_REMEMBER', 1)",
+            arrayOf(byteArrayOf(1), byteArrayOf(2)),
+        )
+        database.execSQL(
+            "INSERT INTO ssh_remembered_authorizations(authorization_id, provider_key_id, requester_client_id, " +
+                "authorization_generation, authorization_epoch, scope, host_key_sha256, created_at) " +
+                "VALUES ('peer', 'key', 'requester', 'generation', 1, 'PEER', NULL, 1)",
+        )
+        database.execSQL(
+            "INSERT INTO ssh_remembered_authorizations(authorization_id, provider_key_id, requester_client_id, " +
+                "authorization_generation, authorization_epoch, scope, host_key_sha256, created_at) " +
+                "VALUES ('host', 'key', 'requester', 'generation', 1, 'PEER_HOST_KEY', ?, 1)",
+            arrayOf(ByteArray(32) { it.toByte() }),
+        )
+        database.execSQL(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, 'build host', 1, 1)",
+            arrayOf(ByteArray(32) { it.toByte() }),
+        )
+        assertThrows(SQLiteConstraintException::class.java) {
+            database.execSQL(
+                "INSERT INTO ssh_remembered_authorizations(authorization_id, provider_key_id, requester_client_id, " +
+                    "authorization_generation, authorization_epoch, scope, host_key_sha256, created_at) " +
+                    "VALUES ('process', 'key', 'requester', 'generation', 1, 'APPLICATION_PROCESS', NULL, 1)",
+            )
+        }
+        store?.close()
+        store = SshKeyProviderStore(context)
+
+        val persisted = requireNotNull(store).readableDatabase.rawQuery(
+            "SELECT scope FROM ssh_remembered_authorizations ORDER BY scope",
+            null,
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+        assertEquals(listOf("PEER", "PEER_HOST_KEY"), persisted)
+        val authorizations = requireNotNull(store).rememberedAuthorizations()
+        assertEquals(listOf("host", "peer"), authorizations.map { it.authorizationId }.sorted())
+        assertEquals("build host", authorizations.single { it.authorizationId == "host" }.hostname)
+        assertTrue(requireNotNull(store).deleteRememberedAuthorization("host"))
+        assertFalse(requireNotNull(store).deleteRememberedAuthorization("host"))
+        assertEquals(listOf("peer"), requireNotNull(store).rememberedAuthorizations().map { it.authorizationId })
     }
 
     @Test
@@ -99,6 +182,11 @@ class SshKeyProviderDatabaseTest {
             database.version = version
         }
     }
+
+    private fun SQLiteDatabase.hasTable(name: String): Boolean = rawQuery(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+        arrayOf(name),
+    ).use { it.moveToFirst() }
 
     private companion object {
         const val DATABASE_NAME = "ssh-key-provider.sqlite3"

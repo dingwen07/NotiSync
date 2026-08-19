@@ -86,6 +86,7 @@ import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 enum class SshProviderRequestState { PENDING_REVIEW, RESPONSE_PENDING_SEND, SENT, CANCELLED, EXPIRED }
 enum class SshProviderRequestKind { SIGN, IMPORT }
 enum class SshProviderRequestOutcome { SIGNED, IMPORTED, ALREADY_PRESENT, REJECTED, FAILED, CANCELLED, EXPIRED }
+enum class SshRequestApprovalKind { MANUAL, REMEMBERED_AUTHORIZATION }
 enum class SshProviderAcceptResult {
     STORED,
     DUPLICATE,
@@ -130,6 +131,28 @@ data class SshRequestHistorySnapshot(
     val destinationHost: String? = null,
     val destinationHostKeyFingerprint: String? = null,
     val payloadSize: Int,
+    val approvalKind: SshRequestApprovalKind? = null,
+    val rememberedAuthorizationId: String? = null,
+    val rememberedScope: SshRememberScope? = null,
+)
+
+data class SshKnownHost(
+    val hostKeySha256: ByteArray,
+    val hostname: String?,
+    val firstApprovedAt: Long,
+    val lastApprovedAt: Long,
+)
+
+data class SshRememberedAuthorization(
+    val authorizationId: String,
+    val providerKeyId: String,
+    val requesterClientId: ClientId,
+    val authorizationGeneration: String,
+    val authorizationEpoch: Long,
+    val scope: SshRememberScope,
+    val hostKeySha256: ByteArray?,
+    val hostname: String?,
+    val createdAt: Long,
 )
 
 class PreparedSshSignature internal constructor(
@@ -427,35 +450,47 @@ class SshKeyProviderStore(context: Context) :
         )
         db.execSQL(
             """
-            CREATE TABLE remember_rules(
-              rule_id TEXT PRIMARY KEY,
+            CREATE TABLE ssh_remembered_authorizations(
+              authorization_id TEXT PRIMARY KEY,
               provider_key_id TEXT NOT NULL REFERENCES ssh_keys(provider_key_id) ON DELETE CASCADE,
               requester_client_id TEXT NOT NULL,
               authorization_generation TEXT NOT NULL,
               authorization_epoch INTEGER NOT NULL,
-              scope TEXT NOT NULL,
-              leaf_executable_path TEXT,
-              parent_pid INTEGER,
-              parent_start_epoch_millis INTEGER,
-              parent_executable_path TEXT,
-              created_at INTEGER NOT NULL
+              scope TEXT NOT NULL CHECK(scope IN ('PEER', 'PEER_HOST_KEY')),
+              host_key_sha256 BLOB,
+              created_at INTEGER NOT NULL,
+              CHECK(
+                (scope='PEER' AND host_key_sha256 IS NULL)
+                OR
+                (scope='PEER_HOST_KEY' AND host_key_sha256 IS NOT NULL AND length(host_key_sha256)=32)
+              )
             )
             """.trimIndent(),
         )
         db.execSQL(
-            "CREATE INDEX remember_rules_match_idx ON remember_rules(" +
+            "CREATE INDEX ssh_remembered_authorizations_match_idx ON ssh_remembered_authorizations(" +
                 "provider_key_id, requester_client_id, authorization_generation, authorization_epoch)",
         )
         db.execSQL(
-            "CREATE UNIQUE INDEX remember_rules_peer_unique ON remember_rules(" +
+            "CREATE UNIQUE INDEX ssh_remembered_authorizations_peer_unique ON ssh_remembered_authorizations(" +
                 "provider_key_id, requester_client_id, authorization_generation, authorization_epoch, scope) " +
                 "WHERE scope='PEER'",
         )
         db.execSQL(
-            "CREATE UNIQUE INDEX remember_rules_parent_unique ON remember_rules(" +
+            "CREATE UNIQUE INDEX ssh_remembered_authorizations_host_unique ON ssh_remembered_authorizations(" +
                 "provider_key_id, requester_client_id, authorization_generation, authorization_epoch, scope, " +
-                "leaf_executable_path, parent_pid, parent_start_epoch_millis, parent_executable_path) " +
-                "WHERE scope='PARENT_PROCESS_SESSION'",
+                "host_key_sha256) WHERE scope='PEER_HOST_KEY'",
+        )
+        db.execSQL(
+            """
+            CREATE TABLE ssh_known_hosts(
+              host_key_sha256 BLOB PRIMARY KEY CHECK(length(host_key_sha256)=32),
+              hostname TEXT,
+              first_approved_at INTEGER NOT NULL CHECK(first_approved_at>0),
+              last_approved_at INTEGER NOT NULL,
+              CHECK(last_approved_at>=first_approved_at)
+            )
+            """.trimIndent(),
         )
         db.execSQL(
             """
@@ -511,6 +546,7 @@ class SshKeyProviderStore(context: Context) :
         super.onOpen(db)
         validateDatabaseSchema(db)
         reconcileLifecycle(db)
+        pruneHistory(db)
     }
 
     private fun validateDatabaseSchema(db: SQLiteDatabase) {
@@ -602,6 +638,116 @@ class SshKeyProviderStore(context: Context) :
             }
         }
         return SshKeysSnapshot(provider, state.first, state.second, now, respondingToRequestId, keys, SshProviderHealth.HEALTHY)
+    }
+
+    @Synchronized
+    fun knownHosts(): List<SshKnownHost> = readableDatabase.rawQuery(
+        "SELECT host_key_sha256, hostname, first_approved_at, last_approved_at FROM ssh_known_hosts " +
+            "ORDER BY hostname IS NULL, hostname COLLATE NOCASE, last_approved_at DESC",
+        emptyArray(),
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(
+                    SshKnownHost(
+                        hostKeySha256 = cursor.getBlob(0),
+                        hostname = if (cursor.isNull(1)) null else cursor.getString(1),
+                        firstApprovedAt = cursor.getLong(2),
+                        lastApprovedAt = cursor.getLong(3),
+                    ),
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    fun knownHostHostname(hostKeySha256: ByteArray): String? {
+        require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
+        return readableDatabase.rawQuery(
+            "SELECT hostname FROM ssh_known_hosts WHERE hex(host_key_sha256)=?",
+            arrayOf(hostKeySha256.toHex().uppercase()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst() || cursor.isNull(0)) null else cursor.getString(0)
+        }
+    }
+
+    @Synchronized
+    fun knownHostHostname(destination: net.extrawdw.notisync.protocol.SshDestinationContext): String? =
+        SshRememberAuthorizationPolicy.verifiedHostKeySha256(destination)?.let(::knownHostHostname)
+
+    @Synchronized
+    fun updateKnownHostHostname(hostKeySha256: ByteArray, hostname: String): Boolean {
+        require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
+        val values = ContentValues().apply { put("hostname", hostname) }
+        val changed = writableDatabase.update(
+            "ssh_known_hosts",
+            values,
+            "hex(host_key_sha256)=?",
+            arrayOf(hostKeySha256.toHex().uppercase()),
+        ) == 1
+        if (changed) notifyChanged()
+        return changed
+    }
+
+    @Synchronized
+    fun deleteKnownHost(hostKeySha256: ByteArray): Boolean {
+        require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
+        val changed = writableDatabase.delete(
+            "ssh_known_hosts",
+            "hex(host_key_sha256)=?",
+            arrayOf(hostKeySha256.toHex().uppercase()),
+        ) == 1
+        if (changed) notifyChanged()
+        return changed
+    }
+
+    @Synchronized
+    fun rememberedAuthorizations(): List<SshRememberedAuthorization> = readableDatabase.rawQuery(
+        "SELECT a.authorization_id, a.provider_key_id, a.requester_client_id, " +
+            "a.authorization_generation, a.authorization_epoch, a.scope, a.host_key_sha256, " +
+            "h.hostname, a.created_at FROM ssh_remembered_authorizations a " +
+            "LEFT JOIN ssh_known_hosts h ON h.host_key_sha256=a.host_key_sha256 " +
+            "ORDER BY a.provider_key_id, a.created_at DESC, a.authorization_id",
+        emptyArray(),
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                add(
+                    SshRememberedAuthorization(
+                        authorizationId = cursor.getString(0),
+                        providerKeyId = cursor.getString(1),
+                        requesterClientId = ClientId(cursor.getString(2)),
+                        authorizationGeneration = cursor.getString(3),
+                        authorizationEpoch = cursor.getLong(4),
+                        scope = SshRememberScope.valueOf(cursor.getString(5)),
+                        hostKeySha256 = if (cursor.isNull(6)) null else cursor.getBlob(6),
+                        hostname = if (cursor.isNull(7)) null else cursor.getString(7),
+                        createdAt = cursor.getLong(8),
+                    ),
+                )
+            }
+        }
+    }
+
+    @Synchronized
+    fun deleteRememberedAuthorization(authorizationId: String): Boolean {
+        require(authorizationId.isNotBlank()) { "authorization id must not be blank" }
+        val database = writableDatabase
+        database.beginTransaction()
+        val changed = try {
+            val removed = database.delete(
+                "ssh_remembered_authorizations",
+                "authorization_id=?",
+                arrayOf(authorizationId),
+            ) == 1
+            if (removed) bumpRevision(database)
+            database.setTransactionSuccessful()
+            removed
+        } finally {
+            database.endTransaction()
+        }
+        if (changed) notifyChanged()
+        return changed
     }
 
     @Synchronized
@@ -1748,7 +1894,7 @@ class SshKeyProviderStore(context: Context) :
             val changed = database.update("ssh_keys", values, "provider_key_id=?", arrayOf(providerKeyId)) == 1
             if (changed) {
                 if (approvalPolicy == SshApprovalPolicy.ALWAYS_ASK) {
-                    database.delete("remember_rules", "provider_key_id=?", arrayOf(providerKeyId))
+                    database.delete("ssh_remembered_authorizations", "provider_key_id=?", arrayOf(providerKeyId))
                 }
                 bumpRevision(database)
             }
@@ -1812,7 +1958,10 @@ class SshKeyProviderStore(context: Context) :
     fun requests(): List<StoredSshProviderRequest> = readableDatabase.rawQuery(
         "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
             "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
-        "FROM provider_requests ORDER BY updated_at DESC",
+            "FROM provider_requests WHERE state IN ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') OR request_id IN (" +
+            "SELECT request_id FROM provider_requests WHERE state NOT IN " +
+            "('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') ORDER BY updated_at DESC LIMIT $MAX_HISTORY_ROWS) " +
+            "ORDER BY updated_at DESC",
         emptyArray(),
     ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(decodeActiveRequest = false)) } }
 
@@ -1867,12 +2016,7 @@ class SshKeyProviderStore(context: Context) :
         if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
             policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
         ) return emptySet()
-        return buildSet {
-            add(SshRememberScope.PEER)
-            if (request.processContext.leaf != null && request.processContext.directParent != null) {
-                add(SshRememberScope.PARENT_PROCESS_SESSION)
-            }
-        }
+        return SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext)
     }
 
     @Synchronized
@@ -1909,7 +2053,7 @@ class SshKeyProviderStore(context: Context) :
             // Imports must pass through the explicit storage-choice review flow.
             SshProviderRequestKind.IMPORT -> return null
         }
-        return response.takeIf { storeResponse(stored, it, now) }
+        return response.takeIf { storeUserApprovedSignResponse(stored, it, now) }
     }
 
     @Synchronized
@@ -2039,7 +2183,7 @@ class SshKeyProviderStore(context: Context) :
         } finally {
             prepared.close()
         }
-        return response.takeIf { storeResponse(stored, it, now) }
+        return response.takeIf { storeUserApprovedSignResponse(stored, it, now) }
     }
 
     @Synchronized
@@ -2175,34 +2319,83 @@ class SshKeyProviderStore(context: Context) :
         val stored = find(requestId) ?: return null
         val request = stored.signRequest ?: return null
         if (stored.state != SshProviderRequestState.PENDING_REVIEW || stored.expiresAt() < now ||
-            request.confirmationRequired
+            request.confirmationRequired ||
+            request.authorizationEpoch <= authorizationFloor(
+                request.requesterClientId,
+                request.authorizationGeneration,
+            )
         ) return null
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
         if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
             policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
         ) return null
-        if (!createRememberRule(policy.providerKeyId, request, scope, now)) return null
+        if (scope !in SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext) ||
+            scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
+        ) return null
         val disposition = when (scope) {
             SshRememberScope.PEER -> SshRememberDisposition.CREATED_PEER
-            SshRememberScope.PARENT_PROCESS_SESSION -> SshRememberDisposition.CREATED_PARENT_PROCESS
+            SshRememberScope.PEER_HOST_KEY -> SshRememberDisposition.CREATED_PEER_HOST_KEY
+            SshRememberScope.APPLICATION_PROCESS -> return null
         }
         val response = sign(request, provider, now, disposition)
-        return response.takeIf { storeResponse(stored, it, now) }
+        if (response.kind != SshSignResultKind.SIGNED) {
+            return response.takeIf { storeResponse(stored, it, now) }
+        }
+        val database = writableDatabase
+        database.beginTransaction()
+        val storedResponse = try {
+            when (val write = persistRememberedAuthorization(database, policy.providerKeyId, request, scope, now)) {
+                RememberedAuthorizationWrite.Rejected -> false
+                is RememberedAuthorizationWrite.Stored -> {
+                    observeKnownHost(database, request.destinationContext, now)
+                    val consumed = storeResponse(
+                        stored = stored,
+                        response = response,
+                        now = now,
+                        database = database,
+                        notify = false,
+                        approvalAudit = ApprovalAudit(
+                            kind = SshRequestApprovalKind.MANUAL,
+                            rememberedAuthorizationId = write.authorizationId,
+                            rememberedScope = scope,
+                        ),
+                    )
+                    if (consumed && write.created) bumpRevision(database)
+                    consumed
+                }
+            }
+                .also { consumed -> if (consumed) database.setTransactionSuccessful() }
+        } finally {
+            database.endTransaction()
+        }
+        if (storedResponse) notifyChanged()
+        return response.takeIf { storedResponse }
     }
 
     @Synchronized
-    fun autoApproveRemembered(requestId: String, provider: ClientId, now: Long): Boolean {
-        val stored = find(requestId) ?: return false
-        val request = stored.signRequest ?: return false
+    fun autoApproveRemembered(requestId: String, provider: ClientId, now: Long): StoredSshProviderRequest? {
+        val stored = find(requestId) ?: return null
+        val request = stored.signRequest ?: return null
         if (stored.state != SshProviderRequestState.PENDING_REVIEW || stored.expiresAt() < now ||
             request.confirmationRequired
-        ) return false
-        val disposition = matchingRememberDisposition(request) ?: return false
-        return storeResponse(
+        ) return null
+        val authorization = matchingRememberedAuthorization(request) ?: return null
+        val disposition = when (authorization.scope) {
+            SshRememberScope.PEER -> SshRememberDisposition.MATCHED_PEER
+            SshRememberScope.PEER_HOST_KEY -> SshRememberDisposition.MATCHED_PEER_HOST_KEY
+            SshRememberScope.APPLICATION_PROCESS -> return null
+        }
+        val consumed = storeResponse(
             stored,
             sign(request, provider, now, disposition),
             now,
+            approvalAudit = ApprovalAudit(
+                kind = SshRequestApprovalKind.REMEMBERED_AUTHORIZATION,
+                rememberedAuthorizationId = authorization.authorizationId,
+                rememberedScope = authorization.scope,
+            ),
         )
+        return if (consumed) find(requestId) else null
     }
 
     @Synchronized
@@ -2242,7 +2435,7 @@ class SshKeyProviderStore(context: Context) :
                 )
             }
             val removed = database.delete(
-                "remember_rules",
+                "ssh_remembered_authorizations",
                 "requester_client_id=? AND authorization_generation=? AND authorization_epoch<=?",
                 arrayOf(requester.value, generation, invalidatedThroughEpoch.toString()),
             )
@@ -2321,7 +2514,10 @@ class SshKeyProviderStore(context: Context) :
             put("updated_at", now)
         }
         val changed = writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(requestId)) == 1
-        if (changed) notifyChanged()
+        if (changed) {
+            pruneHistory(writableDatabase)
+            notifyChanged()
+        }
         return changed
     }
 
@@ -2339,7 +2535,10 @@ class SshKeyProviderStore(context: Context) :
             "request_id=? AND state=?",
             arrayOf(requestId, SshProviderRequestState.RESPONSE_PENDING_SEND.name),
         ) == 1
-        if (changed) notifyChanged()
+        if (changed) {
+            pruneHistory(writableDatabase)
+            notifyChanged()
+        }
         return changed
     }
 
@@ -2358,7 +2557,10 @@ class SshKeyProviderStore(context: Context) :
             put("updated_at", now)
         }
         expired.forEach { writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(it)) }
-        if (expired.isNotEmpty()) notifyChanged()
+        if (expired.isNotEmpty()) {
+            pruneHistory(writableDatabase)
+            notifyChanged()
+        }
         return expired
     }
 
@@ -2388,6 +2590,7 @@ class SshKeyProviderStore(context: Context) :
                 arrayOf(requestId, SshProviderRequestState.PENDING_REVIEW.name),
             )
         }
+        pruneHistory(writableDatabase)
         notifyChanged()
         return cancelled
     }
@@ -2401,6 +2604,7 @@ class SshKeyProviderStore(context: Context) :
         now: Long,
     ): SshProviderAcceptResult {
         return try {
+            pruneHistory(writableDatabase)
             val fingerprint = sha256(cbor)
             val existing = findRequestIdentity(requestId)
             if (existing != null) {
@@ -2636,7 +2840,14 @@ class SshKeyProviderStore(context: Context) :
         }
     }
 
-    private fun storeResponse(stored: StoredSshProviderRequest, response: Any, now: Long): Boolean {
+    private fun storeResponse(
+        stored: StoredSshProviderRequest,
+        response: Any,
+        now: Long,
+        database: SQLiteDatabase = writableDatabase,
+        notify: Boolean = true,
+        approvalAudit: ApprovalAudit? = null,
+    ): Boolean {
         val encoded = when (response) {
             is SshSignResult -> ProtocolCodec.encodeToCbor(response)
             is SshImportResult -> ProtocolCodec.encodeToCbor(response)
@@ -2666,7 +2877,7 @@ class SshKeyProviderStore(context: Context) :
         }
         val encrypted = auditWrapping.encrypt(encoded, auditAad(stored.requestId, AUDIT_RESPONSE))
         val responsePublicKey = (response as? SshImportResult)?.publicKeyBlob
-        val updatedHistory = if (responsePublicKey != null) {
+        var updatedHistory = if (responsePublicKey != null) {
             stored.history.publicKeyBlob?.let { previewed ->
                 check(MessageDigest.isEqual(previewed, responsePublicKey)) {
                     "SSH import result does not match the reviewed public key"
@@ -2678,6 +2889,13 @@ class SshKeyProviderStore(context: Context) :
             )
         } else {
             stored.history
+        }
+        if (approvalAudit != null && response is SshSignResult && response.kind == SshSignResultKind.SIGNED) {
+            updatedHistory = updatedHistory.copy(
+                approvalKind = approvalAudit.kind,
+                rememberedAuthorizationId = approvalAudit.rememberedAuthorizationId,
+                rememberedScope = approvalAudit.rememberedScope,
+            )
         }
         val historyBytes = ProtocolCodec.encodeToCbor(updatedHistory)
         val encryptedHistory = try {
@@ -2697,14 +2915,70 @@ class SshKeyProviderStore(context: Context) :
             put("response_nonce", encrypted.second)
             put("updated_at", now)
         }
-        val changed = writableDatabase.update(
+        val changed = database.update(
             "provider_requests",
             values,
             "request_id=? AND state=?",
             arrayOf(stored.requestId, SshProviderRequestState.PENDING_REVIEW.name),
         ) == 1
-        if (changed) notifyChanged()
+        if (changed && notify) notifyChanged()
         return changed
+    }
+
+    private fun storeUserApprovedSignResponse(
+        stored: StoredSshProviderRequest,
+        response: SshSignResult,
+        now: Long,
+    ): Boolean {
+        if (response.kind != SshSignResultKind.SIGNED) return storeResponse(stored, response, now)
+        val request = stored.signRequest ?: return false
+        val database = writableDatabase
+        database.beginTransaction()
+        val consumed = try {
+            observeKnownHost(database, request.destinationContext, now)
+            storeResponse(
+                stored,
+                response,
+                now,
+                database,
+                notify = false,
+                approvalAudit = ApprovalAudit(SshRequestApprovalKind.MANUAL),
+            ).also {
+                if (it) database.setTransactionSuccessful()
+            }
+        } finally {
+            database.endTransaction()
+        }
+        if (consumed) notifyChanged()
+        return consumed
+    }
+
+    private fun observeKnownHost(
+        database: SQLiteDatabase,
+        destination: net.extrawdw.notisync.protocol.SshDestinationContext,
+        now: Long,
+    ): Boolean {
+        val hostKeySha256 = SshRememberAuthorizationPolicy.verifiedHostKeySha256(destination) ?: return false
+        val values = ContentValues().apply {
+            put("host_key_sha256", hostKeySha256)
+            putNull("hostname")
+            put("first_approved_at", now)
+            put("last_approved_at", now)
+        }
+        if (database.insertWithOnConflict(
+                "ssh_known_hosts",
+                null,
+                values,
+                SQLiteDatabase.CONFLICT_IGNORE,
+            ) != -1L
+        ) return true
+        val update = ContentValues().apply { put("last_approved_at", now) }
+        return database.update(
+            "ssh_known_hosts",
+            update,
+            "hex(host_key_sha256)=? AND last_approved_at<?",
+            arrayOf(hostKeySha256.toHex().uppercase(), now.toString()),
+        ) == 1
     }
 
     private fun signFailure(
@@ -2783,75 +3057,91 @@ class SshKeyProviderStore(context: Context) :
         )
     }
 
-    private fun createRememberRule(
+    private fun persistRememberedAuthorization(
+        database: SQLiteDatabase,
         providerKeyId: String,
         request: SshSignRequest,
         scope: SshRememberScope,
         now: Long,
-    ): Boolean {
+    ): RememberedAuthorizationWrite {
         val floor = authorizationFloor(request.requesterClientId, request.authorizationGeneration)
-        if (request.authorizationEpoch <= floor) return false
-        val leaf = request.processContext.leaf
-        val parent = request.processContext.directParent
-        if (scope == SshRememberScope.PARENT_PROCESS_SESSION && (leaf == null || parent == null)) return false
-        val database = writableDatabase
-        if (database.rawQuery("SELECT COUNT(*) FROM remember_rules", emptyArray()).use {
-                it.moveToFirst() && it.getLong(0) >= MAX_REMEMBER_RULES_GLOBAL
+        if (request.authorizationEpoch <= floor ||
+            scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
+        ) {
+            return RememberedAuthorizationWrite.Rejected
+        }
+        val hostKeySha256 = SshRememberAuthorizationPolicy.hostKeySha256ForPersistentAuthorization(
+            scope,
+            request.destinationContext,
+        )
+        if (scope == SshRememberScope.PEER_HOST_KEY && hostKeySha256 == null) {
+            return RememberedAuthorizationWrite.Rejected
+        }
+        val existingId = database.rawQuery(
+            "SELECT authorization_id, host_key_sha256 FROM ssh_remembered_authorizations WHERE provider_key_id=? " +
+                "AND requester_client_id=? AND authorization_generation=? AND authorization_epoch=? AND scope=?",
+            arrayOf(
+                providerKeyId,
+                request.requesterClientId.value,
+                request.authorizationGeneration,
+                request.authorizationEpoch.toString(),
+                scope.name,
+            ),
+        ).use { cursor ->
+            generateSequence { if (cursor.moveToNext()) cursor else null }.firstNotNullOfOrNull {
+                val storedHostKey = if (it.isNull(1)) null else it.getBlob(1)
+                val matches = (scope == SshRememberScope.PEER && storedHostKey == null) ||
+                    (hostKeySha256 != null && storedHostKey != null &&
+                        MessageDigest.isEqual(hostKeySha256, storedHostKey))
+                if (matches) it.getString(0) else null
             }
-        ) return false
-        if (database.rawQuery("SELECT COUNT(*) FROM remember_rules WHERE provider_key_id=?", arrayOf(providerKeyId)).use {
-                it.moveToFirst() && it.getLong(0) >= MAX_REMEMBER_RULES_PER_KEY
+        }
+        if (existingId != null) return RememberedAuthorizationWrite.Stored(existingId, created = false)
+        if (database.rawQuery("SELECT COUNT(*) FROM ssh_remembered_authorizations", emptyArray()).use {
+                it.moveToFirst() && it.getLong(0) >= MAX_REMEMBERED_AUTHORIZATIONS_GLOBAL
             }
-        ) return false
+        ) return RememberedAuthorizationWrite.Rejected
+        if (database.rawQuery(
+                "SELECT COUNT(*) FROM ssh_remembered_authorizations WHERE provider_key_id=?",
+                arrayOf(providerKeyId),
+            ).use {
+                it.moveToFirst() && it.getLong(0) >= MAX_REMEMBERED_AUTHORIZATIONS_PER_KEY
+            }
+        ) return RememberedAuthorizationWrite.Rejected
+        val authorizationId = randomId()
         val values = ContentValues().apply {
-            put("rule_id", randomId())
+            put("authorization_id", authorizationId)
             put("provider_key_id", providerKeyId)
             put("requester_client_id", request.requesterClientId.value)
             put("authorization_generation", request.authorizationGeneration)
             put("authorization_epoch", request.authorizationEpoch)
             put("scope", scope.name)
-            if (scope == SshRememberScope.PARENT_PROCESS_SESSION) {
-                put("leaf_executable_path", requireNotNull(leaf).executablePath)
-                put("parent_pid", requireNotNull(parent).pid)
-                put("parent_start_epoch_millis", parent.startEpochMillis)
-                put("parent_executable_path", parent.executablePath)
-            } else {
-                putNull("leaf_executable_path")
-                putNull("parent_pid")
-                putNull("parent_start_epoch_millis")
-                putNull("parent_executable_path")
-            }
+            if (hostKeySha256 == null) putNull("host_key_sha256") else put("host_key_sha256", hostKeySha256)
             put("created_at", now)
         }
-        database.beginTransaction()
-        val created = try {
-            val created = database.insertWithOnConflict(
-                "remember_rules",
+        return if (database.insertWithOnConflict(
+                "ssh_remembered_authorizations",
                 null,
                 values,
                 SQLiteDatabase.CONFLICT_IGNORE,
             ) != -1L
-            if (created) bumpRevision(database)
-            database.setTransactionSuccessful()
-            created
-        } finally {
-            database.endTransaction()
+        ) {
+            RememberedAuthorizationWrite.Stored(authorizationId, created = true)
+        } else {
+            // A concurrent duplicate can only be the same exact scope tuple; resolve its stable id.
+            persistRememberedAuthorization(database, providerKeyId, request, scope, now)
         }
-        if (created) notifyChanged()
-        return created
     }
 
-    private fun matchingRememberDisposition(request: SshSignRequest): SshRememberDisposition? {
+    private fun matchingRememberedAuthorization(request: SshSignRequest): RememberedAuthorizationMatch? {
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
         if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
             policy.userVerificationPolicy != SshUserVerificationPolicy.NONE ||
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return null
-        val leaf = request.processContext.leaf
-        val parent = request.processContext.directParent
         val scopes = readableDatabase.rawQuery(
-            "SELECT scope, leaf_executable_path, parent_pid, parent_start_epoch_millis, parent_executable_path " +
-                "FROM remember_rules WHERE provider_key_id=? AND requester_client_id=? " +
+            "SELECT authorization_id, scope, host_key_sha256 FROM ssh_remembered_authorizations " +
+                "WHERE provider_key_id=? AND requester_client_id=? " +
                 "AND authorization_generation=? AND authorization_epoch=?",
             arrayOf(
                 policy.providerKeyId,
@@ -2863,28 +3153,25 @@ class SshKeyProviderStore(context: Context) :
             buildList {
                 while (cursor.moveToNext()) {
                     add(
-                        RememberRuleMatch(
-                            scope = SshRememberScope.valueOf(cursor.getString(0)),
-                            leafExecutablePath = if (cursor.isNull(1)) null else cursor.getString(1),
-                            parentPid = if (cursor.isNull(2)) null else cursor.getLong(2),
-                            parentStartEpochMillis = if (cursor.isNull(3)) null else cursor.getLong(3),
-                            parentExecutablePath = if (cursor.isNull(4)) null else cursor.getString(4),
+                        RememberedAuthorizationMatch(
+                            authorizationId = cursor.getString(0),
+                            scope = SshRememberScope.valueOf(cursor.getString(1)),
+                            hostKeySha256 = if (cursor.isNull(2)) null else cursor.getBlob(2),
                         ),
                     )
                 }
             }
         }
-        if (leaf != null && parent != null && scopes.any {
-                it.scope == SshRememberScope.PARENT_PROCESS_SESSION &&
-                    it.leafExecutablePath == leaf.executablePath &&
-                    it.parentPid == parent.pid &&
-                    it.parentStartEpochMillis == parent.startEpochMillis &&
-                    it.parentExecutablePath == parent.executablePath
+        scopes.firstOrNull {
+                it.scope == SshRememberScope.PEER_HOST_KEY &&
+                    SshRememberAuthorizationPolicy.persistentAuthorizationMatches(
+                        it.scope,
+                        it.hostKeySha256,
+                        request.destinationContext,
+                    )
             }
-        ) return SshRememberDisposition.MATCHED_PARENT_PROCESS
-        return if (scopes.any { it.scope == SshRememberScope.PEER }) {
-            SshRememberDisposition.MATCHED_PEER
-        } else null
+            ?.let { return it }
+        return scopes.firstOrNull { it.scope == SshRememberScope.PEER }
     }
 
     private fun authorizationFloor(requester: ClientId, generation: String): Long = readableDatabase.rawQuery(
@@ -2898,7 +3185,8 @@ class SshKeyProviderStore(context: Context) :
         val grouped = linkedMapOf<String, LinkedHashMap<NamespaceKey, MutableSet<SshRememberScope>>>()
         readableDatabase.rawQuery(
             "SELECT provider_key_id, requester_client_id, authorization_generation, authorization_epoch, scope " +
-                "FROM remember_rules ORDER BY provider_key_id, requester_client_id, authorization_generation, " +
+                "FROM ssh_remembered_authorizations " +
+                "ORDER BY provider_key_id, requester_client_id, authorization_generation, " +
                 "authorization_epoch, scope",
             emptyArray(),
         ).use { cursor ->
@@ -2936,6 +3224,16 @@ class SshKeyProviderStore(context: Context) :
         }
         if (expired.isEmpty()) return
         expired.forEach(::deleteKey)
+    }
+
+    /** Keeps terminal audit rendering bounded without ever deleting pending reviews or unsent responses. */
+    private fun pruneHistory(database: SQLiteDatabase) {
+        database.execSQL(
+            "DELETE FROM provider_requests WHERE request_id IN (" +
+                "SELECT request_id FROM provider_requests WHERE state NOT IN " +
+                "('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') ORDER BY updated_at DESC " +
+                "LIMIT -1 OFFSET $MAX_HISTORY_ROWS)",
+        )
     }
 
     private fun bumpRevision(database: SQLiteDatabase = writableDatabase) {
@@ -3503,12 +3801,21 @@ class SshKeyProviderStore(context: Context) :
         val userVerificationPolicy: SshUserVerificationPolicy,
     )
 
-    private data class RememberRuleMatch(
+    private data class RememberedAuthorizationMatch(
+        val authorizationId: String,
         val scope: SshRememberScope,
-        val leafExecutablePath: String?,
-        val parentPid: Long?,
-        val parentStartEpochMillis: Long?,
-        val parentExecutablePath: String?,
+        val hostKeySha256: ByteArray?,
+    )
+
+    private sealed interface RememberedAuthorizationWrite {
+        data object Rejected : RememberedAuthorizationWrite
+        data class Stored(val authorizationId: String, val created: Boolean) : RememberedAuthorizationWrite
+    }
+
+    private data class ApprovalAudit(
+        val kind: SshRequestApprovalKind,
+        val rememberedAuthorizationId: String? = null,
+        val rememberedScope: SshRememberScope? = null,
     )
 
     private companion object {
@@ -3527,13 +3834,14 @@ class SshKeyProviderStore(context: Context) :
         const val AUDIT_HISTORY = "history"
         const val MAX_PENDING_GLOBAL = 128
         const val MAX_PENDING_PER_REQUESTER = 16
-        const val MAX_REMEMBER_RULES_GLOBAL = 1_024L
+        const val MAX_HISTORY_ROWS = 500
+        const val MAX_REMEMBERED_AUTHORIZATIONS_GLOBAL = 1_024L
         const val CERTIFICATE_CLOCK_SKEW_MILLIS = 5 * 60_000L
         const val CERTIFICATE_VALIDITY_MILLIS = 20L * 365 * 24 * 60 * 60 * 1_000
         const val DEFAULT_RSA_KEY_SIZE_BITS = 3072
         val SUPPORTED_RSA_KEY_SIZE_BITS = setOf(2048, DEFAULT_RSA_KEY_SIZE_BITS, 4096)
         val BOUNCY_CASTLE = BouncyCastleProvider()
-        const val MAX_REMEMBER_RULES_PER_KEY = 128L
+        const val MAX_REMEMBERED_AUTHORIZATIONS_PER_KEY = 128L
         val EMPTY_BYTES = ByteArray(0)
         val RANDOM = SecureRandom()
         val EXPECTED_DATABASE_SCHEMA = mapOf(
@@ -3559,10 +3867,12 @@ class SshKeyProviderStore(context: Context) :
             "authorization_floors" to setOf(
                 "requester_client_id", "authorization_generation", "invalidated_through_epoch", "updated_at",
             ),
-            "remember_rules" to setOf(
-                "rule_id", "provider_key_id", "requester_client_id", "authorization_generation",
-                "authorization_epoch", "scope", "leaf_executable_path", "parent_pid",
-                "parent_start_epoch_millis", "parent_executable_path", "created_at",
+            "ssh_remembered_authorizations" to setOf(
+                "authorization_id", "provider_key_id", "requester_client_id", "authorization_generation",
+                "authorization_epoch", "scope", "host_key_sha256", "created_at",
+            ),
+            "ssh_known_hosts" to setOf(
+                "host_key_sha256", "hostname", "first_approved_at", "last_approved_at",
             ),
             "provider_requests" to setOf(
                 "request_id", "kind", "requester_client_id", "request_fingerprint", "request_cbor",

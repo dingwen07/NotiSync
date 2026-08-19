@@ -179,6 +179,14 @@
             android:screenOrientation="fullUser"
             android:theme="@style/Theme.NotiSync" />
 
+        <activity
+            android:name=".sshagent.SshKeySendActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:theme="@style/Theme.NotiSync" />
+
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains
              callable by browsers. Android 17 requires NFC-dispatched activities in target-37 apps to be

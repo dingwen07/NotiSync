@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.sshagent
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.layout.Arrangement
@@ -9,9 +10,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
@@ -36,6 +40,7 @@ import androidx.compose.material.icons.outlined.Sync
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -44,8 +49,10 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -65,6 +72,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.semantics.Role
 import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
@@ -75,6 +83,7 @@ import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.protocol.SshProcessIdentity
+import net.extrawdw.notisync.protocol.SshRememberScope
 
 internal enum class SshRequestDisplayStatus {
     WAITING,
@@ -113,6 +122,7 @@ internal fun StoredSshProviderRequest.isActiveRequest(): Boolean =
 internal fun SshRequestListItem(
     request: StoredSshProviderRequest,
     requesterName: String,
+    knownHostname: String? = null,
     onClick: () -> Unit,
 ) {
     val status = request.displayStatus()
@@ -122,11 +132,15 @@ internal fun SshRequestListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SshStatusIcon(status) },
             headlineContent = {
-                Text(request.headline(), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(request.headline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
             },
             supportingContent = {
                 Column {
-                    Text(statusLabel(status), color = statusColor(status), maxLines = 1)
+                    Text(
+                        listOfNotNull(statusLabel(status), request.approvalLabel()).joinToString(" · "),
+                        color = statusColor(status),
+                        maxLines = 1,
+                    )
                     Text(
                         listOfNotNull(request.contextLabel(), requesterName, time).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
@@ -147,6 +161,7 @@ internal fun SshHistoryRequestDetail(
     request: StoredSshProviderRequest,
     requesterName: String,
     requesterIdentityKeyFingerprint: String?,
+    knownHostname: String?,
     onBack: () -> Unit,
 ) {
     val keyPreview = remember(request.requestId) {
@@ -165,6 +180,7 @@ internal fun SshHistoryRequestDetail(
                 ?: stringResource(R.string.ssh_agent_imported_key_default),
             requesterName = requesterName,
             requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
+            destinationHostname = knownHostname,
         ),
         storage = SshKeyStorageSelection(),
         passphrase = "",
@@ -172,7 +188,6 @@ internal fun SshHistoryRequestDetail(
         onStorageChange = {},
         onPassphraseChange = {},
         onPreviewImport = {},
-        onRemember = {},
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
         showSheetHeader = true,
         onBack = onBack,
@@ -190,11 +205,15 @@ internal fun SshReviewContent(
     onPreviewImport: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
-    onRemember: () -> Unit,
+    onRemember: (SshRememberScope) -> Unit,
     onClose: () -> Unit,
 ) {
     val details = state as? SshReviewScreenState.Details
     val pending = details?.request?.state == SshProviderRequestState.PENDING_REVIEW
+    val canRemember = details?.let {
+        pending && it.request.kind == SshProviderRequestKind.SIGN && it.rememberScopes.isNotEmpty()
+    } == true
+    var showRememberOptions by remember(details?.request?.requestId) { mutableStateOf(false) }
     Scaffold(
         topBar = {
             TopAppBar(
@@ -233,8 +252,13 @@ internal fun SshReviewContent(
                         Text(stringResource(R.string.action_reject))
                     }
                     Spacer(Modifier.size(10.dp))
-                    Button(
+                    LongClickButton(
                         onClick = onApprove,
+                        onLongClick = if (canRemember) {
+                            { showRememberOptions = true }
+                        } else {
+                            null
+                        },
                         enabled = !busy && details.canApprove(passphrase),
                     ) {
                         if (busy) {
@@ -288,13 +312,62 @@ internal fun SshReviewContent(
                 onStorageChange = onStorageChange,
                 onPassphraseChange = onPassphraseChange,
                 onPreviewImport = onPreviewImport,
-                onRemember = onRemember,
                 contentPadding = PaddingValues(
                     start = 20.dp,
                     end = 20.dp,
                     top = padding.calculateTopPadding() + 8.dp,
                     bottom = padding.calculateBottomPadding() + 16.dp,
                 ),
+            )
+        }
+    }
+    if (showRememberOptions && canRemember) {
+        val rememberDetails = requireNotNull(details)
+        ModalBottomSheet(onDismissRequest = { showRememberOptions = false }) {
+            RememberAuthorizationSheet(
+                details = rememberDetails,
+                busy = busy,
+                onRemember = { scope ->
+                    showRememberOptions = false
+                    onRemember(scope)
+                },
+            )
+        }
+    }
+}
+
+@Composable
+private fun LongClickButton(
+    onClick: () -> Unit,
+    onLongClick: (() -> Unit)?,
+    enabled: Boolean,
+    content: @Composable RowScope.() -> Unit,
+) {
+    val colors = ButtonDefaults.buttonColors()
+    val containerColor = if (enabled) colors.containerColor else colors.disabledContainerColor
+    val contentColor = if (enabled) colors.contentColor else colors.disabledContentColor
+    Surface(
+        modifier = Modifier.combinedClickable(
+            enabled = enabled,
+            role = Role.Button,
+            onLongClick = onLongClick,
+            onClick = onClick,
+        ),
+        shape = ButtonDefaults.shape,
+        color = containerColor,
+        contentColor = contentColor,
+    ) {
+        ProvideTextStyle(MaterialTheme.typography.labelLarge) {
+            Row(
+                modifier = Modifier
+                    .defaultMinSize(
+                        minWidth = ButtonDefaults.MinWidth,
+                        minHeight = ButtonDefaults.MinHeight,
+                    )
+                    .padding(ButtonDefaults.ContentPadding),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+                content = content,
             )
         }
     }
@@ -309,7 +382,6 @@ internal fun SshRequestDetail(
     onStorageChange: (SshKeyStorageSelection) -> Unit,
     onPassphraseChange: (String) -> Unit,
     onPreviewImport: () -> Unit,
-    onRemember: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     showSheetHeader: Boolean = false,
@@ -347,7 +419,13 @@ internal fun SshRequestDetail(
         }
         item {
             CenteredRequestItem {
-                SshRequestHero(request, details.requesterName, status)
+                SshRequestHero(
+                    request,
+                    details.requesterName,
+                    details.destinationHostname,
+                    status,
+                    approvalPresentation = pending,
+                )
             }
         }
         if (pending) {
@@ -381,7 +459,7 @@ internal fun SshRequestDetail(
         item {
             CenteredRequestItem {
                 when (request.kind) {
-                    SshProviderRequestKind.SIGN -> SignRequestCard(request)
+                    SshProviderRequestKind.SIGN -> SignRequestCard(details)
                     SshProviderRequestKind.IMPORT -> ImportRequestCard(
                         details = details,
                         storage = storage,
@@ -423,15 +501,6 @@ internal fun SshRequestDetail(
                 )
             }
         }
-        if (pending && details.rememberScopes.isNotEmpty()) {
-            item {
-                CenteredRequestItem {
-                    OutlinedButton(onClick = onRemember, enabled = !busy, modifier = Modifier.fillMaxWidth()) {
-                        Text(stringResource(R.string.ssh_agent_approve_remember))
-                    }
-                }
-            }
-        }
         item {
             CenteredRequestItem {
                 RequestCard(
@@ -445,6 +514,9 @@ internal fun SshRequestDetail(
                     )
                     RecordLine(stringResource(R.string.ssh_agent_requested_at), formatter.format(Date(request.requestedAt())))
                     RecordLine(stringResource(R.string.ssh_agent_updated_at), formatter.format(Date(request.resultAt ?: request.updatedAt)))
+                    request.approvalLabel()?.let {
+                        RecordLine(stringResource(R.string.ssh_agent_approval_method), it)
+                    }
                     RecordLine(stringResource(R.string.ssh_agent_request_id), request.requestId.take(8), monospace = true)
                     RecordLine(stringResource(R.string.seal_sha256), request.requestFingerprint.toHex(), monospace = true)
                     RecordLine(
@@ -463,10 +535,80 @@ internal fun SshRequestDetail(
 }
 
 @Composable
+private fun RememberAuthorizationSheet(
+    details: SshReviewScreenState.Details,
+    busy: Boolean,
+    onRemember: (SshRememberScope) -> Unit,
+) {
+    val scopes = details.rememberScopes
+    LazyColumn(
+        modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
+        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
+    ) {
+        item {
+            Text(stringResource(R.string.ssh_agent_approve_remember), style = MaterialTheme.typography.headlineSmall)
+        }
+        item {
+            RequestCard(stringResource(R.string.ssh_agent_request_section), Icons.Outlined.Fingerprint) {
+                RequestDeviceSubCard(
+                    deviceName = details.requesterName,
+                    verificationNumber = details.request.requesterClientId.value,
+                    identityKeyFingerprint = details.requesterIdentityKeyFingerprint,
+                )
+            }
+        }
+        item {
+            RequestCard(stringResource(R.string.ssh_agent_request_sign), Icons.Outlined.Terminal) {
+                DestinationDetailLine(details)
+                HorizontalDivider()
+                HostKeyDetailLine(details)
+            }
+        }
+        item {
+            Text(
+                stringResource(R.string.ssh_agent_remember_pending_help),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (SshRememberScope.PEER_HOST_KEY in scopes) {
+            item {
+                OutlinedButton(
+                    onClick = { onRemember(SshRememberScope.PEER_HOST_KEY) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        stringResource(R.string.ssh_agent_remember_peer_host, details.requesterName),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+        if (SshRememberScope.PEER in scopes) {
+            item {
+                OutlinedButton(
+                    onClick = { onRemember(SshRememberScope.PEER) },
+                    enabled = !busy,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text(
+                        stringResource(R.string.ssh_agent_remember_peer, details.requesterName),
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun SshRequestHero(
     request: StoredSshProviderRequest,
     requesterName: String,
+    knownHostname: String?,
     status: SshRequestDisplayStatus,
+    approvalPresentation: Boolean,
 ) {
     val content = statusColor(status)
     Surface(
@@ -486,7 +628,10 @@ private fun SshRequestHero(
             }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(statusLabel(status), style = MaterialTheme.typography.labelLarge)
-                Text(request.headline(), style = MaterialTheme.typography.titleLarge)
+                Text(
+                    request.headline(knownHostname, approvalPresentation),
+                    style = MaterialTheme.typography.titleLarge,
+                )
                 Text(
                     listOfNotNull(requesterName, request.contextLabel()).joinToString(" · "),
                     style = MaterialTheme.typography.bodyMedium,
@@ -502,16 +647,14 @@ private fun SshRequestHero(
 }
 
 @Composable
-private fun SignRequestCard(request: StoredSshProviderRequest) {
+private fun SignRequestCard(
+    details: SshReviewScreenState.Details,
+) {
+    val request = details.request
     val history = request.history
     val processLineage = request.processLineageForDisplay()
     RequestCard(stringResource(R.string.ssh_agent_request_sign), Icons.Outlined.Terminal) {
-        DetailLine(
-            Icons.Outlined.Computer,
-            stringResource(R.string.ssh_agent_destination),
-            request.destinationLabel() ?: stringResource(R.string.ssh_agent_unavailable),
-            true,
-        )
+        DestinationDetailLine(details)
         HorizontalDivider()
         DetailLine(
             Icons.Outlined.Person,
@@ -520,12 +663,7 @@ private fun SignRequestCard(request: StoredSshProviderRequest) {
             true,
         )
         HorizontalDivider()
-        DetailLine(
-            Icons.Outlined.Fingerprint,
-            stringResource(R.string.ssh_agent_destination_host_key_fingerprint),
-            history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_agent_unavailable),
-            true,
-        )
+        HostKeyDetailLine(details)
         HorizontalDivider()
         ProcessLineageLine(
             processLineage = processLineage,
@@ -586,6 +724,29 @@ private fun ProcessLineageLine(
             )
         }
     }
+}
+
+@Composable
+private fun DestinationDetailLine(
+    details: SshReviewScreenState.Details,
+) {
+    DetailLine(
+        Icons.Outlined.Computer,
+        stringResource(R.string.ssh_agent_destination),
+        details.request.approvalDestinationLabel(details.destinationHostname)
+            ?: stringResource(R.string.ssh_agent_unknown),
+        true,
+    )
+}
+
+@Composable
+private fun HostKeyDetailLine(details: SshReviewScreenState.Details) {
+    DetailLine(
+        Icons.Outlined.Fingerprint,
+        stringResource(R.string.ssh_agent_destination_host_key_fingerprint),
+        details.request.history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_agent_unavailable),
+        true,
+    )
 }
 
 @Composable
@@ -762,9 +923,24 @@ private fun statusContainer(status: SshRequestDisplayStatus): Color = when (stat
 }
 
 @Composable
-private fun StoredSshProviderRequest.headline(): String = when (kind) {
-    SshProviderRequestKind.SIGN -> destinationLabel() ?: stringResource(R.string.ssh_agent_request_sign)
+private fun StoredSshProviderRequest.headline(
+    knownHostname: String? = null,
+    approvalPresentation: Boolean = false,
+): String = when (kind) {
+    SshProviderRequestKind.SIGN -> (if (approvalPresentation) {
+        approvalDestinationLabel(knownHostname)
+    } else {
+        destinationLabel(knownHostname)
+    }) ?: stringResource(R.string.ssh_agent_request_sign)
     SshProviderRequestKind.IMPORT -> history.suggestedName ?: stringResource(R.string.ssh_agent_imported_key_default)
+}
+
+@Composable
+private fun StoredSshProviderRequest.approvalLabel(): String? = when (history.approvalKind) {
+    SshRequestApprovalKind.MANUAL -> stringResource(R.string.ssh_agent_approval_manual)
+    SshRequestApprovalKind.REMEMBERED_AUTHORIZATION ->
+        stringResource(R.string.ssh_agent_approval_remembered)
+    null -> null
 }
 
 private fun StoredSshProviderRequest.contextLabel(): String? = when (kind) {
@@ -774,9 +950,13 @@ private fun StoredSshProviderRequest.contextLabel(): String? = when (kind) {
     } else null
 }
 
-internal fun StoredSshProviderRequest.destinationLabel(): String? {
-    val host = history.destinationHost ?: return null
+internal fun StoredSshProviderRequest.destinationLabel(knownHostname: String? = null): String? {
+    val host = knownHostname ?: history.destinationHost ?: return null
     return history.destinationUsername?.let { "$it@$host" } ?: host
+}
+
+internal fun StoredSshProviderRequest.approvalDestinationLabel(knownHostname: String?): String? {
+    return knownHostname
 }
 
 /** Returns the available caller chain from the system root to the SSH client process. */

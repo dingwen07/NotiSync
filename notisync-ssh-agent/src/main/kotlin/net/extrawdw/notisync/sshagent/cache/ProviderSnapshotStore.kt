@@ -7,7 +7,6 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshKeysSnapshot
-import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshFingerprint
 
@@ -151,7 +150,7 @@ class ProviderSnapshotStore(private val database: AgentDatabase) {
                         namespace.requesterClientId == requesterClientId &&
                             namespace.authorizationGeneration == authorizationGeneration &&
                             namespace.authorizationEpoch == authorizationEpoch &&
-                            namespace.scopes.any { it == SshRememberScope.PEER || it == SshRememberScope.PARENT_PROCESS_SESSION }
+                            namespace.scopes.isNotEmpty()
                     }
                 }
                 val canRemember = stable.any {

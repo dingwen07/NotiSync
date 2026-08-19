@@ -124,6 +124,7 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             ).apply {
                 description = context.getString(R.string.seal_notification_channel_description)
                 lockscreenVisibility = NotificationCompat.VISIBILITY_PRIVATE
+                enableVibration(true)
             }
         )
     }

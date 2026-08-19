@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.sshagent
 
-import android.app.AlertDialog
 import android.content.Context
 import android.content.Intent
 import android.hardware.biometrics.BiometricManager
@@ -59,7 +58,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                     onPreviewImport = ::previewImport,
                     onApprove = ::approve,
                     onReject = ::reject,
-                    onRemember = ::chooseRememberScope,
+                    onRemember = ::authenticateRemember,
                     onClose = ::finish,
                 )
             }
@@ -104,6 +103,11 @@ class SshAgentReviewActivity : ComponentActivity() {
                 ?: return@launch showError(getString(R.string.ssh_agent_review_unavailable))
             val rememberScopes = withContext(Dispatchers.IO) {
                 graph.sshKeyProviderStore.availableRememberScopes(requestId)
+            }
+            val destinationHostname = stored.signRequest?.destinationContext?.let { destination ->
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.knownHostHostname(destination)
+                }
             }
             val importInspection = runCatching {
                 withContext(Dispatchers.Default) {
@@ -162,6 +166,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                 keyName = keyName,
                 requesterName = peer?.displayName ?: stored.requesterClientId.shortForm(),
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                destinationHostname = destinationHostname,
             )
             if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
                 approve()
@@ -456,39 +461,33 @@ class SshAgentReviewActivity : ComponentActivity() {
         }
     }
 
-    private fun chooseRememberScope() {
-        val details = screen as? SshReviewScreenState.Details ?: return
-        val scopes = details.rememberScopes
-        if (scopes.size == 1) return authenticateRemember(scopes.single())
-        val choices = buildList {
-            if (SshRememberScope.PARENT_PROCESS_SESSION in scopes) {
-                add(getString(R.string.ssh_agent_remember_parent) to SshRememberScope.PARENT_PROCESS_SESSION)
-            }
-            if (SshRememberScope.PEER in scopes) {
-                add(getString(R.string.ssh_agent_remember_peer) to SshRememberScope.PEER)
-            }
-        }
-        AlertDialog.Builder(this)
-            .setTitle(getString(R.string.ssh_agent_remember_title))
-            .setItems(choices.map { it.first }.toTypedArray()) { _, which -> authenticateRemember(choices[which].second) }
-            .show()
-    }
-
     private fun authenticateRemember(scope: SshRememberScope) {
-        val subtitle = if (scope == SshRememberScope.PARENT_PROCESS_SESSION) {
-            getString(R.string.ssh_agent_remember_parent_subtitle)
-        } else {
-            getString(R.string.ssh_agent_remember_peer_subtitle)
+        if (busy) return
+        val details = screen as? SshReviewScreenState.Details ?: return
+        if (scope !in details.rememberScopes ||
+            scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
+        ) return
+        val subtitle = when (scope) {
+            SshRememberScope.PEER -> getString(
+                R.string.ssh_agent_remember_peer_subtitle,
+                details.requesterName,
+            )
+            SshRememberScope.PEER_HOST_KEY -> getString(
+                R.string.ssh_agent_remember_peer_host_subtitle,
+                details.requesterName,
+            )
+            SshRememberScope.APPLICATION_PROCESS -> return
         }
-        BiometricPrompt.Builder(this)
+        busy = true
+        val prompt = BiometricPrompt.Builder(this)
             .setTitle(getString(R.string.ssh_agent_remember_auth_title))
             .setSubtitle(subtitle)
             .setAllowedAuthenticators(
-                BiometricManager.Authenticators.BIOMETRIC_STRONG or
-                    BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+                SshAuthenticationPolicy.REMEMBER_PROMPT_AUTHENTICATORS,
             )
             .build()
-            .authenticate(
+        try {
+            prompt.authenticate(
                 CancellationSignal(),
                 mainExecutor,
                 object : BiometricPrompt.AuthenticationCallback() {
@@ -502,8 +501,15 @@ class SshAgentReviewActivity : ComponentActivity() {
                             showSignResult(signResult)
                         }
                     }
+
+                    override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                        busy = false
+                    }
                 },
             )
+        } catch (_: Exception) {
+            showError(getString(R.string.ssh_agent_remember_auth_failed))
+        }
     }
 
     private fun showError(message: String) {
@@ -558,6 +564,7 @@ internal sealed interface SshReviewScreenState {
         val keyName: String,
         val requesterName: String,
         val requesterIdentityKeyFingerprint: String?,
+        val destinationHostname: String? = null,
         val errorMessage: String? = null,
     ) : SshReviewScreenState
 }

@@ -14,6 +14,8 @@ import net.extrawdw.notisync.protocol.SshKeysSnapshot
 import net.extrawdw.notisync.protocol.SshOperationalKeyProtection
 import net.extrawdw.notisync.protocol.SshOperationalKeyProvider
 import net.extrawdw.notisync.protocol.SshProviderHealth
+import net.extrawdw.notisync.protocol.SshRememberedNamespace
+import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
@@ -77,6 +79,42 @@ class ProviderSnapshotStoreTest {
     }
 
     @Test
+    fun hostScopedNamespaceMarksTheMatchingRequesterEpochAsRemembered() {
+        withDatabase { database ->
+            val store = ProviderSnapshotStore(database)
+            val provider = ClientId("b".repeat(52))
+            val requester = ClientId("a".repeat(52))
+            val generation = "5".repeat(32)
+            val blob = SshPublicKeyCodec.encode(KeyPairGenerator.getInstance("Ed25519").generateKeyPair().public)
+            val remembered = SshRememberedNamespace(
+                requesterClientId = requester,
+                authorizationGeneration = generation,
+                authorizationEpoch = 7,
+                scopes = listOf(SshRememberScope.PEER_HOST_KEY),
+            )
+            store.apply(
+                provider,
+                snapshot(
+                    provider,
+                    "1".repeat(32),
+                    1,
+                    key(
+                        "2".repeat(32),
+                        blob,
+                        "Host-scoped",
+                        approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER,
+                        rememberedNamespaces = listOf(remembered),
+                    ),
+                ),
+                2_000,
+            )
+
+            assertTrue(store.aggregate(setOf(provider), requester, generation, 7, 3_000).single().remembered)
+            assertTrue(!store.aggregate(setOf(provider), requester, generation, 8, 3_000).single().remembered)
+        }
+    }
+
+    @Test
     fun incompatibleDatabaseFailsClosedWithoutDeletingOrRewritingIt() {
         withTemporaryDatabasePath { path ->
             DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
@@ -112,7 +150,13 @@ class ProviderSnapshotStoreTest {
         vararg keys: SshKeyDescriptor,
     ) = SshKeysSnapshot(provider, generation, revision, 1_000, keys = keys.toList(), providerHealth = SshProviderHealth.HEALTHY)
 
-    private fun key(id: String, blob: ByteArray, name: String) = SshKeyDescriptor(
+    private fun key(
+        id: String,
+        blob: ByteArray,
+        name: String,
+        approvalPolicy: SshApprovalPolicy = SshApprovalPolicy.ALWAYS_ASK,
+        rememberedNamespaces: List<SshRememberedNamespace> = emptyList(),
+    ) = SshKeyDescriptor(
         id,
         blob,
         MessageDigest.getInstance("SHA-256").digest(blob),
@@ -127,7 +171,8 @@ class ProviderSnapshotStoreTest {
             strongBoxFallback = false,
         ),
         null,
-        SshApprovalPolicy.ALWAYS_ASK,
+        approvalPolicy,
+        rememberedNamespaces,
         createdAt = 1_000,
     )
 

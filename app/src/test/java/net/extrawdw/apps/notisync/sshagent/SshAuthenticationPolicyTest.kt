@@ -26,6 +26,11 @@ class SshAuthenticationPolicyTest {
                 BiometricManager.Authenticators.DEVICE_CREDENTIAL,
             SshAuthenticationPolicy.EXPORT_PROMPT_AUTHENTICATORS,
         )
+        assertEquals(
+            BiometricManager.Authenticators.BIOMETRIC_STRONG or
+                BiometricManager.Authenticators.DEVICE_CREDENTIAL,
+            SshAuthenticationPolicy.REMEMBER_PROMPT_AUTHENTICATORS,
+        )
         assertNotEquals(
             SshAuthenticationPolicy.SIGNING_KEY_AUTHENTICATORS,
             SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,

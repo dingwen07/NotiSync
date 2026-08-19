@@ -50,6 +50,22 @@ class SigningRequestUiTest {
     }
 
     @Test
+    fun oversizedCommitDisplayFactsAreBoundedForHistory() {
+        val oversizedMessage = "x".repeat(20_000)
+        val payload = (
+            "tree 0123456789abcdef0123456789abcdef01234567\n" +
+                "author Example <example@example.com> 1700000000 +0000\n" +
+                "committer Example <example@example.com> 1700000000 +0000\n\n" +
+                oversizedMessage
+            ).encodeToByteArray()
+
+        val snapshot = requireNotNull(payload.toDisplaySnapshot())
+
+        assertEquals(16 * 1_024, snapshot.message.length)
+        assertEquals(true, snapshot.truncated)
+    }
+
+    @Test
     fun payloadDigestProducesTheSharedVerificationCode() {
         assertEquals("0123456", byteArrayOf(0x01, 0x23, 0x45, 0x67).toHex().take(7))
     }

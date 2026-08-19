@@ -468,6 +468,14 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
                 )
             }
         }
+        if (commit.truncated) {
+            HorizontalDivider()
+            Text(
+                stringResource(R.string.seal_history_details_truncated),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 

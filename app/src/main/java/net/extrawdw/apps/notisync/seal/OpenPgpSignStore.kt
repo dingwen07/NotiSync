@@ -46,6 +46,7 @@ data class GitCommitDisplaySnapshot(
     val message: String,
     val extraHeaders: List<GitCommitDisplayHeader>,
     val payloadBytes: Int,
+    val truncated: Boolean = false,
 )
 
 @Serializable
@@ -69,6 +70,7 @@ class OpenPgpSignStore(context: Context) :
     val requests: StateFlow<List<StoredOpenPgpRequest>> = _requests.asStateFlow()
 
     init {
+        prune(System.currentTimeMillis())
         refresh()
     }
 
@@ -408,7 +410,9 @@ class OpenPgpSignStore(context: Context) :
             encodedResponse = response,
             updatedAt = getLong(11),
             commit = getBlobOrNull(12)?.let { encoded ->
-                runCatching { ProtocolCodec.decodeFromCbor<GitCommitDisplaySnapshot>(encoded) }.getOrNull()
+                runCatching { ProtocolCodec.decodeFromCbor<GitCommitDisplaySnapshot>(encoded) }
+                    .getOrNull()
+                    ?.boundedForHistory()
             },
             result = getStringOrNull(13)?.let { value ->
                 runCatching { OpenPgpRequestResult.valueOf(value) }.getOrNull()
@@ -520,8 +524,37 @@ internal fun ByteArray.toDisplaySnapshot(): GitCommitDisplaySnapshot? = runCatch
             .filterNot { it.name in setOf("tree", "parent", "author", "committer") }
             .map { GitCommitDisplayHeader(it.name, it.value) },
         payloadBytes = size,
-    )
+    ).boundedForHistory()
 }.getOrNull()
+
+private fun GitCommitDisplaySnapshot.boundedForHistory(): GitCommitDisplaySnapshot {
+    val boundedParents = parentIds.take(MAX_HISTORY_PARENTS)
+    val boundedAuthor = author.take(MAX_HISTORY_IDENTITY_CHARS)
+    val boundedCommitter = committer.take(MAX_HISTORY_IDENTITY_CHARS)
+    val boundedMessage = message.take(MAX_HISTORY_MESSAGE_CHARS)
+    val boundedHeaders = extraHeaders.take(MAX_HISTORY_HEADERS).map {
+        GitCommitDisplayHeader(
+            name = it.name.take(MAX_HISTORY_HEADER_NAME_CHARS),
+            value = it.value.take(MAX_HISTORY_HEADER_VALUE_CHARS),
+        )
+    }
+    return copy(
+        parentIds = boundedParents,
+        author = boundedAuthor,
+        committer = boundedCommitter,
+        message = boundedMessage,
+        extraHeaders = boundedHeaders,
+        truncated = truncated || boundedParents != parentIds || boundedAuthor != author ||
+            boundedCommitter != committer || boundedMessage != message || boundedHeaders != extraHeaders,
+    )
+}
+
+private const val MAX_HISTORY_PARENTS = 64
+private const val MAX_HISTORY_IDENTITY_CHARS = 1_024
+private const val MAX_HISTORY_MESSAGE_CHARS = 16 * 1_024
+private const val MAX_HISTORY_HEADERS = 64
+private const val MAX_HISTORY_HEADER_NAME_CHARS = 128
+private const val MAX_HISTORY_HEADER_VALUE_CHARS = 2 * 1_024
 
 private fun resultFor(reason: OpenPgpRejectReason): OpenPgpRequestResult = when (reason) {
     OpenPgpRejectReason.USER_REJECTED -> OpenPgpRequestResult.REJECTED

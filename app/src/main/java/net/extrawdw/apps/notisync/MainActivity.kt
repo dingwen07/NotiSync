@@ -98,12 +98,14 @@ class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
     private val pendingOpenDevices = MutableStateFlow(false)
     private val pendingOpenRun = MutableStateFlow<RunKey?>(null)
+    private val pendingOpenSshHistory = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         updatePendingPairingPayload(intent)
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
+        consumeOpenSshHistory(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         setContent {
@@ -112,6 +114,7 @@ class MainActivity : ComponentActivity() {
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
+            val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
             NotiSyncTheme {
                 if (graphReady) {
                     val graph = remember { app.graph }
@@ -139,6 +142,8 @@ class MainActivity : ComponentActivity() {
                             onOpenDevicesConsumed = { pendingOpenDevices.value = false },
                             openRun = openRun,
                             onOpenRunConsumed = { pendingOpenRun.value = null },
+                            openSshHistoryRequestId = openSshHistory,
+                            onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
                         )
                         null -> LoadingBox()
                     }
@@ -155,6 +160,7 @@ class MainActivity : ComponentActivity() {
         updatePendingPairingPayload(intent)
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
+        consumeOpenSshHistory(intent)
     }
 
     /** A trust notification asked us to open the Devices tab. */
@@ -175,11 +181,22 @@ class MainActivity : ComponentActivity() {
         intent.removeExtra(EXTRA_RUN_ID)
     }
 
+    /** An auto-approval notification asked us to open one exact durable SSH history record. */
+    private fun consumeOpenSshHistory(intent: Intent?) {
+        intent ?: return
+        if (intent.action != ACTION_OPEN_SSH_HISTORY && !intent.hasExtra(EXTRA_SSH_REQUEST_ID)) return
+        val requestId = intent.getStringExtra(EXTRA_SSH_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return
+        pendingOpenSshHistory.value = requestId
+        intent.removeExtra(EXTRA_SSH_REQUEST_ID)
+    }
+
     companion object {
         const val EXTRA_OPEN_DEVICES = "net.extrawdw.apps.notisync.OPEN_DEVICES"
         const val ACTION_OPEN_RUN = "net.extrawdw.apps.notisync.OPEN_RUN"
         const val EXTRA_RUN_HOST_CLIENT_ID = "net.extrawdw.apps.notisync.RUN_HOST_CLIENT_ID"
         const val EXTRA_RUN_ID = "net.extrawdw.apps.notisync.RUN_ID"
+        const val ACTION_OPEN_SSH_HISTORY = "net.extrawdw.apps.notisync.OPEN_SSH_HISTORY"
+        const val EXTRA_SSH_REQUEST_ID = "net.extrawdw.apps.notisync.SSH_REQUEST_ID"
     }
 
     private fun updatePendingPairingPayload(intent: Intent?) {
@@ -266,6 +283,8 @@ fun NotiSyncRoot(
     onOpenDevicesConsumed: () -> Unit = {},
     openRun: RunKey? = null,
     onOpenRunConsumed: () -> Unit = {},
+    openSshHistoryRequestId: String? = null,
+    onOpenSshHistoryConsumed: () -> Unit = {},
 ) {
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
@@ -275,6 +294,8 @@ fun NotiSyncRoot(
     // when the graph was first created (normally null).
     val latestOpenRun = rememberUpdatedState(openRun)
     val latestOnOpenRunConsumed = rememberUpdatedState(onOpenRunConsumed)
+    val latestOpenSshHistoryRequestId = rememberUpdatedState(openSshHistoryRequestId)
+    val latestOnOpenSshHistoryConsumed = rememberUpdatedState(onOpenSshHistoryConsumed)
 
     // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
     // this also blocks the deep-link path so a pairing link can't bypass the freeze.
@@ -307,6 +328,13 @@ fun NotiSyncRoot(
             // A notification open is explicit navigation: dismiss the overlay before selecting the Run tab.
             showPairing = pairingOverlayAfterRunOpenRequest(showPairing, openRun)
             navController.navigateToTopLevel(FeatureDestination.RUN)
+        }
+    }
+
+    LaunchedEffect(openSshHistoryRequestId) {
+        if (openSshHistoryRequestId != null) {
+            showPairing = false
+            navController.navigateToTopLevel(FeatureDestination.SSH_AGENT)
         }
     }
 
@@ -415,7 +443,12 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Seal> { SealScreen() }
-                composable<Route.SshAgent> { SshAgentScreen() }
+                composable<Route.SshAgent> {
+                    SshAgentScreen(
+                        initialHistoryRequestId = latestOpenSshHistoryRequestId.value,
+                        onInitialHistoryRequestConsumed = latestOnOpenSshHistoryConsumed.value,
+                    )
+                }
                 composable<Route.Activity> { ActivityScreen() }
                 composable<Route.Settings> { SettingsScreen() }
             }

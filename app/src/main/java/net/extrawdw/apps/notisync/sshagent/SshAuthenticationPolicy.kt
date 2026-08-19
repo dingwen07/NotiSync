@@ -12,4 +12,6 @@ internal object SshAuthenticationPolicy {
     const val SIGNING_PROMPT_AUTHENTICATORS = BiometricManager.Authenticators.BIOMETRIC_STRONG
     const val EXPORT_PROMPT_AUTHENTICATORS =
         BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+    const val REMEMBER_PROMPT_AUTHENTICATORS =
+        BiometricManager.Authenticators.BIOMETRIC_STRONG or BiometricManager.Authenticators.DEVICE_CREDENTIAL
 }

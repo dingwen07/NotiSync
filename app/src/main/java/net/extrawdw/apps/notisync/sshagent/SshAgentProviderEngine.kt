@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.sshagent
 
 import android.content.Context
 import java.security.MessageDigest
+import java.security.SecureRandom
 import kotlin.math.abs
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
@@ -18,6 +19,9 @@ import net.extrawdw.notisync.protocol.SshAgentSync
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshForgetResult
 import net.extrawdw.notisync.protocol.SshForgetResultKind
+import net.extrawdw.notisync.protocol.SshAgentLimits
+import net.extrawdw.notisync.protocol.SshImportRequest
+import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.protocol.SshProviderFailure
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
 import net.extrawdw.notisync.protocol.SshExportCopyBackendPolicy
@@ -192,6 +196,18 @@ class SshAgentProviderEngine(
         return result
     }
 
+    /** Rebuilds pending notifications after presentation-only state such as a saved hostname changes. */
+    fun refreshPendingNotifications() {
+        scope.launch {
+            store.pendingReview().forEach { request ->
+                notifications.post(
+                    request,
+                    deviceNameOf(request.requesterClientId) ?: request.requesterClientId.shortForm(),
+                )
+            }
+        }
+    }
+
     suspend fun sendPersistedResponse(requestId: String): Boolean {
         val stored = store.find(requestId) ?: return true
         if (stored.state != SshProviderRequestState.RESPONSE_PENDING_SEND) return true
@@ -210,7 +226,9 @@ class SshAgentProviderEngine(
         }
         val accepted = send(stored.requesterClientId, sync)
         if (accepted) {
-            store.markSent(requestId, now())
+            if (store.markSent(requestId, now())) {
+                store.find(requestId)?.let(::notifyAutoApproval)
+            }
             if (stored.kind == SshProviderRequestKind.IMPORT) broadcastSnapshot()
         }
         return accepted
@@ -220,9 +238,12 @@ class SshAgentProviderEngine(
         store.expireDue(now()).forEach(notifications::dismiss)
         store.cancelInvalidatedPending(now()).forEach(notifications::dismiss)
         store.pendingReview().forEach { request ->
-            if (request.kind == SshProviderRequestKind.SIGN &&
+            val autoApproved = if (request.kind == SshProviderRequestKind.SIGN) {
                 store.autoApproveRemembered(request.requestId, providerClientId, now())
-            ) {
+            } else {
+                null
+            }
+            if (autoApproved != null) {
                 notifications.dismiss(request.requestId)
                 SshAgentResponseWorker.enqueue(context, request.requestId)
             } else {
@@ -238,6 +259,33 @@ class SshAgentProviderEngine(
     /** Publishes a UI-originated key inventory mutation without blocking the main thread. */
     fun publishInventory() {
         scope.launch { runCatching { broadcastSnapshot() } }
+    }
+
+    /** Sends an export-copy-backed private key to one explicitly selected Android key-provider peer. */
+    suspend fun sendPrivateKeyImport(
+        targetProviderClientId: ClientId,
+        privateKeyFile: ByteArray,
+        suggestedName: String,
+    ): Boolean {
+        require(targetProviderClientId != providerClientId) { "SSH key transfer target must be another device" }
+        val requestedAt = now()
+        val request = SshImportRequest(
+            requestId = randomId(),
+            requesterClientId = providerClientId,
+            requestedAt = requestedAt,
+            expiresAt = requestedAt + SshAgentLimits.MAX_IMPORT_LIFETIME_MILLIS,
+            sourceType = SshImportSourceType.PRIVATE_KEY_FILE,
+            fileBytes = privateKeyFile,
+            suggestedName = suggestedName,
+        )
+        val sync = SshAgentSync(kind = SshAgentSyncKind.IMPORT_REQUEST, importRequest = request)
+        require(sync.validationError(::sha256) == null) { "invalid SSH key transfer request" }
+        return channel.send(
+            MessageType.DATA_SYNC,
+            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.SSH_AGENT, sshAgent = sync)),
+            sshKeyTransferRecipients(targetProviderClientId),
+            Urgency.NORMAL,
+        ) == 1
     }
 
     private fun receiveKeysRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshKeysRequest) {
@@ -279,7 +327,8 @@ class SshAgentProviderEngine(
                 val stored = store.find(request.requestId) ?: return
                 when (stored.state) {
                     SshProviderRequestState.PENDING_REVIEW -> {
-                        if (store.autoApproveRemembered(request.requestId, providerClientId, now())) {
+                        val autoApproved = store.autoApproveRemembered(request.requestId, providerClientId, now())
+                        if (autoApproved != null) {
                             notifications.dismiss(request.requestId)
                             SshAgentResponseWorker.enqueue(context, request.requestId)
                         } else {
@@ -299,6 +348,14 @@ class SshAgentProviderEngine(
             -> Unit
             SshProviderAcceptResult.KEY_NOT_FOUND -> sendKeyNotFound()
         }
+    }
+
+    private fun notifyAutoApproval(stored: StoredSshProviderRequest) {
+        if (stored.history.approvalKind != SshRequestApprovalKind.REMEMBERED_AUTHORIZATION) return
+        notifications.postAutoApproved(
+            stored,
+            deviceNameOf(stored.requesterClientId) ?: stored.requesterClientId.shortForm(),
+        )
     }
 
     private fun receiveImportRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshImportRequest) {
@@ -333,10 +390,7 @@ class SshAgentProviderEngine(
                     sshAgent = SshAgentSync(kind = SshAgentSyncKind.KEYS_SNAPSHOT, keysSnapshot = snapshot),
                 ),
             ),
-            Recipients.OwnMeshFiltered(
-                requiredCapabilities = AGENT_CAPABILITIES,
-                requireCapabilityRoutingV1 = true,
-            ),
+            sshAgentInventoryRecipients(),
             Urgency.NORMAL,
         )
     }
@@ -344,7 +398,7 @@ class SshAgentProviderEngine(
     private suspend fun send(requester: ClientId, sync: SshAgentSync): Boolean = channel.send(
         MessageType.DATA_SYNC,
         ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.SSH_AGENT, sshAgent = sync)),
-        Recipients.OnlyCapable(requester, AGENT_CAPABILITIES),
+        sshAgentDirectRecipients(requester),
         Urgency.NORMAL,
     ) > 0
 
@@ -356,8 +410,22 @@ class SshAgentProviderEngine(
 
     private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
+    private fun randomId(): String = ByteArray(16).also(RANDOM::nextBytes).joinToString("") { "%02x".format(it) }
+
     private companion object {
         const val CLOCK_SKEW_MILLIS = 2 * 60_000L
-        val AGENT_CAPABILITIES = setOf(Capability.CAPABILITY_ROUTING_V1, Capability.SSH_AGENT_V1)
+        val RANDOM = SecureRandom()
     }
 }
+
+internal val SSH_AGENT_INVENTORY_RECIPIENT_CAPABILITIES =
+    setOf(Capability.CAPABILITY_ROUTING_V1, Capability.SSH_AGENT_V1)
+
+/** SSH_AGENT_V1 selects consumers of unsolicited inventory; it is not authorization for request/reply traffic. */
+internal fun sshAgentInventoryRecipients(): Recipients = Recipients.OwnMeshFiltered(
+    requiredCapabilities = SSH_AGENT_INVENTORY_RECIPIENT_CAPABILITIES,
+    requireCapabilityRoutingV1 = true,
+)
+
+/** An authenticated own-device requester remains a valid reply target even if its profile lacks SSH_AGENT_V1. */
+internal fun sshAgentDirectRecipients(requester: ClientId): Recipients = Recipients.Only(requester)
