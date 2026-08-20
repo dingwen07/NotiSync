@@ -1,38 +1,57 @@
 package net.extrawdw.apps.notisync.screen
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenCodecPreferenceEntity
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenCodecToken
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenDao
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import net.extrawdw.notisync.protocol.TrustStatus
 
-/** Local, per-source codec preferences. Absence means automatic selection. */
-internal class ScreenMirrorCodecPreferenceStore(
-    private val store: DataStore<Preferences>,
+/** Local, per-source codec preferences backed by the Operational Room database. */
+internal class ScreenMirrorCodecPreferenceStore internal constructor(
+    private val dao: ScreenDao,
+    scope: CoroutineScope,
 ) {
-    private val key = stringPreferencesKey("screen_mirror_codec_preferences_v1")
     private val mutex = Mutex()
     private val _preferredCodecs = MutableStateFlow(load())
     val preferredCodecs: StateFlow<Map<String, ScreenMirrorCodec>> = _preferredCodecs.asStateFlow()
+
+    init {
+        scope.launch {
+            dao.observeCodecPreferences().collect { rows ->
+                _preferredCodecs.value = rows.associate { it.peerId to it.codec.toProtocol() }
+            }
+        }
+    }
 
     fun preferredCodec(peerId: ClientId): ScreenMirrorCodec? = preferredCodecs.value[peerId.value]
 
     /** A null value selects Auto and removes the durable override. */
     suspend fun setPreferredCodec(peerId: ClientId, codec: ScreenMirrorCodec?) = mutex.withLock {
-        update { current ->
-            if (codec == null) current - peerId.value else current + (peerId.value to codec)
+        requireValidPeerId(peerId.value)
+        if (codec == null) {
+            dao.removeCodecPreference(peerId.value)
+        } else {
+            dao.putCodecPreference(
+                ScreenCodecPreferenceEntity(
+                    peerId = peerId.value,
+                    codec = codec.toStorage(),
+                    updatedAt = System.currentTimeMillis(),
+                ),
+            )
         }
+        _preferredCodecs.value = loadFromRoom()
     }
 
     /** Forget preferences when a peer is removed, revoked, reclassified, or no longer verified. */
@@ -41,55 +60,32 @@ internal class ScreenMirrorCodecPreferenceStore(
             .filter { it.ownDevice && it.status == TrustStatus.TRUSTED && it.verified }
             .map { it.clientId.value }
             .toSet()
-        update { current -> current.filterKeys(allowed::contains) }
+        _preferredCodecs.value.keys
+            .filterNot(allowed::contains)
+            .forEach { dao.removeCodecPreference(it) }
+        _preferredCodecs.value = loadFromRoom()
     }
 
-    private suspend fun update(
-        transform: (Map<String, ScreenMirrorCodec>) -> Map<String, ScreenMirrorCodec>,
-    ) {
-        var next = emptyMap<String, ScreenMirrorCodec>()
-        store.edit { preferences ->
-            val current = decode(preferences[key])
-            next = transform(current)
-                .entries
-                .sortedBy { it.key }
-                .associate { it.toPair() }
-            if (next.isEmpty()) {
-                preferences.remove(key)
-            } else {
-                preferences[key] = encode(next)
-            }
-        }
-        _preferredCodecs.value = next
-    }
+    private fun load(): Map<String, ScreenMirrorCodec> = runBlocking { loadFromRoom() }
 
-    private fun load(): Map<String, ScreenMirrorCodec> = runCatching {
-        runBlocking { decode(store.data.first()[key]) }
-    }.getOrDefault(emptyMap())
+    private suspend fun loadFromRoom(): Map<String, ScreenMirrorCodec> =
+        dao.observeCodecPreferences().first().associate { it.peerId to it.codec.toProtocol() }
+}
 
-    private fun encode(value: Map<String, ScreenMirrorCodec>): String = ProtocolCodec.encodeToJson(
-        value.mapValues { (_, codec) -> codec.name.lowercase() },
-    )
+private fun ScreenCodecToken.toProtocol(): ScreenMirrorCodec = when (this) {
+    ScreenCodecToken.H264 -> ScreenMirrorCodec.H264
+    ScreenCodecToken.H265 -> ScreenMirrorCodec.H265
+    ScreenCodecToken.AV1 -> ScreenMirrorCodec.AV1
+}
 
-    private fun decode(encoded: String?): Map<String, ScreenMirrorCodec> {
-        if (encoded == null) return emptyMap()
-        val raw = runCatching {
-            ProtocolCodec.decodeFromJson<Map<String, String>>(encoded)
-        }.getOrDefault(emptyMap())
-        if (raw.size > MAX_PREFERENCES) return emptyMap()
-        return raw.mapNotNull { (peerId, codecName) ->
-            if (peerId.isBlank() || peerId.length > MAX_PEER_ID_LENGTH || peerId.any(Char::isISOControl)) {
-                return@mapNotNull null
-            }
-            val codec = ScreenMirrorCodec.entries.firstOrNull {
-                it.name.equals(codecName, ignoreCase = true)
-            } ?: return@mapNotNull null
-            peerId to codec
-        }.toMap()
-    }
+private fun ScreenMirrorCodec.toStorage(): ScreenCodecToken = when (this) {
+    ScreenMirrorCodec.H264 -> ScreenCodecToken.H264
+    ScreenMirrorCodec.H265 -> ScreenCodecToken.H265
+    ScreenMirrorCodec.AV1 -> ScreenCodecToken.AV1
+}
 
-    private companion object {
-        const val MAX_PREFERENCES = 256
-        const val MAX_PEER_ID_LENGTH = 128
+private fun requireValidPeerId(value: String) {
+    require(value.isNotBlank() && value.length <= 128 && value.none(Char::isISOControl)) {
+        "screen codec peer id is invalid"
     }
 }

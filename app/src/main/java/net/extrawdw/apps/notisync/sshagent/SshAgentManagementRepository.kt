@@ -34,23 +34,25 @@ data class SshAgentManagementState(
  *
  * The SSH database performs integrity and lifecycle checks on its first open. Preloading the complete screen model
  * while the application graph is already being built off-main keeps that one-time work out of navigation. Subsequent
- * store mutations are observed through [SshKeyProviderStore.changeVersion] and refresh the cache once per version.
+ * store mutations are observed through the Room provider's [SshAgentProviderRepository.changeVersion] and refresh
+ * the cache once per version.
  */
 class SshAgentManagementRepository internal constructor(
     private val changeVersion: StateFlow<Long>,
-    private val loadSnapshot: () -> SshAgentManagementSnapshot,
+    private val loadSnapshot: suspend () -> SshAgentManagementSnapshot,
     private val scope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher,
 ) {
-    constructor(
-        store: SshKeyProviderStore,
+    internal constructor(
+        store: SshAgentProviderRepository,
         providerClientId: ClientId,
         scope: CoroutineScope,
     ) : this(
         changeVersion = store.changeVersion,
         loadSnapshot = {
+            val snapshot = store.snapshot(providerClientId, null, System.currentTimeMillis())
             SshAgentManagementSnapshot(
-                keys = store.snapshot(providerClientId, null, System.currentTimeMillis()).keys,
+                keys = snapshot.keys,
                 requests = store.requests(),
                 knownHosts = store.knownHosts(),
                 rememberedAuthorizations = store.rememberedAuthorizations(),
@@ -70,7 +72,7 @@ class SshAgentManagementRepository internal constructor(
     private var observerJob: Job? = null
 
     /** Called from the application's I/O initialization thread before the graph is exposed to UI. */
-    fun preload() {
+    suspend fun preload() {
         publish(loadStableSnapshot())
     }
 
@@ -98,7 +100,7 @@ class SshAgentManagementRepository internal constructor(
         }
     }
 
-    private fun loadStableSnapshot(): Result<VersionedSnapshot> = try {
+    private suspend fun loadStableSnapshot(): Result<VersionedSnapshot> = try {
         // A load is four individually synchronized reads. Repeat when a mutation lands between them so the
         // published aggregate always represents one stable change-version boundary.
         var versionBefore: Long

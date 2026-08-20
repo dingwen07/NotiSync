@@ -1,5 +1,7 @@
 package net.extrawdw.apps.notisync.run
 
+import net.extrawdw.apps.notisync.data.run.RunKey
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunControlKind
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,7 +12,7 @@ import org.junit.Test
 class RunActionDispatchTest {
     @Test
     fun immutableRouteRoundTripsAllPrivilegedFields() {
-        val key = RunKey("host/with space+plus", "run/with punctuation?")
+        val key = RunKey(ClientId("host/with space+plus"), "run/with punctuation?")
         val encoded = runActionRouteData(key, interactionGeneration = 7, control = "INPUT")
 
         val route = parseRunActionRoute(encoded)
@@ -20,7 +22,7 @@ class RunActionDispatchTest {
 
     @Test
     fun remoteInputCannotTurnInputRouteIntoSignalOrRetargetIt() {
-        val key = RunKey("trusted-host", "run-1")
+        val key = RunKey(ClientId("trusted-host"), "run-1")
         val route = parseRunActionRoute(runActionRouteData(key, 9, "INPUT"))!!
 
         val control = buildRunNotificationControl(
@@ -31,7 +33,7 @@ class RunActionDispatchTest {
             requestedAt = 12_000,
         )!!
 
-        assertEquals(key.hostClientId, control.hostClientId.value)
+        assertEquals(key.hostClientId.value, control.hostClientId.value)
         assertEquals(key.runId, control.runId)
         assertEquals(RunControlKind.WRITE_INPUT, control.kind)
         assertEquals("TERM\n", control.inputText)
@@ -42,7 +44,7 @@ class RunActionDispatchTest {
     @Test
     fun exactSignalAndRequestIdAreBuiltOnce() {
         val route = parseRunActionRoute(
-            runActionRouteData(RunKey("host", "run-2"), 3, "INTERRUPT")
+            runActionRouteData(RunKey(ClientId("host"), "run-2"), 3, "INTERRUPT")
         )!!
 
         val control = buildRunNotificationControl(
@@ -69,7 +71,7 @@ class RunActionDispatchTest {
 
     @Test
     fun notificationActionGateAcceptsOnlyOnePressUntilANewRender() {
-        val key = RunKey("host", "run-1")
+        val key = RunKey(ClientId("host"), "run-1")
         RunNotificationActionGate.release(key)
 
         assertTrue(RunNotificationActionGate.claim(key))

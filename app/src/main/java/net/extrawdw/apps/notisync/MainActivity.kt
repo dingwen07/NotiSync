@@ -75,15 +75,16 @@ import androidx.navigation.compose.rememberNavController
 import kotlinx.serialization.Serializable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapFailureKind
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapState
+import net.extrawdw.apps.notisync.data.run.RunKey
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
-import net.extrawdw.apps.notisync.run.RunKey
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
 import net.extrawdw.apps.notisync.ui.IosScreen
 import net.extrawdw.apps.notisync.ui.LocalFeatureDrawerOpener
-import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
@@ -93,6 +94,7 @@ import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshAgentScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
+import net.extrawdw.notisync.protocol.ClientId
 
 class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
@@ -108,47 +110,28 @@ class MainActivity : ComponentActivity() {
         consumeOpenSshHistory(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
+        (applicationContext as NotiSyncApp).startUserInitialization()
         setContent {
             val app = applicationContext as NotiSyncApp
-            val graphReady by app.graphReady.collectAsStateWithLifecycle()
+            val bootstrapState by app.bootstrapState.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
             NotiSyncTheme {
-                if (graphReady) {
-                    val graph = remember { app.graph }
-                    // null = still reading DataStore. Gate on the PERSISTED flag (an eager StateFlow would
-                    // still report its false default here and flash onboarding at already-onboarded users).
-                    var showOnboarding by remember { mutableStateOf<Boolean?>(null) }
-                    LaunchedEffect(Unit) {
-                        showOnboarding = !graph.settings.onboardingCompletedNow()
-                    }
-                    when (showOnboarding) {
-                        // Persist on the graph scope: the composable (and any rememberCoroutineScope) is
-                        // disposed the moment this flips, which would cancel the write mid-flight.
-                        true -> OnboardingScreen(
-                            onFinish = {
-                                graph.scope.launch { graph.settings.setOnboardingCompleted() }
-                                showOnboarding = false
-                            },
-                        )
-                        // Finishing onboarding lands here with Devices as the NavHost start destination;
-                        // a pairing deep link received during onboarding is still pending and opens now.
-                        false -> NotiSyncRoot(
-                            pendingPairingPayload = pairingPayload,
-                            onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
-                            openDevices = openDevices,
-                            onOpenDevicesConsumed = { pendingOpenDevices.value = false },
-                            openRun = openRun,
-                            onOpenRunConsumed = { pendingOpenRun.value = null },
-                            openSshHistoryRequestId = openSshHistory,
-                            onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
-                        )
-                        null -> LoadingBox()
-                    }
-                } else {
-                    LoadingBox()
+                when (val state = bootstrapState) {
+                    ApplicationBootstrapState.Loading -> LoadingBox()
+                    is ApplicationBootstrapState.Unavailable -> BootstrapUnavailableBox(state.failure.kind)
+                    is ApplicationBootstrapState.Ready -> NotiSyncRoot(
+                        pendingPairingPayload = pairingPayload,
+                        onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                        openDevices = openDevices,
+                        onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                        openRun = openRun,
+                        onOpenRunConsumed = { pendingOpenRun.value = null },
+                        openSshHistoryRequestId = openSshHistory,
+                        onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
+                    )
                 }
             }
         }
@@ -176,7 +159,7 @@ class MainActivity : ComponentActivity() {
         if (intent.action != ACTION_OPEN_RUN && !intent.hasExtra(EXTRA_RUN_ID)) return
         val host = intent.getStringExtra(EXTRA_RUN_HOST_CLIENT_ID) ?: return
         val runId = intent.getStringExtra(EXTRA_RUN_ID) ?: return
-        pendingOpenRun.value = RunKey(host, runId)
+        pendingOpenRun.value = RunKey(ClientId(host), runId)
         intent.removeExtra(EXTRA_RUN_HOST_CLIENT_ID)
         intent.removeExtra(EXTRA_RUN_ID)
     }
@@ -449,7 +432,7 @@ fun NotiSyncRoot(
                         onInitialHistoryRequestConsumed = latestOnOpenSshHistoryConsumed.value,
                     )
                 }
-                composable<Route.Activity> { ActivityScreen() }
+                composable<Route.Activity> { ActivityScreen(rememberGraph().activityRepository) }
                 composable<Route.Settings> { SettingsScreen() }
             }
         }
@@ -499,6 +482,23 @@ private fun TopLevelNavLabel(dest: AppDestination) {
 private fun LoadingBox() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         CircularProgressIndicator()
+    }
+}
+
+@Composable
+private fun BootstrapUnavailableBox(kind: ApplicationBootstrapFailureKind) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Text(
+            stringResource(
+                when (kind) {
+                    ApplicationBootstrapFailureKind.SECURITY_BLOCKING ->
+                        R.string.activity_outcome_security_blocked
+                    ApplicationBootstrapFailureKind.RETRYABLE,
+                    ApplicationBootstrapFailureKind.USER_RECOVERABLE,
+                    -> R.string.activity_load_failed
+                },
+            ),
+        )
     }
 }
 

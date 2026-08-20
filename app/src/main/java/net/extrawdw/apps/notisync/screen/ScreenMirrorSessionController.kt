@@ -31,7 +31,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
@@ -124,7 +123,6 @@ class ScreenMirrorSessionController(
     private val context: Context,
     private val ownClientId: ClientId,
     private val channel: SecureChannel,
-    private val settings: SettingsRepository,
     private val authorizations: ScreenMirrorAuthorizationStore,
     private val capabilities: ScreenMirrorCapabilityProvider,
     private val shizuku: ScreenMirrorShizukuManager,
@@ -199,9 +197,23 @@ class ScreenMirrorSessionController(
         }
     }
 
-    private fun receiveRequest(message: InboundMessage, request: ScreenMirrorSync) {
-        val enabled = runCatching { kotlinx.coroutines.runBlocking { settings.screenMirroringEnabledNow() } }
-            .getOrDefault(false)
+    /**
+     * Starts a request whose replay token and handled receipt were already committed atomically in Room.
+     * The normal legacy entry point must still consume the token itself, so the bypass is explicit and private
+     * to the post-commit broker-custody adapter.
+     */
+    fun onCommittedScreenMirrorRequest(message: InboundMessage, sync: DataSync) {
+        val request = sync.screenMirror ?: return
+        if (request.action != ScreenMirrorAction.REQUEST) return
+        receiveRequest(message, request, replayAlreadyConsumed = true)
+    }
+
+    private fun receiveRequest(
+        message: InboundMessage,
+        request: ScreenMirrorSync,
+        replayAlreadyConsumed: Boolean = false,
+    ) {
+        val enabled = authorizations.screenMirroringEnabledNow()
         val failure = ScreenMirrorRequestValidator.validate(
             request = request,
             authenticatedSender = message.senderId,
@@ -232,7 +244,9 @@ class ScreenMirrorSessionController(
         }
         val token = requireNotNull(request.routingToken)
         val expiry = requireNotNull(request.expiresAt)
-        val consumed = try {
+        val consumed = if (replayAlreadyConsumed) {
+            true
+        } else try {
             authorizations.consumeRequest(request.sessionId, token, request.issuedAt, expiry, now())
         } catch (error: ScreenReplayStateUnavailableException) {
             request.destroySecrets()
@@ -598,7 +612,7 @@ class ScreenMirrorSessionController(
     /** Recheck mutable runtime policy after the old controller has fully released its resources. */
     private fun runtimeAdmissionFailure(holder: PendingRequest): Pair<ScreenMirrorStatus, String>? = when {
         now() >= (holder.request.expiresAt ?: 0L) -> ScreenMirrorStatus.EXPIRED to "request expired during controller handoff"
-        !settings.screenMirroringEnabled.value -> ScreenMirrorStatus.UNAUTHORIZED to "screen sharing disabled"
+        !authorizations.screenMirroringEnabled.value -> ScreenMirrorStatus.UNAUTHORIZED to "screen sharing disabled"
         !authorizations.isAuthorized(holder.request.requesterPeerId) ->
             ScreenMirrorStatus.UNAUTHORIZED to "requester authorization changed"
         shizuku.status.value != ShizukuScreenStatus.READY ->
@@ -961,7 +975,7 @@ class ScreenMirrorSessionController(
             )
         }
         if (
-            !settings.screenMirroringEnabled.value ||
+            !authorizations.screenMirroringEnabled.value ||
             shizuku.status.value != ShizukuScreenStatus.READY ||
             requesters.any { !authorizations.isAuthorized(it) }
         ) {

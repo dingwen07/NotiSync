@@ -1,21 +1,23 @@
 package net.extrawdw.apps.notisync.screen
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import java.security.MessageDigest
-import java.util.Base64
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSingletons
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenAuthorizationAggregate
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenAuthorizedPeerEntity
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenDao
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenReplayConsumeResult
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenReplayHealth
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenSecurityStateEntity
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.TrustStatus
 
 enum class ScreenReplayStateHealth { HEALTHY, CORRUPT }
@@ -24,56 +26,86 @@ enum class ScreenAuthorizationStateHealth { HEALTHY, PERSISTENCE_UNAVAILABLE }
 class ScreenReplayStateUnavailableException(message: String, cause: Throwable? = null) :
     RuntimeException(message, cause)
 
-private class CorruptScreenReplayState(message: String, cause: Throwable? = null) :
-    IllegalStateException(message, cause)
-
 /**
- * Local authorization and replay state for screen control.
+ * Room-backed local authorization and replay state for screen control.
  *
- * Authorizations never converge through the peer trust table: control of this phone is an explicit local
- * decision. Replay rows contain only SHA-256 digests and expiry times, never rendezvous tokens or PSKs.
+ * Authorizations never converge through the peer trust table: control of this phone is an explicit
+ * local decision. Replay rows contain only SHA-256 digests and expiry times, never rendezvous tokens
+ * or PSKs. [ScreenDao] owns the transaction and receipt boundary; this adapter only keeps the
+ * synchronous API required by the authenticated screen channel and exposes hot projections to UI.
  */
-class ScreenMirrorAuthorizationStore(
-    private val store: DataStore<Preferences>,
+class ScreenMirrorAuthorizationStore internal constructor(
+    private val dao: ScreenDao,
+    scope: CoroutineScope,
 ) {
     private val lock = Any()
-    private val authorizedKey = stringPreferencesKey("screen_mirror_authorized_peer_ids")
-    private val replayKey = stringPreferencesKey("screen_mirror_request_replay_v1")
-    private val replayBlockedKey = booleanPreferencesKey("screen_mirror_request_replay_v1_blocked")
-    private val replayQuarantineDigestKey = stringPreferencesKey("screen_mirror_request_replay_v1_quarantine_digest")
-    private val replayQuarantinedAtKey = longPreferencesKey("screen_mirror_request_replay_v1_quarantined_at")
-    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
+    private var aggregate: ScreenAuthorizationAggregate = loadAggregate()
 
-    private val _authorizedPeerIds = MutableStateFlow(loadAuthorized())
+    private val _authorizedPeerIds = MutableStateFlow(aggregate.peers.map { it.peerId }.toSet())
     val authorizedPeerIds: StateFlow<Set<String>> = _authorizedPeerIds.asStateFlow()
+
     private val _authorizationStateHealth = MutableStateFlow(ScreenAuthorizationStateHealth.HEALTHY)
     val authorizationStateHealth: StateFlow<ScreenAuthorizationStateHealth> =
         _authorizationStateHealth.asStateFlow()
-    private val _replayStateHealth = MutableStateFlow(ScreenReplayStateHealth.HEALTHY)
+
+    private val _replayStateHealth = MutableStateFlow(aggregate.replayHealth())
     val replayStateHealth: StateFlow<ScreenReplayStateHealth> = _replayStateHealth.asStateFlow()
 
+    private val _screenMirroringEnabled = MutableStateFlow(aggregate.securityState?.enabled == true)
+    val screenMirroringEnabled: StateFlow<Boolean> = _screenMirroringEnabled.asStateFlow()
+
     init {
-        _replayStateHealth.value = inspectAndQuarantineReplayState()
+        // A Room flow keeps the security header current when a maintenance/import action or another
+        // owner changes it. Peer rows are only changed through this adapter after initialization, so
+        // the existing DAO API intentionally does not add a second full-list peer flow.
+        scope.launch {
+            try {
+                dao.observeSecurityState().collect { state ->
+                    synchronized(lock) {
+                        aggregate = aggregate.copy(securityState = state)
+                        publishSecurityState(state)
+                    }
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Throwable) {
+                synchronized(lock) {
+                    _authorizationStateHealth.value = ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
+                    _screenMirroringEnabled.value = false
+                }
+            }
+        }
     }
 
     fun isAuthorized(peerId: ClientId): Boolean =
         _authorizationStateHealth.value == ScreenAuthorizationStateHealth.HEALTHY &&
             peerId.value in _authorizedPeerIds.value
 
+    /**
+     * Changes a local grant in the same Room transaction as its security revision. A grant is not
+     * published in the in-memory projection until that transaction succeeds; revocation is still
+     * published before the I/O so a live session fails closed immediately.
+     */
     fun setAuthorized(peerId: ClientId, authorized: Boolean) = synchronized(lock) {
         val current = _authorizedPeerIds.value
         val next = if (authorized) current + peerId.value else current - peerId.value
         if (next == current && _authorizationStateHealth.value == ScreenAuthorizationStateHealth.HEALTHY) {
             return@synchronized
         }
-        if (authorized) {
-            // A new grant never becomes routing authority until it is durable.
-            if (persistAuthorizedOrFailClosed(next)) _authorizedPeerIds.value = next
-        } else {
-            // Revocation is fail-closed in the opposite order: active sessions observe it immediately,
-            // even if DataStore is currently unavailable.
+        requireValidPeerId(peerId.value)
+        val state = nextSecurityState()
+        if (!authorized) _authorizedPeerIds.value = next
+        try {
+            val peers = next.toRoomPeers(state.updatedAt)
+            runBlocking { dao.replaceAuthorizations(peers, state) }
+            aggregate = ScreenAuthorizationAggregate(state, peers)
             _authorizedPeerIds.value = next
-            persistAuthorizedOrFailClosed(next)
+            publishSecurityState(state)
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.HEALTHY
+        } catch (_: Throwable) {
+            if (authorized) _authorizedPeerIds.value = current
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
+            return@synchronized
         }
     }
 
@@ -88,15 +120,41 @@ class ScreenMirrorAuthorizationStore(
         if (next == current && _authorizationStateHealth.value == ScreenAuthorizationStateHealth.HEALTHY) {
             return@synchronized
         }
+        val state = nextSecurityState()
         // Publish before I/O so roster revocation terminates a live controller synchronously.
         _authorizedPeerIds.value = next
-        persistAuthorizedOrFailClosed(next)
+        try {
+            val peers = next.toRoomPeers(state.updatedAt)
+            runBlocking { dao.replaceAuthorizations(peers, state) }
+            aggregate = ScreenAuthorizationAggregate(state, peers)
+            publishSecurityState(state)
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.HEALTHY
+        } catch (_: Throwable) {
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
+            return@synchronized
+        }
     }
 
+    /** Persist the local screen-control master switch in the same security header as replay state. */
+    fun setScreenMirroringEnabled(enabled: Boolean) = synchronized(lock) {
+        val state = nextSecurityState().copy(enabled = enabled)
+        try {
+            runBlocking { dao.replaceSecurityState(state) }
+            aggregate = aggregate.copy(securityState = state)
+            publishSecurityState(state)
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.HEALTHY
+        } catch (_: Throwable) {
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
+            return@synchronized
+        }
+    }
+
+    fun screenMirroringEnabledNow(): Boolean = _screenMirroringEnabled.value
+
     /**
-     * Atomically and durably consumes a valid request identity. False means it was already consumed.
-     * The synchronous contract is intentional: the secure channel may acknowledge immediately after its
-     * handler returns, so replay state must reach DataStore first.
+     * Atomically and durably consumes a valid request identity. False means it was already consumed,
+     * disabled, quarantined, or at capacity. Storage failures remain retryable so the signed envelope
+     * is not acknowledged before the Room commit.
      */
     fun consumeRequest(
         sessionId: String,
@@ -113,164 +171,117 @@ class ScreenMirrorAuthorizationStore(
         if (_replayStateHealth.value != ScreenReplayStateHealth.HEALTHY) {
             throw ScreenReplayStateUnavailableException("screen replay state is quarantined")
         }
-        var accepted = false
-        var encodedReplay: String? = null
-        try {
-            runBlocking {
-                store.edit { preferences ->
-                    if (preferences[replayBlockedKey] == true) {
-                        throw CorruptScreenReplayState("screen replay state is quarantined")
-                    }
-                    encodedReplay = preferences[replayKey]
-                    val rows = decodeReplayStrict(encodedReplay)
-                        .filterValues { it > now }
-                        .toMutableMap()
-                    val sessionDigest = digest(SESSION_REPLAY_DOMAIN, sessionId.toByteArray(Charsets.UTF_8))
-                    val tokenDigest = digest(TOKEN_REPLAY_DOMAIN, routingToken)
-                    if (
-                        sessionDigest !in rows && tokenDigest !in rows &&
-                        rows.size <= MAX_REPLAY_ROWS - ROWS_PER_REQUEST
-                    ) {
-                        rows[sessionDigest] = expiresAt
-                        rows[tokenDigest] = expiresAt
-                        accepted = true
-                    }
-                    preferences[replayKey] = ProtocolCodec.encodeToJson(
-                        rows.entries
-                            .sortedByDescending { it.value }
-                            .associate { it.key to it.value },
+        val sessionDigest = digest(SESSION_REPLAY_DOMAIN, sessionId.toByteArray(Charsets.UTF_8))
+        val tokenDigest = digest(TOKEN_REPLAY_DOMAIN, routingToken)
+        return@synchronized try {
+            when (
+                runBlocking {
+                    dao.consumeReplay(
+                        sessionDigest = sessionDigest,
+                        routingTokenDigest = tokenDigest,
+                        expiresAt = expiresAt,
+                        consumedAt = now,
                     )
                 }
+            ) {
+                ScreenReplayConsumeResult.CONSUMED -> true
+                ScreenReplayConsumeResult.DUPLICATE,
+                ScreenReplayConsumeResult.CAPACITY_EXCEEDED,
+                ScreenReplayConsumeResult.DISABLED,
+                ScreenReplayConsumeResult.QUARANTINED -> false
             }
-            accepted
-        } catch (error: CorruptScreenReplayState) {
-            quarantineReplayState(encodedReplay, now)
-            throw ScreenReplayStateUnavailableException("screen replay state failed validation", error)
-        } catch (error: ScreenReplayStateUnavailableException) {
-            throw error
         } catch (error: Throwable) {
-            // The signed envelope must remain unacknowledged so the relay can retry after storage recovers.
-            throw ScreenReplayStateUnavailableException("could not durably consume screen request", error)
+            throw if (error is ScreenReplayStateUnavailableException) {
+                error
+            } else {
+                ScreenReplayStateUnavailableException("could not durably consume screen request", error)
+            }
         }
     }
 
     /** Explicit recovery hook. Call only from a user-visible repair action while mirroring is disabled. */
     fun repairReplayState() = synchronized(lock) {
         try {
-            runBlocking {
-                store.edit { preferences ->
-                    preferences.remove(replayKey)
-                    preferences.remove(replayBlockedKey)
-                    preferences.remove(replayQuarantineDigestKey)
-                    preferences.remove(replayQuarantinedAtKey)
-                }
-            }
+            val repairedAt = System.currentTimeMillis()
+            runBlocking { dao.repairReplay(repairedAt) }
+            val current = aggregate.securityState
+            val repaired = (current ?: defaultSecurityState(repairedAt)).copy(
+                enabled = false,
+                replayHealth = ScreenReplayHealth.HEALTHY,
+                quarantineDigest = null,
+                quarantinedAt = null,
+                updatedAt = repairedAt,
+            )
+            aggregate = aggregate.copy(securityState = repaired)
+            publishSecurityState(repaired)
             _replayStateHealth.value = ScreenReplayStateHealth.HEALTHY
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.HEALTHY
         } catch (error: Throwable) {
             throw ScreenReplayStateUnavailableException("could not repair screen replay state", error)
         }
     }
 
-    private fun loadAuthorized(): Set<String> = runBlocking {
-        decodeAuthorized(store.data.first()[authorizedKey])
+    private fun loadAggregate(): ScreenAuthorizationAggregate = runBlocking { dao.readAuthorizations() }
+
+    private fun nextSecurityState(): ScreenSecurityStateEntity {
+        val now = System.currentTimeMillis()
+        val current = aggregate.securityState
+        return (current ?: defaultSecurityState(now)).copy(
+            authorizationRevision = (current?.authorizationRevision ?: 0L) + 1L,
+            updatedAt = now,
+        )
     }
 
-    private suspend fun persistAuthorized(value: Set<String>) {
-        store.edit { it[authorizedKey] = ProtocolCodec.encodeToJson(value.sorted().toSet()) }
+    private fun defaultSecurityState(now: Long) = ScreenSecurityStateEntity(
+        singletonId = OperationalSingletons.ID,
+        enabled = false,
+        replayHealth = ScreenReplayHealth.HEALTHY,
+        quarantineDigest = null,
+        quarantinedAt = null,
+        authorizationRevision = 0,
+        updatedAt = now,
+    )
+
+    private fun publishSecurityState(state: ScreenSecurityStateEntity?) {
+        _screenMirroringEnabled.value = state?.enabled == true
+        _replayStateHealth.value = state.replayHealth()
     }
 
-    /**
-     * Returns true only when [value] became durable. Any failure removes every in-memory grant and
-     * tries to persist that fail-closed state. The health flow disables capability advertisement if
-     * even the empty fallback cannot be committed.
-     */
-    private fun persistAuthorizedOrFailClosed(value: Set<String>): Boolean {
-        return try {
-            runBlocking { persistAuthorized(value) }
-            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.HEALTHY
-            true
-        } catch (_: Throwable) {
-            _authorizedPeerIds.value = emptySet()
-            val cleared = runCatching { runBlocking { persistAuthorized(emptySet()) } }.isSuccess
-            _authorizationStateHealth.value = if (cleared) {
-                ScreenAuthorizationStateHealth.HEALTHY
-            } else {
-                ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
-            }
-            false
-        }
+    private fun ScreenAuthorizationAggregate.replayHealth(): ScreenReplayStateHealth =
+        securityState?.replayHealth.toReplayStateHealth()
+
+    private fun ScreenSecurityStateEntity?.replayHealth(): ScreenReplayStateHealth =
+        this?.replayHealth.toReplayStateHealth()
+
+    private fun ScreenReplayHealth?.toReplayStateHealth(): ScreenReplayStateHealth = when (this) {
+        null, ScreenReplayHealth.HEALTHY -> ScreenReplayStateHealth.HEALTHY
+        ScreenReplayHealth.QUARANTINED -> ScreenReplayStateHealth.CORRUPT
     }
 
-    private fun decodeAuthorized(encoded: String?): Set<String> = encoded?.let {
-        runCatching { ProtocolCodec.decodeFromJson<Set<String>>(it) }.getOrDefault(emptySet())
-    } ?: emptySet()
-
-    private fun inspectAndQuarantineReplayState(): ScreenReplayStateHealth = runBlocking {
-        val preferences = store.data.first()
-        if (preferences[replayBlockedKey] == true) return@runBlocking ScreenReplayStateHealth.CORRUPT
-        val encoded = preferences[replayKey] ?: return@runBlocking ScreenReplayStateHealth.HEALTHY
-        try {
-            decodeReplayStrict(encoded)
-            ScreenReplayStateHealth.HEALTHY
-        } catch (_: CorruptScreenReplayState) {
-            quarantineReplayState(encoded, System.currentTimeMillis())
-            ScreenReplayStateHealth.CORRUPT
-        }
+    private fun Set<String>.toRoomPeers(updatedAt: Long): List<ScreenAuthorizedPeerEntity> = sorted().map { id ->
+        val previous = aggregate.peers.firstOrNull { it.peerId == id }
+        ScreenAuthorizedPeerEntity(
+            peerId = id,
+            grantedAt = previous?.grantedAt ?: updatedAt,
+            updatedAt = updatedAt,
+        )
     }
 
-    private fun quarantineReplayState(encoded: String?, detectedAt: Long) {
-        _replayStateHealth.value = ScreenReplayStateHealth.CORRUPT
-        runCatching {
-            runBlocking {
-                store.edit { preferences ->
-                    encoded?.let {
-                        preferences[replayQuarantineDigestKey] = digest(
-                            CORRUPT_REPLAY_DOMAIN,
-                            it.toByteArray(Charsets.UTF_8),
-                        )
-                    }
-                    preferences[replayQuarantinedAtKey] = detectedAt
-                    preferences[replayBlockedKey] = true
-                    preferences.remove(replayKey)
-                    // A corrupt replay ledger must also remove routing authority until an explicit repair.
-                    preferences[screenMirroringEnabledKey] = false
-                }
-            }
-        }
-    }
-
-    private fun decodeReplayStrict(encoded: String?): Map<String, Long> {
-        if (encoded == null) return emptyMap()
-        val decoded = try {
-            ProtocolCodec.decodeFromJson<Map<String, Long>>(encoded)
-        } catch (error: Throwable) {
-            throw CorruptScreenReplayState("screen replay state is not valid JSON", error)
-        }
-        if (
-            decoded.size > MAX_REPLAY_ROWS ||
-            decoded.any { (key, expiry) ->
-                key.length != SHA256_BASE64URL_LENGTH || key.any { it !in BASE64URL_CHARS } || expiry <= 0
-            }
-        ) {
-            throw CorruptScreenReplayState("screen replay state contains invalid rows")
-        }
-        return decoded
-    }
-
-    private fun digest(domain: ByteArray, value: ByteArray): String {
+    private fun digest(domain: ByteArray, value: ByteArray): ByteArray {
         val digest = MessageDigest.getInstance("SHA-256")
         digest.update(domain)
         digest.update(value)
-        return Base64.getUrlEncoder().withoutPadding().encodeToString(digest.digest())
+        return digest.digest()
     }
 
     private companion object {
-        const val MAX_REPLAY_ROWS = 512
-        const val ROWS_PER_REQUEST = 2
-        const val SHA256_BASE64URL_LENGTH = 43
-        const val BASE64URL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
         val SESSION_REPLAY_DOMAIN = "notisync-screen/replay/v1/session\u0000".toByteArray(Charsets.UTF_8)
         val TOKEN_REPLAY_DOMAIN = "notisync-screen/replay/v1/token\u0000".toByteArray(Charsets.UTF_8)
-        val CORRUPT_REPLAY_DOMAIN = "notisync-screen/replay/v1/corrupt\u0000".toByteArray(Charsets.UTF_8)
+    }
+}
+
+private fun requireValidPeerId(value: String) {
+    require(value.isNotBlank() && value.length <= 128 && value.none(Char::isISOControl)) {
+        "screen authorization peer id is invalid"
     }
 }

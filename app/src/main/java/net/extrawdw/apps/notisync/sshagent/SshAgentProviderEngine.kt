@@ -32,17 +32,22 @@ import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.protocol.Urgency
 
 /** Android application edge for authenticated SSH Agent traffic. */
-class SshAgentProviderEngine(
+internal class SshAgentProviderEngine(
     private val context: Context,
     private val providerClientId: ClientId,
     private val channel: SecureChannel,
-    private val store: SshKeyProviderStore,
+    private val store: SshAgentProviderRepository,
     private val notifications: SshAgentNotificationPresenter,
     private val scope: CoroutineScope,
     private val deviceNameOf: (ClientId) -> String?,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
     fun onSshAgentSync(message: InboundMessage, dataSync: DataSync) {
+        scope.launch { handleSshAgentSync(message, dataSync) }
+    }
+
+    /** Broker-custody receive path; returns only after the decoded SSH operation has completed. */
+    suspend fun handleSshAgentSync(message: InboundMessage, dataSync: DataSync) {
         if (!message.senderOwnDevice || dataSync.kind != DataSyncKind.SSH_AGENT) return
         val sync = dataSync.sshAgent ?: return
         if (sync.validationError(::sha256) != null) return
@@ -76,13 +81,11 @@ class SshAgentProviderEngine(
                     SshForgetResultKind.APPLIED,
                     forget.invalidatedThroughEpoch,
                 )
-                scope.launch {
-                    send(
-                        forget.requesterClientId,
-                        SshAgentSync(kind = SshAgentSyncKind.FORGET_RESULT, forgetResult = result),
-                    )
-                    if (outcome.inventoryChanged) broadcastSnapshot()
-                }
+                send(
+                    forget.requesterClientId,
+                    SshAgentSync(kind = SshAgentSyncKind.FORGET_RESULT, forgetResult = result),
+                )
+                if (outcome.inventoryChanged) broadcastSnapshot()
             }
             SshAgentSyncKind.KEYS_SNAPSHOT,
             SshAgentSyncKind.SIGN_RESULT,
@@ -92,7 +95,7 @@ class SshAgentProviderEngine(
         }
     }
 
-    fun approve(requestId: String): SshSignResult? {
+    suspend fun approve(requestId: String): SshSignResult? {
         val result = store.approve(requestId, providerClientId, now())
         if (result != null) {
             notifications.dismiss(requestId)
@@ -101,7 +104,7 @@ class SshAgentProviderEngine(
         return result
     }
 
-    fun approveImport(
+    suspend fun approveImport(
         requestId: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
@@ -125,7 +128,7 @@ class SshAgentProviderEngine(
         return outcome
     }
 
-    fun completePreparedImport(
+    suspend fun completePreparedImport(
         prepared: PreparedSshImportStorage,
         authenticatedCipher: javax.crypto.Cipher?,
         authenticatedSignature: java.security.Signature?,
@@ -145,9 +148,9 @@ class SshAgentProviderEngine(
         return outcome
     }
 
-    fun cancelPreparedImport(prepared: PreparedSshImportStorage) = store.cancelPreparedImport(prepared)
+    suspend fun cancelPreparedImport(prepared: PreparedSshImportStorage) = store.cancelPreparedImport(prepared)
 
-    fun prepareUserVerifiedSignature(requestId: String): PreparedSshSignature? {
+    suspend fun prepareUserVerifiedSignature(requestId: String): PreparedSshSignature? {
         val prepared = store.prepareUserVerifiedSignature(requestId, providerClientId, now())
         if (prepared == null && store.find(requestId)?.state == SshProviderRequestState.RESPONSE_PENDING_SEND) {
             notifications.dismiss(requestId)
@@ -156,7 +159,7 @@ class SshAgentProviderEngine(
         return prepared
     }
 
-    fun completeUserVerifiedSignature(
+    suspend fun completeUserVerifiedSignature(
         prepared: PreparedSshSignature,
         signature: java.security.Signature?,
         cipher: javax.crypto.Cipher?,
@@ -169,9 +172,9 @@ class SshAgentProviderEngine(
         return result
     }
 
-    fun cancelPreparedSignature(prepared: PreparedSshSignature) = store.cancelPreparedSignature(prepared)
+    suspend fun cancelPreparedSignature(prepared: PreparedSshSignature) = store.cancelPreparedSignature(prepared)
 
-    fun failUserVerification(prepared: PreparedSshSignature, code: SshProviderFailureCode) {
+    suspend fun failUserVerification(prepared: PreparedSshSignature, code: SshProviderFailureCode) {
         store.cancelPreparedSignature(prepared)
         if (store.failUserVerification(prepared.requestId, providerClientId, now(), code)) {
             notifications.dismiss(prepared.requestId)
@@ -179,14 +182,14 @@ class SshAgentProviderEngine(
         }
     }
 
-    fun reject(requestId: String) {
+    suspend fun reject(requestId: String) {
         if (store.reject(requestId, providerClientId, now())) {
             notifications.dismiss(requestId)
             SshAgentResponseWorker.enqueue(context, requestId)
         }
     }
 
-    fun approveAndRemember(requestId: String, rememberScope: SshRememberScope): SshSignResult? {
+    suspend fun approveAndRemember(requestId: String, rememberScope: SshRememberScope): SshSignResult? {
         val result = store.approveAndRemember(requestId, providerClientId, rememberScope, now())
         if (result != null) {
             notifications.dismiss(requestId)
@@ -211,7 +214,8 @@ class SshAgentProviderEngine(
     suspend fun sendPersistedResponse(requestId: String): Boolean {
         val stored = store.find(requestId) ?: return true
         if (stored.state != SshProviderRequestState.RESPONSE_PENDING_SEND) return true
-        val bytes = stored.encodedResponse ?: return false
+        val prepared = store.prepareResponse(requestId, now()) ?: return false
+        val bytes = prepared.encodedBody
         val sync = when (stored.kind) {
             SshProviderRequestKind.SIGN -> SshAgentSync(
                 kind = SshAgentSyncKind.SIGN_RESULT,
@@ -226,8 +230,8 @@ class SshAgentProviderEngine(
         }
         val accepted = send(stored.requesterClientId, sync)
         if (accepted) {
-            if (store.markSent(requestId, now())) {
-                store.find(requestId)?.let(::notifyAutoApproval)
+            if (store.completeResponse(prepared, now())) {
+                store.find(requestId)?.let { notifyAutoApproval(it) }
             }
             if (stored.kind == SshProviderRequestKind.IMPORT) broadcastSnapshot()
         }
@@ -235,25 +239,27 @@ class SshAgentProviderEngine(
     }
 
     fun reconcile() {
-        store.expireDue(now()).forEach(notifications::dismiss)
-        store.cancelInvalidatedPending(now()).forEach(notifications::dismiss)
-        store.pendingReview().forEach { request ->
-            val autoApproved = if (request.kind == SshProviderRequestKind.SIGN) {
-                store.autoApproveRemembered(request.requestId, providerClientId, now())
-            } else {
-                null
+        scope.launch {
+            store.expireDue(now()).forEach(notifications::dismiss)
+            store.cancelInvalidatedPending(now()).forEach(notifications::dismiss)
+            store.pendingReview().forEach { request ->
+                val autoApproved = if (request.kind == SshProviderRequestKind.SIGN) {
+                    store.autoApproveRemembered(request.requestId, providerClientId, now())
+                } else {
+                    null
+                }
+                if (autoApproved != null) {
+                    notifications.dismiss(request.requestId)
+                    SshAgentResponseWorker.enqueue(context, request.requestId)
+                } else {
+                    notifications.post(
+                        request,
+                        deviceNameOf(request.requesterClientId) ?: request.requesterClientId.shortForm(),
+                    )
+                }
             }
-            if (autoApproved != null) {
-                notifications.dismiss(request.requestId)
-                SshAgentResponseWorker.enqueue(context, request.requestId)
-            } else {
-                notifications.post(
-                    request,
-                    deviceNameOf(request.requesterClientId) ?: request.requesterClientId.shortForm(),
-                )
-            }
+            store.pendingResponses().forEach { SshAgentResponseWorker.enqueue(context, it.requestId) }
         }
-        store.pendingResponses().forEach { SshAgentResponseWorker.enqueue(context, it.requestId) }
     }
 
     /** Publishes a UI-originated key inventory mutation without blocking the main thread. */
@@ -288,24 +294,22 @@ class SshAgentProviderEngine(
         ) == 1
     }
 
-    private fun receiveKeysRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshKeysRequest) {
+    private suspend fun receiveKeysRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshKeysRequest) {
         if (request.requesterClientId != message.senderId || providerClientId !in request.targetProviderClientIds ||
             !fresh(request.requestedAt, request.expiresAt, message.createdAt)
         ) return
-        scope.launch {
-            val snapshot = store.snapshot(providerClientId, request.requestId, now())
-            send(
-                request.requesterClientId,
-                SshAgentSync(kind = SshAgentSyncKind.KEYS_SNAPSHOT, keysSnapshot = snapshot),
-            )
-        }
+        val snapshot = store.snapshot(providerClientId, request.requestId, now())
+        send(
+            request.requesterClientId,
+            SshAgentSync(kind = SshAgentSyncKind.KEYS_SNAPSHOT, keysSnapshot = snapshot),
+        )
     }
 
-    private fun receiveSignRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshSignRequest) {
+    private suspend fun receiveSignRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshSignRequest) {
         if (request.requesterClientId != message.senderId || providerClientId !in request.eligibleProviderClientIds ||
             !fresh(request.requestedAt, request.expiresAt, message.createdAt)
         ) return
-        fun sendKeyNotFound() {
+        suspend fun sendKeyNotFound() {
             val result = SshSignResult(
                 request.requestId,
                 request.requesterClientId,
@@ -315,12 +319,10 @@ class SshAgentProviderEngine(
                 providerClientId,
                 failure = SshProviderFailure(SshProviderFailureCode.KEY_NOT_FOUND),
             )
-            scope.launch {
-                send(
-                    request.requesterClientId,
-                    SshAgentSync(kind = SshAgentSyncKind.SIGN_RESULT, signResult = result),
-                )
-            }
+            send(
+                request.requesterClientId,
+                SshAgentSync(kind = SshAgentSyncKind.SIGN_RESULT, signResult = result),
+            )
         }
         when (store.acceptSign(request, now())) {
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {
@@ -350,7 +352,7 @@ class SshAgentProviderEngine(
         }
     }
 
-    private fun notifyAutoApproval(stored: StoredSshProviderRequest) {
+    private suspend fun notifyAutoApproval(stored: StoredSshProviderRequest) {
         if (stored.history.approvalKind != SshRequestApprovalKind.REMEMBERED_AUTHORIZATION) return
         notifications.postAutoApproved(
             stored,
@@ -358,7 +360,7 @@ class SshAgentProviderEngine(
         )
     }
 
-    private fun receiveImportRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshImportRequest) {
+    private suspend fun receiveImportRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshImportRequest) {
         if (request.requesterClientId != message.senderId || !fresh(request.requestedAt, request.expiresAt, message.createdAt)) return
         when (store.acceptImport(request, now())) {
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {

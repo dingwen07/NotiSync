@@ -73,8 +73,8 @@ fun DevicesScreen(
     val context = LocalContext.current
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
-    val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
-    val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
+    val deviceName by graph.profileCapture.deviceName.collectAsStateWithLifecycle()
+    val screenMirroringEnabled by graph.screenMirrorAuthorizations.screenMirroringEnabled.collectAsStateWithLifecycle()
     val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
     val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
     val ownDevices = roster.filter { it.ownDevice }

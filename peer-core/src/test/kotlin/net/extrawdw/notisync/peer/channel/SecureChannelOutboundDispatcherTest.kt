@@ -87,7 +87,7 @@ class SecureChannelOutboundDispatcherTest {
 
     private class FixedDirectory(private val recipient: RecipientKey) : PeerDirectory {
         override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? = null
-        override fun recipients(scope: Recipients): List<RecipientKey> = listOf(recipient)
+        override fun resolveAudience(scope: Recipients) = AudienceSnapshot(listOf(recipient))
     }
 
     private class RecordingTransport : Transport {

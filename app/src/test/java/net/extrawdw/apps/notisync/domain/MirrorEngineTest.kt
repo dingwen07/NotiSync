@@ -5,17 +5,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.channel.InboundMessage
 import net.extrawdw.apps.notisync.channel.SecureChannel
-import net.extrawdw.apps.notisync.data.ActivityEvent
-import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.testsupport.testChannel
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
-import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.apps.notisync.testsupport.FakeTrustState
 import net.extrawdw.apps.notisync.testsupport.newHpke
 import net.extrawdw.apps.notisync.testsupport.newSigner
 import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
-import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.AssetRole
@@ -32,7 +28,6 @@ import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.MirrorCategory
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
-import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.PrivateAssetRef
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import org.junit.Assert.assertEquals
@@ -99,30 +94,18 @@ class MirrorEngineTest {
         importance = MirrorImportance.DEFAULT, postTime = 1L,
     )
 
-    /** A notification bridged from an iPhone over ANCS: ANCS-shaped key, IOS_ANCS origin, iPhone name. */
-    private fun iosNotif(source: ClientId) = CapturedNotification(
-        sourceClientId = source, sourceKey = "ancs|ip|com.x|7", packageName = "com.x",
-        appLabel = "WhatsApp", title = "t", text = "x", style = NotificationStyle.DEFAULT,
-        category = MirrorCategory.MESSAGE, importance = MirrorImportance.HIGH, postTime = 1L,
-        originPlatform = OriginPlatform.IOS_ANCS, originDeviceName = "Dingwen's iPhone",
-        originDeviceId = "ip",
-    )
-
     private fun engine(
         me: net.extrawdw.notisync.protocol.crypto.IdentitySigner,
         myHpkePrivate: ByteArray,
         trust: FakeTrustState,
         renderer: MirrorRenderer,
         transport: CapturingTransport = CapturingTransport(),
-        activityLog: ActivityLog = ActivityLog(),
     ): Pair<SecureChannel, MirrorEngine> {
         val channel = testChannel(me, myHpkePrivate, trust, transport)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = renderer,
-            activityLog = activityLog,
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
         )
         mirror.register()
         return channel to mirror
@@ -181,47 +164,7 @@ class MirrorEngineTest {
     }
 
     @Test
-    fun notificationActivity_includesDeliveryMode() {
-        val me = newSigner();
-        val myHpke = newHpke()
-        val own = newSigner();
-        val ownHpke = newHpke()
-        val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true, name = "Desk"))
-        }
-        val renderer = RecordingRenderer()
-        val activityLog = ActivityLog()
-        val channel = testChannel(me, myHpke.privateKeyset, trust)
-        val mirror = MirrorEngine(
-            channel = channel,
-            renderer = renderer,
-            activityLog = activityLog,
-            scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
-            peerNameResolver = { trust.displayName(it) ?: it.shortForm() },
-        )
-        mirror.register()
-
-        channel.deliver(
-            seal(
-                own,
-                MessageType.NOTIFICATION,
-                ProtocolCodec.encodeToCbor(sampleNotif(own.clientId)),
-                me.clientId,
-                myHpke.publicKeyset,
-                "n1"
-            ),
-            DeliveryMode.FCM_RELAY_FETCH,
-        )
-
-        assertEquals(1, renderer.renders)
-        val row = activityLog.events.value.single()
-        assertEquals("from Desk", row.detail)
-        assertEquals(DeliveryMode.FCM_RELAY_FETCH, row.deliveryMode)
-    }
-
-    @Test
-    fun receivedGroupSummary_rendersButDoesNotLogActivityRow() {
+    fun receivedGroupSummary_rendersWithoutAdditionalProjection() {
         val me = newSigner();
         val myHpke = newHpke()
         val own = newSigner();
@@ -230,8 +173,7 @@ class MirrorEngineTest {
             peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
         }
         val renderer = RecordingRenderer()
-        val activityLog = ActivityLog()
-        val (channel, _) = engine(me, myHpke.privateKeyset, trust, renderer, activityLog = activityLog)
+        val (channel, _) = engine(me, myHpke.privateKeyset, trust, renderer)
 
         channel.deliver(
             seal(
@@ -252,7 +194,6 @@ class MirrorEngineTest {
         )
 
         assertEquals(1, renderer.renders)
-        assertTrue(activityLog.events.value.isEmpty())
     }
 
     @Test
@@ -265,14 +206,7 @@ class MirrorEngineTest {
             peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
         }
         val renderer = RecordingRenderer()
-        val activityLog = ActivityLog()
-        val (channel, mirror) = engine(
-            me,
-            myHpke.privateKeyset,
-            trust,
-            renderer,
-            activityLog = activityLog
-        )
+        val (channel, mirror) = engine(me, myHpke.privateKeyset, trust, renderer)
         val canceled = mutableListOf<String>()
         mirror.originalCanceler = OriginalCanceler { canceled.add(it) }
 
@@ -286,12 +220,10 @@ class MirrorEngineTest {
                 myHpke.publicKeyset,
                 "d1"
             ),
-            DeliveryMode.WEBSOCKET,
         )
 
         assertEquals(listOf(own.clientId to "0|com.x|1|t"), renderer.cleared)
         assertEquals(listOf("0|com.x|1|t"), canceled)
-        assertEquals(DeliveryMode.WEBSOCKET, activityLog.events.value.single().deliveryMode)
     }
 
     @Test
@@ -340,139 +272,6 @@ class MirrorEngineTest {
         )
 
         assertEquals(listOf("ancs|ip|com.x|7"), iosCleared)
-    }
-
-    @Test
-    fun receivedIosNotification_titleCarriesOriginDeviceName() {
-        val me = newSigner();
-        val myHpke = newHpke()
-        val own = newSigner();
-        val ownHpke = newHpke()
-        val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
-        }
-        val activityLog = ActivityLog()
-        val (channel, _) = engine(
-            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
-        )
-
-        channel.deliver(
-            seal(
-                own,
-                MessageType.NOTIFICATION,
-                ProtocolCodec.encodeToCbor(iosNotif(own.clientId)),
-                me.clientId,
-                myHpke.publicKeyset,
-                "n1"
-            )
-        )
-
-        // A bridged iPhone notification's posted row reads "App (iPhone)", not just the app label.
-        val row = activityLog.events.value.single()
-        assertEquals(ActivityEvent.Kind.RECEIVED, row.kind)
-        assertEquals("WhatsApp (Dingwen's iPhone)", row.title)
-    }
-
-    @Test
-    fun remoteDismissalOfIosNotification_titleMatchesPostedRow() {
-        val me = newSigner();
-        val myHpke = newHpke()
-        val own = newSigner();
-        val ownHpke = newHpke()
-        val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
-        }
-        val activityLog = ActivityLog()
-        val (channel, _) = engine(
-            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
-        )
-
-        // Receive the iPhone notification (remembers its title) …
-        channel.deliver(
-            seal(
-                own,
-                MessageType.NOTIFICATION,
-                ProtocolCodec.encodeToCbor(iosNotif(own.clientId)),
-                me.clientId,
-                myHpke.publicKeyset,
-                "n1"
-            )
-        )
-        // … then a peer dismisses it. The DismissEvent carries only the opaque ANCS key (whose 2nd
-        // segment is the iPhone id, not the app), yet the row must still read "App (iPhone)".
-        channel.deliver(
-            seal(
-                own,
-                MessageType.DISMISSAL,
-                ProtocolCodec.encodeToCbor(DismissEvent(own.clientId, "ancs|ip|com.x|7", 2L)),
-                me.clientId,
-                myHpke.publicKeyset,
-                "d1"
-            )
-        )
-
-        val dismissed = activityLog.events.value.first()
-        assertEquals(ActivityEvent.Kind.DISMISSED, dismissed.kind)
-        assertEquals("WhatsApp (Dingwen's iPhone)", dismissed.title)
-    }
-
-    @Test
-    fun dismissalOfIosNotification_coldCache_namesAppNotIphoneId() {
-        val me = newSigner();
-        val myHpke = newHpke()
-        val own = newSigner();
-        val ownHpke = newHpke()
-        val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
-        }
-        val activityLog = ActivityLog()
-        val (channel, _) = engine(
-            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
-        )
-
-        // No prior posted row (e.g. the process restarted while the mirror sat in the tray): the ANCS key's
-        // app field is the bundle id, never the iPhone id — so the row names the app, not the opaque hash.
-        channel.deliver(
-            seal(
-                own,
-                MessageType.DISMISSAL,
-                ProtocolCodec.encodeToCbor(
-                    DismissEvent(own.clientId, "ancs|a3f9deadbeef|net.whatsapp.WhatsApp|7", 1L)
-                ),
-                me.clientId,
-                myHpke.publicKeyset,
-                "d1"
-            )
-        )
-
-        val row = activityLog.events.value.single()
-        assertEquals(ActivityEvent.Kind.DISMISSED, row.kind)
-        assertEquals("net.whatsapp.WhatsApp", row.title)
-    }
-
-    @Test
-    fun capturedIosNotification_titleCarriesDeviceName_andSurvivesLocalDismissal() = runBlocking {
-        val me = newSigner();
-        val myHpke = newHpke()
-        val own = newSigner();
-        val ownHpke = newHpke()
-        val trust = FakeTrustState().apply {
-            peers.value = listOf(peerOf(own, ownHpke.publicKeyset, ownDevice = true))
-        }
-        val activityLog = ActivityLog()
-        val (_, mirror) = engine(
-            me, myHpke.privateKeyset, trust, RecordingRenderer(), activityLog = activityLog
-        )
-
-        // Bridge side: capture from the iPhone (Sent row) then locally swipe the mirror (Dismissed row).
-        mirror.captureLocal(iosNotif(me.clientId))
-        mirror.dismissLocal(me.clientId, "ancs|ip|com.x|7")
-
-        val rows = activityLog.events.value // newest first
-        assertEquals(ActivityEvent.Kind.DISMISSED, rows[0].kind)
-        assertEquals("WhatsApp (Dingwen's iPhone)", rows[0].title)
-        assertEquals(ActivityEvent.Kind.SENT, rows[1].kind)
-        assertEquals("WhatsApp (Dingwen's iPhone)", rows[1].title)
     }
 
     @Test
@@ -632,7 +431,7 @@ class MirrorEngineTest {
     }
 
     @Test
-    fun tapRemote_unicastsToOrigin_andLogsActivity() = runBlocking {
+    fun tapRemote_unicastsToOrigin() = runBlocking {
         val me = newSigner();
         val myHpke = newHpke()
         val origin = newSigner();
@@ -641,15 +440,11 @@ class MirrorEngineTest {
             peers.value = listOf(peerOf(origin, originHpke.publicKeyset, ownDevice = true, name = "Pixel 9"))
         }
         val transport = CapturingTransport()
-        val activityLog = ActivityLog()
         val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),
-            activityLog = activityLog,
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
-            peerNameResolver = { trust.displayName(it) ?: it.shortForm() },
         )
         mirror.register()
 
@@ -659,7 +454,6 @@ class MirrorEngineTest {
         assertEquals(MessageType.ACTION, envelope.typ)
         assertEquals(setOf(origin.clientId), envelope.recipientIds().toSet())
         assertEquals(Urgency.HIGH, urgency)
-        assertEquals("opening on Pixel 9", activityLog.events.value.single().detail)
     }
 
     @Test
@@ -701,8 +495,7 @@ class MirrorEngineTest {
             )
         }
         val transport = CapturingTransport()
-        val activityLog = ActivityLog()
-        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport, activityLog)
+        val (_, mirror) = engine(me, myHpke.privateKeyset, trust, RecordingRenderer(), transport)
 
         mirror.captureLocal(
             sampleNotif(me.clientId).copy(
@@ -713,7 +506,6 @@ class MirrorEngineTest {
         )
 
         assertEquals(setOf(android.clientId), transport.envelopes.single().recipientIds().toSet())
-        assertTrue(activityLog.events.value.isEmpty())
     }
 
     @Test
@@ -1086,9 +878,7 @@ class MirrorEngineTest {
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),
-            activityLog = ActivityLog(),
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
             assetResolver = MissingResolver(listOf(ref(other.clientId))),
         )
         mirror.register()
@@ -1126,9 +916,7 @@ class MirrorEngineTest {
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),
-            activityLog = ActivityLog(),
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
             assetResolver = MissingResolver(listOf(ref(sender.clientId))),
         )
         mirror.register()
@@ -1165,9 +953,7 @@ class MirrorEngineTest {
         val mirror = MirrorEngine(
             channel = channel,
             renderer = renderer,
-            activityLog = ActivityLog(),
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
             assetResolver = AvailableResolver(),
         )
         mirror.register()
@@ -1206,9 +992,7 @@ class MirrorEngineTest {
         val mirror = MirrorEngine(
             channel = channel,
             renderer = RecordingRenderer(),
-            activityLog = ActivityLog(),
             scope = CoroutineScope(Dispatchers.Unconfined),
-            activityText = TestActivityText,
             assetResolver = resolver,
         )
         mirror.register()

@@ -19,17 +19,19 @@ import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.SshImportSourceType
 
-class SshAgentNotificationPresenter(
+internal class SshAgentNotificationPresenter(
     private val context: Context,
-    private val store: SshKeyProviderStore,
+    private val store: SshAgentProviderRepository,
 ) {
-    fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
+    suspend fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
         }
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
-        val knownHostname = stored.signRequest?.destinationContext?.let(store::knownHostHostname)
+        val knownHostname = stored.signRequest?.destinationContext?.let { destination ->
+            store.knownHostHostname(destination)
+        }
         val destination = stored.destinationLabel(knownHostname)?.take(MAX_CONTEXT_CHARS)
         val process = stored.signRequest?.processContext?.processLineage?.mainCallerLabel()
         val keyName = when (stored.kind) {
@@ -139,7 +141,7 @@ class SshAgentNotificationPresenter(
         return true
     }
 
-    fun postAutoApproved(stored: StoredSshProviderRequest, requesterName: String): Boolean {
+    suspend fun postAutoApproved(stored: StoredSshProviderRequest, requesterName: String): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
@@ -149,7 +151,9 @@ class SshAgentNotificationPresenter(
             stored.outcome != SshProviderRequestOutcome.SIGNED
         ) return false
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
-        val knownHostname = stored.signRequest?.destinationContext?.let(store::knownHostHostname)
+        val knownHostname = stored.signRequest?.destinationContext?.let { destination ->
+            store.knownHostHostname(destination)
+        }
             ?: stored.history.destinationHostKeyFingerprint?.let { fingerprint ->
                 store.knownHosts().firstOrNull { it.fingerprint() == fingerprint }?.hostname
             }

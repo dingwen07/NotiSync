@@ -76,7 +76,7 @@ class SecureChannel(
     /**
      * Notified that we hold no usable key-epoch for a peer and should fetch its current one — from BOTH
      * directions: an inbound envelope whose sender we can't resolve ([deliver]), and an outbound send that
-     * targets a peer we can't currently seal to ([sendAll], via [PeerDirectory.unsealableRecipients]). The
+     * targets a peer we can't currently seal to ([sendAll], via [PeerDirectory.resolveAudience]). The
      * handler reacts by pulling that peer's key-epoch from the broker (and falling back to a roster
      * broadcast), so an asymmetric or post-rotation gap self-heals on either receive OR attempted send.
      * Default is a no-op.
@@ -167,12 +167,13 @@ class SecureChannel(
         signWith: SignerSelection,
     ): Int {
         validateOutboundPolicy(typ, bodies, scope, urgency)
-        val recipients = directory.recipients(scope)
+        val audience = directory.resolveAudience(scope)
+        val recipients = audience.recipients
         // Send-initiated key-epoch repair (same handler as the receive-side unresolved-sender path): a trusted
         // peer this scope targets but that we can't currently seal to was filtered out of `recipients`, so
         // attempting delivery would otherwise never repair it. Surface it for a broker refetch. BEFORE the
         // empty-recipients return: a scope whose ONLY peer is unsealable must still trigger its repair.
-        directory.unsealableRecipients(scope).forEach(onUnresolvedSender)
+        audience.unsealableRecipientIds.forEach(onUnresolvedSender)
         if (recipients.isEmpty()) return 0
         // Resolve the operational signer once per broadcast (stable across the batch); the identity root is
         // a fixed field. EnvelopeCrypto picks the overload by signer type, stamping signerEpoch accordingly.
@@ -251,8 +252,9 @@ class SecureChannel(
         if (items.isEmpty()) return 0
         require(items.all { it.messageId.isNotBlank() }) { "strict outbound messageId must not be blank" }
 
-        val recipients = directory.recipients(scope)
-        val unsealable = directory.unsealableRecipients(scope)
+        val audience = directory.resolveAudience(scope)
+        val recipients = audience.recipients
+        val unsealable = audience.unsealableRecipientIds
         unsealable.forEach(onUnresolvedSender)
         if (unsealable.isNotEmpty()) {
             error(

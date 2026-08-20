@@ -52,7 +52,8 @@ class FoundationEngineDecodedCallbackTest {
                 override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? =
                     if (id == sender.clientId && signerEpoch == 0) SenderKey(sender.publicKeySpki, true) else null
 
-                override fun recipients(scope: Recipients): List<RecipientKey> = emptyList()
+                override fun resolveAudience(scope: Recipients) =
+                    net.extrawdw.notisync.peer.channel.AudienceSnapshot(emptyList())
             },
             log = ChannelLogger { },
         )
@@ -107,7 +108,8 @@ class FoundationEngineDecodedCallbackTest {
                 override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? =
                     if (id == sender.clientId && signerEpoch == 0) SenderKey(sender.publicKeySpki, true) else null
 
-                override fun recipients(scope: Recipients): List<RecipientKey> = emptyList()
+                override fun resolveAudience(scope: Recipients) =
+                    net.extrawdw.notisync.peer.channel.AudienceSnapshot(emptyList())
             },
             log = ChannelLogger { },
         )
@@ -142,6 +144,8 @@ class FoundationEngineDecodedCallbackTest {
 
     private object EmptyTrustState : TrustState {
         override val activePeers = MutableStateFlow(emptyList<Peer>())
+        override fun directorySnapshot(now: Long) =
+            net.extrawdw.notisync.peer.trust.TrustDirectorySnapshot(emptyList())
         override fun displayName(clientId: ClientId): String? = null
         override fun buildTrustTable() = TrustTable(emptyList())
         override fun applyProfile(update: ProfileUpdate) = false

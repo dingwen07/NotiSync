@@ -62,7 +62,8 @@ class FoundationEngineTrustDurabilityTest {
                         null
                     }
 
-                override fun recipients(scope: Recipients): List<RecipientKey> = emptyList()
+                override fun resolveAudience(scope: Recipients) =
+                    net.extrawdw.notisync.peer.channel.AudienceSnapshot(emptyList())
             },
             log = ChannelLogger { },
         )

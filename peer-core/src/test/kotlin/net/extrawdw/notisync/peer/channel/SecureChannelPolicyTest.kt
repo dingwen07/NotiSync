@@ -336,7 +336,7 @@ class SecureChannelPolicyTest {
         }
         val directory = object : PeerDirectory {
             override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? = null
-            override fun recipients(scope: Recipients): List<RecipientKey> = emptyList()
+            override fun resolveAudience(scope: Recipients) = AudienceSnapshot(emptyList())
         }
         return SecureChannel(
             signer = identity,

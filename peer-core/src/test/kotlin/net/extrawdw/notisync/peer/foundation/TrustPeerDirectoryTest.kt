@@ -5,6 +5,8 @@ import kotlinx.coroutines.flow.StateFlow
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.trust.IncomingTrustResult
 import net.extrawdw.notisync.peer.trust.Peer
+import net.extrawdw.notisync.peer.trust.TrustDirectoryPeer
+import net.extrawdw.notisync.peer.trust.TrustDirectorySnapshot
 import net.extrawdw.notisync.peer.trust.TrustState
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
@@ -12,10 +14,28 @@ import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.SignedBlob
 import net.extrawdw.notisync.protocol.TrustTable
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Test
 import java.util.Base64
 
 class TrustPeerDirectoryTest {
+    @Test
+    fun audienceComesFromOneDefensiveTrustSnapshot() {
+        val sealable = peer("sealable", emptySet())
+        val keyless = keylessPeer("keyless", ownDevice = true)
+        val trust = FakeTrustState(listOf(sealable), listOf(keyless))
+        val directory = TrustPeerDirectory(trust, now = { 123L })
+
+        val audience = directory.resolveAudience(Recipients.OwnMesh)
+        val originalKey = audience.recipients.single().hpkePublicKey.copyOf()
+        audience.recipients.single().hpkePublicKey.fill(0)
+
+        assertEquals(1, trust.directorySnapshotCalls)
+        assertEquals(0, trust.legacyDirectoryReadCalls)
+        assertEquals(setOf(keyless.clientId), audience.unsealableRecipientIds)
+        assertArrayEquals(originalKey, audience.recipients.single().hpkePublicKey)
+    }
+
     @Test
     fun capableUnicastRequiresExactOwnPeerAndEveryDeclaredCapability() {
         val required = setOf(
@@ -30,11 +50,13 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             listOf(matching.clientId),
-            directory.recipients(Recipients.OnlyCapable(matching.clientId, required)).map { it.clientId },
+            directory.resolveAudience(Recipients.OnlyCapable(matching.clientId, required))
+                .recipients.map { it.clientId },
         )
         assertEquals(
             emptyList<ClientId>(),
-            directory.recipients(Recipients.OnlyCapable(missingControl.clientId, required)).map { it.clientId },
+            directory.resolveAudience(Recipients.OnlyCapable(missingControl.clientId, required))
+                .recipients.map { it.clientId },
         )
     }
 
@@ -49,9 +71,9 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             listOf(first.clientId, second.clientId),
-            directory.recipients(
+            directory.resolveAudience(
                 Recipients.OnlyCapableSet(setOf(first.clientId, second.clientId, incomplete.clientId), required),
-            ).map { it.clientId },
+            ).recipients.map { it.clientId },
         )
     }
 
@@ -82,12 +104,12 @@ class TrustPeerDirectoryTest {
             Capability.DISPLAY_NOTIFICATION_UPDATES,
         )
 
-        val recipients = directory.recipients(
+        val recipients = directory.resolveAudience(
             Recipients.OwnMeshFiltered(
                 requiredCapabilities = required,
                 requireCapabilityRoutingV1 = true,
             )
-        )
+        ).recipients
 
         assertEquals(listOf(routed.clientId), recipients.map { it.clientId })
     }
@@ -113,13 +135,13 @@ class TrustPeerDirectoryTest {
         )
         val directory = TrustPeerDirectory(FakeTrustState(listOf(compatibility, filtering)))
 
-        val recipients = directory.recipients(
+        val recipients = directory.resolveAudience(
             Recipients.OwnMeshFiltered(
                 requiredCapabilities = setOf(Capability.DISPLAY, Capability.BACKGROUND_WAKE),
                 forbiddenCapabilities = setOf(Capability.PUSH_FILTERING),
                 requireCapabilityRoutingV1 = true,
             )
-        )
+        ).recipients
 
         assertEquals(listOf(compatibility.clientId), recipients.map { it.clientId })
     }
@@ -132,7 +154,7 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             setOf(own.clientId),
-            directory.unsealableRecipients(Recipients.OwnMesh),
+            directory.resolveAudience(Recipients.OwnMesh).unsealableRecipientIds,
         )
     }
 
@@ -156,12 +178,12 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             setOf(matchingOwn.clientId),
-            directory.unsealableRecipients(
+            directory.resolveAudience(
                 Recipients.OwnMeshFiltered(
                     requiredCapabilities = required,
                     requireCapabilityRoutingV1 = true,
                 ),
-            ),
+            ).unsealableRecipientIds,
         )
     }
 
@@ -173,11 +195,11 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             setOf(own.clientId),
-            directory.unsealableRecipients(Recipients.Only(own.clientId)),
+            directory.resolveAudience(Recipients.Only(own.clientId)).unsealableRecipientIds,
         )
         assertEquals(
             emptySet<ClientId>(),
-            directory.unsealableRecipients(Recipients.Only(other.clientId)),
+            directory.resolveAudience(Recipients.Only(other.clientId)).unsealableRecipientIds,
         )
     }
 
@@ -199,15 +221,18 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             setOf(matching.clientId),
-            directory.unsealableRecipients(Recipients.OnlyCapable(matching.clientId, required)),
+            directory.resolveAudience(Recipients.OnlyCapable(matching.clientId, required))
+                .unsealableRecipientIds,
         )
         assertEquals(
             emptySet<ClientId>(),
-            directory.unsealableRecipients(Recipients.OnlyCapable(missing.clientId, required)),
+            directory.resolveAudience(Recipients.OnlyCapable(missing.clientId, required))
+                .unsealableRecipientIds,
         )
         assertEquals(
             emptySet<ClientId>(),
-            directory.unsealableRecipients(Recipients.OnlyCapable(other.clientId, required)),
+            directory.resolveAudience(Recipients.OnlyCapable(other.clientId, required))
+                .unsealableRecipientIds,
         )
     }
 
@@ -223,7 +248,7 @@ class TrustPeerDirectoryTest {
 
         assertEquals(
             setOf(own.clientId, other.clientId),
-            directory.unsealableRecipients(Recipients.AllTrusted),
+            directory.resolveAudience(Recipients.AllTrusted).unsealableRecipientIds,
         )
     }
 
@@ -259,14 +284,51 @@ class TrustPeerDirectoryTest {
         keylessPeers: List<KeylessPeerMetadata> = emptyList(),
     ) : TrustState {
         private val keylessPeers = keylessPeers.associateBy(KeylessPeerMetadata::clientId)
+        var directorySnapshotCalls = 0
+        var legacyDirectoryReadCalls = 0
 
         override val activePeers: StateFlow<List<Peer>> = MutableStateFlow(peers)
+        override fun directorySnapshot(now: Long): TrustDirectorySnapshot {
+            directorySnapshotCalls++
+            return TrustDirectorySnapshot(
+                activePeers.value.map { peer ->
+                    TrustDirectoryPeer(
+                        clientId = peer.clientId,
+                        ownDevice = peer.ownDevice,
+                        platform = peer.platform,
+                        capabilities = peer.capabilities,
+                        sealablePeer = peer,
+                        needsKeyEpoch = false,
+                    )
+                } + keylessPeers.values.map { peer ->
+                    TrustDirectoryPeer(
+                        clientId = peer.clientId,
+                        ownDevice = peer.ownDevice,
+                        platform = peer.platform,
+                        capabilities = peer.capabilities,
+                        sealablePeer = null,
+                        needsKeyEpoch = true,
+                    )
+                },
+            )
+        }
         override fun displayName(clientId: ClientId): String? = null
-        override fun peerPlatform(clientId: ClientId): String? = keylessPeers[clientId]?.platform
-        override fun peerCapabilities(clientId: ClientId): List<Capability> =
-            keylessPeers[clientId]?.capabilities.orEmpty()
-        override fun peerOwnDevice(clientId: ClientId): Boolean? = keylessPeers[clientId]?.ownDevice
-        override fun peersNeedingKeyEpoch(now: Long): List<ClientId> = keylessPeers.keys.toList()
+        override fun peerPlatform(clientId: ClientId): String? {
+            legacyDirectoryReadCalls++
+            return keylessPeers[clientId]?.platform
+        }
+        override fun peerCapabilities(clientId: ClientId): List<Capability> {
+            legacyDirectoryReadCalls++
+            return keylessPeers[clientId]?.capabilities.orEmpty()
+        }
+        override fun peerOwnDevice(clientId: ClientId): Boolean? {
+            legacyDirectoryReadCalls++
+            return keylessPeers[clientId]?.ownDevice
+        }
+        override fun peersNeedingKeyEpoch(now: Long): List<ClientId> {
+            legacyDirectoryReadCalls++
+            return keylessPeers.keys.toList()
+        }
         override fun buildTrustTable() = TrustTable(emptyList())
         override fun applyProfile(update: ProfileUpdate) = false
         override fun applyIncomingTable(

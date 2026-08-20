@@ -201,6 +201,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         if (hasFocus) applySystemChrome()
     }
 
+    @SuppressLint("RestrictedApi") // A ComponentActivity override must delegate unhandled keys to its superclass.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN

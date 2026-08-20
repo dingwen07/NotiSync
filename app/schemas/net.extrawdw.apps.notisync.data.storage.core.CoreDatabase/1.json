@@ -1,0 +1,745 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "2f505ae6abcad792bdae0f39947bfbb3",
+    "entities": [
+      {
+        "tableName": "core_maintenance_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL DEFAULT 1, `trust_cleanup_state` TEXT NOT NULL, `trust_cleanup_completed_at` INTEGER, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`singleton`))",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "trustCleanupState",
+            "columnName": "trust_cleanup_state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "trustCleanupCompletedAt",
+            "columnName": "trust_cleanup_completed_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        }
+      },
+      {
+        "tableName": "identity_metadata",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL DEFAULT 1, `key_alias` TEXT NOT NULL, `key_alias_version` INTEGER NOT NULL, `public_spki` BLOB NOT NULL, `client_id` TEXT NOT NULL, `security_level` TEXT NOT NULL, `lifecycle_state` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`singleton`))",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "keyAlias",
+            "columnName": "key_alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keyAliasVersion",
+            "columnName": "key_alias_version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicSpki",
+            "columnName": "public_spki",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "clientId",
+            "columnName": "client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "securityLevel",
+            "columnName": "security_level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lifecycleState",
+            "columnName": "lifecycle_state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        }
+      },
+      {
+        "tableName": "trust_snapshot",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL DEFAULT 1, `signature_format` TEXT NOT NULL, `entries` BLOB NOT NULL, `cards` BLOB NOT NULL, `overlays` BLOB NOT NULL, `epochs` BLOB, `signature` BLOB NOT NULL, `snapshot_digest` BLOB NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`singleton`))",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "signatureFormat",
+            "columnName": "signature_format",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "entriesUtf8",
+            "columnName": "entries",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cardsUtf8",
+            "columnName": "cards",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "overlaysUtf8",
+            "columnName": "overlays",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "epochsUtf8",
+            "columnName": "epochs",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "signatureBase64UrlUtf8",
+            "columnName": "signature",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "snapshotDigest",
+            "columnName": "snapshot_digest",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        }
+      },
+      {
+        "tableName": "crypto_epoch",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`epoch` INTEGER NOT NULL, `operational_signer_alias` TEXT NOT NULL, `operational_signer_public_spki` BLOB NOT NULL, `hpke_public_keyset` BLOB NOT NULL, `hpke_private_keyset_wrapped` BLOB, `security_level` TEXT NOT NULL, `lifecycle_state` TEXT NOT NULL, `anti_rollback_floor` INTEGER NOT NULL, `activation_at` INTEGER, `retirement_at` INTEGER, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`epoch`))",
+        "fields": [
+          {
+            "fieldPath": "epoch",
+            "columnName": "epoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalSignerAlias",
+            "columnName": "operational_signer_alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalSignerPublicSpki",
+            "columnName": "operational_signer_public_spki",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hpkePublicKeyset",
+            "columnName": "hpke_public_keyset",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hpkePrivateKeysetWrapped",
+            "columnName": "hpke_private_keyset_wrapped",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "securityLevel",
+            "columnName": "security_level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lifecycleState",
+            "columnName": "lifecycle_state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "antiRollbackFloor",
+            "columnName": "anti_rollback_floor",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "activationAt",
+            "columnName": "activation_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "retirementAt",
+            "columnName": "retirement_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "epoch"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_crypto_epoch_lifecycle_state_activation_at",
+            "unique": false,
+            "columnNames": [
+              "lifecycle_state",
+              "activation_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_crypto_epoch_lifecycle_state_activation_at` ON `${TABLE_NAME}` (`lifecycle_state`, `activation_at`)"
+          },
+          {
+            "name": "index_crypto_epoch_operational_signer_alias",
+            "unique": true,
+            "columnNames": [
+              "operational_signer_alias"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_crypto_epoch_operational_signer_alias` ON `${TABLE_NAME}` (`operational_signer_alias`)"
+          }
+        ]
+      },
+      {
+        "tableName": "broker_auth_token",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL DEFAULT 1, `wrapped_token` BLOB NOT NULL, `encoding_version` INTEGER NOT NULL, `issued_at` INTEGER, `expires_at` INTEGER, `broker_endpoint_revision` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`singleton`), FOREIGN KEY(`singleton`, `broker_endpoint_revision`) REFERENCES `core_transport_state`(`singleton`, `broker_endpoint_revision`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "wrappedToken",
+            "columnName": "wrapped_token",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "encodingVersion",
+            "columnName": "encoding_version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "issuedAt",
+            "columnName": "issued_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expires_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "brokerEndpointRevision",
+            "columnName": "broker_endpoint_revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_broker_auth_token_singleton_broker_endpoint_revision",
+            "unique": false,
+            "columnNames": [
+              "singleton",
+              "broker_endpoint_revision"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_broker_auth_token_singleton_broker_endpoint_revision` ON `${TABLE_NAME}` (`singleton`, `broker_endpoint_revision`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "core_transport_state",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "singleton",
+              "broker_endpoint_revision"
+            ],
+            "referencedColumns": [
+              "singleton",
+              "broker_endpoint_revision"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "core_transport_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL DEFAULT 1, `broker_url` TEXT NOT NULL, `group_id` TEXT, `fcm_route_ref` TEXT, `route_epoch` INTEGER NOT NULL, `broker_endpoint_revision` INTEGER NOT NULL DEFAULT 0, `self_epoch_activated_at` INTEGER, `operational_generation` INTEGER NOT NULL, `operational_incarnation_id` TEXT NOT NULL, `replay_fence_state` TEXT NOT NULL, `continuity_origin` TEXT, `replay_fence_id` TEXT, `replay_fence_epoch` INTEGER, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`singleton`))",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "1"
+          },
+          {
+            "fieldPath": "brokerUrl",
+            "columnName": "broker_url",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "groupId",
+            "columnName": "group_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "fcmRouteRef",
+            "columnName": "fcm_route_ref",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "routeEpoch",
+            "columnName": "route_epoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "brokerEndpointRevision",
+            "columnName": "broker_endpoint_revision",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "selfEpochActivatedAt",
+            "columnName": "self_epoch_activated_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "operationalGeneration",
+            "columnName": "operational_generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalIncarnationId",
+            "columnName": "operational_incarnation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replayFenceState",
+            "columnName": "replay_fence_state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "continuityOrigin",
+            "columnName": "continuity_origin",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "replayFenceId",
+            "columnName": "replay_fence_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "replayFenceEpoch",
+            "columnName": "replay_fence_epoch",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_core_transport_state_singleton_broker_endpoint_revision",
+            "unique": true,
+            "columnNames": [
+              "singleton",
+              "broker_endpoint_revision"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_core_transport_state_singleton_broker_endpoint_revision` ON `${TABLE_NAME}` (`singleton`, `broker_endpoint_revision`)"
+          }
+        ]
+      },
+      {
+        "tableName": "keystore_operation",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`operation_id` TEXT NOT NULL, `target_type` TEXT NOT NULL, `target_id` TEXT NOT NULL, `operation_kind` TEXT NOT NULL, `state` TEXT NOT NULL, `attempts` INTEGER NOT NULL DEFAULT 0, `created_at` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `completed_at` INTEGER, `last_error_code` TEXT, PRIMARY KEY(`operation_id`))",
+        "fields": [
+          {
+            "fieldPath": "operationId",
+            "columnName": "operation_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetType",
+            "columnName": "target_type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "targetId",
+            "columnName": "target_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationKind",
+            "columnName": "operation_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "attempts",
+            "columnName": "attempts",
+            "affinity": "INTEGER",
+            "notNull": true,
+            "defaultValue": "0"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "completedAt",
+            "columnName": "completed_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "lastErrorCode",
+            "columnName": "last_error_code",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "operation_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_keystore_operation_target_type_target_id_state",
+            "unique": false,
+            "columnNames": [
+              "target_type",
+              "target_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_keystore_operation_target_type_target_id_state` ON `${TABLE_NAME}` (`target_type`, `target_id`, `state`)"
+          },
+          {
+            "name": "index_keystore_operation_state_updated_at",
+            "unique": false,
+            "columnNames": [
+              "state",
+              "updated_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_keystore_operation_state_updated_at` ON `${TABLE_NAME}` (`state`, `updated_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "core_command_applied",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`command_id` TEXT NOT NULL, `authenticated_request_id` TEXT NOT NULL, `command_digest` BLOB NOT NULL, `command_type` TEXT NOT NULL, `outcome` TEXT NOT NULL, `core_revision` INTEGER NOT NULL, `applied_at` INTEGER NOT NULL, PRIMARY KEY(`command_id`))",
+        "fields": [
+          {
+            "fieldPath": "commandId",
+            "columnName": "command_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authenticatedRequestId",
+            "columnName": "authenticated_request_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandDigest",
+            "columnName": "command_digest",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commandType",
+            "columnName": "command_type",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "coreRevision",
+            "columnName": "core_revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "appliedAt",
+            "columnName": "applied_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "command_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_core_command_applied_applied_at_command_id",
+            "unique": false,
+            "columnNames": [
+              "applied_at",
+              "command_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_core_command_applied_applied_at_command_id` ON `${TABLE_NAME}` (`applied_at`, `command_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "core_activity_outbox",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`command_id` TEXT NOT NULL, `event_id` TEXT NOT NULL, `operational_generation` INTEGER NOT NULL, `feature` TEXT NOT NULL, `semantic_action` TEXT NOT NULL, `direction` TEXT NOT NULL, `outcome` TEXT NOT NULL, `peer_client_id` TEXT, `correlation_id` TEXT, `delivery_mode` TEXT, `args_version` INTEGER NOT NULL, `render_args` BLOB NOT NULL, `occurred_at` INTEGER NOT NULL, `created_at` INTEGER NOT NULL, PRIMARY KEY(`command_id`), FOREIGN KEY(`command_id`) REFERENCES `core_command_applied`(`command_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "commandId",
+            "columnName": "command_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "eventId",
+            "columnName": "event_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalGeneration",
+            "columnName": "operational_generation",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "feature",
+            "columnName": "feature",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "semanticAction",
+            "columnName": "semantic_action",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "direction",
+            "columnName": "direction",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "peerClientId",
+            "columnName": "peer_client_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "correlationId",
+            "columnName": "correlation_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "deliveryMode",
+            "columnName": "delivery_mode",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "argsVersion",
+            "columnName": "args_version",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "renderArgs",
+            "columnName": "render_args",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "occurredAt",
+            "columnName": "occurred_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "command_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_core_activity_outbox_event_id",
+            "unique": true,
+            "columnNames": [
+              "event_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `index_core_activity_outbox_event_id` ON `${TABLE_NAME}` (`event_id`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "core_command_applied",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "command_id"
+            ],
+            "referencedColumns": [
+              "command_id"
+            ]
+          }
+        ]
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '2f505ae6abcad792bdae0f39947bfbb3')"
+    ]
+  }
+}

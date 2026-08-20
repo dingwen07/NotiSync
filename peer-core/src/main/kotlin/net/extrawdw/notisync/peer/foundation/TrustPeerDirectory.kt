@@ -1,23 +1,28 @@
 package net.extrawdw.notisync.peer.foundation
 
+import java.util.Base64
+import net.extrawdw.notisync.peer.channel.AudienceSnapshot
 import net.extrawdw.notisync.peer.channel.PeerDirectory
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SenderKey
+import net.extrawdw.notisync.peer.trust.TrustDirectoryPeer
 import net.extrawdw.notisync.peer.trust.TrustState
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
-import java.util.Base64
 
 /**
  * [PeerDirectory] over the trust roster — the foundation's implementation of the channel's key port.
  *
- * Reads `TrustStore.activePeers` (TRUSTED ∩ current-key-epoch held) at call time and NEVER caches, so a
- * newly paired, just-revoked, or just-converged peer is reflected immediately. The base64 key fields are
- * decoded here so the channel deals only in bytes; the per-epoch anti-rollback gate lives in the trust
- * store ([TrustState.peerOperationalSpki]).
+ * Outbound resolution consumes one [TrustState.directorySnapshot], so sealable recipients and targeted
+ * key-repair peers cannot come from different roster versions. The base64 key fields are decoded here so the
+ * channel deals only in bytes; the inbound per-epoch anti-rollback gate remains in
+ * [TrustState.peerOperationalSpki].
  */
-class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
+class TrustPeerDirectory(
+    private val trust: TrustState,
+    private val now: () -> Long = System::currentTimeMillis,
+) : PeerDirectory {
     private val b64 = Base64.getDecoder()
 
     override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? {
@@ -32,94 +37,43 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
         return SenderKey(verifySpki, peer.ownDevice)
     }
 
-    override fun recipients(scope: Recipients): List<RecipientKey> {
-        val peers = trust.activePeers.value
-        val selected = when (scope) {
-            Recipients.OwnMesh -> peers.filter { it.ownDevice }
-            Recipients.AllTrusted -> peers
-            // Own mesh minus the devices that asked (over a FILTER) not to receive this capture, and minus any
-            // platform family that can't consume it (e.g. iOS for Android group summaries).
-            is Recipients.OwnMeshFiltered -> {
-                peers.filter {
-                    it.ownDevice &&
-                        it.clientId !in scope.excluded &&
-                        capabilityOrLegacyPlatformAllows(
-                            it.capabilities,
-                            it.platform,
-                            scope,
-                        )
-                }
-            }
-            // Unicast is own-mesh only, matching the original sendCard/sendAssetSync `&& it.ownDevice`
-            // guard: a body-controlled id (e.g. a notification's sourceClientId) must never cause a send
-            // to a trusted "other" (non-own) contact device.
-            is Recipients.Only -> peers.filter { it.clientId == scope.id && it.ownDevice }
-            is Recipients.OnlyCapable -> peers.filter {
-                it.clientId == scope.id &&
-                    it.ownDevice &&
-                    Capability.CAPABILITY_ROUTING_V1 in it.capabilities &&
-                    it.capabilities.containsAll(scope.requiredCapabilities)
-            }
-            is Recipients.OnlyCapableSet -> peers.filter {
-                it.clientId in scope.ids &&
-                    it.ownDevice &&
-                    Capability.CAPABILITY_ROUTING_V1 in it.capabilities &&
-                    it.capabilities.containsAll(scope.requiredCapabilities)
+    override fun resolveAudience(scope: Recipients): AudienceSnapshot {
+        val snapshot = trust.directorySnapshot(now()).peers
+        val selected = snapshot.filter { it.matches(scope) }
+        val recipients = selected.mapNotNull { directoryPeer ->
+            directoryPeer.sealablePeer?.let { peer ->
+                // Seal to the peer's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
+                // signed EnvelopeAuth, so the receiver selects its matching retained private keyset.
+                RecipientKey(
+                    peer.clientId,
+                    b64.decode(peer.hpkePublicKeyB64),
+                    peer.currentEpoch,
+                )
             }
         }
-        // Seal to each recipient's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
-        // signed EnvelopeAuth, so the recipient selects the matching (possibly retained) private keyset.
-        return selected.map {
-            RecipientKey(
-                it.clientId,
-                b64.decode(it.hpkePublicKeyB64),
-                it.currentEpoch
-            )
-        }
+        val unsealable = selected
+            .asSequence()
+            .filter(TrustDirectoryPeer::needsKeyEpoch)
+            .map(TrustDirectoryPeer::clientId)
+            .toSet()
+        return AudienceSnapshot(recipients, unsealable)
     }
 
-    override fun unsealableRecipients(scope: Recipients): Set<ClientId> {
-        // Trusted peers we hold no usable key-epoch for (the convergence-pull target set). This result is also
-        // the strict sender's retry boundary, so it must describe the exact requested audience: an unrelated
-        // keyless "other" contact must not turn an empty own-mesh projection into a permanently blocked send.
-        val needing = trust.peersNeedingKeyEpoch(System.currentTimeMillis())
-        return when (scope) {
-            Recipients.OwnMesh -> needing.filterTo(mutableSetOf()) { trust.peerOwnDevice(it) == true }
-            Recipients.AllTrusted -> needing.toSet()
-            // Don't drive key-epoch repair for a peer we're intentionally NOT sending this capture to.
-            is Recipients.OwnMeshFiltered -> {
-                val remaining = needing.toSet() - scope.excluded
-                // Skip the roster re-scan when there's nothing left to repair (the steady-state case).
-                if (remaining.isEmpty()) remaining else remaining.filterTo(mutableSetOf()) { id ->
-                    trust.peerOwnDevice(id) == true && capabilityOrLegacyPlatformAllows(
-                        trust.peerCapabilities(id),
-                        trust.peerPlatform(id).orEmpty(),
-                        scope,
-                    )
-                }
-            }
-            is Recipients.Only -> if (scope.id in needing && trust.peerOwnDevice(scope.id) == true) {
-                setOf(scope.id)
-            } else {
-                emptySet()
-            }
-            is Recipients.OnlyCapable -> if (
-                scope.id in needing &&
-                trust.peerOwnDevice(scope.id) == true &&
-                Capability.CAPABILITY_ROUTING_V1 in trust.peerCapabilities(scope.id) &&
-                trust.peerCapabilities(scope.id).containsAll(scope.requiredCapabilities)
-            ) {
-                setOf(scope.id)
-            } else {
-                emptySet()
-            }
-            is Recipients.OnlyCapableSet -> scope.ids.filterTo(mutableSetOf()) { id ->
-                id in needing &&
-                    trust.peerOwnDevice(id) == true &&
-                    Capability.CAPABILITY_ROUTING_V1 in trust.peerCapabilities(id) &&
-                    trust.peerCapabilities(id).containsAll(scope.requiredCapabilities)
-            }
-        }
+    private fun TrustDirectoryPeer.matches(scope: Recipients): Boolean = when (scope) {
+        Recipients.OwnMesh -> ownDevice
+        Recipients.AllTrusted -> true
+        is Recipients.OwnMeshFiltered -> ownDevice &&
+            clientId !in scope.excluded &&
+            capabilityOrLegacyPlatformAllows(capabilities, platform, scope)
+        is Recipients.Only -> clientId == scope.id && ownDevice
+        is Recipients.OnlyCapable -> clientId == scope.id &&
+            ownDevice &&
+            Capability.CAPABILITY_ROUTING_V1 in capabilities &&
+            capabilities.containsAll(scope.requiredCapabilities)
+        is Recipients.OnlyCapableSet -> clientId in scope.ids &&
+            ownDevice &&
+            Capability.CAPABILITY_ROUTING_V1 in capabilities &&
+            capabilities.containsAll(scope.requiredCapabilities)
     }
 
     private fun capabilityOrLegacyPlatformAllows(

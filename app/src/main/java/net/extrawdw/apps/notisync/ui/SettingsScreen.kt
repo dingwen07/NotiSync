@@ -62,14 +62,14 @@ import kotlinx.coroutines.withContext
 fun SettingsScreen() {
     val graph = rememberGraph()
     val scope = rememberCoroutineScope()
-    val brokerUrl by graph.settings.brokerUrl.collectAsStateWithLifecycle()
-    val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
+    val brokerUrl by graph.brokerUrl.collectAsStateWithLifecycle()
+    val deviceName by graph.profileCapture.deviceName.collectAsStateWithLifecycle()
     val batchLow by graph.settings.batchLowPriority.collectAsStateWithLifecycle()
     val advanced by graph.settings.advancedDiagnostics.collectAsStateWithLifecycle()
     val analytics by graph.settings.analyticsEnabled.collectAsStateWithLifecycle()
     val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
     val lockScreenPublicIdentity by graph.settings.lockScreenPublicIdentity.collectAsStateWithLifecycle()
-    val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
+    val screenMirroringEnabled by graph.screenMirrorAuthorizations.screenMirroringEnabled.collectAsStateWithLifecycle()
     val shizukuStatus by graph.screenMirrorShizuku.status.collectAsStateWithLifecycle()
     val screenCodecBits by graph.screenMirrorShizuku.availableCodecBits.collectAsStateWithLifecycle()
     val screenProbeBits by graph.screenMirrorShizuku.probeBits.collectAsStateWithLifecycle()
@@ -98,7 +98,7 @@ fun SettingsScreen() {
     LaunchedEffect(screenEnableRequested, shizukuStatus, screenCodecBits, screenProbeBits) {
         if (screenEnableRequested && shizukuStatus == ShizukuScreenStatus.READY) {
             if (screenSetupReady(shizukuStatus, screenCodecBits, screenProbeBits)) {
-                graph.settings.setScreenMirroringEnabled(true)
+                graph.screenMirrorAuthorizations.setScreenMirroringEnabled(true)
             }
             screenEnableRequested = false
         }
@@ -139,7 +139,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = deviceName,
-                    onCommit = { graph.scope.launch { graph.settings.setDeviceName(it) } },
+                    onCommit = { graph.scope.launch { graph.profileCapture.setDeviceName(it) } },
                     label = { Text(stringResource(R.string.settings_device_name)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
@@ -151,7 +151,7 @@ fun SettingsScreen() {
             item {
                 SettingsTextField(
                     value = brokerUrl,
-                    onCommit = { graph.scope.launch { graph.settings.setBrokerUrl(it) } },
+                    onCommit = { graph.scope.launch { graph.setBrokerUrl(it) } },
                     label = { Text(stringResource(R.string.settings_broker_url)) },
                     keyboardOptions = KeyboardOptions(
                         autoCorrectEnabled = false,
@@ -185,7 +185,7 @@ fun SettingsScreen() {
                     onChange = { enabled ->
                         if (!enabled) {
                             screenEnableRequested = false
-                            scope.launch { graph.settings.setScreenMirroringEnabled(false) }
+                            graph.screenMirrorAuthorizations.setScreenMirroringEnabled(false)
                         } else {
                             val permissions = buildList {
                                 if (ContextCompat.checkSelfPermission(
@@ -284,8 +284,6 @@ fun SettingsScreen() {
                         },
                     )
                 }
-                // SSH Agent key-storage flow test — one self-contained item; see SshKeyStorageFlowTestCard.
-                item { SshKeyStorageFlowTestCard() }
             }
         }
     }
@@ -335,7 +333,8 @@ fun SettingsScreen() {
  * A settings text field that commits its value only when editing is *done* — when the field loses
  * focus, or the user presses the IME action (Done commits + dismisses; Next advances focus, which
  * also triggers the focus-loss commit). Keystrokes only update local state, so a single edit never
- * fans out a string of partial values (important for [setDeviceName], which propagates to peers).
+ * fans out a string of partial values (important for [RoomProfileCaptureFacade.setDeviceName], which propagates
+ * to peers).
  */
 @Composable
 private fun SettingsTextField(

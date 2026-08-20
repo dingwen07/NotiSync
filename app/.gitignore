@@ -9,6 +9,7 @@
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
+/local-device-fixtures/
 /release
 /captures
 .externalNativeBuild

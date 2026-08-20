@@ -33,6 +33,8 @@ import net.extrawdw.notisync.protocol.crypto.IdentitySigner
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
+import net.extrawdw.notisync.peer.trust.TrustDirectoryPeer
+import net.extrawdw.notisync.peer.trust.TrustDirectorySnapshot
 import net.extrawdw.notisync.protocol.crypto.SoftwareOperationalSigner
 import java.util.Base64
 
@@ -82,6 +84,34 @@ class CapturingTransport : Transport {
 class FakeTrustState : TrustState {
     val peers = MutableStateFlow<List<Peer>>(emptyList())
     override val activePeers: StateFlow<List<Peer>> = peers
+
+    override fun directorySnapshot(now: Long): TrustDirectorySnapshot {
+        val activeIds = peers.value.mapTo(mutableSetOf(), Peer::clientId)
+        val active = peers.value.map { peer ->
+            TrustDirectoryPeer(
+                clientId = peer.clientId,
+                ownDevice = peer.ownDevice,
+                platform = peer.platform,
+                capabilities = peer.capabilities,
+                sealablePeer = peer,
+                needsKeyEpoch = peer.clientId in peersNeeding,
+            )
+        }
+        val keyless = peersNeeding.asSequence()
+            .filterNot(activeIds::contains)
+            .map { clientId ->
+                TrustDirectoryPeer(
+                    clientId = clientId,
+                    ownDevice = peerOwnDevices[clientId] ?: false,
+                    platform = peerPlatforms[clientId].orEmpty(),
+                    capabilities = peerCapabilitySets[clientId].orEmpty(),
+                    sealablePeer = null,
+                    needsKeyEpoch = true,
+                )
+            }
+            .toList()
+        return TrustDirectorySnapshot(active + keyless)
+    }
 
     var table: TrustTable = TrustTable(emptyList())
     var incomingResult: IncomingTrustResult = IncomingTrustResult(emptyList(), emptyList())

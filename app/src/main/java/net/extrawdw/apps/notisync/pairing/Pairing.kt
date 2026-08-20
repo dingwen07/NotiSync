@@ -8,7 +8,6 @@ import com.google.zxing.EncodeHintType
 import com.google.zxing.qrcode.QRCodeWriter
 import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import net.extrawdw.apps.notisync.AppGraph
-import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
 import kotlinx.coroutines.launch
@@ -91,12 +90,6 @@ class PairingManager(private val graph: AppGraph) {
         // Apply the peer's key-epoch (verified standalone, pinned to the just-pinned identity) so the peer is
         // sealable at once — its operational + current HPKE keys come from here, not the card.
         verified.epochBlob?.let { graph.trust.applyKeyEpoch(verified.card.clientId, it) }
-        graph.activityLog.add(
-            ActivityEvent.Kind.PAIRED,
-            graph.activityText.pairedTitle(),
-            verified.card.displayName,
-            System.currentTimeMillis()
-        )
         // Make sure our own key-epoch is published so the new peer (and broker) can resolve us.
         graph.scope.launch { runCatching { graph.transport.publishKeyEpoch(graph.buildClientKeyEpochBlob()) } }
         // Tell our own devices about the new device (own or other) so the shared roster + its keys converge.

@@ -4,21 +4,16 @@ import android.annotation.SuppressLint
 import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
-import net.extrawdw.notisync.peer.channel.SecureChannel
-import net.extrawdw.notisync.peer.channel.safeToAck
+import net.extrawdw.apps.notisync.messaging.MAX_AUTHENTICATED_MESSAGE_ID_CHARS
 import net.extrawdw.apps.notisync.work.WakeFetchWorker
-import net.extrawdw.notisync.peer.transport.DeliveryMode
-import net.extrawdw.notisync.protocol.Envelope
-import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.notisync.protocol.RelayWire
-import java.util.Base64
 
 /**
  * FCM data-message handler. The broker sends data-only messages: an inline encrypted envelope ("ct")
  * for small payloads, or a wake pointer ("mid") for large ones — which WorkManager pulls from the
  * broker's relay by id rather than waiting for the next foreground WebSocket flush.
- * Decryption happens locally in the [SecureChannel] — FCM never sees plaintext. The graph's receive gate
- * authenticates inline and either commits stale notification payloads to the inbox or dispatches synchronously.
+ * FCM never sees plaintext. This callback extracts only the durable broker locator and immediately hands it to
+ * WorkManager; authentication, decryption, storage, and feature dispatch happen under a valid worker lifecycle.
+ * The broker relay copy is authoritative recovery state, so the inline ciphertext is never the sole copy.
  */
 // Routing uses the FCM installation id from the newer register()/onRegistered() flow (see
 // AppGraph.registerFcmRoute), not the legacy registration token — so onNewToken() is intentionally
@@ -27,47 +22,24 @@ import java.util.Base64
 class NotiSyncMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
-        val acceptedAt = message.data[RelayWire.ACCEPTED_AT_PUSH_KEY]?.toLongOrNull()
-        val ct = message.data["ct"]
-        if (ct != null) {
-            val envelope = runCatching {
-                ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(ct))
-            }.getOrNull() ?: return
-            val graph = (applicationContext as NotiSyncApp)
-                .awaitGraphReadyBlocking(INLINE_GRAPH_WAIT_MS)
-            if (graph == null) {
-                // Cold graph initialization can outlive Firebase's callback budget. The inline envelope also has
-                // a relay copy; hand its id to durable WorkManager instead of silently waiting for foreground.
-                WakeFetchWorker.enqueue(applicationContext, envelope.messageId, acceptedAt)
-                return
-            }
-            val channel = graph.secureChannel
-            if (channel == null) {
-                WakeFetchWorker.enqueue(applicationContext, envelope.messageId, acceptedAt)
-                return
-            }
-            // Inline delivery never gets fetched, so the broker can't drop its relay copy on its own —
-            // queue it for the worker's batch ack (skipped for a dropped-unhandled message).
-            val outcome = graph.deliverInbound(envelope, DeliveryMode.FCM_INLINE, acceptedAt)
-            graph.onInlineDelivered(envelope.messageId, outcome)
-            if (!outcome.safeToAck) {
-                // Retryable handler/storage failures and key-convergence races remain queued at the broker.
-                WakeFetchWorker.enqueue(applicationContext, envelope.messageId, acceptedAt)
-            }
-            return
-        }
-        // Wake-only message ("typ"="wake"): the payload was too large to inline. Hand off immediately
-        // to WorkManager so this FCM callback never blocks on graph init, network, or relay fetch time.
-        message.data["mid"]?.let { mid ->
-            WakeFetchWorker.enqueue(applicationContext, mid, acceptedAt)
-        }
+        val messageId = relayWakeMessageId(message.data) ?: return
+        WakeFetchWorker.enqueue(
+            context = applicationContext,
+            messageId = messageId,
+            expedited = message.priority == RemoteMessage.PRIORITY_HIGH,
+        )
     }
 
     override fun onRegistered(installationId: String) {
-        (applicationContext as NotiSyncApp).runWhenGraphReady { it.onFcmRegistered(installationId) }
-    }
-
-    private companion object {
-        const val INLINE_GRAPH_WAIT_MS = 10_000L
+        (applicationContext as? NotiSyncApp)?.runWhenReadyServices { services ->
+            services.fcmRouteRegistration.onRegistered(installationId)
+        }
     }
 }
+
+/** Bounded FCM locator parsing only; the broker supplies `mid` for both inline and wake pushes. */
+internal fun relayWakeMessageId(data: Map<String, String>): String? =
+    data["mid"]?.takeIf(::isValidRelayMessageId)
+
+private fun isValidRelayMessageId(value: String): Boolean =
+    value.isNotBlank() && value.length <= MAX_AUTHENTICATED_MESSAGE_ID_CHARS && value.none(Char::isISOControl)

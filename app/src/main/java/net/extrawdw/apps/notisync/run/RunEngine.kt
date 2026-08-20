@@ -3,22 +3,28 @@ package net.extrawdw.apps.notisync.run
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import net.extrawdw.apps.notisync.data.ActivityEvent
-import net.extrawdw.apps.notisync.data.ActivityLog
-import net.extrawdw.apps.notisync.data.ActivityText
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import net.extrawdw.apps.notisync.data.run.RunApplyResult
+import net.extrawdw.apps.notisync.data.run.RunKey
+import net.extrawdw.apps.notisync.data.run.RunRepository
+import net.extrawdw.apps.notisync.data.run.StoredRun
 import net.extrawdw.notisync.peer.channel.InboundMessage
-import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
+import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
-import net.extrawdw.notisync.peer.transport.ifKnown
-import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.MessageType
@@ -26,7 +32,6 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunControl
 import net.extrawdw.notisync.protocol.RunControlKind
 import net.extrawdw.notisync.protocol.RunControlResult
-import net.extrawdw.notisync.protocol.RunCommandRequest
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
 import net.extrawdw.notisync.protocol.RunSync
@@ -50,38 +55,35 @@ class RunEngine internal constructor(
     private val presenter: RunStatePresenter,
     private val scope: CoroutineScope,
     private val sendControl: suspend (RunControl) -> Boolean,
-    private val activityLog: ActivityLog? = null,
-    private val activityText: ActivityText? = null,
-    private val deviceNameOf: (ClientId) -> String? = { null },
     private val now: () -> Long = { System.currentTimeMillis() },
 ) {
+    /** Production convenience constructor: Room owns Run state; SecureChannel remains the existing wire path. */
     constructor(
         channel: SecureChannel,
-        store: RunStore,
+        repository: RunRepository,
         presenter: RunStatePresenter,
         scope: CoroutineScope,
-        activityLog: ActivityLog,
-        activityText: ActivityText,
-        deviceNameOf: (ClientId) -> String?,
         now: () -> Long = { System.currentTimeMillis() },
     ) : this(
-        repository = store,
+        repository = repository,
         presenter = presenter,
         scope = scope,
         sendControl = { control -> sendOverChannel(channel, control) },
-        activityLog = activityLog,
-        activityText = activityText,
-        deviceNameOf = deviceNameOf,
         now = now,
     )
 
-    val runs: StateFlow<List<StoredRun>> = repository.runs
+    /** Room-backed snapshots are the sole presentation source; the engine does not own another cache. */
+    val runs: StateFlow<List<StoredRun>> = repository.observeAll().stateIn(
+        scope = scope,
+        started = SharingStarted.Eagerly,
+        initialValue = emptyList(),
+    )
 
     private val refreshByKey = ConcurrentHashMap<RunKey, String>()
     private val refreshTimeouts = ConcurrentHashMap<String, Job>()
     private val _pendingRefreshes = MutableStateFlow<Set<RunKey>>(emptySet())
     val pendingRefreshes: StateFlow<Set<RunKey>> = _pendingRefreshes.asStateFlow()
-    private val presentationLock = Any()
+    private val presentationLock = Mutex()
     private val maintenanceJob = scope.launch {
         while (isActive) {
             delay(RUN_MAINTENANCE_INTERVAL_MS)
@@ -93,44 +95,48 @@ class RunEngine internal constructor(
     fun onRunSync(message: InboundMessage, sync: DataSync) {
         if (!message.senderOwnDevice || sync.kind != DataSyncKind.RUN) return
         val run = sync.run ?: return
-        when (run.kind) {
-            RunSyncKind.STATE -> receiveState(message, run.state ?: return)
-            RunSyncKind.CONTROL_RESULT -> {
-                val result = run.controlResult ?: return
-                logReceived(message, result.activitySummary())
-                receiveControlResult(message, result)
+        runBlocking(Dispatchers.IO) {
+            when (run.kind) {
+                RunSyncKind.STATE -> receiveState(message, run.state ?: return@runBlocking)
+                RunSyncKind.CONTROL_RESULT -> {
+                    val result = run.controlResult ?: return@runBlocking
+                    receiveControlResult(message, result)
+                }
+                // Android is a Run display/controller. It never hosts controls or executes command requests.
+                // These sub-kinds are not handled on this display/controller surface.
+                RunSyncKind.CONTROL,
+                RunSyncKind.COMMAND_REQUEST,
+                -> Unit
             }
-            // Android is a Run display/controller. It never hosts controls or executes command requests.
-            // Still record safely summarized traffic: Activity is also the protocol diagnostics feed.
-            RunSyncKind.CONTROL -> logReceived(message, (run.control ?: return).activitySummary())
-            RunSyncKind.COMMAND_REQUEST ->
-                logReceived(message, (run.commandRequest ?: return).activitySummary())
         }
     }
 
-    private fun receiveState(message: InboundMessage, state: RunState) {
+    private suspend fun receiveState(message: InboundMessage, state: RunState) {
         if (state.hostClientId != message.senderId || !state.validForDisplay()) return
-        synchronized(presentationLock) {
-            val key = RunKey(message.senderId.value, state.runId)
-            val activeBefore = activeKeys()
+        presentationLock.withLock {
+            val key = RunKey(message.senderId, state.runId)
+            val activeBefore = readSnapshotForDelivery()
+                .filter(StoredRun::active)
+                .mapTo(mutableSetOf(), StoredRun::key)
             val result = try {
                 repository.apply(state)
             } catch (error: Exception) {
                 throw RetryableDeliveryException("could not persist Run state", error)
             }
             dismissRunsNoLongerActive(activeBefore)
-            if (result == RunApplyResult.OLDER) return
-            // Match the other application handlers: log a valid, newly-applied inbound update, but not a stale
-            // revision or an equal-revision transport replay. Unlike notification presentation, every semantic
-            // Run update (including PERIODIC, LLM_SUMMARY, and REFRESH) belongs in the diagnostics feed.
-            if (result == RunApplyResult.INSERTED || result == RunApplyResult.UPDATED) {
-                logReceived(message, state.activitySummary())
+            when (result) {
+                RunApplyResult.OLDER -> return
+                RunApplyResult.CONFLICT ->
+                    throw RetryableDeliveryException("conflicting Run revision cannot be acknowledged")
+                RunApplyResult.CAPACITY_EXCEEDED ->
+                    throw RetryableDeliveryException("Run storage capacity is exhausted")
+                else -> Unit
             }
-
             // Equal is intentionally re-presented: it is the delivery retry produced by a crash or renderer
-            // failure after SQLite committed. An equal row whose checkpoint is already current is instead a
-            // durable-outbox resend with a new envelope; rendering it again could duplicate sound/vibration.
-            val durable = repository.find(key)
+            // failure after Room committed. An equal row whose checkpoint is already current is instead a
+            // transport replay with a new envelope; rendering it again could duplicate sound/vibration.
+            val durable = runCatching { repository.find(key) }
+                .getOrElse { throw RetryableDeliveryException("persisted Run state cannot be read", it) }
                 ?: throw RetryableDeliveryException("persisted Run state is unavailable")
             if (result == RunApplyResult.EQUAL && !durable.presentationPending) return
             // Always render the durable current row, never alternate data carrying the same revision number.
@@ -154,17 +160,20 @@ class RunEngine internal constructor(
 
     /** Re-post only snapshots that committed without a successful presentation checkpoint. */
     fun reconcilePendingPresentations() {
-        synchronized(presentationLock) {
-            // A store can age an active-phase snapshot into History during cold start, before this presenter exists.
-            // Dismiss any stable ongoing notification left behind by a previous process in that case.
-            repository.runs.value
-                .filter { !it.active && it.state.remotePhaseIsActive() }
-                .forEach { stored -> runCatching { presenter.dismiss(stored.key) } }
-            repository.runs.value.filter { it.presentationPending }.forEach { stored ->
-                runCatching {
-                    val posted = presenter.render(stored.state)
-                    if (posted || !stored.active) {
-                        repository.markPresented(stored.key, stored.state.revision)
+        runBlocking(Dispatchers.IO) {
+            presentationLock.withLock {
+                // Room retention can age an active-phase snapshot into History during cold start, before this presenter exists.
+                // Dismiss any stable ongoing notification left behind by a previous process in that case.
+                val storedRuns = snapshot()
+                storedRuns
+                    .filter { !it.active && it.state.remotePhaseIsActive() }
+                    .forEach { stored -> runCatching { presenter.dismiss(stored.key) } }
+                storedRuns.filter { it.presentationPending }.forEach { stored ->
+                    runCatching {
+                        val posted = presenter.render(stored.state)
+                        if (posted || !stored.active) {
+                            repository.markPresented(stored.key, stored.state.revision)
+                        }
                     }
                 }
             }
@@ -173,29 +182,35 @@ class RunEngine internal constructor(
 
     /** Testable one-shot used by the long-lived maintenance loop. */
     internal fun runMaintenanceNow() {
-        synchronized(presentationLock) {
-            val activeBefore = activeKeys()
-            if (runCatching { repository.prune() }.isSuccess) {
-                dismissRunsNoLongerActive(activeBefore)
+        runBlocking(Dispatchers.IO) {
+            presentationLock.withLock {
+                val activeBefore = snapshot().filter(StoredRun::active).mapTo(mutableSetOf(), StoredRun::key)
+                if (runCatching { repository.prune(now()) }.isSuccess) {
+                    dismissRunsNoLongerActive(activeBefore)
+                }
             }
         }
     }
 
     /** A future higher-revision snapshot can reactivate this Run through [RunRepository.apply]. */
-    fun markInactive(key: RunKey): Boolean = synchronized(presentationLock) {
-        val changed = runCatching { repository.markInactive(key) }.getOrDefault(false)
-        if (changed) {
-            refreshByKey[key]?.let { requestId -> completeRefresh(requestId, key) }
-            runCatching { presenter.dismiss(key) }
+    fun markInactive(key: RunKey): Boolean = runBlocking(Dispatchers.IO) {
+        presentationLock.withLock {
+            val changed = runCatching { repository.markInactive(key) }.getOrDefault(false)
+            if (changed) {
+                refreshByKey[key]?.let { requestId -> completeRefresh(requestId, key) }
+                runCatching { presenter.dismiss(key) }
+            }
+            changed
         }
-        changed
     }
 
-    fun clearHistory(): Boolean = synchronized(presentationLock) {
-        val historicalKeys = repository.runs.value.filterNot { it.active }.map { it.key }
-        if (runCatching { repository.clearHistory() }.isFailure) return@synchronized false
-        historicalKeys.forEach { key -> runCatching { presenter.dismiss(key) } }
-        true
+    fun clearHistory(): Boolean = runBlocking(Dispatchers.IO) {
+        presentationLock.withLock {
+            val historicalKeys = snapshot().filterNot { it.active }.map { it.key }
+            if (runCatching { repository.clearHistory() }.isFailure) return@withLock false
+            historicalKeys.forEach { key -> runCatching { presenter.dismiss(key) } }
+            true
+        }
     }
 
     private fun receiveControlResult(
@@ -203,7 +218,7 @@ class RunEngine internal constructor(
         result: net.extrawdw.notisync.protocol.RunControlResult,
     ) {
         val key = refreshByKey.entries.firstOrNull { it.value == result.requestId }?.key ?: return
-        if (key.hostClientId != message.senderId.value || key.runId != result.runId) return
+        if (key.hostClientId != message.senderId || key.runId != result.runId) return
         completeRefresh(result.requestId, key)
     }
 
@@ -221,7 +236,7 @@ class RunEngine internal constructor(
             send(
                 RunControl(
                     requestId = requestId,
-                    hostClientId = ClientId(key.hostClientId),
+                    hostClientId = key.hostClientId,
                     runId = key.runId,
                     kind = RunControlKind.REFRESH,
                     requestedAt = now(),
@@ -248,7 +263,7 @@ class RunEngine internal constructor(
             send(
                 RunControl(
                     requestId = UUID.randomUUID().toString(),
-                    hostClientId = ClientId(key.hostClientId),
+                    hostClientId = key.hostClientId,
                     runId = key.runId,
                     kind = RunControlKind.WRITE_INPUT,
                     requestedAt = now(),
@@ -266,7 +281,7 @@ class RunEngine internal constructor(
             send(
                 RunControl(
                     requestId = UUID.randomUUID().toString(),
-                    hostClientId = ClientId(key.hostClientId),
+                    hostClientId = key.hostClientId,
                     runId = key.runId,
                     kind = RunControlKind.SIGNAL,
                     requestedAt = now(),
@@ -276,42 +291,13 @@ class RunEngine internal constructor(
         }.getOrDefault(false)
     }
 
-    /** WorkManager/outbox path: preserve the caller-minted request id across transport retries. */
-    internal suspend fun sendPersistedControl(control: RunControl): Boolean =
+    /** Notification actions send the caller-minted request once; process death may lose the control. */
+    internal suspend fun sendBestEffortControl(control: RunControl): Boolean =
         runCatching { send(control) }.getOrDefault(false)
 
     private suspend fun send(control: RunControl): Boolean {
-        val sent = sendControl(control)
-        // Like notification/action sends, only record an outbound row after the channel accepted a recipient.
-        if (sent) logSent(control)
-        return sent
+        return sendControl(control)
     }
-
-    private fun logReceived(message: InboundMessage, summary: String) {
-        val log = activityLog ?: return
-        val text = activityText ?: return
-        log.add(
-            ActivityEvent.Kind.RECEIVED,
-            text.runTitle(),
-            text.runReceived(summary, deviceName(message.senderId)),
-            now(),
-            deliveryMode = message.deliveryMode.ifKnown(),
-        )
-    }
-
-    private fun logSent(control: RunControl) {
-        val log = activityLog ?: return
-        val text = activityText ?: return
-        log.add(
-            ActivityEvent.Kind.SENT,
-            text.runTitle(),
-            text.runSent(control.activitySummary(), deviceName(control.hostClientId)),
-            now(),
-        )
-    }
-
-    private fun deviceName(clientId: ClientId): String =
-        deviceNameOf(clientId) ?: clientId.shortForm()
 
     private fun completeRefresh(requestId: String, key: RunKey) {
         if (!refreshByKey.remove(key, requestId)) return
@@ -323,11 +309,15 @@ class RunEngine internal constructor(
         _pendingRefreshes.value = refreshByKey.keys.toSet()
     }
 
-    private fun activeKeys(): Set<RunKey> =
-        repository.runs.value.filter { it.active }.map { it.key }.toSet()
+    private suspend fun snapshot(): List<StoredRun> = repository.observeAll().first()
 
-    private fun dismissRunsNoLongerActive(activeBefore: Set<RunKey>) {
-        (activeBefore - activeKeys()).forEach { key -> runCatching { presenter.dismiss(key) } }
+    private suspend fun readSnapshotForDelivery(): List<StoredRun> =
+        runCatching { snapshot() }
+            .getOrElse { throw RetryableDeliveryException("persisted Run history cannot be read", it) }
+
+    private suspend fun dismissRunsNoLongerActive(activeBefore: Set<RunKey>) {
+        val activeAfter = snapshot().filter(StoredRun::active).mapTo(mutableSetOf(), StoredRun::key)
+        (activeBefore - activeAfter).forEach { key -> runCatching { presenter.dismiss(key) } }
     }
 
     private fun RunState.validForDisplay(): Boolean =
@@ -351,44 +341,12 @@ class RunEngine internal constructor(
                 MessageType.DATA_SYNC,
                 ProtocolCodec.encodeToCbor(
                     DataSync(
-                        kind = DataSyncKind.RUN,
+                        DataSyncKind.RUN,
                         run = RunSync(kind = RunSyncKind.CONTROL, control = control),
-                    )
+                    ),
                 ),
                 Recipients.Only(control.hostClientId),
                 Urgency.NORMAL,
             ) > 0
     }
 }
-
-private fun RunState.activitySummary(): String =
-    "STATE/${updateReason.name} · ${phase.name} · r$revision · run ${runId.diagnosticValue()}"
-
-private fun RunControl.activitySummary(): String =
-    "CONTROL/${kind.name} · req ${requestId.diagnosticRequestId()} · run ${runId.diagnosticValue()}"
-
-private fun RunControlResult.activitySummary(): String =
-    "CONTROL_RESULT/${status.name} · req ${requestId.diagnosticRequestId()} · run ${runId.diagnosticValue()}"
-
-private fun RunCommandRequest.activitySummary(): String =
-    "COMMAND_REQUEST · req ${requestId.diagnosticRequestId()}"
-
-private fun String.diagnosticRequestId(): String = take(8)
-
-/** Bound and neutralize protocol identifiers so a diagnostic row cannot inject controls or become very tall. */
-private fun String.diagnosticValue(): String {
-    val bounded = take(DIAGNOSTIC_VALUE_MAX_CHARS)
-    val safe = buildString(bounded.length) {
-        bounded.forEach { char ->
-            append(
-                if (
-                    char.isISOControl() || char.isSurrogate() ||
-                    Character.getType(char) == Character.FORMAT.toInt()
-                ) '�' else char
-            )
-        }
-    }
-    return if (length <= DIAGNOSTIC_VALUE_MAX_CHARS) safe else "$safe…"
-}
-
-private const val DIAGNOSTIC_VALUE_MAX_CHARS = 64

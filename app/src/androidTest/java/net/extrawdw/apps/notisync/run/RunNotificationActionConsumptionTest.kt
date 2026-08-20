@@ -11,6 +11,8 @@ import android.graphics.drawable.Icon
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
+import net.extrawdw.apps.notisync.data.run.RunKey
+import net.extrawdw.notisync.protocol.ClientId
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -23,7 +25,7 @@ import org.junit.runner.RunWith
 class RunNotificationActionConsumptionTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
     private val manager = context.getSystemService(NotificationManager::class.java)
-    private val key = RunKey("action-host", "action-run")
+    private val key = RunKey(ClientId("action-host"), "action-run")
 
     @Before
     fun setUp() {
@@ -78,7 +80,7 @@ class RunNotificationActionConsumptionTest {
         assertEquals(runNotificationTag(key), replacement.tag)
         assertEquals(runNotificationId(key), replacement.id)
         assertTrue(replacement.notification.actions.isNullOrEmpty())
-        assertFalse(removeRunNotificationActions(context, RunKey("missing", "run")))
+        assertFalse(removeRunNotificationActions(context, RunKey(ClientId("missing"), "run")))
     }
 
     private fun activeNotification() = manager.activeNotifications.single {

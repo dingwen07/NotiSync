@@ -88,6 +88,16 @@ data class RelayDelivery(
     val acceptedAt: Long?,
 )
 
+/**
+ * Exact relay lookup result. A missing row is different from an unavailable broker: callers must never turn a
+ * network failure into a successful worker run while the broker still owns the message.
+ */
+sealed interface RelayDeliveryFetchResult {
+    data class Found(val delivery: RelayDelivery) : RelayDeliveryFetchResult
+    data object Missing : RelayDeliveryFetchResult
+    data object Failed : RelayDeliveryFetchResult
+}
+
 data class RelayBatchDownload(
     val snapshotAt: Long,
     val cutoff: Long,
@@ -98,6 +108,26 @@ sealed interface RelayBatchFetchResult {
     data class Complete(val download: RelayBatchDownload) : RelayBatchFetchResult
     data object Unsupported : RelayBatchFetchResult
     data object Failed : RelayBatchFetchResult
+}
+
+/** Result boundary for ordinary suspend failures; cooperative cancellation and fatal [Error]s always propagate. */
+internal suspend inline fun <T> runSuspendCatching(block: () -> T): Result<T> = try {
+    Result.success(block())
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (failure: Exception) {
+    Result.failure(failure)
+}
+
+/** Suspending counterpart used by streaming callbacks that commit each frame before the next read. */
+internal suspend inline fun <T> runSuspendCatchingSuspending(
+    crossinline block: suspend () -> T,
+): Result<T> = try {
+    Result.success(block())
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (failure: Exception) {
+    Result.failure(failure)
 }
 
 /**
@@ -196,7 +226,7 @@ class BrokerClient(
     override suspend fun fetchKeyEpoch(clientId: ClientId, epoch: Int?): SignedBlob? {
         val q = if (epoch != null) "?epoch=$epoch" else ""
         val resp = authedGet("${httpBase()}/v2/keyepoch/${clientId.value}$q")
-        return if (resp.status.isSuccess()) runCatching {
+        return if (resp.status.isSuccess()) runSuspendCatching {
             ProtocolCodec.decodeFromCbor<SignedBlob>(
                 resp.readRawBytes()
             )
@@ -213,7 +243,7 @@ class BrokerClient(
             ProtocolCodec.encodeToCbor(SendRequest(envelope, urgency)),
             operational = true
         )
-        return runCatching { ProtocolCodec.decodeFromJson<SendResult>(resp.bodyAsText()) }
+        return runSuspendCatching { ProtocolCodec.decodeFromJson<SendResult>(resp.bodyAsText()) }
             .getOrDefault(SendResult(accepted = false))
     }
 
@@ -248,9 +278,18 @@ class BrokerClient(
      * root on a 401 if the broker hasn't ingested our current epoch yet (a rotation/convergence race).
      * `Peek: true` keeps the relay item queued until the caller durably handles it and explicitly acks it.
      */
-    suspend fun fetchRelayDelivery(messageId: String): RelayDelivery? {
+    suspend fun fetchRelayDelivery(messageId: String): RelayDelivery? =
+        when (val result = fetchRelayDeliveryResult(messageId)) {
+            is RelayDeliveryFetchResult.Found -> result.delivery
+            RelayDeliveryFetchResult.Missing,
+            RelayDeliveryFetchResult.Failed,
+            -> null
+        }
+
+    /** Exact relay lookup with absence/failure kept distinct for broker-custody workers. */
+    suspend fun fetchRelayDeliveryResult(messageId: String): RelayDeliveryFetchResult {
         val url = "${httpBase()}/v2/relay/$messageId"
-        var resp = runCatching {
+        var resp = runSuspendCatching {
             client.get(url) {
                 signedHeaders(
                     "GET",
@@ -261,23 +300,28 @@ class BrokerClient(
                 )
                 header("Peek", "true")
             }
-        }.getOrNull() ?: return null
+        }.getOrNull() ?: return RelayDeliveryFetchResult.Failed
         // unknown_epoch → 401: the broker doesn't yet know our operational epoch; retry once on the
         // always-valid identity root (still signature-only — never attests).
         if (resp.status == HttpStatusCode.Unauthorized) {
-            resp = runCatching {
+            resp = runSuspendCatching {
                 client.get(url) {
                     signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull())
                     header("Peek", "true")
                 }
-            }.getOrNull() ?: return null
+            }.getOrNull() ?: return RelayDeliveryFetchResult.Failed
         }
-        if (!resp.status.isSuccess()) return null
-        val envelope = runCatching { ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes()) }.getOrNull()
-            ?: return null
-        return RelayDelivery(
-            envelope = envelope,
-            acceptedAt = resp.headers[RelayWire.ACCEPTED_AT_HEADER]?.toLongOrNull(),
+        if (resp.status == HttpStatusCode.NotFound) return RelayDeliveryFetchResult.Missing
+        if (!resp.status.isSuccess()) return RelayDeliveryFetchResult.Failed
+        val envelope = runSuspendCatching {
+            ProtocolCodec.decodeFromCbor<Envelope>(resp.readRawBytes())
+        }.getOrNull()
+            ?: return RelayDeliveryFetchResult.Failed
+        return RelayDeliveryFetchResult.Found(
+            RelayDelivery(
+                envelope = envelope,
+                acceptedAt = resp.headers[RelayWire.ACCEPTED_AT_HEADER]?.toLongOrNull(),
+            ),
         )
     }
 
@@ -290,11 +334,13 @@ class BrokerClient(
      */
     suspend fun fetchPendingRelayIdsOrNull(): List<String>? {
         val url = "${httpBase()}/v2/relay"
-        val resp = runCatching {
+        val resp = runSuspendCatching {
             client.get(url) { signedHeaders("GET", url, ByteArray(0), cachedBearerOrNull()) }
         }.getOrNull() ?: return null
         if (!resp.status.isSuccess()) return null
-        return runCatching { ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds }.getOrNull()
+        return runSuspendCatching {
+            ProtocolCodec.decodeFromJson<RelayPending>(resp.bodyAsText()).messageIds
+        }.getOrNull()
     }
 
     suspend fun fetchPendingRelayIds(): List<String> = fetchPendingRelayIdsOrNull().orEmpty()
@@ -307,11 +353,20 @@ class BrokerClient(
     suspend fun fetchRelayBatch(
         before: Long? = null,
         onItem: (RelayBatchFrame) -> Unit,
+    ): RelayBatchFetchResult = fetchRelayBatchSuspending(before) { frame -> onItem(frame) }
+
+    /**
+     * Suspending streaming variant for receivers that must commit each item before reading the next one. The
+     * original non-suspending overload remains available to existing peer-core callers.
+     */
+    suspend fun fetchRelayBatchSuspending(
+        before: Long? = null,
+        onItem: suspend (RelayBatchFrame) -> Unit,
     ): RelayBatchFetchResult {
         val suffix = before?.let { "?before=$it" }.orEmpty()
         val url = "${httpBase()}/v2/relay/batch$suffix"
 
-        suspend fun request(operational: Boolean): HttpResponse? = runCatching {
+        suspend fun request(operational: Boolean): HttpResponse? = runSuspendCatching {
             client.get(url) {
                 signedHeaders(
                     "GET",
@@ -332,7 +387,7 @@ class BrokerClient(
         if (response.status == HttpStatusCode.NotFound) return RelayBatchFetchResult.Unsupported
         if (!response.status.isSuccess()) return RelayBatchFetchResult.Failed
 
-        return runCatching<RelayBatchFetchResult> {
+        return runSuspendCatchingSuspending<RelayBatchFetchResult> {
             val channel = response.bodyAsChannel()
             var snapshotAt: Long? = null
             var cutoff: Long? = null
@@ -359,7 +414,7 @@ class BrokerClient(
                     RelayBatchKind.END -> {
                         require(snapshotAt != null)
                         require(frame.itemCount == seen)
-                        return@runCatching RelayBatchFetchResult.Complete(
+                        return@runSuspendCatchingSuspending RelayBatchFetchResult.Complete(
                             RelayBatchDownload(
                                 snapshotAt = snapshotAt!!,
                                 cutoff = requireNotNull(cutoff),
@@ -387,7 +442,7 @@ class BrokerClient(
         if (messageIds.isEmpty()) return true
         val url = "${httpBase()}/v2/relay/ack"
         val body = ProtocolCodec.encodeToJson(RelayAck(messageIds)).toByteArray(Charsets.UTF_8)
-        val resp = runCatching {
+        val resp = runSuspendCatching {
             client.post(url) {
                 contentType(ContentType.Application.Json)
                 signedHeaders("POST", url, body, cachedBearerOrNull())
@@ -403,13 +458,15 @@ class BrokerClient(
      * safe for a UI/status poll. Returns null if the broker is unreachable.
      */
     suspend fun fetchVerificationStatus(): VerificationStatusResponse? {
-        val resp = runCatching {
+        val resp = runSuspendCatching {
             client.get("${httpBase()}/v2/status") {
                 cachedBearerForRefresh()?.let { header(HttpHeaders.Authorization, "Bearer $it") }
             }
         }.getOrNull() ?: return null
         return if (resp.status.isSuccess()) {
-            runCatching { ProtocolCodec.decodeFromJson<VerificationStatusResponse>(resp.bodyAsText()) }.getOrNull()
+            runSuspendCatching {
+                ProtocolCodec.decodeFromJson<VerificationStatusResponse>(resp.bodyAsText())
+            }.getOrNull()
         } else {
             null
         }
@@ -417,9 +474,11 @@ class BrokerClient(
 
     /** Liveness probe: GET /healthz, or null if the broker is unreachable or unhealthy. */
     suspend fun fetchHealth(): HealthResponse? {
-        val resp = runCatching { client.get("${httpBase()}/healthz") }.getOrNull() ?: return null
+        val resp = runSuspendCatching { client.get("${httpBase()}/healthz") }.getOrNull() ?: return null
         return if (resp.status.isSuccess()) {
-            runCatching { ProtocolCodec.decodeFromJson<HealthResponse>(resp.bodyAsText()) }.getOrNull()
+            runSuspendCatching {
+                ProtocolCodec.decodeFromJson<HealthResponse>(resp.bodyAsText())
+            }.getOrNull()
         } else {
             null
         }
@@ -486,7 +545,7 @@ class BrokerClient(
      *  token nearing expiry is served as-is while a background refresh renews it (stale-while-revalidate). */
     private suspend fun bearerTokenOrNull(): String? =
         cachedBearerOrNull()?.also { maybeProactiveRefresh() }
-            ?: runCatching { bearerToken() }.getOrNull()
+            ?: runSuspendCatching { bearerToken() }.getOrNull()
 
     private suspend fun bearerToken(): String {
         cachedBearerOrNull()?.let { return it }
@@ -517,7 +576,7 @@ class BrokerClient(
                     val current = cachedAuth
                     if (current != null && current.expiresAt - System.currentTimeMillis() > AUTH_PROACTIVE_REFRESH_MS) return@withLock
                     if (isCoolingDown()) return@withLock
-                    runCatching { reverifyLocked() }
+                    runSuspendCatching { reverifyLocked() }
                 }
             } finally {
                 refreshInFlight.set(false)
@@ -528,7 +587,7 @@ class BrokerClient(
     /** Attest, then atomically cache and persist the new token. Caller holds [authMutex]; records a
      *  cooldown and rethrows on failure. */
     private suspend fun reverifyLocked(): IntegrityVerificationResponse =
-        runCatching { verifyIntegrity() }
+        runSuspendCatching { verifyIntegrity() }
             .onSuccess { lastAuthFailure = null }
             .onFailure {
                 // Transient failures (network, server 429/5xx, stale token) start with a short cooldown so
@@ -634,8 +693,8 @@ class BrokerClient(
                     resp.status == HttpStatusCode.TooManyRequests || resp.status.value >= 500
                 result = if (retryable) "retryable" else "rejected"
                 throw IntegrityException(
-                    "Attestation verification failed: ${resp.status} ${resp.bodyAsText()}",
-                    retryable
+                    "Attestation verification failed with HTTP ${resp.status.value}",
+                    retryable,
                 )
             }
             val response = ProtocolCodec.decodeFromJson<IntegrityVerificationResponse>(resp.bodyAsText())
@@ -710,6 +769,11 @@ class BrokerClient(
     /** Android receive path with broker acceptance metadata; the transport-neutral API remains compatible. */
     suspend fun runLiveDeliveryWithMetadata(
         onEnvelope: (Envelope, acceptedAt: Long?) -> LiveDeliveryDisposition,
+    ) = runLiveDeliveryWithMetadataSuspending { envelope, acceptedAt -> onEnvelope(envelope, acceptedAt) }
+
+    /** Suspending callback variant used by the Room-backed broker-custody receiver. */
+    suspend fun runLiveDeliveryWithMetadataSuspending(
+        onEnvelope: suspend (Envelope, acceptedAt: Long?) -> LiveDeliveryDisposition,
     ) {
         var backoffMs = 1_000L
         var consecutiveFailures = 0

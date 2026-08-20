@@ -22,48 +22,79 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.firebase.messaging.FirebaseMessaging
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.FlowPreview
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
 import net.extrawdw.apps.notisync.analytics.AndroidPeerTelemetry
 import net.extrawdw.apps.notisync.analytics.PerfSpan
+import net.extrawdw.apps.notisync.analytics.perfSpan
 import net.extrawdw.apps.notisync.analytics.crashGuard
-import net.extrawdw.apps.notisync.analytics.perfTrace
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapCoordinator
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapFailure
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapFailureKind
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapOutcome
+import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapState
+import net.extrawdw.apps.notisync.composition.app.FcmRouteRegistration
+import net.extrawdw.apps.notisync.composition.app.ReadyServices
+import net.extrawdw.apps.notisync.composition.bootstrap.StorageBootstrapFailure
+import net.extrawdw.apps.notisync.composition.bootstrap.StorageBootstrapFailureDisposition
+import net.extrawdw.apps.notisync.composition.messaging.BrokerCustodyRelayRuntimeComponents
+import net.extrawdw.apps.notisync.composition.messaging.assembleBrokerCustodyInboundRuntime
+import net.extrawdw.apps.notisync.composition.storage.AndroidOperationalPayloadVaultPort
+import net.extrawdw.apps.notisync.composition.storage.LegacyV51StorageSources
+import net.extrawdw.apps.notisync.composition.storage.OperationalPreferencesCutoverDefaults
+import net.extrawdw.apps.notisync.composition.storage.StorageBootstrapDependencies
+import net.extrawdw.apps.notisync.composition.storage.StorageClock
+import net.extrawdw.apps.notisync.composition.storage.StorageContainerDependencies
+import net.extrawdw.apps.notisync.composition.storage.StorageContainerFactory
+import net.extrawdw.apps.notisync.composition.runtime.CoreRoomRuntime
 import net.extrawdw.apps.notisync.crypto.AndroidIdentitySigner
 import net.extrawdw.apps.notisync.crypto.AndroidOperationalSigner
-import net.extrawdw.apps.notisync.crypto.EpochHpkeKeyManager
+import net.extrawdw.apps.notisync.crypto.EpochHpkeKeyring
 import net.extrawdw.apps.notisync.crypto.KeyFingerprint
-import net.extrawdw.apps.notisync.crypto.KeyVault
-import net.extrawdw.apps.notisync.crypto.KeyVaultAuthTokenStore
-import net.extrawdw.apps.notisync.data.ActivityEvent
-import net.extrawdw.apps.notisync.data.ActivityLog
-import net.extrawdw.apps.notisync.data.ActivityText
-import net.extrawdw.apps.notisync.data.AndroidActivityText
+import net.extrawdw.apps.notisync.data.storage.protection.AndroidKeystoreProtectedPayloadVault
+import net.extrawdw.apps.notisync.data.activity.ActivityRepository
+import net.extrawdw.apps.notisync.data.storage.core.CoreFoundationRepository
+import net.extrawdw.apps.notisync.data.storage.core.BrokerEndpointChangeResult
+import net.extrawdw.apps.notisync.data.storage.core.RouteAdvanceResult
+import net.extrawdw.apps.notisync.data.storage.core.RouteUpdate
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.protection.OperationalProtectedPayloadProtector
+import net.extrawdw.apps.notisync.data.storage.runtime.OperationalPayloadKeyEnsurer
+import net.extrawdw.apps.notisync.data.storage.runtime.OperationalStorageMaintenanceGate
 import net.extrawdw.apps.notisync.data.AppConfigRepository
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
+import net.extrawdw.apps.notisync.data.incomingfilter.RoomIncomingFilterRepository
+import net.extrawdw.apps.notisync.data.iosregistry.RoomIosAppRegistryRepository
+import net.extrawdw.apps.notisync.data.notificationpolicy.RoomAndroidNotificationPolicyFacade
+import net.extrawdw.apps.notisync.data.notificationpolicy.RoomAndroidNotificationPolicyRepository
+import net.extrawdw.apps.notisync.data.profile.RoomProfileCaptureFacade
 import net.extrawdw.apps.notisync.ios.IosBridgeManager
 import net.extrawdw.apps.notisync.ios.IosBridgeService
 import net.extrawdw.apps.notisync.ios.IosCompanion
 import net.extrawdw.apps.notisync.ios.IosAppRegistry
+import net.extrawdw.apps.notisync.ios.RoomBackedIosAppRegistry
 import net.extrawdw.apps.notisync.ios.IosDeviceRepository
 import net.extrawdw.apps.notisync.appicon.AppStoreIconCache
 import net.extrawdw.apps.notisync.appicon.AppStoreIconClient
@@ -73,17 +104,12 @@ import net.extrawdw.apps.notisync.appicon.ShippedIcons
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.apps.notisync.assets.AssetManager
 import net.extrawdw.apps.notisync.assets.TicketStore
-import net.extrawdw.notisync.peer.channel.DeliveryOutcome
-import net.extrawdw.notisync.peer.channel.PreparationOutcome
-import net.extrawdw.notisync.peer.channel.PreparedInbound
+import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.SecureChannel
-import net.extrawdw.apps.notisync.data.MessageStore
 import net.extrawdw.apps.notisync.domain.MirrorEngine
 import net.extrawdw.apps.notisync.domain.RenderPhase
 import net.extrawdw.apps.notisync.domain.OriginalActionPerformer
 import net.extrawdw.apps.notisync.domain.OriginalCanceler
-import net.extrawdw.apps.notisync.domain.isFreshCall
-import net.extrawdw.apps.notisync.domain.isRingingCall
 import net.extrawdw.apps.notisync.foundation.FoundationEngine
 import net.extrawdw.notisync.peer.foundation.RotationManager
 import net.extrawdw.notisync.peer.foundation.TrustPeerDirectory
@@ -98,19 +124,26 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.pairing.automaticTimeEnabled
 import net.extrawdw.apps.notisync.run.RunEngine
-import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
-import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.apps.notisync.data.run.RunRepository
+import net.extrawdw.apps.notisync.data.seal.RoomSealRepository
+import net.extrawdw.apps.notisync.data.ssh.RoomSshProviderRepository
+import net.extrawdw.apps.notisync.messaging.DecodedInboundPayload
+import net.extrawdw.apps.notisync.messaging.InboundDeliveryMode
+import net.extrawdw.apps.notisync.messaging.PlannedInboundCommand
+import net.extrawdw.apps.notisync.messaging.inbound.InboundEffectResult
+import net.extrawdw.apps.notisync.messaging.inbound.OperationalInboundCompatibilityEffects
+import net.extrawdw.apps.notisync.messaging.inbound.OperationalInboundEffects
 import net.extrawdw.apps.notisync.seal.OpenKeychainSigningProvider
-import net.extrawdw.apps.notisync.seal.OpenPgpEnrollmentStore
+import net.extrawdw.apps.notisync.seal.OpenPgpEnrollmentRepository
 import net.extrawdw.apps.notisync.seal.OpenPgpSignEngine
 import net.extrawdw.apps.notisync.seal.OpenPgpSignNotificationPresenter
-import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
+import net.extrawdw.apps.notisync.seal.OpenPgpSignRepository
 import net.extrawdw.apps.notisync.seal.OpenPgpSigningProvider
 import net.extrawdw.apps.notisync.sshagent.SshAgentManagementRepository
 import net.extrawdw.apps.notisync.sshagent.SshAgentNotificationPresenter
 import net.extrawdw.apps.notisync.sshagent.SshAgentProviderEngine
-import net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore
+import net.extrawdw.apps.notisync.sshagent.SshAgentProviderRepository
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
@@ -133,17 +166,12 @@ import net.extrawdw.apps.notisync.trust.DurableTrustMutations
 import net.extrawdw.apps.notisync.trust.TrustActionReceiver
 import net.extrawdw.apps.notisync.work.EpochMaintenanceWorker
 import net.extrawdw.apps.notisync.work.RelayDrainWorker
-import net.extrawdw.apps.notisync.data.InboxInsertResult
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ClientKeyEpoch
-import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
-import net.extrawdw.notisync.protocol.Envelope
-import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
-import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.MirrorImportance
 import net.extrawdw.notisync.protocol.NotificationStyle
 import net.extrawdw.notisync.protocol.ProfileUpdate
@@ -158,7 +186,11 @@ import net.extrawdw.notisync.protocol.TransportType
 import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
+import net.extrawdw.apps.notisync.work.RelayWorkerRuntimeAvailability
+import net.extrawdw.apps.notisync.work.RelayWorkerRuntimeProvider
 import java.time.ZonedDateTime
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlin.io.path.toPath
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
 
@@ -212,19 +244,23 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.SSH_KEY_PROVIDER_V1,
 )
 
-class AppGraph(private val app: Application) {
+class AppGraph internal constructor(
+    private val app: Application,
+    val activityRepository: ActivityRepository,
+    private val runRepository: RunRepository,
+    private val coreRepository: CoreFoundationRepository,
+    private val coreRuntime: CoreRoomRuntime,
+    private val operationalDatabase: OperationalDatabase,
+    private val protectedPayloadProtector: OperationalProtectedPayloadProtector,
+    private val maintenanceGate: OperationalStorageMaintenanceGate,
+    private val payloadKeyEnsurer: OperationalPayloadKeyEnsurer,
+) {
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
     internal val durableTrustMutations = DurableTrustMutations(scope)
-    val activityLog = ActivityLog()
-    val activityText: ActivityText = AndroidActivityText(app)
-
-    /** Durable receive-path bookkeeping: cross-restart dedup, the pending relay-ack queue, and the
-     *  mirror→message map for dismissal-ack. Constructing it is cheap (the db opens lazily, off-main). */
-    val messageStore = MessageStore(app)
 
     lateinit var identity: AndroidIdentitySigner
         private set
-    lateinit var epochHpke: EpochHpkeKeyManager
+    lateinit var epochHpke: EpochHpkeKeyring
         private set
 
     /**
@@ -238,6 +274,11 @@ class AppGraph(private val app: Application) {
 
     lateinit var settings: SettingsRepository
         private set
+    internal lateinit var profileCapture: RoomProfileCaptureFacade
+        private set
+    val brokerUrl: StateFlow<String> = coreRepository.transport
+        .map { it?.brokerUrl ?: coreRuntime.transport.brokerUrl }
+        .stateIn(scope, SharingStarted.Eagerly, coreRuntime.transport.brokerUrl)
     lateinit var trust: TrustStore
         private set
     /** Notification-suppression filters peers asked this device to apply (DATA_SYNC FILTER), keyed by requester. */
@@ -271,27 +312,28 @@ class AppGraph(private val app: Application) {
         private set
     var foundationEngine: FoundationEngine? = null
         private set
-    lateinit var runStore: RunStore
-        private set
     var runEngine: RunEngine? = null
         private set
     lateinit var openPgpProvider: OpenPgpSigningProvider
         private set
-    lateinit var openPgpEnrollment: OpenPgpEnrollmentStore
+    lateinit var openPgpEnrollment: OpenPgpEnrollmentRepository
         private set
-    lateinit var openPgpSignStore: OpenPgpSignStore
+    lateinit var openPgpSignStore: OpenPgpSignRepository
         private set
     lateinit var openPgpSignNotifications: OpenPgpSignNotificationPresenter
         private set
     var openPgpSignEngine: OpenPgpSignEngine? = null
         private set
-    lateinit var sshKeyProviderStore: SshKeyProviderStore
+    /** Room-backed SSH provider authority; the field name remains stable for UI/notification callers. */
+    internal lateinit var sshKeyProviderStore: SshAgentProviderRepository
         private set
     lateinit var sshAgentManagement: SshAgentManagementRepository
         private set
-    lateinit var sshAgentNotifications: SshAgentNotificationPresenter
+    internal lateinit var sshAgentNotifications: SshAgentNotificationPresenter
         private set
-    var sshAgentProviderEngine: SshAgentProviderEngine? = null
+    internal var sshAgentProviderEngine: SshAgentProviderEngine? = null
+        private set
+    internal lateinit var brokerCustodyInbound: BrokerCustodyRelayRuntimeComponents
         private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
@@ -337,19 +379,32 @@ class AppGraph(private val app: Application) {
 
     val clientId: ClientId? get() = if (::identity.isInitialized) identity.clientId else null
 
-    fun init(initSpan: PerfSpan) {
+    suspend fun init(initSpan: PerfSpan) {
         val identityStartNanos = System.nanoTime()
-        identity = AndroidIdentitySigner.loadOrCreate()
-        // StrongBox identity-key load/generate dominates first-run cold start; isolate it from the rest.
+        identity = coreRuntime.identity
+        // Strict existing-key hydration happens only after the one migrator published Room authority.
         initSpan.metric("identity_load_ms", (System.nanoTime() - identityStartNanos) / 1_000_000)
-        val vault = KeyVault()
         val ds = app.dataStore
         settings = SettingsRepository(ds, scope)
+        profileCapture = RoomProfileCaptureFacade(operationalDatabase, scope)
         openPgpProvider = OpenKeychainSigningProvider(app)
-        openPgpEnrollment = OpenPgpEnrollmentStore(ds, scope)
-        openPgpSignStore = OpenPgpSignStore(app)
+        val sealRepository = RoomSealRepository(
+            database = operationalDatabase,
+            protector = protectedPayloadProtector,
+            payloadKeyEnsurer = payloadKeyEnsurer,
+            scope = scope,
+            ioDispatcher = Dispatchers.IO,
+        )
+        openPgpEnrollment = sealRepository
+        openPgpSignStore = sealRepository
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
-        sshKeyProviderStore = SshKeyProviderStore(app)
+        val sshRepository = RoomSshProviderRepository(
+            context = app,
+            database = operationalDatabase,
+            protector = protectedPayloadProtector,
+            payloadKeyEnsurer = payloadKeyEnsurer,
+        )
+        sshKeyProviderStore = sshRepository
         sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
         sshAgentManagement.preload()
@@ -366,19 +421,27 @@ class AppGraph(private val app: Application) {
             settings.analyticsEnabled.onEach(AnalyticsController::apply).launchIn(this)
         }
         val trustStartNanos = System.nanoTime()
-        trust = TrustStore(ds, identity)
+        trust = coreRuntime.trust
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
-        appSelection = AppSelectionRepository(ds, scope)
-        appConfig = AppConfigRepository(ds, scope)
-        notificationFilters = NotificationFilterStore(ds, scope)
-        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
-        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds)
+        val notificationPolicy = RoomAndroidNotificationPolicyFacade(
+            RoomAndroidNotificationPolicyRepository(operationalDatabase.notificationPolicyDao()),
+            scope,
+        )
+        appSelection = notificationPolicy
+        appConfig = notificationPolicy
+        notificationFilters = NotificationFilterStore(
+            RoomIncomingFilterRepository(operationalDatabase.incomingFilterDao(), scope),
+            scope,
+        )
+        notificationPolicy.awaitHydrated()
+        notificationFilters.awaitHydrated()
+        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(operationalDatabase.screenDao(), scope)
+        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(operationalDatabase.screenDao(), scope)
         screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
         screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
         screenMirrorCapabilities = ScreenMirrorCapabilityProvider(
-            settings = settings,
             authorizations = screenMirrorAuthorizations,
             scope = scope,
         )
@@ -388,31 +451,28 @@ class AppGraph(private val app: Application) {
                 runCatching { screenMirrorCodecPreferences.retainTrustedOwnPeers(roster) }
             }
             .launchIn(scope)
-        if (settings.needsUnverifiedDeviceCleanupV1()) {
-            val removed = trust.removeUnverifiedDevices()
-            if (removed != null) {
-                removed.forEach(notificationFilters::remove)
-                settings.markUnverifiedDeviceCleanupV1Completed()
-                if (removed.isNotEmpty()) {
-                    Log.i("NotiSync", "Removed ${removed.size} unverified device(s) during NS2 upgrade")
-                }
+        trust.removeUnverifiedDevices()?.let { removed ->
+            removed.forEach(notificationFilters::remove)
+            if (removed.isNotEmpty()) {
+                Log.i("NotiSync", "Removed ${removed.size} unverified device(s) during NS2 upgrade")
             }
         }
         // NS2 operational layer (always on — the ENABLE_ROTATION flag only gates *minting a second* epoch).
         // The self epoch lives in the signed TrustStore section #4 (≥1); ensure it, then materialise this
         // epoch's TEE operational signing key + HPKE keyset. Rotation (Phase 6) advances the epoch + swaps
         // [operational]; here we simply pin epoch 1 (or whatever the floor recovered to).
-        val selfEpoch = trust.advanceSelfEpoch(1)
-        epochHpke = EpochHpkeKeyManager(app, vault).apply { loadOrCreate(selfEpoch) }
-        operational = AndroidOperationalSigner.loadOrCreate(identity.clientId, selfEpoch)
+        val selfEpoch = trust.selfEpoch()
+        check(selfEpoch == coreRuntime.activeEpoch) { "Core trust and active crypto epoch disagree" }
+        epochHpke = coreRuntime
+        operational = coreRuntime.operational
         val peerTelemetry = AndroidPeerTelemetry()
         transport = BrokerClient(
             signer = identity,
             operationalSigner = { operational },
-            baseUrlProvider = { settings.brokerUrl.value },
+            baseUrlProvider = { brokerUrl.value },
             integrity = AppCheckAttestor(),
             clientKeyEpochProvider = ::buildClientKeyEpochBlob,
-            tokenStore = KeyVaultAuthTokenStore(app, vault),
+            tokenStore = coreRuntime.authTokenStore,
             scope = scope,
             telemetry = peerTelemetry,
         )
@@ -475,16 +535,6 @@ class AppGraph(private val app: Application) {
             transport = transport,
             directory = TrustPeerDirectory(trust),
             log = { msg -> Log.w("SecureChannel", msg) },
-            dedup = messageStore, // persisted dedup so a redelivery after restart isn't re-posted
-            onBadSignature = { id, at, deliveryMode ->
-                activityLog.add(
-                    ActivityEvent.Kind.ERROR,
-                    activityText.rejectedTitle(),
-                    activityText.badSignatureFrom(trust.displayName(id) ?: id.shortForm()),
-                    at,
-                    deliveryMode = deliveryMode.ifKnown(),
-                )
-            },
             telemetry = peerTelemetry,
             // Envelope signing and authenticated-request signing synchronously cross Android Keystore.
             // Compose and lifecycle callers may enter on main; suspend them while the whole send runs on I/O.
@@ -506,7 +556,6 @@ class AppGraph(private val app: Application) {
             context = app,
             ownClientId = identity.clientId,
             channel = channel,
-            settings = settings,
             authorizations = screenMirrorAuthorizations,
             capabilities = screenMirrorCapabilities,
             shizuku = screenMirrorShizuku,
@@ -560,7 +609,7 @@ class AppGraph(private val app: Application) {
         trust.quarantined
             .onEach { quarantined -> if (quarantined) screenRequester.close() }
             .launchIn(scope)
-        settings.screenMirroringEnabled
+        screenMirrorAuthorizations.screenMirroringEnabled
             .onEach { enabled ->
                 if (enabled) screenMirrorShizuku.refresh()
                 else {
@@ -579,24 +628,16 @@ class AppGraph(private val app: Application) {
             .launchIn(scope)
         // DATA_SYNC/RUN is a first-class Android application path. It has its own durable history and
         // notification renderer; it must never be adapted into CapturedNotification/MirrorEngine.
-        val runsStore = RunStore(app)
-        runStore = runsStore
         val runs = RunEngine(
             channel = channel,
-            store = runsStore,
+            repository = runRepository,
             presenter = RunNotificationPresenter(
                 app,
                 deviceNameOf = { id -> trust.displayName(id) },
             ),
             scope = scope,
-            activityLog = activityLog,
-            activityText = activityText,
-            deviceNameOf = { id -> trust.displayName(id) },
         )
         runEngine = runs
-        // Recover notification actions committed before a cold graph was ready, including a process death in the
-        // receiver's post-persist/pre-WorkManager window.
-        RunControlDrainWorker.enqueue(app)
         // A process can die after a Run snapshot commits but before its stable notification posts. The store's
         // presentation checkpoint makes this startup reconciliation precise and idempotent.
         scope.launch { runs.reconcilePendingPresentations() }
@@ -625,21 +666,19 @@ class AppGraph(private val app: Application) {
         val mirror = MirrorEngine(
             channel = channel,
             renderer = poster,
-            activityLog = activityLog,
             scope = scope,
             assetResolver = assetManager,
-            appLabelResolver = ::appLabelFor,
-            peerNameResolver = { id -> trust.displayName(id) ?: id.shortForm() },
-            activityText = activityText,
-            ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
-            lifecycleStore = messageStore,
             notificationFilters = notificationFilters, // honor peers' suppression requests when forwarding
         )
         mirrorEngine = mirror
         // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the
         // BLE manager that turns ANCS events into CapturedNotifications, then dispatches them to local display
         // and/or the own mesh — reusing the same capture/render pipeline as a local Android capture.
-        val registry = IosAppRegistry(ds, scope)
+        val registry = RoomBackedIosAppRegistry(
+            RoomIosAppRegistryRepository(operationalDatabase.iosAppDao()),
+            scope,
+        )
+        registry.awaitHydrated()
         iosAppRegistry = registry
         iosBridgeManager = IosBridgeManager(
             context = app,
@@ -681,7 +720,6 @@ class AppGraph(private val app: Application) {
         val foundation = FoundationEngine(
             channel = channel,
             trust = trust,
-            activityLog = activityLog,
             scope = scope,
             onTrustPrompt = ::onTrustPrompt,
             onAsset = mirror::onAssetSync, // ASSET DataSync forwarded to the notification app
@@ -694,7 +732,6 @@ class AppGraph(private val app: Application) {
                 screenController.onScreenMirrorSync(message, sync)
                 screenRequester.onScreenMirrorSync(message, sync)
             },
-            activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.
             selfKeyEpoch = {
@@ -706,10 +743,9 @@ class AppGraph(private val app: Application) {
             fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
         foundationEngine = foundation
-        // Register all handlers synchronously now — BEFORE the lifecycle observer or an FCM wake can
-        // reach the channel — or an early cold-start delivery to an unregistered type is dropped.
-        foundation.register() // DATA_SYNC (TRUST/CARD/PROFILE; forwards ASSET)
-        mirror.register()      // NOTIFICATION + DISMISSAL + ACTION
+        // SecureChannel remains the outbound compatibility surface for current feature engines. Inbound traffic
+        // is owned exclusively by the Room-backed authenticated coordinator assembled below; do not register the
+        // legacy mutable handler map as a second consumer.
 
         // NS2 rotation (Phase 6) — constructed ONLY behind the flag; the key generation, live-signer swap,
         // and key destruction are the Android-specific bits injected here, keeping the state machine itself
@@ -776,6 +812,72 @@ class AppGraph(private val app: Application) {
             .onEach { tampered -> if (tampered) postTamperAlert() else cancelTamperAlert() }
             .launchIn(scope)
 
+        brokerCustodyInbound = assembleBrokerCustodyInboundRuntime(
+            broker = transport,
+            identity = identity,
+            operationalSigner = { operational },
+            hpkeKeyring = epochHpke,
+            trust = trust,
+            coreRepository = coreRepository,
+            operationalDatabase = operationalDatabase,
+            maintenanceGate = maintenanceGate,
+            sealRepository = sealRepository,
+            sshRepository = sshRepository,
+            effects = object : OperationalInboundEffects {
+                override suspend fun presentNotification(
+                    notification: CapturedNotification,
+                    forceSilent: Boolean,
+                ): InboundEffectResult {
+                    mirror.presentCommitted(notification, forceSilent)
+                    return InboundEffectResult.COMPLETED
+                }
+
+                override suspend fun dismissNotification(
+                    event: net.extrawdw.notisync.protocol.DismissEvent,
+                ): InboundEffectResult {
+                    mirror.dismissCommitted(event)
+                    return InboundEffectResult.COMPLETED
+                }
+
+                override suspend fun performAction(
+                    event: net.extrawdw.notisync.protocol.ActionEvent,
+                ): InboundEffectResult = if (mirror.performCommitted(event)) {
+                    InboundEffectResult.COMPLETED
+                } else {
+                    InboundEffectResult.RETRY_REQUIRED
+                }
+            },
+            compatibilityEffects = OperationalInboundCompatibilityEffects { command ->
+                val data = (command.payload as? DecodedInboundPayload.Data)?.value
+                if (data == null) {
+                    InboundEffectResult.SECURITY_BLOCKED
+                } else {
+                    val message = command.toCompatibilityInboundMessage()
+                    when (data.kind) {
+                        DataSyncKind.ASSET -> mirror.handleAssetSync(message, data)
+                        DataSyncKind.RUN -> runs.onRunSync(message, data)
+                        DataSyncKind.SCREEN_MIRRORING -> {
+                            if (data.screenMirror?.action == net.extrawdw.notisync.protocol.ScreenMirrorAction.REQUEST) {
+                                screenController.onCommittedScreenMirrorRequest(message, data)
+                            } else {
+                                screenController.onScreenMirrorSync(message, data)
+                                screenRequester.onScreenMirrorSync(message, data)
+                            }
+                        }
+                        DataSyncKind.OPENPGP_SIGN -> openPgpSigning.onOpenPgpSignSync(message, data)
+                        DataSyncKind.SSH_AGENT -> sshProvider.handleSshAgentSync(message, data)
+                        DataSyncKind.PROFILE,
+                        DataSyncKind.TRUST,
+                        DataSyncKind.CARD,
+                        DataSyncKind.FILTER,
+                        DataSyncKind.NOTIFICATION,
+                        -> return@OperationalInboundCompatibilityEffects InboundEffectResult.SECURITY_BLOCKED
+                    }
+                    InboundEffectResult.COMPLETED
+                }
+            },
+        )
+
         // Battery-efficient transport policy:
         //  * Background delivery is via FCM only (Google's shared push connection — no app socket),
         //    so neither the provider nor the consumer holds a network connection while idle.
@@ -785,21 +887,9 @@ class AppGraph(private val app: Application) {
         observeProcessLifecycle()
         observeProfileChanges()
         announceProfileOnProcessStart()
-        // Low-frequency safety net: sweep the broker relay for anything FCM deferred or whose wake
-        // fetch failed. The FCM wake + foreground WS remain the primary, prompt delivery paths.
-        RelayDrainWorker.schedulePeriodic(app)
-        if (messageStore.hasInbox()) {
-            val delay = if (messageStore.hasDeferredInbox()) {
-                RelayDrainWorker.remainingDeferredQuietDelay(messageStore.lastDeferredAt())
-            } else 1L
-            RelayDrainWorker.scheduleAfterDeferredQuiet(app, delay)
-        }
         // Time-driven epoch upkeep (converge peer key-epochs; with ENABLE_ROTATION also initiate + advance
         // rotation) — the message-independent guarantee a quiet device still rotates. See the worker doc.
         EpochMaintenanceWorker.schedulePeriodic(app)
-        // Trim handled-message history past its retention window on each start — bounds the dedup db on
-        // long-lived processes and rarely-opened devices alike (off-main; the db opens lazily here).
-        scope.launch { runCatching { messageStore.prune() } }
         // Resume the iOS bridge if the user left its switch on — covers any cold start of this process
         // (FCM wake, etc.). Reboot / app-update arrive via IosBridgeBootReceiver, which starts the same FGS inside
         // the boot exemption window; both are idempotent.
@@ -811,11 +901,26 @@ class AppGraph(private val app: Application) {
         )
     }
 
-    /** Friendly application label for a package, falling back to the package id when not installed. */
-    private fun appLabelFor(pkg: String): String = runCatching {
-        val pm = app.packageManager
-        pm.getApplicationLabel(pm.getApplicationInfo(pkg, 0)).toString()
-    }.getOrDefault(pkg)
+    private fun PlannedInboundCommand.toCompatibilityInboundMessage(): InboundMessage = InboundMessage(
+        senderId = delivery.senderId,
+        senderOwnDevice = delivery.senderOwnDevice,
+        typ = delivery.messageType,
+        body = delivery.encodedBody,
+        signerEpoch = delivery.signerEpoch,
+        messageId = delivery.messageId,
+        deliveryMode = delivery.deliveryMode.toPeerDeliveryMode(),
+        createdAt = delivery.signedCreatedAt,
+        acceptedAt = delivery.acceptedAt,
+        forceSilent = delivery.forceSilent,
+    )
+
+    private fun InboundDeliveryMode.toPeerDeliveryMode(): DeliveryMode = when (this) {
+        InboundDeliveryMode.UNKNOWN -> DeliveryMode.UNKNOWN
+        InboundDeliveryMode.WEBSOCKET -> DeliveryMode.WEBSOCKET
+        InboundDeliveryMode.FCM_INLINE -> DeliveryMode.FCM_INLINE
+        InboundDeliveryMode.FCM_RELAY_FETCH -> DeliveryMode.FCM_RELAY_FETCH
+        InboundDeliveryMode.RELAY_DRAIN -> DeliveryMode.RELAY_DRAIN
+    }
 
     @Volatile
     private var liveJob: Job? = null
@@ -854,77 +959,6 @@ class AppGraph(private val app: Application) {
         }
     }
 
-    /**
-     * Shared FCM/WebSocket/worker receive gate. Broker-old notification payloads are authenticated and
-     * decrypted first, then persisted without dispatch; all other messages keep the normal inline path.
-     */
-    fun deliverInbound(
-        envelope: Envelope,
-        deliveryMode: DeliveryMode,
-        acceptedAt: Long? = null,
-    ): DeliveryOutcome {
-        val channel = secureChannel ?: return DeliveryOutcome.DROPPED
-        return when (val outcome = channel.prepare(envelope, deliveryMode, acceptedAt)) {
-            PreparationOutcome.Duplicate -> DeliveryOutcome.DUPLICATE
-            PreparationOutcome.Dropped -> DeliveryOutcome.DROPPED
-            is PreparationOutcome.Ready -> {
-                val now = System.currentTimeMillis()
-                val notification = notificationPayload(outcome.prepared)
-                val staleRingingCall = notification?.let { it.isRingingCall() && !it.isFreshCall(now) } == true
-                if (!shouldDeferRelayNotification(
-                        acceptedAt = acceptedAt,
-                        now = now,
-                        notificationProducing = notification != null,
-                        rejectedByCallFreshnessGuard = staleRingingCall,
-                    )
-                ) {
-                    channel.deliverPrepared(outcome.prepared)
-                } else {
-                    when (
-                        messageStore.stageDeferred(
-                            messageId = envelope.messageId,
-                            envelope = ProtocolCodec.encodeToCbor(envelope),
-                            acceptedAt = requireNotNull(acceptedAt),
-                            deliveryMode = deliveryMode,
-                        )
-                    ) {
-                        InboxInsertResult.INSERTED -> {
-                            RelayDrainWorker.scheduleAfterDeferredQuiet(app)
-                            // The cache commit and pending-ack insert are already durable. Try the broker now;
-                            // failure leaves the id in pending_ack for the drain/periodic recovery path.
-                            scope.launch { flushOnePendingAckBatch() }
-                            DeliveryOutcome.DEFERRED
-                        }
-                        InboxInsertResult.EXISTS -> DeliveryOutcome.DEFERRED
-                        InboxInsertResult.FAILED -> DeliveryOutcome.DROPPED
-                    }
-                }
-            }
-        }
-    }
-
-    private fun notificationPayload(prepared: PreparedInbound): CapturedNotification? {
-        val msg = prepared.message
-        if (!msg.senderOwnDevice) return null
-        return when (msg.typ) {
-            MessageType.NOTIFICATION -> runCatching {
-                ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
-            }.getOrNull()
-            MessageType.DATA_SYNC -> runCatching {
-                ProtocolCodec.decodeFromCbor<DataSync>(msg.body)
-            }.getOrNull()?.takeIf { it.kind == DataSyncKind.NOTIFICATION }?.notification
-            MessageType.DISMISSAL, MessageType.ACTION -> null
-        }
-    }
-
-    private suspend fun flushOnePendingAckBatch() {
-        val ids = messageStore.pendingAcks()
-        if (ids.isEmpty()) return
-        if (runCatching { transport.ackRelayMessages(ids) }.getOrDefault(false)) {
-            messageStore.clearAcks(ids)
-        }
-    }
-
     /** Foreground only: refresh our key-epoch on the broker (self-heals stale broker state) and stream live updates. */
     private fun startLiveConnection() {
         // Also retry after notification permission is granted while the process remains alive.
@@ -938,13 +972,7 @@ class AppGraph(private val app: Application) {
             // Between rotations anti-entropy includes our own epoch; while staged, RotationManager owns that
             // certificate. Material for third peers is returned by targeted CARD.
             runCatching { foundationEngine?.broadcastTrust() }
-            transport.runLiveDeliveryWithMetadata { envelope, acceptedAt ->
-                when (deliverInbound(envelope, DeliveryMode.WEBSOCKET, acceptedAt)) {
-                    DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE, DeliveryOutcome.DEFERRED ->
-                        LiveDeliveryDisposition.ACK
-                    DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED -> LiveDeliveryDisposition.RETRY
-                }
-            }
+            brokerCustodyInbound.liveDelivery.run()
         }
         tickRotation() // advance any staged rotation across an activation/retirement boundary
     }
@@ -1272,7 +1300,7 @@ class AppGraph(private val app: Application) {
             }
 
     private fun selfProfileFingerprint(): String = buildString {
-        append(settings.deviceName.value)
+        append(profileCapture.deviceName.value)
         append('\u001f')
         append("android")
         selfCapabilities().forEach {
@@ -1296,7 +1324,7 @@ class AppGraph(private val app: Application) {
         val card = ClientCard(
             clientId = identity.clientId,
             identityPublicKey = identity.publicKeySpki,
-            displayName = settings.deviceName.value,
+            displayName = profileCapture.deviceName.value,
             platform = "android",
             capabilities = selfCapabilities(),
             createdAt = createdAt,
@@ -1355,9 +1383,9 @@ class AppGraph(private val app: Application) {
     }
 
     /** This device's current mutable profile, stamped when any advertised field last changed. */
-    fun buildProfileUpdate(updatedAt: Long = settings.selfProfileUpdatedAt.value): ProfileUpdate = ProfileUpdate(
+    fun buildProfileUpdate(updatedAt: Long = profileCapture.selfProfileUpdatedAt.value): ProfileUpdate = ProfileUpdate(
         clientId = identity.clientId,
-        displayName = settings.deviceName.value,
+        displayName = profileCapture.deviceName.value,
         platform = "android",
         capabilities = selfCapabilities(),
         updatedAt = updatedAt,
@@ -1369,8 +1397,8 @@ class AppGraph(private val app: Application) {
      */
     private fun announceProfileOnProcessStart() {
         scope.launch {
-            val revision = settings.ensureSelfProfileRevision(selfProfileFingerprint())
-                ?: settings.selfProfileUpdatedAt.value
+            val revision = profileCapture.ensureSelfProfileRevision(selfProfileFingerprint())
+                ?: profileCapture.selfProfileUpdatedAt.value
             runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate(revision)) }
         }
     }
@@ -1385,28 +1413,29 @@ class AppGraph(private val app: Application) {
     @OptIn(FlowPreview::class) // debounce() is a preview API; used only to coalesce rapid renames
     private fun observeProfileChanges() {
         combine(
-            settings.deviceName,
+            profileCapture.deviceName,
             screenMirrorCapabilities.advertisedCapabilities,
         ) { name, capabilities -> name to capabilities }
             .drop(1) // skip the eager StateFlow seed; only react to real profile changes
             .debounce(PROFILE_BROADCAST_DEBOUNCE_MS)
             .distinctUntilChanged()
             .onEach {
-                val changedAt = settings.ensureSelfProfileRevision(selfProfileFingerprint()) ?: return@onEach
+                val changedAt = profileCapture.ensureSelfProfileRevision(selfProfileFingerprint()) ?: return@onEach
                 // The profile is not key material and never goes to the broker; converge peers over E2E only.
                 runCatching { foundationEngine?.broadcastProfile(buildProfileUpdate(changedAt)) }
             }
             .launchIn(scope)
     }
 
-    private fun signedRouteClaim(routeRef: String, epoch: Int): SignedBlob {
+    private fun signedRouteClaim(routeRef: String, epoch: Long): SignedBlob {
+        require(epoch in 0..Int.MAX_VALUE.toLong()) { "FCM route epoch exceeds the wire contract" }
         val claim = RouteClaim(
             clientId = identity.clientId,
             transport = TransportType.FCM,
             environment = RouteEnvironment.PRODUCTION,
             routeRef = routeRef,
             capabilities = RouteCapabilities(inlinePayloadLimitBytes = 3600),
-            epoch = epoch,
+            epoch = epoch.toInt(),
             issuedAt = System.currentTimeMillis(),
         )
         val payload = ProtocolCodec.encodeToCbor(claim)
@@ -1424,51 +1453,49 @@ class AppGraph(private val app: Application) {
      */
     fun registerFcmRoute() {
         FirebaseMessaging.getInstance().register()
-            .addOnFailureListener { e ->
-                activityLog.add(
-                    ActivityEvent.Kind.ERROR,
-                    activityText.fcmRouteTitle(),
-                    activityText.fcmRouteRegistrationFailed(e.message ?: e.javaClass.simpleName),
-                    System.currentTimeMillis(),
-                )
-            }
     }
 
     fun onFcmRegistered(routeRef: String) {
         scope.launch {
-            val epoch = settings.epochForFcmRoute(routeRef)
             runCatching {
-                transport.publishRoutes(listOf(signedRouteClaim(routeRef, epoch)))
-                activityLog.add(
-                    ActivityEvent.Kind.ROUTE_REPAIR,
-                    activityText.fcmRouteTitle(),
-                    activityText.fcmRouteRegistered(),
-                    System.currentTimeMillis(),
-                )
+                val current = requireNotNull(coreRepository.transport.first()) {
+                    "Core transport authority is missing"
+                }
+                val epoch = if (current.fcmRouteRef == routeRef) {
+                    current.routeEpoch
+                } else {
+                    Math.addExact(current.routeEpoch, 1L)
+                }
+                when (
+                    coreRepository.advanceRoute(
+                        RouteUpdate(
+                            brokerUrl = current.brokerUrl,
+                            fcmRouteRef = routeRef,
+                            routeEpoch = epoch,
+                            expectedBrokerEndpointRevision = current.brokerEndpointRevision,
+                            selfEpochActivatedAt = current.selfEpochActivatedAt,
+                        ),
+                    )
+                ) {
+                    RouteAdvanceResult.ADVANCED,
+                    RouteAdvanceResult.UNCHANGED,
+                    -> transport.publishRoutes(listOf(signedRouteClaim(routeRef, epoch)))
+                    RouteAdvanceResult.STALE,
+                    RouteAdvanceResult.CONFLICT,
+                    RouteAdvanceResult.STALE_ENDPOINT,
+                    RouteAdvanceResult.MISSING,
+                    -> error("Core rejected the FCM route transition")
+                }
             }
         }
     }
 
-    /**
-     * After an FCM-inline delivery, queue the message for batch relay-ack — UNLESS it was dropped
-     * unhandled (unknown sender / bad signature / decrypt fail), which must stay queued so it can still
-     * deliver once trust/keys converge. The inline path is the one delivery the broker can't observe
-     * being consumed (the envelope rode in the push, so it's never fetched), so without this the item
-     * lingers in the relay until TTL and is the backlog that re-posts after a restart. Local write only
-     * (no network) — the actual ack is one batched request from the relay worker.
-     *
-     * Ack only what is durably handled: HANDLED and DUPLICATE both are (the channel records before
-     * returning either). IN_FLIGHT (a racing thread is still handling this id and hasn't committed) and
-     * DROPPED are not — acking IN_FLIGHT could drop the item before that thread commits. The channel's
-     * outcome already encodes this, so no second dedup read is needed here. Erring toward "don't ack"
-     * only costs a later, deduped redelivery — never a lost notification.
-     */
-    fun onInlineDelivered(messageId: String, outcome: DeliveryOutcome) {
-        val ackable = when (outcome) {
-            DeliveryOutcome.HANDLED, DeliveryOutcome.DUPLICATE, DeliveryOutcome.DEFERRED -> true
-            DeliveryOutcome.IN_FLIGHT, DeliveryOutcome.DROPPED -> false
+    suspend fun setBrokerUrl(url: String) {
+        when (coreRepository.changeBrokerEndpoint(url)) {
+            BrokerEndpointChangeResult.CHANGED -> registerFcmRoute()
+            BrokerEndpointChangeResult.UNCHANGED -> Unit
+            BrokerEndpointChangeResult.MISSING -> error("Core transport authority is missing")
         }
-        if (ackable) runCatching { messageStore.enqueueAck(messageId) }
     }
 
     /**
@@ -1515,49 +1542,175 @@ class AppGraph(private val app: Application) {
     }
 }
 
-/** Application entry point: builds the dependency graph. */
-class NotiSyncApp : Application() {
-    lateinit var graph: AppGraph
-        private set
-
+/** Application entry point. Storage/runtime readiness is the only path that may publish live services. */
+internal class NotiSyncApp : Application(), RelayWorkerRuntimeProvider {
     private val initScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard("NotiSyncApp.initScope"))
-    private val graphDeferred = CompletableDeferred<AppGraph>()
-    private val _graphReady = MutableStateFlow(false)
-    val graphReady: StateFlow<Boolean> = _graphReady
-    val isGraphReady: Boolean get() = _graphReady.value
-    val graphIfReady: AppGraph? get() = if (isGraphReady && ::graph.isInitialized) graph else null
+    private val bootstrapCoordinator = ApplicationBootstrapCoordinator(
+        scope = initScope,
+        initialize = ::initializeProductionServices,
+    )
+    private val userInitializationRequested = AtomicBoolean(false)
+
+    internal val bootstrapState: StateFlow<ApplicationBootstrapState<ReadyServices>> =
+        bootstrapCoordinator.state
+    val graphIfReady: AppGraph?
+        get() = (bootstrapState.value as? ApplicationBootstrapState.Ready)?.services?.graph
+    val graph: AppGraph
+        get() = graphIfReady ?: error("Application runtime is not ready")
 
     override fun onCreate() {
         super.onCreate()
-        graph = AppGraph(this)
+        // FCM, WorkManager, receivers, and services may create the application process after an
+        // update. They must not start the user-visible legacy-to-Room cutover. MainActivity is the
+        // only caller of startUserInitialization(). A completed Room authority may still hydrate in
+        // a background-created process; that probe never opens or inspects a legacy source.
+        bootstrapCoordinator.probeExisting(::probeExistingProductionServices)
+    }
+
+    internal fun startUserInitialization() {
+        if (!userInitializationRequested.compareAndSet(false, true)) return
+        bootstrapCoordinator.start()
         initScope.launch {
-            runCatching {
-                // Cold-start init runs off the main thread (so the automatic `_app_start` trace can't see
-                // it); `app_graph_init` captures its duration + the StrongBox/TrustStore sub-metrics.
-                perfTrace("app_graph_init") { span -> graph.init(span) }
-                _graphReady.value = true
-                graphDeferred.complete(graph)
-            }.onFailure { t ->
-                Log.e("NotiSyncApp", "graph init failed", t)
-                graphDeferred.completeExceptionally(t)
+            when (val settled = bootstrapState.first { it !is ApplicationBootstrapState.Loading }) {
+                is ApplicationBootstrapState.Ready -> {
+                    // FCM/worker callbacks intentionally stop while first-open migration is incomplete. The broker
+                    // retains those messages, so Ready publication starts one backlog drain and then the backstop.
+                    RelayDrainWorker.enqueueNormal(this@NotiSyncApp)
+                    RelayDrainWorker.schedulePeriodic(this@NotiSyncApp)
+                }
+                is ApplicationBootstrapState.Unavailable -> Log.w(
+                    "NotiSyncApp",
+                    "application bootstrap unavailable code=${settled.failure.code}",
+                )
+                ApplicationBootstrapState.Loading -> error("settled bootstrap state cannot be loading")
             }
         }
     }
 
     suspend fun awaitGraphReady(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =
-        graphIfReady ?: runCatching {
-            withTimeoutOrNull(timeoutMillis) { graphDeferred.await() }
-        }.getOrNull()
+        withTimeoutOrNull(timeoutMillis) {
+            when (val settled = bootstrapState.first { it !is ApplicationBootstrapState.Loading }) {
+                is ApplicationBootstrapState.Ready -> settled.services.graph
+                is ApplicationBootstrapState.Unavailable -> null
+                ApplicationBootstrapState.Loading -> error("settled bootstrap state cannot be loading")
+            }
+        }
 
     fun awaitGraphReadyBlocking(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =
         graphIfReady ?: kotlinx.coroutines.runBlocking { awaitGraphReady(timeoutMillis) }
 
-    fun runWhenGraphReady(block: (AppGraph) -> Unit) {
-        graphIfReady?.let(block) ?: initScope.launch {
-            runCatching { awaitGraphReady() }.getOrNull()?.let(block)
+    fun runWhenReadyServices(block: (ReadyServices) -> Unit) {
+        val current = bootstrapState.value
+        if (current is ApplicationBootstrapState.Ready) {
+            block(current.services)
+        } else if (current is ApplicationBootstrapState.Loading) {
+            initScope.launch {
+                val settled = bootstrapState.first { it !is ApplicationBootstrapState.Loading }
+                if (settled is ApplicationBootstrapState.Ready) block(settled.services)
+            }
         }
     }
+
+    fun runWhenGraphReady(block: (AppGraph) -> Unit) {
+        graphIfReady?.let(block) ?: initScope.launch {
+            awaitGraphReady()?.let(block)
+        }
+    }
+
+    override suspend fun relayWorkerRuntimeAvailability(): RelayWorkerRuntimeAvailability =
+        when (val state = bootstrapState.value) {
+            ApplicationBootstrapState.Loading -> RelayWorkerRuntimeAvailability.Unavailable
+            is ApplicationBootstrapState.Ready ->
+                RelayWorkerRuntimeAvailability.Ready(state.services.relayWorkerRuntime)
+            is ApplicationBootstrapState.Unavailable -> RelayWorkerRuntimeAvailability.Unavailable
+        }
+
+    private fun storageContainer() = StorageContainerFactory.get(
+            context = this,
+            dependencies = StorageContainerDependencies(
+                ioDispatcher = Dispatchers.IO,
+                clock = StorageClock(System::currentTimeMillis),
+                payloadVault = AndroidOperationalPayloadVaultPort(
+                    AndroidKeystoreProtectedPayloadVault(),
+                    Dispatchers.IO,
+                ),
+                preferencesCutoverDefaults = OperationalPreferencesCutoverDefaults(
+                    legacyDeviceName = android.os.Build.MODEL.takeIf(String::isNotBlank) ?: "Android",
+                ),
+                legacyV51Sources = LegacyV51StorageSources(
+                    preferencesDataStore = dataStore,
+                    coreFilesDirectory = filesDir.toPath(),
+                    messageLedgerFile = getDatabasePath("message_ledger.db"),
+                    runsFile = getDatabasePath("runs.db"),
+                    sealHistoryFile = getDatabasePath("openpgp_signing.db"),
+                    noBackupStagingDirectory = noBackupFilesDir,
+                ),
+                bootstrap = StorageBootstrapDependencies(SettingsRepository.DEFAULT_BROKER),
+            ),
+        )
+
+    private suspend fun initializeProductionServices(): ApplicationBootstrapOutcome<ReadyServices> = try {
+        val container = storageContainer()
+        container.initialize()
+        ApplicationBootstrapOutcome.Ready(createReadyServices(container))
+    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+        throw cancelled
+    } catch (failure: StorageBootstrapFailure) {
+        failure.toApplicationOutcome()
+    }
+
+    private suspend fun probeExistingProductionServices(): ApplicationBootstrapOutcome<ReadyServices>? {
+        return try {
+            val container = storageContainer()
+            container.loadExistingAuthorityOrNull() ?: return null
+            ApplicationBootstrapOutcome.Ready(createReadyServices(container))
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (failure: StorageBootstrapFailure) {
+            failure.toApplicationOutcome()
+        }
+    }
+
+    private suspend fun createReadyServices(container: net.extrawdw.apps.notisync.composition.storage.StorageContainer): ReadyServices {
+        val graph = AppGraph(
+            app = this,
+            activityRepository = container.activityRepository,
+            runRepository = container.runRepository,
+            coreRepository = container.coreRepository,
+            coreRuntime = container.loadCoreRuntime(),
+            operationalDatabase = container.operationalDatabase,
+            protectedPayloadProtector = container.protectedPayloadProtector,
+            maintenanceGate = container.maintenanceGate,
+            payloadKeyEnsurer = container.payloadKeyEnsurer,
+        )
+        val span = perfSpan("application_runtime_init")
+        try {
+            graph.init(span)
+        } finally {
+            span.stop()
+        }
+        return ReadyServices(
+            graph = graph,
+            activityRepository = container.activityRepository,
+            relayWorkerRuntime = graph.brokerCustodyInbound.workerRuntime,
+            fcmRouteRegistration = FcmRouteRegistration(graph::onFcmRegistered),
+        )
+    }
+
+    private fun StorageBootstrapFailure.toApplicationOutcome(): ApplicationBootstrapOutcome.Unavailable =
+        ApplicationBootstrapOutcome.Unavailable(
+            ApplicationBootstrapFailure(
+                kind = when (disposition) {
+                    StorageBootstrapFailureDisposition.RETRYABLE -> ApplicationBootstrapFailureKind.RETRYABLE
+                    StorageBootstrapFailureDisposition.USER_RECOVERABLE ->
+                        ApplicationBootstrapFailureKind.USER_RECOVERABLE
+                    StorageBootstrapFailureDisposition.SECURITY_BLOCKING ->
+                        ApplicationBootstrapFailureKind.SECURITY_BLOCKING
+                },
+                code = errorCode,
+            ),
+        )
 
     companion object {
         const val GRAPH_INIT_TIMEOUT_MS = 30_000L

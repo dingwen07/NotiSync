@@ -1,11 +1,13 @@
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    // AGP 9.2.x compiles Kotlin via built-in Kotlin (bundled KGP 2.2.10) — do NOT apply
+    // AGP 9.3.x compiles Kotlin via built-in Kotlin (bundled KGP 2.2.10) — do NOT apply
     // org.jetbrains.kotlin.android (it conflicts). The compose + serialization compiler plugins
-    // coexist with built-in Kotlin. v1 deliberately avoids KSP/Hilt/Room (annotation processing
-    // is a moving target on AGP 9) and uses manual DI + DataStore instead.
+    // coexist with built-in Kotlin. Room 3 is Kotlin/KSP-only and is proven by the storage schema build.
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.room3)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
@@ -13,15 +15,76 @@ plugins {
     alias(libs.plugins.firebase.perf)
 }
 
+room3 {
+    schemaDirectory("$projectDir/schemas")
+}
+
 val localProperties = Properties().apply {
     val file = rootProject.file("local.properties")
     if (file.isFile) file.inputStream().use(::load)
+}
+
+// This is a local, ignored capture from one connected v51 device.  It is deliberately not a
+// checked-in test resource: a build without the capture still compiles, and the instrumentation
+// test skips itself.  Keep the hash here so an accidentally replaced archive cannot silently
+// change the release migration fixture.
+val connectedDeviceMigrationFixtureArchive =
+    layout.projectDirectory.file(
+        "local-device-fixtures/connected-device-migration-inputs/app-private-migration-inputs.tar",
+    )
+val connectedDeviceMigrationFixtureAssets =
+    layout.buildDirectory.dir("generated/connected-device-migration-assets")
+val extractConnectedDeviceMigrationFixture = tasks.register<Sync>("extractConnectedDeviceMigrationFixture") {
+    val archive = connectedDeviceMigrationFixtureArchive.asFile
+    from(providers.provider {
+        if (archive.isFile) tarTree(archive) else files().asFileTree
+    }) {
+        include(
+            "databases/message_ledger.db",
+            "databases/message_ledger.db-journal",
+            "databases/message_ledger.db-wal",
+            "databases/message_ledger.db-shm",
+            "databases/runs.db",
+            "databases/runs.db-wal",
+            "databases/runs.db-shm",
+            "databases/openpgp_signing.db",
+            "databases/openpgp_signing.db-journal",
+            "databases/openpgp_signing.db-wal",
+            "databases/openpgp_signing.db-shm",
+            "databases/run_control_outbox.db",
+            "databases/run_control_outbox.db-journal",
+            "databases/ssh-key-provider.sqlite3",
+            "databases/ssh-key-provider.sqlite3-wal",
+            "databases/ssh-key-provider.sqlite3-shm",
+            "files/datastore/notisync.preferences_pb",
+            "files/auth_token.wrapped",
+            "files/hpke_private.wrapped",
+            "files/hpke_public.bin",
+            "files/hpke_private.epoch3.wrapped",
+            "files/hpke_public.epoch3.bin",
+        )
+    }
+    into(connectedDeviceMigrationFixtureAssets.map { it.dir("connected-device-v51") })
+    doFirst {
+        if (!archive.isFile) return@doFirst
+        val actual = MessageDigest.getInstance("SHA-256").digest(archive.readBytes())
+            .joinToString("") { byte -> "%02x".format(byte.toInt() and 0xff) }
+        check(actual == "8e030f5868e17619b0485ebd91b128f158c86e055756997d164461d2d131d1f0") {
+            "connected-device migration fixture archive hash does not match the captured device input"
+        }
+    }
 }
 
 android {
     namespace = "net.extrawdw.apps.notisync"
     compileSdk {
         version = release(37)
+    }
+
+    sourceSets {
+        getByName("androidTest") {
+            assets.directories.add(connectedDeviceMigrationFixtureAssets.get().asFile.absolutePath)
+        }
     }
 
     defaultConfig {
@@ -60,6 +123,13 @@ android {
         resources.pickFirsts += "META-INF/LICENSE.md"
         resources.pickFirsts += "META-INF/DEPENDENCIES"
     }
+
+}
+
+tasks.matching { task ->
+    task.name.startsWith("merge") && task.name.endsWith("AndroidTestAssets")
+}.configureEach {
+    dependsOn(extractConnectedDeviceMigrationFixture)
 }
 
 kotlin {
@@ -122,7 +192,10 @@ dependencies {
         }
     }
 
-    // Persistence (no codegen): Preferences + structured values serialized via kotlinx-serialization.
+    // Persistence: Room 3 owns relational durable state; DataStore remains for independent scalar preferences.
+    implementation(libs.androidx.room3.runtime)
+    implementation(libs.androidx.sqlite.framework)
+    ksp(libs.androidx.room3.compiler)
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
@@ -167,6 +240,7 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.room3.testing)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

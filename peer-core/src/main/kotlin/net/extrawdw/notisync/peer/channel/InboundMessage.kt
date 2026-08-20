@@ -19,8 +19,9 @@ import net.extrawdw.notisync.protocol.MessageType
  * `TrustTable` must be identity-signed (0), so a leaked operational key cannot drive roster gossip (§8 #12).
  *
  * [messageId] is the envelope's relay id — surfaced so a handler can later relay-ack the exact item
- * that delivered this message (e.g. when its mirror is dismissed). It is transport metadata, not
- * sender-authenticated content.
+ * that delivered this message (e.g. when its mirror is dismissed). It is not encrypted feature-payload
+ * content, but it is sender-authenticated envelope metadata because [net.extrawdw.notisync.protocol.EnvelopeAuth]
+ * binds it into the verified signature.
  *
  * [createdAt] is the signed envelope creation time. A handler may compare it with a body timestamp for
  * expiry/replay policy without trusting transport arrival time.
