@@ -169,7 +169,11 @@ class NotisyncdCli(
                 "foreground",
             )
         }
-        val nullDevice = Path.of("/dev/null").toFile()
+        val nullDevice = if (System.getProperty("os.name").contains("windows", ignoreCase = true)) {
+            Path.of("NUL").toFile()
+        } else {
+            Path.of("/dev/null").toFile()
+        }
         val log = layout.daemonLogFile.toFile()
         val processBuilder = ProcessBuilder(command)
             .redirectInput(ProcessBuilder.Redirect.from(nullDevice))
@@ -272,6 +276,9 @@ class NotisyncdCli(
     private fun removeStaleSocket() {
         if (!Files.exists(paths.socket, LinkOption.NOFOLLOW_LINKS)) return
         fileSystem.validatePrivateNode(paths.socket)
+        require(fileSystem.isSocketNode(paths.socket)) {
+            "refusing to remove non-socket path ${paths.socket}"
+        }
         Files.delete(paths.socket)
     }
 
@@ -300,8 +307,8 @@ class NotisyncdCli(
 
     private fun requireSupportedDesktop() {
         val os = System.getProperty("os.name").lowercase()
-        require(os.contains("linux") || os.contains("mac") || os.contains("darwin")) {
-            "notisyncd currently supports Linux and macOS"
+        require(os.contains("linux") || os.contains("mac") || os.contains("darwin") || os.contains("windows")) {
+            "notisyncd currently supports Linux, macOS, and Windows"
         }
     }
 

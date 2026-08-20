@@ -116,6 +116,33 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
     }
 
     @Test
+    fun `pairing requests advance the card floor and profile updatedAt so re-scans supersede peers`() {
+        val profileState = MemoryProfileState()
+        val changing = runtimeHarness(
+            directory = "pairing-advances-stamps",
+            name = "Workstation",
+            profileState = profileState,
+        )
+        try {
+            val first = profileState.profilePublicationState()
+            changing.runtime.pairingPayload()
+            val second = profileState.profilePublicationState()
+            assertTrue(second.cardCreatedAtFloorEpochMillis!! > (first.cardCreatedAtFloorEpochMillis ?: 0))
+            assertTrue(second.profileUpdatedAtEpochMillis!! > (first.profileUpdatedAtEpochMillis ?: 0))
+            assertEquals(second.publicationRevision, second.pendingPublicationRevision)
+            assertTrue(second.profileUpdatedAtEpochMillis!! >= second.cardCreatedAtFloorEpochMillis!!)
+
+            val third = profileState.profilePublicationState()
+            changing.runtime.pairingPayload()
+            val fourth = profileState.profilePublicationState()
+            assertTrue(fourth.cardCreatedAtFloorEpochMillis!! > second.cardCreatedAtFloorEpochMillis!!)
+            assertTrue(fourth.profileUpdatedAtEpochMillis!! > second.profileUpdatedAtEpochMillis!!)
+        } finally {
+            changing.close()
+        }
+    }
+
+    @Test
     fun `failed forced profile reannouncement remains pending for the next maintenance retry`() = runBlocking {
         val profileState = MemoryProfileState()
         profileState.updateProfilePublicationState {

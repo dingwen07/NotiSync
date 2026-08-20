@@ -28,8 +28,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 50
-        versionName = "2.0.0-rc.3"
+        versionCode = 52
+        versionName = "2.2.0-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -58,6 +58,7 @@ android {
     }
     packaging {
         resources.pickFirsts += "META-INF/LICENSE.md"
+        resources.pickFirsts += "META-INF/DEPENDENCIES"
     }
 }
 
@@ -80,9 +81,14 @@ dependencies {
     implementation(project(":protocol"))
     implementation(project(":protocol-crypto"))
     implementation(project(":peer-core"))
+    implementation(project(":ssh-agent-core"))
     implementation(project(":scrcpy-server"))
     implementation(project(":screen-session"))
     implementation(libs.tink.android)
+    implementation(libs.apache.sshd.common)
+    implementation(libs.apache.sshd.putty)
+    implementation(libs.bouncycastle.provider)
+    implementation(libs.bouncycastle.pkix)
 
     // Compose / Material 3 Expressive
     implementation(platform(libs.androidx.compose.bom))
@@ -126,6 +132,7 @@ dependencies {
     // artifact only discovers the separately installed Shizuku Manager; it does not bundle or start it.
     implementation(libs.shizuku.api)
     implementation(libs.shizuku.provider)
+    implementation(libs.openpgp.api)
     // Directly used for the small App Store (iTunes Lookup) icon JSON; also exported transitively by :protocol.
     implementation(libs.kotlinx.serialization.json)
 
@@ -155,6 +162,7 @@ dependencies {
     implementation(libs.zxing.core)
 
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
     androidTestImplementation(platform(libs.androidx.compose.bom))
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)

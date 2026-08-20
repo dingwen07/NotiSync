@@ -115,8 +115,8 @@ class MacProcessTitleIntegrationTest {
         assertTrue(Files.isExecutable(installedNotisyncd))
         assertTrue(Files.isExecutable(installedNotisync))
         assertTrue(Files.isExecutable(installedNsrun))
-        // Match install-desktop.sh: commands on PATH are symlinks to physical, correctly named
-        // launchers inside the distribution.
+        // Exercise symlinked entry points too: the physical launcher name must still determine the
+        // kernel-visible process name when a distribution is exposed through symlinks.
         val notisyncd = Files.createSymbolicLink(commandDirectory.resolve("notisyncd"), installedNotisyncd)
         val notisync = Files.createSymbolicLink(commandDirectory.resolve("notisync"), installedNotisync)
         val nsrun = Files.createSymbolicLink(commandDirectory.resolve("nsrun"), installedNsrun)

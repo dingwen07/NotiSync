@@ -1,0 +1,7 @@
+OpenPGP API
+Copyright OpenKeychain contributors
+https://github.com/open-keychain/openpgp-api
+
+Licensed under the Apache License, Version 2.0.
+The complete Apache License 2.0 text is bundled in this directory as
+scrcpy-Apache-2.0.txt.

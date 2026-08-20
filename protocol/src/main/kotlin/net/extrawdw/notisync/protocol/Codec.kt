@@ -31,6 +31,9 @@ object ProtocolCodec {
         // re-encoded on both ends for crypto ([EnvelopeAuth], [AssetAad]) carry NO defaults, so their
         // signature/AAD bytes are identical regardless of this flag.
         // INVARIANT: never give a nullable field a non-null default (an absent key would be ambiguous).
+        // Also avoid putting an all-default nested class instance in a nullable field: it serializes to
+        // an empty map, which decoders may collapse back to null. Normalize such values to null before
+        // encoding so the wire representation reflects the semantic value.
         // Version/suite discriminators that must outlive a suite bump are pinned with @EncodeDefault(ALWAYS).
         encodeDefaults = false
     }

@@ -20,14 +20,14 @@ Kotlin/Ktor broker, so the wire format and signature verification can never drif
                   derivation. Shared verbatim by client and server.
 :peer-core        Shared JVM peer engine: secure channel, signed trust store and convergence,
                   pairing, key rotation, broker HTTP/WebSocket client, and platform ports.
-:protocol-local   JVM-only JSON DTOs for the local Unix-socket API.
-:local-client     Reusable Unix-socket client, streaming, autostart, platform paths, and private
+:protocol-local   JVM-only JSON DTOs for the local AF_UNIX API.
+:local-client     Reusable AF_UNIX client, streaming, autostart, platform paths, and private
                   file helpers for desktop applications.
 :nsrun            Standalone NotiSync Run client: command supervision, terminal integration,
                   private Run configuration/logs, and daemon reporting.
-:notisyncd        JVM 21 Linux/macOS desktop distribution containing the `notisyncd` peer daemon
-                  and the `notisync` peer-management CLI; its runtime distribution also composes
-                  the standalone `:nsrun` launcher.
+:notisyncd        JVM 21 desktop distribution containing the `notisyncd` peer daemon and the
+                  `notisync` peer-management CLI; POSIX distributions also compose `:nsrun` and
+                  `nsscreen`.
 :server           Ktor CIO broker. Verifies signed cards/routes (never decrypts), store-and-forward
                   relay, authenticated WebSocket transport, FCM HTTP v1 adapter, Exposed/SQLite
                   recoverable cache. Containerized (distroless JRE 21).
@@ -116,8 +116,13 @@ bounded delivery feedback, and broker-side stale-delta dropping. It does not dep
 
 ### Desktop daemon and NotiSync Run
 
-NotiSync Desktop supports Linux and macOS and requires JDK 21. On macOS, install Xcode Command Line
-Tools as well. Install the `notisyncd`, `notisync`, and `nsrun` commands for the current user:
+NotiSync Desktop supports Linux, macOS, and Windows and requires JDK 21. On macOS, install Xcode
+Command Line Tools as well. The `notisyncd` daemon and `notisync` CLI use the local AF_UNIX API on
+all three platforms. `nsrun` and `nsscreen` remain POSIX-only and are not included in Windows
+distributions. Windows supports the administrative and send endpoints; process-leased local
+`/v1/receive` registration remains unavailable because Windows AF_UNIX does not expose verified peer
+credentials. This does not affect the daemon's encrypted broker receive path. Install the desktop
+commands for the current user on POSIX:
 
 ```bash
 git clone https://github.com/dingwen07/NotiSync.git
@@ -126,15 +131,86 @@ cd NotiSync
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-The default installation is under `~/.local/share/notisync`. Add the `PATH` export to the shell's
-startup file. Operational `notisync` commands and `nsrun` start the daemon automatically when
-needed:
+On Windows, run the native PowerShell installer:
+
+```powershell
+git clone https://github.com/dingwen07/NotiSync.git
+Set-Location NotiSync
+.\scripts\install-desktop.bat
+```
+
+The POSIX installation defaults to `~/.local/share/notisync`; add the `~/.local/bin` `PATH` export
+to the shell's startup file. Windows installs under `%LOCALAPPDATA%\Programs\NotiSync` and places
+command shims in `%LOCALAPPDATA%\Microsoft\WindowsApps`, which is normally already on `PATH`. Both
+installers honor `NOTISYNC_INSTALL_DIR` and `NOTISYNC_BIN_DIR` overrides. Their command shims remember
+the verified JDK 21+ used for installation and use it whenever the current shell has no valid
+`JAVA_HOME`. Operational `notisync` commands and `nsrun` start the daemon automatically when needed:
 
 ```bash
 notisync config set device-name "Workstation"
 notisync status
 notisync applications list
 ```
+
+### NotiSync Seal: remote Git commit signing (Android)
+
+NotiSync can use a trusted Android device and OpenKeychain to approve ordinary OpenPGP-signed Git
+commits. The desktop still needs the public certificate and a real GPG installation: the
+`notisync-gpg` adapter uses that GPG to resolve the requested certificate, delegates every unsupported
+operation unchanged, and verifies the returned detached signature before Git receives it. No private
+OpenPGP key is required on the desktop for the remotely selected certificate.
+
+1. Before changing Git configuration, record the absolute path of the real GPG executable and store it:
+
+   ```bash
+   real_gpg="$(command -v gpg)"
+   notisync-gpg config set-real-gpg "$real_gpg"
+   notisync-gpg doctor
+   ```
+
+   On Windows PowerShell:
+
+   ```powershell
+   $realGpg = (Get-Command gpg.exe).Source
+   notisync-gpg config set-real-gpg $realGpg
+   notisync-gpg doctor
+   ```
+
+2. Install OpenKeychain on the Android device, import the private certificate there, then open
+   **Tools > Seal** in NotiSync and select that certificate. OpenKeychain remains responsible for
+   private-key storage, passphrases, and its approval interaction.
+
+3. Keep the matching public certificate in the desktop GPG keyring. Configure Git with the adapter's
+   absolute path and preferably the full primary fingerprint:
+
+   ```bash
+   git config --global gpg.format openpgp
+   git config --global gpg.openpgp.program "$(command -v notisync-gpg)"
+   git config --global user.signingKey FULL_PRIMARY_FINGERPRINT
+   git config --global commit.gpgSign true
+   ```
+
+   On Windows PowerShell, use
+   `git config --global gpg.openpgp.program (Get-Command notisync-gpg.cmd).Source` for the second
+   command. A 16-digit primary or signing-subkey long ID is also accepted, but a full fingerprint is
+   less ambiguous. Git's `-S` override is honored because the adapter uses Git's final selector.
+
+Seal signs commit objects only. Annotated tags, exact-subkey selectors ending in `!`,
+short IDs, email selectors, verification, encryption, and all other GPG invocations go directly to the
+configured real GPG. A recognized remote request fails closed on timeout, rejection, provider failure,
+or an invalid response; it never silently falls back to local signing. The phone review shows the exact
+commit headers/message and payload hash, but it does not contain or claim to show the code diff. It also
+shows the desktop process's working directory as requester-reported context; that path is authenticated
+as coming from the trusted device but is not part of the Git commit or its OpenPGP signature.
+
+When Git is run from an interactive terminal, `notisync-gpg` prints a seven-character hash directly to
+that controlling terminal. Compare it with the hash in Seal before approving. The adapter
+never adds this message to stdout, which remains reserved for the detached signature required by Git;
+headless and IDE invocations without a controlling terminal simply omit the message.
+
+To roll back, restore the previous `gpg.openpgp.program` value (or run
+`git config --global --unset gpg.openpgp.program`) and leave `user.signingKey` pointing at the desired
+local key.
 
 Use `notisync daemon start|stop|restart` for explicit lifecycle control. `notisync daemon` and
 `notisync daemon status` only report status and do not autostart; `notisync status` is an alias with
@@ -189,17 +265,20 @@ notisync applications remove nsrun   # remove a stale local-app registration
 notisync daemon stop
 ```
 
-Configuration and private daemon data live in `~/.notisync/`. Daemon logs use the platform's user log
-location: `~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
+Configuration and private daemon data live in `~/.notisync/` on POSIX and under the user's local
+application-data directory on Windows. Daemon logs use the platform's user log location:
+`~/Library/Logs/NotiSync/notisyncd.log` on macOS, or
 `$XDG_STATE_HOME/notisync/log/notisyncd.log` on Linux, falling back to
-`~/.local/state/notisync/log/notisyncd.log`. Use `notisync applications list` to inspect persistent
+`~/.local/state/notisync/log/notisyncd.log`; Windows keeps them under the daemon data directory.
+Use `notisync applications list` to inspect persistent
 local-application registrations and `notisync applications remove APPLICATION_ID` to clean up one
 that is no longer used. Log lines include an ISO-8601
 timestamp, severity, and thread name; the default level is `WARN` and can be changed with
-`notisyncd config set log-level info`. Rerun `./scripts/install-desktop.sh` to update the installed
-commands; if the daemon is running, the installer stops it before replacing the installation and starts
-the updated daemon afterward. The current desktop key provider stores unencrypted key material in the
-private `~/.notisync/private-keys-v1/` directory.
+`notisyncd config set log-level info`. Rerun `./scripts/install-desktop.sh` on POSIX or
+`.\scripts\install-desktop.bat` on Windows to update the installed commands; if the daemon is running,
+the installer stops it before replacing the installation and starts the updated daemon afterward. The
+current desktop key provider stores unencrypted key material in the private
+`~/.notisync/private-keys-v1/` directory.
 
 ## Pairing
 

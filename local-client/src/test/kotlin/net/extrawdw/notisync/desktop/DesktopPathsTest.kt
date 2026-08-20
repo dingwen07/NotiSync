@@ -17,7 +17,11 @@ class DesktopPathsTest {
 
     @Test
     fun `Linux defaults daemon logs to XDG state log directory`() {
-        val xdgState = "/var/tmp/test-state"
+        val xdgState = if (System.getProperty("os.name").contains("windows", ignoreCase = true)) {
+            "C:/var/tmp/test-state"
+        } else {
+            "/var/tmp/test-state"
+        }
         val paths = DesktopPaths.defaults(home, "Linux", xdgStateHome = xdgState)
 
         assertEquals(Path.of(xdgState, "notisync/log"), paths.logDirectory)
@@ -28,6 +32,19 @@ class DesktopPathsTest {
         val paths = DesktopPaths.defaults(home, "Linux", xdgStateHome = "relative-state")
 
         assertEquals(home.resolve(".local/state/notisync/log"), paths.logDirectory)
+    }
+
+    @Test
+    fun `Windows defaults use local app data`() {
+        val home = Path.of("C:/Users/tester")
+        val paths = DesktopPaths.defaults(
+            userHome = home,
+            osName = "Windows 11",
+            localAppData = "C:/Users/tester/AppData/Local",
+        )
+
+        assertEquals(home.resolve("AppData/Local/NotiSync"), paths.dataDirectory)
+        assertEquals(paths.dataDirectory.resolve("logs"), paths.logDirectory)
     }
 
     @Test

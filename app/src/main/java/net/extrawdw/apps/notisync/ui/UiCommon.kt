@@ -4,9 +4,14 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.Menu
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -34,12 +39,28 @@ fun rememberGraph(): AppGraph {
     return remember { (context.applicationContext as NotiSyncApp).graph }
 }
 
+internal val LocalFeatureDrawerOpener = compositionLocalOf<(() -> Unit)?> { null }
+
+@Composable
+internal fun FeatureDrawerNavigationIcon() {
+    LocalFeatureDrawerOpener.current?.let { open ->
+        IconButton(onClick = open) {
+            Icon(Icons.Outlined.Menu, contentDescription = stringResource(R.string.open_features))
+        }
+    }
+}
+
 /** Shared scaffold with a standard Material 3 top app bar (pinned, does not collapse on scroll). */
 @Composable
 internal fun NotiScaffold(title: String, content: @Composable (Modifier) -> Unit) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
-        topBar = { TopAppBar(title = { Text(title) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text(title) },
+                navigationIcon = { FeatureDrawerNavigationIcon() },
+            )
+        },
     ) { padding ->
         content(Modifier.padding(padding))
     }

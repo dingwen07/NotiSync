@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <uses-permission android:name="android.permission.HIDE_OVERLAY_WINDOWS" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
@@ -13,6 +15,7 @@
     <!-- Runtime permission for LAN sockets and DNS-SD when targeting Android 17 / SDK 37. -->
     <uses-permission android:name="android.permission.ACCESS_LOCAL_NETWORK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.USE_BIOMETRIC" />
     <!-- Android 16 promoted ongoing notifications (Live Updates). The sender still has to request
          promotion on each eligible notification; the system/user remains the final arbiter. -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
@@ -73,6 +76,10 @@
         <package android:name="com.google.android.gms" />           <!-- Google Play services -->
         <package android:name="net.extrawdw.notifly" />             <!-- Notifly diagnostic source -->
         <package android:name="moe.shizuku.privileged.api" />       <!-- External Shizuku Manager setup -->
+        <package android:name="org.sufficientlysecure.keychain" />  <!-- OpenKeychain signing provider -->
+        <intent>
+            <action android:name="org.openintents.openpgp.IOpenPgpService2" />
+        </intent>
     </queries>
 
     <application
@@ -92,6 +99,7 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="true"
             android:launchMode="singleTask"
+            android:screenOrientation="fullUser"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -129,10 +137,55 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="false"
             android:label="@string/screen_viewer_task_title"
+            android:screenOrientation="fullUser"
             android:supportsPictureInPicture="true"
             android:taskAffinity="${applicationId}.screen_viewer"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize" />
+
+        <activity
+            android:name=".seal.OpenPgpEnrollmentActivity"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".seal.OpenPgpSignReviewActivity"
+            android:documentLaunchMode="intoExisting"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="standard"
+            android:screenOrientation="fullUser"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sshagent.SshAgentReviewActivity"
+            android:documentLaunchMode="intoExisting"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="standard"
+            android:screenOrientation="fullUser"
+            android:taskAffinity=""
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sshagent.SshKeyExportActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
+            android:name=".sshagent.SshKeySendActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:screenOrientation="fullUser"
+            android:theme="@style/Theme.NotiSync" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
              ACTION_VIEW. Keep this on an alias so MainActivity's ordinary app-link entry point remains
@@ -182,6 +235,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTask"
+            android:screenOrientation="fullUser"
             android:showWhenLocked="true"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync.CallScreen"
@@ -290,6 +344,15 @@
         <!-- Run shade controls are DATA_SYNC/RUN actions, separate from notification mirroring. -->
         <receiver
             android:name=".run.RunActionReceiver"
+            android:exported="false" />
+
+        <!-- Rejects a pending Seal request directly from its notification. -->
+        <receiver
+            android:name=".seal.OpenPgpSignActionReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".sshagent.SshAgentActionReceiver"
             android:exported="false" />
 
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's

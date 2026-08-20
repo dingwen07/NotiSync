@@ -27,3 +27,11 @@
     public <init>();
     public <init>(android.content.Context);
 }
+
+# Apache MINA SSHD has Android-aware guards around its JMX exception unwrapping, and NotiSync
+# rejects an empty encrypted-key passphrase before MINA's FilePasswordProvider can construct the
+# desktop JAAS login exceptions. These classes are absent from the Android API surface.
+-dontwarn javax.management.MBeanException
+-dontwarn javax.management.ReflectionException
+-dontwarn javax.security.auth.login.CredentialException
+-dontwarn javax.security.auth.login.FailedLoginException

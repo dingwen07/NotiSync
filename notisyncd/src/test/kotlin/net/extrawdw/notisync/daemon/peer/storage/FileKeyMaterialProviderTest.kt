@@ -54,10 +54,7 @@ class FileKeyMaterialProviderTest : StorageTestSupport() {
 
         Files.list(layout.privateKeysDirectory).use { files ->
             files.forEach { path ->
-                assertEquals(
-                    SecureFileSystem.FILE_PERMISSIONS,
-                    Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS),
-                )
+                assertPrivateFile(path)
             }
         }
     }

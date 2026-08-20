@@ -36,6 +36,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
+import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
 
 // Tuning for the expand/collapse + predictive-back container transform. Mirrors the values used by
 // the AskMyTimeline "Chat history" overlay this is modelled on.
@@ -75,6 +76,7 @@ internal fun PairingOverlay(
     initialPairingPayload: String? = null,
     onInitialPairingPayloadConsumed: () -> Unit = {},
 ) {
+    TapjackingProtectionEffect()
     val scope = rememberCoroutineScope()
     val enterProgress = remember { Animatable(0f) }     // 0 → 1 expand from the stripe
     val dragProgress = remember { Animatable(0f) }      // 0 → 0.72, follows the live back gesture

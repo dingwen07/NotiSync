@@ -1,9 +1,11 @@
 package net.extrawdw.notisync.peer.channel
 
+import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
 
@@ -15,17 +17,63 @@ object HighDataSyncPolicy {
      */
     fun validate(body: ByteArray, scope: Recipients, requesterId: ClientId? = null) {
         val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull()
-        if (sync?.kind == DataSyncKind.SCREEN_MIRRORING || scope is Recipients.OnlyCapable) {
+        if (scope is Recipients.OnlyCapableSet) {
+            validateExactPush(scope)
+        } else if (sync?.kind == DataSyncKind.OPENPGP_SIGN) {
+            validateOpenPgpRequest(sync, scope, requesterId)
+        } else if (sync?.kind == DataSyncKind.SCREEN_MIRRORING || scope is Recipients.OnlyCapable) {
             validateScreenRequest(sync, scope, requesterId)
         } else {
             validateLegacyRouted(scope)
         }
     }
 
+    /**
+     * Exact-set HIGH routing is intentionally application agnostic. The submitting application is
+     * responsible for binding its signed body to this audience; the daemon only requires the
+     * capabilities needed for exact routing and filtered push delivery.
+     */
+    private fun validateExactPush(scope: Recipients.OnlyCapableSet) {
+        require(
+            scope.requiredCapabilities.contains(Capability.CAPABILITY_ROUTING_V1) &&
+                scope.requiredCapabilities.contains(Capability.PUSH_FILTERING),
+        ) {
+            "HIGH exact-set DATA_SYNC requires capability routing and push filtering"
+        }
+    }
+
+    private fun validateOpenPgpRequest(sync: DataSync, scope: Recipients, requesterId: ClientId?) {
+        val request = requireNotNull(sync.openPgpSign) {
+            "HIGH OPENPGP_SIGN requires an openPgpSign body"
+        }
+        require(request.action == OpenPgpSignAction.REQUEST) {
+            "only an OPENPGP_SIGN REQUEST may use HIGH urgency"
+        }
+        val validationError = request.validationError(::sha256)
+        require(validationError == null) { validationError ?: "invalid OpenPGP request" }
+        requesterId?.let {
+            require(request.requesterClientId == it) {
+                "OpenPGP requesterClientId must be the envelope signer"
+            }
+        }
+        val filtered = scope as? Recipients.OwnMeshFiltered
+        require(
+            filtered != null &&
+                filtered.excluded.isEmpty() &&
+                filtered.excludedPlatforms.isEmpty() &&
+                filtered.legacyExcludedPlatforms.isEmpty() &&
+                filtered.forbiddenCapabilities.isEmpty() &&
+                filtered.requireCapabilityRoutingV1 &&
+                filtered.requiredCapabilities == request.requiredSignerCapabilities()
+        ) {
+            "HIGH OpenPGP request requires the exact capability-routed own-mesh audience"
+        }
+    }
+
     /** Preserve validation of an empty strict batch without manufacturing an unauthenticated body. */
     fun validateEmpty(scope: Recipients) {
-        require(scope !is Recipients.OnlyCapable) {
-            "HIGH screen DATA_SYNC requires a SCREEN_MIRRORING REQUEST body"
+        require(scope !is Recipients.OnlyCapable && scope !is Recipients.OnlyCapableSet) {
+            "HIGH exact-capability DATA_SYNC requires a matching request body"
         }
         validateLegacyRouted(scope)
     }
@@ -94,4 +142,8 @@ object HighDataSyncPolicy {
         Capability.BACKGROUND_WAKE,
         Capability.PUSH_FILTERING,
     )
+
+    private fun sha256(bytes: ByteArray): ByteArray =
+        MessageDigest.getInstance("SHA-256").digest(bytes)
+
 }

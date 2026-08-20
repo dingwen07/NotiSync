@@ -10,6 +10,8 @@ import java.nio.charset.StandardCharsets
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.BasicFileAttributes
+import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
@@ -122,7 +124,7 @@ class UnixHttpServer(
             try {
                 peer = identityResolver.resolve(it)
                 executable = peer.pid?.let(identityResolver::executable)
-                if (peer.uid != daemonUid) {
+                if (daemonUid >= 0 && peer.uid != daemonUid) {
                     responseStatus = 403
                     writeJson(output, 403, ApiError("wrong_uid", "local API access is restricted to the daemon uid"))
                     return
@@ -494,7 +496,9 @@ class UnixHttpServer(
     }
 
     private fun setSocketPermissions() {
-        runCatching { Files.setPosixFilePermissions(socketPath, PosixFilePermissions.fromString("rw-------")) }
+        if (Files.getFileAttributeView(socketPath, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS) != null) {
+            runCatching { Files.setPosixFilePermissions(socketPath, PosixFilePermissions.fromString("rw-------")) }
+        }
     }
 
     private fun deleteOwnedSocket() {
@@ -502,7 +506,11 @@ class UnixHttpServer(
         val isSocket = runCatching {
             val mode = (Files.getAttribute(socketPath, "unix:mode", LinkOption.NOFOLLOW_LINKS) as Number).toInt()
             mode and 0xF000 == 0xC000
-        }.getOrDefault(false)
+        }.getOrElse {
+            runCatching {
+                Files.readAttributes(socketPath, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS).isOther
+            }.getOrDefault(false)
+        }
         if (isSocket) runCatching { Files.deleteIfExists(socketPath) }
     }
 

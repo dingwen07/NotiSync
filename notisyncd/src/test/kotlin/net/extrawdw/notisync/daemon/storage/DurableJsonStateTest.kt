@@ -32,10 +32,7 @@ class DurableJsonStateTest : StorageTestSupport() {
         assertFalse(store.exists())
         assertEquals(QueueState(), store.initialize())
         assertTrue(store.exists())
-        assertEquals(
-            SecureFileSystem.FILE_PERMISSIONS,
-            Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS),
-        )
+        assertPrivateFile(path)
     }
 
     @Test

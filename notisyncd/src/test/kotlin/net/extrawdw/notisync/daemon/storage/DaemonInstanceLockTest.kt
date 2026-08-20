@@ -30,14 +30,8 @@ class DaemonInstanceLockTest : StorageTestSupport() {
             assertTrue(first.isHeld)
             assertTrue(Files.exists(layout.pidFile, LinkOption.NOFOLLOW_LINKS))
             assertEquals(1001L, DaemonInstanceLock.readPidRecord(layout.pidFile, fileSystem)?.pid)
-            assertEquals(
-                SecureFileSystem.FILE_PERMISSIONS,
-                Files.getPosixFilePermissions(layout.lockFile, LinkOption.NOFOLLOW_LINKS),
-            )
-            assertEquals(
-                SecureFileSystem.FILE_PERMISSIONS,
-                Files.getPosixFilePermissions(layout.pidFile, LinkOption.NOFOLLOW_LINKS),
-            )
+            assertPrivateFile(layout.lockFile)
+            assertPrivateFile(layout.pidFile)
 
             val error = assertThrows(DaemonAlreadyRunningException::class.java) {
                 DaemonInstanceLock.acquire(

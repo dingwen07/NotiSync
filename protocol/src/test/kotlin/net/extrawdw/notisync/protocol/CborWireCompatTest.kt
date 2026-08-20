@@ -196,12 +196,42 @@ class CborWireCompatTest {
 
     @Test
     fun screenCapabilitiesUsePermanentIds12Through19() {
-        val screenCapabilities = Capability.entries.drop(12)
+        val screenCapabilities = Capability.entries.drop(12).take(8)
         val profile = ProfileUpdate(ClientId("screen"), "Screen", "android", screenCapabilities, 1L)
 
         val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
 
         assertEquals((12..19).toList(), raw.capabilities)
+    }
+
+    @Test
+    fun openPgpSigningCapabilityUsesPermanentId20() {
+        val profile = ProfileUpdate(
+            ClientId("signer"),
+            "Signer",
+            "android",
+            listOf(Capability.OPENPGP_SIGN_V1),
+            1L,
+        )
+
+        val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
+
+        assertEquals(listOf(20), raw.capabilities)
+    }
+
+    @Test
+    fun sshCapabilitiesUsePermanentIds21And22() {
+        val profile = ProfileUpdate(
+            ClientId("ssh"),
+            "SSH",
+            "android",
+            listOf(Capability.SSH_KEY_PROVIDER_V1, Capability.SSH_AGENT_V1),
+            1L,
+        )
+
+        val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
+
+        assertEquals(listOf(21, 22), raw.capabilities)
     }
 
     @Test

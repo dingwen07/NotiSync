@@ -47,6 +47,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class UnixHttpServerIntegrationTest {
@@ -78,11 +79,12 @@ class UnixHttpServerIntegrationTest {
             val accessLines = fixture.logs.lines()
             val patchAccess = accessLines.single { it.contains("\"PATCH /v1/config HTTP/1.1\"") }
             assertTrue(patchAccess.contains("INFO [notisyncd-http-"))
-            assertTrue(
-                patchAccess.contains(
-                    "pid=${ProcessHandle.current().pid()} process=",
-                ),
-            )
+            val expectedPid = if (System.getProperty("os.name").contains("windows", ignoreCase = true)) {
+                "unknown"
+            } else {
+                ProcessHandle.current().pid().toString()
+            }
+            assertTrue(patchAccess.contains("pid=$expectedPid process="))
             assertTrue(patchAccess.contains(" executable="))
             assertTrue(Regex(".* \\\"PATCH /v1/config HTTP/1\\.1\\\" 200 \\d+ms$").matches(patchAccess))
             assertFalse(patchAccess.contains("->"))
@@ -310,7 +312,7 @@ class UnixHttpServerIntegrationTest {
         }
 
     @Test
-    fun `receive sockets fan out while ack completion and interest deletion are application scoped`() =
+    fun `receive sockets fan out while ack completion and interest deletion are application scoped`() {
         ServerFixture().use { fixture ->
             fixture.start()
             val client = UnixDaemonClient(fixture.paths.socket)
@@ -353,6 +355,31 @@ class UnixHttpServerIntegrationTest {
                 }
             }
         }
+    }
+
+    @Test
+    fun `Windows receive trusts the owner-only socket without peer process verification`() {
+        assumeTrue(
+            "Windows-only AF_UNIX credential boundary",
+            System.getProperty("os.name").contains("windows", ignoreCase = true),
+        )
+        ServerFixture().use { fixture ->
+            fixture.start()
+            val client = UnixDaemonClient(fixture.paths.socket)
+            client.putApplication("receiver", ApplicationRegistrationRequest("Windows receiver"))
+            val interest = ReceiveRequest("receiver", messageTypes = listOf(MessageType.NOTIFICATION))
+
+            client.openReceive(interest).use { stream ->
+                assertEquals(1, fixture.receiver.interestCount("receiver"))
+                assertTrue(fixture.receiver.accept(fixture.inbound("windows-receive", byteArrayOf(7))))
+                assertEquals("windows-receive", stream.next()?.envelopeId)
+                client.ack("receiver", "windows-receive")
+            }
+            assertEquals(1, fixture.receiver.interestCount("receiver"))
+            client.unregisterReceive(interest)
+            assertEquals(0, fixture.receiver.interestCount("receiver"))
+        }
+    }
 
     @Test
     fun `shutdown response closes listener without waiting on its own request worker`() =
@@ -385,7 +412,10 @@ class UnixHttpServerIntegrationTest {
 
     private class ServerFixture(
         // macOS limits sockaddr_un paths to 104 bytes; the Gradle temp root is much longer.
-        val root: Path = Files.createTempDirectory(Path.of("/private/tmp"), "nsuds-").toRealPath(),
+        val root: Path = Files.createTempDirectory(
+            Path.of(System.getProperty("java.io.tmpdir")).toRealPath(),
+            "nsuds-",
+        ).toRealPath(),
         private val maxHeaderBytes: Int = 64 * 1024,
         private val maxBodyBytes: Int = 1024 * 1024,
     ) : AutoCloseable {

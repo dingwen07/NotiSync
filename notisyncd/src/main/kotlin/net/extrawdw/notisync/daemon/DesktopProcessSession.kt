@@ -19,9 +19,7 @@ internal object DesktopProcessSession {
         val request = System.getProperty(DETACH_PROPERTY) ?: return
         require(request == DETACH_VALUE) { "invalid internal detach-session request" }
         System.clearProperty(DETACH_PROPERTY)
-        check(Platform.isLinux() || Platform.isMac()) {
-            "detached daemon sessions are supported only on Linux and macOS"
-        }
+        if (Platform.isWindows()) return
         try {
             check(posix.setsid() > 0) { "setsid returned an invalid session ID" }
         } catch (failure: LastErrorException) {

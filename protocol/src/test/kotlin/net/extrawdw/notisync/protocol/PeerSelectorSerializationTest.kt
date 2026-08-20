@@ -24,6 +24,10 @@ class PeerSelectorSerializationTest {
                 ClientId("screen-source"),
                 setOf(Capability.SCREEN_MIRROR_SOURCE_V1, Capability.SCREEN_MIRROR_ENCODER_H264_HW),
             ),
+            Recipients.OnlyCapableSet(
+                setOf(ClientId("phone-a"), ClientId("phone-b")),
+                setOf(Capability.CAPABILITY_ROUTING_V1, Capability.SSH_KEY_PROVIDER_V1),
+            ),
         )
 
         selectors.forEach { selector ->
@@ -56,7 +60,10 @@ class PeerSelectorSerializationTest {
                 Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1,
                 Capability.SCREEN_MIRROR_BROKER_RELAY_V1,
             ),
-            Capability.entries.drop(12),
+            Capability.entries.drop(12).take(8),
         )
+        assertEquals(Capability.OPENPGP_SIGN_V1, Capability.entries[20])
+        assertEquals(Capability.SSH_KEY_PROVIDER_V1, Capability.entries[21])
+        assertEquals(Capability.SSH_AGENT_V1, Capability.entries[22])
     }
 }

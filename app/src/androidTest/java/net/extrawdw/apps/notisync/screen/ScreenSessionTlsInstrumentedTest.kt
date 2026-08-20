@@ -4,7 +4,9 @@ import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.time.Duration
+import java.util.concurrent.Callable
 import java.util.concurrent.Executors
+import java.util.concurrent.Future
 import java.util.concurrent.TimeUnit
 import net.extrawdw.notisync.screen.MASTER_PSK_BYTES
 import net.extrawdw.notisync.screen.PskRegistry
@@ -12,6 +14,7 @@ import net.extrawdw.notisync.screen.PskTlsClient
 import net.extrawdw.notisync.screen.PskTlsServer
 import net.extrawdw.notisync.screen.ROUTING_TOKEN_BYTES
 import net.extrawdw.notisync.screen.ScreenChannel
+import net.extrawdw.notisync.screen.SecureSessionChannel
 import net.extrawdw.notisync.screen.SessionDescriptor
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -48,9 +51,9 @@ class ScreenSessionTlsInstrumentedTest {
                 val listener = ServerSocket(0, 2, InetAddress.getLoopbackAddress())
                 val executor = Executors.newSingleThreadExecutor()
                 try {
-                    val accepted = executor.submit {
-                        PskTlsServer.accept(listener.accept(), registry, Duration.ofSeconds(10))
-                    }
+                    val accepted: Future<SecureSessionChannel> = executor.submit(
+                        Callable { PskTlsServer.accept(listener.accept(), registry, Duration.ofSeconds(10)) },
+                    )
                     PskTlsClient.connect(
                         Socket(InetAddress.getLoopbackAddress(), listener.localPort),
                         descriptor,

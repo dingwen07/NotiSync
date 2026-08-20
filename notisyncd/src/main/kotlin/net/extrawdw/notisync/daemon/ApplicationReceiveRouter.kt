@@ -65,7 +65,7 @@ object ProtocolInboundBodyProjector : InboundBodyProjector {
  * Memory-only fan-out from authenticated SecureChannel messages to registered local applications.
  *
  * An application's inbox owns one pending reference per envelope. Socket handles are merely views:
- * closing one detaches that stream without removing its process interest or acknowledging data.
+ * closing one detaches that stream without removing its process/user interest or acknowledging data.
  */
 class ApplicationReceiveRouter(
     private val applications: RegisteredApplicationLookup,
@@ -81,17 +81,22 @@ class ApplicationReceiveRouter(
         }
     }
 
-    internal data class ProcessLease(
-        val uid: Long,
-        val pid: Long,
-        val startTime: String,
-    ) {
-        fun peer(): LocalPeer = LocalPeer(uid, pid, startTime)
+    internal sealed interface ReceiveLease {
+        data class VerifiedProcess(
+            val uid: Long,
+            val pid: Long,
+            val startTime: String,
+        ) : ReceiveLease {
+            fun peer(): LocalPeer = LocalPeer(uid, pid, startTime)
+        }
+
+        /** All local processes are trusted once the Windows owner-only socket ACL admits them. */
+        data object WindowsUser : ReceiveLease
     }
 
     private data class RegisteredInterest(
         val applicationId: String,
-        val lease: ProcessLease,
+        val lease: ReceiveLease,
         val interest: CanonicalInterest,
     )
 
@@ -177,12 +182,12 @@ class ApplicationReceiveRouter(
     private val handles = linkedSetOf<ReceiverHandle>()
 
     /**
-     * Register (or reuse) this process's canonical interest, attach a new independent stream, and
+     * Register (or reuse) this local principal's canonical interest, attach a new independent stream, and
      * replay every matching unacknowledged application event to that stream.
      */
     fun open(peer: LocalPeer, request: ReceiveRequest): ReceiverHandle {
         val canonical = canonicalize(request)
-        val lease = peer.toVerifiedLease()
+        val lease = peer.toReceiveLease()
         return lock.withLock {
             cleanupDeadProcessesLocked()
             // Application deletion removes the durable registration before calling removeApplication.
@@ -269,10 +274,10 @@ class ApplicationReceiveRouter(
         envelopeId in pendingByApplication[applicationId].orEmpty()
     }
 
-    /** Remove exactly this process's canonical interest and detach streams opened for it. */
+    /** Remove exactly this local principal's canonical interest and detach streams opened for it. */
     fun unregister(peer: LocalPeer, request: ReceiveRequest): Boolean {
         val canonical = canonicalize(request)
-        val lease = peer.toVerifiedLease()
+        val lease = peer.toReceiveLease()
         return lock.withLock {
             val removed = interests.remove(RegisteredInterest(request.applicationId, lease, canonical))
             if (removed) {
@@ -312,6 +317,7 @@ class ApplicationReceiveRouter(
     private fun cleanupDeadProcessesLocked(): Int {
         val deadLeases = interests.asSequence()
             .map(RegisteredInterest::lease)
+            .filterIsInstance<ReceiveLease.VerifiedProcess>()
             .distinct()
             .filterNot { processStillMatches(it.peer()) }
             .toSet()
@@ -331,7 +337,7 @@ class ApplicationReceiveRouter(
     /** One close-delimited receive stream. [close] detaches only this socket view. */
     inner class ReceiverHandle internal constructor(
         val applicationId: String,
-        internal val lease: ProcessLease,
+        internal val lease: ReceiveLease,
         internal val interest: CanonicalInterest,
     ) : AutoCloseable {
         private val available = lock.newCondition()
@@ -357,7 +363,7 @@ class ApplicationReceiveRouter(
 
         fun isAttached(): Boolean = lock.withLock { !detached }
 
-        /** Detach this stream without unregistering its process interest or acknowledging events. */
+        /** Detach this stream without unregistering its local-principal interest or acknowledging events. */
         override fun close() = detach(this)
 
         internal fun offerLocked(record: ReceiveRecord) {
@@ -428,13 +434,16 @@ class ApplicationReceiveRouter(
         )
     }
 
-    private fun LocalPeer.toVerifiedLease(): ProcessLease {
+    private fun LocalPeer.toReceiveLease(): ReceiveLease {
         val verifiedPid = pid
         val verifiedStartTime = startTime
-        require(verifiedPid != null && verifiedStartTime != null) {
+        if (verifiedPid != null && verifiedStartTime != null) {
+            return ReceiveLease.VerifiedProcess(uid, verifiedPid, verifiedStartTime)
+        }
+        require(identityResolver.mayOpenReceiveWithoutProcessIdentity(this)) {
             "receive requires kernel-verified pid and process start time"
         }
-        return ProcessLease(uid, verifiedPid, verifiedStartTime)
+        return ReceiveLease.WindowsUser
     }
 
     companion object {

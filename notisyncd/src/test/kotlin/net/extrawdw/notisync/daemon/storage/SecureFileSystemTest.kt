@@ -3,6 +3,8 @@ package net.extrawdw.notisync.daemon.storage
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
+import java.nio.file.attribute.AclFileAttributeView
+import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermissions
 import java.net.StandardProtocolFamily
 import java.net.UnixDomainSocketAddress
@@ -51,10 +53,7 @@ class SecureFileSystemTest : StorageTestSupport() {
             layout.stateDirectory,
         ).forEach { directory ->
             assertTrue(Files.isDirectory(directory, LinkOption.NOFOLLOW_LINKS))
-            assertEquals(
-                SecureFileSystem.DIRECTORY_PERMISSIONS,
-                Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS),
-            )
+            assertPrivateSecurity(directory, SecureFileSystem.DIRECTORY_PERMISSIONS)
         }
         assertFalse(Files.exists(layout.pidFile, LinkOption.NOFOLLOW_LINKS))
     }
@@ -63,30 +62,26 @@ class SecureFileSystemTest : StorageTestSupport() {
     fun `existing overly broad modes are repaired`() {
         val directory = temporaryDirectory.resolve("state")
         Files.createDirectory(directory)
-        Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwxr-xr-x"))
+        if (Files.getFileAttributeView(directory, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS) != null) {
+            Files.setPosixFilePermissions(directory, PosixFilePermissions.fromString("rwxr-xr-x"))
+        }
         val file = directory.resolve("state.json")
         Files.writeString(file, "secret")
-        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"))
+        if (Files.getFileAttributeView(file, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS) != null) {
+            Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"))
+        }
 
         fileSystem.ensurePrivateDirectory(directory)
         fileSystem.validatePrivateFile(file)
 
-        assertEquals(
-            SecureFileSystem.DIRECTORY_PERMISSIONS,
-            Files.getPosixFilePermissions(directory, LinkOption.NOFOLLOW_LINKS),
-        )
-        assertEquals(
-            SecureFileSystem.FILE_PERMISSIONS,
-            Files.getPosixFilePermissions(file, LinkOption.NOFOLLOW_LINKS),
-        )
+        assertPrivateSecurity(directory, SecureFileSystem.DIRECTORY_PERMISSIONS)
+        assertPrivateSecurity(file, SecureFileSystem.FILE_PERMISSIONS)
     }
 
     @Test
     fun `unix socket owner and mode validation works on desktop providers`() {
         // macOS caps sockaddr_un paths at 104 bytes; the JUnit temporary root can exceed that.
-        val shortTemporaryRoot = Path.of("/private/tmp").takeIf {
-            Files.isDirectory(it, LinkOption.NOFOLLOW_LINKS) && !Files.isSymbolicLink(it)
-        } ?: Path.of("/tmp")
+        val shortTemporaryRoot = Path.of(System.getProperty("java.io.tmpdir")).toRealPath()
         val directory = fileSystem.ensurePrivateDirectory(Files.createTempDirectory(shortTemporaryRoot, "nsfs-"))
         val socket = directory.resolve("S")
         try {
@@ -94,11 +89,9 @@ class SecureFileSystemTest : StorageTestSupport() {
                 server.bind(UnixDomainSocketAddress.of(socket))
 
                 fileSystem.validatePrivateNode(socket)
+                assertTrue(fileSystem.isSocketNode(socket))
 
-                assertEquals(
-                    SecureFileSystem.FILE_PERMISSIONS,
-                    Files.getPosixFilePermissions(socket, LinkOption.NOFOLLOW_LINKS),
-                )
+                assertPrivateSecurity(socket, SecureFileSystem.FILE_PERMISSIONS)
             }
         } finally {
             Files.deleteIfExists(socket)
@@ -156,10 +149,7 @@ class SecureFileSystemTest : StorageTestSupport() {
         fileSystem.atomicWrite(path, "second".encodeToByteArray())
 
         assertArrayEquals("second".encodeToByteArray(), fileSystem.readPrivateBytes(path))
-        assertEquals(
-            SecureFileSystem.FILE_PERMISSIONS,
-            Files.getPosixFilePermissions(path, LinkOption.NOFOLLOW_LINKS),
-        )
+        assertPrivateSecurity(path, SecureFileSystem.FILE_PERMISSIONS)
         Files.list(directory).use { files ->
             assertEquals(listOf(path), files.toList())
         }
@@ -177,6 +167,25 @@ class SecureFileSystemTest : StorageTestSupport() {
             fileSystem.atomicWrite(path, "replacement".encodeToByteArray())
         }
         assertEquals("unchanged", Files.readString(outside))
+    }
+
+    @Test
+    fun `private directory validation accepts an owner-only directory without mutation`() {
+        val directory = fileSystem.ensurePrivateDirectory(temporaryDirectory.resolve("private-existing"))
+
+        assertEquals(directory.toAbsolutePath().normalize(), fileSystem.validatePrivateDirectory(directory))
+        assertPrivateSecurity(directory, SecureFileSystem.DIRECTORY_PERMISSIONS)
+    }
+
+    private fun assertPrivateSecurity(path: Path, expected: Set<java.nio.file.attribute.PosixFilePermission>) {
+        val posix = Files.getFileAttributeView(path, PosixFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS)
+        if (posix != null) {
+            assertEquals(expected, posix.readAttributes().permissions())
+        } else {
+            assertTrue(
+                Files.getFileAttributeView(path, AclFileAttributeView::class.java, LinkOption.NOFOLLOW_LINKS) != null,
+            )
+        }
     }
 
 }

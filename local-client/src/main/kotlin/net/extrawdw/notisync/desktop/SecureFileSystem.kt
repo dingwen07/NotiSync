@@ -10,11 +10,18 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.nio.file.StandardCopyOption
 import java.nio.file.StandardOpenOption
+import java.nio.file.attribute.AclEntry
+import java.nio.file.attribute.AclEntryFlag
+import java.nio.file.attribute.AclEntryPermission
+import java.nio.file.attribute.AclEntryType
+import java.nio.file.attribute.AclFileAttributeView
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFileAttributeView
 import java.nio.file.attribute.PosixFilePermission
 import java.nio.file.attribute.PosixFilePermissions
 import java.nio.file.attribute.UserPrincipal
 import java.util.ArrayDeque
+import java.util.EnumSet
 
 /**
  * Filesystem boundary for daemon secrets and durable state.
@@ -28,6 +35,39 @@ import java.util.ArrayDeque
 class SecureFileSystem(
     private val expectedOwnerName: String? = System.getProperty("user.name")?.takeIf(String::isNotBlank),
 ) {
+    /** Verifies an existing owner-only directory without changing an arbitrary caller-selected path. */
+    fun validatePrivateDirectory(path: Path): Path {
+        val absolute = normalized(path)
+        rejectSymbolicLinkComponents(absolute)
+        require(Files.isDirectory(absolute, LinkOption.NOFOLLOW_LINKS)) { "$absolute is not a directory" }
+        verifyOwner(absolute)
+        val posix = Files.getFileAttributeView(
+            absolute,
+            PosixFileAttributeView::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+        if (posix != null) {
+            require(posix.readAttributes().permissions() == DIRECTORY_PERMISSIONS) {
+                "$absolute is not an owner-only directory"
+            }
+        } else {
+            val view = Files.getFileAttributeView(
+                absolute,
+                AclFileAttributeView::class.java,
+                LinkOption.NOFOLLOW_LINKS,
+            ) ?: throw IOException("$absolute has neither POSIX permissions nor an ACL security view")
+            val owner = Files.getOwner(absolute, LinkOption.NOFOLLOW_LINKS)
+            val expectedFlags = EnumSet.of(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
+            require(view.acl.size == 1 && view.acl.single().let { candidate ->
+                candidate.type() == AclEntryType.ALLOW &&
+                    candidate.principal() == owner &&
+                    candidate.permissions() == ALL_ACL_PERMISSIONS &&
+                    candidate.flags() == expectedFlags
+            }) { "$absolute does not have a private ACL for ${owner.name}" }
+        }
+        return absolute
+    }
+
     fun ensurePrivateDirectory(path: Path): Path {
         val absolute = normalized(path)
         rejectSymbolicLinkComponents(absolute)
@@ -53,7 +93,11 @@ class SecureFileSystem(
 
         if (!Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) {
             try {
-                Files.createFile(absolute, PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS))
+                try {
+                    Files.createFile(absolute, PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS))
+                } catch (_: UnsupportedOperationException) {
+                    Files.createFile(absolute)
+                }
             } catch (_: FileAlreadyExistsException) {
                 // A concurrent creator is acceptable only after all checks below pass.
             }
@@ -86,14 +130,39 @@ class SecureFileSystem(
         // directory is already name-owner verified; require the node's numeric uid to match it.
         val parent = requireNotNull(absolute.parent) { "$absolute has no parent" }
         verifyOwner(parent)
-        val nodeUid = (Files.getAttribute(absolute, "unix:uid", LinkOption.NOFOLLOW_LINKS) as Number).toLong()
-        val parentUid = (Files.getAttribute(parent, "unix:uid", LinkOption.NOFOLLOW_LINKS) as Number).toLong()
-        require(nodeUid == parentUid) { "$absolute is owned by uid $nodeUid, expected $parentUid" }
-        Files.setPosixFilePermissions(absolute, FILE_PERMISSIONS)
-        val mode = (Files.getAttribute(absolute, "unix:mode", LinkOption.NOFOLLOW_LINKS) as Number).toInt()
-        require(mode and POSIX_MODE_MASK == FILE_MODE) {
-            "$absolute has mode ${(mode and POSIX_MODE_MASK).toString(8)}, expected 600"
+        val posix = Files.getFileAttributeView(
+            absolute,
+            PosixFileAttributeView::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        )
+        if (posix != null) {
+            val nodeUid = (Files.getAttribute(absolute, "unix:uid", LinkOption.NOFOLLOW_LINKS) as Number).toLong()
+            val parentUid = (Files.getAttribute(parent, "unix:uid", LinkOption.NOFOLLOW_LINKS) as Number).toLong()
+            require(nodeUid == parentUid) { "$absolute is owned by uid $nodeUid, expected $parentUid" }
+            Files.setPosixFilePermissions(absolute, FILE_PERMISSIONS)
+            val mode = (Files.getAttribute(absolute, "unix:mode", LinkOption.NOFOLLOW_LINKS) as Number).toInt()
+            require(mode and POSIX_MODE_MASK == FILE_MODE) {
+                "$absolute has mode ${(mode and POSIX_MODE_MASK).toString(8)}, expected 600"
+            }
+        } else {
+            // Windows represents a pathname AF_UNIX socket as a reparse point. Its ACL view is
+            // not consistently exposed for that special node, but the private parent directory
+            // is the security boundary and is inherited by the socket at bind time.
+            setAndVerifyPermissions(parent, DIRECTORY_PERMISSIONS)
         }
+    }
+
+    /** Returns true for a filesystem node that can be treated as a pathname AF_UNIX socket. */
+    fun isSocketNode(path: Path): Boolean {
+        val absolute = normalized(path)
+        if (!Files.exists(absolute, LinkOption.NOFOLLOW_LINKS) || Files.isSymbolicLink(absolute)) return false
+        val posixMode = runCatching {
+            (Files.getAttribute(absolute, "unix:mode", LinkOption.NOFOLLOW_LINKS) as Number).toInt()
+        }.getOrNull()
+        if (posixMode != null) return posixMode and 0xF000 == 0xC000
+        return runCatching {
+            Files.readAttributes(absolute, BasicFileAttributes::class.java, LinkOption.NOFOLLOW_LINKS).isOther
+        }.getOrDefault(false)
     }
 
     fun readPrivateBytes(path: Path, maximumBytes: Long = DEFAULT_MAXIMUM_READ_BYTES): ByteArray {
@@ -125,12 +194,16 @@ class SecureFileSystem(
         rejectSymbolicLinkComponents(absolute)
         if (Files.exists(absolute, LinkOption.NOFOLLOW_LINKS)) validatePrivateFile(absolute)
 
-        val temporary = Files.createTempFile(
-            parent,
-            ".${absolute.fileName}.",
-            ".tmp",
-            PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS),
-        )
+        val temporary = try {
+            Files.createTempFile(
+                parent,
+                ".${absolute.fileName}.",
+                ".tmp",
+                PosixFilePermissions.asFileAttribute(FILE_PERMISSIONS),
+            )
+        } catch (_: UnsupportedOperationException) {
+            Files.createTempFile(parent, ".${absolute.fileName}.", ".tmp")
+        }
         try {
             verifyOwner(temporary)
             setAndVerifyPermissions(temporary, FILE_PERMISSIONS)
@@ -202,13 +275,18 @@ class SecureFileSystem(
             path,
             PosixFileAttributeView::class.java,
             LinkOption.NOFOLLOW_LINKS,
-        ) ?: throw IOException("$path is not on a POSIX filesystem")
-        view.setPermissions(permissions)
-        val actual = view.readAttributes().permissions()
-        require(actual == permissions) {
-            "$path has permissions ${PosixFilePermissions.toString(actual)}, expected " +
-                PosixFilePermissions.toString(permissions)
+        )
+        if (view != null) {
+            view.setPermissions(permissions)
+            val actual = view.readAttributes().permissions()
+            require(actual == permissions) {
+                "$path has permissions ${PosixFilePermissions.toString(actual)}, expected " +
+                    PosixFilePermissions.toString(permissions)
+            }
+            return
         }
+
+        secureAcl(path, Files.isDirectory(path, LinkOption.NOFOLLOW_LINKS))
     }
 
     private fun createMissingDirectories(path: Path) {
@@ -223,7 +301,11 @@ class SecureFileSystem(
 
         for (directory in missing) {
             try {
-                Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(DIRECTORY_PERMISSIONS))
+                try {
+                    Files.createDirectory(directory, PosixFilePermissions.asFileAttribute(DIRECTORY_PERMISSIONS))
+                } catch (_: UnsupportedOperationException) {
+                    Files.createDirectory(directory)
+                }
             } catch (_: FileAlreadyExistsException) {
                 // A racing creator is checked just like a pre-existing component.
             }
@@ -244,6 +326,36 @@ class SecureFileSystem(
         }
     }
 
+    private fun secureAcl(path: Path, directory: Boolean) {
+        val view = Files.getFileAttributeView(
+            path,
+            AclFileAttributeView::class.java,
+            LinkOption.NOFOLLOW_LINKS,
+        ) ?: throw IOException("$path has neither POSIX permissions nor an ACL security view")
+        val owner = Files.getOwner(path, LinkOption.NOFOLLOW_LINKS)
+        val flags = if (directory) {
+            EnumSet.of(AclEntryFlag.FILE_INHERIT, AclEntryFlag.DIRECTORY_INHERIT)
+        } else {
+            EnumSet.noneOf(AclEntryFlag::class.java)
+        }
+        val entry = AclEntry.newBuilder()
+            .setType(AclEntryType.ALLOW)
+            .setPrincipal(owner)
+            .setPermissions(ALL_ACL_PERMISSIONS)
+            .setFlags(flags)
+            .build()
+        view.setAcl(listOf(entry))
+        val actual = view.acl
+        require(actual.size == 1 && actual.single().let { candidate ->
+            candidate.type() == AclEntryType.ALLOW &&
+                candidate.principal() == owner &&
+                candidate.permissions() == ALL_ACL_PERMISSIONS &&
+                candidate.flags() == flags
+        }) {
+            "$path does not have a private ACL for ${owner.name}"
+        }
+    }
+
     private fun ownerMatches(owner: UserPrincipal, expected: String): Boolean {
         val actual = owner.name
         if (actual == expected) return true
@@ -259,5 +371,7 @@ class SecureFileSystem(
         const val DEFAULT_MAXIMUM_READ_BYTES: Long = 64L * 1024 * 1024
         private const val POSIX_MODE_MASK = 0x1FF
         private const val FILE_MODE = 0x180
+        private val ALL_ACL_PERMISSIONS: Set<AclEntryPermission> =
+            EnumSet.allOf(AclEntryPermission::class.java)
     }
 }

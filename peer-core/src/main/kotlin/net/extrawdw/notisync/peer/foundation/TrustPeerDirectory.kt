@@ -60,6 +60,12 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
                     Capability.CAPABILITY_ROUTING_V1 in it.capabilities &&
                     it.capabilities.containsAll(scope.requiredCapabilities)
             }
+            is Recipients.OnlyCapableSet -> peers.filter {
+                it.clientId in scope.ids &&
+                    it.ownDevice &&
+                    Capability.CAPABILITY_ROUTING_V1 in it.capabilities &&
+                    it.capabilities.containsAll(scope.requiredCapabilities)
+            }
         }
         // Seal to each recipient's CURRENT HPKE epoch — bound into PerRecipientKey.recipientEpoch + the
         // signed EnvelopeAuth, so the recipient selects the matching (possibly retained) private keyset.
@@ -106,6 +112,12 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
                 setOf(scope.id)
             } else {
                 emptySet()
+            }
+            is Recipients.OnlyCapableSet -> scope.ids.filterTo(mutableSetOf()) { id ->
+                id in needing &&
+                    trust.peerOwnDevice(id) == true &&
+                    Capability.CAPABILITY_ROUTING_V1 in trust.peerCapabilities(id) &&
+                    trust.peerCapabilities(id).containsAll(scope.requiredCapabilities)
             }
         }
     }

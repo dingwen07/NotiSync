@@ -39,6 +39,23 @@ class TrustPeerDirectoryTest {
     }
 
     @Test
+    fun capableSetSelectsOnlyListedOwnPeersWithEveryCapability() {
+        val required = setOf(Capability.CAPABILITY_ROUTING_V1, Capability.SSH_KEY_PROVIDER_V1)
+        val first = peer("first", required)
+        val second = peer("second", required)
+        val unlisted = peer("unlisted", required)
+        val incomplete = peer("incomplete", required - Capability.SSH_KEY_PROVIDER_V1)
+        val directory = TrustPeerDirectory(FakeTrustState(listOf(first, second, unlisted, incomplete)))
+
+        assertEquals(
+            listOf(first.clientId, second.clientId),
+            directory.recipients(
+                Recipients.OnlyCapableSet(setOf(first.clientId, second.clientId, incomplete.clientId), required),
+            ).map { it.clientId },
+        )
+    }
+
+    @Test
     fun strictCapabilityRoutingRejectsLegacyPeers() {
         val legacy = peer(
             "legacy",

@@ -53,6 +53,10 @@ open class FoundationEngine(
     private val onRunSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     /** Hands an authenticated own-mesh screen-session rendezvous to the platform screen feature. */
     private val onScreenMirrorSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hands authenticated own-mesh OpenPGP request/cancel traffic to the platform signing feature. */
+    private val onOpenPgpSignSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hands authenticated own-mesh SSH inventory/sign/import traffic to the SSH provider or agent feature. */
+    private val onSshAgentSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     /** Observes every successfully decoded DATA_SYNC before its sub-kind handler. Generic local bridges can
      *  reuse the exact decoded object without becoming a second decoder. */
     private val onDecodedDataSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
@@ -230,6 +234,16 @@ open class FoundationEngine(
             DataSyncKind.SCREEN_MIRRORING -> {
                 if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.SCREEN_MIRRORING, msg.senderOwnDevice)) return
                 onScreenMirrorSync(msg, sync)
+            }
+
+            DataSyncKind.OPENPGP_SIGN -> {
+                if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.OPENPGP_SIGN, msg.senderOwnDevice)) return
+                onOpenPgpSignSync(msg, sync)
+            }
+
+            DataSyncKind.SSH_AGENT -> {
+                if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.SSH_AGENT, msg.senderOwnDevice)) return
+                onSshAgentSync(msg, sync)
             }
 
             DataSyncKind.PROFILE -> {

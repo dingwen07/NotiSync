@@ -249,6 +249,10 @@ static const char *main_class_for(const char *name) {
     if (strcmp(name, "nsrun") == 0) return "net.extrawdw.notisync.run.NSRunMainKt";
     if (strcmp(name, "nsscreen") == 0) return "net.extrawdw.notisync.screen.desktop.NSScreenMainKt";
     if (strcmp(name, "notisync") == 0) return "net.extrawdw.notisync.cli.NotisyncMainKt";
+    if (strcmp(name, "notisync-gpg") == 0) return "net.extrawdw.notisync.gpg.NotisyncGpgMainKt";
+    if (strcmp(name, "notisync-ssh-agent") == 0) {
+        return "net.extrawdw.notisync.sshagent.NotisyncSshAgentMainKt";
+    }
     return NULL;
 }
 

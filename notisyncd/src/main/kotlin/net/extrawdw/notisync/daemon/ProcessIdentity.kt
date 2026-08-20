@@ -29,6 +29,11 @@ class ProcessIdentityResolver(
     private val procRoot: Path = Path.of("/proc"),
 ) {
     fun resolve(socket: AFUNIXSocket): LocalPeer {
+        // Windows AF_UNIX intentionally has no SCM_CREDENTIALS/ancillary credential support.
+        // The pathname socket is protected by the private user ACL prepared by SecureFileSystem;
+        // leave process identity absent rather than pretending an unverified PID is kernel-authenticated.
+        // The receive bridge explicitly treats this one platform case as a trusted same-user peer.
+        if (osName.contains("windows")) return LocalPeer(UNKNOWN_UID, null, null)
         val credentials = socket.peerCredentials
         val uid = credentials.uid
         require(uid >= 0) { "the operating system did not provide the peer uid" }
@@ -37,6 +42,7 @@ class ProcessIdentityResolver(
     }
 
     fun currentUid(dataDirectory: Path): Long {
+        if (osName.contains("windows")) return UNKNOWN_UID
         val unixUid = runCatching {
             (Files.getAttribute(dataDirectory, "unix:uid") as Number).toLong()
         }.getOrNull()
@@ -48,6 +54,10 @@ class ProcessIdentityResolver(
         val expected = peer.startTime ?: return false
         return startTime(pid) == expected
     }
+
+    /** Windows relies on the daemon directory/socket's private owner ACL instead of peer credentials. */
+    fun mayOpenReceiveWithoutProcessIdentity(peer: LocalPeer): Boolean =
+        osName.contains("windows") && peer.uid == UNKNOWN_UID && peer.pid == null && peer.startTime == null
 
     /** Best-effort executable identity for diagnostics; authorization never relies on these display values. */
     fun executable(pid: Long): ProcessExecutable? {
@@ -102,4 +112,8 @@ class ProcessIdentityResolver(
             path = command,
         )
     }.getOrNull()
+
+    private companion object {
+        const val UNKNOWN_UID = -1L
+    }
 }
