@@ -83,7 +83,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -132,14 +131,15 @@ fun SshAgentScreen(
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
-    val changeVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle()
-    var keys by remember { mutableStateOf<List<SshKeyDescriptor>>(emptyList()) }
-    var requests by remember { mutableStateOf<List<StoredSshProviderRequest>>(emptyList()) }
-    var knownHosts by remember { mutableStateOf<List<SshKnownHost>>(emptyList()) }
-    var rememberedAuthorizations by remember { mutableStateOf<List<SshRememberedAuthorization>>(emptyList()) }
+    val managementState by graph.sshAgentManagement.state.collectAsStateWithLifecycle()
+    val managementSnapshot = managementState.snapshot
+    val keys = managementSnapshot?.keys.orEmpty()
+    val requests = managementSnapshot?.requests.orEmpty()
+    val knownHosts = managementSnapshot?.knownHosts.orEmpty()
+    val rememberedAuthorizations = managementSnapshot?.rememberedAuthorizations.orEmpty()
     var selectedKeyId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
+    var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var generating by remember { mutableStateOf(false) }
     var pastingKey by remember { mutableStateOf(false) }
@@ -185,24 +185,11 @@ fun SshAgentScreen(
 
     fun refresh() {
         scope.launch {
-            val result = runCatching {
-                withContext(Dispatchers.IO) {
-                    SshAgentUiSnapshot(
-                        keys = graph.sshKeyProviderStore
-                            .snapshot(graph.identity.clientId, null, System.currentTimeMillis()).keys,
-                        requests = graph.sshKeyProviderStore.requests(),
-                        knownHosts = graph.sshKeyProviderStore.knownHosts(),
-                        rememberedAuthorizations = graph.sshKeyProviderStore.rememberedAuthorizations(),
-                    )
-                }
+            try {
+                graph.sshAgentManagement.refresh()
+            } finally {
+                loading = false
             }
-            result.onSuccess {
-                keys = it.keys
-                requests = it.requests
-                knownHosts = it.knownHosts
-                rememberedAuthorizations = it.rememberedAuthorizations
-            }.onFailure { error = it.message ?: it.javaClass.simpleName }
-            loading = false
         }
     }
 
@@ -284,17 +271,19 @@ fun SshAgentScreen(
         }
     }
 
-    LifecycleResumeEffect(Unit) {
-        refresh()
-        onPauseOrDispose { }
+    LaunchedEffect(managementState.errorMessage) {
+        managementState.errorMessage?.let { error = it }
     }
-    LaunchedEffect(changeVersion) { refresh() }
+    // Normally a version-only no-op; this also retries a failed background refresh when the user returns here.
+    LaunchedEffect(Unit) { graph.sshAgentManagement.refresh() }
+
+    val showLoading = loading || (managementSnapshot == null && managementState.errorMessage == null)
 
     val selectedKey = selectedKeyId?.let { keyId ->
         keys.firstOrNull { it.providerKeyId == keyId }
     }
-    LaunchedEffect(selectedKeyId, selectedKey, loading) {
-        if (!loading && selectedKeyId != null && selectedKey == null) {
+    LaunchedEffect(selectedKeyId, selectedKey, showLoading) {
+        if (!showLoading && selectedKeyId != null && selectedKey == null) {
             selectedKeyId = null
         }
     }
@@ -305,13 +294,13 @@ fun SshAgentScreen(
         host.hostname?.let { host.fingerprint() to it }
     }.toMap()
     val transferPeers = eligibleSshKeyTransferPeers(activePeers)
-    LaunchedEffect(selectedHistoryRequestId, selectedHistory, loading) {
-        if (!loading && selectedHistoryRequestId != null && selectedHistory == null) {
+    LaunchedEffect(selectedHistoryRequestId, selectedHistory, showLoading) {
+        if (!showLoading && selectedHistoryRequestId != null && selectedHistory == null) {
             selectedHistoryRequestId = null
         }
     }
-    LaunchedEffect(initialHistoryRequestId, requests, loading) {
-        if (initialHistoryRequestId != null && !loading) {
+    LaunchedEffect(initialHistoryRequestId, requests, showLoading) {
+        if (initialHistoryRequestId != null && !showLoading) {
             selectedHistoryRequestId = requests.firstOrNull {
                 it.requestId == initialHistoryRequestId && !it.isActiveRequest()
             }?.requestId
@@ -368,7 +357,7 @@ fun SshAgentScreen(
                     }
                 }
             }
-            if (loading) {
+            if (showLoading) {
                 item {
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
                         CircularProgressIndicator()
@@ -376,7 +365,7 @@ fun SshAgentScreen(
                 }
             }
             item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_keys)) } }
-            if (!loading && keys.isEmpty()) {
+            if (!showLoading && keys.isEmpty()) {
                 item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_keys)) } }
             }
             items(keys, key = SshKeyDescriptor::providerKeyId) { key ->
@@ -388,7 +377,7 @@ fun SshAgentScreen(
                 }
             }
             item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_hosts)) } }
-            if (!loading && knownHosts.isEmpty()) {
+            if (!showLoading && knownHosts.isEmpty()) {
                 item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_hosts)) } }
             }
             items(knownHosts, key = { it.fingerprint() }) { host ->
@@ -417,7 +406,7 @@ fun SshAgentScreen(
                 }
             }
             item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_agent_section_history)) } }
-            if (!loading && historyRequests.isEmpty()) {
+            if (!showLoading && historyRequests.isEmpty()) {
                 item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_agent_no_history)) } }
             }
             items(historyRequests, key = StoredSshProviderRequest::requestId) { request ->
@@ -446,7 +435,7 @@ fun SshAgentScreen(
                 requesterName = { requester ->
                     roster.firstOrNull { it.clientId == requester }?.displayName ?: requester.shortForm()
                 },
-                policyChangeBusy = loading,
+                policyChangeBusy = showLoading,
                 onCopy = { copyPublicKey(context, key) },
                 onExport = if (key.exportCopy != null) {
                     {
@@ -809,13 +798,6 @@ fun SshAgentScreen(
         )
     }
 }
-
-private data class SshAgentUiSnapshot(
-    val keys: List<SshKeyDescriptor>,
-    val requests: List<StoredSshProviderRequest>,
-    val knownHosts: List<SshKnownHost>,
-    val rememberedAuthorizations: List<SshRememberedAuthorization>,
-)
 
 @Composable
 private fun SshKnownHostDetailSheet(

@@ -107,6 +107,7 @@ import net.extrawdw.apps.notisync.seal.OpenPgpSignEngine
 import net.extrawdw.apps.notisync.seal.OpenPgpSignNotificationPresenter
 import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpSigningProvider
+import net.extrawdw.apps.notisync.sshagent.SshAgentManagementRepository
 import net.extrawdw.apps.notisync.sshagent.SshAgentNotificationPresenter
 import net.extrawdw.apps.notisync.sshagent.SshAgentProviderEngine
 import net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore
@@ -286,6 +287,8 @@ class AppGraph(private val app: Application) {
         private set
     lateinit var sshKeyProviderStore: SshKeyProviderStore
         private set
+    lateinit var sshAgentManagement: SshAgentManagementRepository
+        private set
     lateinit var sshAgentNotifications: SshAgentNotificationPresenter
         private set
     var sshAgentProviderEngine: SshAgentProviderEngine? = null
@@ -347,6 +350,12 @@ class AppGraph(private val app: Application) {
         openPgpSignStore = OpenPgpSignStore(app)
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
         sshKeyProviderStore = SshKeyProviderStore(app)
+        sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
+        val sshManagementStartNanos = System.nanoTime()
+        sshAgentManagement.preload()
+        // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
+        initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
+        sshAgentManagement.start()
         sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore)
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
