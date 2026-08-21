@@ -67,6 +67,20 @@ class SettingsRepositoryTest {
     }
 
     @Test
+    fun approvalPageAutoOpenSettings_defaultOffAndPersist() = runBlocking {
+        val settings = newRepository()
+
+        assertFalse(settings.autoOpenOpenPgpRequest.value)
+        assertFalse(settings.autoOpenSshRequest.value)
+
+        settings.setAutoOpenOpenPgpRequest(true)
+        settings.setAutoOpenSshRequest(true)
+
+        assertTrue(settings.autoOpenOpenPgpRequest.value)
+        assertTrue(settings.autoOpenSshRequest.value)
+    }
+
+    @Test
     fun screenMirroring_isExplicitOptInAndHasPersistedColdRead() = runBlocking {
         val settings = newRepository()
 

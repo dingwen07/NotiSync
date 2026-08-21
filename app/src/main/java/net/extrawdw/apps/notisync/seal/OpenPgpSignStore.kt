@@ -35,7 +35,7 @@ enum class OpenPgpRequestState {
 enum class OpenPgpRequestResult { APPROVED, REJECTED, CANCELED, EXPIRED, FAILED }
 
 /**
- * Bounded rendering snapshot kept for the 72-hour decision ledger. The byte-exact commit payload is
+ * Bounded rendering snapshot kept for the 10-year decision ledger. The byte-exact commit payload is
  * still erased at terminal state; this stores only the facts shown in Seal history.
  */
 @Serializable
@@ -423,8 +423,8 @@ class OpenPgpSignStore(context: Context) :
             "commit_details,result,working_directory"
         const val MAX_PENDING_PER_SENDER = 3
         const val MAX_PENDING_GLOBAL = 10
-        const val MAX_HISTORY_ROWS = 500
-        const val DECISION_RETENTION_MILLIS = 72L * 60 * 60 * 1_000
+        const val MAX_HISTORY_ROWS = 10_000
+        const val DECISION_RETENTION_MILLIS = 10L * 365 * 24 * 60 * 60 * 1_000
         val ACTIVE_STATES = setOf(
             OpenPgpRequestState.PENDING_REVIEW,
             OpenPgpRequestState.USER_APPROVED,

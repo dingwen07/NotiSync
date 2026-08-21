@@ -7,6 +7,8 @@ import java.io.File
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
 import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -69,6 +71,22 @@ class SshKeyProviderDatabaseTest {
     }
 
     @Test
+    fun openingStoreRepairsLegacyUuidInventoryGeneration() {
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE).use { database ->
+            database.execSQL(
+                "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 28)",
+                arrayOf("b59ebab4-5fc0-40d0-b1de-27e20f21cf80"),
+            )
+        }
+
+        store = SshKeyProviderStore(context)
+        val snapshot = requireNotNull(store).snapshot(ClientId("provider"), null, 1_000)
+
+        assertEquals("b59ebab45fc040d0b1de27e20f21cf80", snapshot.inventoryGeneration)
+        assertEquals(28L, snapshot.revision)
+    }
+
+    @Test
     fun knownHostHostnameIsStoredAsAnUnvalidatedString() {
         store = SshKeyProviderStore(context)
         val hostKeySha256 = ByteArray(32) { it.toByte() }
@@ -81,6 +99,20 @@ class SshKeyProviderDatabaseTest {
 
         assertTrue(requireNotNull(store).updateKnownHostHostname(hostKeySha256, hostname))
         assertEquals(hostname, requireNotNull(store).knownHostHostname(hostKeySha256))
+    }
+
+    @Test
+    fun blankKnownHostHostnameIsStoredAsUnset() {
+        store = SshKeyProviderStore(context)
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        requireNotNull(store).writableDatabase.execSQL(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, 'old name', 1, 1)",
+            arrayOf(hostKeySha256),
+        )
+
+        assertTrue(requireNotNull(store).updateKnownHostHostname(hostKeySha256, "  "))
+        assertEquals(null, requireNotNull(store).knownHostHostname(hostKeySha256))
     }
 
     @Test
@@ -144,6 +176,41 @@ class SshKeyProviderDatabaseTest {
         assertEquals("build host", authorizations.single { it.authorizationId == "host" }.hostname)
         assertTrue(requireNotNull(store).deleteRememberedAuthorization("host"))
         assertFalse(requireNotNull(store).deleteRememberedAuthorization("host"))
+        assertEquals(listOf("peer"), requireNotNull(store).rememberedAuthorizations().map { it.authorizationId })
+    }
+
+    @Test
+    fun switchingToAlwaysAskPreservesRememberedAuthorizations() {
+        store = SshKeyProviderStore(context)
+        val database = requireNotNull(store).writableDatabase
+        database.execSQL(
+            "INSERT INTO ssh_keys(provider_key_id, public_blob, public_hash, algorithm, display_name, origin, " +
+                "approval_policy, created_at) VALUES ('key', ?, ?, 'SSH_ED25519', 'Test', 'GENERATED', " +
+                "'ALLOW_REMEMBER', 1)",
+            arrayOf(byteArrayOf(1), byteArrayOf(2)),
+        )
+        database.execSQL(
+            "INSERT INTO ssh_remembered_authorizations(authorization_id, provider_key_id, requester_client_id, " +
+                "authorization_generation, authorization_epoch, scope, host_key_sha256, created_at) " +
+                "VALUES ('peer', 'key', 'requester', 'generation', 1, 'PEER', NULL, 1)",
+        )
+
+        assertTrue(
+            requireNotNull(store).updateKeyMetadata(
+                "key",
+                "Test",
+                SshApprovalPolicy.ALWAYS_ASK,
+            ),
+        )
+        assertEquals(listOf("peer"), requireNotNull(store).rememberedAuthorizations().map { it.authorizationId })
+
+        assertTrue(
+            requireNotNull(store).updateKeyMetadata(
+                "key",
+                "Test",
+                SshApprovalPolicy.ALLOW_REMEMBER,
+            ),
+        )
         assertEquals(listOf("peer"), requireNotNull(store).rememberedAuthorizations().map { it.authorizationId })
     }
 

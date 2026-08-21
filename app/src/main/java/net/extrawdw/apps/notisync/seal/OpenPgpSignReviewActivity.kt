@@ -45,11 +45,21 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import java.security.MessageDigest
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
+import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
+import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.requestPageObservationState
+import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
@@ -63,6 +73,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     private var interactionRequestId: String? = null
     private var interactionPayloadDigest: ByteArray? = null
     private var providerContinuation: Intent? = null
+    private var autoLaunchOwned = false
 
     private val providerInteraction = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -82,6 +93,8 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestId = requestIdFrom(intent) ?: return finish()
         val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        autoLaunchOwned = savedInstanceState?.getBoolean(STATE_AUTO_LAUNCH_OWNED)
+            ?: isAutomaticRequestPageLaunch(intent.action)
         intent.action = null
         awaitingInteraction = savedInstanceState?.getBoolean(STATE_AWAITING_INTERACTION) == true
         interactionRequestId = savedInstanceState?.getString(STATE_INTERACTION_REQUEST_ID)
@@ -103,7 +116,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 )
             }
         }
-        load(approveAfterLoad)
+        observeRequest(approveAfterLoad)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -111,6 +124,9 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         val reopenedRequestId = requestIdFrom(intent) ?: return finish()
         if (reopenedRequestId != requestId) return finish()
         val approveAfterLoad = intent.action == ACTION_APPROVE
+        // Once a notification interaction takes ownership of this task, a later automatic
+        // re-delivery must not make it auto-dismissible again.
+        autoLaunchOwned = retainAutomaticRequestPageOwnership(autoLaunchOwned, intent.action)
         intent.action = null
         setIntent(intent)
         screen = ReviewScreenState.Loading
@@ -122,36 +138,67 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         outState.putString(STATE_INTERACTION_REQUEST_ID, interactionRequestId)
         outState.putByteArray(STATE_INTERACTION_DIGEST, interactionPayloadDigest)
         outState.putParcelable(STATE_PROVIDER_CONTINUATION, providerContinuation)
+        outState.putBoolean(STATE_AUTO_LAUNCH_OWNED, autoLaunchOwned)
         super.onSaveInstanceState(outState)
+    }
+
+    private fun observeRequest(approveAfterLoad: Boolean) {
+        lifecycleScope.launch {
+            val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
+                ?: return@launch showError(getString(R.string.seal_not_ready))
+            var approveOnFirstLoad = approveAfterLoad
+            repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
+                graph.openPgpSignStore.requests
+                    .map { requests -> requests.firstOrNull { it.request.requestId == requestId } }
+                    .distinctUntilChanged()
+                    .collectLatest { stored ->
+                        renderRequest(graph, stored, approveOnFirstLoad)
+                        approveOnFirstLoad = false
+                    }
+            }
+        }
     }
 
     private fun load(approveAfterLoad: Boolean = false) {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                 ?: return@launch showError(getString(R.string.seal_not_ready))
-            val stored = graph.openPgpSignStore.find(requestId)
-                ?: return@launch showError(getString(R.string.seal_request_unavailable))
-            val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
-                ?: return@launch showError(getString(R.string.seal_request_invalid))
-            val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
-            val enrollment = graph.openPgpEnrollment.enrollment.value
-            screen = ReviewScreenState.Details(
-                request = if (stored.commit == null) stored.copy(commit = commit) else stored,
-                requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
-                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
-            )
-            if (approveAfterLoad && stored.state == OpenPgpRequestState.PENDING_REVIEW) {
-                approve()
-                return@launch
-            }
-            if (
-                stored.state in setOf(
-                    OpenPgpRequestState.USER_APPROVED,
-                    OpenPgpRequestState.PROVIDER_INTERACTION,
-                ) && !awaitingInteraction
-            ) runProvider()
+            renderRequest(graph, graph.openPgpSignStore.find(requestId), approveAfterLoad)
         }
+    }
+
+    private fun renderRequest(
+        graph: AppGraph,
+        stored: StoredOpenPgpRequest?,
+        approveAfterLoad: Boolean,
+    ) {
+        stored ?: return showError(getString(R.string.seal_request_unavailable))
+        if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
+            clearInteractionBinding()
+            finishAutoOpenedRequestPage()
+            return
+        }
+        val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
+            ?: return showError(getString(R.string.seal_request_invalid))
+        val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
+        val enrollment = graph.openPgpEnrollment.enrollment.value
+        if (!stored.opensSealReview()) clearInteractionBinding()
+        screen = ReviewScreenState.Details(
+            request = if (stored.commit == null) stored.copy(commit = commit) else stored,
+            requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
+            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+            signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
+        )
+        if (approveAfterLoad && stored.state == OpenPgpRequestState.PENDING_REVIEW) {
+            approve()
+            return
+        }
+        if (
+            stored.state in setOf(
+                OpenPgpRequestState.USER_APPROVED,
+                OpenPgpRequestState.PROVIDER_INTERACTION,
+            ) && !awaitingInteraction
+        ) runProvider()
     }
 
     private fun approve() {
@@ -281,6 +328,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         private const val STATE_INTERACTION_REQUEST_ID = "provider_interaction_request_id"
         private const val STATE_INTERACTION_DIGEST = "provider_interaction_payload_digest"
         private const val STATE_PROVIDER_CONTINUATION = "provider_continuation"
+        private const val STATE_AUTO_LAUNCH_OWNED = "auto_launch_owned"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "seal-review"
 
@@ -292,8 +340,11 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         fun approveIntent(context: Context, requestId: String): Intent =
             intent(context, requestId).setAction(ACTION_APPROVE)
 
+        fun autoOpenIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_AUTO_OPEN_REQUEST_PAGE)
+
         private fun requestIdFrom(intent: Intent): String? {
-            if (intent.action != null && intent.action != ACTION_APPROVE) return null
+            if (intent.action !in setOf(null, ACTION_APPROVE, ACTION_AUTO_OPEN_REQUEST_PAGE)) return null
             val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
             return requestId.takeIf { intent.data == reviewUri(it) }
         }

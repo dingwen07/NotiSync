@@ -14,13 +14,23 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
+import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
+import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.requestPageObservationState
+import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
+import net.extrawdw.apps.notisync.ui.SshKeyImportSheet
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.SshImportSourceType
@@ -34,14 +44,20 @@ class SshAgentReviewActivity : ComponentActivity() {
     private var screen by mutableStateOf<SshReviewScreenState>(SshReviewScreenState.Loading)
     private var storage by mutableStateOf(SshKeyStorageSelection(allowExport = true))
     private var passphrase by mutableStateOf("")
+    private var importName by mutableStateOf("")
+    private var showImportSheet by mutableStateOf(false)
     private var busy by mutableStateOf(false)
     private var pendingSignature: Pair<SshAgentProviderEngine, PreparedSshSignature>? = null
     private var pendingImportStorage: Pair<SshAgentProviderEngine, PreparedSshImportStorage>? = null
+    private var renderGeneration = 0L
+    private var autoLaunchOwned = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestId = requestIdFrom(intent) ?: return finish()
         val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        autoLaunchOwned = savedInstanceState?.getBoolean(STATE_AUTO_LAUNCH_OWNED)
+            ?: isAutomaticRequestPageLaunch(intent.action)
         intent.action = null
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
@@ -50,20 +66,43 @@ class SshAgentReviewActivity : ComponentActivity() {
             NotiSyncTheme {
                 SshReviewContent(
                     state = screen,
-                    storage = storage,
-                    passphrase = passphrase,
                     busy = busy,
-                    onStorageChange = { storage = it },
-                    onPassphraseChange = ::changePassphrase,
-                    onPreviewImport = ::previewImport,
-                    onApprove = ::approve,
+                    onApprove = ::beginApproval,
                     onReject = ::reject,
                     onRemember = ::authenticateRemember,
                     onClose = ::finish,
                 )
+                val details = screen as? SshReviewScreenState.Details
+                if (showImportSheet && details?.request?.kind == SshProviderRequestKind.IMPORT) {
+                    SshKeyImportSheet(
+                        privateKeyText = null,
+                        encrypted = details.encryptedImport,
+                        preview = details.keyPreview,
+                        name = importName,
+                        passphrase = passphrase,
+                        storage = storage,
+                        error = details.errorMessage,
+                        previewing = busy,
+                        importing = false,
+                        onPrivateKeyTextChange = {},
+                        onPaste = {},
+                        onNameChange = { importName = it },
+                        onPassphraseChange = ::changePassphrase,
+                        onStorageChange = { storage = it },
+                        onContinueClipboard = {},
+                        onPreview = ::previewImport,
+                        onImport = ::approve,
+                        onDismiss = {
+                            if (!busy) {
+                                showImportSheet = false
+                                changePassphrase("")
+                            }
+                        },
+                    )
+                }
             }
         }
-        load(approveAfterLoad)
+        observeRequest(approveAfterLoad)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -71,10 +110,20 @@ class SshAgentReviewActivity : ComponentActivity() {
         val reopenedRequestId = requestIdFrom(intent) ?: return finish()
         if (reopenedRequestId != requestId) return finish()
         val approveAfterLoad = intent.action == ACTION_APPROVE
+        // Once a notification interaction takes ownership of this task, a later automatic
+        // re-delivery must not make it auto-dismissible again.
+        autoLaunchOwned = retainAutomaticRequestPageOwnership(autoLaunchOwned, intent.action)
         intent.action = null
         setIntent(intent)
+        showImportSheet = false
+        passphrase = ""
         screen = SshReviewScreenState.Loading
         load(approveAfterLoad)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_AUTO_LAUNCH_OWNED, autoLaunchOwned)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
@@ -95,83 +144,140 @@ class SshAgentReviewActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun load(approveAfterLoad: Boolean = false) {
+    private fun observeRequest(approveAfterLoad: Boolean) {
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
                 ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
-            val stored = withContext(Dispatchers.IO) { graph.sshKeyProviderStore.find(requestId) }
-                ?: return@launch showError(getString(R.string.ssh_agent_review_unavailable))
-            val rememberScopes = withContext(Dispatchers.IO) {
-                graph.sshKeyProviderStore.availableRememberScopes(requestId)
-            }
-            val destinationHostname = stored.signRequest?.destinationContext?.let { destination ->
-                withContext(Dispatchers.IO) {
-                    graph.sshKeyProviderStore.knownHostHostname(destination)
-                }
-            }
-            val importInspection = runCatching {
-                withContext(Dispatchers.Default) {
-                    stored.importRequest?.takeIf { it.sourceType == SshImportSourceType.PRIVATE_KEY_FILE }?.let {
-                        SshPrivateKeyFileParser.inspect(requireNotNull(it.fileBytes))
-                    }
-                }
-            }.getOrElse {
-                return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_private_key))
-            }
-            val keyPreview = runCatching {
-                withContext(Dispatchers.Default) {
-                    stored.history.publicKeyBlob?.let(SshImportPreviewParser::preview) ?: when (stored.kind) {
-                        SshProviderRequestKind.SIGN -> stored.signRequest?.let {
-                            SshImportPreviewParser.preview(it.publicKeyBlob)
-                        }
-                        SshProviderRequestKind.IMPORT -> stored.importRequest?.let { request ->
-                            if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
-                                SshImportPreviewParser.parse(request, null)
-                            } else {
-                                importInspection?.preview
-                            }
+            var approveOnFirstLoad = approveAfterLoad
+            repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
+                graph.sshKeyProviderStore.changeVersion
+                    .mapLatest {
+                        val generation = nextRenderGeneration()
+                        generation to withContext(Dispatchers.IO) {
+                            graph.sshKeyProviderStore.find(requestId)
                         }
                     }
-                }
-            }.getOrElse {
-                return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_key))
-            }
-            if (stored.kind == SshProviderRequestKind.IMPORT && keyPreview != null &&
-                stored.state == SshProviderRequestState.PENDING_REVIEW
-            ) {
-                val recorded = runCatching {
-                    withContext(Dispatchers.IO) {
-                        graph.sshKeyProviderStore.recordImportPreview(requestId, keyPreview.publicKeyBlob)
+                    .collectLatest { (generation, stored) ->
+                        renderRequest(graph, stored, approveOnFirstLoad, generation)
+                        approveOnFirstLoad = false
                     }
-                }.getOrElse {
-                    return@launch showError(it.message ?: getString(R.string.ssh_agent_invalid_key))
-                }
-                if (!recorded) return@launch showError(getString(R.string.ssh_agent_review_unavailable))
-            }
-            val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.requesterClientId }
-            val currentKeyName = keyPreview?.let { preview ->
-                withContext(Dispatchers.IO) {
-                    graph.sshKeyProviderStore.keyDisplayName(preview.publicKeyBlob)
-                }
-            }
-            val keyName = when (stored.kind) {
-                SshProviderRequestKind.SIGN -> currentKeyName ?: stored.history.keyName
-                SshProviderRequestKind.IMPORT -> stored.history.keyName ?: currentKeyName
-            } ?: stored.history.suggestedName ?: getString(R.string.ssh_agent_imported_key_default)
-            screen = SshReviewScreenState.Details(
-                request = stored,
-                rememberScopes = rememberScopes,
-                encryptedImport = importInspection?.encrypted ?: stored.history.encryptedImport,
-                keyPreview = keyPreview,
-                keyName = keyName,
-                requesterName = peer?.displayName ?: stored.requesterClientId.shortForm(),
-                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                destinationHostname = destinationHostname,
-            )
-            if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
-                approve()
             }
         }
+    }
+
+    private fun load(approveAfterLoad: Boolean = false) {
+        lifecycleScope.launch {
+            val generation = nextRenderGeneration()
+            val graph = (application as? NotiSyncApp)?.awaitGraphReady()
+                ?: return@launch showErrorIfCurrent(generation, getString(R.string.ssh_agent_not_ready))
+            val stored = withContext(Dispatchers.IO) { graph.sshKeyProviderStore.find(requestId) }
+            renderRequest(graph, stored, approveAfterLoad, generation)
+        }
+    }
+
+    private suspend fun renderRequest(
+        graph: AppGraph,
+        stored: StoredSshProviderRequest?,
+        approveAfterLoad: Boolean,
+        generation: Long,
+    ) {
+        stored ?: return showErrorIfCurrent(generation, getString(R.string.ssh_agent_review_unavailable))
+        if (generation != renderGeneration) return
+        if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
+            busy = false
+            showImportSheet = false
+            passphrase = ""
+            finishAutoOpenedRequestPage()
+            return
+        }
+        val rememberScopes = withContext(Dispatchers.IO) {
+            graph.sshKeyProviderStore.availableRememberScopes(requestId)
+        }
+        val destinationHostname = stored.signRequest?.destinationContext?.let { destination ->
+            withContext(Dispatchers.IO) {
+                graph.sshKeyProviderStore.knownHostHostname(destination)
+            }
+        }
+        val importInspection = runCatching {
+            withContext(Dispatchers.Default) {
+                stored.importRequest?.takeIf { it.sourceType == SshImportSourceType.PRIVATE_KEY_FILE }?.let {
+                    SshPrivateKeyFileParser.inspect(requireNotNull(it.fileBytes))
+                }
+            }
+        }.getOrElse {
+            return showErrorIfCurrent(
+                generation,
+                it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+            )
+        }
+        val keyPreview = runCatching {
+            withContext(Dispatchers.Default) {
+                stored.history.publicKeyBlob?.let(SshImportPreviewParser::preview) ?: when (stored.kind) {
+                    SshProviderRequestKind.SIGN -> stored.signRequest?.let {
+                        SshImportPreviewParser.preview(it.publicKeyBlob)
+                    }
+                    SshProviderRequestKind.IMPORT -> stored.importRequest?.let { request ->
+                        if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
+                            SshImportPreviewParser.parse(request, null)
+                        } else {
+                            importInspection?.preview
+                        }
+                    }
+                }
+            }
+        }.getOrElse {
+            return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_agent_invalid_key))
+        }
+        if (stored.kind == SshProviderRequestKind.IMPORT && keyPreview != null &&
+            stored.state == SshProviderRequestState.PENDING_REVIEW
+        ) {
+            val recorded = runCatching {
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.recordImportPreview(requestId, keyPreview.publicKeyBlob)
+                }
+            }.getOrElse {
+                return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_agent_invalid_key))
+            }
+            if (!recorded) {
+                return showErrorIfCurrent(generation, getString(R.string.ssh_agent_review_unavailable))
+            }
+        }
+        val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.requesterClientId }
+        val currentKeyName = keyPreview?.let { preview ->
+            withContext(Dispatchers.IO) {
+                graph.sshKeyProviderStore.keyDisplayName(preview.publicKeyBlob)
+            }
+        }
+        val keyName = when (stored.kind) {
+            SshProviderRequestKind.SIGN -> currentKeyName ?: stored.history.keyName
+            SshProviderRequestKind.IMPORT -> stored.history.keyName ?: currentKeyName
+        } ?: stored.history.suggestedName ?: getString(R.string.ssh_agent_imported_key_default)
+        if (generation != renderGeneration) return
+        if (stored.state != SshProviderRequestState.PENDING_REVIEW) {
+            busy = false
+            showImportSheet = false
+            passphrase = ""
+        }
+        screen = SshReviewScreenState.Details(
+            request = stored,
+            rememberScopes = rememberScopes,
+            encryptedImport = importInspection?.encrypted ?: stored.history.encryptedImport,
+            keyPreview = keyPreview,
+            keyName = keyName,
+            requesterName = peer?.displayName ?: stored.requesterClientId.shortForm(),
+            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+            destinationHostname = destinationHostname,
+        )
+        importName = keyName
+        if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
+            beginApproval()
+        }
+    }
+
+    private fun nextRenderGeneration(): Long = ++renderGeneration
+
+    private fun showErrorIfCurrent(generation: Long, message: String) {
+        if (generation == renderGeneration) showError(message)
     }
 
     private fun changePassphrase(value: String) {
@@ -221,11 +327,23 @@ class SshAgentReviewActivity : ComponentActivity() {
         }
     }
 
+    private fun beginApproval() {
+        if (busy) return
+        val details = screen as? SshReviewScreenState.Details ?: return
+        if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
+        if (details.request.kind == SshProviderRequestKind.IMPORT) {
+            showImportSheet = true
+        } else {
+            approve()
+        }
+    }
+
     private fun approve() {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
         if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
         if (details.encryptedImport && passphrase.isBlank()) return
+        if (details.request.kind == SshProviderRequestKind.IMPORT && importName.isBlank()) return
         if (details.request.kind == SshProviderRequestKind.IMPORT && details.keyPreview == null) {
             previewImport()
             return
@@ -245,6 +363,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                             withContext(Dispatchers.IO) {
                                 engine.approveImport(
                                     requestId,
+                                    importName,
                                     storage.allowExport,
                                     storage.exportCopyBackendPolicy,
                                     storage.userVerificationPolicy,
@@ -262,13 +381,15 @@ class SshAgentReviewActivity : ComponentActivity() {
                                 authenticateImportStorage(engine, outcome.prepared, details)
                             null -> {
                                 busy = false
-                                screen = details.copy(errorMessage = getString(R.string.ssh_agent_import_unavailable))
+                                screen = details.afterImportFailure(
+                                    getString(R.string.ssh_agent_import_unavailable),
+                                )
                             }
                         }
                     }.onFailure {
                         busy = false
-                        screen = details.copy(
-                            errorMessage = it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                        screen = details.afterImportFailure(
+                            it.message ?: getString(R.string.ssh_agent_invalid_private_key),
                         )
                     }
                 }
@@ -367,7 +488,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
                 pendingImportStorage = null
                 busy = false
-                screen = details.copy(errorMessage = message)
+                screen = details.afterImportFailure(message)
             }
         }
         val storage = prepared.keyStorage
@@ -419,22 +540,22 @@ class SshAgentReviewActivity : ComponentActivity() {
                                     }
                                     null -> {
                                         withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
-                                        pendingImportStorage = null
-                                        busy = false
-                                        screen = details.copy(
-                                            errorMessage = getString(R.string.ssh_agent_import_unavailable),
-                                        )
+                        pendingImportStorage = null
+                        busy = false
+                        screen = details.afterImportFailure(
+                            getString(R.string.ssh_agent_import_unavailable),
+                        )
                                     }
                                 }
                             }.onFailure {
                                 withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
-                                pendingImportStorage = null
-                                busy = false
-                                screen = details.copy(
-                                    errorMessage = it.sshKeyStorageUserMessage(
-                                        this@SshAgentReviewActivity,
-                                        R.string.ssh_agent_store_private_key_failed,
-                                    ),
+                        pendingImportStorage = null
+                        busy = false
+                        screen = details.afterImportFailure(
+                            it.sshKeyStorageUserMessage(
+                                this@SshAgentReviewActivity,
+                                R.string.ssh_agent_store_private_key_failed,
+                            ),
                                 )
                             }
                         }
@@ -517,18 +638,25 @@ class SshAgentReviewActivity : ComponentActivity() {
         screen = SshReviewScreenState.Error(message)
     }
 
+    private fun SshReviewScreenState.Details.afterImportFailure(message: String): SshReviewScreenState.Details =
+        copy(
+            keyPreview = keyPreview.takeUnless { encryptedImport },
+            errorMessage = message,
+        )
+
     private fun showSignResult(result: SshSignResult?) {
         when (result?.kind) {
             SshSignResultKind.SIGNED -> finish()
             SshSignResultKind.PROVIDER_FAILURE -> showError(getString(R.string.ssh_agent_sign_failed))
             SshSignResultKind.REJECTED_BY_USER -> finish()
-            null -> showError(getString(R.string.ssh_agent_request_unavailable))
+            null -> load()
         }
     }
 
     companion object {
         private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SSH_AGENT_APPROVE"
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
+        private const val STATE_AUTO_LAUNCH_OWNED = "auto_launch_owned"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "ssh-agent-review"
 
@@ -539,8 +667,11 @@ class SshAgentReviewActivity : ComponentActivity() {
         fun approveIntent(context: Context, requestId: String): Intent =
             intent(context, requestId).setAction(ACTION_APPROVE)
 
+        fun autoOpenIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_AUTO_OPEN_REQUEST_PAGE)
+
         private fun requestIdFrom(intent: Intent): String? {
-            if (intent.action != null && intent.action != ACTION_APPROVE) return null
+            if (intent.action !in setOf(null, ACTION_APPROVE, ACTION_AUTO_OPEN_REQUEST_PAGE)) return null
             val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
             return requestId.takeIf { intent.data == reviewUri(it) }
         }

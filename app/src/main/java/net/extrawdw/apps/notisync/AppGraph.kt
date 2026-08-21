@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -352,7 +353,9 @@ class AppGraph(private val app: Application) {
         openPgpProvider = OpenKeychainSigningProvider(app)
         openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
-        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
+        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app) {
+            settings.autoOpenOpenPgpRequest.value
+        }
         sshKeyProviderStore = SshKeyProviderStore(app)
         sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
@@ -360,7 +363,9 @@ class AppGraph(private val app: Application) {
         // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
         initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
         sshAgentManagement.start()
-        sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore)
+        sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore) {
+            settings.autoOpenSshRequest.value
+        }
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
         // eager `true` default), then re-apply on every toggle — DataStore stays the single source of
@@ -1519,7 +1524,20 @@ class AppGraph(private val app: Application) {
     }
 }
 
-/** Application entry point: builds the dependency graph. */
+internal enum class AppStartupStage {
+    CHECKING_STORAGE,
+    IMPORTING_DATABASE,
+    INITIALIZING_APPLICATION,
+    READY,
+    FAILED,
+}
+
+internal data class AppStartupState(
+    val stage: AppStartupStage = AppStartupStage.CHECKING_STORAGE,
+    val databaseImportRequired: Boolean = false,
+)
+
+/** Application entry point: prepares storage and builds the dependency graph. */
 class NotiSyncApp : Application() {
     lateinit var graph: AppGraph
         private set
@@ -1530,6 +1548,9 @@ class NotiSyncApp : Application() {
     private val graphDeferred = CompletableDeferred<AppGraph>()
     private val _graphReady = MutableStateFlow(false)
     val graphReady: StateFlow<Boolean> = _graphReady
+    private val _startupState = MutableStateFlow(AppStartupState())
+    internal val startupState: StateFlow<AppStartupState> = _startupState
+    internal val startupStartedAtElapsedRealtime: Long = SystemClock.elapsedRealtime()
     val isGraphReady: Boolean get() = _graphReady.value
     val graphIfReady: AppGraph? get() = if (isGraphReady && ::graph.isInitialized) graph else null
 
@@ -1537,7 +1558,15 @@ class NotiSyncApp : Application() {
         super.onCreate()
         initScope.launch {
             runCatching {
-                RoomStorageMigration(this@NotiSyncApp).prepare()
+                RoomStorageMigration(this@NotiSyncApp).prepare {
+                    _startupState.value = AppStartupState(
+                        stage = AppStartupStage.IMPORTING_DATABASE,
+                        databaseImportRequired = true,
+                    )
+                }
+                _startupState.value = _startupState.value.copy(
+                    stage = AppStartupStage.INITIALIZING_APPLICATION,
+                )
                 storageDeferred.complete(Unit)
                 graph = AppGraph(this@NotiSyncApp)
                 // Cold-start init runs off the main thread (so the automatic `_app_start` trace can't see
@@ -1545,8 +1574,10 @@ class NotiSyncApp : Application() {
                 perfTrace("app_graph_init") { span -> graph.init(span) }
                 _graphReady.value = true
                 graphDeferred.complete(graph)
+                _startupState.value = _startupState.value.copy(stage = AppStartupStage.READY)
             }.onFailure { t ->
                 Log.e("NotiSyncApp", "graph init failed", t)
+                _startupState.value = _startupState.value.copy(stage = AppStartupStage.FAILED)
                 storageDeferred.completeExceptionally(t)
                 graphDeferred.completeExceptionally(t)
             }

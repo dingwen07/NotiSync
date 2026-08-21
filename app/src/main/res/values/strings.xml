@@ -1,6 +1,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name" translatable="false">NotiSync</string>
 
+    <!-- Startup -->
+    <string name="startup_checking_storage">Checking app data…</string>
+    <string name="startup_importing_database">Importing your existing data…</string>
+    <string name="startup_initializing_application">Starting NotiSync…</string>
+    <string name="startup_failed">NotiSync couldn’t start. Close and reopen the app to try again.</string>
+
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
@@ -44,14 +50,15 @@
     <string name="ssh_agent_public_key">Public Key</string>
     <string name="ssh_agent_fingerprint">Fingerprint</string>
     <string name="ssh_agent_passphrase">Passphrase</string>
-    <string name="ssh_agent_import_storage_help">OpenSSH and PuTTY PPK v2/v3 keys are supported. Signing always uses a non-exportable Android Keystore key; the export copy is separate and optional.</string>
+    <string name="ssh_agent_import_passphrase_prompt">This private key is protected. Enter its passphrase to review it.</string>
+    <string name="ssh_agent_import_storage_help">Supports OpenSSH and PuTTY PPK v2/v3 private keys.</string>
     <string name="ssh_agent_import_text">Paste key</string>
     <string name="ssh_agent_export">Export private key</string>
     <string name="ssh_agent_export_title">Export SSH private key</string>
-    <string name="ssh_agent_export_password">Export password (optional)</string>
-    <string name="ssh_agent_export_password_confirm">Confirm export password</string>
-    <string name="ssh_agent_export_password_help">A password encrypts the exported PKCS#8 PEM independently of this device. Enter the same password when importing it later.</string>
-    <string name="ssh_agent_export_password_mismatch">Passwords do not match.</string>
+    <string name="ssh_agent_export_password">Export passphrase (optional)</string>
+    <string name="ssh_agent_export_password_confirm">Confirm export passphrase</string>
+    <string name="ssh_agent_export_password_help">Protect the exported private key with a passphrase.</string>
+    <string name="ssh_agent_export_password_mismatch">Passphrases do not match.</string>
     <string name="ssh_agent_export_plaintext_warning">Leaving both fields blank exports the private key as plaintext.</string>
     <string name="ssh_agent_export_choose_location">Choose where to save the private key</string>
     <string name="ssh_agent_export_preparing">Preparing private-key export</string>
@@ -71,9 +78,9 @@
     <string name="ssh_agent_key_name">Key Name</string>
     <string name="ssh_agent_rsa_key_size">RSA key size</string>
     <string name="ssh_agent_export_settings">Export</string>
-    <string name="ssh_agent_keep_export_backup">Keep an export copy</string>
-    <string name="ssh_agent_export_copy_force_tee">Use TEE for the export copy</string>
-    <string name="ssh_agent_export_copy_auth_help">Every export requires a strong biometric or the device PIN, pattern, or password. StrongBox is tried first unless TEE is selected.</string>
+    <string name="ssh_agent_keep_export_backup">Allow this key to be exported</string>
+    <string name="ssh_agent_export_copy_skip_strongbox">Skip StrongBox (use Android Keystore’s default protection level for the export copy)</string>
+    <string name="ssh_agent_export_copy_auth_help">A strong biometric or device passcode is required when exporting a private key. StrongBox is preferred when protecting the export copy.</string>
     <string name="ssh_agent_signing_storage">Signing key</string>
     <string name="ssh_agent_export_auth_unavailable">An export copy requires a strong biometric or device screen lock.</string>
     <string name="ssh_agent_require_biometric_each_use">Require strong biometric for every signature</string>
@@ -86,8 +93,8 @@
     <string name="ssh_agent_request_unavailable">This SSH signature request is no longer available.</string>
     <string name="ssh_agent_storage_auth_cancelled">SSH key storage was cancelled.</string>
     <string name="ssh_agent_storage_auth_lost">The authenticated SSH key-storage operation was lost.</string>
-    <string name="ssh_agent_generated_device_bound">Generated in Android Keystore. This key cannot be exported.</string>
-    <string name="ssh_agent_generated_exportable">Briefly handled by the app during setup, then protected for signing and export.</string>
+    <string name="ssh_agent_generated_device_bound">Generated inside StrongBox or the TEE. Private key is never present in application-processor or kernel-accessible memory, and cannot be exported.</string>
+    <string name="ssh_agent_generated_exportable">Generated outside secure hardware. During setup, the private key is temporarily stored in main memory accessible to the application processor and the kernel; it is then protected by Android Keystore for signing and export.</string>
     <string name="ssh_agent_non_exportable">Unavailable</string>
     <string name="ssh_agent_key_details">Key details</string>
     <string name="ssh_agent_key_storage">Key Storage</string>
@@ -104,25 +111,24 @@
     <string name="ssh_agent_approval_policy">Approval policy</string>
     <string name="ssh_agent_approval_always">Always ask</string>
     <string name="ssh_agent_approval_remember">Allow remembering</string>
-    <string name="ssh_agent_approval_help">Allow remembering adds a Remember action to eligible approvals. Choosing Always ask removes this key’s saved authorizations.</string>
+    <string name="ssh_agent_approval_help">Long-press Approve during review to remember this authorization.</string>
+    <string name="ssh_agent_approval_help_always_ask">Every request requires manual approval.</string>
     <string name="ssh_agent_remembered_authorizations">Remembered authorizations</string>
     <string name="ssh_agent_no_remembered_authorizations">No remembered authorizations for this key.</string>
     <string name="ssh_agent_remembered_peer_scope">All hosts</string>
     <string name="ssh_agent_remembered_delete_title">Forget remembered authorization?</string>
     <string name="ssh_agent_remembered_delete_body">Future requests from %1$s will require approval when they no longer match another remembered authorization.</string>
     <string name="ssh_agent_remembered_delete_confirm">Forget authorization</string>
-    <string name="ssh_agent_hardware_keystore_unavailable">Hardware-backed Android Keystore is unavailable. Emulators commonly provide only software-backed keys; use a physical device with TEE or StrongBox.</string>
+    <string name="ssh_agent_hardware_keystore_unavailable">Hardware-backed Android Keystore is unavailable.</string>
     <string name="ssh_agent_section_keys">Keys</string>
     <string name="ssh_agent_section_hosts">Known Hosts</string>
     <string name="ssh_agent_section_active">Active requests</string>
     <string name="ssh_agent_section_history">History</string>
-    <string name="ssh_agent_no_keys">No SSH keys yet. Generate one here or import one with ssh-add from a trusted computer.</string>
+    <string name="ssh_agent_no_keys">No SSH keys yet. Generate one here or import one with ssh-add from another device.</string>
     <string name="ssh_agent_no_hosts">Verified SSH host fingerprints appear here after you approve their first request.</string>
     <string name="ssh_agent_no_history">SSH signature and import requests will appear here.</string>
-    <string name="ssh_agent_host_no_hostname">Hostname not set</string>
     <string name="ssh_agent_host_set_hostname">Set SSH hostname</string>
     <string name="ssh_agent_host_hostname">Hostname</string>
-    <string name="ssh_agent_host_hostname_help">Stored as an unverified string. No hostname validation is applied; the host-key fingerprint remains the host identity.</string>
     <string name="ssh_agent_host_delete_title">Forget SSH host?</string>
     <string name="ssh_agent_host_delete_body">Remove %1$s from saved SSH hosts? This removes its hostname and fingerprint entry. Remembered key authorizations are not changed.</string>
     <string name="ssh_agent_host_delete_confirm">Forget host</string>
@@ -140,8 +146,8 @@
     <string name="ssh_agent_send_complete_body">Review and approve the SSH key import on %1$s.</string>
     <string name="ssh_agent_send_peer_unavailable">The selected device is no longer an eligible SSH key provider.</string>
     <string name="ssh_agent_send_failed">Unable to send the SSH key.</string>
-    <string name="ssh_agent_delete_title">Remove SSH key?</string>
-    <string name="ssh_agent_delete_body">%1$s will no longer be available to any connected SSH Agent.</string>
+    <string name="ssh_agent_delete_title">Delete SSH key?</string>
+    <string name="ssh_agent_delete_body">%1$s will be deleted and no longer be available to any trusted devices; this cannot be undone.\n\nIf the key was generated within the security hardware on this device, or if no backup is available, you may permanently lose access to it.</string>
     <string name="ssh_agent_request_sign">SSH Signature</string>
     <string name="ssh_agent_request_import">SSH Key Import</string>
     <string name="ssh_agent_state_pending">Awaiting approval</string>
@@ -200,7 +206,6 @@
     <string name="ssh_agent_remember_peer">%1$s</string>
     <string name="ssh_agent_remember_peer_host">%1$s + this host</string>
     <string name="ssh_agent_remember_pending_help">Choose a scope to approve this request and remember future use of this key.</string>
-    <string name="ssh_agent_remember_unavailable">Remembering is unavailable for this request. The key must allow remembering, without per-use verification, and the request must not require confirmation.</string>
     <string name="ssh_agent_remember_auth_title">Authorize remembered SSH access</string>
     <string name="ssh_agent_remember_peer_subtitle">Allow %1$s to use the key without another approval</string>
     <string name="ssh_agent_remember_peer_host_subtitle">Allow %1$s to use the key without another approval only for this host</string>
@@ -225,7 +230,7 @@
 
     <!-- NotiSync Seal: remote Git commit approval and OpenPGP signing -->
     <string name="seal_name" translatable="false">NotiSync Seal</string>
-    <string name="seal_intro">Approve Git commits from your trusted computers with the OpenPGP key on this device.</string>
+    <string name="seal_intro">Approve Git commits from your trusted devices with the OpenPGP key on this device.</string>
     <string name="seal_identity_title">Signing identity</string>
     <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP key %1$s</string>
@@ -236,7 +241,7 @@
     <string name="seal_section_active">Active</string>
     <string name="seal_section_history">History</string>
     <string name="seal_empty_title">No commit requests yet</string>
-    <string name="seal_empty_body">Requests from your trusted computers will appear here.</string>
+    <string name="seal_empty_body">Requests from your trusted devices will appear here.</string>
     <string name="seal_commit_untitled">Untitled Commit</string>
     <string name="seal_commit_initial">Initial Commit</string>
     <string name="seal_status_waiting">Awaiting approval</string>
@@ -276,10 +281,10 @@
     <string name="seal_signing_action">Signing…</string>
     <string name="seal_close">Close</string>
     <string name="seal_back_to_history">Back to Seal history</string>
-    <string name="seal_details_unavailable">Commit details are unavailable for this older request.</string>
+    <string name="seal_details_unavailable">Commit details unavailable.</string>
     <string name="seal_request_unavailable">This commit request is unavailable.</string>
     <string name="seal_request_invalid">This commit request can’t be displayed.</string>
-    <string name="seal_request_changed">The request changed while OpenKeychain was open.</string>
+    <string name="seal_request_changed">This request changed. Review it again before signing.</string>
     <string name="seal_not_ready">NotiSync Seal isn’t ready yet.</string>
     <string name="seal_notification_title_with_commit">Git Commit Signing · %1$s</string>
     <string name="seal_notification_body">%1$s wants to sign a Git commit</string>
@@ -289,7 +294,7 @@
     <string name="seal_notification_channel" translatable="false">NotiSync Seal</string>
     <string name="seal_notification_channel_description">Git commit signing requests</string>
     <string name="seal_notification_public_content">A Git commit signing request is waiting for review.</string>
-    <string name="seal_history_details_truncated">Some commit details were truncated to keep history responsive.</string>
+    <string name="seal_history_details_truncated">Some commit details are not shown.</string>
 
     <!-- Run screen + locally-rendered Run live updates -->
     <string name="run_screen_title" translatable="false">NotiSync Run</string>
@@ -353,6 +358,7 @@
     <string name="run_status_completed">Completed successfully</string>
     <string name="run_status_exit_code">Exited with code %1$d</string>
     <string name="run_status_failed_start">Could not start</string>
+    <string name="run_notification_public_error">Finished with an error</string>
     <string name="run_short_input">Input</string>
     <string name="run_short_attention">Check</string>
     <string name="run_short_done">Done</string>
@@ -460,11 +466,18 @@
     <string name="activity_title_paired">Paired</string>
 
     <!-- Settings screen -->
+    <string name="settings_section_connection">Connection</string>
+    <string name="settings_section_notifications">Notifications</string>
+    <string name="settings_section_screen_sharing">Screen sharing</string>
+    <string name="settings_section_seal_ssh">Seal &amp; SSH</string>
+    <string name="settings_section_diagnostics">Diagnostics</string>
     <string name="settings_device_name">Device name</string>
     <string name="settings_broker_url">Broker URL (https://…)</string>
     <string name="settings_call_ringer">Ring for mirrored calls</string>
     <string name="settings_call_ringer_fsi_blocked">Full-screen call alerts are blocked</string>
     <string name="settings_call_ringer_fsi_blocked_hint">Allow full-screen notifications so mirrored calls can show the incoming-call screen while this phone is locked. Tap to open system settings.</string>
+    <string name="settings_auto_open_openpgp_request">Automatically open OpenPGP signing requests</string>
+    <string name="settings_auto_open_ssh_request">Automatically open SSH requests</string>
     <string name="settings_lock_screen_public_identity">Show app identity on lock screen</string>
     <string name="settings_batch_low_priority">Batch low-priority notifications</string>
     <string name="settings_advanced_diagnostics">Advanced diagnostics</string>

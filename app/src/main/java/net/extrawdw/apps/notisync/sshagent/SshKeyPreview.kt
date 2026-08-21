@@ -15,11 +15,13 @@ data class SshKeyPreview(
     val publicKeyBlob: ByteArray,
     val authorizedKey: String,
     val fingerprint: String,
+    val comment: String? = null,
 )
 
 data class InspectedSshPrivateKeyFile(
     val encrypted: Boolean,
     val preview: SshKeyPreview?,
+    val comment: String? = null,
 )
 
 object SshImportPreviewParser {
@@ -35,7 +37,9 @@ object SshImportPreviewParser {
             require(parsed.constraints.confirm == (request.constraints?.confirmationRequired ?: false)) {
                 "SSH import confirmation constraints do not match the parsed key"
             }
-            preview(parsed.type.toProtocol(), parsed.publicKeyBlob)
+            preview(parsed.type.toProtocol(), parsed.publicKeyBlob).copy(
+                comment = parsed.comment.trim().takeIf(String::isNotEmpty),
+            )
         }
         SshImportSourceType.PRIVATE_KEY_FILE ->
             SshPrivateKeyFileParser.preview(requireNotNull(request.fileBytes), passphrase)

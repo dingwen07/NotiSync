@@ -2,20 +2,22 @@ package net.extrawdw.notisync.sshagent
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.UnixDaemonClient
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.sshagent.bridge.ProviderRoster
+import net.extrawdw.notisync.ssh.core.SshAgentFrameCodec
 import net.extrawdw.notisync.sshagent.cache.AgentDatabase
-import net.extrawdw.notisync.sshagent.cache.AgentMetadataStore
+import net.extrawdw.notisync.sshagent.cache.CachedProviderKeyRow
 import net.extrawdw.notisync.sshagent.cache.ProviderSnapshotStore
+import net.extrawdw.notisync.sshagent.endpoint.AgentKeyListingExtension
 import net.extrawdw.notisync.sshagent.endpoint.agentEndpointAddresses
+import net.extrawdw.notisync.sshagent.endpoint.connectAgentEndpoint
 import net.extrawdw.notisync.sshagent.endpoint.isWindows
 
 fun main(arguments: Array<String>) {
@@ -47,6 +49,7 @@ class NotisyncSshAgentCommand(
     private val error: Appendable = System.err,
 ) {
     private val files = SecureFileSystem()
+    private val processInstances = ProcessInstanceIdentityResolver()
 
     fun run(arguments: List<String>): Int = try {
         val invocation = parseAgentInvocation(arguments)
@@ -95,6 +98,7 @@ class NotisyncSshAgentCommand(
         DaemonAutostarter(paths).connect()
         files.ensurePrivateDirectory(paths.logDirectory)
         files.ensurePrivateFile(paths.sshAgentLog)
+        val startupLogOffset = Files.size(paths.sshAgentLog)
         val java = Path.of(System.getProperty("java.home"), "bin", if (isWindows()) "java.exe" else "java")
         val command = buildList {
             add(java.toString())
@@ -124,11 +128,11 @@ class NotisyncSshAgentCommand(
                 return 0
             }
             if (!process.isAlive) {
-                throw IllegalStateException(startupFailureMessage("SSH Agent exited during startup"))
+                throw IllegalStateException(startupFailureMessage("SSH Agent exited during startup", startupLogOffset))
             }
             Thread.sleep(50)
         }
-        throw IllegalStateException(startupFailureMessage("SSH Agent did not become ready"))
+        throw IllegalStateException(startupFailureMessage("SSH Agent did not become ready", startupLogOffset))
     }
 
     private fun stop(): Int {
@@ -138,7 +142,8 @@ class NotisyncSshAgentCommand(
             return 0
         }
         val process = ProcessHandle.of(record.pid).orElse(null)
-            ?: throw IllegalStateException("SSH Agent PID disappeared")
+            ?.takeIf { processInstances.resolve(record.pid) == record.processIdentity }
+            ?: throw IllegalStateException("SSH Agent PID disappeared or was reused")
         check(process.destroy()) { "could not request SSH Agent shutdown" }
         process.onExit().get(10, TimeUnit.SECONDS)
         output.appendLine("notisync-ssh-agent stopped")
@@ -197,28 +202,49 @@ class NotisyncSshAgentCommand(
     }
 
     private fun keys(): Int {
-        if (!Files.exists(paths.sshAgentDatabase)) {
-            output.appendLine("No cached SSH identities")
-            return 0
-        }
-        val api = UnixDaemonClient(paths.socket)
-        val requester = api.status().clientId?.let(::ClientId)
-            ?: throw IllegalStateException("notisyncd has no local identity")
-        AgentDatabase(paths.sshAgentDatabase).use { database ->
-            val metadata = AgentMetadataStore(database).authorizationNamespace()
-            val identities = ProviderSnapshotStore(database).aggregate(
-                ProviderRoster(api).activeProviderIds(),
-                requester,
-                metadata.generation,
-                metadata.epoch,
-                System.currentTimeMillis(),
+        val running = runningRecord()
+        val rows = if (running != null) {
+            keyRowsFromRunningAgent(
+                running.bindAddresses.ifEmpty { resolveBindAddresses(emptyList()) },
             )
-            if (identities.isEmpty()) output.appendLine("No active cached SSH identities")
-            identities.forEach { identity ->
-                output.appendLine("${identity.fingerprint}  ${identity.comment}  (${identity.candidates.size} provider(s))")
+        } else {
+            if (!Files.exists(paths.sshAgentDatabase)) {
+                output.appendLine("No cached SSH keys")
+                return 0
+            }
+            AgentDatabase(paths.sshAgentDatabase).use { database ->
+                ProviderSnapshotStore(database).keyRows()
             }
         }
+        if (rows.isEmpty()) {
+            output.appendLine("No cached SSH keys")
+            return 0
+        }
+        val deviceNames = runCatching {
+            UnixDaemonClient(paths.socket).devices().devices.associate { ClientId(it.clientId) to it.name }
+        }.getOrDefault(emptyMap())
+        output.appendLine("FINGERPRINT\tCOMMENT\tDEVICE")
+        rows.forEach { row -> output.appendLine(formatKeyRow(row, deviceNames[row.providerClientId])) }
         return 0
+    }
+
+    private fun keyRowsFromRunningAgent(addresses: List<String>): List<CachedProviderKeyRow> {
+        var lastFailure: Throwable? = null
+        addresses.forEach { address ->
+            runCatching {
+                connectAgentEndpoint(address).use { connection ->
+                    SshAgentFrameCodec.write(connection.output, AgentKeyListingExtension.request())
+                    val response = requireNotNull(SshAgentFrameCodec.read(connection.input)) {
+                        "running SSH Agent closed the key-row query"
+                    }
+                    return AgentKeyListingExtension.decodeResponse(response)
+                }
+            }.onFailure { lastFailure = it }
+        }
+        throw IllegalStateException(
+            "could not query cached keys from the running SSH Agent: ${lastFailure?.message ?: "no active endpoint"}",
+            lastFailure,
+        )
     }
 
     private fun config(arguments: List<String>): Int {
@@ -302,9 +328,7 @@ class NotisyncSshAgentCommand(
     private fun runningRecord(): AgentPidRecord? {
         val record = AgentInstanceLock.read(paths, files) ?: return null
         val handle = ProcessHandle.of(record.pid).orElse(null) ?: return null
-        val actualStart = handle.info().startInstant().orElse(null)
-        val expectedStart = record.processStartTime?.let { runCatching { Instant.parse(it) }.getOrNull() }
-        return record.takeIf { handle.isAlive && (expectedStart == null || expectedStart == actualStart) }
+        return record.takeIf { handle.isAlive && processInstances.resolve(record.pid) == record.processIdentity }
     }
 
     private fun resolveBindAddresses(explicitAddresses: List<String>): List<String> =
@@ -319,16 +343,18 @@ class NotisyncSshAgentCommand(
         return block()
     }
 
-    private fun startupFailureMessage(prefix: String): String {
+    private fun startupFailureMessage(prefix: String, startupLogOffset: Long): String {
         val detail = runCatching {
-            files.readPrivateBytes(paths.sshAgentLog, 1024 * 1024)
-                .decodeToString()
-                .lineSequence()
-                .lastOrNull { it.startsWith("notisync-ssh-agent:") }
-                ?.removePrefix("notisync-ssh-agent:")
-                ?.trim()
+            startupFailureDetail(
+                files.readPrivateBytes(paths.sshAgentLog, 1024 * 1024),
+                startupLogOffset,
+            )
         }.getOrNull()
-        return if (detail.isNullOrBlank()) "$prefix; see ${paths.sshAgentLog}" else "$prefix: $detail"
+        return if (detail.isNullOrBlank()) {
+            "$prefix; see ${paths.sshAgentLog}"
+        } else {
+            "$prefix: ${diagnostic(detail)}"
+        }
     }
 
     private fun diagnostic(message: String?): String = message.orEmpty().ifBlank { "operation failed" }
@@ -339,4 +365,23 @@ class NotisyncSshAgentCommand(
     private companion object {
         val CLIENT_ID = Regex("[a-z2-7]{32}")
     }
+}
+
+internal fun formatKeyRow(row: CachedProviderKeyRow, deviceName: String?): String {
+    val device = deviceName?.takeIf(String::isNotBlank)?.let { "$it (${row.providerClientId.value})" }
+        ?: row.providerClientId.value
+    return "${row.fingerprint}\t${row.comment}\t$device"
+}
+
+internal fun startupFailureDetail(log: ByteArray, startupLogOffset: Long): String? {
+    val offset = startupLogOffset.coerceIn(0, log.size.toLong()).toInt()
+    val lines = log.decodeToString(offset, log.size)
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .toList()
+    return lines.lastOrNull { it.startsWith("notisync-ssh-agent:") }
+        ?.removePrefix("notisync-ssh-agent:")
+        ?.trim()
+        ?: lines.firstOrNull()
 }

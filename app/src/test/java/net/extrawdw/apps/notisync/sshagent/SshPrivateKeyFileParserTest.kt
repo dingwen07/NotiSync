@@ -38,6 +38,14 @@ class SshPrivateKeyFileParserTest {
     }
 
     @Test
+    fun inspectionPreservesOpenSshPrivateKeyComment() {
+        val inspection = SshPrivateKeyFileParser.inspect(fixture("id_ed25519_with_comment"))
+
+        assertEquals("NotiSync comment fixture", inspection.comment)
+        assertEquals("NotiSync comment fixture", requireNotNull(inspection.preview).comment)
+    }
+
+    @Test
     fun parsesEncryptedP256WithCorrectPassphrase() {
         val passphrase = "fixture-passphrase".toCharArray()
         val parsed = try {
@@ -144,4 +152,5 @@ class SshPrivateKeyFileParserTest {
     private fun fixture(name: String): ByteArray = requireNotNull(
         javaClass.getResourceAsStream("/ssh/$name"),
     ).use { it.readBytes() }
+
 }

@@ -181,9 +181,26 @@ class SshProcessLineageUiTest {
         )
     }
 
+    @Test
+    fun processTreeKeepsPidOnlyProcessesInTheLineage() {
+        val terminal = process(10, "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal", "Terminal")
+        val restrictedLogin = DesktopProcessIdentity(pid = 20)
+        val shell = process(30, "/bin/zsh", "zsh")
+
+        assertEquals(
+            "Terminal (10)\n└─ PID 20\n  └─ zsh (30)",
+            listOf(terminal, restrictedLogin, shell).toProcessTreeText(),
+        )
+        assertEquals(
+            "/Applications/Utilities/Terminal.app/Contents/MacOS/Terminal (10)\n" +
+                "└─ PID 20\n" +
+                "  └─ /bin/zsh (30)",
+            listOf(terminal, restrictedLogin, shell).toProcessTreeText(showFullPaths = true),
+        )
+    }
+
     private fun process(pid: Long, path: String, name: String) = DesktopProcessIdentity(
         pid = pid,
-        startEpochMillis = pid * 1_000,
         executablePath = path,
         displayName = name,
     )

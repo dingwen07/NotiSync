@@ -14,6 +14,7 @@ class DesktopProcessContextTest {
         val context = DesktopProcessContext(
             DesktopProcessContextSource.PEER_CREDENTIALS,
             listOf(leaf, parent, root),
+            bootId = "01234567-89ab-cdef-0123-456789abcdef",
         )
 
         val decoded = ProtocolCodec.decodeFromCbor<DesktopProcessContext>(
@@ -37,10 +38,16 @@ class DesktopProcessContextTest {
             DesktopProcessContext(DesktopProcessContextSource.NAMED_PIPE_CLIENT_PID).validationError(),
         )
         assertNull(DesktopProcessContext(DesktopProcessContextSource.UNAVAILABLE).validationError())
+        assertNotNull(
+            DesktopProcessContext(
+                DesktopProcessContextSource.UNAVAILABLE,
+                bootId = "01234567-89ab-cdef-0123-456789abcdef",
+            ).validationError(),
+        )
     }
 
     @Test
-    fun duplicateProcessInstancesAreRejected() {
+    fun duplicateProcessIdsAreRejected() {
         val process = process(10, "/usr/bin/ssh", "ssh")
 
         assertNotNull(
@@ -49,6 +56,22 @@ class DesktopProcessContextTest {
                 listOf(process, process),
             ).validationError(),
         )
+    }
+
+    @Test
+    fun pidOnlyIdentityIsValidAndRoundTrips() {
+        val identity = DesktopProcessIdentity(pid = 42)
+        val context = DesktopProcessContext(
+            DesktopProcessContextSource.PEER_CREDENTIALS,
+            listOf(identity),
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<DesktopProcessContext>(
+            ProtocolCodec.encodeToCbor(context),
+        )
+
+        assertEquals(context, decoded)
+        assertNull(decoded.validationError())
     }
 
     @Test
@@ -70,7 +93,6 @@ class DesktopProcessContextTest {
 
     private fun process(pid: Long, path: String, name: String) = DesktopProcessIdentity(
         pid = pid,
-        startEpochMillis = 1_000L + pid,
         executablePath = path,
         displayName = name,
     )

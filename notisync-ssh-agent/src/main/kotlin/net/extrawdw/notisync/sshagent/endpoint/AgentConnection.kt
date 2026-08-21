@@ -31,12 +31,47 @@ fun interface IdentityImporter {
     }
 }
 
+fun interface IdentityListRefresh {
+    fun request(caller: LocalCallerSnapshot)
+
+    object None : IdentityListRefresh {
+        override fun request(caller: LocalCallerSnapshot) = Unit
+    }
+}
+
+/**
+ * OpenSSH does not include the ssh-add command-line flags in the agent request. An identity-list
+ * request whose local caller is ssh-add therefore represents either `ssh-add -l` or `ssh-add -L`.
+ */
+class SshAddIdentityListRefresh(
+    private val refresh: () -> Unit,
+    private val execute: ((() -> Unit) -> Unit) = { it() },
+) : IdentityListRefresh {
+    override fun request(caller: LocalCallerSnapshot) {
+        if (!caller.isSshAdd()) return
+        runCatching {
+            execute { runCatching(refresh) }
+        }
+    }
+
+    private fun LocalCallerSnapshot.isSshAdd(): Boolean {
+        val leaf = processContext.leaf ?: return false
+        val executableName = leaf.executablePath
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('\\')
+        return listOfNotNull(leaf.displayName, executableName).any {
+            it.equals("ssh-add", ignoreCase = true) || it.equals("ssh-add.exe", ignoreCase = true)
+        }
+    }
+}
+
 class AgentConnectionHandler(
     private val signing: SignCoordinator,
     private val snapshots: ProviderSnapshotStore,
     private val lock: AuthorizationLockCoordinator,
     private val callerResolver: LocalCallerResolver = LocalCallerResolver(),
     private val importer: IdentityImporter = IdentityImporter.Unsupported,
+    private val identityListRefresh: IdentityListRefresh = IdentityListRefresh.None,
     maximumInFlightRequests: Int = 256,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
@@ -49,7 +84,7 @@ class AgentConnectionHandler(
     fun handle(
         input: InputStream,
         output: OutputStream,
-        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
+        caller: LocalCallerSnapshot,
     ) {
         val connectionId = randomId()
         val destination = ConnectionDestinationState()
@@ -59,7 +94,7 @@ class AgentConnectionHandler(
                 dispatch(
                     AgentMessageCodec.decodeRequest(body),
                     connectionId,
-                    processContext,
+                    caller,
                     destination,
                 )
             }.getOrElse { AgentMessageCodec.failure() }
@@ -70,11 +105,12 @@ class AgentConnectionHandler(
     private fun dispatch(
         request: AgentRequest,
         connectionId: String,
-        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
+        caller: LocalCallerSnapshot,
         destination: ConnectionDestinationState,
     ): ByteArray {
         return when (request) {
         AgentRequest.RequestIdentities -> {
+            identityListRefresh.request(caller)
             val identities = if (lock.isLocked()) emptyList() else signing.identities().map {
                 AgentIdentity(it.publicKeyBlob, it.comment)
             }
@@ -91,7 +127,7 @@ class AgentConnectionHandler(
                     request.data,
                     request.flags,
                     connectionId,
-                    callerResolver.refresh(processContext),
+                    callerResolver.refresh(caller),
                     resolved,
                 )) {
                     is SignDecision.Signed -> AgentMessageCodec.signResponse(decision.signatureBlob)
@@ -139,11 +175,16 @@ class AgentConnectionHandler(
         is AgentRequest.Extension -> when (request.name) {
             OpenSshSessionBind.QUERY_EXTENSION_NAME -> {
                 if (request.contents.isNotEmpty()) AgentMessageCodec.extensionFailure() else {
-                    AgentMessageCodec.extensionQueryResponse(listOf(OpenSshSessionBind.EXTENSION_NAME))
+                    AgentMessageCodec.extensionQueryResponse(
+                        listOf(OpenSshSessionBind.EXTENSION_NAME, AgentKeyListingExtension.NAME),
+                    )
                 }
             }
             OpenSshSessionBind.EXTENSION_NAME -> if (destination.bind(request.contents)) {
                 AgentMessageCodec.success()
+            } else AgentMessageCodec.extensionFailure()
+            AgentKeyListingExtension.NAME -> if (request.contents.isEmpty() && !lock.isLocked()) {
+                AgentKeyListingExtension.response(snapshots.keyRows())
             } else AgentMessageCodec.extensionFailure()
             else -> AgentMessageCodec.extensionFailure()
         }

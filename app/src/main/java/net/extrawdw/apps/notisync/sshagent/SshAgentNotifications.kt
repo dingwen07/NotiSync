@@ -17,13 +17,20 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
+import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
 import net.extrawdw.notisync.protocol.SshImportSourceType
 
 class SshAgentNotificationPresenter(
     private val context: Context,
     private val store: SshKeyProviderStore,
+    private val openRequestPageAutomatically: () -> Boolean = { false },
 ) {
-    fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
+    fun post(
+        stored: StoredSshProviderRequest,
+        requesterName: String,
+        openImmediately: Boolean = false,
+    ): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
@@ -87,11 +94,20 @@ class SshAgentNotificationPresenter(
             addAll(expandedDetails)
             add(context.getString(R.string.ssh_agent_notification_request, stored.requestId.take(8)))
         }.joinToString("\n")
+        val autoOpenEnabled = openRequestPageAutomatically()
         val review = PendingIntent.getActivity(
             context,
             notificationId(stored.requestId),
             SshAgentReviewActivity.intent(context, stored.requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )
+        val automaticReview = PendingIntent.getActivity(
+            context,
+            notificationId(stored.requestId),
+            SshAgentReviewActivity.autoOpenIntent(context, stored.requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
         )
         val approve = PendingIntent.getActivity(
             context,
@@ -134,8 +150,16 @@ class SshAgentNotificationPresenter(
                     approve,
                 ).setAuthenticationRequired(true).build(),
             )
+            .apply {
+                if (autoOpenEnabled) {
+                    setFullScreenIntent(automaticReview, true)
+                }
+            }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)
+        if (openImmediately && autoOpenEnabled) {
+            tryOpenRequestPageWhileUnlocked(context, automaticReview)
+        }
         return true
     }
 
@@ -215,7 +239,16 @@ class SshAgentNotificationPresenter(
         return true
     }
 
-    fun dismiss(requestId: String) = NotificationManagerCompat.from(context).cancel(notificationId(requestId))
+    fun dismiss(requestId: String) {
+        PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            SshAgentReviewActivity.autoOpenIntent(context, requestId),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )?.cancel()
+        NotificationManagerCompat.from(context).cancel(notificationId(requestId))
+    }
 
     private fun ensureChannel() {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(

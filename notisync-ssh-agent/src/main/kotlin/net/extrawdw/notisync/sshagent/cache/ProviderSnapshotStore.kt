@@ -2,6 +2,7 @@ package net.extrawdw.notisync.sshagent.cache
 
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
@@ -25,6 +26,14 @@ data class AggregateIdentity(
     val candidates: List<ProviderCandidate>,
     val remembered: Boolean,
     val canRemember: Boolean,
+)
+
+@Serializable
+data class CachedProviderKeyRow(
+    val providerClientId: ClientId,
+    val providerKeyId: String,
+    val fingerprint: String,
+    val comment: String,
 )
 
 class ProviderSnapshotStore(private val database: AgentDatabase) {
@@ -173,6 +182,33 @@ class ProviderSnapshotStore(private val database: AgentDatabase) {
                     .thenBy { it.comment.lowercase() }
                     .thenBy { it.fingerprint },
             )
+    }
+
+    /** Returns one entry per physical provider_keys row, including inactive or no-longer-known providers. */
+    fun keyRows(): List<CachedProviderKeyRow> = database.read { connection ->
+        connection.prepareStatement(
+            "SELECT provider_id, provider_key_id, public_blob, descriptor_cbor " +
+                "FROM provider_keys ORDER BY provider_id, provider_key_id",
+        ).use { statement ->
+            statement.executeQuery().use { result ->
+                buildList {
+                    while (result.next()) {
+                        val publicKeyBlob = result.getBytes(3)
+                        val descriptor = runCatching {
+                            ProtocolCodec.decodeFromCbor<SshKeyDescriptor>(result.getBytes(4))
+                        }.getOrNull()
+                        add(
+                            CachedProviderKeyRow(
+                                providerClientId = ClientId(result.getString(1)),
+                                providerKeyId = result.getString(2),
+                                fingerprint = SshFingerprint.sha256(publicKeyBlob),
+                                comment = descriptor?.displayName ?: "<unreadable descriptor>",
+                            ),
+                        )
+                    }
+                }
+            }
+        }
     }
 
     fun hide(publicKeyBlob: ByteArray, reason: String, hiddenAt: Long, expiresAt: Long? = null) {

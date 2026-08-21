@@ -77,20 +77,74 @@ object SshPrivateKeyFileParser {
     /** Validates unencrypted keys immediately; encrypted keys require a passphrase before a preview is available. */
     fun inspect(fileBytes: ByteArray): InspectedSshPrivateKeyFile {
         val encrypted = detectEncryption(fileBytes)
+        val preview = if (encrypted) null else preview(fileBytes, null)
         return InspectedSshPrivateKeyFile(
             encrypted = encrypted,
-            preview = if (encrypted) null else preview(fileBytes, null),
+            preview = preview,
+            comment = preview?.comment ?: extractPrivateKeyComment(fileBytes),
         )
     }
 
     fun preview(fileBytes: ByteArray, passphrase: CharArray?): SshKeyPreview {
         val parsed = parse(fileBytes, passphrase)
         return try {
-            SshImportPreviewParser.preview(parsed.algorithm, parsed.publicKeyBlob)
+            SshImportPreviewParser.preview(parsed.algorithm, parsed.publicKeyBlob).copy(
+                comment = extractPrivateKeyComment(fileBytes),
+            )
         } finally {
             parsed.pkcs8PrivateKey.fill(0)
         }
     }
+
+    /** Reads import display metadata only; cryptographic parsing and validation remain authoritative. */
+    private fun extractPrivateKeyComment(fileBytes: ByteArray): String? = when {
+        isOpenSshPem(fileBytes) -> extractUnencryptedOpenSshComment(fileBytes)
+        fileBytes.toString(StandardCharsets.ISO_8859_1)
+            .lineSequence()
+            .firstOrNull()
+            ?.startsWith("PuTTY-User-Key-File-") == true -> fileBytes.toString(StandardCharsets.UTF_8)
+            .lineSequence()
+            .firstOrNull { it.startsWith("Comment:") }
+            ?.substringAfter(':')
+            ?.trim()
+            ?.takeIf(::isUsableImportComment)
+        else -> null
+    }
+
+    private fun extractUnencryptedOpenSshComment(fileBytes: ByteArray): String? {
+        val text = fileBytes.toString(StandardCharsets.ISO_8859_1)
+        val encoded = text.substringAfter(OPENSSH_BEGIN).substringBefore(OPENSSH_END)
+            .filterNot(Char::isWhitespace)
+        val decoded = Base64.getDecoder().decode(encoded)
+        return try {
+            val outer = SshMetadataReader(decoded)
+            outer.requireBytes(OPENSSH_MAGIC)
+            if (outer.readString(MAX_CIPHER_NAME_BYTES) != "none") return null
+            outer.skipString()
+            outer.skipString()
+            val keyCount = outer.readU32()
+            require(keyCount == 1) { "OpenSSH private keys must contain exactly one key" }
+            repeat(keyCount) { outer.skipString() }
+            val privateBlock = outer.readNestedString()
+            require(privateBlock.readU32() == privateBlock.readU32()) {
+                "OpenSSH private-key check values do not match"
+            }
+            when (privateBlock.readString(MAX_KEY_TYPE_BYTES)) {
+                "ssh-ed25519" -> repeat(2) { privateBlock.skipString() }
+                "ecdsa-sha2-nistp256" -> repeat(3) { privateBlock.skipString() }
+                "ssh-rsa" -> repeat(6) { privateBlock.skipString() }
+                else -> return null
+            }
+            privateBlock.readString(SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES)
+                .trim()
+                .takeIf(::isUsableImportComment)
+        } finally {
+            decoded.fill(0)
+        }
+    }
+
+    private fun isUsableImportComment(comment: String): Boolean =
+        comment.isNotEmpty() && comment.encodeToByteArray().size <= SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES
 
     private fun detectEncryption(fileBytes: ByteArray): Boolean {
         require(fileBytes.isNotEmpty() && fileBytes.size <= SshAgentLimits.MAX_IMPORT_BYTES) {
@@ -258,6 +312,7 @@ object SshPrivateKeyFileParser {
 
     private const val MIN_RSA_BITS = 2_048
     private const val MAX_CIPHER_NAME_BYTES = 64
+    private const val MAX_KEY_TYPE_BYTES = 64
     private const val OPENSSH_BEGIN = "-----BEGIN OPENSSH PRIVATE KEY-----"
     private const val OPENSSH_END = "-----END OPENSSH PRIVATE KEY-----"
     private const val OPENSSH_PEM_TYPE = "OPENSSH PRIVATE KEY"
@@ -265,4 +320,47 @@ object SshPrivateKeyFileParser {
     private const val PKCS8_ENCRYPTED_BEGIN = "-----BEGIN ENCRYPTED PRIVATE KEY-----"
     private val OPENSSH_MAGIC = "openssh-key-v1\u0000".encodeToByteArray()
     private val BOUNCY_CASTLE = BouncyCastleProvider()
+
+    private class SshMetadataReader(
+        private val bytes: ByteArray,
+        private var offset: Int = 0,
+        private val end: Int = bytes.size,
+    ) {
+        fun requireBytes(expected: ByteArray) {
+            require(end - offset >= expected.size && expected.indices.all { bytes[offset + it] == expected[it] }) {
+                "OpenSSH private-key header is invalid"
+            }
+            offset += expected.size
+        }
+
+        fun readU32(): Int {
+            require(end - offset >= 4) { "OpenSSH private-key data is truncated" }
+            val value = ((bytes[offset].toInt() and 0xff) shl 24) or
+                ((bytes[offset + 1].toInt() and 0xff) shl 16) or
+                ((bytes[offset + 2].toInt() and 0xff) shl 8) or
+                (bytes[offset + 3].toInt() and 0xff)
+            offset += 4
+            return value
+        }
+
+        fun readString(maxBytes: Int): String {
+            val length = readU32()
+            require(length >= 0 && length <= maxBytes && length <= end - offset) {
+                "OpenSSH private-key string is invalid"
+            }
+            return String(bytes, offset, length, StandardCharsets.UTF_8).also { offset += length }
+        }
+
+        fun skipString() {
+            val length = readU32()
+            require(length >= 0 && length <= end - offset) { "OpenSSH private-key string is truncated" }
+            offset += length
+        }
+
+        fun readNestedString(): SshMetadataReader {
+            val length = readU32()
+            require(length >= 0 && length <= end - offset) { "OpenSSH private-key block is truncated" }
+            return SshMetadataReader(bytes, offset, offset + length).also { offset += length }
+        }
+    }
 }

@@ -17,11 +17,20 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
+import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
+import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
 /** Private notification-shade presentation for a pending signing decision. */
-class OpenPgpSignNotificationPresenter(private val context: Context) {
-    fun post(stored: StoredOpenPgpRequest, requesterName: String): Boolean {
+class OpenPgpSignNotificationPresenter(
+    private val context: Context,
+    private val openRequestPageAutomatically: () -> Boolean = { false },
+) {
+    fun post(
+        stored: StoredOpenPgpRequest,
+        requesterName: String,
+        openImmediately: Boolean = false,
+    ): Boolean {
         ensureChannel()
         if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -53,12 +62,20 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             ?.let { context.getString(R.string.seal_notification_author, it) }
         val expandedText = listOfNotNull(requestText, authorText, identifiersText).joinToString("\n")
         val contentTitle = context.getString(R.string.seal_notification_title_with_commit, commitTitle)
-        val intent = OpenPgpSignReviewActivity.intent(context, requestId)
-        val pendingIntent = PendingIntent.getActivity(
+        val autoOpenEnabled = openRequestPageAutomatically()
+        val review = PendingIntent.getActivity(
             context,
             notificationId(requestId),
-            intent,
+            OpenPgpSignReviewActivity.intent(context, requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )
+        val automaticReview = PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            OpenPgpSignReviewActivity.autoOpenIntent(context, requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
         )
         val rejectIntent = PendingIntent.getBroadcast(
             context,
@@ -100,17 +117,32 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(review)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
             .addAction(rejectAction)
             .addAction(approveAction)
+            .apply {
+                if (autoOpenEnabled) {
+                    setFullScreenIntent(automaticReview, true)
+                }
+            }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(requestId), notification)
+        if (openImmediately && autoOpenEnabled) {
+            tryOpenRequestPageWhileUnlocked(context, automaticReview)
+        }
         return true
     }
 
     fun dismiss(requestId: String) {
+        PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            OpenPgpSignReviewActivity.autoOpenIntent(context, requestId),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )?.cancel()
         NotificationManagerCompat.from(context).cancel(notificationId(requestId))
     }
 

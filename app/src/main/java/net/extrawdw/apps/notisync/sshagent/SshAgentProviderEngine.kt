@@ -103,6 +103,7 @@ class SshAgentProviderEngine(
 
     fun approveImport(
         requestId: String,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -112,6 +113,7 @@ class SshAgentProviderEngine(
             requestId,
             providerClientId,
             now(),
+            displayName,
             allowExport,
             exportCopyBackendPolicy,
             userVerificationPolicy,
@@ -322,7 +324,7 @@ class SshAgentProviderEngine(
                 )
             }
         }
-        when (store.acceptSign(request, now())) {
+        when (val accepted = store.acceptSign(request, now())) {
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {
                 val stored = store.find(request.requestId) ?: return
                 when (stored.state) {
@@ -335,6 +337,7 @@ class SshAgentProviderEngine(
                             notifications.post(
                                 stored,
                                 deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
+                                openImmediately = accepted == SshProviderAcceptResult.STORED,
                             )
                         }
                     }
@@ -360,13 +363,14 @@ class SshAgentProviderEngine(
 
     private fun receiveImportRequest(message: InboundMessage, request: net.extrawdw.notisync.protocol.SshImportRequest) {
         if (request.requesterClientId != message.senderId || !fresh(request.requestedAt, request.expiresAt, message.createdAt)) return
-        when (store.acceptImport(request, now())) {
+        when (val accepted = store.acceptImport(request, now())) {
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {
                 val stored = store.find(request.requestId) ?: return
                 when (stored.state) {
                     SshProviderRequestState.PENDING_REVIEW -> notifications.post(
                         stored,
                         deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
+                        openImmediately = accepted == SshProviderAcceptResult.STORED,
                     )
                     SshProviderRequestState.RESPONSE_PENDING_SEND -> SshAgentResponseWorker.enqueue(context, request.requestId)
                     else -> Unit

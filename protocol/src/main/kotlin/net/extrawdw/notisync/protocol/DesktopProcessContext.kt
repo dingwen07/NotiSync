@@ -35,14 +35,14 @@ enum class DesktopProcessContextSource {
 @Serializable
 data class DesktopProcessIdentity(
     @CborLabel(0) val pid: Long,
-    @CborLabel(1) val startEpochMillis: Long,
-    @CborLabel(2) val executablePath: String,
-    @CborLabel(3) val displayName: String? = null,
+    /** Best-effort executable path. Some platforms restrict this for processes owned by another user. */
+    @CborLabel(1) val executablePath: String? = null,
+    @CborLabel(2) val displayName: String? = null,
 ) {
     fun validationError(): String? = when {
         pid <= 0 -> "process pid must be positive"
-        startEpochMillis <= 0 -> "process start time must be positive"
-        !executablePath.isBoundedDesktopExecutablePath() -> "process executable path is invalid"
+        executablePath != null && !executablePath.isBoundedDesktopExecutablePath() ->
+            "process executable path is invalid"
         displayName != null && !displayName.isBoundedDesktopProcessText(
             DesktopProcessContextLimits.MAX_DISPLAY_NAME_UTF8_BYTES,
         ) -> "process display name is invalid"
@@ -58,21 +58,28 @@ data class DesktopProcessIdentity(
 data class DesktopProcessContext(
     @CborLabel(0) val source: DesktopProcessContextSource,
     @CborLabel(1) val processLineage: List<DesktopProcessIdentity> = emptyList(),
+    /** Linux kernel boot ID for the process-lineage snapshot. */
+    @CborLabel(2) val bootId: String? = null,
 ) {
     val leaf: DesktopProcessIdentity? get() = processLineage.firstOrNull()
 
     fun validationError(): String? = when {
         source == DesktopProcessContextSource.UNAVAILABLE && processLineage.isNotEmpty() ->
             "unavailable process context must not carry identities"
+        source == DesktopProcessContextSource.UNAVAILABLE && bootId != null ->
+            "unavailable process context must not carry a boot ID"
         source != DesktopProcessContextSource.UNAVAILABLE && processLineage.isEmpty() ->
             "available process context requires a process lineage"
+        bootId != null && !DESKTOP_BOOT_ID.matches(bootId) -> "process boot ID is invalid"
         processLineage.size > DesktopProcessContextLimits.MAX_LINEAGE -> "process lineage is too long"
         processLineage.any { it.validationError() != null } -> "invalid process identity"
-        processLineage.map { Pair(it.pid, it.startEpochMillis) }.distinct().size != processLineage.size ->
+        processLineage.map(DesktopProcessIdentity::pid).distinct().size != processLineage.size ->
             "duplicate process identity"
         else -> null
     }
 }
+
+private val DESKTOP_BOOT_ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 
 private fun String.isBoundedDesktopProcessText(maxUtf8Bytes: Int): Boolean =
     encodeToByteArray().size <= maxUtf8Bytes && none(Char::isISOControl)

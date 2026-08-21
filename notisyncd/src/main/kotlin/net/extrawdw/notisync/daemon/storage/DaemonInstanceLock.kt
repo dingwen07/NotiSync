@@ -1,6 +1,8 @@
 package net.extrawdw.notisync.daemon.storage
 
 import net.extrawdw.notisync.desktop.SecureFileSystem
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentity
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 
 import java.nio.channels.FileChannel
 import java.nio.channels.FileLock
@@ -19,7 +21,7 @@ import kotlinx.serialization.json.Json
 @Serializable
 data class DaemonPidRecord(
     val pid: Long,
-    val processStartTime: String? = null,
+    val processIdentity: ProcessInstanceIdentity,
     val daemonStartedAt: String,
     val instanceId: String,
 )
@@ -78,7 +80,8 @@ class DaemonInstanceLock private constructor(
             layout: DaemonStorageLayout = DaemonStorageLayout.default(),
             fileSystem: SecureFileSystem = SecureFileSystem(),
             pid: Long = ProcessHandle.current().pid(),
-            processStartTime: String? = ProcessHandle.current().info().startInstant().orElse(null)?.toString(),
+            processIdentity: ProcessInstanceIdentity = ProcessInstanceIdentityResolver().resolve(pid)
+                ?: error("cannot determine notisyncd process identity"),
             now: Instant = Instant.now(),
             registerShutdownHook: Boolean = true,
         ): DaemonInstanceLock {
@@ -102,7 +105,7 @@ class DaemonInstanceLock private constructor(
 
             val record = DaemonPidRecord(
                 pid = pid,
-                processStartTime = processStartTime,
+                processIdentity = processIdentity,
                 daemonStartedAt = now.toString(),
                 instanceId = UUID.randomUUID().toString(),
             )

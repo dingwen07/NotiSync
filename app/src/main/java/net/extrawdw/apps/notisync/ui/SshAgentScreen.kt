@@ -6,7 +6,9 @@ import android.content.ClipboardManager
 import android.content.Context
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
+import android.net.Uri
 import android.os.CancellationSignal
+import android.provider.OpenableColumns
 import android.util.Log
 import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -78,11 +80,8 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -128,6 +127,8 @@ fun SshAgentScreen(
     val graph = rememberGraph()
     val context = LocalContext.current
     val storageAuthUnavailable = stringResource(R.string.ssh_agent_storage_auth_unavailable)
+    val defaultImportedKeyName = stringResource(R.string.ssh_agent_imported_key_default)
+    val clipboardKeyTooLarge = stringResource(R.string.ssh_agent_clipboard_key_too_large)
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
@@ -142,14 +143,16 @@ fun SshAgentScreen(
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var generating by remember { mutableStateOf(false) }
-    var pastingKey by remember { mutableStateOf(false) }
-    var pasteError by remember { mutableStateOf<String?>(null) }
-    var validatingPaste by remember { mutableStateOf(false) }
+    var privateKeyText by remember { mutableStateOf<String?>(null) }
+    var validatingImportSource by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<PendingSshKeyImport?>(null) }
     val latestPendingImport by rememberUpdatedState(pendingImport)
     var importError by remember { mutableStateOf<String?>(null) }
     var previewingImport by remember { mutableStateOf(false) }
     var importingKey by remember { mutableStateOf(false) }
+    var importName by remember { mutableStateOf("") }
+    var importPassphrase by remember { mutableStateOf("") }
+    var importStorage by remember { mutableStateOf(SshKeyStorageSelection(allowExport = true)) }
     var renaming by remember { mutableStateOf<SshKeyDescriptor?>(null) }
     var selectedKnownHost by remember { mutableStateOf<SshKnownHost?>(null) }
     var deletingHost by remember { mutableStateOf<SshKnownHost?>(null) }
@@ -167,7 +170,14 @@ fun SshAgentScreen(
                             ?: error("The selected private-key file could not be opened")
                         try {
                             val inspected = SshPrivateKeyFileParser.inspect(bytes)
-                            PendingSshKeyImport(bytes, inspected.encrypted, inspected.preview)
+                            PendingSshKeyImport(
+                                bytes = bytes,
+                                encrypted = inspected.encrypted,
+                                preview = inspected.preview,
+                                suggestedName = inspected.comment
+                                    ?: privateKeyDisplayName(context, uri)
+                                    ?: defaultImportedKeyName,
+                            )
                         } catch (failure: Exception) {
                             bytes.fill(0)
                             throw failure
@@ -175,6 +185,9 @@ fun SshAgentScreen(
                     }
                 }.onSuccess {
                     importError = null
+                    importName = it.suggestedName
+                    importPassphrase = ""
+                    importStorage = SshKeyStorageSelection(allowExport = true)
                     pendingImport = it
                 }
                     .onFailure { error = it.message ?: it.javaClass.simpleName }
@@ -260,6 +273,16 @@ fun SshAgentScreen(
         }
     }
 
+    fun pasteClipboardIntoImport(requirePrivateKey: Boolean) {
+        val candidate = clipboardText(context) ?: return
+        if (candidate.length > net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES) {
+            importError = clipboardKeyTooLarge
+        } else if (!requirePrivateKey || looksLikePrivateKey(candidate)) {
+            importError = null
+            privateKeyText = candidate
+        }
+    }
+
     DisposableEffect(Unit) {
         onDispose {
             latestPendingImport?.bytes?.fill(0)
@@ -291,7 +314,7 @@ fun SshAgentScreen(
         requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
     }
     val knownHostnames = knownHosts.mapNotNull { host ->
-        host.hostname?.let { host.fingerprint() to it }
+        host.hostname?.takeIf(String::isNotBlank)?.let { host.fingerprint() to it }
     }.toMap()
     val transferPeers = eligibleSshKeyTransferPeers(activePeers)
     LaunchedEffect(selectedHistoryRequestId, selectedHistory, showLoading) {
@@ -344,8 +367,14 @@ fun SshAgentScreen(
                         },
                         onPaste = {
                             error = null
-                            pasteError = null
-                            pastingKey = true
+                            pendingImport?.bytes?.fill(0)
+                            pendingImport = null
+                            importError = null
+                            importName = defaultImportedKeyName
+                            importPassphrase = ""
+                            importStorage = SshKeyStorageSelection(allowExport = true)
+                            privateKeyText = ""
+                            pasteClipboardIntoImport(requirePrivateKey = true)
                         },
                     )
                 }
@@ -486,12 +515,13 @@ fun SshAgentScreen(
 
     selectedHistory?.let { request ->
         val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
-        ModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
+        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
             SshHistoryRequestDetail(
                 request = request,
                 requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                contentPadding = historySheetContentPadding(),
                 onBack = { selectedHistoryRequestId = null },
             )
         }
@@ -526,25 +556,65 @@ fun SshAgentScreen(
         )
     }
 
-    pendingImport?.let { pending ->
-        val bytes = pending.bytes
-        ImportKeyDialog(
-            encrypted = pending.encrypted,
-            preview = pending.preview,
+    if (privateKeyText != null || pendingImport != null) {
+        val pending = pendingImport
+        SshKeyImportSheet(
+            privateKeyText = privateKeyText,
+            encrypted = pending?.encrypted ?: false,
+            preview = pending?.preview,
+            name = importName,
+            passphrase = importPassphrase,
+            storage = importStorage,
             error = importError,
-            previewing = previewingImport,
+            previewing = validatingImportSource || previewingImport,
             importing = importingKey,
-            onDismiss = {
-                if (importingKey || previewingImport) return@ImportKeyDialog
-                bytes.fill(0)
+            onPrivateKeyTextChange = {
+                privateKeyText = it
                 importError = null
-                previewingImport = false
-                pendingImport = null
             },
-            onPreviewInvalidated = {
-                if (pendingImport?.bytes === bytes) pendingImport = pendingImport?.copy(preview = null)
+            onPaste = { pasteClipboardIntoImport(requirePrivateKey = false) },
+            onNameChange = { importName = it },
+            onPassphraseChange = {
+                importPassphrase = it
+                if (pending?.preview != null) pendingImport = pending.copy(preview = null)
+                importError = null
             },
-            onPreview = { passphrase ->
+            onStorageChange = { importStorage = it },
+            onContinueClipboard = {
+                val text = privateKeyText ?: return@SshKeyImportSheet
+                val bytes = text.encodeToByteArray()
+                validatingImportSource = true
+                importError = null
+                scope.launch {
+                    val result = runCatching {
+                        withContext(Dispatchers.IO) {
+                            require(
+                                bytes.isNotEmpty() &&
+                                    bytes.size <= net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES,
+                            ) { "SSH private-key text is outside the 256 KiB limit" }
+                            val inspected = SshPrivateKeyFileParser.inspect(bytes)
+                            PendingSshKeyImport(
+                                bytes = bytes,
+                                encrypted = inspected.encrypted,
+                                preview = inspected.preview,
+                                suggestedName = inspected.comment ?: defaultImportedKeyName,
+                            )
+                        }
+                    }
+                    validatingImportSource = false
+                    result.onSuccess {
+                        privateKeyText = null
+                        importError = null
+                        pendingImport = it
+                    }.onFailure {
+                        bytes.fill(0)
+                        importError = it.message ?: it.javaClass.simpleName
+                    }
+                }
+            },
+            onPreview = {
+                val bytes = pending?.bytes ?: return@SshKeyImportSheet
+                val passphrase = importPassphrase.toCharArray()
                 previewingImport = true
                 importError = null
                 scope.launch {
@@ -553,7 +623,7 @@ fun SshAgentScreen(
                             try {
                                 SshPrivateKeyFileParser.preview(bytes, passphrase)
                             } finally {
-                                passphrase?.fill('\u0000')
+                                passphrase.fill('\u0000')
                             }
                         }
                     }
@@ -561,11 +631,14 @@ fun SshAgentScreen(
                     result.onSuccess { preview ->
                         if (pendingImport?.bytes === bytes) {
                             pendingImport = pendingImport?.copy(preview = preview)
+                            preview.comment?.let { importName = it }
                         }
                     }.onFailure { importError = it.message ?: it.javaClass.simpleName }
                 }
             },
-            onImport = { name, passphrase, storage ->
+            onImport = {
+                val bytes = pending?.bytes ?: return@SshKeyImportSheet
+                val passphrase = if (pending.encrypted) importPassphrase.toCharArray() else null
                 importingKey = true
                 importError = null
                 scope.launch {
@@ -575,11 +648,11 @@ fun SshAgentScreen(
                                 graph.sshKeyProviderStore.importPrivateKeyFile(
                                     bytes,
                                     passphrase,
-                                    name,
+                                    importName.trim(),
                                     System.currentTimeMillis(),
-                                    storage.allowExport,
-                                    storage.exportCopyBackendPolicy,
-                                    storage.userVerificationPolicy,
+                                    importStorage.allowExport,
+                                    importStorage.exportCopyBackendPolicy,
+                                    importStorage.userVerificationPolicy,
                                 )
                             } finally {
                                 passphrase?.fill('\u0000')
@@ -589,6 +662,7 @@ fun SshAgentScreen(
                     result.onSuccess {
                         bytes.fill(0)
                         pendingImport = null
+                        importPassphrase = ""
                         importingKey = false
                         finishStorage(it)
                     }.onFailure {
@@ -600,45 +674,15 @@ fun SshAgentScreen(
                     }
                 }
             },
-        )
-    }
-
-    if (pastingKey) {
-        PastePrivateKeyDialog(
-            error = pasteError,
-            validating = validatingPaste,
             onDismiss = {
-                if (!validatingPaste) {
-                    pasteError = null
-                    pastingKey = false
-                }
-            },
-            onContinue = { text ->
-                val bytes = text.encodeToByteArray()
-                validatingPaste = true
-                pasteError = null
-                scope.launch {
-                    val result = runCatching {
-                        withContext(Dispatchers.IO) {
-                            require(
-                                bytes.isNotEmpty() &&
-                                    bytes.size <= net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES,
-                            ) { "SSH private-key text is outside the 256 KiB limit" }
-                            val inspected = SshPrivateKeyFileParser.inspect(bytes)
-                            PendingSshKeyImport(bytes, inspected.encrypted, inspected.preview)
-                        }
-                    }
-                    validatingPaste = false
-                    result.onSuccess {
-                        pasteError = null
-                        pastingKey = false
-                        importError = null
-                        pendingImport = it
-                    }.onFailure {
-                        bytes.fill(0)
-                        pasteError = it.message ?: it.javaClass.simpleName
-                    }
-                }
+                pending?.bytes?.fill(0)
+                pendingImport = null
+                privateKeyText = null
+                importName = ""
+                importPassphrase = ""
+                importError = null
+                previewingImport = false
+                validatingImportSource = false
             },
         )
     }
@@ -702,7 +746,8 @@ fun SshAgentScreen(
                 Text(
                     stringResource(
                         R.string.ssh_agent_host_delete_body,
-                        host.hostname ?: host.fingerprint(),
+                        host.hostname?.takeIf(String::isNotBlank)
+                            ?: stringResource(R.string.ssh_agent_unknown),
                     ),
                 )
             },
@@ -810,7 +855,10 @@ private fun SshKnownHostDetailSheet(
         modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(stringResource(R.string.ssh_agent_host_set_hostname), style = MaterialTheme.typography.titleLarge)
+        Text(
+            host.hostname?.takeIf(String::isNotBlank) ?: stringResource(R.string.ssh_agent_unknown),
+            style = MaterialTheme.typography.titleLarge,
+        )
         Text(
             host.fingerprint(),
             fontFamily = FontFamily.Monospace,
@@ -822,11 +870,6 @@ private fun SshKnownHostDetailSheet(
             label = { Text(stringResource(R.string.ssh_agent_host_hostname)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            stringResource(R.string.ssh_agent_host_hostname_help),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -993,7 +1036,7 @@ private fun SshKnownHostCard(
             Icon(Icons.Outlined.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    host.hostname ?: stringResource(R.string.ssh_agent_host_no_hostname),
+                    host.hostname?.takeIf(String::isNotBlank) ?: stringResource(R.string.ssh_agent_unknown),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -1185,7 +1228,12 @@ private fun SshKeyApprovalPolicy(
             }
         }
         Text(
-            stringResource(R.string.ssh_agent_approval_help),
+            stringResource(
+                when (key.approvalPolicy) {
+                    SshApprovalPolicy.ALLOW_REMEMBER -> R.string.ssh_agent_approval_help
+                    SshApprovalPolicy.ALWAYS_ASK -> R.string.ssh_agent_approval_help_always_ask
+                },
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1412,188 +1460,6 @@ private fun RenameKeyDialog(
     )
 }
 
-@Composable
-private fun ImportKeyDialog(
-    encrypted: Boolean,
-    preview: SshKeyPreview?,
-    error: String?,
-    previewing: Boolean,
-    importing: Boolean,
-    onDismiss: () -> Unit,
-    onPreviewInvalidated: () -> Unit,
-    onPreview: (CharArray?) -> Unit,
-    onImport: (String, CharArray?, SshKeyStorageSelection) -> Unit,
-) {
-    var name by remember { mutableStateOf("Imported SSH key") }
-    var passphrase by remember { mutableStateOf("") }
-    var storage by remember { mutableStateOf(SshKeyStorageSelection(allowExport = true)) }
-    AlertDialog(
-        onDismissRequest = { if (!previewing && !importing) onDismiss() },
-        title = { Text(stringResource(R.string.ssh_agent_import_title)) },
-        text = {
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text(stringResource(R.string.ssh_agent_key_name)) },
-                    singleLine = true,
-                )
-                if (encrypted) {
-                    OutlinedTextField(
-                        value = passphrase,
-                        onValueChange = {
-                            passphrase = it
-                            if (preview != null) onPreviewInvalidated()
-                        },
-                        label = { Text(stringResource(R.string.ssh_agent_passphrase)) },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                    )
-                }
-                preview?.let {
-                    SshKeyPreviewCard(
-                        name = name,
-                        preview = it,
-                        showFullPublicKey = true,
-                    )
-                }
-                SshKeyStorageOptions(storage, { storage = it })
-                Text(
-                    stringResource(R.string.ssh_agent_import_storage_help),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (error != null) {
-                    Text(
-                        error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error,
-                    )
-                }
-                if (previewing || importing) {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        CircularProgressIndicator()
-                    }
-                }
-            }
-        },
-        confirmButton = {
-            TextButton(
-                onClick = {
-                    val secret = if (encrypted) passphrase.toCharArray() else null
-                    if (preview == null) {
-                        onPreview(secret)
-                    } else {
-                        passphrase = ""
-                        onImport(name.trim(), secret, storage)
-                    }
-                },
-                enabled = !previewing && !importing && name.isNotBlank() && (!encrypted || passphrase.isNotBlank()),
-            ) {
-                Text(
-                    stringResource(
-                        if (preview == null) R.string.ssh_agent_review_key else R.string.ssh_agent_import_file,
-                    ),
-                )
-            }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss, enabled = !previewing && !importing) {
-                Text(stringResource(R.string.action_cancel))
-            }
-        },
-    )
-}
-
-@Composable
-private fun PastePrivateKeyDialog(
-    error: String?,
-    validating: Boolean,
-    onDismiss: () -> Unit,
-    onContinue: (String) -> Unit,
-) {
-    val context = LocalContext.current
-    val clipboardKeyTooLarge = stringResource(R.string.ssh_agent_clipboard_key_too_large)
-    var text by remember { mutableStateOf("") }
-    var clipboardError by remember { mutableStateOf<String?>(null) }
-    fun pasteClipboard(requirePrivateKey: Boolean) {
-        val candidate = clipboardText(context) ?: return
-        if (candidate.length > net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES) {
-            clipboardError = clipboardKeyTooLarge
-        } else if (!requirePrivateKey || looksLikePrivateKey(candidate)) {
-            clipboardError = null
-            text = candidate
-        }
-    }
-    LaunchedEffect(Unit) { pasteClipboard(requirePrivateKey = true) }
-    Dialog(
-        onDismissRequest = { if (!validating) onDismiss() },
-        properties = DialogProperties(usePlatformDefaultWidth = false),
-    ) {
-        Box(Modifier.fillMaxSize().padding(16.dp), contentAlignment = Alignment.Center) {
-            Surface(
-                modifier = Modifier.fillMaxWidth().widthIn(max = 720.dp),
-                shape = MaterialTheme.shapes.extraLarge,
-                tonalElevation = 6.dp,
-            ) {
-                Column(
-                    Modifier.fillMaxWidth().padding(24.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                ) {
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                        Text(
-                            stringResource(R.string.ssh_agent_import_text_title),
-                            modifier = Modifier.weight(1f),
-                            style = MaterialTheme.typography.headlineSmall,
-                        )
-                        TextButton(onClick = { pasteClipboard(requirePrivateKey = false) }, enabled = !validating) {
-                            Text(stringResource(R.string.action_paste))
-                        }
-                    }
-                    OutlinedTextField(
-                        value = text,
-                        onValueChange = {
-                            text = it
-                            clipboardError = null
-                        },
-                        label = { Text(stringResource(R.string.ssh_agent_private_key_text)) },
-                        minLines = 8,
-                        maxLines = 16,
-                        modifier = Modifier.fillMaxWidth().heightIn(min = 200.dp, max = 420.dp),
-                        textStyle = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
-                    )
-                    (error ?: clipboardError)?.let { message ->
-                        Text(
-                            message,
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.error,
-                        )
-                    }
-                    if (validating) {
-                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                            CircularProgressIndicator()
-                        }
-                    }
-                    Row(
-                        Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
-                    ) {
-                        TextButton(onClick = onDismiss, enabled = !validating) {
-                            Text(stringResource(R.string.action_cancel))
-                        }
-                        Button(
-                            onClick = { onContinue(text) },
-                            enabled = !validating && text.isNotBlank(),
-                        ) {
-                            Text(stringResource(R.string.action_continue))
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
 private fun clipboardText(context: Context): String? {
     val clipboard = context.getSystemService(ClipboardManager::class.java)
     val clip = clipboard.primaryClip ?: return null
@@ -1691,6 +1557,19 @@ private fun SshKeyDescriptor.authorizedPublicKey(): String {
     return "$wireName ${Base64.getEncoder().encodeToString(publicKeyBlob)} $displayName"
 }
 
+private fun privateKeyDisplayName(context: Context, uri: Uri): String? =
+    context.contentResolver.query(
+        uri,
+        arrayOf(OpenableColumns.DISPLAY_NAME),
+        null,
+        null,
+        null,
+    )?.use { cursor ->
+        if (!cursor.moveToFirst()) return@use null
+        val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+        if (index < 0 || cursor.isNull(index)) null else cursor.getString(index).trim().takeIf(String::isNotEmpty)
+    }
+
 private fun readBoundedPrivateKey(input: java.io.InputStream): ByteArray {
     val output = ByteArrayOutputStream()
     val buffer = ByteArray(8 * 1024)
@@ -1769,4 +1648,5 @@ private data class PendingSshKeyImport(
     val bytes: ByteArray,
     val encrypted: Boolean,
     val preview: SshKeyPreview?,
+    val suggestedName: String,
 )

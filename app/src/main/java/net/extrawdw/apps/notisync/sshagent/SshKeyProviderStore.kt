@@ -360,8 +360,35 @@ class SshKeyProviderStore(context: Context) :
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         validateDatabaseSchema(db)
+        repairInventoryGeneration(db)
         reconcileLifecycle(db)
         pruneHistory(db)
+    }
+
+    private fun repairInventoryGeneration(db: SQLiteDatabase) {
+        val stored = db.rawQuery(
+            "SELECT inventory_generation FROM provider_state WHERE singleton=1",
+            emptyArray(),
+        ).use { cursor ->
+            cursor.takeIf { it.moveToFirst() }?.getString(0)
+        }
+        if (stored == null) {
+            val values = ContentValues().apply {
+                put("singleton", 1)
+                put("inventory_generation", SshInventoryGeneration.create())
+                put("revision", 1)
+            }
+            check(db.insertOrThrow("provider_state", null, values) != -1L) {
+                "Could not initialize SSH inventory generation"
+            }
+            return
+        }
+        val canonical = SshInventoryGeneration.canonicalize(stored)
+        if (canonical == stored) return
+        val values = ContentValues().apply { put("inventory_generation", canonical) }
+        check(db.update("provider_state", values, "singleton=1", emptyArray()) == 1) {
+            "Could not repair SSH inventory generation"
+        }
     }
 
     private fun validateDatabaseSchema(db: SQLiteDatabase) {
@@ -497,7 +524,9 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun updateKnownHostHostname(hostKeySha256: ByteArray, hostname: String): Boolean {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
-        val values = ContentValues().apply { put("hostname", hostname) }
+        val values = ContentValues().apply {
+            if (hostname.isBlank()) putNull("hostname") else put("hostname", hostname)
+        }
         val changed = writableDatabase.update(
             "ssh_known_hosts",
             values,
@@ -1728,9 +1757,6 @@ class SshKeyProviderStore(context: Context) :
             }
             val changed = database.update("ssh_keys", values, "provider_key_id=?", arrayOf(providerKeyId)) == 1
             if (changed) {
-                if (approvalPolicy == SshApprovalPolicy.ALWAYS_ASK) {
-                    database.delete("ssh_remembered_authorizations", "provider_key_id=?", arrayOf(providerKeyId))
-                }
                 bumpRevision(database)
             }
             database.setTransactionSuccessful()
@@ -1848,8 +1874,10 @@ class SshKeyProviderStore(context: Context) :
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return emptySet()
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return emptySet()
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            )
         ) return emptySet()
         return SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext)
     }
@@ -2048,6 +2076,7 @@ class SshKeyProviderStore(context: Context) :
         requestId: String,
         provider: ClientId,
         now: Long,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -2060,10 +2089,15 @@ class SshKeyProviderStore(context: Context) :
             expireDue(now)
             return null
         }
+        val name = displayName.trim()
+        require(name.isNotEmpty() && name.encodeToByteArray().size <= SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) {
+            "key name is outside the allowed bounds"
+        }
         val attempt = import(
             request,
             provider,
             now,
+            name,
             allowExport,
             exportCopyBackendPolicy,
             userVerificationPolicy,
@@ -2161,8 +2195,10 @@ class SshKeyProviderStore(context: Context) :
             )
         ) return null
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            )
         ) return null
         if (scope !in SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext) ||
             scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
@@ -2588,6 +2624,7 @@ class SshKeyProviderStore(context: Context) :
         request: SshImportRequest,
         provider: ClientId,
         now: Long,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -2638,7 +2675,7 @@ class SshKeyProviderStore(context: Context) :
                     publicKey = material.publicKey,
                     publicBlob = material.publicBlob,
                     algorithm = material.algorithm,
-                    displayName = boundedImportName(request.suggestedName ?: material.comment),
+                    displayName = displayName,
                     origin = if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
                         SshKeyOrigin.AGENT_ADD
                     } else {
@@ -2970,8 +3007,11 @@ class SshKeyProviderStore(context: Context) :
 
     private fun matchingRememberedAuthorization(request: SshSignRequest): RememberedAuthorizationMatch? {
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE ||
+        // Persisted grants remain dormant while the key is set to Always ask.
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            ) ||
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return null
         val scopes = readableDatabase.rawQuery(

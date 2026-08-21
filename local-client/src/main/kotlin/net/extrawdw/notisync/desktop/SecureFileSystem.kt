@@ -247,6 +247,31 @@ class SecureFileSystem(
         return deleted
     }
 
+    /** Atomically moves an existing private file to a new private path without overwriting anything. */
+    fun movePrivateFileIfExists(source: Path, target: Path): Boolean {
+        val absoluteSource = normalized(source)
+        val absoluteTarget = normalized(target)
+        rejectSymbolicLinkComponents(absoluteSource)
+        if (!Files.exists(absoluteSource, LinkOption.NOFOLLOW_LINKS)) return false
+        validatePrivateFile(absoluteSource)
+        val targetParent = ensurePrivateDirectory(
+            requireNotNull(absoluteTarget.parent) { "$absoluteTarget has no parent" },
+        )
+        rejectSymbolicLinkComponents(absoluteTarget)
+        require(!Files.exists(absoluteTarget, LinkOption.NOFOLLOW_LINKS)) {
+            "refusing to overwrite $absoluteTarget"
+        }
+        try {
+            Files.move(absoluteSource, absoluteTarget, StandardCopyOption.ATOMIC_MOVE)
+        } catch (error: AtomicMoveNotSupportedException) {
+            throw IOException("atomic move is not supported for $absoluteSource", error)
+        }
+        validatePrivateFile(absoluteTarget)
+        absoluteSource.parent?.let(::forceDirectory)
+        if (targetParent != absoluteSource.parent) forceDirectory(targetParent)
+        return true
+    }
+
     /** Reject a symbolic link at [path] or at any existing ancestor. */
     fun rejectSymbolicLinkComponents(path: Path) {
         val absolute = normalized(path)

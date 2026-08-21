@@ -5,6 +5,7 @@ import java.nio.file.Path
 import java.security.MessageDigest
 import java.security.KeyPairGenerator
 import java.sql.DriverManager
+import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
@@ -20,7 +21,6 @@ import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -57,6 +57,25 @@ class ProviderSnapshotStoreTest {
 
             assertEquals(SnapshotApplyResult.APPLIED, store.apply(first, snapshot(first, "1".repeat(32), 2), 4_000))
             assertEquals(1, store.aggregate(setOf(first, second), ClientId("a".repeat(52)), "5".repeat(32), 0, 5_000).single().candidates.size)
+        }
+    }
+
+    @Test
+    fun keyRowsListsEveryStoredProviderRowWithoutActiveProviderFiltering() {
+        withDatabase { database ->
+            val store = ProviderSnapshotStore(database)
+            val first = ClientId("b".repeat(52))
+            val second = ClientId("c".repeat(52))
+            val blob = SshPublicKeyCodec.encode(KeyPairGenerator.getInstance("Ed25519").generateKeyPair().public)
+            store.apply(first, snapshot(first, "1".repeat(32), 1, key("2".repeat(32), blob, "First")), 2_000)
+            store.apply(second, snapshot(second, "3".repeat(32), 1, key("4".repeat(32), blob, "Second")), 2_000)
+
+            val rows = store.keyRows()
+
+            assertEquals(listOf(first, second), rows.map(CachedProviderKeyRow::providerClientId))
+            assertEquals(listOf("First", "Second"), rows.map(CachedProviderKeyRow::comment))
+            assertEquals(2, rows.size)
+            assertEquals(rows[0].fingerprint, rows[1].fingerprint)
         }
     }
 
@@ -115,8 +134,10 @@ class ProviderSnapshotStoreTest {
     }
 
     @Test
-    fun incompatibleDatabaseFailsClosedWithoutDeletingOrRewritingIt() {
+    fun databaseOpenFailureResetsCacheWithoutTouchingConfiguration() {
         withTemporaryDatabasePath { path ->
+            val config = path.resolveSibling("notisync-ssh-agent.conf")
+            Files.writeString(config, "endpoint-mode=custom\n")
             DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
                 connection.createStatement().use { statement ->
                     statement.execute("CREATE TABLE retained_marker(value TEXT NOT NULL)")
@@ -125,21 +146,65 @@ class ProviderSnapshotStoreTest {
                 }
             }
 
-            val failure = assertThrows(IllegalStateException::class.java) { AgentDatabase(path) }
+            var resetFailure: Throwable? = null
+            var backupDirectory: Path? = null
+            AgentDatabase.openRecoveringOnFailure(path) { failure, backup ->
+                resetFailure = failure
+                backupDirectory = backup
+            }.use { database ->
+                assertEquals(1, database.userVersion())
+                assertTrue("retained_marker" !in database.userTableNames())
+            }
 
-            assertTrue(failure.message.orEmpty().contains("database was not modified"))
-            DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
+            assertTrue(resetFailure is UnsupportedAgentDatabaseSchemaException)
+            val backup = requireNotNull(backupDirectory).resolve(path.fileName)
+            DriverManager.getConnection("jdbc:sqlite:${backup.toAbsolutePath()}").use { connection ->
                 connection.createStatement().use { statement ->
-                    statement.executeQuery("PRAGMA user_version").use { result ->
-                        assertTrue(result.next())
-                        assertEquals(2, result.getInt(1))
-                    }
                     statement.executeQuery("SELECT value FROM retained_marker").use { result ->
                         assertTrue(result.next())
                         assertEquals("keep", result.getString(1))
                     }
                 }
             }
+            assertEquals("endpoint-mode=custom\n", Files.readString(config))
+        }
+    }
+
+    @Test
+    fun currentVersionValidationFailureAlsoResetsCache() {
+        withTemporaryDatabasePath { path ->
+            DriverManager.getConnection("jdbc:sqlite:${path.toAbsolutePath()}").use { connection ->
+                connection.createStatement().use { statement ->
+                    statement.execute("CREATE TABLE retained_marker(value TEXT NOT NULL)")
+                    statement.execute("INSERT INTO retained_marker(value) VALUES('keep')")
+                    statement.execute("PRAGMA user_version=1")
+                }
+            }
+
+            var resetFailure: Throwable? = null
+            AgentDatabase.openRecoveringOnFailure(path) { failure, _ -> resetFailure = failure }.use { database ->
+                assertEquals(1, database.userVersion())
+                assertTrue("retained_marker" !in database.userTableNames())
+            }
+
+            assertTrue(resetFailure is IllegalStateException)
+        }
+    }
+
+    @Test
+    fun stateDatabaseDoesNotTouchLegacyRootSqliteFile() {
+        withTemporaryDatabasePath { temporaryPath ->
+            val paths = DesktopPaths(temporaryPath.parent)
+            val legacy = paths.dataDirectory.resolve("notisync-ssh-agent.sqlite3")
+            Files.writeString(legacy, "legacy database remains untouched")
+
+            AgentDatabase.openRecoveringOnFailure(paths.sshAgentDatabase).use { database ->
+                assertEquals(1, database.userVersion())
+            }
+
+            assertEquals("legacy database remains untouched", Files.readString(legacy))
+            assertEquals("notisync-ssh-agent.db", paths.sshAgentDatabase.fileName.toString())
+            assertEquals(paths.stateDirectory, paths.sshAgentDatabase.parent)
         }
     }
 
@@ -178,6 +243,23 @@ class ProviderSnapshotStoreTest {
 
     private fun withDatabase(block: (AgentDatabase) -> Unit) {
         withTemporaryDatabasePath { path -> AgentDatabase(path).use(block) }
+    }
+
+    private fun AgentDatabase.userVersion(): Int = read { connection ->
+        connection.createStatement().use { statement ->
+            statement.executeQuery("PRAGMA user_version").use { result ->
+                assertTrue(result.next())
+                result.getInt(1)
+            }
+        }
+    }
+
+    private fun AgentDatabase.userTableNames(): Set<String> = read { connection ->
+        connection.createStatement().use { statement ->
+            statement.executeQuery(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+            ).use { result -> buildSet { while (result.next()) add(result.getString(1)) } }
+        }
     }
 
     private fun withTemporaryDatabasePath(block: (Path) -> Unit) {
