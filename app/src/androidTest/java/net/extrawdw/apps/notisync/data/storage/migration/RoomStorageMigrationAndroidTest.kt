@@ -152,6 +152,13 @@ class RoomStorageMigrationAndroidTest {
             assertEquals(1L, database.count("mirror_msg"))
             assertEquals(0L, database.count("ssh_known_hosts"))
             assertEquals(1L, database.count("provider_state"))
+            database.rawQuery(
+                "SELECT inventory_generation FROM provider_state WHERE singleton=1",
+                emptyArray(),
+            ).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertTrue(Regex("[0-9a-f]{32}").matches(cursor.getString(0)))
+            }
             assertEquals(1L, database.count("android_apps"))
             assertEquals(1L, database.count("incoming_notification_filters"))
             assertEquals(3L, database.count("ios_apps"))

@@ -7,6 +7,7 @@ import java.io.File
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
 import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -67,6 +68,22 @@ class SshKeyProviderDatabaseTest {
                 arrayOf("terminal-request", byteArrayOf(1), byteArrayOf(2), byteArrayOf(3), byteArrayOf(4), byteArrayOf(5)),
             )
         }
+    }
+
+    @Test
+    fun openingStoreRepairsLegacyUuidInventoryGeneration() {
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE).use { database ->
+            database.execSQL(
+                "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 28)",
+                arrayOf("b59ebab4-5fc0-40d0-b1de-27e20f21cf80"),
+            )
+        }
+
+        store = SshKeyProviderStore(context)
+        val snapshot = requireNotNull(store).snapshot(ClientId("provider"), null, 1_000)
+
+        assertEquals("b59ebab45fc040d0b1de27e20f21cf80", snapshot.inventoryGeneration)
+        assertEquals(28L, snapshot.revision)
     }
 
     @Test

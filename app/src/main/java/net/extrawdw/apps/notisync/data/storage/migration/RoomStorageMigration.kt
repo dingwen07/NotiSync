@@ -24,6 +24,7 @@ import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabaseFactory
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
+import net.extrawdw.apps.notisync.sshagent.SshInventoryGeneration
 import net.extrawdw.apps.notisync.ios.IosApp
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -335,7 +336,7 @@ internal class RoomStorageMigration(
         if (rowCount(database, "provider_state") != 0L) return
         database.execSQL(
             "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
-            arrayOf(UUID.randomUUID().toString()),
+            arrayOf(SshInventoryGeneration.create()),
         )
     }
 

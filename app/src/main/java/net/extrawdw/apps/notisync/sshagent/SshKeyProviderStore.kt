@@ -360,8 +360,35 @@ class SshKeyProviderStore(context: Context) :
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
         validateDatabaseSchema(db)
+        repairInventoryGeneration(db)
         reconcileLifecycle(db)
         pruneHistory(db)
+    }
+
+    private fun repairInventoryGeneration(db: SQLiteDatabase) {
+        val stored = db.rawQuery(
+            "SELECT inventory_generation FROM provider_state WHERE singleton=1",
+            emptyArray(),
+        ).use { cursor ->
+            cursor.takeIf { it.moveToFirst() }?.getString(0)
+        }
+        if (stored == null) {
+            val values = ContentValues().apply {
+                put("singleton", 1)
+                put("inventory_generation", SshInventoryGeneration.create())
+                put("revision", 1)
+            }
+            check(db.insertOrThrow("provider_state", null, values) != -1L) {
+                "Could not initialize SSH inventory generation"
+            }
+            return
+        }
+        val canonical = SshInventoryGeneration.canonicalize(stored)
+        if (canonical == stored) return
+        val values = ContentValues().apply { put("inventory_generation", canonical) }
+        check(db.update("provider_state", values, "singleton=1", emptyArray()) == 1) {
+            "Could not repair SSH inventory generation"
+        }
     }
 
     private fun validateDatabaseSchema(db: SQLiteDatabase) {
