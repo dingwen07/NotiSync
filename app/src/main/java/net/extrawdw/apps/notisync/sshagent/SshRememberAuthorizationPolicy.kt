@@ -2,9 +2,11 @@ package net.extrawdw.apps.notisync.sshagent
 
 import java.security.MessageDigest
 import java.util.Base64
+import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
 import net.extrawdw.notisync.protocol.SshRememberScope
+import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 
 /** The lifetime boundary is part of the scope contract, not an implementation detail of SQLite. */
 internal enum class SshRememberAuthorizationStorage { DISK, PROCESS_MEMORY }
@@ -19,6 +21,12 @@ internal val SshRememberScope.authorizationStorage: SshRememberAuthorizationStor
 
 /** Pure eligibility and matching rules shared by the approval UI and persistent rule store. */
 internal object SshRememberAuthorizationPolicy {
+    fun keyAllowsRememberedAuthorization(
+        approvalPolicy: SshApprovalPolicy,
+        userVerificationPolicy: SshUserVerificationPolicy,
+    ): Boolean = approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER &&
+        userVerificationPolicy == SshUserVerificationPolicy.NONE
+
     fun availableDiskScopes(destination: SshDestinationContext): Set<SshRememberScope> = buildSet {
         add(SshRememberScope.PEER)
         if (verifiedHostKeySha256(destination) != null) add(SshRememberScope.PEER_HOST_KEY)

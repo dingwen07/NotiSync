@@ -1,10 +1,12 @@
 package net.extrawdw.apps.notisync.sshagent
 
 import java.security.MessageDigest
+import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
 import net.extrawdw.notisync.protocol.SshRememberScope
+import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -12,6 +14,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SshRememberAuthorizationPolicyTest {
+    @Test
+    fun alwaysAskDisablesApplyingRememberedAuthorizations() {
+        assertFalse(
+            SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                SshApprovalPolicy.ALWAYS_ASK,
+                SshUserVerificationPolicy.NONE,
+            ),
+        )
+        assertTrue(
+            SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                SshApprovalPolicy.ALLOW_REMEMBER,
+                SshUserVerificationPolicy.NONE,
+            ),
+        )
+        assertFalse(
+            SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                SshApprovalPolicy.ALLOW_REMEMBER,
+                SshUserVerificationPolicy.PER_USE,
+            ),
+        )
+    }
+
     @Test
     fun peerScopeIsAlwaysAvailableButHostScopeRequiresVerifiedSessionBind() {
         val unknown = destination(SshDestinationProvenance.UNKNOWN)

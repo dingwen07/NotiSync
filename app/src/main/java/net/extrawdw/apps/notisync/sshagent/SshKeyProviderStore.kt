@@ -1728,9 +1728,6 @@ class SshKeyProviderStore(context: Context) :
             }
             val changed = database.update("ssh_keys", values, "provider_key_id=?", arrayOf(providerKeyId)) == 1
             if (changed) {
-                if (approvalPolicy == SshApprovalPolicy.ALWAYS_ASK) {
-                    database.delete("ssh_remembered_authorizations", "provider_key_id=?", arrayOf(providerKeyId))
-                }
                 bumpRevision(database)
             }
             database.setTransactionSuccessful()
@@ -1848,8 +1845,10 @@ class SshKeyProviderStore(context: Context) :
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return emptySet()
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return emptySet()
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            )
         ) return emptySet()
         return SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext)
     }
@@ -2161,8 +2160,10 @@ class SshKeyProviderStore(context: Context) :
             )
         ) return null
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            )
         ) return null
         if (scope !in SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext) ||
             scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
@@ -2970,8 +2971,11 @@ class SshKeyProviderStore(context: Context) :
 
     private fun matchingRememberedAuthorization(request: SshSignRequest): RememberedAuthorizationMatch? {
         val policy = findKeyPolicy(request.publicKeyBlob) ?: return null
-        if (policy.approvalPolicy != SshApprovalPolicy.ALLOW_REMEMBER ||
-            policy.userVerificationPolicy != SshUserVerificationPolicy.NONE ||
+        // Persisted grants remain dormant while the key is set to Always ask.
+        if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
+                policy.approvalPolicy,
+                policy.userVerificationPolicy,
+            ) ||
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return null
         val scopes = readableDatabase.rawQuery(
