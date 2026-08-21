@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
+import android.os.SystemClock
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -22,7 +23,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
@@ -78,9 +78,10 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import kotlinx.serialization.Serializable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.serialization.Serializable
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
 import net.extrawdw.apps.notisync.run.RunKey
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
@@ -117,10 +118,24 @@ class MainActivity : ComponentActivity() {
         setContent {
             val app = applicationContext as NotiSyncApp
             val graphReady by app.graphReady.collectAsStateWithLifecycle()
+            val startupState by app.startupState.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
+            var normalStartupDelayElapsed by remember { mutableStateOf(false) }
+            LaunchedEffect(app.startupStartedAtElapsedRealtime) {
+                val remainingDelay = remainingStartupProgressDelayMillis(
+                    startupStartedAtElapsedRealtime = app.startupStartedAtElapsedRealtime,
+                    nowElapsedRealtime = SystemClock.elapsedRealtime(),
+                )
+                delay(remainingDelay)
+                normalStartupDelayElapsed = true
+            }
+            val showStartupProgress = shouldShowStartupProgress(
+                startupState = startupState,
+                normalStartupDelayElapsed = normalStartupDelayElapsed,
+            )
             NotiSyncTheme {
                 if (graphReady) {
                     val graph = remember { app.graph }
@@ -151,10 +166,16 @@ class MainActivity : ComponentActivity() {
                             openSshHistoryRequestId = openSshHistory,
                             onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
                         )
-                        null -> LoadingBox()
+                        null -> StartupScreen(
+                            stage = AppStartupStage.INITIALIZING_APPLICATION,
+                            showProgress = showStartupProgress,
+                        )
                     }
                 } else {
-                    LoadingBox()
+                    StartupScreen(
+                        stage = startupState.stage,
+                        showProgress = showStartupProgress,
+                    )
                 }
             }
         }
@@ -538,14 +559,6 @@ private fun TopLevelNavIcon(dest: AppDestination) {
 @Composable
 private fun TopLevelNavLabel(dest: AppDestination) {
     Text(stringResource(dest.label), maxLines = 1)
-}
-
-/** Launch placeholder shown while the DI graph builds and while the onboarding flag loads. */
-@Composable
-private fun LoadingBox() {
-    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        CircularProgressIndicator()
-    }
 }
 
 /**
