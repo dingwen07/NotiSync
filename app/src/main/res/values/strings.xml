@@ -116,7 +116,7 @@
     <string name="ssh_agent_section_hosts">Known Hosts</string>
     <string name="ssh_agent_section_active">Active requests</string>
     <string name="ssh_agent_section_history">History</string>
-    <string name="ssh_agent_no_keys">No SSH keys yet. Generate one here or import one with ssh-add from a trusted computer.</string>
+    <string name="ssh_agent_no_keys">No SSH keys yet. Generate one here or import one with ssh-add from another device.</string>
     <string name="ssh_agent_no_hosts">Verified SSH host fingerprints appear here after you approve their first request.</string>
     <string name="ssh_agent_no_history">SSH signature and import requests will appear here.</string>
     <string name="ssh_agent_host_no_hostname">Hostname not set</string>
@@ -225,7 +225,7 @@
 
     <!-- NotiSync Seal: remote Git commit approval and OpenPGP signing -->
     <string name="seal_name" translatable="false">NotiSync Seal</string>
-    <string name="seal_intro">Approve Git commits from your trusted computers with the OpenPGP key on this device.</string>
+    <string name="seal_intro">Approve Git commits from your trusted devices with the OpenPGP key on this device.</string>
     <string name="seal_identity_title">Signing identity</string>
     <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP key %1$s</string>
@@ -236,7 +236,7 @@
     <string name="seal_section_active">Active</string>
     <string name="seal_section_history">History</string>
     <string name="seal_empty_title">No commit requests yet</string>
-    <string name="seal_empty_body">Requests from your trusted computers will appear here.</string>
+    <string name="seal_empty_body">Requests from your trusted devices will appear here.</string>
     <string name="seal_commit_untitled">Untitled Commit</string>
     <string name="seal_commit_initial">Initial Commit</string>
     <string name="seal_status_waiting">Awaiting approval</string>
@@ -353,6 +353,7 @@
     <string name="run_status_completed">Completed successfully</string>
     <string name="run_status_exit_code">Exited with code %1$d</string>
     <string name="run_status_failed_start">Could not start</string>
+    <string name="run_notification_public_error">Finished with an error</string>
     <string name="run_short_input">Input</string>
     <string name="run_short_attention">Check</string>
     <string name="run_short_done">Done</string>

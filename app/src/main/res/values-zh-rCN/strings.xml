@@ -27,7 +27,7 @@
     <!-- SSH Agent 密钥提供程序 -->
     <string name="ssh_agent_provider_title">SSH 密钥提供程序</string>
     <plurals name="ssh_agent_provider_ready">
-        <item quantity="other">已就绪 · 可向受信任设备提供 %1$d 个密钥</item>
+        <item quantity="other">已就绪 · 可向受信任的设备提供 %1$d 个密钥</item>
     </plurals>
     <string name="ssh_agent_provider_unavailable">SSH 密钥提供程序尚未就绪。</string>
     <string name="ssh_agent_generate">生成</string>
@@ -110,7 +110,7 @@
     <string name="ssh_agent_section_hosts">已知主机</string>
     <string name="ssh_agent_section_active">进行中的请求</string>
     <string name="ssh_agent_section_history">历史记录</string>
-    <string name="ssh_agent_no_keys">暂无 SSH 密钥。可在此生成，或从受信任电脑使用 ssh-add 导入。</string>
+    <string name="ssh_agent_no_keys">暂无 SSH 密钥。可在此生成，或从其它设备使用 ssh-add 导入。</string>
     <string name="ssh_agent_no_hosts">首次批准请求后，已验证的 SSH 主机密钥指纹会显示在这里。</string>
     <string name="ssh_agent_no_history">SSH 签名和导入请求会显示在这里。</string>
     <string name="ssh_agent_host_no_hostname">未设置主机名</string>
@@ -217,7 +217,7 @@
     <string name="ssh_agent_notification_public_content">有待审核的 SSH 请求。</string>
 
     <!-- NotiSync Seal：远程 Git 提交审批与 OpenPGP 签名 -->
-    <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任电脑的 Git 提交。</string>
+    <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任设备的 Git 提交。</string>
     <string name="seal_identity_title">签名身份</string>
     <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP 密钥 %1$s</string>
@@ -228,7 +228,7 @@
     <string name="seal_section_active">进行中</string>
     <string name="seal_section_history">历史</string>
     <string name="seal_empty_title">暂无提交请求</string>
-    <string name="seal_empty_body">来自受信任电脑的请求会显示在这里。</string>
+    <string name="seal_empty_body">来自受信任设备的请求会显示在这里。</string>
     <string name="seal_commit_untitled">无标题提交</string>
     <string name="seal_commit_initial">初始提交</string>
     <string name="seal_status_waiting">等待批准</string>
@@ -337,6 +337,7 @@
     <string name="run_status_completed">已成功完成</string>
     <string name="run_status_exit_code">已退出，代码为 %1$d</string>
     <string name="run_status_failed_start">无法启动</string>
+    <string name="run_notification_public_error">执行结束，但出现错误</string>
     <string name="run_short_input">输入</string>
     <string name="run_short_attention">查看</string>
     <string name="run_short_done">完成</string>
