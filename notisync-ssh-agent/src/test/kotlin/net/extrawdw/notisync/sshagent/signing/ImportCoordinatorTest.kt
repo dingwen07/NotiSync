@@ -6,6 +6,7 @@ import net.extrawdw.notisync.protocol.SshImportConstraints
 import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.ssh.core.AgentAddConstraints
+import net.extrawdw.notisync.sshagent.AgentConfig
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -13,6 +14,22 @@ import org.junit.Test
 
 /** Guards the optional ssh-add constraint representation used on the wire. */
 class ImportCoordinatorTest {
+    @Test
+    fun defaultProviderIsReadAgainForEachImport() {
+        val first = ClientId("a".repeat(52))
+        val second = ClientId("b".repeat(52))
+        val active = setOf(first, second)
+        var config = AgentConfig(defaultProviderClientId = first.value)
+
+        assertEquals(first, activeDefaultProvider({ config }, active))
+
+        config = config.copy(defaultProviderClientId = second.value)
+        assertEquals(second, activeDefaultProvider({ config }, active))
+
+        config = config.copy(defaultProviderClientId = null)
+        assertNull(activeDefaultProvider({ config }, active))
+    }
+
     @Test
     fun allDefaultConstraintsCollapseToNull() {
         assertNull(importConstraints(AgentAddConstraints()))

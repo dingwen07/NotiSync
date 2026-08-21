@@ -21,6 +21,7 @@ import net.extrawdw.notisync.sshagent.endpoint.CompositeAgentEndpoint
 import net.extrawdw.notisync.sshagent.endpoint.LocalCallerResolver
 import net.extrawdw.notisync.sshagent.endpoint.NamedPipeConflictException
 import net.extrawdw.notisync.sshagent.endpoint.PreferredAgentEndpoint
+import net.extrawdw.notisync.sshagent.endpoint.SshAddIdentityListRefresh
 import net.extrawdw.notisync.sshagent.endpoint.UnixAgentEndpoint
 import net.extrawdw.notisync.sshagent.endpoint.WINDOWS_OPENSSH_PIPE
 import net.extrawdw.notisync.sshagent.endpoint.WindowsNamedPipeEndpoint
@@ -39,7 +40,8 @@ class AgentRuntime(
     private val onReady: (List<String>) -> Unit = {},
 ) {
     fun run() {
-        val config = AgentConfigStore(paths.sshAgentConfig).load()
+        val configStore = AgentConfigStore(paths.sshAgentConfig)
+        val config = configStore.load()
         val bindAddresses = agentEndpointAddresses(paths, config, explicitBindAddresses)
         val api = DaemonAutostarter(paths).connect()
         AgentDatabase.openRecoveringOnFailure(paths.sshAgentDatabase) { _, backup ->
@@ -56,7 +58,7 @@ class AgentRuntime(
             val forgetOutbox = AuthorizationForgetOutbox(database)
             metadata.authorizationNamespace()
             val signing = SignCoordinator(requester, config, roster, snapshots, metadata, bridge, database)
-            val importer = ImportCoordinator(requester, config, roster, bridge)
+            val importer = ImportCoordinator(requester, configStore::load, roster, bridge)
             val lockState = AgentLockState()
             val lock = AuthorizationLockCoordinator(
                 requester,
@@ -68,12 +70,19 @@ class AgentRuntime(
                 forgetOutbox,
             )
             val callerResolver = LocalCallerResolver()
+            val refresh = Executors.newSingleThreadScheduledExecutor(
+                Thread.ofVirtual().name("notisync-ssh-agent-refresh").factory(),
+            )
             val connection = AgentConnectionHandler(
                 signing,
                 snapshots,
                 lock,
                 callerResolver,
                 importer,
+                SshAddIdentityListRefresh(
+                    refresh = { bridge.requestInventory(requester, startup = false) },
+                    execute = { task -> refresh.execute(task) },
+                ),
                 config.maximumInFlightRequests,
             )
             val binding = createEndpoint(config, bindAddresses, connection, callerResolver)
@@ -91,9 +100,6 @@ class AgentRuntime(
                 },
             )
             val receiver = Thread.ofVirtual().name("notisync-ssh-agent-receive").start(inbound::run)
-            val refresh = Executors.newSingleThreadScheduledExecutor(
-                Thread.ofVirtual().name("notisync-ssh-agent-refresh").factory(),
-            )
             refresh.scheduleWithFixedDelay(
                 {
                     runCatching { drainForgetOutbox(forgetOutbox, bridge) }

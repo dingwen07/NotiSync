@@ -11,9 +11,8 @@ import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.UnixDaemonClient
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.sshagent.bridge.ProviderRoster
 import net.extrawdw.notisync.sshagent.cache.AgentDatabase
-import net.extrawdw.notisync.sshagent.cache.AgentMetadataStore
+import net.extrawdw.notisync.sshagent.cache.CachedProviderKeyRow
 import net.extrawdw.notisync.sshagent.cache.ProviderSnapshotStore
 import net.extrawdw.notisync.sshagent.endpoint.agentEndpointAddresses
 import net.extrawdw.notisync.sshagent.endpoint.isWindows
@@ -201,26 +200,21 @@ class NotisyncSshAgentCommand(
 
     private fun keys(): Int {
         if (!Files.exists(paths.sshAgentDatabase)) {
-            output.appendLine("No cached SSH identities")
+            output.appendLine("No cached SSH keys")
             return 0
         }
-        val api = UnixDaemonClient(paths.socket)
-        val requester = api.status().clientId?.let(::ClientId)
-            ?: throw IllegalStateException("notisyncd has no local identity")
-        AgentDatabase(paths.sshAgentDatabase).use { database ->
-            val metadata = AgentMetadataStore(database).authorizationNamespace()
-            val identities = ProviderSnapshotStore(database).aggregate(
-                ProviderRoster(api).activeProviderIds(),
-                requester,
-                metadata.generation,
-                metadata.epoch,
-                System.currentTimeMillis(),
-            )
-            if (identities.isEmpty()) output.appendLine("No active cached SSH identities")
-            identities.forEach { identity ->
-                output.appendLine("${identity.fingerprint}  ${identity.comment}  (${identity.candidates.size} provider(s))")
-            }
+        val rows = AgentDatabase(paths.sshAgentDatabase).use { database ->
+            ProviderSnapshotStore(database).keyRows()
         }
+        if (rows.isEmpty()) {
+            output.appendLine("No cached SSH keys")
+            return 0
+        }
+        val deviceNames = runCatching {
+            UnixDaemonClient(paths.socket).devices().devices.associate { ClientId(it.clientId) to it.name }
+        }.getOrDefault(emptyMap())
+        output.appendLine("FINGERPRINT\tCOMMENT\tDEVICE")
+        rows.forEach { row -> output.appendLine(formatKeyRow(row, deviceNames[row.providerClientId])) }
         return 0
     }
 
@@ -342,6 +336,12 @@ class NotisyncSshAgentCommand(
     private companion object {
         val CLIENT_ID = Regex("[a-z2-7]{32}")
     }
+}
+
+internal fun formatKeyRow(row: CachedProviderKeyRow, deviceName: String?): String {
+    val device = deviceName?.takeIf(String::isNotBlank)?.let { "$it (${row.providerClientId.value})" }
+        ?: row.providerClientId.value
+    return "${row.fingerprint}\t${row.comment}\t$device"
 }
 
 internal fun startupFailureDetail(log: ByteArray, startupLogOffset: Long): String? {

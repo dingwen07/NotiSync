@@ -31,12 +31,47 @@ fun interface IdentityImporter {
     }
 }
 
+fun interface IdentityListRefresh {
+    fun request(caller: LocalCallerSnapshot)
+
+    object None : IdentityListRefresh {
+        override fun request(caller: LocalCallerSnapshot) = Unit
+    }
+}
+
+/**
+ * OpenSSH does not include the ssh-add command-line flags in the agent request. An identity-list
+ * request whose local caller is ssh-add therefore represents either `ssh-add -l` or `ssh-add -L`.
+ */
+class SshAddIdentityListRefresh(
+    private val refresh: () -> Unit,
+    private val execute: ((() -> Unit) -> Unit) = { it() },
+) : IdentityListRefresh {
+    override fun request(caller: LocalCallerSnapshot) {
+        if (!caller.isSshAdd()) return
+        runCatching {
+            execute { runCatching(refresh) }
+        }
+    }
+
+    private fun LocalCallerSnapshot.isSshAdd(): Boolean {
+        val leaf = processContext.leaf ?: return false
+        val executableName = leaf.executablePath
+            ?.substringAfterLast('/')
+            ?.substringAfterLast('\\')
+        return listOfNotNull(leaf.displayName, executableName).any {
+            it.equals("ssh-add", ignoreCase = true) || it.equals("ssh-add.exe", ignoreCase = true)
+        }
+    }
+}
+
 class AgentConnectionHandler(
     private val signing: SignCoordinator,
     private val snapshots: ProviderSnapshotStore,
     private val lock: AuthorizationLockCoordinator,
     private val callerResolver: LocalCallerResolver = LocalCallerResolver(),
     private val importer: IdentityImporter = IdentityImporter.Unsupported,
+    private val identityListRefresh: IdentityListRefresh = IdentityListRefresh.None,
     maximumInFlightRequests: Int = 256,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
@@ -75,6 +110,7 @@ class AgentConnectionHandler(
     ): ByteArray {
         return when (request) {
         AgentRequest.RequestIdentities -> {
+            identityListRefresh.request(caller)
             val identities = if (lock.isLocked()) emptyList() else signing.identities().map {
                 AgentIdentity(it.publicKeyBlob, it.comment)
             }
