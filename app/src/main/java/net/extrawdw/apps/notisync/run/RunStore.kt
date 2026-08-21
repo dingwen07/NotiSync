@@ -5,7 +5,6 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import androidx.core.database.sqlite.transaction
-import java.io.File
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -54,19 +53,10 @@ interface RunRepository {
     fun prune()
 }
 
-internal data class RunStorageUsage(
-    val usedPageBytes: Long,
-    val mainFileBytes: Long,
-    val walFileBytes: Long,
-    val shmFileBytes: Long,
-) {
-    val diskBytes: Long get() = mainFileBytes + walFileBytes + shmFileBytes
-    val accountedBytes: Long get() = maxOf(diskBytes, usedPageBytes + walFileBytes + shmFileBytes)
-}
-
 /**
  * Private, device-local Run history. It deliberately does not share [net.extrawdw.apps.notisync.data.MessageStore]:
- * the latter is a small delivery ledger with relay-TTL retention, while Run history has product-visible retention.
+ * the latter is a small delivery ledger with relay-TTL retention, while Run history uses deliberately high age and
+ * row-count limits. Operational storage is shared, so Run does not enforce a whole-database size limit.
  *
  * Incoming full snapshots commit synchronously. Equal revisions are identified separately because delivery may be
  * retrying after the state committed but before its notification rendered. Database errors escape so the receive
@@ -75,16 +65,14 @@ internal data class RunStorageUsage(
 class RunStore(
     context: Context,
     private val now: () -> Long = { System.currentTimeMillis() },
-    private val maxStorageBytes: Long = MAX_STORAGE_BYTES,
+    private val completedRetentionMs: Long = COMPLETED_RETENTION_MS,
+    private val maxCompletedRuns: Int = MAX_COMPLETED_RUNS,
 ) : SQLiteOpenHelper(
     context.applicationContext,
     OperationalDatabase.DATABASE_NAME,
     null,
     OperationalDatabase.VERSION,
 ), RunRepository {
-    private val databaseFile: File = context.applicationContext.getDatabasePath(
-        OperationalDatabase.DATABASE_NAME,
-    )
     private val _runs = MutableStateFlow<List<StoredRun>>(emptyList())
     override val runs: StateFlow<List<StoredRun>> = _runs.asStateFlow()
 
@@ -92,7 +80,7 @@ class RunStore(
         // Operational Room owns the file and keeps it in WAL; opt in before opening the shared database.
         setWriteAheadLoggingEnabled(true)
         _runs.value = readAll()
-        // Enforce history retention on cold start too; a device may receive no new Run after records age out.
+        // Enforce the long-horizon history bounds on cold start too.
         runCatching { prune() }
     }
 
@@ -211,7 +199,7 @@ class RunStore(
         runCatching { checkpointAndCompact(db, vacuum = true) }
     }
 
-    /** Apply age retention, then enforce the cap against SQLite pages and the database/WAL/SHM files. */
+    /** Apply the high age and completed-row bounds; active Runs remain exempt. */
     @Synchronized
     override fun prune() = prune(protectedKey = null)
 
@@ -221,16 +209,15 @@ class RunStore(
         try {
             markStaleRunsInactive(db, now() - ACTIVE_STALE_AFTER_MS)
 
-            val expired = completedBefore(db, now() - COMPLETED_RETENTION_MS)
-                .filterNot { it.key == protectedKey }
+            val expired = completedBefore(db, now() - completedRetentionMs)
+                .filterNot { it == protectedKey }
             if (expired.isNotEmpty()) {
-                deleteKeys(db, expired.map { it.key })
-                removed += expired.map { it.key }
+                deleteKeys(db, expired)
+                removed += expired
                 checkpointAndCompact(db, vacuum = true)
             }
 
-            // The visible log is intentionally bounded independently of the byte/age policy. Active Runs are
-            // exempt; among completed Runs retain the 50 most recently received entries.
+            // Active Runs are exempt; among completed Runs retain the configured newest entries.
             val overCount = completedBeyondLogLimit(db, protectedKey)
             if (overCount.isNotEmpty()) {
                 deleteKeys(db, overCount)
@@ -238,27 +225,6 @@ class RunStore(
                 checkpointAndCompact(db, vacuum = true)
             }
 
-            var usage = storageUsage(db)
-            if (usage.accountedBytes > maxStorageBytes) {
-                // A large WAL may be the only reason the cap is exceeded. Fold it into the main database before
-                // deleting user-visible history, then reclaim any freelist left by a crash after a committed
-                // delete but before VACUUM. Only then make the decision from measured files/pages again.
-                checkpointAndCompact(db, vacuum = false)
-                if (pragmaLong(db, "freelist_count") > 0) {
-                    checkpointAndCompact(db, vacuum = true)
-                }
-                usage = storageUsage(db)
-            }
-            while (usage.accountedBytes > maxStorageBytes) {
-                val target = (usage.accountedBytes - maxStorageBytes)
-                    .coerceAtLeast(pragmaLong(db, "page_size"))
-                val oldest = oldestCompletedForBudget(db, target, protectedKey)
-                if (oldest.isEmpty()) break // Active Runs remain exempt even if they alone exceed the cap.
-                deleteKeys(db, oldest.map { it.key })
-                removed += oldest.map { it.key }
-                checkpointAndCompact(db, vacuum = true)
-                usage = storageUsage(db)
-            }
         } finally {
             // Deletions may already have committed even if checkpoint/VACUUM failed; keep the observable cache in
             // lock-step with SQLite and allow future periodic maintenance to retry the physical compaction.
@@ -290,28 +256,14 @@ class RunStore(
         }.sortedWith(RUN_ORDER)
     }
 
-    @Synchronized
-    internal fun storageUsage(): RunStorageUsage = storageUsage(writableDatabase)
-
-    private fun storageUsage(db: SQLiteDatabase): RunStorageUsage {
-        val pageSize = pragmaLong(db, "page_size")
-        val usedPages = (pragmaLong(db, "page_count") - pragmaLong(db, "freelist_count")).coerceAtLeast(0)
-        return RunStorageUsage(
-            usedPageBytes = usedPages * pageSize,
-            mainFileBytes = databaseFile.lengthOrZero(),
-            walFileBytes = File(databaseFile.path + "-wal").lengthOrZero(),
-            shmFileBytes = File(databaseFile.path + "-shm").lengthOrZero(),
-        )
-    }
-
-    private fun completedBefore(db: SQLiteDatabase, cutoff: Long): List<SizedRunKey> = db.rawQuery(
-        "SELECT host_client, run_id, LENGTH(payload) FROM runs " +
+    private fun completedBefore(db: SQLiteDatabase, cutoff: Long): List<RunKey> = db.rawQuery(
+        "SELECT host_client, run_id FROM runs " +
             "WHERE active = 0 AND received_at < ? ORDER BY received_at, updated_at",
         arrayOf(cutoff.toString()),
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
-                add(SizedRunKey(RunKey(cursor.getString(0), cursor.getString(1)), cursor.getLong(2)))
+                add(RunKey(cursor.getString(0), cursor.getString(1)))
             }
         }
     }
@@ -326,7 +278,7 @@ class RunStore(
                 while (cursor.moveToNext()) add(RunKey(cursor.getString(0), cursor.getString(1)))
             }
         }
-        if (newestFirst.size <= MAX_COMPLETED_RUNS) return emptyList()
+        if (newestFirst.size <= maxCompletedRuns) return emptyList()
 
         // A just-committed snapshot must survive until its renderer checkpoints it, even under a clock tie.
         val protectedCompleted = protectedKey?.takeIf { it in newestFirst }
@@ -334,31 +286,10 @@ class RunStore(
             protectedCompleted?.let(::add)
             newestFirst.asSequence()
                 .filterNot { it == protectedCompleted }
-                .take(MAX_COMPLETED_RUNS - if (protectedCompleted == null) 0 else 1)
+                .take(maxCompletedRuns - if (protectedCompleted == null) 0 else 1)
                 .forEach(::add)
         }.toSet()
         return newestFirst.filterNot { it in retained }
-    }
-
-    private fun oldestCompletedForBudget(
-        db: SQLiteDatabase,
-        targetBytes: Long,
-        protectedKey: RunKey?,
-    ): List<SizedRunKey> = db.rawQuery(
-        "SELECT host_client, run_id, LENGTH(payload) FROM runs " +
-            "WHERE active = 0 ORDER BY received_at, updated_at LIMIT $PRUNE_BATCH_LIMIT",
-        emptyArray(),
-    ).use { cursor ->
-        buildList {
-            var selectedBytes = 0L
-            while (cursor.moveToNext() && (isEmpty() || selectedBytes < targetBytes)) {
-                val key = RunKey(cursor.getString(0), cursor.getString(1))
-                if (key == protectedKey) continue
-                val bytes = cursor.getLong(2).coerceAtLeast(1)
-                add(SizedRunKey(key, bytes))
-                selectedBytes += bytes
-            }
-        }
     }
 
     private fun deleteKeys(db: SQLiteDatabase, keys: List<RunKey>) {
@@ -382,11 +313,6 @@ class RunStore(
             while (cursor.moveToNext()) Unit
         }
     }
-
-    private fun pragmaLong(db: SQLiteDatabase, name: String): Long = db.rawQuery(
-        "PRAGMA $name",
-        emptyArray(),
-    ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else 0L }
 
     private fun readAll(): List<StoredRun> = runCatching {
         readableDatabase.rawQuery(
@@ -414,17 +340,12 @@ class RunStore(
 
     private fun RunState.isActive(): Boolean = phase == RunPhase.RUNNING || phase == RunPhase.BLOCKED
 
-    private fun File.lengthOrZero(): Long = if (exists()) length() else 0L
-
     private data class ExistingRun(val revision: Long, val presentedRevision: Long)
-    private data class SizedRunKey(val key: RunKey, val bytes: Long)
 
     companion object {
         internal const val ACTIVE_STALE_AFTER_MS = 3L * 60 * 60 * 1000
-        private const val COMPLETED_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
-        private const val MAX_STORAGE_BYTES = 100L * 1024 * 1024
-        private const val MAX_COMPLETED_RUNS = 50
-        private const val PRUNE_BATCH_LIMIT = 64
+        private const val COMPLETED_RETENTION_MS = 50L * 365 * 24 * 60 * 60 * 1000
+        private const val MAX_COMPLETED_RUNS = 1_000_000
         private val RUN_ORDER = compareByDescending<StoredRun> { it.active }
             .thenByDescending { it.state.updatedAt }
     }

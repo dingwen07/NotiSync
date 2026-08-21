@@ -145,67 +145,91 @@ internal class RoomStorageMigration(
         legacyPreferences: Preferences? = null,
     ) {
         val destinationFile = appContext.getDatabasePath(destinationName)
-        val readableSources = sources.mapNotNull(::readableSource)
-        val database = SQLiteDatabase.openDatabase(
-            destinationFile.absolutePath,
-            null,
-            SQLiteDatabase.OPEN_READWRITE,
+        val snapshotRoot = File(
+            appContext.cacheDir,
+            "$MIGRATION_SNAPSHOT_PREFIX-${UUID.randomUUID()}",
         )
-        val attached = mutableListOf<AttachedSource>()
+        check(snapshotRoot.mkdirs()) { "Could not create legacy migration snapshots" }
         try {
-            database.setForeignKeyConstraintsEnabled(true)
-            readableSources.forEach { source ->
-                runCatching {
-                    database.execSQL(
-                        "ATTACH DATABASE ? AS ${identifier(source.spec.alias)}",
-                        arrayOf(source.file.absolutePath),
-                    )
-                    attached += source
-                }.onFailure { failure ->
-                    Log.w(TAG, "Skipping unreadable legacy database ${source.spec.databaseName}", failure)
-                }
-            }
-            database.beginTransaction()
+            val readableSources = sources.mapNotNull { readableSource(it, snapshotRoot) }
+            val database = SQLiteDatabase.openDatabase(
+                destinationFile.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READWRITE,
+            )
+            val attached = mutableListOf<AttachedSource>()
             try {
-                attached.forEach { source -> copySource(database, source.spec) }
-                if (seedOperationalDefaults) {
-                    seedSshProviderState(database)
-                    seedOperationalPreferences(database, checkNotNull(legacyPreferences))
+                database.setForeignKeyConstraintsEnabled(true)
+                readableSources.forEach { source ->
+                    runCatching {
+                        database.execSQL(
+                            "ATTACH DATABASE ? AS ${identifier(source.spec.alias)}",
+                            arrayOf(source.file.absolutePath),
+                        )
+                        attached += source
+                    }.onFailure { failure ->
+                        Log.w(TAG, "Skipping unreadable legacy database ${source.spec.databaseName}", failure)
+                    }
                 }
-                database.setTransactionSuccessful()
+                database.beginTransaction()
+                try {
+                    attached.forEach { source -> copySource(database, source.spec) }
+                    if (seedOperationalDefaults) {
+                        seedSshProviderState(database)
+                        seedOperationalPreferences(database, checkNotNull(legacyPreferences))
+                    }
+                    database.setTransactionSuccessful()
+                } finally {
+                    database.endTransaction()
+                }
+                database.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
+                    check(cursor.moveToFirst() && cursor.getString(0) == "ok") {
+                        "$databaseLabel v1 integrity check failed"
+                    }
+                }
+                database.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { cursor ->
+                    check(!cursor.moveToFirst()) { "$databaseLabel v1 foreign-key check failed" }
+                }
             } finally {
-                database.endTransaction()
-            }
-            database.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
-                check(cursor.moveToFirst() && cursor.getString(0) == "ok") {
-                    "$databaseLabel v1 integrity check failed"
+                attached.forEach { source ->
+                    runCatching { database.execSQL("DETACH DATABASE ${identifier(source.spec.alias)}") }
                 }
-            }
-            database.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { cursor ->
-                check(!cursor.moveToFirst()) { "$databaseLabel v1 foreign-key check failed" }
+                database.close()
             }
         } finally {
-            attached.forEach { source ->
-                runCatching { database.execSQL("DETACH DATABASE ${identifier(source.spec.alias)}") }
+            check(snapshotRoot.deleteRecursively() || !snapshotRoot.exists()) {
+                "Could not delete legacy migration snapshots"
             }
-            database.close()
         }
     }
 
-    private fun readableSource(source: LegacySource): AttachedSource? {
-        val file = appContext.getDatabasePath(source.databaseName)
-        if (!file.isFile) return null
+    private fun readableSource(source: LegacySource, snapshotRoot: File): AttachedSource? {
+        val sourceFile = appContext.getDatabasePath(source.databaseName)
+        if (!sourceFile.isFile) return null
+        val snapshotFile = File(snapshotRoot, source.databaseName)
         return runCatching {
+            DATABASE_FILE_SUFFIXES.forEach { suffix ->
+                val input = File(sourceFile.absolutePath + suffix)
+                if (input.isFile) input.copyTo(File(snapshotFile.absolutePath + suffix))
+            }
             SQLiteDatabase.openDatabase(
-                file.absolutePath,
+                snapshotFile.absolutePath,
                 null,
-                SQLiteDatabase.OPEN_READONLY,
+                SQLiteDatabase.OPEN_READWRITE or SQLiteDatabase.ENABLE_WRITE_AHEAD_LOGGING,
             ).use { database ->
                 database.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
                     check(cursor.moveToFirst() && cursor.getString(0) == "ok")
                 }
+                database.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray()).use { cursor ->
+                    check(cursor.moveToFirst() && cursor.getInt(0) == 0) {
+                        "Could not checkpoint the legacy migration snapshot"
+                    }
+                }
+                database.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
+                    check(cursor.moveToFirst() && cursor.getString(0) == "ok")
+                }
             }
-            AttachedSource(source, file)
+            AttachedSource(source, snapshotFile)
         }.onFailure { failure ->
             Log.w(TAG, "Skipping corrupt legacy database ${source.databaseName}", failure)
         }.getOrNull()
@@ -477,6 +501,10 @@ internal class RoomStorageMigration(
         const val MAX_STORAGE_KEY_LENGTH = 512
         const val SHA256_BASE64URL_LENGTH = 43
         const val BASE64URL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        const val MIGRATION_SNAPSHOT_PREFIX = "notisync-room-v1-sources"
+        // The shared-memory file contains transient locks/read marks from the old process.
+        // Copy the durable WAL, but let SQLite rebuild its matching -shm file in the snapshot.
+        val DATABASE_FILE_SUFFIXES = listOf("", "-journal", "-wal")
         val VALID_SCREEN_CODECS = setOf("av1", "h265", "h264")
         val OPENPGP_KEY_ID = Regex("[0-9A-F]{16}")
         val MIGRATION_COMPLETE = booleanPreferencesKey("known_good_to_room_v1_complete")

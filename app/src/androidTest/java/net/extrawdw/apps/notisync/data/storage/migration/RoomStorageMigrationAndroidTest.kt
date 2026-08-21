@@ -13,6 +13,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import java.io.File
+import java.security.MessageDigest
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -122,6 +123,7 @@ class RoomStorageMigrationAndroidTest {
             it[longPreferencesKey("openpgp_sign_enrolled_at")] = 1_234L
         }
         createKnownGoodSources()
+        val legacyMessageHashes = legacyMessageFamily().associate { it.name to it.sha256() }
 
         val migrator = RoomStorageMigration(context, preferences)
         migrator.prepare()
@@ -136,8 +138,9 @@ class RoomStorageMigrationAndroidTest {
             "0123456789ABCDEF",
             migratedPreferences[stringPreferencesKey("openpgp_sign_primary_key_id")],
         )
+        assertEquals(legacyMessageHashes, legacyMessageFamily().associate { it.name to it.sha256() })
         openCore().use { database ->
-            assertEquals(1L, database.count("dedup"))
+            assertEquals(2L, database.count("dedup"))
             assertTrue(database.tableExists("pending_ack"))
             assertFalse(database.tableExists("mirror_lifecycle"))
         }
@@ -224,7 +227,7 @@ class RoomStorageMigrationAndroidTest {
         migrator.prepare()
 
         openCore().use { database ->
-            assertEquals(2L, database.count("dedup"))
+            assertEquals(3L, database.count("dedup"))
             assertTrue(database.containsMessage("added-after-cutover"))
         }
         openOperational().use { database ->
@@ -307,6 +310,7 @@ class RoomStorageMigrationAndroidTest {
                 "INSERT INTO mirror_msg VALUES('source-client', 'source-key', 'mirror-message', 1)",
             )
         }
+        appendWalOnlyMessage()
         createDatabase(LegacyDatabaseNames.RUNS) { database ->
             database.execSQL(
                 "CREATE TABLE runs(host_client TEXT NOT NULL, run_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
@@ -331,6 +335,47 @@ class RoomStorageMigrationAndroidTest {
             )
         }
     }
+
+    private fun appendWalOnlyMessage() {
+        val source = context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER)
+        val captureRoot = File(root, "message-wal-capture").also { check(it.mkdirs()) }
+        val writer = SQLiteDatabase.openDatabase(source.absolutePath, null, SQLiteDatabase.OPEN_READWRITE)
+        check(writer.enableWriteAheadLogging())
+        writer.rawQuery("PRAGMA wal_autocheckpoint=0", emptyArray()).use { cursor ->
+            check(cursor.moveToFirst())
+        }
+        val reader = SQLiteDatabase.openDatabase(source.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        try {
+            reader.execSQL("BEGIN DEFERRED TRANSACTION")
+            reader.rawQuery("SELECT COUNT(*) FROM dedup", emptyArray()).use { cursor ->
+                check(cursor.moveToFirst())
+            }
+            writer.execSQL("INSERT INTO dedup VALUES('wal-only-message', 2)")
+            listOf("", "-wal", "-shm").forEach { suffix ->
+                val input = File(source.absolutePath + suffix)
+                check(input.isFile)
+                input.copyTo(File(captureRoot, source.name + suffix))
+            }
+        } finally {
+            runCatching { reader.execSQL("ROLLBACK") }
+            reader.close()
+            writer.close()
+        }
+        listOf("", "-wal", "-shm").forEach { suffix ->
+            val target = File(source.absolutePath + suffix)
+            check(target.delete() || !target.exists())
+            File(captureRoot, source.name + suffix).copyTo(target)
+        }
+        check(captureRoot.deleteRecursively())
+    }
+
+    private fun legacyMessageFamily(): List<File> {
+        val source = context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER)
+        return listOf("", "-wal", "-shm").map { suffix -> File(source.absolutePath + suffix) }
+    }
+
+    private fun File.sha256(): String =
+        MessageDigest.getInstance("SHA-256").digest(readBytes()).joinToString("") { "%02x".format(it) }
 
     private inline fun createDatabase(name: String, block: (SQLiteDatabase) -> Unit) {
         SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name), null).use(block)
