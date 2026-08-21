@@ -29,6 +29,8 @@ import net.extrawdw.notisync.protocol.SshSignRequest
 import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
+import net.extrawdw.notisync.protocol.SshUserRejectionReason
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -70,10 +72,17 @@ class RoomSshProviderResponseAndroidTest {
             assertNotNull(prepared)
             prepared!!
             assertFalse(prepared.durableCustody)
-            assertEquals(
-                SshSignResultKind.REJECTED_BY_USER,
-                ProtocolCodec.decodeFromCbor<SshSignResult>(prepared.encodedBody).kind,
+            val result = ProtocolCodec.decodeFromCbor<SshSignResult>(prepared.encodedBody)
+            assertEquals(SshSignResultKind.REJECTED_BY_USER, result.kind)
+            assertEquals(request.requestId, result.requestId)
+            assertEquals(request.requesterClientId, result.requesterClientId)
+            assertEquals(provider, result.providerClientId)
+            assertArrayEquals(
+                MessageDigest.getInstance("SHA-256").digest(request.publicKeyBlob),
+                result.publicKeyBlobSha256,
             )
+            assertEquals(SshUserRejectionReason.USER_TAPPED_REJECT, result.rejection?.reason)
+            assertEquals(null, result.validationError())
             assertTrue(repository.completeResponse(prepared, 4))
             assertEquals(SshProviderRequestState.SENT, repository.find(request.requestId)?.state)
             assertTrue(repository.pendingResponses().isEmpty())
@@ -83,7 +92,7 @@ class RoomSshProviderResponseAndroidTest {
     }
 
     private fun signRequest() = SshSignRequest(
-        requestId = "ssh-reject-reply",
+        requestId = "2d81afaed24238ba81d8d1c7218dea36",
         requesterClientId = ClientId("desktop-requester"),
         requestedAt = 1,
         expiresAt = 10_000,

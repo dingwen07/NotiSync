@@ -164,6 +164,8 @@ import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.SshSignatureResult
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
+import net.extrawdw.notisync.protocol.SshUserRejection
+import net.extrawdw.notisync.protocol.SshUserRejectionReason
 import org.bouncycastle.jce.provider.BouncyCastleProvider
 import org.bouncycastle.asn1.x500.X500Name
 import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
@@ -808,6 +810,7 @@ internal class RoomSshProviderRepository(
             SshSignResultKind.REJECTED_BY_USER,
             now,
             provider,
+            rejection = SshUserRejection(SshUserRejectionReason.USER_TAPPED_REJECT),
         ), now, null)
     }
 
