@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
@@ -64,7 +65,7 @@ fun SshKeyStorageOptions(
             ToggleRow(
                 checked = selection.exportCopyBackendPolicy == SshExportCopyBackendPolicy.TEE_ONLY,
                 enabled = strongBoxAvailable,
-                label = stringResource(R.string.ssh_agent_export_copy_force_tee),
+                label = stringResource(R.string.ssh_agent_export_copy_skip_strongbox),
                 onCheckedChange = {
                     onSelectionChange(
                         selection.copy(
@@ -79,6 +80,7 @@ fun SshKeyStorageOptions(
             )
             Text(
                 stringResource(R.string.ssh_agent_export_copy_auth_help),
+                modifier = Modifier.padding(bottom = 12.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

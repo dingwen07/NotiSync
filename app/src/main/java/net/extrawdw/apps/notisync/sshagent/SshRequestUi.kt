@@ -158,6 +158,7 @@ internal fun SshHistoryRequestDetail(
     requesterName: String,
     requesterIdentityKeyFingerprint: String?,
     knownHostname: String?,
+    contentPadding: PaddingValues,
     onBack: () -> Unit,
 ) {
     val keyPreview = remember(request.requestId) {
@@ -178,7 +179,7 @@ internal fun SshHistoryRequestDetail(
             requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
             destinationHostname = knownHostname,
         ),
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
+        contentPadding = contentPadding,
         showSheetHeader = true,
         onBack = onBack,
     )

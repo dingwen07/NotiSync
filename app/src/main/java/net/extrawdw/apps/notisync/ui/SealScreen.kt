@@ -25,7 +25,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -125,14 +124,14 @@ fun SealScreen() {
         val identity = enrollment.displayIdentity
             ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
             ?: stringResource(R.string.seal_openpgp_identity)
-        ModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
+        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
             SigningRequestDetail(
                 stored = stored,
                 requesterName = requesterName,
                 requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
                 signingIdentity = identity,
                 modifier = Modifier.fillMaxWidth(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
+                contentPadding = historySheetContentPadding(),
                 showSheetHeader = true,
                 onBack = { selectedRequestId = null },
             )

@@ -66,7 +66,6 @@ class SshAgentReviewActivity : ComponentActivity() {
                         encrypted = details.encryptedImport,
                         preview = details.keyPreview,
                         name = importName,
-                        nameEditable = false,
                         passphrase = passphrase,
                         storage = storage,
                         error = details.errorMessage,
@@ -74,7 +73,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                         importing = false,
                         onPrivateKeyTextChange = {},
                         onPaste = {},
-                        onNameChange = {},
+                        onNameChange = { importName = it },
                         onPassphraseChange = ::changePassphrase,
                         onStorageChange = { storage = it },
                         onContinueClipboard = {},
@@ -267,6 +266,7 @@ class SshAgentReviewActivity : ComponentActivity() {
         val details = screen as? SshReviewScreenState.Details ?: return
         if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
         if (details.encryptedImport && passphrase.isBlank()) return
+        if (details.request.kind == SshProviderRequestKind.IMPORT && importName.isBlank()) return
         if (details.request.kind == SshProviderRequestKind.IMPORT && details.keyPreview == null) {
             previewImport()
             return
@@ -286,6 +286,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                             withContext(Dispatchers.IO) {
                                 engine.approveImport(
                                     requestId,
+                                    importName,
                                     storage.allowExport,
                                     storage.exportCopyBackendPolicy,
                                     storage.userVerificationPolicy,

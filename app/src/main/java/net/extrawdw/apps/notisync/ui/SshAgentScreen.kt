@@ -314,7 +314,7 @@ fun SshAgentScreen(
         requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
     }
     val knownHostnames = knownHosts.mapNotNull { host ->
-        host.hostname?.let { host.fingerprint() to it }
+        host.hostname?.takeIf(String::isNotBlank)?.let { host.fingerprint() to it }
     }.toMap()
     val transferPeers = eligibleSshKeyTransferPeers(activePeers)
     LaunchedEffect(selectedHistoryRequestId, selectedHistory, showLoading) {
@@ -515,12 +515,13 @@ fun SshAgentScreen(
 
     selectedHistory?.let { request ->
         val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
-        ModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
+        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
             SshHistoryRequestDetail(
                 request = request,
                 requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                contentPadding = historySheetContentPadding(),
                 onBack = { selectedHistoryRequestId = null },
             )
         }
@@ -562,7 +563,6 @@ fun SshAgentScreen(
             encrypted = pending?.encrypted ?: false,
             preview = pending?.preview,
             name = importName,
-            nameEditable = true,
             passphrase = importPassphrase,
             storage = importStorage,
             error = importError,
@@ -746,7 +746,8 @@ fun SshAgentScreen(
                 Text(
                     stringResource(
                         R.string.ssh_agent_host_delete_body,
-                        host.hostname ?: host.fingerprint(),
+                        host.hostname?.takeIf(String::isNotBlank)
+                            ?: stringResource(R.string.ssh_agent_unknown),
                     ),
                 )
             },
@@ -854,7 +855,10 @@ private fun SshKnownHostDetailSheet(
         modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
-        Text(stringResource(R.string.ssh_agent_host_set_hostname), style = MaterialTheme.typography.titleLarge)
+        Text(
+            host.hostname?.takeIf(String::isNotBlank) ?: stringResource(R.string.ssh_agent_unknown),
+            style = MaterialTheme.typography.titleLarge,
+        )
         Text(
             host.fingerprint(),
             fontFamily = FontFamily.Monospace,
@@ -866,11 +870,6 @@ private fun SshKnownHostDetailSheet(
             label = { Text(stringResource(R.string.ssh_agent_host_hostname)) },
             singleLine = true,
             modifier = Modifier.fillMaxWidth(),
-        )
-        Text(
-            stringResource(R.string.ssh_agent_host_hostname_help),
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Row(
             modifier = Modifier.fillMaxWidth(),
@@ -1037,7 +1036,7 @@ private fun SshKnownHostCard(
             Icon(Icons.Outlined.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
-                    host.hostname ?: stringResource(R.string.ssh_agent_host_no_hostname),
+                    host.hostname?.takeIf(String::isNotBlank) ?: stringResource(R.string.ssh_agent_unknown),
                     style = MaterialTheme.typography.titleMedium,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
