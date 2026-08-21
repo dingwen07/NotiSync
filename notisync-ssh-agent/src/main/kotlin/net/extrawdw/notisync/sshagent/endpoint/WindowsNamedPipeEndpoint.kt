@@ -190,6 +190,15 @@ class WindowsNamedPipeEndpoint(
             defaultTimeout: Int,
             security: SecurityAttributes,
         ): Pointer
+        fun CreateFileW(
+            name: WString,
+            desiredAccess: Int,
+            shareMode: Int,
+            securityAttributes: Pointer?,
+            creationDisposition: Int,
+            flagsAndAttributes: Int,
+            templateFile: Pointer?,
+        ): Pointer
         fun ConnectNamedPipe(pipe: Pointer, overlapped: Pointer?): Int
         fun DisconnectNamedPipe(pipe: Pointer): Int
         fun GetNamedPipeClientProcessId(pipe: Pointer, processId: IntByReference): Int
@@ -209,9 +218,6 @@ class WindowsNamedPipeEndpoint(
         ): Int
     }
 
-    private fun closeHandle(handle: Pointer) = runCatching { KERNEL.CloseHandle(handle) }.let { Unit }
-    private fun isInvalid(handle: Pointer?): Boolean = handle == null || Pointer.nativeValue(handle) == -1L
-
     private fun pipeCreationFailure(error: Int): IOException {
         val conflict = error == ERROR_ACCESS_DENIED || error == ERROR_PIPE_BUSY
         val detail = when {
@@ -225,22 +231,49 @@ class WindowsNamedPipeEndpoint(
         return if (conflict) NamedPipeConflictException(pipeName, error, message) else IOException(message)
     }
 
-    private companion object {
-        val KERNEL: Kernel32 = Native.load("kernel32", Kernel32::class.java)
-        val ADVAPI: Advapi32 = Native.load("advapi32", Advapi32::class.java)
-        const val PIPE_ACCESS_DUPLEX = 0x00000003
-        const val FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
-        const val PIPE_TYPE_BYTE = 0x00000000
-        const val PIPE_READMODE_BYTE = 0x00000000
-        const val PIPE_WAIT = 0x00000000
-        const val PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
-        const val MAX_INSTANCES = 255
-        const val PIPE_BUFFER_BYTES = 256 * 1024
-        const val ERROR_BROKEN_PIPE = 109
-        const val ERROR_ACCESS_DENIED = 5
-        const val ERROR_PIPE_BUSY = 231
-        const val ERROR_NO_DATA = 232
-        const val ERROR_PIPE_CONNECTED = 535
-        const val SDDL_REVISION_1 = 1
+    internal companion object {
+        private val KERNEL: Kernel32 = Native.load("kernel32", Kernel32::class.java)
+        private val ADVAPI: Advapi32 = Native.load("advapi32", Advapi32::class.java)
+        private const val PIPE_ACCESS_DUPLEX = 0x00000003
+        private const val FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
+        private const val PIPE_TYPE_BYTE = 0x00000000
+        private const val PIPE_READMODE_BYTE = 0x00000000
+        private const val PIPE_WAIT = 0x00000000
+        private const val PIPE_REJECT_REMOTE_CLIENTS = 0x00000008
+        private const val MAX_INSTANCES = 255
+        private const val PIPE_BUFFER_BYTES = 256 * 1024
+        private const val ERROR_BROKEN_PIPE = 109
+        private const val ERROR_ACCESS_DENIED = 5
+        private const val ERROR_PIPE_BUSY = 231
+        private const val ERROR_NO_DATA = 232
+        private const val ERROR_PIPE_CONNECTED = 535
+        private const val SDDL_REVISION_1 = 1
+
+        private const val GENERIC_READ = -0x80000000
+        private const val GENERIC_WRITE = 0x40000000
+        private const val OPEN_EXISTING = 3
+
+        internal fun connectClient(pipeName: String): AgentEndpointConnection {
+            check(isWindows())
+            check(isWindowsNamedPipeAddress(pipeName))
+            val handle = KERNEL.CreateFileW(
+                WString(pipeName),
+                GENERIC_READ or GENERIC_WRITE,
+                0,
+                null,
+                OPEN_EXISTING,
+                0,
+                null,
+            )
+            if (isInvalid(handle)) {
+                throw IOException("cannot connect to SSH Agent pipe $pipeName (Win32 ${Native.getLastError()})")
+            }
+            return AgentEndpointConnection(PipeInputStream(handle), PipeOutputStream(handle)) {
+                closeHandle(handle)
+            }
+        }
+
+        private fun closeHandle(handle: Pointer) = runCatching { KERNEL.CloseHandle(handle) }.let { Unit }
+        private fun isInvalid(handle: Pointer?): Boolean = handle == null || Pointer.nativeValue(handle) == -1L
     }
 }

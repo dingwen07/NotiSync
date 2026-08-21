@@ -11,10 +11,13 @@ import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.UnixDaemonClient
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.ssh.core.SshAgentFrameCodec
 import net.extrawdw.notisync.sshagent.cache.AgentDatabase
 import net.extrawdw.notisync.sshagent.cache.CachedProviderKeyRow
 import net.extrawdw.notisync.sshagent.cache.ProviderSnapshotStore
+import net.extrawdw.notisync.sshagent.endpoint.AgentKeyListingExtension
 import net.extrawdw.notisync.sshagent.endpoint.agentEndpointAddresses
+import net.extrawdw.notisync.sshagent.endpoint.connectAgentEndpoint
 import net.extrawdw.notisync.sshagent.endpoint.isWindows
 
 fun main(arguments: Array<String>) {
@@ -199,12 +202,19 @@ class NotisyncSshAgentCommand(
     }
 
     private fun keys(): Int {
-        if (!Files.exists(paths.sshAgentDatabase)) {
-            output.appendLine("No cached SSH keys")
-            return 0
-        }
-        val rows = AgentDatabase(paths.sshAgentDatabase).use { database ->
-            ProviderSnapshotStore(database).keyRows()
+        val running = runningRecord()
+        val rows = if (running != null) {
+            keyRowsFromRunningAgent(
+                running.bindAddresses.ifEmpty { resolveBindAddresses(emptyList()) },
+            )
+        } else {
+            if (!Files.exists(paths.sshAgentDatabase)) {
+                output.appendLine("No cached SSH keys")
+                return 0
+            }
+            AgentDatabase(paths.sshAgentDatabase).use { database ->
+                ProviderSnapshotStore(database).keyRows()
+            }
         }
         if (rows.isEmpty()) {
             output.appendLine("No cached SSH keys")
@@ -216,6 +226,25 @@ class NotisyncSshAgentCommand(
         output.appendLine("FINGERPRINT\tCOMMENT\tDEVICE")
         rows.forEach { row -> output.appendLine(formatKeyRow(row, deviceNames[row.providerClientId])) }
         return 0
+    }
+
+    private fun keyRowsFromRunningAgent(addresses: List<String>): List<CachedProviderKeyRow> {
+        var lastFailure: Throwable? = null
+        addresses.forEach { address ->
+            runCatching {
+                connectAgentEndpoint(address).use { connection ->
+                    SshAgentFrameCodec.write(connection.output, AgentKeyListingExtension.request())
+                    val response = requireNotNull(SshAgentFrameCodec.read(connection.input)) {
+                        "running SSH Agent closed the key-row query"
+                    }
+                    return AgentKeyListingExtension.decodeResponse(response)
+                }
+            }.onFailure { lastFailure = it }
+        }
+        throw IllegalStateException(
+            "could not query cached keys from the running SSH Agent: ${lastFailure?.message ?: "no active endpoint"}",
+            lastFailure,
+        )
     }
 
     private fun config(arguments: List<String>): Int {
