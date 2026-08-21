@@ -10,12 +10,15 @@ internal fun List<DesktopProcessIdentity>.mainCallerLabel(): String? {
 }
 
 private fun DesktopProcessIdentity.isTrivialProcess(): Boolean =
-    executableFileName().lowercase() in TRIVIAL_PROCESS_NAMES
+    (executableFileName() ?: displayName)?.lowercase() in TRIVIAL_PROCESS_NAMES
 
 internal fun DesktopProcessIdentity.shortProcessName(): String =
-    displayName?.takeIf(String::isNotBlank) ?: executableFileName()
+    displayName?.takeIf(String::isNotBlank) ?: executableFileName() ?: "PID $pid"
 
-private fun DesktopProcessIdentity.executableFileName(): String =
-    executablePath.substringAfterLast('/').substringAfterLast('\\').ifBlank { executablePath }
+private fun DesktopProcessIdentity.executableFileName(): String? =
+    executablePath
+        ?.substringAfterLast('/')
+        ?.substringAfterLast('\\')
+        ?.ifBlank { executablePath }
 
 private val TRIVIAL_PROCESS_NAMES = setOf("ssh", "ssh.exe")

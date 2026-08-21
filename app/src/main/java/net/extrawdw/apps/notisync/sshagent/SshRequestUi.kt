@@ -893,10 +893,18 @@ private fun StoredSshProviderRequest.processLineageLeafFirst(): List<DesktopProc
 
 internal fun List<DesktopProcessIdentity>.toProcessTreeText(showFullPaths: Boolean = false): String =
     mapIndexed { index, process ->
-    val branch = if (index == 0) "" else "  ".repeat(index - 1) + "└─ "
-    val name = if (showFullPaths) process.executablePath else process.shortProcessName()
-    "$branch$name (${process.pid})"
-}.joinToString("\n")
+        val branch = if (index == 0) "" else "  ".repeat(index - 1) + "└─ "
+        val name = if (showFullPaths) {
+            process.executablePath ?: process.displayName?.takeIf(String::isNotBlank)
+        } else {
+            process.shortProcessName()
+        }
+        if (name == null || name == "PID ${process.pid}") {
+            "${branch}PID ${process.pid}"
+        } else {
+            "$branch$name (${process.pid})"
+        }
+    }.joinToString("\n")
 
 private fun StoredSshProviderRequest.requestedAt(): Long = history.requestedAt
 private fun StoredSshProviderRequest.expiresAt(): Long = history.expiresAt

@@ -1,9 +1,12 @@
 package net.extrawdw.notisync.sshagent.endpoint
 
+import net.extrawdw.notisync.desktop.DesktopProcessExecutableResolver
 import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assume.assumeNotNull
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 
 class LocalCallerResolverTest {
@@ -35,5 +38,57 @@ class LocalCallerResolverTest {
             DesktopProcessContextSource.UNAVAILABLE,
             resolver.refresh(original.copy(leafInstance = otherInstance)).source,
         )
+    }
+
+    @Test
+    fun `missing ancestor command keeps pid and does not stop parent traversal`() {
+        val leaf = ProcessHandle.current()
+        val parent = leaf.parent().orElse(null)
+        val grandparent = parent?.parent()?.orElse(null)
+        assumeNotNull(parent, grandparent)
+        val hiddenPid = requireNotNull(parent).pid()
+        val processExecutables = DesktopProcessExecutableResolver(
+            osName = "Test OS",
+            portableCommand = { pid ->
+                if (pid == hiddenPid) null else ProcessHandle.of(pid).orElse(null)?.info()?.command()?.orElse(null)
+            },
+        )
+        val resolver = LocalCallerResolver(processExecutables = processExecutables)
+
+        val resolved = resolver.resolve(
+            leaf.pid(),
+            DesktopProcessContextSource.CURRENT_PROCESS,
+        ).processContext
+
+        assertEquals(
+            listOf(leaf.pid(), hiddenPid, requireNotNull(grandparent).pid()),
+            resolved.processLineage.take(3).map { it.pid },
+        )
+        assertNull(resolved.processLineage[1].executablePath)
+    }
+
+    @Test
+    fun `macOS restricted login metadata does not hide its parent`() {
+        assumeTrue(System.getProperty("os.name").contains("mac", ignoreCase = true))
+        val processExecutables = DesktopProcessExecutableResolver()
+        val login = ProcessHandle.allProcesses()
+            .filter { it.info().command().isEmpty }
+            .filter { process -> processExecutables.resolve(process.pid())?.endsWith("/login") == true }
+            .findFirst()
+            .orElse(null)
+        val parent = login?.parent()?.orElse(null)
+        assumeNotNull(login, parent)
+
+        val resolved = LocalCallerResolver(processExecutables = processExecutables).resolve(
+            requireNotNull(login).pid(),
+            DesktopProcessContextSource.CURRENT_PROCESS,
+        ).processContext
+
+        assertEquals(
+            listOf(login.pid(), requireNotNull(parent).pid()),
+            resolved.processLineage.take(2).map { it.pid },
+        )
+        assertEquals("/usr/bin/login", resolved.processLineage[0].executablePath)
+        assertNotNull(resolved.processLineage[1].executablePath)
     }
 }

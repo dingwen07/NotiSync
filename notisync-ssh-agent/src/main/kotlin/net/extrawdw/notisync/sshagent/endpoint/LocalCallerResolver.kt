@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.sshagent.endpoint
 
 import java.nio.file.Path
+import net.extrawdw.notisync.desktop.DesktopProcessExecutableResolver
 import net.extrawdw.notisync.desktop.ProcessInstanceIdentity
 import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.protocol.DesktopProcessContext
@@ -16,6 +17,7 @@ data class LocalCallerSnapshot(
 
 class LocalCallerResolver(
     private val processInstances: ProcessInstanceIdentityResolver = ProcessInstanceIdentityResolver(),
+    private val processExecutables: DesktopProcessExecutableResolver = DesktopProcessExecutableResolver(),
 ) {
     fun resolve(socket: AFUNIXSocket): LocalCallerSnapshot {
         // Windows AF_UNIX is supported as an explicit compatibility listener, but its provider
@@ -35,15 +37,15 @@ class LocalCallerResolver(
             var current: ProcessHandle? = handle
             repeat(DesktopProcessContextLimits.MAX_LINEAGE) {
                 val value = current ?: return@buildList
-                // A gap would make the next entry look like a direct parent when it is not.
-                val resolved = identity(value) ?: return@buildList
+                // PID/parent provenance is useful even when the OS withholds executable metadata.
+                val instance = processInstances.resolve(value.pid())
                 if (isEmpty()) {
-                    bootId = resolved.instance.bootId
-                    leafInstance = resolved.instance
-                } else if (bootId != resolved.instance.bootId) {
+                    bootId = instance?.bootId
+                    leafInstance = instance
+                } else if (bootId != null && instance?.bootId != null && bootId != instance.bootId) {
                     return@buildList
                 }
-                add(resolved.identity)
+                add(identity(value))
                 current = value.parent().orElse(null)
             }
         }
@@ -70,26 +72,19 @@ class LocalCallerResolver(
         } ?: unavailableContext()
     }
 
-    private fun identity(handle: ProcessHandle): ResolvedIdentity? {
-        val info = handle.info()
-        val instance = processInstances.resolve(handle.pid()) ?: return null
-        val command = info.command().orElse(null)?.takeIf(String::isNotBlank) ?: return null
-        val normalized = runCatching { Path.of(command).toAbsolutePath().normalize().toString() }.getOrNull()
-            ?: return null
-        return ResolvedIdentity(
-            instance,
-            DesktopProcessIdentity(
-                pid = handle.pid(),
-                executablePath = normalized,
-                displayName = runCatching { Path.of(normalized).fileName?.toString() }.getOrNull(),
-            ),
+    private fun identity(handle: ProcessHandle): DesktopProcessIdentity {
+        val normalized = processExecutables.resolve(handle.pid())
+            ?.let { command ->
+                runCatching { Path.of(command).toAbsolutePath().normalize().toString() }.getOrNull()
+            }
+        return DesktopProcessIdentity(
+            pid = handle.pid(),
+            executablePath = normalized,
+            displayName = normalized?.let { path ->
+                runCatching { Path.of(path).fileName?.toString() }.getOrNull()
+            },
         )
     }
-
-    private data class ResolvedIdentity(
-        val instance: ProcessInstanceIdentity,
-        val identity: DesktopProcessIdentity,
-    )
 
     private fun unavailable() = LocalCallerSnapshot(
         unavailableContext(),

@@ -59,6 +59,22 @@ class DesktopProcessContextTest {
     }
 
     @Test
+    fun pidOnlyIdentityIsValidAndRoundTrips() {
+        val identity = DesktopProcessIdentity(pid = 42)
+        val context = DesktopProcessContext(
+            DesktopProcessContextSource.PEER_CREDENTIALS,
+            listOf(identity),
+        )
+
+        val decoded = ProtocolCodec.decodeFromCbor<DesktopProcessContext>(
+            ProtocolCodec.encodeToCbor(context),
+        )
+
+        assertEquals(context, decoded)
+        assertNull(decoded.validationError())
+    }
+
+    @Test
     fun lineageAndIdentityBoundsAreEnforced() {
         val oversizedLineage = List(DesktopProcessContextLimits.MAX_LINEAGE + 1) { index ->
             process(index + 1L, "/usr/bin/process-$index", "process-$index")
