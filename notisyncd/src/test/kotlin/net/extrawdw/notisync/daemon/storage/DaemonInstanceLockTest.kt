@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.daemon.storage
 
 import net.extrawdw.notisync.desktop.SecureFileSystem
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentity
 
 import java.nio.file.Files
 import java.nio.file.LinkOption
@@ -22,7 +23,7 @@ class DaemonInstanceLockTest : StorageTestSupport() {
             layout = layout,
             fileSystem = fileSystem,
             pid = 1001,
-            processStartTime = "42",
+            processIdentity = ProcessInstanceIdentity(startToken = "42"),
             now = Instant.parse("2026-07-18T00:00:00Z"),
             registerShutdownHook = false,
         )
@@ -54,7 +55,7 @@ class DaemonInstanceLockTest : StorageTestSupport() {
         val layout = DaemonStorageLayout(temporaryDirectory.resolve("data")).prepare(fileSystem)
         fileSystem.atomicWrite(
             layout.pidFile,
-            """{"pid":7,"processStartTime":"old","daemonStartedAt":"2020-01-01T00:00:00Z","instanceId":"stale"}"""
+            """{"pid":7,"processIdentity":{"startToken":"old"},"daemonStartedAt":"2020-01-01T00:00:00Z","instanceId":"stale"}"""
                 .encodeToByteArray(),
         )
 
@@ -62,6 +63,7 @@ class DaemonInstanceLockTest : StorageTestSupport() {
             layout = layout,
             fileSystem = fileSystem,
             pid = 2002,
+            processIdentity = ProcessInstanceIdentity(startToken = "84"),
             registerShutdownHook = false,
         )
         try {
@@ -82,7 +84,7 @@ class DaemonInstanceLockTest : StorageTestSupport() {
         )
         fileSystem.atomicWrite(
             layout.pidFile,
-            """{"pid":9,"daemonStartedAt":"2026-07-18T00:00:00Z","instanceId":"replacement"}"""
+            """{"pid":9,"processIdentity":{"startToken":"replacement"},"daemonStartedAt":"2026-07-18T00:00:00Z","instanceId":"replacement"}"""
                 .encodeToByteArray(),
         )
 

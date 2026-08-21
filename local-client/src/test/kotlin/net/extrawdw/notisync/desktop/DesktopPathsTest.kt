@@ -59,5 +59,7 @@ class DesktopPathsTest {
 
         assertEquals(Path.of("/tmp/notisync-data/logs"), isolated.logDirectory)
         assertEquals(Path.of("/tmp/notisync-logs"), split.logDirectory)
+        assertEquals(Path.of("/tmp/notisync-data/state"), isolated.stateDirectory)
+        assertEquals(Path.of("/tmp/notisync-data/state/notisync-ssh-agent.db"), isolated.sshAgentDatabase)
     }
 }

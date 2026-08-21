@@ -150,7 +150,14 @@ for launcher in "${launchers[@]}"; do
     chmod 0755 "$shim_stage_dir/$launcher"
 done
 
-if agent_status="$("$distribution_dir/bin/notisync-ssh-agent" status 2>/dev/null)"; then
+# A running agent belongs to the currently installed distribution and may use an older
+# private PID-record format. Ask that version to identify and stop its own process before
+# replacing it; the just-built launcher is only appropriate for a first installation.
+agent_control="$distribution_dir/bin/notisync-ssh-agent"
+if [[ -x "$install_dir/bin/notisync-ssh-agent" ]]; then
+    agent_control="$install_dir/bin/notisync-ssh-agent"
+fi
+if agent_status="$("$agent_control" status 2>/dev/null)"; then
     agent_was_running=true
     if printf '%s\n' "$agent_status" | grep -qx 'Endpoint selection: explicit'; then
         while IFS= read -r address; do
@@ -158,7 +165,7 @@ if agent_status="$("$distribution_dir/bin/notisync-ssh-agent" status 2>/dev/null
         done < <(printf '%s\n' "$agent_status" | sed -n 's/^Endpoint: //p')
     fi
     echo "Stopping the running NotiSync SSH Agent..."
-    "$distribution_dir/bin/notisync-ssh-agent" stop
+    "$agent_control" stop
 else
     echo "NotiSync SSH Agent is not running."
 fi

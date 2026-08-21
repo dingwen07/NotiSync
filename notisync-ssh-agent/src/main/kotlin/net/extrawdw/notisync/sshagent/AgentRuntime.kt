@@ -42,7 +42,12 @@ class AgentRuntime(
         val config = AgentConfigStore(paths.sshAgentConfig).load()
         val bindAddresses = agentEndpointAddresses(paths, config, explicitBindAddresses)
         val api = DaemonAutostarter(paths).connect()
-        AgentDatabase(paths.sshAgentDatabase).use { database ->
+        AgentDatabase.openRecoveringOnFailure(paths.sshAgentDatabase) { _, backup ->
+            output.appendLine(
+                backup?.let { "Moved unreadable SSH Agent database to $it" }
+                    ?: "Recreated SSH Agent database after an open failure",
+            )
+        }.use { database ->
             val roster = ProviderRoster(api)
             val bridge = SshApplicationBridge(api, roster)
             val requester = bridge.register()

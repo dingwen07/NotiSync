@@ -1,10 +1,22 @@
 package net.extrawdw.notisync.sshagent.cache
 
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.Path
 import java.sql.Connection
 import java.sql.DriverManager
 import java.sql.ResultSet
+import java.util.UUID
 import net.extrawdw.notisync.desktop.PrivateFiles
+import net.extrawdw.notisync.desktop.SecureFileSystem
+
+internal class UnsupportedAgentDatabaseSchemaException(
+    val actualVersion: Int,
+    val expectedVersion: Int,
+) : IllegalStateException(
+    "Unsupported SSH Agent database schema $actualVersion; expected $expectedVersion. " +
+        "The database was not modified.",
+)
 
 class AgentDatabase(path: Path) : AutoCloseable {
     val connection: Connection
@@ -134,10 +146,7 @@ class AgentDatabase(path: Path) : AutoCloseable {
                 }
             }
             SCHEMA_VERSION -> Unit
-            else -> error(
-                "Unsupported SSH Agent database schema $version; expected $SCHEMA_VERSION. " +
-                    "The database was not modified.",
-            )
+            else -> throw UnsupportedAgentDatabaseSchemaException(version, SCHEMA_VERSION)
         }
         validateSchema(database)
     }
@@ -179,10 +188,52 @@ class AgentDatabase(path: Path) : AutoCloseable {
 
     override fun close() = connection.close()
 
-    private companion object {
-        const val SCHEMA_VERSION = 1
+    companion object {
+        private const val SCHEMA_VERSION = 1
 
-        val EXPECTED_SCHEMA = mapOf(
+        /** Quarantines this cache after any open or validation failure, then retries once. */
+        internal fun openRecoveringOnFailure(
+            path: Path,
+            recoveryRoot: Path = requireNotNull(path.toAbsolutePath().parent).resolve("recovery"),
+            onReset: (failure: Throwable, backupDirectory: Path?) -> Unit = { _, _ -> },
+        ): AgentDatabase = try {
+            AgentDatabase(path)
+        } catch (failure: Throwable) {
+            val backup = try {
+                quarantineDatabaseFiles(path, recoveryRoot)
+            } catch (backupFailure: Throwable) {
+                backupFailure.addSuppressed(failure)
+                throw backupFailure
+            }
+            onReset(failure, backup)
+            try {
+                AgentDatabase(path)
+            } catch (retryFailure: Throwable) {
+                retryFailure.addSuppressed(failure)
+                throw retryFailure
+            }
+        }
+
+        private fun quarantineDatabaseFiles(path: Path, recoveryRoot: Path): Path? {
+            val absolute = path.toAbsolutePath().normalize()
+            val candidates = (listOf(absolute) + SQLITE_SIDECAR_SUFFIXES.map { suffix ->
+                absolute.resolveSibling(absolute.fileName.toString() + suffix)
+            }).filter { Files.exists(it, LinkOption.NOFOLLOW_LINKS) }
+            if (candidates.isEmpty()) return null
+
+            val files = SecureFileSystem()
+            val backupDirectory = recoveryRoot.toAbsolutePath().normalize()
+                .resolve("ssh-agent-db-${UUID.randomUUID()}")
+            files.ensurePrivateDirectory(backupDirectory)
+            candidates.forEach { candidate ->
+                files.movePrivateFileIfExists(candidate, backupDirectory.resolve(candidate.fileName))
+            }
+            return backupDirectory
+        }
+
+        private val SQLITE_SIDECAR_SUFFIXES = listOf("-wal", "-shm", "-journal")
+
+        private val EXPECTED_SCHEMA = mapOf(
             "provider_snapshots" to setOf(
                 "provider_id", "inventory_generation", "revision", "generated_at", "received_at",
                 "canonical_hash", "provider_health",
