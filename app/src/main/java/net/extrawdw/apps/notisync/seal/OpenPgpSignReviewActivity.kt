@@ -44,10 +44,16 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import java.security.MessageDigest
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
+import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
@@ -103,7 +109,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 )
             }
         }
-        load(approveAfterLoad)
+        observeRequest(approveAfterLoad)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -125,33 +131,58 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         super.onSaveInstanceState(outState)
     }
 
+    private fun observeRequest(approveAfterLoad: Boolean) {
+        lifecycleScope.launch {
+            val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
+                ?: return@launch showError(getString(R.string.seal_not_ready))
+            var approveOnFirstLoad = approveAfterLoad
+            repeatOnLifecycle(Lifecycle.State.STARTED) {
+                graph.openPgpSignStore.requests
+                    .map { requests -> requests.firstOrNull { it.request.requestId == requestId } }
+                    .distinctUntilChanged()
+                    .collectLatest { stored ->
+                        renderRequest(graph, stored, approveOnFirstLoad)
+                        approveOnFirstLoad = false
+                    }
+            }
+        }
+    }
+
     private fun load(approveAfterLoad: Boolean = false) {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                 ?: return@launch showError(getString(R.string.seal_not_ready))
-            val stored = graph.openPgpSignStore.find(requestId)
-                ?: return@launch showError(getString(R.string.seal_request_unavailable))
-            val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
-                ?: return@launch showError(getString(R.string.seal_request_invalid))
-            val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
-            val enrollment = graph.openPgpEnrollment.enrollment.value
-            screen = ReviewScreenState.Details(
-                request = if (stored.commit == null) stored.copy(commit = commit) else stored,
-                requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
-                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
-            )
-            if (approveAfterLoad && stored.state == OpenPgpRequestState.PENDING_REVIEW) {
-                approve()
-                return@launch
-            }
-            if (
-                stored.state in setOf(
-                    OpenPgpRequestState.USER_APPROVED,
-                    OpenPgpRequestState.PROVIDER_INTERACTION,
-                ) && !awaitingInteraction
-            ) runProvider()
+            renderRequest(graph, graph.openPgpSignStore.find(requestId), approveAfterLoad)
         }
+    }
+
+    private fun renderRequest(
+        graph: AppGraph,
+        stored: StoredOpenPgpRequest?,
+        approveAfterLoad: Boolean,
+    ) {
+        stored ?: return showError(getString(R.string.seal_request_unavailable))
+        val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
+            ?: return showError(getString(R.string.seal_request_invalid))
+        val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
+        val enrollment = graph.openPgpEnrollment.enrollment.value
+        if (!stored.opensSealReview()) clearInteractionBinding()
+        screen = ReviewScreenState.Details(
+            request = if (stored.commit == null) stored.copy(commit = commit) else stored,
+            requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
+            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+            signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
+        )
+        if (approveAfterLoad && stored.state == OpenPgpRequestState.PENDING_REVIEW) {
+            approve()
+            return
+        }
+        if (
+            stored.state in setOf(
+                OpenPgpRequestState.USER_APPROVED,
+                OpenPgpRequestState.PROVIDER_INTERACTION,
+            ) && !awaitingInteraction
+        ) runProvider()
     }
 
     private fun approve() {
