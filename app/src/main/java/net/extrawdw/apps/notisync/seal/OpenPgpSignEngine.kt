@@ -67,7 +67,7 @@ class OpenPgpSignEngine(
         when (accepted) {
             OpenPgpAcceptResult.STORED -> {
                 store.find(request.requestId)?.let { stored ->
-                    postNotification(stored)
+                    postNotification(stored, openImmediately = true)
                 }
                 OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
             }
@@ -164,11 +164,15 @@ class OpenPgpSignEngine(
         }
     }
 
-    private fun postNotification(stored: StoredOpenPgpRequest) {
+    private fun postNotification(
+        stored: StoredOpenPgpRequest,
+        openImmediately: Boolean = false,
+    ) {
         runCatching {
             notifications.post(
                 stored,
                 deviceNameOf(stored.senderClientId) ?: stored.senderClientId.shortForm(),
+                openImmediately = openImmediately,
             )
         }
     }

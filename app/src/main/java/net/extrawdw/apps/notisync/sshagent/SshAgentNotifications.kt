@@ -17,6 +17,8 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
+import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
 import net.extrawdw.notisync.protocol.SshImportSourceType
 
 class SshAgentNotificationPresenter(
@@ -24,7 +26,11 @@ class SshAgentNotificationPresenter(
     private val store: SshKeyProviderStore,
     private val openRequestPageAutomatically: () -> Boolean = { false },
 ) {
-    fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
+    fun post(
+        stored: StoredSshProviderRequest,
+        requesterName: String,
+        openImmediately: Boolean = false,
+    ): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
             return false
@@ -93,6 +99,7 @@ class SshAgentNotificationPresenter(
             notificationId(stored.requestId),
             SshAgentReviewActivity.intent(context, stored.requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
         )
         val approve = PendingIntent.getActivity(
             context,
@@ -142,6 +149,9 @@ class SshAgentNotificationPresenter(
             }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)
+        if (openImmediately && openRequestPageAutomatically()) {
+            tryOpenRequestPageWhileUnlocked(context, review)
+        }
         return true
     }
 
