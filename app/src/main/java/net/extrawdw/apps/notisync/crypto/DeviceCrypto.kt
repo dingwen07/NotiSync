@@ -25,8 +25,6 @@ import java.security.Signature
 import java.security.spec.ECGenParameterSpec
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.SecretKeyFactory
 import javax.crypto.spec.GCMParameterSpec
 
 private const val ANDROID_KEYSTORE = "AndroidKeyStore"
@@ -88,33 +86,22 @@ class AndroidIdentitySigner private constructor(
     }
 
     companion object {
-        internal const val KEY_ALIAS = "notisync.identity.v1"
-
-        /**
-         * Loads exactly one already-existing identity alias. This path never generates, replaces, or deletes an
-         * entry and is therefore safe for retained-v51 activation and bootstrap-origin inspection.
-         */
-        fun loadExisting(alias: String = KEY_ALIAS): AndroidIdentitySigner? {
-            requireKeystoreWorkerThread("Existing identity key load")
-            require(alias.isNotBlank()) { "Identity key alias must not be blank" }
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val entry = keyStore.getEntry(alias, null) ?: return null
-            check(entry is KeyStore.PrivateKeyEntry) { "Existing identity alias has an invalid key type" }
-            val spki = entry.certificate.publicKey.encoded
-            return AndroidIdentitySigner(
-                spki,
-                ClientIds.derive(spki),
-                backingOf(entry.privateKey),
-                entry.privateKey,
-            )
-        }
+        private const val ALIAS = "notisync.identity.v1"
 
         fun loadOrCreate(): AndroidIdentitySigner {
             requireKeystoreWorkerThread("Identity key load/generation")
-            loadExisting()?.let { return it }
-            val backing = generate(KEY_ALIAS)
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val entry = keyStore.getEntry(KEY_ALIAS, null) as KeyStore.PrivateKeyEntry
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
+            (ks.getEntry(ALIAS, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
+                val spki = entry.certificate.publicKey.encoded
+                return AndroidIdentitySigner(
+                    spki,
+                    ClientIds.derive(spki),
+                    backingOf(entry.privateKey),
+                    entry.privateKey
+                )
+            }
+            val backing = generate()
+            val entry = ks.getEntry(ALIAS, null) as KeyStore.PrivateKeyEntry
             val spki = entry.certificate.publicKey.encoded
             return AndroidIdentitySigner(spki, ClientIds.derive(spki), backing, entry.privateKey)
         }
@@ -136,9 +123,9 @@ class AndroidIdentitySigner private constructor(
                 KeyBacking.UNKNOWN
             }
 
-        private fun generate(alias: String): KeyBacking {
+        private fun generate(): KeyBacking {
             fun spec(strongBox: Boolean) = KeyGenParameterSpec.Builder(
-                alias,
+                ALIAS,
                 KeyProperties.PURPOSE_SIGN or KeyProperties.PURPOSE_VERIFY,
             )
                 .setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
@@ -203,21 +190,6 @@ class AndroidOperationalSigner private constructor(
 
         fun aliasFor(epoch: Int): String = "$ALIAS_PREFIX$epoch"
 
-        /** Strict retained-key load. Missing aliases return null; no generation or mutation is attempted. */
-        fun loadExisting(
-            clientId: ClientId,
-            epoch: Int,
-            alias: String = aliasFor(epoch),
-        ): AndroidOperationalSigner? {
-            requireKeystoreWorkerThread("Existing operational key load")
-            require(epoch > 0) { "Operational key epoch must be positive" }
-            require(alias.isNotBlank()) { "Operational key alias must not be blank" }
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val entry = keyStore.getEntry(alias, null) ?: return null
-            check(entry is KeyStore.PrivateKeyEntry) { "Existing operational alias has an invalid key type" }
-            return fromEntry(keyStore, alias, entry, clientId, epoch)
-        }
-
         /**
          * Load (or generate) the operational key for [epoch], bound to the device [clientId]. Supply an
          * [attestationChallenge] (e.g. a Play Integrity nonce) on first generation to obtain a hardware
@@ -229,12 +201,14 @@ class AndroidOperationalSigner private constructor(
             attestationChallenge: ByteArray? = null
         ): AndroidOperationalSigner {
             requireKeystoreWorkerThread("Operational key load/generation")
+            val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
             val alias = aliasFor(epoch)
-            loadExisting(clientId, epoch, alias)?.let { return it }
+            (ks.getEntry(alias, null) as? KeyStore.PrivateKeyEntry)?.let { entry ->
+                return fromEntry(ks, alias, entry, clientId, epoch)
+            }
             generate(alias, attestationChallenge)
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val entry = keyStore.getEntry(alias, null) as KeyStore.PrivateKeyEntry
-            return fromEntry(keyStore, alias, entry, clientId, epoch)
+            val entry = ks.getEntry(alias, null) as KeyStore.PrivateKeyEntry
+            return fromEntry(ks, alias, entry, clientId, epoch)
         }
 
         /** Destroy the operational key for [epoch] after its retirement window (rotation cleanup). */
@@ -321,19 +295,14 @@ class AndroidOperationalSigner private constructor(
  * Wraps small secrets (the HPKE private keyset) with a non-exportable AES-256-GCM key held in the
  * Android Keystore, so plaintext key material is never persisted to disk.
  */
-class KeyVault private constructor(
-    private val alias: String,
-    existingKey: SecretKey?,
-) {
-    constructor() : this(KEY_ALIAS, null)
-
+class KeyVault {
     private val key by lazy {
         val ks = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        existingKey ?: (ks.getKey(alias, null) as? SecretKey) ?: run {
+        (ks.getKey(ALIAS, null) as? javax.crypto.SecretKey) ?: run {
             KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).apply {
                 init(
                     KeyGenParameterSpec.Builder(
-                        alias,
+                        ALIAS,
                         KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
                     )
                         .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -342,12 +311,9 @@ class KeyVault private constructor(
                         .build()
                 )
             }.generateKey()
-            ks.getKey(alias, null) as SecretKey
+            ks.getKey(ALIAS, null) as javax.crypto.SecretKey
         }
     }
-
-    val backing: KeyBacking
-        get() = secretKeyBackingOf(key)
 
     fun wrap(plain: ByteArray): ByteArray {
         requireKeystoreWorkerThread("Vault encryption")
@@ -369,36 +335,9 @@ class KeyVault private constructor(
     }
 
     companion object {
-        internal const val KEY_ALIAS = "notisync.kek.v1"
-
-        /** Strict retained-key load used by v51 activation. It never generates or changes an alias. */
-        fun loadExisting(alias: String = KEY_ALIAS): KeyVault? {
-            requireKeystoreWorkerThread("Existing wrapping key load")
-            require(alias.isNotBlank()) { "Wrapping key alias must not be blank" }
-            val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-            val key = keyStore.getKey(alias, null) ?: return null
-            check(key is SecretKey) { "Existing wrapping alias has an invalid key type" }
-            return KeyVault(alias, key)
-        }
+        private const val ALIAS = "notisync.kek.v1"
     }
 }
-
-private fun secretKeyBackingOf(secretKey: SecretKey): KeyBacking =
-    runCatching {
-        val info = SecretKeyFactory.getInstance(secretKey.algorithm, ANDROID_KEYSTORE)
-            .getKeySpec(secretKey, KeyInfo::class.java) as KeyInfo
-        when (info.securityLevel) {
-            KeyProperties.SECURITY_LEVEL_UNKNOWN -> KeyBacking.UNKNOWN
-            KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> KeyBacking.UNKNOWN_SECURE
-            KeyProperties.SECURITY_LEVEL_SOFTWARE -> KeyBacking.SOFTWARE
-            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> KeyBacking.TEE
-            KeyProperties.SECURITY_LEVEL_STRONGBOX -> KeyBacking.STRONGBOX
-            else -> KeyBacking.UNKNOWN
-        }
-    }.getOrElse {
-        Log.w(TAG, "Unable to read wrapping key security level", it)
-        KeyBacking.UNKNOWN
-    }
 
 /** The HPKE keypair used for per-recipient payload-key sealing. Private keyset is wrapped on disk. */
 class HpkeKeyManager(context: Context, private val vault: KeyVault) {
@@ -431,21 +370,13 @@ class HpkeKeyManager(context: Context, private val vault: KeyVault) {
  * selects the keyset by the sender's `recipientEpoch`. Rotation mints the next epoch and [prune] removes
  * retired keysets after their grace window.
  */
-interface EpochHpkeKeyring {
-    fun loadOrCreate(epoch: Int): ByteArray
-    fun publicKeyset(epoch: Int): ByteArray?
-    fun privateKeyset(epoch: Int): ByteArray?
-    fun retainedEpochs(): List<Int>
-    fun prune(keep: Set<Int>)
-}
-
-class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) : EpochHpkeKeyring {
+class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) {
     private val dir = context.filesDir
     private fun publicFile(epoch: Int) = File(dir, "hpke_public.epoch$epoch.bin")
     private fun privateFile(epoch: Int) = File(dir, "hpke_private.epoch$epoch.wrapped")
 
     /** Load the public keyset for [epoch], generating + persisting a fresh keypair if absent. */
-    override fun loadOrCreate(epoch: Int): ByteArray {
+    fun loadOrCreate(epoch: Int): ByteArray {
         publicKeyset(epoch)?.let { return it }
         val pair = Hpke.generateKeyPair()
         privateFile(epoch).writeBytes(vault.wrap(pair.privateKeyset))
@@ -453,14 +384,14 @@ class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) : Epoch
         return pair.publicKeyset
     }
 
-    override fun publicKeyset(epoch: Int): ByteArray? = publicFile(epoch).takeIf { it.exists() }?.readBytes()
+    fun publicKeyset(epoch: Int): ByteArray? = publicFile(epoch).takeIf { it.exists() }?.readBytes()
 
     /** The unwrapped private keyset for [epoch], or null if not retained — used by [EnvelopeCrypto.open]. */
-    override fun privateKeyset(epoch: Int): ByteArray? =
+    fun privateKeyset(epoch: Int): ByteArray? =
         privateFile(epoch).takeIf { it.exists() }?.let { vault.unwrap(it.readBytes()) }
 
     /** Epochs whose keysets are still retained (highest is current). */
-    override fun retainedEpochs(): List<Int> =
+    fun retainedEpochs(): List<Int> =
         dir.listFiles { f -> f.name.startsWith("hpke_private.epoch") }
             .orEmpty()
             .mapNotNull {
@@ -469,7 +400,7 @@ class EpochHpkeKeyManager(context: Context, private val vault: KeyVault) : Epoch
             .sorted()
 
     /** Destroy any retained keyset whose epoch is not in [keep] (rotation cleanup after the grace window). */
-    override fun prune(keep: Set<Int>) {
+    fun prune(keep: Set<Int>) {
         for (epoch in retainedEpochs()) if (epoch !in keep) {
             privateFile(epoch).delete()
             publicFile(epoch).delete()

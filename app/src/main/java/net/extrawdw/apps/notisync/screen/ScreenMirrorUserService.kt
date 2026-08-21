@@ -183,20 +183,9 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         validOwnerToken(ownerToken) &&
             runCatching { backend.get().restartVideo(ownerToken) }.getOrDefault(false)
 
-    /**
-     * Reserved Shizuku destroy transaction.
-     *
-     * Shizuku removes the service registration before invoking this callback, but it does not
-     * terminate the UserService process for us. The UserService contract requires the callback to
-     * finish cleanup and exit; otherwise every explicit remove leaves an orphan shell app_process.
-     */
+    /** Reserved Shizuku destroy transaction. Shizuku owns process teardown after unbind. */
     override fun destroy() {
-        if (destroyed.compareAndSet(false, true)) {
-            runCatching { backend.get().close() }
-            // This class is instantiated only inside Shizuku's shell-uid app_process. Do not let
-            // an explicitly removed non-daemon service survive as a PPID-1 orphan.
-            System.exit(0)
-        }
+        if (destroyed.compareAndSet(false, true)) runCatching { backend.get().close() }
     }
 
     private fun validOwnerToken(value: String): Boolean =

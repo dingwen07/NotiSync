@@ -13,6 +13,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
+import android.util.Log
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -29,11 +30,11 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
-import net.extrawdw.apps.notisync.data.run.RunKey
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunBlockedReason
 import net.extrawdw.notisync.protocol.RunPhase
@@ -53,7 +54,7 @@ class RunNotificationPresenter(
 
         val peerName = deviceNameOf(state.hostClientId)
         val channelId = RunNotificationChannels.ensure(context, state.hostClientId, peerName)
-        val key = RunKey(state.hostClientId, state.runId)
+        val key = RunKey(state.hostClientId.value, state.runId)
         val active = RunPresentationPolicy.active(state)
         val terminal = !active
         val silent = RunPresentationPolicy.silent(state)
@@ -130,8 +131,8 @@ class RunNotificationPresenter(
     private fun openIntent(key: RunKey, id: Int): PendingIntent {
         val intent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_OPEN_RUN
-            data = "notisync://run/${Uri.encode(key.hostClientId.value)}/${Uri.encode(key.runId)}".toUri()
-            putExtra(MainActivity.EXTRA_RUN_HOST_CLIENT_ID, key.hostClientId.value)
+            data = "notisync://run/${Uri.encode(key.hostClientId)}/${Uri.encode(key.runId)}".toUri()
+            putExtra(MainActivity.EXTRA_RUN_HOST_CLIENT_ID, key.hostClientId)
             putExtra(MainActivity.EXTRA_RUN_ID, key.runId)
         }
         return PendingIntent.getActivity(
@@ -238,7 +239,7 @@ class RunNotificationPresenter(
 }
 
 internal fun runNotificationTag(key: RunKey): String =
-    "notisync-run:${key.hostClientId.value}:${key.runId}"
+    "notisync-run:${key.hostClientId}:${key.runId}"
 
 internal fun runNotificationId(key: RunKey): Int = runNotificationTag(key).hashCode()
 
@@ -331,7 +332,7 @@ internal data class RunActionRoute(val key: RunKey, val control: String, val int
 
 internal fun runActionRouteData(key: RunKey, interactionGeneration: Long, control: String): String =
     "notisync://run-control/${control.lowercase(Locale.ROOT)}/" +
-        "${key.hostClientId.value.encodePathSegment()}/${key.runId.encodePathSegment()}/$interactionGeneration"
+        "${key.hostClientId.encodePathSegment()}/${key.runId.encodePathSegment()}/$interactionGeneration"
 
 /** Parse only immutable base Intent data. Mutable RemoteInput fill-in extras are deliberately ignored here. */
 internal fun parseRunActionRoute(dataString: String?): RunActionRoute? = runCatching {
@@ -348,7 +349,7 @@ internal fun parseRunActionRoute(dataString: String?): RunActionRoute? = runCatc
     val runId = segments[2].decodePathSegment()
     val generation = segments[3].toLongOrNull() ?: return null
     if (host.isBlank() || runId.isBlank() || generation < 0) return null
-    RunActionRoute(RunKey(ClientId(host), runId), control, generation)
+    RunActionRoute(RunKey(host, runId), control, generation)
 }.getOrNull()
 
 internal fun buildRunNotificationControl(
@@ -359,7 +360,7 @@ internal fun buildRunNotificationControl(
 ): net.extrawdw.notisync.protocol.RunControl? = runCatching {
     val base = net.extrawdw.notisync.protocol.RunControl(
         requestId = requestId,
-        hostClientId = route.key.hostClientId,
+        hostClientId = ClientId(route.key.hostClientId),
         runId = route.key.runId,
         kind = when (route.control) {
             "YES", "NO", "INPUT" -> net.extrawdw.notisync.protocol.RunControlKind.WRITE_INPUT
@@ -393,7 +394,7 @@ private fun String.decodePathSegment(): String = URLDecoder.decode(this, Charset
 private val RUN_CONTEXTUAL_CONTROLS = setOf("YES", "NO", "INPUT")
 private val RUN_NOTIFICATION_CONTROLS = RUN_CONTEXTUAL_CONTROLS + setOf("INTERRUPT", "TERMINATE")
 
-/** Notification shade action receiver. Controls are sent once and may be lost if the process dies. */
+/** Notification shade action receiver. All actions become durable DATA_SYNC/RUN controls. */
 
 class RunActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -413,26 +414,32 @@ class RunActionReceiver : BroadcastReceiver() {
         removeRunNotificationActions(context, route.key)
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO + crashGuard("RunActionReceiver")).launch {
+            var outbox: RunControlOutbox? = null
             try {
-                val graph = app.awaitGraphReady()
+                val queue = RunControlOutbox(context)
+                outbox = queue
+                queue.enqueue(control)
+                runCatching { RunControlDrainWorker.enqueue(context) }
+                val graph = app.awaitGraphReady(RECEIVER_GRAPH_WAIT_MS)
                 val engine = graph?.runEngine
-                val sent = engine?.sendBestEffortControl(control) == true
-                if (!sent) {
-                    RunNotificationActionGate.release(route.key)
-                    ContextCompat.getMainExecutor(context).execute {
-                        Toast.makeText(
-                            context,
-                            R.string.run_notification_action_failed,
-                            Toast.LENGTH_LONG,
-                        ).show()
+                if (engine != null) {
+                    // Use the remaining broadcast budget for a fast send. Timeout/cancellation leaves the exact
+                    // request in SQLite for WorkManager; no new request id is minted on retry.
+                    withTimeoutOrNull(RECEIVER_SEND_JOIN_MS) {
+                        RunControlOutboxDrainer.drain(
+                            queue = queue,
+                            send = engine::sendPersistedControl,
+                        )
                     }
                 }
             } catch (error: Exception) {
                 RunNotificationActionGate.release(route.key)
+                Log.w("RunActionReceiver", "could not queue Run action", error)
                 ContextCompat.getMainExecutor(context).execute {
                     Toast.makeText(context, R.string.run_notification_action_failed, Toast.LENGTH_LONG).show()
                 }
             } finally {
+                outbox?.close()
                 pending.finish()
             }
         }
@@ -441,5 +448,7 @@ class RunActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_CONTROL = "net.extrawdw.apps.notisync.RUN_CONTROL"
         const val REMOTE_INPUT_KEY = "run_input"
+        private const val RECEIVER_GRAPH_WAIT_MS = 7_000L
+        private const val RECEIVER_SEND_JOIN_MS = 2_000L
     }
 }

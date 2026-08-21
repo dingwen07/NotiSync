@@ -169,36 +169,11 @@ class SshAgentProtocolTest {
                 keys = listOf(key.copy(approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER)),
             ).validationError(::sha256),
         )
-        assertNull(
+        assertNotNull(
             key.copy(
                 operationalKey = key.operationalKey.copy(
                     securityLevel = SshStorageSecurityLevel.STRONGBOX,
                     strongBoxAttempted = false,
-                ),
-            ).validationError(::sha256),
-        )
-        assertNull(
-            key.copy(
-                operationalKey = key.operationalKey.copy(
-                    securityLevel = SshStorageSecurityLevel.SOFTWARE,
-                ),
-            ).validationError(::sha256),
-        )
-        assertNotNull(
-            key.copy(
-                operationalKey = key.operationalKey.copy(
-                    securityLevel = SshStorageSecurityLevel.SOFTWARE,
-                    strongBoxAttempted = true,
-                    strongBoxFallback = false,
-                ),
-            ).validationError(::sha256),
-        )
-        assertNull(
-            key.copy(
-                operationalKey = key.operationalKey.copy(
-                    securityLevel = SshStorageSecurityLevel.SOFTWARE,
-                    strongBoxAttempted = true,
-                    strongBoxFallback = true,
                 ),
             ).validationError(::sha256),
         )
@@ -216,7 +191,7 @@ class SshAgentProtocolTest {
                     securityLevel = SshStorageSecurityLevel.STRONGBOX,
                     backendPolicy = SshExportCopyBackendPolicy.TEE_ONLY,
                     authentication = SshExportCopyAuthentication.STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE,
-                    strongBoxAttempted = true,
+                    strongBoxAttempted = false,
                     strongBoxFallback = false,
                 ),
             ).validationError(::sha256),

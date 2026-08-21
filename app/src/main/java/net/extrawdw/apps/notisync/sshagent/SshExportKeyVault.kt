@@ -70,17 +70,17 @@ internal class PreparedSshKeyUnwrap internal constructor(
 /**
  * Stores only the optional export copy. Operational signing keys never pass through this class.
  *
- * Each call creates or opens one exact StrongBox-preferred or default Android Keystore candidate. There is
- * deliberately no cached master key or internal fallback. The provisioning state machine validates the complete
- * persisted encrypt/decrypt round trip before committing a candidate, and may delete a failed StrongBox candidate
- * before retrying with the default provider. The default provider's actual [KeyInfo.securityLevel] is retained.
+ * Each call creates or opens one exact StrongBox or TEE candidate. There is deliberately no capability probe,
+ * cached master key, or internal fallback. The provisioning state machine must validate the complete persisted
+ * encrypt/decrypt/sign round trip before committing a candidate, and may then delete a failed StrongBox candidate
+ * and create a fresh TEE candidate.
  */
 internal class SshExportKeyVault(private val strongBoxAvailable: Boolean) {
     fun shouldAttemptStrongBox(policy: SshExportCopyBackendPolicy): Boolean =
         SshKeyStoragePolicy.shouldAttemptExportStrongBox(strongBoxAvailable, policy)
 
     fun alias(providerKeyId: String, strongBox: Boolean): String =
-        EXPORT_ALIAS_PREFIX + providerKeyId + if (strongBox) STRONGBOX_SUFFIX else DEFAULT_SUFFIX
+        EXPORT_ALIAS_PREFIX + providerKeyId + if (strongBox) STRONGBOX_SUFFIX else TEE_SUFFIX
 
     fun prepareProtect(
         providerKeyId: String,
@@ -152,21 +152,24 @@ internal class SshExportKeyVault(private val strongBoxAvailable: Boolean) {
         algorithm: SshKeyAlgorithm,
         publicKeyHash: ByteArray,
         securityLevel: SshStorageSecurityLevel,
-        strongBoxCandidate: Boolean = securityLevel == SshStorageSecurityLevel.STRONGBOX,
     ): PreparedSshKeyUnwrap {
         require(nonce.size == GCM_NONCE_BYTES) { "invalid SSH export-copy nonce" }
         require(ciphertext.isNotEmpty() && ciphertext.size <= MAX_CIPHERTEXT_BYTES) {
             "invalid SSH export-copy ciphertext"
         }
+        val strongBox = when (securityLevel) {
+            SshStorageSecurityLevel.STRONGBOX -> true
+            SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> false
+        }
         val cipher = try {
-            val key = androidKeyStore().getKey(alias(providerKeyId, strongBoxCandidate), null) as? SecretKey
+            val key = androidKeyStore().getKey(alias(providerKeyId, strongBox), null) as? SecretKey
                 ?: error("SSH export-copy key is unavailable")
-            check(inspect(key, strongBoxCandidate) == securityLevel) { "SSH export-copy security level changed" }
+            check(inspect(key, strongBox) == securityLevel) { "SSH export-copy security level changed" }
             SshKeystoreJca.cipher(AES_TRANSFORMATION).apply {
                 init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(GCM_TAG_BITS, nonce))
             }
         } catch (failure: Exception) {
-            throw SshExportCandidateException(strongBoxCandidate, failure)
+            throw SshExportCandidateException(strongBox, failure)
         }
         return PreparedSshKeyUnwrap(
             cipher = cipher,
@@ -244,12 +247,16 @@ internal class SshExportKeyVault(private val strongBoxAvailable: Boolean) {
         check(info.userAuthenticationValidityDurationSeconds == 0)
         check(info.userAuthenticationType and KeyProperties.AUTH_BIOMETRIC_STRONG != 0)
         check(info.userAuthenticationType and KeyProperties.AUTH_DEVICE_CREDENTIAL != 0)
-        val level = info.securityLevel.toSshStorageSecurityLevel()
-        if (expectedStrongBox) {
-            check(level == SshStorageSecurityLevel.STRONGBOX) {
-                "Android Keystore did not honor the requested SSH export-copy StrongBox backend"
-            }
+        check(info.isUserAuthenticationRequirementEnforcedBySecureHardware) {
+            "Android Keystore did not enforce SSH export authentication in secure hardware"
         }
+        val level = info.securityLevel.toSshSecurityLevel()
+        val expected = if (expectedStrongBox) {
+            SshStorageSecurityLevel.STRONGBOX
+        } else {
+            SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
+        }
+        check(level == expected) { "Android Keystore did not honor the requested SSH export-copy backend" }
         return level
     }
 
@@ -259,8 +266,7 @@ internal class SshExportKeyVault(private val strongBoxAvailable: Boolean) {
     private companion object {
         const val EXPORT_ALIAS_PREFIX = "notisync_ssh_export_copy_"
         const val STRONGBOX_SUFFIX = "_sb"
-        // Keep the pre-release alias spelling stable; this suffix means the default Android Keystore backend.
-        const val DEFAULT_SUFFIX = "_tee"
+        const val TEE_SUFFIX = "_tee"
         const val AES_TRANSFORMATION = "AES/GCM/NoPadding"
         const val GCM_NONCE_BYTES = 12
         const val GCM_TAG_BITS = 128
@@ -299,13 +305,10 @@ internal object SshKeyMaterialAad {
     private const val EXPORT_COPY: Byte = 2
 }
 
-internal fun Int.toSshStorageSecurityLevel(): SshStorageSecurityLevel = when (this) {
+private fun Int.toSshSecurityLevel(): SshStorageSecurityLevel = when (this) {
     KeyProperties.SECURITY_LEVEL_STRONGBOX -> SshStorageSecurityLevel.STRONGBOX
     KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
-    KeyProperties.SECURITY_LEVEL_SOFTWARE -> SshStorageSecurityLevel.SOFTWARE
-    KeyProperties.SECURITY_LEVEL_UNKNOWN_SECURE -> SshStorageSecurityLevel.UNKNOWN_SECURE
-    KeyProperties.SECURITY_LEVEL_UNKNOWN -> SshStorageSecurityLevel.UNKNOWN
-    else -> SshStorageSecurityLevel.UNKNOWN
+    else -> throw SshHardwareBackedKeystoreUnavailableException("SSH export-copy key")
 }
 
 private fun Exception.exportFailureSummary(): String =

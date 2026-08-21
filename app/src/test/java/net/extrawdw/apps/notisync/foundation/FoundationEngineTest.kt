@@ -5,6 +5,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.channel.InboundMessage
 import net.extrawdw.apps.notisync.channel.SecureChannel
+import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.IncomingTrustResult
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.testsupport.CapturingTransport
@@ -17,6 +18,7 @@ import net.extrawdw.apps.notisync.testsupport.peerOf
 import net.extrawdw.apps.notisync.testsupport.seal
 import net.extrawdw.apps.notisync.testsupport.sealOperational
 import net.extrawdw.apps.notisync.testsupport.testChannel
+import net.extrawdw.apps.notisync.testsupport.TestActivityText
 import net.extrawdw.apps.notisync.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.CardDelivery
 import net.extrawdw.notisync.protocol.ClientId
@@ -52,6 +54,7 @@ class FoundationEngineTest {
         val foundation: FoundationEngine,
         val prompts: MutableList<Triple<ClientId, TrustPrompt, String>>,
         val forwardedAssets: MutableList<Pair<InboundMessage, DataSync>>,
+        val activityLog: ActivityLog,
     )
 
     private fun harness(
@@ -65,12 +68,15 @@ class FoundationEngineTest {
         val channel = testChannel(me, myHpke.privateKeyset, trust, transport)
         val prompts = mutableListOf<Triple<ClientId, TrustPrompt, String>>()
         val forwarded = mutableListOf<Pair<InboundMessage, DataSync>>()
+        val activityLog = ActivityLog()
         val foundation = FoundationEngine(
             channel = channel,
             trust = trust,
+            activityLog = activityLog,
             scope = CoroutineScope(Dispatchers.Unconfined),
             onTrustPrompt = { id, p, by -> prompts.add(Triple(id, p, by)) },
             onAsset = { msg, sync -> forwarded.add(msg to sync) },
+            activityText = TestActivityText,
             fetchKeyEpoch = fetchKeyEpoch,
             selfKeyEpoch = selfKeyEpoch,
         )
@@ -84,6 +90,7 @@ class FoundationEngineTest {
             foundation,
             prompts,
             forwarded,
+            activityLog
         )
     }
 
@@ -286,6 +293,7 @@ class FoundationEngineTest {
         assertEquals(sender.clientId, trust.foldedTables.single().first)
         assertEquals(listOf(TrustPrompt.NEW_TRUST), h.prompts.map { it.second })
         assertEquals("S", h.prompts.single().third)
+        assertEquals(DeliveryMode.WEBSOCKET, h.activityLog.events.value.single().deliveryMode)
         // Combine C's card and epoch into one CARD sent only to B, whose TRUST row declared them missing.
         // The other own-mesh peer receives neither that repair nor a broad third-party CARD broadcast.
         val envelope = h.transport.envelopes.single()
@@ -658,6 +666,35 @@ class FoundationEngineTest {
             sender.clientId,
             trust.appliedProfiles.single().clientId
         )
+    }
+
+    @Test
+    fun profileRenameRow_usesThePreMutationName() {
+        val sender = newSigner();
+        val senderHpke = newHpke()
+        val trust = FakeTrustState().apply {
+            peers.value = listOf(peerOf(sender, senderHpke.publicKeyset, name = "Old Name"))
+        }
+        val h = harness(trust)
+
+        val update = ProfileUpdate(sender.clientId, "New Name", "android", emptyList(), 500L)
+        h.channel.deliver(
+            seal(
+                sender,
+                MessageType.DATA_SYNC,
+                ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.PROFILE, profile = update)),
+                h.me.clientId,
+                h.myHpke.publicKeyset,
+                "p1"
+            ),
+            DeliveryMode.FCM_INLINE,
+        )
+
+        // The PAIRED row's "was <name>" must be the OLD name, captured before applyProfile mutated it.
+        val row = h.activityLog.events.value.first()
+        assertEquals("New Name", row.title)
+        assertEquals("renamed (was Old Name)", row.detail)
+        assertEquals(DeliveryMode.FCM_INLINE, row.deliveryMode)
     }
 
     @Test

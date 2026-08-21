@@ -75,9 +75,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.data.run.RunKey
-import net.extrawdw.apps.notisync.data.run.StoredRun
 import net.extrawdw.apps.notisync.run.RunEngine
+import net.extrawdw.apps.notisync.run.RunKey
+import net.extrawdw.apps.notisync.run.StoredRun
 import net.extrawdw.apps.notisync.run.asRunTerminalLine
 import net.extrawdw.notisync.protocol.RunBlockedReason
 import net.extrawdw.notisync.protocol.RunPhase

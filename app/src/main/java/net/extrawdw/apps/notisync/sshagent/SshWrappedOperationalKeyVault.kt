@@ -227,14 +227,22 @@ internal class SshWrappedOperationalKeyVault(private val strongBoxAvailable: Boo
                 check(info.isUserAuthenticationRequired)
                 check(info.userAuthenticationValidityDurationSeconds == 0)
                 check(info.userAuthenticationType and KeyProperties.AUTH_BIOMETRIC_STRONG != 0)
+                check(info.isUserAuthenticationRequirementEnforcedBySecureHardware) {
+                    "Android Keystore did not enforce wrapped SSH operational authentication in secure hardware"
+                }
             }
         }
-        val level = info.securityLevel.toSshStorageSecurityLevel()
-        if (expectedStrongBox) {
-            check(level == SshStorageSecurityLevel.STRONGBOX) {
-                "Android Keystore did not honor the wrapped SSH operational StrongBox backend"
-            }
+        val level = when (info.securityLevel) {
+            KeyProperties.SECURITY_LEVEL_STRONGBOX -> SshStorageSecurityLevel.STRONGBOX
+            KeyProperties.SECURITY_LEVEL_TRUSTED_ENVIRONMENT -> SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
+            else -> throw SshHardwareBackedKeystoreUnavailableException("Wrapped SSH operational key")
         }
+        val expected = if (expectedStrongBox) {
+            SshStorageSecurityLevel.STRONGBOX
+        } else {
+            SshStorageSecurityLevel.TRUSTED_ENVIRONMENT
+        }
+        check(level == expected) { "Android Keystore did not honor the wrapped SSH operational backend" }
         return level
     }
 

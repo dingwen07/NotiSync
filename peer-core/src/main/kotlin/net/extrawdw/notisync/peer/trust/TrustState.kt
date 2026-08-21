@@ -17,13 +17,6 @@ interface TrustState {
     /** TRUSTED devices whose card we hold — the recipient roster and the inbound sender set. */
     val activePeers: StateFlow<List<Peer>>
 
-    /**
-     * One immutable directory read derived from a single trust-state version. Production implementations must
-     * capture this under the same serialization boundary as trust mutations; callers use it to resolve both
-     * sealable and temporarily unsealable members of one outbound audience without mixing roster versions.
-     */
-    fun directorySnapshot(now: Long): TrustDirectorySnapshot
-
     /** Best-known display name for a device, or null when we hold no card for it. */
     fun displayName(clientId: ClientId): String?
 
@@ -122,41 +115,3 @@ interface TrustState {
     /** Persist (or clear, with null) the in-flight self-rotation. */
     fun setPendingRotation(pending: PendingRotation?) {}
 }
-
-/** One trusted peer's routing facts as observed in a single [TrustDirectorySnapshot]. */
-class TrustDirectoryPeer(
-    val clientId: ClientId,
-    val ownDevice: Boolean,
-    val platform: String,
-    capabilities: List<Capability>,
-    sealablePeer: Peer?,
-    val needsKeyEpoch: Boolean,
-) {
-    private val capabilitySnapshot = capabilities.toList()
-    private val sealablePeerSnapshot = sealablePeer?.defensiveCopy()
-
-    val capabilities: List<Capability>
-        get() = capabilitySnapshot.toList()
-
-    val sealablePeer: Peer?
-        get() = sealablePeerSnapshot?.defensiveCopy()
-
-    internal fun defensiveCopy(): TrustDirectoryPeer = TrustDirectoryPeer(
-        clientId = clientId,
-        ownDevice = ownDevice,
-        platform = platform,
-        capabilities = capabilitySnapshot,
-        sealablePeer = sealablePeerSnapshot,
-        needsKeyEpoch = needsKeyEpoch,
-    )
-}
-
-/** Defensive, immutable projection used only for one audience-resolution decision. */
-class TrustDirectorySnapshot(peers: List<TrustDirectoryPeer>) {
-    private val peerSnapshot = peers.map(TrustDirectoryPeer::defensiveCopy)
-
-    val peers: List<TrustDirectoryPeer>
-        get() = peerSnapshot.map(TrustDirectoryPeer::defensiveCopy)
-}
-
-private fun Peer.defensiveCopy(): Peer = copy(capabilities = capabilities.toList())

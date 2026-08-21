@@ -179,35 +179,8 @@ open class TrustStore(
         MutableStateFlow(if (loaded.quarantined) emptyList<Peer>() else computeActivePeers(loaded.state))
     private val _roster = MutableStateFlow(computeRoster(loaded.state))
 
-    /** TRUSTED devices whose card we hold — the inbound sender roster. Forced empty while [quarantined]. */
+    /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. Forced empty while [quarantined]. */
     override val activePeers: StateFlow<List<Peer>> = _activePeers
-
-    /** Capture outbound directory facts under the same monitor that serializes every state mutation. */
-    @Synchronized
-    override fun directorySnapshot(now: Long): TrustDirectorySnapshot {
-        // Fail closed while the signed trust state is unverified: neither delivery nor a key-repair side effect may
-        // disclose or act on roster membership until the user explicitly resolves quarantine.
-        if (_quarantined.value) return TrustDirectorySnapshot(emptyList())
-        val state = _state.value
-        val peers = state.entries.values
-            .asSequence()
-            .filter { it.status == TrustStatus.TRUSTED && it.clientId != selfId }
-            .map { entry ->
-                val current = currentSealableEpoch(entry.clientId, state, now)
-                TrustDirectoryPeer(
-                    clientId = entry.clientId,
-                    ownDevice = entry.ownDevice,
-                    platform = platformFor(entry.clientId, state).orEmpty(),
-                    capabilities = capabilitiesFor(entry.clientId, state).toList(),
-                    sealablePeer = toPeer(entry, state, now),
-                    needsKeyEpoch = current == null ||
-                        current.notAfter <= now ||
-                        current.identityPublicKey.isEmpty(),
-                )
-            }
-            .toList()
-        return TrustDirectorySnapshot(peers)
-    }
 
     /** Everything the user reviews — trusted, pending, and revoked tombstones (until purged) — for the Devices UI. */
     val roster: StateFlow<List<RosterDevice>> = _roster
@@ -841,13 +814,9 @@ open class TrustStore(
     // A peer is *sealable* (active) once we hold a usable key-epoch for it — that is what carries the
     // current operational + HPKE keys an NS2 envelope needs. The card (if held) only supplies the display
     // profile; identity comes from the key-epoch's carried identity key (== the card's, by fingerprint).
-    private fun toPeer(
-        entry: TrustEntry,
-        st: State,
-        now: Long = System.currentTimeMillis(),
-    ): Peer? {
+    private fun toPeer(entry: TrustEntry, st: State): Peer? {
         if (entry.status != TrustStatus.TRUSTED) return null
-        val current = currentSealableEpoch(entry.clientId, st, now) ?: return null
+        val current = currentSealableEpoch(entry.clientId, st) ?: return null
         // Anchor from the pinned identity (card first), NOT the key-epoch's own copy — a pairing-QR key-epoch
         // omits it. No anchor (no card, and only a stripped ring entry) ⇒ unverifiable ⇒ not sealable.
         val identity = pinnedIdentityOf(entry.clientId, st) ?: return null

@@ -6,8 +6,12 @@ import net.extrawdw.apps.notisync.analytics.PerfSpan
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
+import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.data.ActivityLog
+import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.notisync.peer.foundation.SendPolicy
+import net.extrawdw.notisync.peer.transport.ifKnown
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.MediaCommand
@@ -65,6 +69,20 @@ fun interface OriginalActionPerformer {
     fun perform(event: ActionEvent)
 }
 
+/**
+ * Maps a rendered mirror back to the relay message that delivered it, so a *local* dismissal can tell
+ * the broker to drop that message — otherwise the still-queued copy is redelivered later and the
+ * dismissed notification reappears. Persisted by the data layer (survives a restart); a no-op when the
+ * engine runs without one (tests, provider-only devices).
+ */
+interface MirrorAckIndex {
+    /** Remember that [messageId] delivered the mirror for ([sourceClientId], [sourceKey]). */
+    fun recordMirror(sourceClientId: ClientId, sourceKey: String, messageId: String)
+
+    /** The mirror for ([sourceClientId], [sourceKey]) was dismissed — queue its message for relay-ack. */
+    fun onDismissed(sourceClientId: ClientId, sourceKey: String)
+}
+
 enum class MirrorPostDecision { FIRST, NEWER, STALE }
 
 /** Durable last-writer-wins state shared by live delivery and relay reconciliation. */
@@ -108,9 +126,17 @@ interface AssetResolver {
 class MirrorEngine(
     private val channel: SecureChannel,
     private val renderer: MirrorRenderer,
+    private val activityLog: ActivityLog,
+    private val activityText: ActivityText,
     private val scope: CoroutineScope,
     private val assetResolver: AssetResolver? = null,
     private val now: () -> Long = { System.currentTimeMillis() },
+    /** Resolves a package name to a user-facing app label; defaults to the package itself. */
+    private val appLabelResolver: (String) -> String = { it },
+    /** Resolves an authenticated sender id to a display name for activity rows; defaults to its short id. */
+    private val peerNameResolver: (ClientId) -> String = { it.shortForm() },
+    /** Records mirror→message mappings and queues a relay-ack on local dismissal; null disables both. */
+    private val ackIndex: MirrorAckIndex? = null,
     /** Restart-surviving post watermark + dismissal tombstone store. */
     private val lifecycleStore: MirrorLifecycleStore? = null,
     /** Peer notification-suppression filters: consulted when forwarding a capture (drop a peer that asked not
@@ -146,6 +172,20 @@ class MirrorEngine(
             object : java.util.LinkedHashMap<String, CapturedNotification>(64, 0.75f, true) {
                 override fun removeEldestEntry(eldest: Map.Entry<String, CapturedNotification>): Boolean =
                     size > 128
+            }
+        )
+
+    /**
+     * Activity titles of notifications we've shown, keyed by ([ClientId], sourceKey), so a later dismissal row
+     * reads the same as its posted row — e.g. "WhatsApp (Dingwen's iPhone)". A [DismissEvent] carries only the
+     * opaque source key, which for a bridged iPhone notification names the iPhone id (not the app), so resolving
+     * the title from the key alone would surface that raw id. Bounded LRU; lost on a restart, after which a
+     * dismissal row falls back to [dismissedAppName].
+     */
+    private val originTitles: MutableMap<String, String> =
+        java.util.Collections.synchronizedMap(
+            object : java.util.LinkedHashMap<String, String>(64, 0.75f, true) {
+                override fun removeEldestEntry(eldest: Map.Entry<String, String>): Boolean = size > 256
             }
         )
 
@@ -206,33 +246,6 @@ class MirrorEngine(
         channel.onMessage(MessageType.ACTION, ::onAction)
     }
 
-    /** Idempotent post-commit presentation used by the Room inbound owner. */
-    fun presentCommitted(notif: CapturedNotification, forceSilent: Boolean) {
-        renderer.render(
-            notif,
-            silent = forceSilent || notif.silentUpdate,
-            phase = if (forceSilent || notif.silentUpdate) RenderPhase.REPLAY else RenderPhase.INITIAL,
-        )
-        fetchGraphicsThenReRender(notif)
-    }
-
-    /** Idempotent post-commit dismissal used by the Room inbound owner. */
-    fun dismissCommitted(event: DismissEvent) {
-        renderer.clear(event.sourceClientId, event.sourceKey)
-        originalCanceler?.cancel(event.sourceKey)
-        iosOriginCanceler?.cancel(event.sourceKey)
-    }
-
-    /** Performs an authenticated action only while at least one concrete origin performer is attached. */
-    fun performCommitted(event: ActionEvent): Boolean {
-        val android = originalActionPerformer
-        val ios = iosOriginActionPerformer
-        if (android == null && ios == null) return false
-        android?.perform(event)
-        ios?.perform(event)
-        return true
-    }
-
     /** Seal [notif] to the own mesh; returns the number of peer devices it was sealed to. A peer that asked
      *  (over a DATA_SYNC FILTER) not to receive a matching notification is dropped from the recipient set.
      *  [excludeIos] additionally drops iOS peers — the listener sets it for media playback and non-media ongoing
@@ -251,6 +264,13 @@ class MirrorEngine(
         val n = channel.send(MessageType.NOTIFICATION, payload, scope, Urgency.HIGH)
         span?.metric("send_ms", (System.nanoTime() - sendStartNanos) / 1_000_000)
         span?.metric("recipient_count", n.toLong())
+        rememberTitle(notif)
+        if (n > 0 && !notif.isGroupSummary) activityLog.add(
+            ActivityEvent.Kind.SENT,
+            originTitle(notif),
+            activityText.mirroredToDevices(n),
+            now()
+        )
         return n
     }
 
@@ -319,6 +339,7 @@ class MirrorEngine(
             ),
             Urgency.NORMAL,
         )
+        if (n > 0) rememberTitle(notif)
         return n
     }
 
@@ -350,24 +371,31 @@ class MirrorEngine(
         )
         val payload = ProtocolCodec.encodeToCbor(marked)
         val n = channel.send(MessageType.NOTIFICATION, payload, recipients, Urgency.HIGH)
+        if (n > 0) rememberTitle(marked)
         return n
     }
 
     suspend fun dismissLocal(sourceClientId: ClientId, sourceKey: String, syncToMesh: Boolean = true) {
+        // Drop the still-queued relay copy of the notification we're dismissing (no-op for our own
+        // captures, which were never received). Done first so the ack is queued even if the DISMISSAL
+        // broadcast below fails — the queue is local and drained by the relay worker. Runs even when we do
+        // NOT sync to the mesh, so a swiped mirror doesn't immediately re-post from a still-queued copy.
+        ackIndex?.onDismissed(sourceClientId, sourceKey)
         val dismissedAt = now()
         lifecycleStore?.recordDismissal(sourceClientId, sourceKey, dismissedAt)
         // A non-clearable source (an ongoing notification) can't be cleared on its origin, and its mirrors on
         // OTHER peers should stay put — so a local swipe of such a mirror is local-only: no mesh DISMISSAL and
-        // no origin cancel.
+        // no origin cancel. The relay-ack above already made the local swipe stick.
         if (!syncToMesh) return
         // No local-suppression set here: echoes from our own cancelNotification() (issued on a remote
         // dismissal) carry REASON_LISTENER_CANCEL and are filtered out by the listener's reason
         // allowlist. A permanent suppression set would wrongly block re-dismissals of reused keys.
         val event = DismissEvent(sourceClientId, sourceKey, dismissedAt)
         // Best-effort broadcast: on a broker failure (socket timeout, attestation cooldown) peers simply
-        // keep their mirror — a swipe must never throw. The ANCS origin-clear below is local BLE and remains
+        // keep their mirror — a swipe must never throw. The local-first work around the send still runs
+        // either way: the relay ack above is already queued, and the ANCS origin-clear below is local BLE,
         // independent of broker reachability.
-        runCatching {
+        val n = runCatching {
             channel.send(
                 MessageType.DISMISSAL,
                 ProtocolCodec.encodeToCbor(event),
@@ -375,6 +403,12 @@ class MirrorEngine(
                 Urgency.NORMAL
             )
         }.getOrDefault(0)
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.DISMISSED,
+            dismissedTitle(sourceClientId, sourceKey),
+            activityText.syncedToDevices(n),
+            now()
+        )
         // A bridged iOS notification isn't removed from the iPhone when its mirror is swiped here — propagate
         // the dismissal back over ANCS so it clears on the source device too (no-op for non-ANCS keys).
         iosOriginCanceler?.cancel(sourceKey)
@@ -456,6 +490,12 @@ class MirrorEngine(
                 Urgency.HIGH,
             )
         }.getOrDefault(0)
+        if (n > 0) activityLog.add(
+            ActivityEvent.Kind.SENT,
+            dismissedTitle(event.sourceClientId, event.sourceKey),
+            activityText.actionToDevice(event.actionTitle, peerNameResolver(event.sourceClientId)),
+            now(),
+        )
         return n > 0
     }
 
@@ -468,6 +508,13 @@ class MirrorEngine(
         if (event.sourceClientId != channel.clientId) return
         originalActionPerformer?.perform(event)
         iosOriginActionPerformer?.perform(event)
+        activityLog.add(
+            ActivityEvent.Kind.RECEIVED,
+            dismissedTitle(event.sourceClientId, event.sourceKey),
+            activityText.actionByDevice(event.actionTitle, peerNameResolver(msg.senderId)),
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     private fun onNotification(msg: InboundMessage) {
@@ -475,7 +522,7 @@ class MirrorEngine(
         val notif = ProtocolCodec.decodeFromCbor<CapturedNotification>(msg.body)
         // A prompt in-place update of an already-shown ongoing mirror (a media track / play↔pause change) rides
         // the alerting NOTIFICATION transport for latency but must be applied like a quiet DATA_SYNC update —
-        // silent, in place, last-writer-wins — never as a fresh alert or a second notification post.
+        // silent, in place, last-writer-wins — never as a fresh alert or a second RECEIVED activity row.
         if (notif.silentUpdate) {
             renderQuietUpdate(notif, msg)
             return
@@ -488,11 +535,24 @@ class MirrorEngine(
         if (acceptPostTime(notif.sourceClientId, notif.sourceKey, notif.postTime) ==
             PostTimeAccept.STALE
         ) return
+        // Remember which relay message delivered this mirror, so a later local dismissal can ack it
+        // (drop the still-queued copy) instead of letting it be redelivered and reappear.
+        ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
         renderer.render(
             notif,
             silent = msg.forceSilent,
             phase = if (msg.forceSilent) RenderPhase.REPLAY else RenderPhase.INITIAL,
         ) // text + any already-cached graphics, posted immediately
+        rememberTitle(notif)
+        if (!notif.isGroupSummary) {
+            activityLog.add(
+                ActivityEvent.Kind.RECEIVED,
+                originTitle(notif),
+                activityText.fromDevice(peerNameResolver(msg.senderId)),
+                now(),
+                deliveryMode = msg.deliveryMode.ifKnown(),
+            )
+        }
         fetchGraphicsThenReRender(notif)
     }
 
@@ -563,13 +623,26 @@ class MirrorEngine(
     private fun renderQuietUpdate(notif: CapturedNotification, msg: InboundMessage) {
         val accepted = acceptPostTime(notif.sourceClientId, notif.sourceKey, notif.postTime)
         if (accepted == PostTimeAccept.STALE) return   // stale / out-of-order backlog — drop
+        // Remember which relay message delivered this update, so a later local dismissal can ack (drop) it.
+        ackIndex?.recordMirror(notif.sourceClientId, notif.sourceKey, msg.messageId)
         if (!msg.forceSilent && promoteQuietRenderToAlert(accepted == PostTimeAccept.FIRST, notif, now())) {
             renderer.render(notif) // full alerting render: ring + full-screen call surface
+            rememberTitle(notif)
+            if (!notif.isGroupSummary) {
+                activityLog.add(
+                    ActivityEvent.Kind.RECEIVED,
+                    originTitle(notif),
+                    activityText.fromDevice(peerNameResolver(msg.senderId)),
+                    now(),
+                    deliveryMode = msg.deliveryMode.ifKnown(),
+                )
+            }
             fetchGraphicsThenReRender(notif)
             return
         }
         // Silent + in place: an update to an already-shown notification must refresh without a second alert.
         renderer.render(notif, silent = true, phase = RenderPhase.REPLAY)
+        rememberTitle(notif)
         fetchGraphicsThenReRender(notif)
     }
 
@@ -585,6 +658,13 @@ class MirrorEngine(
         // from an iPhone, clear it on that iPhone too — mirroring how an Android original is cancelled on a
         // remote dismissal (no-op for non-ANCS keys).
         iosOriginCanceler?.cancel(event.sourceKey)
+        activityLog.add(
+            ActivityEvent.Kind.DISMISSED,
+            dismissedTitle(event.sourceClientId, event.sourceKey),
+            activityText.byDevice(peerNameResolver(msg.senderId)),
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     /**
@@ -614,21 +694,6 @@ class MirrorEngine(
     }
 
     /**
-     * Broker-custody receive path. Unlike [onAssetSync], this does not launch detached work: the caller can
-     * acknowledge the broker item only after the requested repair round has actually completed. Failures are
-     * allowed to escape so the broker retains the item for a later retry.
-     */
-    suspend fun handleAssetSync(msg: InboundMessage, sync: DataSync) {
-        if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.ASSET, msg.senderOwnDevice)) return
-        val asset = sync.asset ?: return
-        val resolver = assetResolver ?: return
-        when (asset.kind) {
-            AssetSyncKind.ASSET_MISSING -> repairAndReply(msg.senderId, asset.items, resolver)
-            AssetSyncKind.ASSET_READY -> applyRepaired(asset.items, resolver)
-        }
-    }
-
-    /**
      * A peer's notification-suppression request, forwarded from the foundation's sole DATA_SYNC handler. The
      * peer (chiefly the iOS client) asks this device — a notification source — to stop delivering matching
      * captures to it; we save the snapshot keyed by the requester and honor it on the next [captureLocal].
@@ -639,7 +704,17 @@ class MirrorEngine(
         if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.FILTER, msg.senderOwnDevice)) return
         val filter = sync.filter ?: return
         val store = notificationFilters ?: return
+        // Log a RECEIVED row (with how it was delivered) only on a real change — the source re-announces the
+        // same filter periodically, and those idempotent repeats must not spam the activity feed.
         if (!store.apply(msg.senderId, filter)) return
+        activityLog.add(
+            ActivityEvent.Kind.RECEIVED,
+            peerNameResolver(msg.senderId),
+            if (filter.rules.isEmpty()) activityText.filtersCleared()
+            else activityText.filtersUpdated(filter.rules.size),
+            now(),
+            deliveryMode = msg.deliveryMode.ifKnown(),
+        )
     }
 
     /** Provider side: re-upload each requested asset under its existing id and reply ASSET_READY. */
@@ -656,6 +731,12 @@ class MirrorEngine(
             AssetSync(
                 AssetSyncKind.ASSET_READY,
                 ready.map { AssetSyncItem(it.assetHash, it.assetId, it) })
+        )
+        activityLog.add(
+            ActivityEvent.Kind.SENT,
+            activityText.assetRepairTitle(),
+            activityText.assetRepairDetail(ready.size, requester.shortForm()),
+            now(),
         )
     }
 
@@ -682,6 +763,38 @@ class MirrorEngine(
             Urgency.NORMAL,
         )
     }
+
+    /**
+     * Best-effort app name for a dismissal Activity row when no posted title was remembered (cold cache).
+     * A [DismissEvent] carries only the opaque source key. An Android key is `userId|package|id|tag|uid`,
+     * so the app is the package (index 1). A bridged iPhone key is `ancs|iphoneId|bundleId|uid`, so the app
+     * is the bundle id (index 2) — index 1 there is the *iPhone id*, which must never surface as the "app".
+     * We resolve a friendly label when that app is installed here, else fall back to the field, then the key.
+     */
+    private fun dismissedAppName(sourceKey: String): String {
+        val parts = sourceKey.split('|')
+        val appField = if (parts.firstOrNull() == "ancs") parts.getOrNull(2) else parts.getOrNull(1)
+        val pkg = appField?.takeIf { it.isNotBlank() } ?: return sourceKey
+        return appLabelResolver(pkg)
+    }
+
+    /**
+     * An Activity row's app title: the app label, suffixed with the originating device's name for a bridged
+     * capture (an iPhone notification relayed over ANCS) — "WhatsApp (Dingwen's iPhone)" — to match the
+     * mirror's notification group label. Just the app label for a local Android capture ([originDeviceName] null).
+     */
+    private fun originTitle(notif: CapturedNotification): String =
+        notif.originDeviceName?.takeIf { it.isNotBlank() }
+            ?.let { "${notif.appLabel} ($it)" } ?: notif.appLabel
+
+    /** Remember [notif]'s Activity title so its eventual dismissal row matches its posted row. */
+    private fun rememberTitle(notif: CapturedNotification) {
+        originTitles[titleKey(notif.sourceClientId, notif.sourceKey)] = originTitle(notif)
+    }
+
+    /** The dismissal row's title: the remembered posted title, else a best-effort app name from the key. */
+    private fun dismissedTitle(sourceClientId: ClientId, sourceKey: String): String =
+        originTitles[titleKey(sourceClientId, sourceKey)] ?: dismissedAppName(sourceKey)
 
     private fun titleKey(sourceClientId: ClientId, sourceKey: String): String =
         "${sourceClientId.value}|$sourceKey"

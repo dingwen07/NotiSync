@@ -111,16 +111,14 @@ class SshKeyExportActivity : ComponentActivity() {
     }
 
     private fun authenticateAndWrite(
-        store: SshAgentProviderRepository,
+        store: SshKeyProviderStore,
         prepared: PreparedSshKeyExport,
         target: Uri,
     ) {
         val handled = AtomicBoolean(false)
         fun cancelPrepared(message: String) {
-            lifecycleScope.launch {
-                withContext(Dispatchers.IO) { store.cancelExport(prepared) }
-                fail(message)
-            }
+            store.cancelExport(prepared)
+            fail(message)
         }
         val prompt = BiometricPrompt.Builder(this)
             .setTitle(getString(R.string.ssh_agent_export_auth_title))

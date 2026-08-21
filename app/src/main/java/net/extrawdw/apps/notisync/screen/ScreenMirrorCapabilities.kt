@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
+import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 
@@ -76,6 +77,7 @@ internal fun screenMirrorCapabilitiesFor(
  * while the immutable set below keeps the declaration sticky for the lifetime of the process.
  */
 class ScreenMirrorCapabilityProvider(
+    settings: SettingsRepository,
     authorizations: ScreenMirrorAuthorizationStore,
     scope: CoroutineScope,
     private val hardwareCodecs: Set<ScreenMirrorCodec> = HardwareScreenEncoderProbe.probe(),
@@ -85,7 +87,7 @@ class ScreenMirrorCapabilityProvider(
 
     init {
         combine(
-            authorizations.screenMirroringEnabled,
+            settings.screenMirroringEnabled,
             authorizations.replayStateHealth,
             authorizations.authorizationStateHealth,
         ) { enabled, replayHealth, authorizationHealth ->

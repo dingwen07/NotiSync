@@ -1,9 +1,6 @@
 package net.extrawdw.notisync.peer.trust
 
 import java.io.IOException
-import java.lang.reflect.Modifier
-import net.extrawdw.notisync.peer.channel.Recipients
-import net.extrawdw.notisync.peer.foundation.TrustPeerDirectory
 import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -21,56 +18,6 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class TrustStoreDurabilityTest {
-    @Test
-    fun `quarantine exposes neither routable nor repair audience`() {
-        val store = TrustStore(FailingPersistence(), SoftwareIdentitySigner.generate())
-        val keyless = SoftwareIdentitySigner.generate()
-        assertTrue(store.addLocal(signedCard(keyless), now = 10L))
-        val directory = TrustPeerDirectory(store, now = { 20L })
-        assertEquals(
-            setOf(keyless.clientId),
-            directory.resolveAudience(Recipients.AllTrusted).unsealableRecipientIds,
-        )
-
-        store.simulateSignatureTamper()
-
-        val quarantinedAudience = directory.resolveAudience(Recipients.AllTrusted)
-        assertTrue(store.quarantined.value)
-        assertTrue(store.activePeers.value.isEmpty())
-        assertTrue(quarantinedAudience.recipients.isEmpty())
-        assertTrue(quarantinedAudience.unsealableRecipientIds.isEmpty())
-    }
-
-    @Test
-    fun `directory snapshot is monitor-serialized immutable and version-stable`() {
-        val store = TrustStore(FailingPersistence(), SoftwareIdentitySigner.generate())
-        val sender = SoftwareIdentitySigner.generate()
-        val keyless = SoftwareIdentitySigner.generate()
-        store.applyIncomingTable(
-            sender = sender.clientId,
-            table = TrustTable(
-                listOf(TrustTableEntry(keyless.clientId, TrustStatus.TRUSTED, 20L, keyAvailable = false)),
-            ),
-            decisionTime = 30L,
-        ) { _, _ -> true }
-
-        val snapshot = store.directorySnapshot(now = 40L)
-        assertEquals(listOf(keyless.clientId), snapshot.peers.map { it.clientId })
-        assertTrue(snapshot.peers.single().needsKeyEpoch)
-        assertNull(snapshot.peers.single().sealablePeer)
-
-        assertEquals(setOf(keyless.clientId), store.removeUnverifiedDevices())
-        assertEquals(listOf(keyless.clientId), snapshot.peers.map { it.clientId })
-        (snapshot.peers as MutableList).clear()
-        assertEquals(listOf(keyless.clientId), snapshot.peers.map { it.clientId })
-
-        val method = TrustStore::class.java.getDeclaredMethod(
-            "directorySnapshot",
-            Long::class.javaPrimitiveType,
-        )
-        assertTrue(Modifier.isSynchronized(method.modifiers))
-    }
-
     @Test
     fun `failed signed write does not publish mutation in memory`() {
         val persistence = FailingPersistence()

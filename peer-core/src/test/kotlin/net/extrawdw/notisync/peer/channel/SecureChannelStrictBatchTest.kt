@@ -41,7 +41,8 @@ class SecureChannelStrictBatchTest {
         ) { item -> checkpoints += item.messageId to transport.accepted.size }
 
         assertEquals(1, recipientCount)
-        assertEquals(1, directory.audienceResolutions)
+        assertEquals(1, directory.recipientResolutions)
+        assertEquals(1, directory.unsealableResolutions)
         assertEquals(1, signerResolutions)
         assertEquals(listOf("stable-1", "stable-2"), transport.attempted.map { it.messageId })
         assertEquals(listOf("stable-1" to 1, "stable-2" to 2), checkpoints)
@@ -214,13 +215,19 @@ class SecureChannelStrictBatchTest {
         private val resolved: List<RecipientKey>,
         private val unsealable: Set<ClientId> = emptySet(),
     ) : PeerDirectory {
-        var audienceResolutions = 0
+        var recipientResolutions = 0
+        var unsealableResolutions = 0
 
         override fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey? = null
 
-        override fun resolveAudience(scope: Recipients): AudienceSnapshot {
-            audienceResolutions++
-            return AudienceSnapshot(resolved, unsealable)
+        override fun recipients(scope: Recipients): List<RecipientKey> {
+            recipientResolutions++
+            return resolved
+        }
+
+        override fun unsealableRecipients(scope: Recipients): Set<ClientId> {
+            unsealableResolutions++
+            return unsealable
         }
     }
 

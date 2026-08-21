@@ -1,42 +1,95 @@
 package net.extrawdw.apps.notisync.work
 
+import kotlinx.coroutines.runBlocking
+import net.extrawdw.notisync.peer.channel.DeliveryOutcome
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
-import org.junit.Assert.assertSame
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class RelayWorkersTest {
     @Test
-    fun runtimeSurfaceContainsOnlyExactFetchAndFiniteDrain() {
-        assertEquals(
-            setOf("drainFiniteBatch", "fetchAndProcessExact"),
-            RelayWorkerRuntime::class.java.declaredMethods
-                .map { it.name.substringBefore('-') }
-                .toSet(),
+    fun handledRelayIsAckedAfterDurableDelivery() = runBlocking {
+        val acked = mutableListOf<List<String>>()
+        val queued = mutableListOf<String>()
+
+        val result = finishRelayDelivery(
+            messageId = "message-1",
+            outcome = DeliveryOutcome.HANDLED,
+            ack = { ids -> acked += ids; true },
+            queueAck = queued::add,
         )
-        assertEquals(
-            setOf(RelayWorkerExecutionResult.COMPLETE, RelayWorkerExecutionResult.RETRY_REQUIRED),
-            RelayWorkerExecutionResult.entries.toSet(),
-        )
-        val runtime = object : RelayWorkerRuntime {
-            override suspend fun fetchAndProcessExact(messageId: String) = RelayWorkerExecutionResult.COMPLETE
-            override suspend fun drainFiniteBatch() = RelayWorkerExecutionResult.COMPLETE
-        }
-        assertSame(runtime, RelayWorkerRuntimeAvailability.Ready(runtime).runtime)
+
+        assertEquals(RelayHandleResult.COMPLETE, result)
+        assertEquals(listOf(listOf("message-1")), acked)
+        assertTrue(queued.isEmpty())
     }
 
     @Test
-    fun applicationBridgeExposesNoGraphRoomTransportOrPeerCoreType() {
-        val exposed = listOf(RelayWorkerRuntime::class.java, RelayWorkerRuntimeProvider::class.java)
-            .flatMap { type ->
-                type.declaredMethods.flatMap { method ->
-                    listOf(method.genericReturnType.typeName) + method.genericParameterTypes.map { it.typeName }
-                }
-            }
-            .joinToString("\n")
+    fun failedNetworkAckIsQueuedAfterDuplicateDelivery() = runBlocking {
+        val queued = mutableListOf<String>()
 
-        listOf("AppGraph", "Room", "Dao", "BrokerClient", "peer.channel").forEach { token ->
-            assertFalse("worker bridge leaked $token: $exposed", exposed.contains(token))
-        }
+        val result = finishRelayDelivery(
+            messageId = "message-2",
+            outcome = DeliveryOutcome.DUPLICATE,
+            ack = { false },
+            queueAck = queued::add,
+        )
+
+        assertEquals(RelayHandleResult.COMPLETE, result)
+        assertEquals(listOf("message-2"), queued)
+    }
+
+    @Test
+    fun durablyDeferredRelayIsImmediatelyAckable() = runBlocking {
+        val acked = mutableListOf<List<String>>()
+
+        val result = finishRelayDelivery(
+            messageId = "message-deferred",
+            outcome = DeliveryOutcome.DEFERRED,
+            ack = { ids -> acked += ids; true },
+            queueAck = {},
+        )
+
+        assertEquals(RelayHandleResult.COMPLETE, result)
+        assertEquals(listOf(listOf("message-deferred")), acked)
+    }
+
+    @Test
+    fun deferredQuietDelayResetsFromTheLastDistinctArrival() {
+        val now = 1_000_000L
+
+        assertEquals(
+            120_000L,
+            RelayDrainWorker.remainingDeferredQuietDelay(lastDeferredAt = now, now = now),
+        )
+        assertEquals(
+            30_000L,
+            RelayDrainWorker.remainingDeferredQuietDelay(lastDeferredAt = now - 90_000L, now = now),
+        )
+        assertEquals(
+            0L,
+            RelayDrainWorker.remainingDeferredQuietDelay(
+                lastDeferredAt = now - 120_000L,
+                now = now,
+                allowImmediate = true,
+            ),
+        )
+    }
+
+    @Test
+    fun retryableDeliveryRemainsUnacked() = runBlocking {
+        var ackCalled = false
+        val queued = mutableListOf<String>()
+
+        val result = finishRelayDelivery(
+            messageId = "message-3",
+            outcome = DeliveryOutcome.DROPPED,
+            ack = { ackCalled = true; true },
+            queueAck = queued::add,
+        )
+
+        assertEquals(RelayHandleResult.RETRY, result)
+        assertTrue(!ackCalled)
+        assertTrue(queued.isEmpty())
     }
 }

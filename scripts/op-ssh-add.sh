@@ -12,7 +12,7 @@
 #
 # The first three forms resolve the item's private key field automatically
 # (PRIVATE_KEY purpose, falling back to a "private key" label/id match).
-# Requires: 1Password CLI (op or op.exe), OpenSSH ssh-add; item lookups also need jq.
+# Requires: 1Password CLI (op), OpenSSH ssh-add; item lookups also need jq.
 set -euo pipefail
 
 die() {
@@ -34,7 +34,7 @@ ITEM_OR_REFERENCE may be:
   op://Personal/Test SSH Key/private key          human secret reference
   op://Personal/pyxk4slwrfhf4ef2cfgco2dq4m/private_key   copy-secret-reference form
 
-Requires the 1Password CLI (op or op.exe) and ssh-add; item-name lookups also need jq.
+Requires the 1Password CLI (op) and ssh-add; item-name lookups also need jq.
 EOF
 }
 
@@ -44,20 +44,14 @@ case "$arg" in
     '') usage >&2; exit 1 ;;
 esac
 
-if command -v op >/dev/null 2>&1; then
-    OP_CLI="$(command -v op)"
-elif command -v op.exe >/dev/null 2>&1; then
-    OP_CLI="$(command -v op.exe)"
-else
-    die "the 1Password CLI (op or op.exe) was not found"
-fi
+command -v op >/dev/null 2>&1 || die "the 1Password CLI (op) was not found"
 command -v ssh-add >/dev/null 2>&1 || die "ssh-add was not found"
 
 # A full secret reference (vault/item/field) is passed through unchanged: op accepts
 # both the human form ("op://Vault/Item/private key") and the stable reference form
 # ("op://Vault/<item-id>/private_key", as produced by "copy secret reference").
 if [[ "$arg" == op://*/*/* ]]; then
-    "$OP_CLI" read "$arg" | ssh-add - || die "failed to add the SSH key from '$arg'"
+    op read "$arg" | ssh-add - || die "failed to add the SSH key from '$arg'"
     printf 'op-ssh-add: added SSH key from %s\n' "$arg" >&2
     exit 0
 fi
@@ -70,7 +64,7 @@ item_ref="$arg"
 [[ "$item_ref" != op://* && "$item_ref" == */* ]] && item_ref="op://$item_ref" # "Vault/Item" shorthand
 
 item_meta="$(
-    "$OP_CLI" item get "$item_ref" --format json 2>/dev/null | jq -r '
+    op item get "$item_ref" --format json 2>/dev/null | jq -r '
         [
             .id,
             .vault.id,
@@ -93,10 +87,10 @@ if [[ -z "$item_id" || -z "$vault_id" || -z "$field_ref" ]]; then
 fi
 
 secret_ref="op://$vault_id/$item_id/$field_ref"
-if ! "$OP_CLI" read "$secret_ref" | ssh-add -; then
+if ! op read "$secret_ref" | ssh-add -; then
     if [[ -n "$field_label" && "$field_label" != "$field_ref" ]]; then
         # Fallback: address the field by its label instead of its stable reference.
-        "$OP_CLI" read "op://$vault_id/$item_id/$field_label" | ssh-add - ||
+        op read "op://$vault_id/$item_id/$field_label" | ssh-add - ||
             die "failed to add the SSH key from '$item_ref'"
     else
         die "failed to add the SSH key from '$item_ref'"

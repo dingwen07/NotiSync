@@ -1,24 +1,21 @@
 package net.extrawdw.apps.notisync.data
 
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterOrigin
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterRepository
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterReplaceResult
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterRuleSpec
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterSnapshot
-import net.extrawdw.apps.notisync.data.incomingfilter.IncomingFilterUpdate
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
-import net.extrawdw.notisync.protocol.NotificationFilterRule
 import net.extrawdw.notisync.protocol.OriginPlatform
+import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /**
  * Notification-suppression filters RECEIVED from peers over DATA_SYNC ([net.extrawdw.notisync.protocol.DataSyncKind.FILTER]),
@@ -28,32 +25,24 @@ import net.extrawdw.notisync.protocol.OriginPlatform
  * ([recipientsToExclude]) so the notification never reaches that device.
  *
  * Each FILTER is a FULL snapshot: [apply] REPLACES the requester's prior filter (last-writer-wins on
- * [FilterSync.updatedAt]); an empty rule list clears it. The production implementation persists the aggregate
- * through Room; this device never *generates* filters (Android mirroring is customised with notification
- * channels), it only honors inbound ones.
+ * [FilterSync.updatedAt]); an empty rule list clears it. Persisted as JSON in Preferences DataStore and
+ * mirrored in [filters] for the Devices UI. This device never *generates* filters (Android mirroring is
+ * customised with notification channels); it only honors inbound ones.
  */
 class NotificationFilterStore(
-    private val repository: IncomingFilterRepository,
+    private val store: DataStore<Preferences>,
     private val scope: CoroutineScope,
 ) {
-    private val _filters = MutableStateFlow<Map<String, FilterSync>>(emptyMap())
-    private val hydrated = CompletableDeferred<Unit>()
+    private val key = stringPreferencesKey("received_notification_filters_json")
+    private val _filters = MutableStateFlow(load())
 
     /** requesterClientId → the filter snapshot it asked this device to apply. */
     val filters: StateFlow<Map<String, FilterSync>> = _filters
 
-    init {
-        scope.launch {
-            try {
-                repository.observeAll().collect { snapshots ->
-                    _filters.value = snapshots.associate { it.requesterClientId to it.toProtocol() }
-                    hydrated.complete(Unit)
-                }
-            } catch (error: Throwable) {
-                hydrated.completeExceptionally(error)
-                throw error
-            }
-        }
+    private fun load(): Map<String, FilterSync> = runBlocking {
+        store.data.first()[key]?.let {
+            runCatching { ProtocolCodec.decodeFromJson<Map<String, FilterSync>>(it) }.getOrDefault(emptyMap())
+        } ?: emptyMap()
     }
 
     /**
@@ -67,45 +56,27 @@ class NotificationFilterStore(
      */
     fun apply(requesterId: ClientId, filter: FilterSync): Boolean {
         val id = requesterId.value
-        val before = repository.projection.filterFor(id)
-        val result = runBlocking(Dispatchers.IO) {
-            repository.replace(
-                IncomingFilterUpdate(
-                    requesterClientId = id,
-                    updatedAt = filter.updatedAt,
-                    receivedAt = System.currentTimeMillis().coerceAtLeast(1L),
-                    rules = filter.rules.map { rule ->
-                        IncomingFilterRuleSpec(
-                            origin = when (rule.originPlatform) {
-                                OriginPlatform.ANDROID_LOCAL -> IncomingFilterOrigin.ANDROID_LOCAL
-                                OriginPlatform.IOS_ANCS -> IncomingFilterOrigin.IOS_ANCS
-                            },
-                            appId = rule.appId,
-                            channelId = rule.channelId,
-                        )
-                    },
-                ),
-            )
+        val before = _filters.value[id]
+        if (before != null && filter.updatedAt < before.updatedAt) return false   // stale — ignore entirely
+        // Atomic read-modify-write with the LWW check inside, since inbound handlers may run off any thread.
+        _filters.update { current ->
+            val existing = current[id]
+            if (existing != null && filter.updatedAt < existing.updatedAt) current else current + (id to filter)
         }
-        return when (result) {
-            IncomingFilterReplaceResult.INSERTED,
-            IncomingFilterReplaceResult.REPLACED ->
-                (before?.rules?.map { it.origin.toProtocolOrigin() to (it.appId to it.channelId) }?.toSet() ?: emptySet()) !=
-                    filter.rules.map { it.originPlatform to (it.appId to it.channelId) }.toSet()
-            IncomingFilterReplaceResult.UNCHANGED,
-            IncomingFilterReplaceResult.STALE,
-            IncomingFilterReplaceResult.CONFLICT -> false
-        }
+        persist()
+        return (before?.rules?.toSet() ?: emptySet()) != filter.rules.toSet()
     }
 
     /** Forget a peer's filter (e.g. when it is permanently removed from the roster). No-op if absent. */
     fun remove(requesterId: ClientId) {
         val id = requesterId.value
-        runBlocking(Dispatchers.IO) { repository.remove(id) }
+        if (id !in _filters.value) return
+        _filters.update { it - id }
+        persist()
     }
 
     /** The filter a [requesterId] currently asks us to apply — for the Devices "filters" sheet. */
-    fun filterFor(requesterId: ClientId): FilterSync? = repository.projection.filterFor(requesterId.value)?.toProtocol()
+    fun filterFor(requesterId: ClientId): FilterSync? = _filters.value[requesterId.value]
 
     /**
      * The requester client ids whose stored filter matches [notif] — the devices to drop from this capture's
@@ -113,20 +84,19 @@ class NotificationFilterStore(
      * linear in (stored peers × their rules), both tiny.
      */
     fun recipientsToExclude(notif: CapturedNotification): Set<ClientId> {
-        val origin = when (notif.originPlatform) {
-            OriginPlatform.ANDROID_LOCAL -> IncomingFilterOrigin.ANDROID_LOCAL
-            OriginPlatform.IOS_ANCS -> IncomingFilterOrigin.IOS_ANCS
-        }
-        return repository.projection.recipientsToExclude(
-            origin = origin,
-            packageName = notif.packageName,
-            iosBundleId = notif.iosBundleId,
-            channelId = notif.channelId,
-        ).mapTo(linkedSetOf()) { ClientId(it) }
+        val current = _filters.value
+        if (current.isEmpty()) return emptySet()
+        val appId = appIdentifier(notif.packageName, notif.iosBundleId)
+        val channelId = notif.channelId?.trim()?.takeIf { it.isNotEmpty() }
+        return current.entries
+            .filter { (_, filter) -> matches(filter, notif.originPlatform, appId, channelId) }
+            .mapTo(mutableSetOf()) { (id, _) -> ClientId(id) }
     }
 
-    /** Completes after the Room projection has loaded the first complete filter snapshot. */
-    suspend fun awaitHydrated() = hydrated.await()
+    private fun persist() {
+        val json = ProtocolCodec.encodeToJson(_filters.value)
+        scope.launch { store.edit { it[key] = json } }
+    }
 
     companion object {
         /**
@@ -159,23 +129,4 @@ class NotificationFilterStore(
             }
         }
     }
-}
-
-private fun IncomingFilterSnapshot.toProtocol(): FilterSync = FilterSync(
-    rules = rules.map { rule ->
-        NotificationFilterRule(
-            originPlatform = when (rule.origin) {
-                IncomingFilterOrigin.ANDROID_LOCAL -> OriginPlatform.ANDROID_LOCAL
-                IncomingFilterOrigin.IOS_ANCS -> OriginPlatform.IOS_ANCS
-            },
-            appId = rule.appId,
-            channelId = rule.channelId,
-        )
-    },
-    updatedAt = updatedAt,
-)
-
-private fun IncomingFilterOrigin.toProtocolOrigin(): OriginPlatform = when (this) {
-    IncomingFilterOrigin.ANDROID_LOCAL -> OriginPlatform.ANDROID_LOCAL
-    IncomingFilterOrigin.IOS_ANCS -> OriginPlatform.IOS_ANCS
 }

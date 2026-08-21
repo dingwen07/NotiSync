@@ -506,7 +506,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
             // (e.g. after a NotiSync update). They're still registered so their dismissals sync — only the
             // SEND is gated by the persisted high-water mark of mirrored post times.
             graph.scope.launch {
-                val cutoff = runCatching { graph.profileCapture.lastSeenPostTime() }.getOrDefault(0L)
+                val cutoff = runCatching { graph.settings.lastSeenPostTime() }.getOrDefault(0L)
                 runCatching { activeNotifications }.getOrNull()
                     ?.forEach { handlePosted(it, cutoff, graph) }
             }
@@ -914,7 +914,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         // before a restart (postTime at/under the persisted high-water mark).
         if (unchanged) return
         if (backfillCutoff != null && sbn.postTime <= backfillCutoff) return
-        graph.profileCapture.updateLastSeenPostTime(sbn.postTime)
+        graph.settings.updateLastSeenPostTime(sbn.postTime)
 
         // In-place UPDATE: media playback updates (even from clearable/non-ongoing rows) and platform-ongoing
         // notification updates refresh an existing mirror instead of posting a second alert. Media chooses

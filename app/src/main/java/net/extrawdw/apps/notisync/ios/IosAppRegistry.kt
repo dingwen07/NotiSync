@@ -1,16 +1,18 @@
 package net.extrawdw.apps.notisync.ios
 
-import kotlinx.coroutines.CancellationException
+import androidx.datastore.core.DataStore
+import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.edit
+import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
-import net.extrawdw.apps.notisync.data.iosregistry.IosAppRegistryLimits
-import net.extrawdw.apps.notisync.data.iosregistry.IosAppRegistryRepository
+import net.extrawdw.notisync.protocol.ProtocolCodec
 
 /** A discovered iOS app: bundle id + best-known display name + last-seen time. */
 @Serializable
@@ -40,139 +42,101 @@ internal object IosBundleIdExclusions {
  * discovered set persists so previously seen apps survive process death, and a forgotten app reappears the
  * next time ANCS reports it.
  */
-interface IosAppRegistry {
-    val enabled: StateFlow<Set<String>>
-    val discovered: StateFlow<Map<String, IosApp>>
-    suspend fun isEnabled(bundleId: String): Boolean
-    fun setEnabled(bundleId: String, enabled: Boolean)
-    fun setEnabled(bundleIds: Collection<String>, enabled: Boolean)
-    fun recordSeen(bundleId: String, displayName: String, timeMillis: Long)
-    fun forgetSeen(bundleId: String)
-    suspend fun awaitHydrated()
-}
+class IosAppRegistry(private val store: DataStore<Preferences>, private val scope: CoroutineScope) {
+    private val enabledKey = stringPreferencesKey("ancs_enabled_bundles_json")
+    private val discoveredKey = stringPreferencesKey("ancs_discovered_apps_json")
 
-/** Room-backed adapter retaining the bridge/UI behavior port without a legacy DataStore business store. */
-internal class RoomBackedIosAppRegistry(
-    private val repository: IosAppRegistryRepository,
-    private val scope: CoroutineScope,
-) : IosAppRegistry {
+    // Start empty and hydrate asynchronously: a blocking DataStore read in the constructor would stall the
+    // main thread (this is built in AppGraph.init on every cold start). The bridge takes seconds to connect,
+    // so the load lands well before the first notification; the UI just fills in once it arrives.
     private val _enabled = MutableStateFlow<Set<String>>(emptySet())
-    override val enabled: StateFlow<Set<String>> = _enabled
+    val enabled: StateFlow<Set<String>> = _enabled
 
+    // Persisted so the iOS-apps list survives process death (the bridge often outlives a UI process).
     private val _discovered = MutableStateFlow<Map<String, IosApp>>(emptyMap())
-    override val discovered: StateFlow<Map<String, IosApp>> = _discovered
+    val discovered: StateFlow<Map<String, IosApp>> = _discovered
 
-    private val enabledHydrated = CompletableDeferred<Unit>()
-    private val discoveredHydrated = CompletableDeferred<Unit>()
+    // Completed once the persisted allowlist has loaded; [isEnabled] awaits it so a notification arriving in
+    // the startup window is never dropped as "not enabled" before the user's opt-ins are available.
+    private val hydrated = CompletableDeferred<Unit>()
 
     init {
         scope.launch {
             try {
-                repository.observeAllowlisted().collect { rows ->
-                    _enabled.value = IosBundleIdExclusions.filterEnabled(rows.mapTo(linkedSetOf()) { it.bundleId })
-                    enabledHydrated.complete(Unit)
-                }
-            } catch (error: Throwable) {
-                enabledHydrated.completeExceptionally(error)
-                if (error is CancellationException) throw error
-                throw error
-            }
-        }
-        scope.launch {
-            try {
-                repository.observeSeen().collect { rows ->
-                    _discovered.value = rows.associate { row ->
-                        row.bundleId to IosApp(row.bundleId, row.displayName, row.lastSeenAt)
+                val prefs = runCatching { store.data.first() }.getOrNull()
+                if (prefs != null) {
+                    prefs[enabledKey]?.let { json ->
+                        runCatching { ProtocolCodec.decodeFromJson<Set<String>>(json) }.getOrNull()
                     }
-                    discoveredHydrated.complete(Unit)
+                        ?.let { loaded -> _enabled.update { inSession -> loaded + inSession } } // keep any enable that raced in
+                    prefs[discoveredKey]?.let { json ->
+                        runCatching { ProtocolCodec.decodeFromJson<Map<String, IosApp>>(json) }.getOrNull()
+                    }
+                        ?.let { loaded -> _discovered.update { inSession -> loaded + inSession } } // a recordSeen during load wins
                 }
-            } catch (error: Throwable) {
-                discoveredHydrated.completeExceptionally(error)
-                if (error is CancellationException) throw error
-                throw error
+            } finally {
+                hydrated.complete(Unit) // always release awaiters, even on a failed/cancelled load
             }
         }
     }
 
-    override suspend fun awaitHydrated() {
-        enabledHydrated.await()
-        discoveredHydrated.await()
-    }
-
-    override suspend fun isEnabled(bundleId: String): Boolean {
-        requireBundleId(bundleId)
-        enabledHydrated.await()
+    /** Suspends until the persisted allowlist has loaded, then answers — so an iOS notification arriving in
+     *  the startup window isn't silently dropped as "not enabled" before the user's opt-ins are available. */
+    suspend fun isEnabled(bundleId: String): Boolean {
+        hydrated.await()
         return !IosBundleIdExclusions.isExcluded(bundleId) && bundleId in _enabled.value
     }
 
-    override fun setEnabled(bundleId: String, enabled: Boolean) {
-        requireBundleId(bundleId)
-        if (IosBundleIdExclusions.isExcluded(bundleId)) {
-            _enabled.update { it - bundleId }
-            return
+    fun setEnabled(bundleId: String, enabled: Boolean) {
+        _enabled.update {
+            if (IosBundleIdExclusions.isExcluded(bundleId)) {
+                it - bundleId
+            } else if (enabled) {
+                it + bundleId
+            } else {
+                it - bundleId
+            }
         }
-        _enabled.update { current -> if (enabled) current + bundleId else current - bundleId }
-        scope.launch {
-            enabledHydrated.await()
-            repository.setEnabled(bundleId, enabled)
-        }
+        val json = ProtocolCodec.encodeToJson(_enabled.value)
+        scope.launch { store.edit { it[enabledKey] = json } }
     }
 
-    override fun setEnabled(bundleIds: Collection<String>, enabled: Boolean) {
+    /** Bulk-set mirroring for [bundleIds] in a single persisted write; excluded ids are never enabled. */
+    fun setEnabled(bundleIds: Collection<String>, enabled: Boolean) {
         if (bundleIds.isEmpty()) return
-        bundleIds.forEach(::requireBundleId)
-        val allowed = bundleIds.filterNot(IosBundleIdExclusions::isExcluded).distinct()
-        _enabled.update { current -> if (enabled) current + allowed else current - bundleIds }
-        scope.launch {
-            enabledHydrated.await()
-            allowed.forEach { repository.setEnabled(it, enabled) }
+        _enabled.update { current ->
+            if (enabled) current + bundleIds.filterNot { IosBundleIdExclusions.isExcluded(it) }
+            else current - bundleIds
         }
+        val json = ProtocolCodec.encodeToJson(_enabled.value)
+        scope.launch { store.edit { it[enabledKey] = json } }
     }
 
-    override fun recordSeen(bundleId: String, displayName: String, timeMillis: Long) {
-        requireBundleId(bundleId)
-        requireDisplayName(displayName)
-        require(timeMillis > 0) { "iOS app last-seen time must be positive" }
+    /** Record that [bundleId] (named [displayName]) just posted, so the tab can surface it for opt-in. */
+    fun recordSeen(bundleId: String, displayName: String, timeMillis: Long) {
         val existing = _discovered.value[bundleId]
         if (existing != null && timeMillis <= existing.lastSeen && displayName == existing.displayName) return
         _discovered.update {
             it + (bundleId to IosApp(
-                bundleId = bundleId,
-                displayName = displayName,
-                lastSeen = maxOf(timeMillis, existing?.lastSeen ?: 0L),
+                bundleId,
+                displayName,
+                maxOf(timeMillis, existing?.lastSeen ?: 0L)
             ))
         }
-        // Last-seen recency is useful to the current picker but not a correctness boundary. Keep it live in
-        // memory and write only new apps/name changes, matching the old deliberate write-throttling behavior.
+        // Persist only when the app set or its display name changes — NOT on every lastSeen bump, which would
+        // re-serialize the whole (unbounded) map and disk-write on every incoming notification. lastSeen stays
+        // live in memory for sort order and is flushed opportunistically with the next new-app / rename write.
         if (existing == null || existing.displayName != displayName) {
-            scope.launch {
-                discoveredHydrated.await()
-                repository.recordSeen(bundleId, displayName, timeMillis)
-            }
+            val json = ProtocolCodec.encodeToJson(_discovered.value)
+            scope.launch { store.edit { it[discoveredKey] = json } }
         }
     }
 
-    override fun forgetSeen(bundleId: String) {
-        requireBundleId(bundleId)
+    /** Forget a discovered app from the iOS tab's list only — it reappears the next time ANCS sees it. */
+    fun forgetSeen(bundleId: String) {
         if (bundleId !in _discovered.value) return
         _discovered.update { it - bundleId }
-        scope.launch {
-            discoveredHydrated.await()
-            repository.forgetSeen(bundleId)
-        }
+        val json = ProtocolCodec.encodeToJson(_discovered.value)
+        scope.launch { store.edit { it[discoveredKey] = json } }
     }
-}
-
-private fun requireBundleId(bundleId: String) {
-    require(
-        bundleId.isNotBlank() && bundleId.length <= IosAppRegistryLimits.MAX_BUNDLE_ID_CHARS,
-    ) { "iOS bundle id is invalid" }
-    require(bundleId.none(Char::isISOControl)) { "iOS bundle id contains control characters" }
-}
-
-private fun requireDisplayName(displayName: String) {
-    require(
-        displayName.isNotBlank() && displayName.length <= IosAppRegistryLimits.MAX_DISPLAY_CHARS,
-    ) { "iOS display name is invalid" }
-    require(displayName.none(Char::isISOControl)) { "iOS display name contains control characters" }
 }

@@ -97,11 +97,7 @@ class SshKeySendActivity : ComponentActivity() {
     override fun onDestroy() {
         authenticationCancellation?.cancel()
         authenticationCancellation = null
-        pendingExport?.let { prepared ->
-            graph?.sshKeyProviderStore?.let { store ->
-                lifecycleScope.launch { withContext(Dispatchers.IO) { store.cancelExport(prepared) } }
-            }
-        }
+        pendingExport?.let { prepared -> graph?.sshKeyProviderStore?.cancelExport(prepared) }
         pendingExport = null
         super.onDestroy()
     }
@@ -143,10 +139,8 @@ class SshKeySendActivity : ComponentActivity() {
         val handled = AtomicBoolean(false)
         fun cancelPrepared(message: String) {
             if (pendingExport === prepared) pendingExport = null
-            lifecycleScope.launch {
-                withContext(Dispatchers.IO) { graph.sshKeyProviderStore.cancelExport(prepared) }
-                showError(message)
-            }
+            graph.sshKeyProviderStore.cancelExport(prepared)
+            showError(message)
         }
         val prompt = BiometricPrompt.Builder(this)
             .setTitle(getString(R.string.ssh_agent_send_auth_title))
@@ -191,10 +185,8 @@ class SshKeySendActivity : ComponentActivity() {
                             showError(getString(R.string.ssh_agent_send_peer_unavailable))
                         }
                     }.onFailure {
-                        lifecycleScope.launch {
-                            withContext(Dispatchers.IO) { graph.sshKeyProviderStore.cancelExport(prepared) }
-                            showError(it.message ?: getString(R.string.ssh_agent_send_failed))
-                        }
+                        graph.sshKeyProviderStore.cancelExport(prepared)
+                        showError(it.message ?: getString(R.string.ssh_agent_send_failed))
                     }
                 }
             }

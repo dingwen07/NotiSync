@@ -18,24 +18,6 @@ class SenderKey(
 )
 
 /**
- * One immutable outbound audience decision. Recipient key bytes are copied on construction and every read so a
- * directory update or caller mutation cannot change the exact audience after policy validation.
- */
-class AudienceSnapshot(
-    recipients: List<RecipientKey>,
-    unsealableRecipientIds: Set<ClientId> = emptySet(),
-) {
-    private val recipientSnapshot = recipients.map(RecipientKey::defensiveCopy)
-    private val unsealableSnapshot = unsealableRecipientIds.toSet()
-
-    val recipients: List<RecipientKey>
-        get() = recipientSnapshot.map(RecipientKey::defensiveCopy)
-
-    val unsealableRecipientIds: Set<ClientId>
-        get() = unsealableSnapshot.toSet()
-}
-
-/**
  * The read-only port [SecureChannel] depends on for its only two directory needs: authenticate a
  * sender by id, and enumerate a recipient set for a scope. The channel DEFINES this interface; the
  * trust foundation IMPLEMENTS it — so key material flows foundation → channel with no back-edge, and
@@ -50,16 +32,15 @@ interface PeerDirectory {
      */
     fun resolveSender(id: ClientId, signerEpoch: Int): SenderKey?
 
-    /**
-     * Resolve the recipient keys and every targeted trusted peer that is temporarily unsealable from one directory
-     * state version. Implementations must not assemble this from independently changing reads. The channel freezes
-     * this snapshot for the complete batch; missing-key peers drive the same convergence repair as inbound misses.
-     */
-    fun resolveAudience(scope: Recipients): AudienceSnapshot
-}
+    /** The recipient keys for a [scope] (each bound to the recipient's current HPKE epoch); empty when no
+     *  device matches (the channel then no-ops the send). */
+    fun recipients(scope: Recipients): List<RecipientKey>
 
-private fun RecipientKey.defensiveCopy(): RecipientKey = RecipientKey(
-    clientId = clientId,
-    hpkePublicKey = hpkePublicKey.copyOf(),
-    recipientEpoch = recipientEpoch,
-)
+    /**
+     * Trusted peers the [scope] targets that are NOT currently sealable — no usable key-epoch held (missing,
+     * expired, or stripped). Such a peer is silently absent from [recipients], so a send would otherwise never
+     * repair it on the sender's initiative. The channel feeds these to the same key-epoch refetch the receive
+     * path uses (an unresolved sender), so *attempting to deliver* drives a broker pull. Empty by default.
+     */
+    fun unsealableRecipients(scope: Recipients): Set<ClientId> = emptySet()
+}

@@ -63,20 +63,9 @@ enum class SshOperationalKeyProvider {
     ANDROID_KEYSTORE_AES_WRAPPED,
 }
 @Serializable
-enum class SshStorageSecurityLevel {
-    STRONGBOX,
-    TRUSTED_ENVIRONMENT,
-    SOFTWARE,
-    UNKNOWN_SECURE,
-    UNKNOWN,
-}
+enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT }
 @Serializable
-enum class SshExportCopyBackendPolicy {
-    BEST_AVAILABLE,
-
-    /** Skip the StrongBox preference and use the default Android Keystore backend. */
-    TEE_ONLY,
-}
+enum class SshExportCopyBackendPolicy { BEST_AVAILABLE, TEE_ONLY }
 @Serializable
 enum class SshExportCopyAuthentication { STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE }
 @Serializable
@@ -164,7 +153,14 @@ data class SshOperationalKeyProtection(
     @CborLabel(4) val strongBoxFallback: Boolean,
 ) {
     fun validationError(): String? = when {
+        securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "operational key must be hardware-backed"
+        securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
+            "operational StrongBox storage requires an attempt"
         strongBoxFallback && !strongBoxAttempted -> "operational StrongBox fallback requires an attempt"
+        strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "operational StrongBox fallback must end in TEE"
         strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
             "successful operational StrongBox attempt must report StrongBox"
         else -> null
@@ -180,9 +176,19 @@ data class SshExportCopyProtection(
     @CborLabel(4) val strongBoxFallback: Boolean,
 ) {
     fun validationError(): String? = when {
+        securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "export copy must be hardware-encrypted"
+        securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
+            "export-copy StrongBox storage requires an attempt"
         backendPolicy == SshExportCopyBackendPolicy.TEE_ONLY && strongBoxAttempted ->
-            "default-backend export copy cannot attempt StrongBox"
+            "TEE-only export copy cannot attempt StrongBox"
+        backendPolicy == SshExportCopyBackendPolicy.TEE_ONLY &&
+            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "TEE-only export copy must use TEE"
         strongBoxFallback && !strongBoxAttempted -> "export-copy StrongBox fallback requires an attempt"
+        strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+            "export-copy StrongBox fallback must end in TEE"
         strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
             "successful export-copy StrongBox attempt must report StrongBox"
         else -> null

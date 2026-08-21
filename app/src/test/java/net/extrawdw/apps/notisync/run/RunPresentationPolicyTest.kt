@@ -6,7 +6,6 @@ import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import net.extrawdw.apps.notisync.data.run.RunKey
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunBlockedReason
 import net.extrawdw.notisync.protocol.RunLlmSummary
@@ -129,16 +128,16 @@ class RunPresentationPolicyTest {
 
     @Test
     fun runKeyRoundTripsWithoutDelimiterAmbiguity() {
-        val key = RunKey(ClientId("host"), "run/with punctuation")
+        val key = RunKey("host", "run/with punctuation")
         assertEquals(key, RunKey.decode(key.encoded()))
         assertEquals(null, RunKey.decode("malformed"))
     }
 
     @Test
     fun notificationIdentityIsStableAndScopedToTheExactRun() {
-        val key = RunKey(ClientId("host"), "run/with punctuation")
-        val repeated = RunKey(ClientId("host"), "run/with punctuation")
-        val other = RunKey(ClientId("host"), "another-run")
+        val key = RunKey("host", "run/with punctuation")
+        val repeated = RunKey("host", "run/with punctuation")
+        val other = RunKey("host", "another-run")
 
         assertEquals(runNotificationTag(key), runNotificationTag(repeated))
         assertEquals(runNotificationId(key), runNotificationId(repeated))
