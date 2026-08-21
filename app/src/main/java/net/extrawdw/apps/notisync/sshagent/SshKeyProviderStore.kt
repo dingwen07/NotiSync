@@ -497,7 +497,9 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun updateKnownHostHostname(hostKeySha256: ByteArray, hostname: String): Boolean {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
-        val values = ContentValues().apply { put("hostname", hostname) }
+        val values = ContentValues().apply {
+            if (hostname.isBlank()) putNull("hostname") else put("hostname", hostname)
+        }
         val changed = writableDatabase.update(
             "ssh_known_hosts",
             values,
@@ -2047,6 +2049,7 @@ class SshKeyProviderStore(context: Context) :
         requestId: String,
         provider: ClientId,
         now: Long,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -2059,10 +2062,15 @@ class SshKeyProviderStore(context: Context) :
             expireDue(now)
             return null
         }
+        val name = displayName.trim()
+        require(name.isNotEmpty() && name.encodeToByteArray().size <= SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) {
+            "key name is outside the allowed bounds"
+        }
         val attempt = import(
             request,
             provider,
             now,
+            name,
             allowExport,
             exportCopyBackendPolicy,
             userVerificationPolicy,
@@ -2589,6 +2597,7 @@ class SshKeyProviderStore(context: Context) :
         request: SshImportRequest,
         provider: ClientId,
         now: Long,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -2639,7 +2648,7 @@ class SshKeyProviderStore(context: Context) :
                     publicKey = material.publicKey,
                     publicBlob = material.publicBlob,
                     algorithm = material.algorithm,
-                    displayName = boundedImportName(request.suggestedName ?: material.comment),
+                    displayName = displayName,
                     origin = if (request.sourceType == SshImportSourceType.AGENT_IDENTITY) {
                         SshKeyOrigin.AGENT_ADD
                     } else {

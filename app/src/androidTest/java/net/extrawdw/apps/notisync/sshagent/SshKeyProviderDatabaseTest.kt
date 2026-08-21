@@ -85,6 +85,20 @@ class SshKeyProviderDatabaseTest {
     }
 
     @Test
+    fun blankKnownHostHostnameIsStoredAsUnset() {
+        store = SshKeyProviderStore(context)
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        requireNotNull(store).writableDatabase.execSQL(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, 'old name', 1, 1)",
+            arrayOf(hostKeySha256),
+        )
+
+        assertTrue(requireNotNull(store).updateKnownHostHostname(hostKeySha256, "  "))
+        assertEquals(null, requireNotNull(store).knownHostHostname(hostKeySha256))
+    }
+
+    @Test
     fun knownHostEntryCanBeDeleted() {
         store = SshKeyProviderStore(context)
         val hostKeySha256 = ByteArray(32) { it.toByte() }

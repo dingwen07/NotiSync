@@ -47,14 +47,14 @@
     <string name="ssh_agent_fingerprint">指纹</string>
     <string name="ssh_agent_passphrase">密码</string>
     <string name="ssh_agent_import_passphrase_prompt">此私钥受密码保护。请输入密码以检查密钥。</string>
-    <string name="ssh_agent_import_storage_help">支持 OpenSSH 和 PuTTY PPK v2/v3 密钥。签名始终使用不可导出的 Android Keystore 密钥；导出副本独立且可选。</string>
+    <string name="ssh_agent_import_storage_help">支持 OpenSSH 和 PuTTY PPK v2/v3 私钥。</string>
     <string name="ssh_agent_import_text">粘贴密钥</string>
     <string name="ssh_agent_export">导出私钥</string>
     <string name="ssh_agent_export_title">导出 SSH 私钥</string>
-    <string name="ssh_agent_export_password">导出密码（可选）</string>
-    <string name="ssh_agent_export_password_confirm">确认导出密码</string>
-    <string name="ssh_agent_export_password_help">密码会独立于此设备加密导出的 PKCS#8 PEM。以后导入时需要输入相同密码。</string>
-    <string name="ssh_agent_export_password_mismatch">两次输入的密码不一致。</string>
+    <string name="ssh_agent_export_password">导出密语（可选）</string>
+    <string name="ssh_agent_export_password_confirm">确认导出密语</string>
+    <string name="ssh_agent_export_password_help">使用密语保护导出的私钥。</string>
+    <string name="ssh_agent_export_password_mismatch">两次输入的密语不一致。</string>
     <string name="ssh_agent_export_plaintext_warning">两个字段都留空会以明文形式导出私钥。</string>
     <string name="ssh_agent_export_choose_location">选择私钥的保存位置</string>
     <string name="ssh_agent_export_preparing">正在准备私钥导出</string>
@@ -74,9 +74,9 @@
     <string name="ssh_agent_key_name">密钥名称</string>
     <string name="ssh_agent_rsa_key_size">RSA 密钥大小</string>
     <string name="ssh_agent_export_settings">导出</string>
-    <string name="ssh_agent_keep_export_backup">保留导出副本</string>
-    <string name="ssh_agent_export_copy_force_tee">导出副本使用 TEE</string>
-    <string name="ssh_agent_export_copy_auth_help">每次导出都需要强生物识别或设备 PIN、图案或密码。除非选择 TEE，否则会先尝试 StrongBox。</string>
+    <string name="ssh_agent_keep_export_backup">允许导出此密钥</string>
+    <string name="ssh_agent_export_copy_skip_strongbox">使用 Android Keystore 的默认保护机制保护导出副本</string>
+    <string name="ssh_agent_export_copy_auth_help">导出私钥时需要强生物识别或设备解锁凭据。优先使用 StrongBox 来保护导出用的私钥。</string>
     <string name="ssh_agent_signing_storage">签名密钥</string>
     <string name="ssh_agent_export_auth_unavailable">导出副本需要强生物识别或设备屏幕锁定。</string>
     <string name="ssh_agent_require_biometric_each_use">每次签名都要求强生物识别验证</string>
@@ -89,8 +89,8 @@
     <string name="ssh_agent_request_unavailable">此 SSH 签名请求已不可用。</string>
     <string name="ssh_agent_storage_auth_cancelled">已取消 SSH 密钥存储。</string>
     <string name="ssh_agent_storage_auth_lost">已验证的 SSH 密钥存储操作已丢失。</string>
-    <string name="ssh_agent_generated_device_bound">在 Android Keystore 中生成，不可导出。</string>
-    <string name="ssh_agent_generated_exportable">设置时由应用短暂处理，随后用于受保护的签名和导出。</string>
+    <string name="ssh_agent_generated_device_bound">在 StrongBox 或 TEE 中生成。私钥材料不会进入应用处理器或内核可访问的内存，也无法导出。</string>
+    <string name="ssh_agent_generated_exportable">不在安全硬件中生成。设置期间，私钥材料会存在于应用处理器和内核可访问的主内存中；随后由 Android Keystore 保护，用于签名和导出。</string>
     <string name="ssh_agent_non_exportable">不可用</string>
     <string name="ssh_agent_key_details">密钥详情</string>
     <string name="ssh_agent_key_storage">密钥存储</string>
@@ -105,7 +105,7 @@
     <string name="ssh_agent_approval_policy">批准策略</string>
     <string name="ssh_agent_approval_always">始终询问</string>
     <string name="ssh_agent_approval_remember">允许记住</string>
-    <string name="ssh_agent_approval_help">在批准请求时长按“允许”按钮来记住授权。</string>
+    <string name="ssh_agent_approval_help">审核时长按“批准”可记住此授权。</string>
     <string name="ssh_agent_remembered_authorizations">已记住的授权</string>
     <string name="ssh_agent_no_remembered_authorizations">此密钥没有已记住的授权。</string>
     <string name="ssh_agent_remembered_peer_scope">所有主机</string>
@@ -120,10 +120,8 @@
     <string name="ssh_agent_no_keys">暂无 SSH 密钥。可在此生成，或从其它设备使用 ssh-add 导入。</string>
     <string name="ssh_agent_no_hosts">首次批准请求后，已验证的 SSH 主机密钥指纹会显示在这里。</string>
     <string name="ssh_agent_no_history">SSH 签名和导入请求会显示在这里。</string>
-    <string name="ssh_agent_host_no_hostname">未设置主机名</string>
     <string name="ssh_agent_host_set_hostname">设置 SSH 主机名</string>
     <string name="ssh_agent_host_hostname">主机名</string>
-    <string name="ssh_agent_host_hostname_help">作为未经验证的字符串存储，不进行主机名验证；主机密钥指纹仍是主机身份。</string>
     <string name="ssh_agent_host_delete_title">忘记 SSH 主机？</string>
     <string name="ssh_agent_host_delete_body">从已保存的 SSH 主机中移除 %1$s？这会移除其主机名和指纹条目，但不会更改已记住的密钥授权。</string>
     <string name="ssh_agent_host_delete_confirm">忘记主机</string>
@@ -200,7 +198,6 @@
     <string name="ssh_agent_remember_peer">%1$s</string>
     <string name="ssh_agent_remember_peer_host">%1$s + 此主机</string>
     <string name="ssh_agent_remember_pending_help">选择范围以批准此请求，并记住以后对此密钥的使用授权。</string>
-    <string name="ssh_agent_remember_unavailable">此请求无法记住授权。密钥必须允许记住授权且不要求每次使用时验证身份，请求也不能要求确认。</string>
     <string name="ssh_agent_remember_auth_title">授权记忆 SSH 访问</string>
     <string name="ssh_agent_remember_peer_subtitle">允许 %1$s 使用该密钥，而无需再次批准</string>
     <string name="ssh_agent_remember_peer_host_subtitle">仅对此主机允许 %1$s 使用该密钥，而无需再次批准</string>
@@ -272,10 +269,10 @@
     <string name="seal_signing_action">正在签名…</string>
     <string name="seal_close">关闭</string>
     <string name="seal_back_to_history">返回 Seal 历史</string>
-    <string name="seal_details_unavailable">此较早请求的提交详情不可用。</string>
+    <string name="seal_details_unavailable">提交详情不可用。</string>
     <string name="seal_request_unavailable">此提交请求不可用。</string>
     <string name="seal_request_invalid">无法显示此提交请求。</string>
-    <string name="seal_request_changed">OpenKeychain 打开期间，请求发生了变化。</string>
+    <string name="seal_request_changed">此请求已更改。请在签名前重新审核。</string>
     <string name="seal_not_ready">NotiSync Seal 尚未就绪。</string>
     <string name="seal_notification_title_with_commit">Git 提交签名 · %1$s</string>
     <string name="seal_notification_body">%1$s 请求为一个 Git 提交签名</string>
@@ -284,7 +281,7 @@
     <string name="seal_notification_identifiers">请求 %1$s 的哈希为 %2$s</string>
     <string name="seal_notification_channel_description">Git 提交签名请求</string>
     <string name="seal_notification_public_content">有待审核的 Git 提交签名请求。</string>
-    <string name="seal_history_details_truncated">为保持历史记录流畅，部分提交详情已截断。</string>
+    <string name="seal_history_details_truncated">部分提交详情未显示。</string>
 
     <string name="run_notification_channel_description">来自 %1$s 的运行状态和警报</string>
     <string name="run_command_fallback">命令</string>

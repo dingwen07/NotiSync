@@ -103,6 +103,7 @@ class SshAgentProviderEngine(
 
     fun approveImport(
         requestId: String,
+        displayName: String,
         allowExport: Boolean,
         exportCopyBackendPolicy: SshExportCopyBackendPolicy,
         userVerificationPolicy: SshUserVerificationPolicy,
@@ -112,6 +113,7 @@ class SshAgentProviderEngine(
             requestId,
             providerClientId,
             now(),
+            displayName,
             allowExport,
             exportCopyBackendPolicy,
             userVerificationPolicy,
