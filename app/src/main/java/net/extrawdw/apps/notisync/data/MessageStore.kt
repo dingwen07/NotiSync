@@ -4,6 +4,11 @@ import android.content.ContentValues
 import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
+import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
 import net.extrawdw.notisync.peer.channel.MessageDedup
 import net.extrawdw.apps.notisync.domain.MirrorAckIndex
 import net.extrawdw.apps.notisync.domain.MirrorLifecycleStore
@@ -13,10 +18,9 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RelayAck
 
 /**
- * Durable, restart-surviving message bookkeeping for the receive path, backed by a tiny SQLite db in
- * app-private storage (so it persists across an app update / package replace, the exact case where the
- * in-memory channel dedup was being wiped and the broker's un-acked backlog re-posted). The same ledger
- * also owns the durable deferred inbox and notification lifecycle watermarks.
+ * Durable, restart-surviving message bookkeeping for the receive path. After the Room v1 cutover,
+ * transport-neutral relay state lives in Core while notification mappings and lifecycle watermarks
+ * live in Operational. The retained known-good database still contains both groups before cutover.
  *
  *  * **dedup** — every relay message id we've durably handled, kept [RETENTION_MS] (≥ the broker's
  *    relay TTL, so any redelivery of a still-queued item is always recognised). Implements
@@ -43,49 +47,50 @@ data class RelayInboxItem(
 enum class InboxInsertResult { INSERTED, EXISTS, FAILED }
 
 class MessageStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION),
+    SQLiteOpenHelper(
+        context.applicationContext,
+        context.operationalDatabaseName(DB_NAME),
+        null,
+        context.operationalDatabaseVersion(VERSION),
+    ),
     MessageDedup,
     MirrorAckIndex,
     MirrorLifecycleStore {
+    private val appContext = context.applicationContext
+    private val coreHelper =
+        if (appContext.usesRoomStorage) CoreMessageStoreHelper(appContext) else null
+    private val coreReadableDatabase: SQLiteDatabase
+        get() = coreHelper?.readableDatabase ?: readableDatabase
+    private val coreWritableDatabase: SQLiteDatabase
+        get() = coreHelper?.writableDatabase ?: writableDatabase
+
+    init {
+        // Every legacy helper sharing a Room-owned file must request WAL before its first connection.
+        setWriteAheadLoggingEnabled(true)
+    }
 
     private fun now(): Long = System.currentTimeMillis()
 
-    override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
-    }
-
     override fun onCreate(db: SQLiteDatabase) {
-        // IF NOT EXISTS + an additive onUpgrade means a future schema-version bump never drops these
-        // tables (which would re-wipe the dedup and reintroduce the very bug this fixes).
-        db.execSQL("CREATE TABLE IF NOT EXISTS dedup (message_id TEXT PRIMARY KEY, handled_at INTEGER NOT NULL)")
-        db.execSQL("CREATE TABLE IF NOT EXISTS pending_ack (message_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)")
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS mirror_msg (" +
-                    "source_client TEXT NOT NULL, source_key TEXT NOT NULL, message_id TEXT NOT NULL, " +
-                    "recorded_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
-        )
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS relay_inbox (" +
-                "message_id TEXT PRIMARY KEY, envelope BLOB NOT NULL, accepted_at INTEGER NOT NULL, " +
-                "delivery_mode TEXT NOT NULL, received_at INTEGER NOT NULL, early_ack INTEGER NOT NULL)"
-        )
-        db.execSQL("CREATE TABLE IF NOT EXISTS message_meta (name TEXT PRIMARY KEY, long_value INTEGER NOT NULL)")
-        db.execSQL(
-            "CREATE TABLE IF NOT EXISTS mirror_lifecycle (" +
-                "source_client TEXT NOT NULL, source_key TEXT NOT NULL, post_time INTEGER, " +
-                "dismissed_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
-        )
-        db.execSQL("CREATE INDEX IF NOT EXISTS relay_inbox_accepted_idx ON relay_inbox (accepted_at, received_at)")
+        // The retained legacy database owns both groups. After cutover Room creates each target before
+        // this helper opens it, so this callback is only a defensive additive fallback.
+        if (!appContext.usesRoomStorage) createCoreMessageTables(db)
+        createOperationalMessageTables(db)
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
         onCreate(db) // additive only — preserve handled-message history across upgrades
     }
 
+    override fun close() {
+        coreHelper?.close()
+        super.close()
+    }
+
     // --- MessageDedup (channel) -------------------------------------------------------------------
 
     override fun seen(messageId: String): Boolean = runCatching {
-        readableDatabase.rawQuery(
+        coreReadableDatabase.rawQuery(
             "SELECT 1 FROM dedup WHERE message_id = ? LIMIT 1",
             arrayOf(messageId)
         ).use {
@@ -95,7 +100,7 @@ class MessageStore(context: Context) :
 
     override fun record(messageId: String) {
         runCatching {
-            writableDatabase.insertWithOnConflict(
+            coreWritableDatabase.insertWithOnConflict(
                 "dedup",
                 null,
                 ContentValues().apply {
@@ -116,7 +121,7 @@ class MessageStore(context: Context) :
 
     /** Persist an ACK intent and confirm it is queryable before an inbox row may be removed. */
     fun ensureAckQueued(messageId: String): Boolean = runCatching {
-            writableDatabase.insertWithOnConflict(
+            coreWritableDatabase.insertWithOnConflict(
                 "pending_ack",
                 null,
                 ContentValues().apply {
@@ -125,7 +130,7 @@ class MessageStore(context: Context) :
                 },
                 SQLiteDatabase.CONFLICT_IGNORE,
             )
-            readableDatabase.rawQuery(
+            coreReadableDatabase.rawQuery(
                 "SELECT 1 FROM pending_ack WHERE message_id = ? LIMIT 1",
                 arrayOf(messageId),
             ).use { it.moveToFirst() }
@@ -133,7 +138,7 @@ class MessageStore(context: Context) :
 
     /** Up to [limit] queued ack ids, oldest first. The worker acks these, then [clearAcks] them. */
     fun pendingAcks(limit: Int = MAX_ACK_BATCH): List<String> = runCatching {
-        readableDatabase.rawQuery(
+        coreReadableDatabase.rawQuery(
             "SELECT message_id FROM pending_ack ORDER BY queued_at LIMIT ?",
             arrayOf(limit.toString()),
         ).use { c ->
@@ -146,7 +151,7 @@ class MessageStore(context: Context) :
         if (messageIds.isEmpty()) return
         runCatching {
             val placeholders = messageIds.joinToString(",") { "?" }
-            writableDatabase.delete(
+            coreWritableDatabase.delete(
                 "pending_ack",
                 "message_id IN ($placeholders)",
                 messageIds.toTypedArray()
@@ -166,7 +171,7 @@ class MessageStore(context: Context) :
         acceptedAt: Long,
         deliveryMode: DeliveryMode,
     ): InboxInsertResult = runCatching {
-        val db = writableDatabase
+        val db = coreWritableDatabase
         db.beginTransaction()
         try {
             val inserted = db.insertWithOnConflict(
@@ -211,7 +216,7 @@ class MessageStore(context: Context) :
         acceptedAt: Long,
         deliveryMode: DeliveryMode = DeliveryMode.RELAY_DRAIN,
     ): InboxInsertResult = runCatching {
-        val inserted = writableDatabase.insertWithOnConflict(
+        val inserted = coreWritableDatabase.insertWithOnConflict(
             "relay_inbox",
             null,
             inboxValues(messageId, envelope, acceptedAt, deliveryMode, earlyAck = false),
@@ -221,24 +226,24 @@ class MessageStore(context: Context) :
     }.getOrDefault(InboxInsertResult.FAILED)
 
     fun lastDeferredAt(): Long? = runCatching {
-        readableDatabase.rawQuery(
+        coreReadableDatabase.rawQuery(
             "SELECT long_value FROM message_meta WHERE name = ? LIMIT 1",
             arrayOf(META_LAST_DEFERRED_AT),
         ).use { if (it.moveToFirst()) it.getLong(0) else null }
     }.getOrNull()
 
     fun hasInbox(): Boolean = runCatching {
-        readableDatabase.rawQuery("SELECT 1 FROM relay_inbox LIMIT 1", null).use { it.moveToFirst() }
+        coreReadableDatabase.rawQuery("SELECT 1 FROM relay_inbox LIMIT 1", null).use { it.moveToFirst() }
     }.getOrDefault(false)
 
     fun hasDeferredInbox(): Boolean = runCatching {
-        readableDatabase.rawQuery("SELECT 1 FROM relay_inbox WHERE early_ack = 1 LIMIT 1", null)
+        coreReadableDatabase.rawQuery("SELECT 1 FROM relay_inbox WHERE early_ack = 1 LIMIT 1", null)
             .use { it.moveToFirst() }
     }.getOrDefault(false)
 
     /** Capture the local inbox boundary before reconciliation; later inserts wait for the next drain. */
     fun relayInboxHighWater(): Long = runCatching {
-        readableDatabase.rawQuery("SELECT COALESCE(MAX(rowid), 0) FROM relay_inbox", null)
+        coreReadableDatabase.rawQuery("SELECT COALESCE(MAX(rowid), 0) FROM relay_inbox", null)
             .use { if (it.moveToFirst()) it.getLong(0) else 0L }
     }.getOrDefault(0L)
 
@@ -248,7 +253,7 @@ class MessageStore(context: Context) :
         throughRowId: Long,
         limit: Int = INBOX_PAGE_SIZE,
     ): List<RelayInboxItem> = runCatching {
-        readableDatabase.rawQuery(
+        coreReadableDatabase.rawQuery(
             "SELECT rowid, message_id, envelope, accepted_at, delivery_mode, received_at, early_ack " +
                 "FROM relay_inbox WHERE rowid > ? AND rowid <= ? ORDER BY rowid LIMIT ?",
             arrayOf(afterRowId.toString(), throughRowId.toString(), limit.toString()),
@@ -277,14 +282,14 @@ class MessageStore(context: Context) :
         return runCatching {
             messageIds.chunked(MAX_ACK_BATCH).forEach { chunk ->
                 val placeholders = chunk.joinToString(",") { "?" }
-                writableDatabase.delete(
+                coreWritableDatabase.delete(
                     "relay_inbox",
                     "message_id IN ($placeholders)",
                     chunk.toTypedArray(),
                 )
             }
             val placeholders = messageIds.joinToString(",") { "?" }
-            readableDatabase.rawQuery(
+            coreReadableDatabase.rawQuery(
                 "SELECT 1 FROM relay_inbox WHERE message_id IN ($placeholders) LIMIT 1",
                 messageIds.toTypedArray(),
             ).use { !it.moveToFirst() }
@@ -428,17 +433,19 @@ class MessageStore(context: Context) :
     fun prune() {
         val cutoff = now() - RETENTION_MS
         runCatching {
-            writableDatabase.run {
+            coreWritableDatabase.run {
                 delete("dedup", "handled_at < ?", arrayOf(cutoff.toString()))
-                delete("mirror_msg", "recorded_at < ?", arrayOf(cutoff.toString()))
                 delete("pending_ack", "queued_at < ?", arrayOf(cutoff.toString()))
+            }
+            writableDatabase.run {
+                delete("mirror_msg", "recorded_at < ?", arrayOf(cutoff.toString()))
                 delete("mirror_lifecycle", "updated_at < ?", arrayOf(cutoff.toString()))
             }
         }
     }
 
     companion object {
-        private const val DB_NAME = "message_ledger.db"
+        private const val DB_NAME = LegacyDatabaseNames.MESSAGE_LEDGER
         private const val VERSION = 2
         private const val META_LAST_DEFERRED_AT = "last_deferred_at"
         private const val INBOX_PAGE_SIZE = 128
@@ -451,4 +458,45 @@ class MessageStore(context: Context) :
          *  keeping its `IN (...)` under SQLite's 999-variable limit. */
         const val MAX_ACK_BATCH = RelayAck.MAX_BATCH
     }
+}
+
+private class CoreMessageStoreHelper(context: Context) :
+    SQLiteOpenHelper(context, CoreDatabase.DATABASE_NAME, null, CoreDatabase.VERSION) {
+    init {
+        setWriteAheadLoggingEnabled(true)
+    }
+
+    override fun onCreate(db: SQLiteDatabase) {
+        createCoreMessageTables(db)
+    }
+
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
+        createCoreMessageTables(db)
+    }
+}
+
+private fun createCoreMessageTables(db: SQLiteDatabase) {
+    // Additive definitions exactly mirror the known-good message ledger.
+    db.execSQL("CREATE TABLE IF NOT EXISTS dedup (message_id TEXT PRIMARY KEY, handled_at INTEGER NOT NULL)")
+    db.execSQL("CREATE TABLE IF NOT EXISTS pending_ack (message_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)")
+    db.execSQL(
+        "CREATE TABLE IF NOT EXISTS relay_inbox (" +
+            "message_id TEXT PRIMARY KEY, envelope BLOB NOT NULL, accepted_at INTEGER NOT NULL, " +
+            "delivery_mode TEXT NOT NULL, received_at INTEGER NOT NULL, early_ack INTEGER NOT NULL)"
+    )
+    db.execSQL("CREATE TABLE IF NOT EXISTS message_meta (name TEXT PRIMARY KEY, long_value INTEGER NOT NULL)")
+    db.execSQL("CREATE INDEX IF NOT EXISTS relay_inbox_accepted_idx ON relay_inbox (accepted_at, received_at)")
+}
+
+private fun createOperationalMessageTables(db: SQLiteDatabase) {
+    db.execSQL(
+        "CREATE TABLE IF NOT EXISTS mirror_msg (" +
+            "source_client TEXT NOT NULL, source_key TEXT NOT NULL, message_id TEXT NOT NULL, " +
+            "recorded_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
+    )
+    db.execSQL(
+        "CREATE TABLE IF NOT EXISTS mirror_lifecycle (" +
+            "source_client TEXT NOT NULL, source_key TEXT NOT NULL, post_time INTEGER, " +
+            "dismissed_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
+    )
 }

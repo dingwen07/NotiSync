@@ -8,6 +8,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunControl
+import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
 
 internal interface RunControlQueue {
     fun enqueue(control: RunControl)
@@ -23,11 +26,15 @@ internal enum class QueuedRunControlDisposition { SEND, RETAIN, DROP }
  * or signals if Android dies after send acceptance but before local removal.
  */
 internal class RunControlOutbox(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION),
+    SQLiteOpenHelper(
+        context.applicationContext,
+        context.operationalDatabaseName(DB_NAME),
+        null,
+        context.operationalDatabaseVersion(VERSION),
+    ),
     RunControlQueue {
-
-    override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
+    init {
+        setWriteAheadLoggingEnabled(true)
     }
 
     override fun onCreate(db: SQLiteDatabase) {
@@ -88,7 +95,7 @@ internal class RunControlOutbox(context: Context) :
     ).use { it.moveToFirst() }
 
     companion object {
-        private const val DB_NAME = "run_control_outbox.db"
+        private const val DB_NAME = LegacyDatabaseNames.RUN_CONTROL_OUTBOX
         private const val VERSION = 1
     }
 }

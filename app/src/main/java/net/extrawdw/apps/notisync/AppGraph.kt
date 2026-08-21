@@ -16,7 +16,6 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.preferencesDataStore
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
@@ -60,6 +59,11 @@ import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
+import net.extrawdw.apps.notisync.data.storage.RoomStorageSelection
+import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
+import net.extrawdw.apps.notisync.data.storage.migration.RoomStorageMigration
+import net.extrawdw.apps.notisync.data.storage.migration.notiSyncDataStore
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.apps.notisync.ios.IosBridgeManager
 import net.extrawdw.apps.notisync.ios.IosBridgeService
 import net.extrawdw.apps.notisync.ios.IosCompanion
@@ -160,7 +164,8 @@ import net.extrawdw.notisync.protocol.crypto.Hpke
 import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import java.time.ZonedDateTime
 
-internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
+internal val Context.dataStore: DataStore<Preferences>
+    get() = applicationContext.notiSyncDataStore
 
 internal const val STALE_RELAY_AGE_MS = 2L * 60 * 60 * 1000
 
@@ -344,9 +349,16 @@ class AppGraph(private val app: Application) {
         initSpan.metric("identity_load_ms", (System.nanoTime() - identityStartNanos) / 1_000_000)
         val vault = KeyVault()
         val ds = app.dataStore
-        settings = SettingsRepository(ds, scope)
+        val operationalApplicationState = if (app.usesRoomStorage) {
+            OperationalApplicationState(app)
+        } else {
+            null
+        }
+        settings = operationalApplicationState?.let { SettingsRepository(ds, scope, it) }
+            ?: SettingsRepository(ds, scope)
         openPgpProvider = OpenKeychainSigningProvider(app)
-        openPgpEnrollment = OpenPgpEnrollmentStore(ds, scope)
+        openPgpEnrollment = operationalApplicationState?.let { OpenPgpEnrollmentStore(ds, scope, it) }
+            ?: OpenPgpEnrollmentStore(ds, scope)
         openPgpSignStore = OpenPgpSignStore(app)
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
         sshKeyProviderStore = SshKeyProviderStore(app)
@@ -369,11 +381,16 @@ class AppGraph(private val app: Application) {
         trust = TrustStore(ds, identity)
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
-        appSelection = AppSelectionRepository(ds, scope)
-        appConfig = AppConfigRepository(ds, scope)
-        notificationFilters = NotificationFilterStore(ds, scope)
-        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(ds)
-        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds)
+        appSelection = operationalApplicationState?.let { AppSelectionRepository(ds, scope, it) }
+            ?: AppSelectionRepository(ds, scope)
+        appConfig = operationalApplicationState?.let { AppConfigRepository(ds, scope, it) }
+            ?: AppConfigRepository(ds, scope)
+        notificationFilters = operationalApplicationState?.let { NotificationFilterStore(ds, scope, it) }
+            ?: NotificationFilterStore(ds, scope)
+        screenMirrorAuthorizations = operationalApplicationState?.let {
+            ScreenMirrorAuthorizationStore(ds, it)
+        } ?: ScreenMirrorAuthorizationStore(ds)
+        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds, operationalApplicationState)
         screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
         screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
@@ -639,7 +656,8 @@ class AppGraph(private val app: Application) {
         // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the
         // BLE manager that turns ANCS events into CapturedNotifications, then dispatches them to local display
         // and/or the own mesh — reusing the same capture/render pipeline as a local Android capture.
-        val registry = IosAppRegistry(ds, scope)
+        val registry = operationalApplicationState?.let { IosAppRegistry(ds, scope, it) }
+            ?: IosAppRegistry(ds, scope)
         iosAppRegistry = registry
         iosBridgeManager = IosBridgeManager(
             context = app,
@@ -1516,12 +1534,16 @@ class AppGraph(private val app: Application) {
 }
 
 /** Application entry point: builds the dependency graph. */
-class NotiSyncApp : Application() {
+class NotiSyncApp : Application(), RoomStorageSelection {
     lateinit var graph: AppGraph
+        private set
+
+    override var usesRoomStorage: Boolean = false
         private set
 
     private val initScope =
         CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard("NotiSyncApp.initScope"))
+    private val storageDeferred = CompletableDeferred<Unit>()
     private val graphDeferred = CompletableDeferred<AppGraph>()
     private val _graphReady = MutableStateFlow(false)
     val graphReady: StateFlow<Boolean> = _graphReady
@@ -1530,9 +1552,12 @@ class NotiSyncApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
-        graph = AppGraph(this)
         initScope.launch {
             runCatching {
+                val storage = RoomStorageMigration(this@NotiSyncApp).prepare()
+                usesRoomStorage = storage.usesRoom
+                storageDeferred.complete(Unit)
+                graph = AppGraph(this@NotiSyncApp)
                 // Cold-start init runs off the main thread (so the automatic `_app_start` trace can't see
                 // it); `app_graph_init` captures its duration + the StrongBox/TrustStore sub-metrics.
                 perfTrace("app_graph_init") { span -> graph.init(span) }
@@ -1540,9 +1565,14 @@ class NotiSyncApp : Application() {
                 graphDeferred.complete(graph)
             }.onFailure { t ->
                 Log.e("NotiSyncApp", "graph init failed", t)
+                storageDeferred.completeExceptionally(t)
                 graphDeferred.completeExceptionally(t)
             }
         }
+    }
+
+    suspend fun awaitStorageReady() {
+        storageDeferred.await()
     }
 
     suspend fun awaitGraphReady(timeoutMillis: Long = GRAPH_INIT_TIMEOUT_MS): AppGraph? =

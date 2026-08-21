@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.seal
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import net.extrawdw.apps.notisync.testsupport.LegacyStorageTestContext
 import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
@@ -21,7 +22,7 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class OpenPgpSignStoreTest {
-    private val context: Context = ApplicationProvider.getApplicationContext()
+    private val context: Context = LegacyStorageTestContext(ApplicationProvider.getApplicationContext())
 
     @Before
     fun clearBefore() {

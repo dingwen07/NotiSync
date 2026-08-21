@@ -65,6 +65,10 @@ import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.SshSignatureResult
+import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
+import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserRejection
 import net.extrawdw.notisync.protocol.SshUserRejectionReason
@@ -321,7 +325,12 @@ internal class SshOperationalOperationException(cause: Exception) :
 
 /** Durable Android key inventory, pending approvals, and response outbox. */
 class SshKeyProviderStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION) {
+    SQLiteOpenHelper(
+        context.applicationContext,
+        context.operationalDatabaseName(DB_NAME),
+        null,
+        context.operationalDatabaseVersion(VERSION),
+    ) {
     private val appContext = context.applicationContext
     private val strongBoxAvailable = context.applicationContext.packageManager
         .hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
@@ -332,8 +341,11 @@ class SshKeyProviderStore(context: Context) :
     val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
     private var resetEpoch = 0L
 
+    init {
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
     }
 
@@ -550,15 +562,21 @@ class SshKeyProviderStore(context: Context) :
     }
 
     private fun validateDatabaseSchema(db: SQLiteDatabase) {
-        check(db.version == VERSION) {
-            "Unsupported SSH key database schema ${db.version}; expected $VERSION. No data was modified."
+        val expectedVersion = appContext.operationalDatabaseVersion(VERSION)
+        check(db.version == expectedVersion) {
+            "Unsupported SSH key database schema ${db.version}; expected $expectedVersion. No data was modified."
         }
         val actualTables = db.rawQuery(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' " +
                 "AND name!='android_metadata' ORDER BY name",
             emptyArray(),
         ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
-        check(actualTables == EXPECTED_DATABASE_SCHEMA.keys) {
+        val tableSetMatches = if (appContext.usesRoomStorage) {
+            actualTables.containsAll(EXPECTED_DATABASE_SCHEMA.keys)
+        } else {
+            actualTables == EXPECTED_DATABASE_SCHEMA.keys
+        }
+        check(tableSetMatches) {
             "SSH key database schema $VERSION has an unexpected table set. No data was modified."
         }
         EXPECTED_DATABASE_SCHEMA.forEach { (table, expectedColumns) ->
@@ -1860,9 +1878,32 @@ class SshKeyProviderStore(context: Context) :
             }
         }.getOrDefault(0)
 
-        close()
-        check(appContext.deleteDatabase(DB_NAME) || !appContext.getDatabasePath(DB_NAME).exists()) {
-            "SSH Agent database could not be removed"
+        if (appContext.usesRoomStorage) {
+            val database = writableDatabase
+            database.beginTransaction()
+            try {
+                database.delete("provider_requests", null, null)
+                database.delete("ssh_remembered_authorizations", null, null)
+                database.delete("authorization_floors", null, null)
+                database.delete("ssh_known_hosts", null, null)
+                database.delete("ssh_export_copies", null, null)
+                database.delete("ssh_operational_keys", null, null)
+                database.delete("ssh_key_lifecycle", null, null)
+                database.delete("ssh_keys", null, null)
+                database.delete("provider_state", null, null)
+                database.execSQL(
+                    "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
+                    arrayOf(randomId()),
+                )
+                database.setTransactionSuccessful()
+            } finally {
+                database.endTransaction()
+            }
+        } else {
+            close()
+            check(appContext.deleteDatabase(DB_NAME) || !appContext.getDatabasePath(DB_NAME).exists()) {
+                "SSH Agent database could not be removed"
+            }
         }
 
         resetEpoch = if (resetEpoch == Long.MAX_VALUE) 0L else resetEpoch + 1L
@@ -3819,7 +3860,7 @@ class SshKeyProviderStore(context: Context) :
     )
 
     private companion object {
-        const val DB_NAME = "ssh-key-provider.sqlite3"
+        const val DB_NAME = LegacyDatabaseNames.SSH_KEY_PROVIDER
         const val VERSION = 1
         const val SSH_STORAGE_LOG_TAG = "NotiSyncSshStorage"
         const val SSH_KEYSTORE_ALIAS_PREFIX = "notisync_ssh_"

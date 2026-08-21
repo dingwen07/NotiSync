@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.sshagent
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.platform.app.InstrumentationRegistry
+import net.extrawdw.apps.notisync.testsupport.LegacyStorageTestContext
 import java.io.File
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -13,7 +14,9 @@ import org.junit.Before
 import org.junit.Test
 
 class SshKeyProviderDatabaseTest {
-    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val context by lazy {
+        LegacyStorageTestContext(InstrumentationRegistry.getInstrumentation().targetContext)
+    }
     private val databaseFile: File get() = context.getDatabasePath(DATABASE_NAME)
     private var store: SshKeyProviderStore? = null
 

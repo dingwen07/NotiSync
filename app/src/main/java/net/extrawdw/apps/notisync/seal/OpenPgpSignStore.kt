@@ -17,6 +17,9 @@ import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
 
 enum class OpenPgpRequestState {
     PENDING_REVIEW,
@@ -65,17 +68,22 @@ data class StoredOpenPgpRequest(
 enum class OpenPgpAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED }
 
 class OpenPgpSignStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION) {
+    SQLiteOpenHelper(
+        context.applicationContext,
+        context.operationalDatabaseName(DB_NAME),
+        null,
+        context.operationalDatabaseVersion(VERSION),
+    ) {
     private val _requests = MutableStateFlow<List<StoredOpenPgpRequest>>(emptyList())
     val requests: StateFlow<List<StoredOpenPgpRequest>> = _requests.asStateFlow()
 
     init {
+        setWriteAheadLoggingEnabled(true)
         prune(System.currentTimeMillis())
         refresh()
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
     }
 
@@ -490,7 +498,7 @@ class OpenPgpSignStore(context: Context) :
                 this.request.payload.contentEquals(request.payload ?: ByteArray(0)))
 
     private companion object {
-        const val DB_NAME = "openpgp_signing.db"
+        const val DB_NAME = LegacyDatabaseNames.OPENPGP_SIGNING
         const val VERSION = 3
         const val TABLE = "sign_requests"
         const val COLUMNS = "request_id,requester_client_id,sender_client_id,primary_key_id," +

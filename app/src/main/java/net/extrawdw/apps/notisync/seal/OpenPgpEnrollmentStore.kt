@@ -7,10 +7,14 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.data.storage.operational.OpenPgpEnrollmentEntity
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 
 data class OpenPgpEnrollment(
     val enabled: Boolean = false,
@@ -21,36 +25,84 @@ data class OpenPgpEnrollment(
     val enrolledAt: Long? = null,
 )
 
-class OpenPgpEnrollmentStore(
+class OpenPgpEnrollmentStore private constructor(
     private val dataStore: DataStore<Preferences>,
     scope: CoroutineScope,
+    private val operationalState: OperationalApplicationState?,
+    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
 ) {
-    val enrollment: StateFlow<OpenPgpEnrollment> = dataStore.data.map(::decode).stateIn(
-        scope,
-        SharingStarted.Eagerly,
-        OpenPgpEnrollment(),
+    constructor(dataStore: DataStore<Preferences>, scope: CoroutineScope) :
+        this(dataStore, scope, null, Unit)
+
+    internal constructor(
+        dataStore: DataStore<Preferences>,
+        scope: CoroutineScope,
+        operationalState: OperationalApplicationState,
+    ) : this(dataStore, scope, operationalState, Unit)
+
+    private val roomEnrollment = MutableStateFlow(
+        operationalState?.let { state ->
+            runCatching { runBlocking { state.openPgpEnrollment() } }
+                .getOrNull()
+                ?.let(::decode)
+                ?: OpenPgpEnrollment()
+        } ?: OpenPgpEnrollment(),
     )
+
+    val enrollment: StateFlow<OpenPgpEnrollment> = operationalState?.let { roomEnrollment }
+        ?: dataStore.data.map(::decode).stateIn(
+            scope,
+            SharingStarted.Eagerly,
+            OpenPgpEnrollment(),
+        )
 
     suspend fun save(selection: OpenPgpKeySelection, enrolledAt: Long = System.currentTimeMillis()) {
         require(selection.primaryKeyId.matches(Regex("[0-9A-F]{16}")))
-        dataStore.edit { values ->
-            values[ENABLED] = true
-            values[PROVIDER] = selection.providerId
-            values[PROVIDER_REFERENCE] = selection.providerKeyReference
-            values[PRIMARY_KEY_ID] = selection.primaryKeyId
-            values[DISPLAY_IDENTITY] = selection.displayIdentity
-            values[ENROLLED_AT] = enrolledAt
+        if (operationalState != null) {
+            val entity = OpenPgpEnrollmentEntity(
+                enabled = true,
+                providerId = selection.providerId,
+                providerKeyReference = selection.providerKeyReference,
+                primaryKeyId = selection.primaryKeyId,
+                displayIdentity = selection.displayIdentity,
+                enrolledAt = enrolledAt,
+            )
+            operationalState.replaceOpenPgpEnrollment(entity)
+            roomEnrollment.value = decode(entity)
+        } else {
+            dataStore.edit { values ->
+                values[ENABLED] = true
+                values[PROVIDER] = selection.providerId
+                values[PROVIDER_REFERENCE] = selection.providerKeyReference
+                values[PRIMARY_KEY_ID] = selection.primaryKeyId
+                values[DISPLAY_IDENTITY] = selection.displayIdentity
+                values[ENROLLED_AT] = enrolledAt
+            }
         }
     }
 
     suspend fun clear() {
-        dataStore.edit { values ->
-            values.remove(ENABLED)
-            values.remove(PROVIDER)
-            values.remove(PROVIDER_REFERENCE)
-            values.remove(PRIMARY_KEY_ID)
-            values.remove(DISPLAY_IDENTITY)
-            values.remove(ENROLLED_AT)
+        if (operationalState != null) {
+            operationalState.replaceOpenPgpEnrollment(
+                OpenPgpEnrollmentEntity(
+                    enabled = false,
+                    providerId = null,
+                    providerKeyReference = null,
+                    primaryKeyId = null,
+                    displayIdentity = null,
+                    enrolledAt = null,
+                ),
+            )
+            roomEnrollment.value = OpenPgpEnrollment()
+        } else {
+            dataStore.edit { values ->
+                values.remove(ENABLED)
+                values.remove(PROVIDER)
+                values.remove(PROVIDER_REFERENCE)
+                values.remove(PRIMARY_KEY_ID)
+                values.remove(DISPLAY_IDENTITY)
+                values.remove(ENROLLED_AT)
+            }
         }
     }
 
@@ -69,6 +121,21 @@ class OpenPgpEnrollmentStore(
             primaryKeyId = primary,
             displayIdentity = identity,
             enrolledAt = values[ENROLLED_AT],
+        )
+    }
+
+    private fun decode(values: OpenPgpEnrollmentEntity): OpenPgpEnrollment {
+        val complete = values.enabled && !values.providerId.isNullOrBlank() &&
+            !values.providerKeyReference.isNullOrBlank() &&
+            values.primaryKeyId?.matches(Regex("[0-9A-F]{16}")) == true &&
+            !values.displayIdentity.isNullOrBlank()
+        return if (!complete) OpenPgpEnrollment() else OpenPgpEnrollment(
+            enabled = true,
+            providerId = values.providerId,
+            providerKeyReference = values.providerKeyReference,
+            primaryKeyId = values.primaryKeyId,
+            displayIdentity = values.displayIdentity,
+            enrolledAt = values.enrolledAt,
         )
     }
 

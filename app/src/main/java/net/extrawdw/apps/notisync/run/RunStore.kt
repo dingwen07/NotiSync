@@ -12,6 +12,9 @@ import kotlinx.coroutines.flow.asStateFlow
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
+import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
+import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
 
 /** Stable local identity for one run. Run ids are scoped by their authenticated host. */
 data class RunKey(val hostClientId: String, val runId: String) {
@@ -75,19 +78,27 @@ class RunStore(
     context: Context,
     private val now: () -> Long = { System.currentTimeMillis() },
     private val maxStorageBytes: Long = MAX_STORAGE_BYTES,
-) : SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION), RunRepository {
-    private val databaseFile: File = context.applicationContext.getDatabasePath(DB_NAME)
+) : SQLiteOpenHelper(
+    context.applicationContext,
+    context.operationalDatabaseName(DB_NAME),
+    null,
+    context.operationalDatabaseVersion(VERSION),
+), RunRepository {
+    private val databaseFile: File = context.applicationContext.getDatabasePath(
+        context.operationalDatabaseName(DB_NAME),
+    )
     private val _runs = MutableStateFlow<List<StoredRun>>(emptyList())
     override val runs: StateFlow<List<StoredRun>> = _runs.asStateFlow()
 
     init {
+        // Operational Room owns the file and keeps it in WAL; opt in before opening the shared database.
+        setWriteAheadLoggingEnabled(true)
         _runs.value = readAll()
         // Enforce history retention on cold start too; a device may receive no new Run after records age out.
         runCatching { prune() }
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
     }
 
@@ -425,7 +436,7 @@ class RunStore(
     private data class SizedRunKey(val key: RunKey, val bytes: Long)
 
     companion object {
-        private const val DB_NAME = "runs.db"
+        private const val DB_NAME = LegacyDatabaseNames.RUNS
         private const val VERSION = 2
         internal const val ACTIVE_STALE_AFTER_MS = 3L * 60 * 60 * 1000
         private const val COMPLETED_RETENTION_MS = 30L * 24 * 60 * 60 * 1000

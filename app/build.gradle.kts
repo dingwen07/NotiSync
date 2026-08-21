@@ -4,13 +4,18 @@ plugins {
     alias(libs.plugins.android.application)
     // AGP 9.2.x compiles Kotlin via built-in Kotlin (bundled KGP 2.2.10) — do NOT apply
     // org.jetbrains.kotlin.android (it conflicts). The compose + serialization compiler plugins
-    // coexist with built-in Kotlin. v1 deliberately avoids KSP/Hilt/Room (annotation processing
-    // is a moving target on AGP 9) and uses manual DI + DataStore instead.
+    // coexist with built-in Kotlin. Room 3 uses KSP for the two versioned database schemas.
+    alias(libs.plugins.ksp)
+    alias(libs.plugins.room3)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.google.services)
     alias(libs.plugins.firebase.crashlytics)
     alias(libs.plugins.firebase.perf)
+}
+
+room3 {
+    schemaDirectory("$projectDir/schemas")
 }
 
 val localProperties = Properties().apply {
@@ -122,7 +127,10 @@ dependencies {
         }
     }
 
-    // Persistence (no codegen): Preferences + structured values serialized via kotlinx-serialization.
+    // Persistence. The first legacy cutover is application-managed; subsequent schema upgrades use Room.
+    implementation(libs.androidx.room3.runtime)
+    implementation(libs.androidx.sqlite.framework)
+    ksp(libs.androidx.room3.compiler)
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.datastore.preferences)
     implementation(libs.androidx.work.runtime)
@@ -167,6 +175,7 @@ dependencies {
     androidTestImplementation(libs.androidx.compose.ui.test.junit4)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(libs.androidx.junit)
+    androidTestImplementation(libs.androidx.room3.testing)
     debugImplementation(libs.androidx.compose.ui.test.manifest)
     debugImplementation(libs.androidx.compose.ui.tooling)
 }

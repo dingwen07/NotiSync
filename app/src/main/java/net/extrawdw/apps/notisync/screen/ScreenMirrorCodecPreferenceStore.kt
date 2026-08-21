@@ -12,6 +12,8 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
+import net.extrawdw.apps.notisync.data.storage.operational.ScreenCodecPreferenceEntity
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
@@ -20,6 +22,7 @@ import net.extrawdw.notisync.protocol.TrustStatus
 /** Local, per-source codec preferences. Absence means automatic selection. */
 internal class ScreenMirrorCodecPreferenceStore(
     private val store: DataStore<Preferences>,
+    private val operationalState: OperationalApplicationState? = null,
 ) {
     private val key = stringPreferencesKey("screen_mirror_codec_preferences_v1")
     private val mutex = Mutex()
@@ -48,24 +51,44 @@ internal class ScreenMirrorCodecPreferenceStore(
         transform: (Map<String, ScreenMirrorCodec>) -> Map<String, ScreenMirrorCodec>,
     ) {
         var next = emptyMap<String, ScreenMirrorCodec>()
-        store.edit { preferences ->
-            val current = decode(preferences[key])
+        if (operationalState != null) {
+            val current = loadRoom()
             next = transform(current)
                 .entries
                 .sortedBy { it.key }
                 .associate { it.toPair() }
-            if (next.isEmpty()) {
-                preferences.remove(key)
-            } else {
-                preferences[key] = encode(next)
+            operationalState.replaceScreenCodecPreferences(
+                next.map { (peerId, codec) ->
+                    ScreenCodecPreferenceEntity(peerId, codec.name.lowercase())
+                },
+            )
+        } else {
+            store.edit { preferences ->
+                val current = decode(preferences[key])
+                next = transform(current)
+                    .entries
+                    .sortedBy { it.key }
+                    .associate { it.toPair() }
+                if (next.isEmpty()) {
+                    preferences.remove(key)
+                } else {
+                    preferences[key] = encode(next)
+                }
             }
         }
         _preferredCodecs.value = next
     }
 
     private fun load(): Map<String, ScreenMirrorCodec> = runCatching {
-        runBlocking { decode(store.data.first()[key]) }
+        runBlocking {
+            operationalState?.let { loadRoom() } ?: decode(store.data.first()[key])
+        }
     }.getOrDefault(emptyMap())
+
+    private suspend fun loadRoom(): Map<String, ScreenMirrorCodec> =
+        operationalState?.screenCodecPreferences().orEmpty()
+            .mapNotNull { row -> decodeEntry(row.peerId, row.codec) }
+            .toMap()
 
     private fun encode(value: Map<String, ScreenMirrorCodec>): String = ProtocolCodec.encodeToJson(
         value.mapValues { (_, codec) -> codec.name.lowercase() },
@@ -77,15 +100,17 @@ internal class ScreenMirrorCodecPreferenceStore(
             ProtocolCodec.decodeFromJson<Map<String, String>>(encoded)
         }.getOrDefault(emptyMap())
         if (raw.size > MAX_PREFERENCES) return emptyMap()
-        return raw.mapNotNull { (peerId, codecName) ->
-            if (peerId.isBlank() || peerId.length > MAX_PEER_ID_LENGTH || peerId.any(Char::isISOControl)) {
-                return@mapNotNull null
-            }
-            val codec = ScreenMirrorCodec.entries.firstOrNull {
-                it.name.equals(codecName, ignoreCase = true)
-            } ?: return@mapNotNull null
-            peerId to codec
-        }.toMap()
+        return raw.mapNotNull { (peerId, codecName) -> decodeEntry(peerId, codecName) }.toMap()
+    }
+
+    private fun decodeEntry(peerId: String, codecName: String): Pair<String, ScreenMirrorCodec>? {
+        if (peerId.isBlank() || peerId.length > MAX_PEER_ID_LENGTH || peerId.any(Char::isISOControl)) {
+            return null
+        }
+        val codec = ScreenMirrorCodec.entries.firstOrNull {
+            it.name.equals(codecName, ignoreCase = true)
+        } ?: return null
+        return peerId to codec
     }
 
     private companion object {
