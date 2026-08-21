@@ -68,8 +68,39 @@ class RunNotificationPresenter(
         val progress = state.progress?.takeUnless { terminal }?.toNativeProgress()
         val tag = runNotificationTag(key)
         val id = runNotificationId(key)
+        val shortCriticalText = shortCriticalText(state)
+        val actions = notificationActions(state).map { action ->
+            val pendingIntent = actionPendingIntent(key, state.interactionGeneration, action, id)
+            val compatAction = NotificationCompat.Action.Builder(0, action.label, pendingIntent)
+            if (action == RunShadeAction.INPUT) {
+                compatAction.addRemoteInput(
+                    RemoteInput.Builder(RunActionReceiver.REMOTE_INPUT_KEY)
+                        .setLabel(context.getString(R.string.run_input_hint))
+                        .build()
+                )
+            }
+            compatAction.build()
+        }
         // Any render is a new authoritative opportunity to act (normally a higher Run revision).
         RunNotificationActionGate.release(key)
+
+        // The public version preserves useful lifecycle/progress state and the same controls while omitting
+        // command, peer, generated summary, failure, and terminal-output content.
+        val publicBuilder = NotificationCompat.Builder(context, channelId)
+            .setSmallIcon(R.drawable.ic_terminal_notification)
+            .setContentTitle(context.getString(R.string.run_notification_subtext))
+            .setContentText(publicStatusText(state))
+            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+            .setWhen(if (active) state.startedAt else state.endedAt ?: state.updatedAt)
+            .setShowWhen(true)
+            .setOngoing(active)
+            .setAutoCancel(terminal)
+            .setShortCriticalText(shortCriticalText)
+        if (active) publicBuilder.setRequestPromotedOngoing(true)
+        progress?.let { publicBuilder.setStyle(it.toProgressStyle()) }
+        actions.forEach { publicBuilder.addAction(it) }
 
         val builder = NotificationCompat.Builder(context, channelId)
             .setSmallIcon(R.drawable.ic_terminal_notification)
@@ -90,34 +121,17 @@ class RunNotificationPresenter(
             .setOnlyAlertOnce(silent)
             .setSilent(silent)
             .setContentIntent(openIntent(key, id))
-            .setShortCriticalText(shortCriticalText(state))
+            .setShortCriticalText(shortCriticalText)
+            .setPublicVersion(publicBuilder.build())
 
         if (active) builder.setRequestPromotedOngoing(true)
         if (progress != null) {
-            val style = NotificationCompat.ProgressStyle()
-                .setProgressIndeterminate(progress.indeterminate)
-            if (!progress.indeterminate) {
-                style.addProgressSegment(NotificationCompat.ProgressStyle.Segment(progress.total))
-                    .setProgress(progress.current)
-                    .setStyledByProgress(true)
-            }
-            builder.setStyle(style)
+            builder.setStyle(progress.toProgressStyle())
         } else if (expanded != null) {
             builder.setStyle(NotificationCompat.BigTextStyle().bigText(expanded))
         }
 
-        notificationActions(state).forEach { action ->
-            val pendingIntent = actionPendingIntent(key, state.interactionGeneration, action, id)
-            val compatAction = NotificationCompat.Action.Builder(0, action.label, pendingIntent)
-            if (action == RunShadeAction.INPUT) {
-                compatAction.addRemoteInput(
-                    RemoteInput.Builder(RunActionReceiver.REMOTE_INPUT_KEY)
-                        .setLabel(context.getString(R.string.run_input_hint))
-                        .build()
-                )
-            }
-            builder.addAction(compatAction.build())
-        }
+        actions.forEach { builder.addAction(it) }
 
         NotificationManagerCompat.from(context).notify(tag, id, builder.build())
         return true
@@ -188,6 +202,13 @@ class RunNotificationPresenter(
         RunPhase.FAILED_TO_START -> context.getString(R.string.run_status_failed_start)
     }
 
+    private fun publicStatusText(state: RunState): String =
+        if (state.phase == RunPhase.COMPLETED && state.exitCode != null && state.exitCode != 0) {
+            context.getString(R.string.run_notification_public_error)
+        } else {
+            statusText(state)
+        }
+
     private fun shortCriticalText(state: RunState): String {
         val progressPercent = state.progress?.percentOrNull()
         return when {
@@ -211,6 +232,17 @@ class RunNotificationPresenter(
     )
 
     private data class NativeProgress(val current: Int, val total: Int, val indeterminate: Boolean)
+
+    private fun NativeProgress.toProgressStyle(): NotificationCompat.ProgressStyle {
+        val style = NotificationCompat.ProgressStyle()
+            .setProgressIndeterminate(indeterminate)
+        if (!indeterminate) {
+            style.addProgressSegment(NotificationCompat.ProgressStyle.Segment(total))
+                .setProgress(current)
+                .setStyledByProgress(true)
+        }
+        return style
+    }
 
     private fun RunProgress.percentOrNull(): Int? {
         val value = current ?: return null
@@ -265,12 +297,18 @@ internal fun removeRunNotificationActions(context: Context, key: RunKey): Boolea
     val id = runNotificationId(key)
     val active = manager.activeNotifications.firstOrNull { it.tag == tag && it.id == id }
         ?: return false
-    val replacement = Notification.Builder.recoverBuilder(context, active.notification)
+    val replacementBuilder = Notification.Builder.recoverBuilder(context, active.notification)
         .setActions()
         // Re-posting only changes affordances; it must not alert a second time.
         .setOnlyAlertOnce(true)
-        .build()
-    manager.notify(tag, id, replacement)
+    active.notification.publicVersion?.let { publicVersion ->
+        replacementBuilder.setPublicVersion(
+            Notification.Builder.recoverBuilder(context, publicVersion)
+                .setActions()
+                .build()
+        )
+    }
+    manager.notify(tag, id, replacementBuilder.build())
     true
 }.getOrDefault(false)
 

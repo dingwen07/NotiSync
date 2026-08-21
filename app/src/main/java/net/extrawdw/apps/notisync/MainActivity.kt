@@ -14,6 +14,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
@@ -29,10 +32,13 @@ import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
 import androidx.compose.material3.Icon
+import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
@@ -344,9 +350,10 @@ fun NotiSyncRoot(
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
+    var pendingFeatureDestination by remember { mutableStateOf<FeatureDestination?>(null) }
 
     Box(modifier = Modifier.fillMaxSize()) {
-        ModalNavigationDrawer(
+        NonBouncyModalNavigationDrawer(
             drawerState = featureDrawerState,
             gesturesEnabled = !suiteIsDrawer,
             drawerContent = {
@@ -359,13 +366,21 @@ fun NotiSyncRoot(
                     HorizontalDivider()
                     FeatureDestination.entries.forEach { dest ->
                         NavigationDrawerItem(
-                            selected = currentDestination.isOn(dest),
+                            selected = pendingFeatureDestination?.let { it == dest }
+                                ?: currentDestination.isOn(dest),
                             onClick = {
-                                drawerScope.launch {
-                                    // Keep the current destination behind the retracting sheet, then
-                                    // swap content only after the drawer close animation completes.
-                                    featureDrawerState.close()
-                                    navController.navigateToTopLevel(dest)
+                                if (pendingFeatureDestination == null) {
+                                    // Update the drawer selection immediately, but avoid composing the
+                                    // destination on the UI thread while the sheet is still animating.
+                                    pendingFeatureDestination = dest
+                                    drawerScope.launch {
+                                        try {
+                                            featureDrawerState.close()
+                                            navController.navigateToTopLevel(dest)
+                                        } finally {
+                                            pendingFeatureDestination = null
+                                        }
+                                    }
                                 }
                             },
                             icon = { TopLevelNavIcon(dest) },
@@ -471,6 +486,37 @@ fun NotiSyncRoot(
             )
         }
     }
+}
+
+@Composable
+private fun NonBouncyModalNavigationDrawer(
+    drawerState: DrawerState,
+    gesturesEnabled: Boolean,
+    drawerContent: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val appMotionScheme = MaterialTheme.motionScheme
+    val drawerMotionScheme = remember(appMotionScheme) {
+        NonBouncyDrawerMotionScheme(appMotionScheme)
+    }
+    MaterialTheme(motionScheme = drawerMotionScheme) {
+        ModalNavigationDrawer(
+            drawerState = drawerState,
+            gesturesEnabled = gesturesEnabled,
+            drawerContent = drawerContent,
+        ) {
+            MaterialTheme(motionScheme = appMotionScheme, content = content)
+        }
+    }
+}
+
+/** Drawer motion should be quick and settle once; expressive overshoot is distracting in navigation. */
+private class NonBouncyDrawerMotionScheme(base: MotionScheme) : MotionScheme by base {
+    override fun <T> defaultSpatialSpec(): FiniteAnimationSpec<T> =
+        spring(
+            dampingRatio = Spring.DampingRatioNoBouncy,
+            stiffness = Spring.StiffnessMedium,
+        )
 }
 
 internal fun pairingOverlayAfterRunOpenRequest(currentlyVisible: Boolean, openRun: RunKey?): Boolean =
