@@ -72,7 +72,7 @@ internal class StorageContainer private constructor(
 
     suspend fun initialize(): CoreTransportSnapshot = bootstrap.initialize()
 
-    suspend fun loadExistingAuthorityOrNull(): CoreTransportSnapshot? = bootstrap.loadExistingAuthorityOrNull()
+    suspend fun loadCompletedAuthority(): CoreTransportSnapshot = bootstrap.loadCompletedAuthority()
 
     suspend fun loadCoreRuntime(): CoreRoomRuntime = CoreRoomRuntime.loadExisting(coreRepository)
 

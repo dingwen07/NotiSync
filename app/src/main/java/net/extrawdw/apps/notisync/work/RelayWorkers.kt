@@ -9,11 +9,9 @@ import androidx.work.ExistingWorkPolicy
 import androidx.work.ListenableWorker
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.OutOfQuotaPolicy
 import androidx.work.PeriodicWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import androidx.work.workDataOf
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.CancellationException
 import net.extrawdw.apps.notisync.data.relay.RelayOperationalContinuity
@@ -29,7 +27,7 @@ internal enum class RelayWorkerExecutionResult {
     RETRY_REQUIRED,
 }
 
-/** Narrow composition surface; workers schedule/retry but never own message custody or ACK state. */
+/** Narrow broker-custody surface; callers never own message custody or ACK state. */
 internal interface RelayWorkerRuntime {
     suspend fun fetchAndProcessExact(messageId: String): RelayWorkerExecutionResult
     suspend fun drainFiniteBatch(): RelayWorkerExecutionResult
@@ -38,9 +36,9 @@ internal interface RelayWorkerRuntime {
 internal sealed interface RelayWorkerRuntimeAvailability {
     data class Ready(val runtime: RelayWorkerRuntime) : RelayWorkerRuntimeAvailability
     /**
-     * No local authority is available. The broker still owns every unacknowledged message, so a worker must stop
-     * without creating a WorkManager retry lifecycle. A successful user-started initialization schedules a fresh
-     * backlog drain.
+     * Existing-authority initialization found no usable local authority. The broker still owns every
+     * unacknowledged message, so a worker must stop without creating a WorkManager retry lifecycle. A successful
+     * user-started initialization schedules a fresh backlog drain.
      */
     data object Unavailable : RelayWorkerRuntimeAvailability
 }
@@ -61,7 +59,7 @@ internal fun interface RelayWorkerExactFetchPort {
     ): RelayExactFetchResult
 }
 
-/** Storage/wire-independent WorkManager adapter for the two broker-custody entry points. */
+/** Storage/wire-independent runtime shared by direct FCM fetches and the periodic broker drain. */
 internal class BrokerCustodyRelayWorkerRuntime(
     private val continuity: RelayWorkerContinuityPort,
     private val exactSource: RelayWorkerExactFetchPort,
@@ -104,45 +102,7 @@ private suspend fun Context.relayWorkerRuntimeAvailability(): RelayWorkerRuntime
     (applicationContext as? RelayWorkerRuntimeProvider)?.relayWorkerRuntimeAvailability()
         ?: RelayWorkerRuntimeAvailability.Unavailable
 
-/** High-priority FCM wake: fetch exactly one broker-owned message under a unique expedited worker. */
-class WakeFetchWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
-    override suspend fun doWork(): Result {
-        val messageId = inputData.getString(KEY_MESSAGE_ID) ?: return Result.success()
-        if (!isValidRelayLocator(messageId)) return Result.success()
-        return withRuntime { runtime -> runtime.fetchAndProcessExact(messageId) }
-    }
-
-    companion object {
-        private const val KEY_MESSAGE_ID = "messageId"
-        private const val BACKOFF_SECONDS = 30L
-
-        /** Ordinary wakes coalesce into the normal drain; only high-priority wakes perform an exact fetch. */
-        fun enqueue(
-            context: Context,
-            messageId: String,
-            expedited: Boolean = false,
-        ) {
-            if (!isValidRelayLocator(messageId)) return
-            if (!expedited) {
-                RelayDrainWorker.enqueueNormal(context)
-                return
-            }
-            val request = OneTimeWorkRequestBuilder<WakeFetchWorker>()
-                .setInputData(workDataOf(KEY_MESSAGE_ID to messageId))
-                .setConstraints(connectedConstraint())
-                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, BACKOFF_SECONDS, TimeUnit.SECONDS)
-                .setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
-                .build()
-            WorkManager.getInstance(context).enqueueUniqueWork(
-                "relay-exact-$messageId",
-                ExistingWorkPolicy.KEEP,
-                request,
-            )
-        }
-    }
-}
-
-/** Normal and periodic broker drain. WorkManager is only the retry/wake mechanism. */
+/** Normal and periodic broker drain. This is the backlog safety net, not the FCM delivery path. */
 class RelayDrainWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
     override suspend fun doWork(): Result = withRuntime(RelayWorkerRuntime::drainFiniteBatch)
 
@@ -189,8 +149,8 @@ private suspend fun CoroutineWorker.withRuntime(
     operation: suspend (RelayWorkerRuntime) -> RelayWorkerExecutionResult,
 ): ListenableWorker.Result = when (val availability = applicationContext.relayWorkerRuntimeAvailability()) {
     is RelayWorkerRuntimeAvailability.Ready -> execute { operation(availability.runtime) }
-    // Initialization is user-triggered and the broker remains authoritative until ACK. Retrying an unavailable
-    // application process would only create a second local lifecycle; Ready publication schedules a new drain.
+    // The provider has already waited for existing-authority initialization. A genuinely unavailable
+    // process must not start migration; Ready publication after user initialization schedules a new drain.
     RelayWorkerRuntimeAvailability.Unavailable -> ListenableWorker.Result.success()
 }
 
@@ -209,8 +169,3 @@ private suspend fun CoroutineWorker.execute(
 
 private fun connectedConstraint(): Constraints =
     Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
-
-private fun isValidRelayLocator(messageId: String): Boolean =
-    messageId.isNotBlank() &&
-        messageId.length <= net.extrawdw.apps.notisync.data.relay.RelayLimits.MAX_MESSAGE_ID_CHARS &&
-        messageId.none(Char::isISOControl)

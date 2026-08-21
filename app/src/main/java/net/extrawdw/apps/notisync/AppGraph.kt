@@ -41,6 +41,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.analytics.AnalyticsController
 import net.extrawdw.apps.notisync.analytics.AndroidPeerTelemetry
 import net.extrawdw.apps.notisync.analytics.PerfSpan
@@ -53,6 +54,7 @@ import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapOutcome
 import net.extrawdw.apps.notisync.composition.app.ApplicationBootstrapState
 import net.extrawdw.apps.notisync.composition.app.FcmRouteRegistration
 import net.extrawdw.apps.notisync.composition.app.ReadyServices
+import net.extrawdw.apps.notisync.composition.app.RoomMigrationCompletion
 import net.extrawdw.apps.notisync.composition.bootstrap.StorageBootstrapFailure
 import net.extrawdw.apps.notisync.composition.bootstrap.StorageBootstrapFailureDisposition
 import net.extrawdw.apps.notisync.composition.messaging.BrokerCustodyRelayRuntimeComponents
@@ -189,7 +191,6 @@ import net.extrawdw.notisync.protocol.crypto.OperationalSigner
 import net.extrawdw.apps.notisync.work.RelayWorkerRuntimeAvailability
 import net.extrawdw.apps.notisync.work.RelayWorkerRuntimeProvider
 import java.time.ZonedDateTime
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.io.path.toPath
 
 internal val Context.dataStore: DataStore<Preferences> by preferencesDataStore("notisync")
@@ -1548,9 +1549,9 @@ internal class NotiSyncApp : Application(), RelayWorkerRuntimeProvider {
         CoroutineScope(SupervisorJob() + Dispatchers.IO + crashGuard("NotiSyncApp.initScope"))
     private val bootstrapCoordinator = ApplicationBootstrapCoordinator(
         scope = initScope,
-        initialize = ::initializeProductionServices,
+        startRuntime = ::startRoomRuntime,
     )
-    private val userInitializationRequested = AtomicBoolean(false)
+    private val roomMigrationCompletion by lazy(LazyThreadSafetyMode.NONE) { RoomMigrationCompletion(this) }
 
     internal val bootstrapState: StateFlow<ApplicationBootstrapState<ReadyServices>> =
         bootstrapCoordinator.state
@@ -1561,21 +1562,12 @@ internal class NotiSyncApp : Application(), RelayWorkerRuntimeProvider {
 
     override fun onCreate() {
         super.onCreate()
-        // FCM, WorkManager, receivers, and services may create the application process after an
-        // update. They must not start the user-visible legacy-to-Room cutover. MainActivity is the
-        // only caller of startUserInitialization(). A completed Room authority may still hydrate in
-        // a background-created process; that probe never opens or inspects a legacy source.
-        bootstrapCoordinator.probeExisting(::probeExistingProductionServices)
-    }
-
-    internal fun startUserInitialization() {
-        if (!userInitializationRequested.compareAndSet(false, true)) return
         bootstrapCoordinator.start()
         initScope.launch {
             when (val settled = bootstrapState.first { it !is ApplicationBootstrapState.Loading }) {
                 is ApplicationBootstrapState.Ready -> {
-                    // FCM/worker callbacks intentionally stop while first-open migration is incomplete. The broker
-                    // retains those messages, so Ready publication starts one backlog drain and then the backstop.
+                    // The broker retains messages while migration/runtime startup is incomplete. Ready publication
+                    // starts one immediate backlog drain and keeps the independent periodic safety net scheduled.
                     RelayDrainWorker.enqueueNormal(this@NotiSyncApp)
                     RelayDrainWorker.schedulePeriodic(this@NotiSyncApp)
                 }
@@ -1619,12 +1611,27 @@ internal class NotiSyncApp : Application(), RelayWorkerRuntimeProvider {
     }
 
     override suspend fun relayWorkerRuntimeAvailability(): RelayWorkerRuntimeAvailability =
-        when (val state = bootstrapState.value) {
+        when (val state = bootstrapCoordinator.awaitStartup()) {
             ApplicationBootstrapState.Loading -> RelayWorkerRuntimeAvailability.Unavailable
             is ApplicationBootstrapState.Ready ->
                 RelayWorkerRuntimeAvailability.Ready(state.services.relayWorkerRuntime)
             is ApplicationBootstrapState.Unavailable -> RelayWorkerRuntimeAvailability.Unavailable
         }
+
+    /** Handles an FCM wake directly; broker custody and the periodic drain recover an interrupted attempt. */
+    internal fun processFcmWakeBlocking(messageId: String) {
+        try {
+            runBlocking(Dispatchers.IO) {
+                when (val availability = relayWorkerRuntimeAvailability()) {
+                    is RelayWorkerRuntimeAvailability.Ready ->
+                        availability.runtime.fetchAndProcessExact(messageId)
+                    RelayWorkerRuntimeAvailability.Unavailable -> Unit
+                }
+            }
+        } catch (_: Exception) {
+            // The broker still owns the unacknowledged message. The independent periodic drain retries it.
+        }
+    }
 
     private fun storageContainer() = StorageContainerFactory.get(
             context = this,
@@ -1650,26 +1657,19 @@ internal class NotiSyncApp : Application(), RelayWorkerRuntimeProvider {
             ),
         )
 
-    private suspend fun initializeProductionServices(): ApplicationBootstrapOutcome<ReadyServices> = try {
+    private suspend fun startRoomRuntime(): ApplicationBootstrapOutcome<ReadyServices> = try {
         val container = storageContainer()
-        container.initialize()
+        if (roomMigrationCompletion.isComplete()) {
+            container.loadCompletedAuthority()
+        } else {
+            container.initialize()
+            roomMigrationCompletion.markComplete()
+        }
         ApplicationBootstrapOutcome.Ready(createReadyServices(container))
     } catch (cancelled: kotlinx.coroutines.CancellationException) {
         throw cancelled
     } catch (failure: StorageBootstrapFailure) {
         failure.toApplicationOutcome()
-    }
-
-    private suspend fun probeExistingProductionServices(): ApplicationBootstrapOutcome<ReadyServices>? {
-        return try {
-            val container = storageContainer()
-            container.loadExistingAuthorityOrNull() ?: return null
-            ApplicationBootstrapOutcome.Ready(createReadyServices(container))
-        } catch (cancelled: kotlinx.coroutines.CancellationException) {
-            throw cancelled
-        } catch (failure: StorageBootstrapFailure) {
-            failure.toApplicationOutcome()
-        }
     }
 
     private suspend fun createReadyServices(container: net.extrawdw.apps.notisync.composition.storage.StorageContainer): ReadyServices {

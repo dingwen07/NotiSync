@@ -867,11 +867,12 @@ internal class RoomSshProviderRepository(
 
     override suspend fun prepareResponse(requestId: String, now: Long): PreparedSshResponse? = withContext(ioDispatcher) {
         val stored = find(requestId) ?: return@withContext null
-        if (stored.state != SshProviderRequestState.RESPONSE_PENDING_SEND) {
+        if (stored.state != SshProviderRequestState.RESPONSE_PENDING_SEND) return@withContext null
+        val custody = requestDao.findProviderResponseCustody(requestId)
+        if (custody == null) {
             val transient = transientResponses[requestId]?.copyOf() ?: return@withContext null
             return@withContext PreparedSshResponse(requestId, stored.kind, transient, durableCustody = false)
         }
-        val custody = requestDao.findProviderResponseCustody(requestId) ?: return@withContext null
         val prepared = if (custody.payloadFormat == SshProviderResponsePayloadFormat.BODY) {
             val next = custody.copy(payloadFormat = SshProviderResponsePayloadFormat.PREPARED_ENVELOPE, updatedAt = maxOf(now, custody.updatedAt + 1))
             when (requestDao.prepareProviderResponse(custody, next)) {
@@ -889,7 +890,23 @@ internal class RoomSshProviderRepository(
     override suspend fun completeResponse(prepared: PreparedSshResponse, sentAt: Long): Boolean = withContext(ioDispatcher) {
         try {
             if (!prepared.durableCustody) {
+                val current = requestDao.findProviderRequest(prepared.requestId) ?: return@withContext false
+                if (current.state == StorageSshProviderRequestState.SENT) {
+                    transientResponses.remove(prepared.requestId)?.fill(0)
+                    return@withContext true
+                }
+                val outcome = current.outcome ?: return@withContext false
+                if (
+                    requestDao.terminalProviderRequest(
+                        prepared.requestId,
+                        StorageSshProviderRequestState.RESPONSE_QUEUED,
+                        StorageSshProviderRequestState.SENT,
+                        outcome,
+                        sentAt,
+                    ) != 1
+                ) return@withContext false
                 transientResponses.remove(prepared.requestId)?.fill(0)
+                bumpChange()
                 return@withContext true
             }
             val custody = requestDao.findProviderResponseCustody(prepared.requestId) ?: return@withContext false
@@ -1807,8 +1824,15 @@ internal class RoomSshProviderRepository(
                 val protected = protectAtGeneration(encoded, ProtectedPayloadBinding.sshProviderResponse(stored.requestId), requireReadyGeneration())
                 requestDao.recordProviderOutcomeAndQueueResponse(SshProviderOutcomeTransition(stored.requestId, outcome, at, protected.toResponseEntity(stored.requestId, at), null))
             } else {
-                transientResponses[stored.requestId] = encoded.copyOf()
-                requestDao.terminalProviderRequest(stored.requestId, StorageSshProviderRequestState.PENDING_REVIEW, StorageSshProviderRequestState.COMPLETED, outcome, at) == 1
+                val changed = requestDao.terminalProviderRequest(
+                    stored.requestId,
+                    StorageSshProviderRequestState.PENDING_REVIEW,
+                    StorageSshProviderRequestState.RESPONSE_QUEUED,
+                    outcome,
+                    at,
+                ) == 1
+                if (changed) transientResponses[stored.requestId] = encoded.copyOf()
+                changed
             }
             if (committed) bumpChange()
             committed

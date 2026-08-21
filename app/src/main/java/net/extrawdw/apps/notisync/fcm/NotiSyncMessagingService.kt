@@ -5,14 +5,12 @@ import com.google.firebase.messaging.FirebaseMessagingService
 import com.google.firebase.messaging.RemoteMessage
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.messaging.MAX_AUTHENTICATED_MESSAGE_ID_CHARS
-import net.extrawdw.apps.notisync.work.WakeFetchWorker
 
 /**
  * FCM data-message handler. The broker sends data-only messages: an inline encrypted envelope ("ct")
- * for small payloads, or a wake pointer ("mid") for large ones — which WorkManager pulls from the
- * broker's relay by id rather than waiting for the next foreground WebSocket flush.
- * FCM never sees plaintext. This callback extracts only the durable broker locator and immediately hands it to
- * WorkManager; authentication, decryption, storage, and feature dispatch happen under a valid worker lifecycle.
+ * for small payloads, or a wake pointer ("mid") for large ones. Both include the durable broker locator.
+ * FCM never sees plaintext. This callback exact-fetches and processes the broker-owned message during FCM's
+ * execution window instead of routing prompt delivery through WorkManager.
  * The broker relay copy is authoritative recovery state, so the inline ciphertext is never the sole copy.
  */
 // Routing uses the FCM installation id from the newer register()/onRegistered() flow (see
@@ -23,11 +21,7 @@ class NotiSyncMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         val messageId = relayWakeMessageId(message.data) ?: return
-        WakeFetchWorker.enqueue(
-            context = applicationContext,
-            messageId = messageId,
-            expedited = message.priority == RemoteMessage.PRIORITY_HIGH,
-        )
+        (applicationContext as? NotiSyncApp)?.processFcmWakeBlocking(messageId)
     }
 
     override fun onRegistered(installationId: String) {

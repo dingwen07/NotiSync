@@ -1,8 +1,11 @@
 package net.extrawdw.apps.notisync.composition.app
 
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -64,18 +67,19 @@ class ApplicationBootstrapCoordinatorTest {
     }
 
     @Test
-    fun existingAuthorityProbePublishesWithoutRunningMigrator() = runTest {
-        var migrationCalls = 0
-        val existing = Any()
-        val coordinator = ApplicationBootstrapCoordinator(backgroundScope) {
-            migrationCalls += 1
-            ApplicationBootstrapOutcome.Ready(Any())
+    fun backgroundConsumerWaitsForRuntimeStartup() = runTest {
+        val releaseStartup = CompletableDeferred<Unit>()
+        val runtime = Any()
+        val coordinator = ApplicationBootstrapCoordinator<Any>(backgroundScope) {
+            releaseStartup.await()
+            ApplicationBootstrapOutcome.Ready(runtime)
         }
+        coordinator.start()
 
-        coordinator.probeExisting { ApplicationBootstrapOutcome.Ready(existing) }.join()
-        coordinator.start().join()
+        val observed = async { coordinator.awaitStartup() }
+        assertFalse(observed.isCompleted)
 
-        assertEquals(0, migrationCalls)
-        assertSame(existing, (coordinator.state.value as ApplicationBootstrapState.Ready).services)
+        releaseStartup.complete(Unit)
+        assertSame(runtime, (observed.await() as ApplicationBootstrapState.Ready<*>).services)
     }
 }

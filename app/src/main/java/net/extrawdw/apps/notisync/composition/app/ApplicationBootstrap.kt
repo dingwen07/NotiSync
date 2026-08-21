@@ -58,50 +58,27 @@ internal sealed interface ApplicationBootstrapOutcome<out T : Any> {
     data class Unavailable(val failure: ApplicationBootstrapFailure) : ApplicationBootstrapOutcome<Nothing>
 }
 
-/**
- * One user-open initializer and one atomic ready publication. A failed migration stays unavailable until the next
- * user launch; background callbacks never run or retry the migrator.
- */
+/** One process-start initialization and one atomic runtime publication. */
 internal class ApplicationBootstrapCoordinator<T : Any>(
     private val scope: CoroutineScope,
-    private val initialize: suspend () -> ApplicationBootstrapOutcome<T>,
+    private val startRuntime: suspend () -> ApplicationBootstrapOutcome<T>,
 ) {
     private val startLock = Any()
-    private var startedJob: Job? = null
-    private var existingProbeJob: Job? = null
+    private var startupJob: Job? = null
     private val mutableState = MutableStateFlow<ApplicationBootstrapState<T>>(ApplicationBootstrapState.Loading)
 
     val state: StateFlow<ApplicationBootstrapState<T>> = mutableState.asStateFlow()
 
-    /** Background-safe probe: it may publish an existing authority but cannot invoke the migrator. */
-    fun probeExisting(
-        probe: suspend () -> ApplicationBootstrapOutcome<T>?,
-    ): Job = synchronized(startLock) {
-        existingProbeJob ?: scope.launch {
-            val outcome = try {
-                probe()
-            } catch (cancelled: CancellationException) {
-                throw cancelled
-            } catch (_: Exception) {
-                ApplicationBootstrapOutcome.Unavailable(
-                    ApplicationBootstrapFailure(
-                        ApplicationBootstrapFailureKind.SECURITY_BLOCKING,
-                        UNEXPECTED_FAILURE_CODE,
-                    ),
-                )
-            }
-            if (outcome != null && mutableState.value is ApplicationBootstrapState.Loading) {
-                mutableState.value = outcome.toState()
-            }
-        }.also { existingProbeJob = it }
+    suspend fun awaitStartup(): ApplicationBootstrapState<T> {
+        val startup = synchronized(startLock) { startupJob }
+        startup?.join()
+        return mutableState.value
     }
 
     fun start(): Job = synchronized(startLock) {
-        startedJob ?: scope.launch {
-            existingProbeJob?.join()
-            if (mutableState.value !is ApplicationBootstrapState.Loading) return@launch
+        startupJob ?: scope.launch {
             val outcome = try {
-                initialize()
+                startRuntime()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
@@ -113,7 +90,7 @@ internal class ApplicationBootstrapCoordinator<T : Any>(
                 )
             }
             mutableState.value = outcome.toState()
-        }.also { startedJob = it }
+        }.also { startupJob = it }
     }
 
     private fun ApplicationBootstrapOutcome<T>.toState(): ApplicationBootstrapState<T> = when (this) {

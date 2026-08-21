@@ -101,18 +101,15 @@ internal class ProductionStorageBootstrapCoordinator(
         )
     }
 
-    /**
-     * Background process entry points may resume an already-completed Room authority, but they never inspect or
-     * migrate legacy sources. Null means MainActivity must remain the sole caller allowed to run [initialize].
-     */
-    suspend fun loadExistingAuthorityOrNull(): CoreTransportSnapshot? =
-        if (StorageBootstrapOriginResolver.classifyTarget(targetSource.read()) ==
+    /** Opens a migration-complete Room authority without inspecting any retained v51 source. */
+    suspend fun loadCompletedAuthority(): CoreTransportSnapshot {
+        if (StorageBootstrapOriginResolver.classifyTarget(targetSource.read()) !=
             CoreBootstrapTargetDecision.ExistingAuthority
         ) {
-            validateCompletedAuthority()
-        } else {
-            null
+            blocked("completed_room_authority_missing")
         }
+        return validateCompletedAuthority()
+    }
 
     private suspend fun initializeWithoutAuthority() {
         val before = targetSource.read()

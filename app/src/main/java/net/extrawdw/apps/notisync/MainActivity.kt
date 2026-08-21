@@ -110,7 +110,6 @@ class MainActivity : ComponentActivity() {
         consumeOpenSshHistory(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
-        (applicationContext as NotiSyncApp).startUserInitialization()
         setContent {
             val app = applicationContext as NotiSyncApp
             val bootstrapState by app.bootstrapState.collectAsStateWithLifecycle()
