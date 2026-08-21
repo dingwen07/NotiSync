@@ -4,6 +4,9 @@ import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteConstraintException
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
+import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -13,13 +16,19 @@ import org.junit.Before
 import org.junit.Test
 
 class SshKeyProviderDatabaseTest {
-    private val context get() = InstrumentationRegistry.getInstrumentation().targetContext
+    private val context by lazy {
+        RoomStorageTestContext(
+            InstrumentationRegistry.getInstrumentation().targetContext,
+            "ssh-key-provider",
+        )
+    }
     private val databaseFile: File get() = context.getDatabasePath(DATABASE_NAME)
     private var store: SshKeyProviderStore? = null
 
     @Before
     fun clearDatabase() {
         context.deleteDatabase(DATABASE_NAME)
+        initializeOperationalTestDatabase(context)
     }
 
     @After
@@ -175,6 +184,7 @@ class SshKeyProviderDatabaseTest {
     }
 
     private fun createMarkerDatabase(version: Int) {
+        context.deleteDatabase(DATABASE_NAME)
         databaseFile.parentFile?.mkdirs()
         SQLiteDatabase.openOrCreateDatabase(databaseFile, null).use { database ->
             database.execSQL("CREATE TABLE release_marker(value TEXT NOT NULL)")
@@ -189,6 +199,6 @@ class SshKeyProviderDatabaseTest {
     ).use { it.moveToFirst() }
 
     private companion object {
-        const val DATABASE_NAME = "ssh-key-provider.sqlite3"
+        const val DATABASE_NAME = OperationalDatabase.DATABASE_NAME
     }
 }

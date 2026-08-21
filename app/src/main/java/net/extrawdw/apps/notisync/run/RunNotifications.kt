@@ -416,6 +416,9 @@ class RunActionReceiver : BroadcastReceiver() {
         CoroutineScope(Dispatchers.IO + crashGuard("RunActionReceiver")).launch {
             var outbox: RunControlOutbox? = null
             try {
+                // The one-time cutover owns the legacy outbox until it selects the process storage backend.
+                // Waiting here prevents an action from landing in the retained source after it was copied.
+                app.awaitStorageReady()
                 val queue = RunControlOutbox(context)
                 outbox = queue
                 queue.enqueue(control)

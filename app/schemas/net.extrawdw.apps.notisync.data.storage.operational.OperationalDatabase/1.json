@@ -1,0 +1,1230 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 1,
+    "identityHash": "955447e01ee0a6c7b0029e3f19625a27",
+    "entities": [
+      {
+        "tableName": "mirror_msg",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`source_client` TEXT NOT NULL, `source_key` TEXT NOT NULL, `message_id` TEXT NOT NULL, `recorded_at` INTEGER NOT NULL, PRIMARY KEY(`source_client`, `source_key`))",
+        "fields": [
+          {
+            "fieldPath": "sourceClient",
+            "columnName": "source_client",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "source_key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "messageId",
+            "columnName": "message_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "recordedAt",
+            "columnName": "recorded_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "source_client",
+            "source_key"
+          ]
+        }
+      },
+      {
+        "tableName": "mirror_lifecycle",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`source_client` TEXT NOT NULL, `source_key` TEXT NOT NULL, `post_time` INTEGER, `dismissed_at` INTEGER, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`source_client`, `source_key`))",
+        "fields": [
+          {
+            "fieldPath": "sourceClient",
+            "columnName": "source_client",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sourceKey",
+            "columnName": "source_key",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "postTime",
+            "columnName": "post_time",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "dismissedAt",
+            "columnName": "dismissed_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "source_client",
+            "source_key"
+          ]
+        }
+      },
+      {
+        "tableName": "runs",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`host_client` TEXT NOT NULL, `run_id` TEXT NOT NULL, `revision` INTEGER NOT NULL, `presented_revision` INTEGER NOT NULL, `active` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, `ended_at` INTEGER, `received_at` INTEGER NOT NULL, `payload` BLOB NOT NULL, PRIMARY KEY(`host_client`, `run_id`))",
+        "fields": [
+          {
+            "fieldPath": "hostClient",
+            "columnName": "host_client",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "runId",
+            "columnName": "run_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "presentedRevision",
+            "columnName": "presented_revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "active",
+            "columnName": "active",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "endedAt",
+            "columnName": "ended_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "receivedAt",
+            "columnName": "received_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "BLOB",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "host_client",
+            "run_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "runs_order_idx",
+            "unique": false,
+            "columnNames": [
+              "active",
+              "updated_at"
+            ],
+            "orders": [
+              "DESC",
+              "DESC"
+            ],
+            "createSql": "CREATE INDEX IF NOT EXISTS `runs_order_idx` ON `${TABLE_NAME}` (`active` DESC, `updated_at` DESC)"
+          },
+          {
+            "name": "runs_retention_idx",
+            "unique": false,
+            "columnNames": [
+              "active",
+              "received_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `runs_retention_idx` ON `${TABLE_NAME}` (`active`, `received_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "controls",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `requested_at` INTEGER NOT NULL, `payload` BLOB NOT NULL, PRIMARY KEY(`request_id`))",
+        "fields": [
+          {
+            "fieldPath": "requestId",
+            "columnName": "request_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestedAt",
+            "columnName": "requested_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "BLOB",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "request_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "controls_order_idx",
+            "unique": false,
+            "columnNames": [
+              "requested_at",
+              "request_id"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `controls_order_idx` ON `${TABLE_NAME}` (`requested_at`, `request_id`)"
+          }
+        ]
+      },
+      {
+        "tableName": "sign_requests",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `requester_client_id` TEXT NOT NULL, `sender_client_id` TEXT NOT NULL, `primary_key_id` TEXT NOT NULL, `issued_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `payload_sha256` BLOB NOT NULL, `object_kind` TEXT NOT NULL, `payload` BLOB, `state` TEXT NOT NULL, `encoded_response` BLOB, `updated_at` INTEGER NOT NULL, `commit_details` BLOB, `result` TEXT, `working_directory` TEXT, PRIMARY KEY(`request_id`))",
+        "fields": [
+          {
+            "fieldPath": "requestId",
+            "columnName": "request_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requesterClientId",
+            "columnName": "requester_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "senderClientId",
+            "columnName": "sender_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "primaryKeyId",
+            "columnName": "primary_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "issuedAt",
+            "columnName": "issued_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expires_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payloadSha256",
+            "columnName": "payload_sha256",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "objectKind",
+            "columnName": "object_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "payload",
+            "columnName": "payload",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "encodedResponse",
+            "columnName": "encoded_response",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "commitDetails",
+            "columnName": "commit_details",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "result",
+            "columnName": "result",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "workingDirectory",
+            "columnName": "working_directory",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "request_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "sign_requests_state_idx",
+            "unique": false,
+            "columnNames": [
+              "state",
+              "updated_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `sign_requests_state_idx` ON `${TABLE_NAME}` (`state`, `updated_at`)"
+          },
+          {
+            "name": "sign_requests_sender_idx",
+            "unique": false,
+            "columnNames": [
+              "sender_client_id",
+              "state"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `sign_requests_sender_idx` ON `${TABLE_NAME}` (`sender_client_id`, `state`)"
+          }
+        ]
+      },
+      {
+        "tableName": "provider_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton` INTEGER NOT NULL, `inventory_generation` TEXT NOT NULL, `revision` INTEGER NOT NULL, PRIMARY KEY(`singleton`))",
+        "fields": [
+          {
+            "fieldPath": "singleton",
+            "columnName": "singleton",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "inventoryGeneration",
+            "columnName": "inventory_generation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "revision",
+            "columnName": "revision",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton"
+          ]
+        }
+      },
+      {
+        "tableName": "ssh_keys",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_key_id` TEXT NOT NULL, `public_blob` BLOB NOT NULL, `public_hash` BLOB NOT NULL, `algorithm` TEXT NOT NULL, `display_name` TEXT NOT NULL, `origin` TEXT NOT NULL, `approval_policy` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `expires_at` INTEGER, PRIMARY KEY(`provider_key_id`))",
+        "fields": [
+          {
+            "fieldPath": "providerKeyId",
+            "columnName": "provider_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicBlob",
+            "columnName": "public_blob",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "publicHash",
+            "columnName": "public_hash",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "algorithm",
+            "columnName": "algorithm",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "origin",
+            "columnName": "origin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "approvalPolicy",
+            "columnName": "approval_policy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "expiresAt",
+            "columnName": "expires_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_key_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "ssh_keys_public_hash_unique",
+            "unique": true,
+            "columnNames": [
+              "public_hash"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `ssh_keys_public_hash_unique` ON `${TABLE_NAME}` (`public_hash`)"
+          }
+        ]
+      },
+      {
+        "tableName": "ssh_operational_keys",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_key_id` TEXT NOT NULL, `provider_kind` TEXT NOT NULL, `key_alias` TEXT NOT NULL, `ciphertext` BLOB, `nonce` BLOB, `security_level` TEXT NOT NULL, `user_verification_policy` TEXT NOT NULL, `strongbox_attempted` INTEGER NOT NULL, `strongbox_fallback` INTEGER NOT NULL, PRIMARY KEY(`provider_key_id`), FOREIGN KEY(`provider_key_id`) REFERENCES `ssh_keys`(`provider_key_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "providerKeyId",
+            "columnName": "provider_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerKind",
+            "columnName": "provider_kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keyAlias",
+            "columnName": "key_alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ciphertext",
+            "columnName": "ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "nonce",
+            "columnName": "nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "securityLevel",
+            "columnName": "security_level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "userVerificationPolicy",
+            "columnName": "user_verification_policy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strongBoxAttempted",
+            "columnName": "strongbox_attempted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strongBoxFallback",
+            "columnName": "strongbox_fallback",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_key_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "ssh_operational_keys_alias_unique",
+            "unique": true,
+            "columnNames": [
+              "key_alias"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `ssh_operational_keys_alias_unique` ON `${TABLE_NAME}` (`key_alias`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "ssh_keys",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "provider_key_id"
+            ],
+            "referencedColumns": [
+              "provider_key_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ssh_export_copies",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_key_id` TEXT NOT NULL, `key_alias` TEXT NOT NULL, `ciphertext` BLOB NOT NULL, `nonce` BLOB NOT NULL, `security_level` TEXT NOT NULL, `backend_policy` TEXT NOT NULL, `authentication` TEXT NOT NULL, `strongbox_attempted` INTEGER NOT NULL, `strongbox_fallback` INTEGER NOT NULL, `last_verified_at` INTEGER NOT NULL, PRIMARY KEY(`provider_key_id`), FOREIGN KEY(`provider_key_id`) REFERENCES `ssh_keys`(`provider_key_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "providerKeyId",
+            "columnName": "provider_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "keyAlias",
+            "columnName": "key_alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "ciphertext",
+            "columnName": "ciphertext",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "nonce",
+            "columnName": "nonce",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "securityLevel",
+            "columnName": "security_level",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "backendPolicy",
+            "columnName": "backend_policy",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authentication",
+            "columnName": "authentication",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strongBoxAttempted",
+            "columnName": "strongbox_attempted",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "strongBoxFallback",
+            "columnName": "strongbox_fallback",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastVerifiedAt",
+            "columnName": "last_verified_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_key_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "ssh_export_copies_alias_unique",
+            "unique": true,
+            "columnNames": [
+              "key_alias"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `ssh_export_copies_alias_unique` ON `${TABLE_NAME}` (`key_alias`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "ssh_keys",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "provider_key_id"
+            ],
+            "referencedColumns": [
+              "provider_key_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ssh_key_lifecycle",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`provider_key_id` TEXT NOT NULL, `operational_alias` TEXT NOT NULL, `state` TEXT NOT NULL, `created_at` INTEGER NOT NULL, `operational_candidate_ciphertext` BLOB, `operational_candidate_nonce` BLOB, `operational_candidate_security_level` TEXT, `export_candidate_ciphertext` BLOB, `export_candidate_nonce` BLOB, `export_candidate_security_level` TEXT, PRIMARY KEY(`provider_key_id`))",
+        "fields": [
+          {
+            "fieldPath": "providerKeyId",
+            "columnName": "provider_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalAlias",
+            "columnName": "operational_alias",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "operationalCandidateCiphertext",
+            "columnName": "operational_candidate_ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "operationalCandidateNonce",
+            "columnName": "operational_candidate_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "operationalCandidateSecurityLevel",
+            "columnName": "operational_candidate_security_level",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "exportCandidateCiphertext",
+            "columnName": "export_candidate_ciphertext",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "exportCandidateNonce",
+            "columnName": "export_candidate_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "exportCandidateSecurityLevel",
+            "columnName": "export_candidate_security_level",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "provider_key_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "ssh_key_lifecycle_alias_unique",
+            "unique": true,
+            "columnNames": [
+              "operational_alias"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `ssh_key_lifecycle_alias_unique` ON `${TABLE_NAME}` (`operational_alias`)"
+          }
+        ]
+      },
+      {
+        "tableName": "authorization_floors",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`requester_client_id` TEXT NOT NULL, `authorization_generation` TEXT NOT NULL, `invalidated_through_epoch` INTEGER NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`requester_client_id`, `authorization_generation`))",
+        "fields": [
+          {
+            "fieldPath": "requesterClientId",
+            "columnName": "requester_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizationGeneration",
+            "columnName": "authorization_generation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "invalidatedThroughEpoch",
+            "columnName": "invalidated_through_epoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "requester_client_id",
+            "authorization_generation"
+          ]
+        }
+      },
+      {
+        "tableName": "ssh_remembered_authorizations",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`authorization_id` TEXT NOT NULL, `provider_key_id` TEXT NOT NULL, `requester_client_id` TEXT NOT NULL, `authorization_generation` TEXT NOT NULL, `authorization_epoch` INTEGER NOT NULL, `scope` TEXT NOT NULL, `host_key_sha256` BLOB, `created_at` INTEGER NOT NULL, PRIMARY KEY(`authorization_id`), FOREIGN KEY(`provider_key_id`) REFERENCES `ssh_keys`(`provider_key_id`) ON UPDATE NO ACTION ON DELETE CASCADE )",
+        "fields": [
+          {
+            "fieldPath": "authorizationId",
+            "columnName": "authorization_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerKeyId",
+            "columnName": "provider_key_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requesterClientId",
+            "columnName": "requester_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizationGeneration",
+            "columnName": "authorization_generation",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizationEpoch",
+            "columnName": "authorization_epoch",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "scope",
+            "columnName": "scope",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hostKeySha256",
+            "columnName": "host_key_sha256",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "created_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "authorization_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "ssh_remembered_authorizations_match_idx",
+            "unique": false,
+            "columnNames": [
+              "provider_key_id",
+              "requester_client_id",
+              "authorization_generation",
+              "authorization_epoch"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `ssh_remembered_authorizations_match_idx` ON `${TABLE_NAME}` (`provider_key_id`, `requester_client_id`, `authorization_generation`, `authorization_epoch`)"
+          },
+          {
+            "name": "ssh_remembered_authorizations_scope_unique",
+            "unique": true,
+            "columnNames": [
+              "provider_key_id",
+              "requester_client_id",
+              "authorization_generation",
+              "authorization_epoch",
+              "scope",
+              "host_key_sha256"
+            ],
+            "orders": [],
+            "createSql": "CREATE UNIQUE INDEX IF NOT EXISTS `ssh_remembered_authorizations_scope_unique` ON `${TABLE_NAME}` (`provider_key_id`, `requester_client_id`, `authorization_generation`, `authorization_epoch`, `scope`, `host_key_sha256`)"
+          }
+        ],
+        "foreignKeys": [
+          {
+            "table": "ssh_keys",
+            "onDelete": "CASCADE",
+            "onUpdate": "NO ACTION",
+            "columns": [
+              "provider_key_id"
+            ],
+            "referencedColumns": [
+              "provider_key_id"
+            ]
+          }
+        ]
+      },
+      {
+        "tableName": "ssh_known_hosts",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`host_key_sha256` BLOB NOT NULL, `hostname` TEXT, `first_approved_at` INTEGER NOT NULL, `last_approved_at` INTEGER NOT NULL, PRIMARY KEY(`host_key_sha256`))",
+        "fields": [
+          {
+            "fieldPath": "hostKeySha256",
+            "columnName": "host_key_sha256",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "hostname",
+            "columnName": "hostname",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "firstApprovedAt",
+            "columnName": "first_approved_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastApprovedAt",
+            "columnName": "last_approved_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "host_key_sha256"
+          ]
+        }
+      },
+      {
+        "tableName": "provider_requests",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `requester_client_id` TEXT NOT NULL, `request_fingerprint` BLOB NOT NULL, `request_cbor` BLOB, `request_nonce` BLOB, `history_cbor` BLOB NOT NULL, `history_nonce` BLOB NOT NULL, `state` TEXT NOT NULL, `outcome` TEXT, `result_at` INTEGER, `response_cbor` BLOB, `response_nonce` BLOB, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`request_id`))",
+        "fields": [
+          {
+            "fieldPath": "requestId",
+            "columnName": "request_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "kind",
+            "columnName": "kind",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requesterClientId",
+            "columnName": "requester_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestFingerprint",
+            "columnName": "request_fingerprint",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestCbor",
+            "columnName": "request_cbor",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "requestNonce",
+            "columnName": "request_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "historyCbor",
+            "columnName": "history_cbor",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "historyNonce",
+            "columnName": "history_nonce",
+            "affinity": "BLOB",
+            "notNull": true
+          },
+          {
+            "fieldPath": "state",
+            "columnName": "state",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outcome",
+            "columnName": "outcome",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "resultAt",
+            "columnName": "result_at",
+            "affinity": "INTEGER"
+          },
+          {
+            "fieldPath": "responseCbor",
+            "columnName": "response_cbor",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "responseNonce",
+            "columnName": "response_nonce",
+            "affinity": "BLOB"
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "request_id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "provider_requests_state_idx",
+            "unique": false,
+            "columnNames": [
+              "state",
+              "updated_at"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `provider_requests_state_idx` ON `${TABLE_NAME}` (`state`, `updated_at`)"
+          }
+        ]
+      },
+      {
+        "tableName": "notification_capture_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `last_seen_post_time` INTEGER NOT NULL, PRIMARY KEY(`singleton_id`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastSeenPostTime",
+            "columnName": "last_seen_post_time",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        }
+      },
+      {
+        "tableName": "android_apps",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`package_name` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `config_json` TEXT, `seen_channels_json` TEXT, PRIMARY KEY(`package_name`))",
+        "fields": [
+          {
+            "fieldPath": "packageName",
+            "columnName": "package_name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "configJson",
+            "columnName": "config_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "seenChannelsJson",
+            "columnName": "seen_channels_json",
+            "affinity": "TEXT"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "package_name"
+          ]
+        }
+      },
+      {
+        "tableName": "incoming_notification_filters",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`requester_client_id` TEXT NOT NULL, `filter_json` TEXT NOT NULL, `updated_at` INTEGER NOT NULL, PRIMARY KEY(`requester_client_id`))",
+        "fields": [
+          {
+            "fieldPath": "requesterClientId",
+            "columnName": "requester_client_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "filterJson",
+            "columnName": "filter_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updated_at",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "requester_client_id"
+          ]
+        }
+      },
+      {
+        "tableName": "ios_apps",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`bundle_id` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `display_name` TEXT, `last_seen_at` INTEGER, PRIMARY KEY(`bundle_id`))",
+        "fields": [
+          {
+            "fieldPath": "bundleId",
+            "columnName": "bundle_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "displayName",
+            "columnName": "display_name",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "lastSeenAt",
+            "columnName": "last_seen_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "bundle_id"
+          ]
+        }
+      },
+      {
+        "tableName": "screen_mirror_state",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `authorized_peer_ids_json` TEXT NOT NULL, `request_replay_json` TEXT, `replay_blocked` INTEGER NOT NULL, `replay_quarantine_digest` TEXT, `replay_quarantined_at` INTEGER, PRIMARY KEY(`singleton_id`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "authorizedPeerIdsJson",
+            "columnName": "authorized_peer_ids_json",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "requestReplayJson",
+            "columnName": "request_replay_json",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "replayBlocked",
+            "columnName": "replay_blocked",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "replayQuarantineDigest",
+            "columnName": "replay_quarantine_digest",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "replayQuarantinedAt",
+            "columnName": "replay_quarantined_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        }
+      },
+      {
+        "tableName": "screen_codec_preferences",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`peer_id` TEXT NOT NULL, `codec` TEXT NOT NULL, PRIMARY KEY(`peer_id`))",
+        "fields": [
+          {
+            "fieldPath": "peerId",
+            "columnName": "peer_id",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "codec",
+            "columnName": "codec",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "peer_id"
+          ]
+        }
+      },
+      {
+        "tableName": "openpgp_enrollment",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`singleton_id` INTEGER NOT NULL, `enabled` INTEGER NOT NULL, `provider_id` TEXT, `provider_key_reference` TEXT, `primary_key_id` TEXT, `display_identity` TEXT, `enrolled_at` INTEGER, PRIMARY KEY(`singleton_id`))",
+        "fields": [
+          {
+            "fieldPath": "singletonId",
+            "columnName": "singleton_id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "providerId",
+            "columnName": "provider_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "providerKeyReference",
+            "columnName": "provider_key_reference",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "primaryKeyId",
+            "columnName": "primary_key_id",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "displayIdentity",
+            "columnName": "display_identity",
+            "affinity": "TEXT"
+          },
+          {
+            "fieldPath": "enrolledAt",
+            "columnName": "enrolled_at",
+            "affinity": "INTEGER"
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "singleton_id"
+          ]
+        }
+      }
+    ],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '955447e01ee0a6c7b0029e3f19625a27')"
+    ]
+  }
+}

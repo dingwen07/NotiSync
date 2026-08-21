@@ -17,6 +17,7 @@ import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 
 enum class OpenPgpRequestState {
     PENDING_REVIEW,
@@ -65,53 +66,29 @@ data class StoredOpenPgpRequest(
 enum class OpenPgpAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED }
 
 class OpenPgpSignStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION) {
+    SQLiteOpenHelper(
+        context.applicationContext,
+        OperationalDatabase.DATABASE_NAME,
+        null,
+        OperationalDatabase.VERSION,
+    ) {
     private val _requests = MutableStateFlow<List<StoredOpenPgpRequest>>(emptyList())
     val requests: StateFlow<List<StoredOpenPgpRequest>> = _requests.asStateFlow()
 
     init {
+        setWriteAheadLoggingEnabled(true)
         prune(System.currentTimeMillis())
         refresh()
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            "CREATE TABLE sign_requests (" +
-                "request_id TEXT PRIMARY KEY," +
-                "requester_client_id TEXT NOT NULL," +
-                "sender_client_id TEXT NOT NULL," +
-                "primary_key_id TEXT NOT NULL," +
-                "issued_at INTEGER NOT NULL," +
-                "expires_at INTEGER NOT NULL," +
-                "payload_sha256 BLOB NOT NULL," +
-                "object_kind TEXT NOT NULL," +
-                "payload BLOB," +
-                "state TEXT NOT NULL," +
-                "encoded_response BLOB," +
-                "updated_at INTEGER NOT NULL," +
-                "commit_details BLOB," +
-                "result TEXT," +
-                "working_directory TEXT)"
-        )
-        db.execSQL("CREATE INDEX sign_requests_state_idx ON sign_requests(state, updated_at)")
-        db.execSQL("CREATE INDEX sign_requests_sender_idx ON sign_requests(sender_client_id, state)")
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnOpenPgpSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        if (oldVersion < 2) {
-            db.execSQL("ALTER TABLE sign_requests ADD COLUMN commit_details BLOB")
-            db.execSQL("ALTER TABLE sign_requests ADD COLUMN result TEXT")
-            backfillDisplayLedger(db)
-        }
-        if (oldVersion < 3) {
-            db.execSQL("ALTER TABLE sign_requests ADD COLUMN working_directory TEXT")
-        }
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+        roomMustOwnOpenPgpSchema()
 
     @Synchronized
     fun accept(request: OpenPgpSignSync, senderClientId: ClientId, now: Long): OpenPgpAcceptResult {
@@ -423,56 +400,6 @@ class OpenPgpSignStore(context: Context) :
     private fun Cursor.getBlobOrNull(index: Int): ByteArray? = if (isNull(index)) null else getBlob(index)
     private fun Cursor.getStringOrNull(index: Int): String? = if (isNull(index)) null else getString(index)
 
-    private fun backfillDisplayLedger(db: SQLiteDatabase) {
-        data class LegacyRow(
-            val requestId: String,
-            val payload: ByteArray?,
-            val state: OpenPgpRequestState,
-            val response: ByteArray?,
-        )
-
-        val rows = db.rawQuery(
-            "SELECT request_id,payload,state,encoded_response FROM $TABLE",
-            emptyArray(),
-        ).use { cursor ->
-            buildList {
-                while (cursor.moveToNext()) {
-                    add(
-                        LegacyRow(
-                            requestId = cursor.getString(0),
-                            payload = cursor.getBlobOrNull(1),
-                            state = OpenPgpRequestState.valueOf(cursor.getString(2)),
-                            response = cursor.getBlobOrNull(3),
-                        )
-                    )
-                }
-            }
-        }
-        rows.forEach { row ->
-            val values = ContentValues()
-            row.payload?.toDisplaySnapshot()?.let {
-                values.put("commit_details", ProtocolCodec.encodeToCbor(it))
-            }
-            legacyResult(row.state, row.response)?.let { values.put("result", it.name) }
-            if (values.size() > 0) {
-                db.update(TABLE, values, "request_id = ?", arrayOf(row.requestId))
-            }
-        }
-    }
-
-    private fun legacyResult(state: OpenPgpRequestState, response: ByteArray?): OpenPgpRequestResult? =
-        when (state) {
-            OpenPgpRequestState.SIGNED_PENDING_SEND -> OpenPgpRequestResult.APPROVED
-            OpenPgpRequestState.REJECTED_PENDING_SEND -> response
-                ?.let { runCatching { ProtocolCodec.decodeFromCbor<OpenPgpSignSync>(it) }.getOrNull() }
-                ?.rejectReason
-                ?.let(::resultFor)
-            OpenPgpRequestState.CANCELLED -> OpenPgpRequestResult.CANCELED
-            OpenPgpRequestState.EXPIRED -> OpenPgpRequestResult.EXPIRED
-            OpenPgpRequestState.FAILED -> OpenPgpRequestResult.FAILED
-            else -> null
-        }
-
     private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
 
     private fun StoredOpenPgpRequest.sameContext(request: OpenPgpSignSync, sender: ClientId): Boolean =
@@ -490,8 +417,6 @@ class OpenPgpSignStore(context: Context) :
                 this.request.payload.contentEquals(request.payload ?: ByteArray(0)))
 
     private companion object {
-        const val DB_NAME = "openpgp_signing.db"
-        const val VERSION = 3
         const val TABLE = "sign_requests"
         const val COLUMNS = "request_id,requester_client_id,sender_client_id,primary_key_id," +
             "issued_at,expires_at,payload_sha256,object_kind,payload,state,encoded_response,updated_at," +
@@ -564,3 +489,6 @@ private fun resultFor(reason: OpenPgpRejectReason): OpenPgpRequestResult = when 
     OpenPgpRejectReason.UNSUPPORTED_KEY,
     OpenPgpRejectReason.PROVIDER_FAILURE -> OpenPgpRequestResult.FAILED
 }
+
+private fun roomMustOwnOpenPgpSchema(): Nothing =
+    error("Room must create and migrate Operational storage before OpenPgpSignStore opens")

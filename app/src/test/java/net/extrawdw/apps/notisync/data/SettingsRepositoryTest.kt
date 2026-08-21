@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.testsupport.InMemoryOperationalApplicationState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -25,7 +26,7 @@ class SettingsRepositoryTest {
         if (initialBrokerUrl != null) runBlocking {
             ds.edit { it[stringPreferencesKey("broker_url")] = initialBrokerUrl }
         }
-        return SettingsRepository(ds, scope)
+        return SettingsRepository(ds, scope, InMemoryOperationalApplicationState())
     }
 
     @Test

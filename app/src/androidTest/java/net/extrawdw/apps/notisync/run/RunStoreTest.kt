@@ -3,6 +3,9 @@ package net.extrawdw.apps.notisync.run
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
+import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
@@ -18,11 +21,15 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class RunStoreTest {
-    private val context: Context = ApplicationProvider.getApplicationContext()
+    private val context: Context = RoomStorageTestContext(
+        ApplicationProvider.getApplicationContext(),
+        "run-store",
+    )
 
     @Before
     fun clearBefore() {
         context.deleteDatabase(DB_NAME)
+        initializeOperationalTestDatabase(context)
     }
 
     @After
@@ -63,7 +70,7 @@ class RunStoreTest {
     }
 
     @Test
-    fun retentionDropsOldCompletedRunsButExemptsActiveRuns() {
+    fun defaultRetentionKeepsFortyDayCompletedRuns() {
         val fortyDays = 40L * 24 * 60 * 60 * 1000
         var clock = 0L
         val store = RunStore(context, now = { clock })
@@ -80,9 +87,31 @@ class RunStoreTest {
         store.close()
         val reopened = RunStore(context, now = { clock })
 
-        assertEquals(listOf("active"), reopened.runs.value.map { it.state.runId })
-        assertTrue(reopened.runs.value.single().active)
+        assertEquals(setOf("old", "active"), reopened.runs.value.map { it.state.runId }.toSet())
+        assertFalse(reopened.runs.value.single { it.state.runId == "old" }.active)
+        assertTrue(reopened.runs.value.single { it.state.runId == "active" }.active)
         reopened.close()
+    }
+
+    @Test
+    fun configuredAgeRetentionStillDeletesExpiredCompletedRuns() {
+        val retention = 30L * 24 * 60 * 60 * 1000
+        var clock = 0L
+        val store = RunStore(context, now = { clock }, completedRetentionMs = retention)
+        store.apply(
+            running(runId = "old", revision = 2).copy(
+                phase = RunPhase.COMPLETED,
+                updateReason = RunUpdateReason.COMPLETED,
+                updatedAt = 2_000,
+                endedAt = 2_000,
+                exitCode = 0,
+            ),
+        )
+        clock = retention + 1
+        store.prune()
+
+        assertTrue(store.runs.value.isEmpty())
+        store.close()
     }
 
     @Test
@@ -141,6 +170,7 @@ class RunStoreTest {
             running(runId = "completed", revision = 2).copy(
                 phase = RunPhase.COMPLETED,
                 updateReason = RunUpdateReason.COMPLETED,
+                updatedAt = 2_000,
                 endedAt = 2_000,
                 exitCode = 0,
             )
@@ -157,7 +187,7 @@ class RunStoreTest {
     }
 
     @Test
-    fun completedLogKeepsNewestFiftyAndExemptsActiveRuns() {
+    fun defaultCompletedLogIsNotCappedAtFifty() {
         var clock = 1_000L
         val store = RunStore(context, now = { clock })
         repeat(55) { index ->
@@ -175,29 +205,24 @@ class RunStoreTest {
         repeat(3) { index -> store.apply(running(runId = "active-$index", revision = 1)) }
 
         val completedIds = store.runs.value.filterNot { it.active }.map { it.state.runId }.toSet()
-        assertEquals(50, completedIds.size)
-        assertFalse("completed-0" in completedIds)
-        assertFalse("completed-4" in completedIds)
-        assertTrue("completed-5" in completedIds)
+        assertEquals(55, completedIds.size)
+        assertTrue("completed-0" in completedIds)
         assertTrue("completed-54" in completedIds)
         assertEquals(3, store.runs.value.count { it.active })
         store.close()
 
         val reopened = RunStore(context, now = { clock })
-        assertEquals(50, reopened.runs.value.count { !it.active })
+        assertEquals(55, reopened.runs.value.count { !it.active })
         assertEquals(3, reopened.runs.value.count { it.active })
         reopened.close()
     }
 
     @Test
-    fun storageCapUsesDatabaseFootprintAndNeverPrunesActiveRuns() {
-        val budget = 512L * 1024
-        val store = RunStore(context, now = { 10_000 }, maxStorageBytes = budget)
-        val active = running(runId = "active", revision = 1).copy(
-            terminal = RunTerminalSnapshot("active".repeat(1_024), false, 6_144),
-        )
-        store.apply(active)
-        repeat(40) { index ->
+    fun configuredCompletedRowLimitStillDeletesOldestRuns() {
+        var clock = 1_000L
+        val store = RunStore(context, now = { clock }, maxCompletedRuns = 3)
+        repeat(5) { index ->
+            clock++
             store.apply(
                 running(runId = "completed-$index", revision = 2).copy(
                     phase = RunPhase.COMPLETED,
@@ -205,20 +230,14 @@ class RunStoreTest {
                     updatedAt = 2_000L + index,
                     endedAt = 2_000L + index,
                     exitCode = 0,
-                    terminal = RunTerminalSnapshot(
-                        "$index:" + "x".repeat(24 * 1024),
-                        truncated = true,
-                        rawBytesSeen = 24L * 1024,
-                    ),
-                )
+                ),
             )
         }
 
-        store.prune()
-
-        assertTrue(store.runs.value.any { it.state.runId == active.runId && it.active })
-        assertTrue(store.runs.value.count { !it.active } < 40)
-        assertTrue(store.storageUsage().accountedBytes <= budget)
+        assertEquals(
+            setOf("completed-2", "completed-3", "completed-4"),
+            store.runs.value.map { it.state.runId }.toSet(),
+        )
         store.close()
     }
 
@@ -237,6 +256,6 @@ class RunStoreTest {
     )
 
     companion object {
-        private const val DB_NAME = "runs.db"
+        private const val DB_NAME = OperationalDatabase.DATABASE_NAME
     }
 }

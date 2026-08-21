@@ -1,19 +1,13 @@
 package net.extrawdw.apps.notisync.screen
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.TrustStatus
@@ -33,16 +27,10 @@ private class CorruptScreenReplayState(message: String, cause: Throwable? = null
  * Authorizations never converge through the peer trust table: control of this phone is an explicit local
  * decision. Replay rows contain only SHA-256 digests and expiry times, never rendezvous tokens or PSKs.
  */
-class ScreenMirrorAuthorizationStore(
-    private val store: DataStore<Preferences>,
+class ScreenMirrorAuthorizationStore internal constructor(
+    private val operationalState: OperationalApplicationState,
 ) {
     private val lock = Any()
-    private val authorizedKey = stringPreferencesKey("screen_mirror_authorized_peer_ids")
-    private val replayKey = stringPreferencesKey("screen_mirror_request_replay_v1")
-    private val replayBlockedKey = booleanPreferencesKey("screen_mirror_request_replay_v1_blocked")
-    private val replayQuarantineDigestKey = stringPreferencesKey("screen_mirror_request_replay_v1_quarantine_digest")
-    private val replayQuarantinedAtKey = longPreferencesKey("screen_mirror_request_replay_v1_quarantined_at")
-    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
 
     private val _authorizedPeerIds = MutableStateFlow(loadAuthorized())
     val authorizedPeerIds: StateFlow<Set<String>> = _authorizedPeerIds.asStateFlow()
@@ -71,7 +59,7 @@ class ScreenMirrorAuthorizationStore(
             if (persistAuthorizedOrFailClosed(next)) _authorizedPeerIds.value = next
         } else {
             // Revocation is fail-closed in the opposite order: active sessions observe it immediately,
-            // even if DataStore is currently unavailable.
+            // even if durable storage is currently unavailable.
             _authorizedPeerIds.value = next
             persistAuthorizedOrFailClosed(next)
         }
@@ -96,7 +84,7 @@ class ScreenMirrorAuthorizationStore(
     /**
      * Atomically and durably consumes a valid request identity. False means it was already consumed.
      * The synchronous contract is intentional: the secure channel may acknowledge immediately after its
-     * handler returns, so replay state must reach DataStore first.
+     * handler returns, so replay state must reach durable storage first.
      */
     fun consumeRequest(
         sessionId: String,
@@ -117,29 +105,19 @@ class ScreenMirrorAuthorizationStore(
         var encodedReplay: String? = null
         try {
             runBlocking {
-                store.edit { preferences ->
-                    if (preferences[replayBlockedKey] == true) {
+                operationalState.updateScreenMirrorState { state ->
+                    if (state.replayBlocked) {
                         throw CorruptScreenReplayState("screen replay state is quarantined")
                     }
-                    encodedReplay = preferences[replayKey]
-                    val rows = decodeReplayStrict(encodedReplay)
-                        .filterValues { it > now }
-                        .toMutableMap()
-                    val sessionDigest = digest(SESSION_REPLAY_DOMAIN, sessionId.toByteArray(Charsets.UTF_8))
-                    val tokenDigest = digest(TOKEN_REPLAY_DOMAIN, routingToken)
-                    if (
-                        sessionDigest !in rows && tokenDigest !in rows &&
-                        rows.size <= MAX_REPLAY_ROWS - ROWS_PER_REQUEST
-                    ) {
-                        rows[sessionDigest] = expiresAt
-                        rows[tokenDigest] = expiresAt
-                        accepted = true
-                    }
-                    preferences[replayKey] = ProtocolCodec.encodeToJson(
-                        rows.entries
-                            .sortedByDescending { it.value }
-                            .associate { it.key to it.value },
-                    )
+                    encodedReplay = state.requestReplayJson
+                    val rows = consumeReplayRows(
+                        encodedReplay = encodedReplay,
+                        sessionId = sessionId,
+                        routingToken = routingToken,
+                        expiresAt = expiresAt,
+                        now = now,
+                    ) { accepted = it }
+                    state.copy(requestReplayJson = ProtocolCodec.encodeToJson(rows))
                 }
             }
             accepted
@@ -158,11 +136,13 @@ class ScreenMirrorAuthorizationStore(
     fun repairReplayState() = synchronized(lock) {
         try {
             runBlocking {
-                store.edit { preferences ->
-                    preferences.remove(replayKey)
-                    preferences.remove(replayBlockedKey)
-                    preferences.remove(replayQuarantineDigestKey)
-                    preferences.remove(replayQuarantinedAtKey)
+                operationalState.updateScreenMirrorState {
+                    it.copy(
+                        requestReplayJson = null,
+                        replayBlocked = false,
+                        replayQuarantineDigest = null,
+                        replayQuarantinedAt = null,
+                    )
                 }
             }
             _replayStateHealth.value = ScreenReplayStateHealth.HEALTHY
@@ -172,11 +152,12 @@ class ScreenMirrorAuthorizationStore(
     }
 
     private fun loadAuthorized(): Set<String> = runBlocking {
-        decodeAuthorized(store.data.first()[authorizedKey])
+        decodeAuthorized(operationalState.screenMirrorState().authorizedPeerIdsJson)
     }
 
     private suspend fun persistAuthorized(value: Set<String>) {
-        store.edit { it[authorizedKey] = ProtocolCodec.encodeToJson(value.sorted().toSet()) }
+        val encoded = ProtocolCodec.encodeToJson(value.sorted().toSet())
+        operationalState.updateScreenMirrorState { it.copy(authorizedPeerIdsJson = encoded) }
     }
 
     /**
@@ -206,9 +187,13 @@ class ScreenMirrorAuthorizationStore(
     } ?: emptySet()
 
     private fun inspectAndQuarantineReplayState(): ScreenReplayStateHealth = runBlocking {
-        val preferences = store.data.first()
-        if (preferences[replayBlockedKey] == true) return@runBlocking ScreenReplayStateHealth.CORRUPT
-        val encoded = preferences[replayKey] ?: return@runBlocking ScreenReplayStateHealth.HEALTHY
+        val blocked: Boolean
+        val encoded: String?
+        val state = operationalState.screenMirrorState()
+        blocked = state.replayBlocked
+        encoded = state.requestReplayJson
+        if (blocked) return@runBlocking ScreenReplayStateHealth.CORRUPT
+        if (encoded == null) return@runBlocking ScreenReplayStateHealth.HEALTHY
         try {
             decodeReplayStrict(encoded)
             ScreenReplayStateHealth.HEALTHY
@@ -222,18 +207,16 @@ class ScreenMirrorAuthorizationStore(
         _replayStateHealth.value = ScreenReplayStateHealth.CORRUPT
         runCatching {
             runBlocking {
-                store.edit { preferences ->
-                    encoded?.let {
-                        preferences[replayQuarantineDigestKey] = digest(
-                            CORRUPT_REPLAY_DOMAIN,
-                            it.toByteArray(Charsets.UTF_8),
-                        )
-                    }
-                    preferences[replayQuarantinedAtKey] = detectedAt
-                    preferences[replayBlockedKey] = true
-                    preferences.remove(replayKey)
-                    // A corrupt replay ledger must also remove routing authority until an explicit repair.
-                    preferences[screenMirroringEnabledKey] = false
+                operationalState.updateScreenMirrorState { state ->
+                    state.copy(
+                        requestReplayJson = null,
+                        replayBlocked = true,
+                        replayQuarantineDigest = encoded?.let {
+                            digest(CORRUPT_REPLAY_DOMAIN, it.toByteArray(Charsets.UTF_8))
+                        },
+                        replayQuarantinedAt = detectedAt,
+                        enabled = false,
+                    )
                 }
             }
         }
@@ -255,6 +238,31 @@ class ScreenMirrorAuthorizationStore(
             throw CorruptScreenReplayState("screen replay state contains invalid rows")
         }
         return decoded
+    }
+
+    private fun consumeReplayRows(
+        encodedReplay: String?,
+        sessionId: String,
+        routingToken: ByteArray,
+        expiresAt: Long,
+        now: Long,
+        accepted: (Boolean) -> Unit,
+    ): Map<String, Long> {
+        val rows = decodeReplayStrict(encodedReplay)
+            .filterValues { it > now }
+            .toMutableMap()
+        val sessionDigest = digest(SESSION_REPLAY_DOMAIN, sessionId.toByteArray(Charsets.UTF_8))
+        val tokenDigest = digest(TOKEN_REPLAY_DOMAIN, routingToken)
+        val canConsume = sessionDigest !in rows && tokenDigest !in rows &&
+            rows.size <= MAX_REPLAY_ROWS - ROWS_PER_REQUEST
+        if (canConsume) {
+            rows[sessionDigest] = expiresAt
+            rows[tokenDigest] = expiresAt
+        }
+        accepted(canConsume)
+        return rows.entries
+            .sortedByDescending { it.value }
+            .associate { it.key to it.value }
     }
 
     private fun digest(domain: ByteArray, value: ByteArray): String {

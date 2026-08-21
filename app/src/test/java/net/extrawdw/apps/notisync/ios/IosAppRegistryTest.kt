@@ -1,24 +1,18 @@
 package net.extrawdw.apps.notisync.ios
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.testsupport.InMemoryOperationalApplicationState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
 class IosAppRegistryTest {
     private fun newRegistry(): IosAppRegistry {
         val scope = CoroutineScope(Dispatchers.Unconfined)
-        val file = File.createTempFile("ios-app-registry-${System.nanoTime()}", ".preferences_pb")
-            .also { it.delete() }
-        val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
-        return IosAppRegistry(ds, scope)
+        return IosAppRegistry(scope, InMemoryOperationalApplicationState())
     }
 
     @Test

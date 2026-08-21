@@ -65,6 +65,7 @@ import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.SshSignatureResult
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserRejection
 import net.extrawdw.notisync.protocol.SshUserRejectionReason
@@ -321,7 +322,12 @@ internal class SshOperationalOperationException(cause: Exception) :
 
 /** Durable Android key inventory, pending approvals, and response outbox. */
 class SshKeyProviderStore(context: Context) :
-    SQLiteOpenHelper(context.applicationContext, DB_NAME, null, VERSION) {
+    SQLiteOpenHelper(
+        context.applicationContext,
+        OperationalDatabase.DATABASE_NAME,
+        null,
+        OperationalDatabase.VERSION,
+    ) {
     private val appContext = context.applicationContext
     private val strongBoxAvailable = context.applicationContext.packageManager
         .hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
@@ -332,215 +338,24 @@ class SshKeyProviderStore(context: Context) :
     val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
     private var resetEpoch = 0L
 
+    init {
+        setWriteAheadLoggingEnabled(true)
+    }
+
     override fun onConfigure(db: SQLiteDatabase) {
-        db.enableWriteAheadLogging()
         db.setForeignKeyConstraintsEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            """
-            CREATE TABLE provider_state(
-              singleton INTEGER PRIMARY KEY CHECK(singleton=1),
-              inventory_generation TEXT NOT NULL,
-              revision INTEGER NOT NULL
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_keys(
-              provider_key_id TEXT PRIMARY KEY,
-              public_blob BLOB NOT NULL,
-              public_hash BLOB NOT NULL UNIQUE,
-              algorithm TEXT NOT NULL,
-              display_name TEXT NOT NULL,
-              origin TEXT NOT NULL,
-              approval_policy TEXT NOT NULL,
-              created_at INTEGER NOT NULL,
-              expires_at INTEGER
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_operational_keys(
-              provider_key_id TEXT PRIMARY KEY REFERENCES ssh_keys(provider_key_id) ON DELETE CASCADE,
-              provider_kind TEXT NOT NULL CHECK(provider_kind IN
-                ('ANDROID_KEYSTORE_PRIVATE_KEY', 'ANDROID_KEYSTORE_AES_WRAPPED')),
-              key_alias TEXT NOT NULL UNIQUE,
-              ciphertext BLOB,
-              nonce BLOB,
-              security_level TEXT NOT NULL CHECK(security_level IN ('TRUSTED_ENVIRONMENT', 'STRONGBOX')),
-              user_verification_policy TEXT NOT NULL,
-              strongbox_attempted INTEGER NOT NULL CHECK(strongbox_attempted IN (0, 1)),
-              strongbox_fallback INTEGER NOT NULL CHECK(strongbox_fallback IN (0, 1)),
-              CHECK(strongbox_fallback=0 OR strongbox_attempted=1),
-              CHECK(strongbox_fallback=0 OR security_level='TRUSTED_ENVIRONMENT'),
-              CHECK(security_level!='STRONGBOX' OR strongbox_attempted=1),
-              CHECK(strongbox_attempted=0 OR strongbox_fallback=1 OR security_level='STRONGBOX'),
-              CHECK(
-                (provider_kind='ANDROID_KEYSTORE_PRIVATE_KEY' AND ciphertext IS NULL AND nonce IS NULL)
-                OR
-                (provider_kind='ANDROID_KEYSTORE_AES_WRAPPED' AND ciphertext IS NOT NULL AND nonce IS NOT NULL)
-              )
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_export_copies(
-              provider_key_id TEXT PRIMARY KEY REFERENCES ssh_keys(provider_key_id) ON DELETE CASCADE,
-              key_alias TEXT NOT NULL UNIQUE,
-              ciphertext BLOB NOT NULL,
-              nonce BLOB NOT NULL,
-              security_level TEXT NOT NULL CHECK(security_level IN ('TRUSTED_ENVIRONMENT', 'STRONGBOX')),
-              backend_policy TEXT NOT NULL CHECK(backend_policy IN ('BEST_AVAILABLE', 'TEE_ONLY')),
-              authentication TEXT NOT NULL CHECK(authentication='STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE'),
-              strongbox_attempted INTEGER NOT NULL CHECK(strongbox_attempted IN (0, 1)),
-              strongbox_fallback INTEGER NOT NULL CHECK(strongbox_fallback IN (0, 1)),
-              last_verified_at INTEGER NOT NULL,
-              CHECK(strongbox_fallback=0 OR strongbox_attempted=1),
-              CHECK(strongbox_fallback=0 OR security_level='TRUSTED_ENVIRONMENT'),
-              CHECK(backend_policy!='TEE_ONLY' OR strongbox_attempted=0),
-              CHECK(security_level!='STRONGBOX' OR strongbox_attempted=1),
-              CHECK(strongbox_attempted=0 OR strongbox_fallback=1 OR security_level='STRONGBOX')
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_key_lifecycle(
-              provider_key_id TEXT PRIMARY KEY,
-              operational_alias TEXT NOT NULL UNIQUE,
-              state TEXT NOT NULL CHECK(state IN ('PROVISIONING', 'DELETING')),
-              created_at INTEGER NOT NULL,
-              operational_candidate_ciphertext BLOB,
-              operational_candidate_nonce BLOB,
-              operational_candidate_security_level TEXT,
-              export_candidate_ciphertext BLOB,
-              export_candidate_nonce BLOB,
-              export_candidate_security_level TEXT,
-              CHECK(
-                (operational_candidate_ciphertext IS NULL AND operational_candidate_nonce IS NULL AND
-                 operational_candidate_security_level IS NULL)
-                OR
-                (operational_candidate_ciphertext IS NOT NULL AND operational_candidate_nonce IS NOT NULL AND
-                 operational_candidate_security_level IN ('TRUSTED_ENVIRONMENT', 'STRONGBOX'))
-              ),
-              CHECK(
-                (export_candidate_ciphertext IS NULL AND export_candidate_nonce IS NULL AND export_candidate_security_level IS NULL)
-                OR
-                (export_candidate_ciphertext IS NOT NULL AND export_candidate_nonce IS NOT NULL AND
-                 export_candidate_security_level IN ('TRUSTED_ENVIRONMENT', 'STRONGBOX'))
-              )
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE authorization_floors(
-              requester_client_id TEXT NOT NULL,
-              authorization_generation TEXT NOT NULL,
-              invalidated_through_epoch INTEGER NOT NULL,
-              updated_at INTEGER NOT NULL,
-              PRIMARY KEY(requester_client_id, authorization_generation)
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_remembered_authorizations(
-              authorization_id TEXT PRIMARY KEY,
-              provider_key_id TEXT NOT NULL REFERENCES ssh_keys(provider_key_id) ON DELETE CASCADE,
-              requester_client_id TEXT NOT NULL,
-              authorization_generation TEXT NOT NULL,
-              authorization_epoch INTEGER NOT NULL,
-              scope TEXT NOT NULL CHECK(scope IN ('PEER', 'PEER_HOST_KEY')),
-              host_key_sha256 BLOB,
-              created_at INTEGER NOT NULL,
-              CHECK(
-                (scope='PEER' AND host_key_sha256 IS NULL)
-                OR
-                (scope='PEER_HOST_KEY' AND host_key_sha256 IS NOT NULL AND length(host_key_sha256)=32)
-              )
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            "CREATE INDEX ssh_remembered_authorizations_match_idx ON ssh_remembered_authorizations(" +
-                "provider_key_id, requester_client_id, authorization_generation, authorization_epoch)",
-        )
-        db.execSQL(
-            "CREATE UNIQUE INDEX ssh_remembered_authorizations_peer_unique ON ssh_remembered_authorizations(" +
-                "provider_key_id, requester_client_id, authorization_generation, authorization_epoch, scope) " +
-                "WHERE scope='PEER'",
-        )
-        db.execSQL(
-            "CREATE UNIQUE INDEX ssh_remembered_authorizations_host_unique ON ssh_remembered_authorizations(" +
-                "provider_key_id, requester_client_id, authorization_generation, authorization_epoch, scope, " +
-                "host_key_sha256) WHERE scope='PEER_HOST_KEY'",
-        )
-        db.execSQL(
-            """
-            CREATE TABLE ssh_known_hosts(
-              host_key_sha256 BLOB PRIMARY KEY CHECK(length(host_key_sha256)=32),
-              hostname TEXT,
-              first_approved_at INTEGER NOT NULL CHECK(first_approved_at>0),
-              last_approved_at INTEGER NOT NULL,
-              CHECK(last_approved_at>=first_approved_at)
-            )
-            """.trimIndent(),
-        )
-        db.execSQL(
-            """
-            CREATE TABLE provider_requests(
-              request_id TEXT PRIMARY KEY,
-              kind TEXT NOT NULL CHECK(kind IN ('SIGN', 'IMPORT')),
-              requester_client_id TEXT NOT NULL,
-              request_fingerprint BLOB NOT NULL,
-              request_cbor BLOB,
-              request_nonce BLOB,
-              history_cbor BLOB NOT NULL,
-              history_nonce BLOB NOT NULL,
-              state TEXT NOT NULL CHECK(state IN
-                ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND', 'SENT', 'CANCELLED', 'EXPIRED')),
-              outcome TEXT CHECK(outcome IS NULL OR outcome IN
-                ('SIGNED', 'IMPORTED', 'ALREADY_PRESENT', 'REJECTED', 'FAILED', 'CANCELLED', 'EXPIRED')),
-              result_at INTEGER,
-              response_cbor BLOB,
-              response_nonce BLOB,
-              updated_at INTEGER NOT NULL,
-              CHECK((outcome IS NULL AND result_at IS NULL) OR (outcome IS NOT NULL AND result_at IS NOT NULL)),
-              CHECK(state!='PENDING_REVIEW' OR outcome IS NULL),
-              CHECK(state='PENDING_REVIEW' OR outcome IS NOT NULL),
-              CHECK(
-                (request_cbor IS NULL AND request_nonce IS NULL)
-                OR (request_cbor IS NOT NULL AND request_nonce IS NOT NULL)
-              ),
-              CHECK(state!='PENDING_REVIEW' OR request_cbor IS NOT NULL),
-              CHECK(state='PENDING_REVIEW' OR request_cbor IS NULL),
-              CHECK(
-                (response_cbor IS NULL AND response_nonce IS NULL)
-                OR (response_cbor IS NOT NULL AND response_nonce IS NOT NULL)
-              ),
-              CHECK(state='RESPONSE_PENDING_SEND' OR response_cbor IS NULL),
-              CHECK(state!='RESPONSE_PENDING_SEND' OR response_cbor IS NOT NULL)
-            )
-            """.trimIndent(),
-        )
-        db.execSQL("CREATE INDEX provider_requests_state_idx ON provider_requests(state, updated_at)")
-        db.execSQL(
-            "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
-            arrayOf(randomId()),
-        )
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnSshSchema()
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
         error("Unsupported SSH key database schema $oldVersion; expected $newVersion. No data was modified.")
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
         error("Unsupported SSH key database schema $oldVersion; expected $newVersion. No data was modified.")
+
+    private fun roomMustOwnSshSchema(): Nothing =
+        error("The operational Room database must be initialized before opening the SSH key store")
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
@@ -550,23 +365,27 @@ class SshKeyProviderStore(context: Context) :
     }
 
     private fun validateDatabaseSchema(db: SQLiteDatabase) {
-        check(db.version == VERSION) {
-            "Unsupported SSH key database schema ${db.version}; expected $VERSION. No data was modified."
+        val expectedVersion = OperationalDatabase.VERSION
+        check(db.version == expectedVersion) {
+            "Unsupported SSH key database schema ${db.version}; expected $expectedVersion. No data was modified."
         }
         val actualTables = db.rawQuery(
             "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' " +
                 "AND name!='android_metadata' ORDER BY name",
             emptyArray(),
         ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
-        check(actualTables == EXPECTED_DATABASE_SCHEMA.keys) {
-            "SSH key database schema $VERSION has an unexpected table set. No data was modified."
+        val tableSetMatches = actualTables.containsAll(EXPECTED_DATABASE_SCHEMA.keys)
+        check(tableSetMatches) {
+            "SSH key database schema ${OperationalDatabase.VERSION} has an unexpected table set. " +
+                "No data was modified."
         }
         EXPECTED_DATABASE_SCHEMA.forEach { (table, expectedColumns) ->
             val actualColumns = db.rawQuery("PRAGMA table_info($table)", emptyArray()).use { cursor ->
                 buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
             }
             check(actualColumns == expectedColumns) {
-                "SSH key database schema $VERSION has incompatible columns in $table. No data was modified."
+                "SSH key database schema ${OperationalDatabase.VERSION} has incompatible columns in $table. " +
+                    "No data was modified."
             }
         }
         val integrity = db.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
@@ -1860,9 +1679,25 @@ class SshKeyProviderStore(context: Context) :
             }
         }.getOrDefault(0)
 
-        close()
-        check(appContext.deleteDatabase(DB_NAME) || !appContext.getDatabasePath(DB_NAME).exists()) {
-            "SSH Agent database could not be removed"
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            database.delete("provider_requests", null, null)
+            database.delete("ssh_remembered_authorizations", null, null)
+            database.delete("authorization_floors", null, null)
+            database.delete("ssh_known_hosts", null, null)
+            database.delete("ssh_export_copies", null, null)
+            database.delete("ssh_operational_keys", null, null)
+            database.delete("ssh_key_lifecycle", null, null)
+            database.delete("ssh_keys", null, null)
+            database.delete("provider_state", null, null)
+            database.execSQL(
+                "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
+                arrayOf(randomId()),
+            )
+            database.setTransactionSuccessful()
+        } finally {
+            database.endTransaction()
         }
 
         resetEpoch = if (resetEpoch == Long.MAX_VALUE) 0L else resetEpoch + 1L
@@ -3819,8 +3654,6 @@ class SshKeyProviderStore(context: Context) :
     )
 
     private companion object {
-        const val DB_NAME = "ssh-key-provider.sqlite3"
-        const val VERSION = 1
         const val SSH_STORAGE_LOG_TAG = "NotiSyncSshStorage"
         const val SSH_KEYSTORE_ALIAS_PREFIX = "notisync_ssh_"
         const val AUDIT_KEY_ALIAS = "notisync_ssh_audit_wrapping_v1"

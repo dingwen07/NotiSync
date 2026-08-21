@@ -1,16 +1,13 @@
 package net.extrawdw.apps.notisync.data
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.data.storage.operational.IncomingNotificationFilterEntity
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
@@ -25,24 +22,25 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
  * ([recipientsToExclude]) so the notification never reaches that device.
  *
  * Each FILTER is a FULL snapshot: [apply] REPLACES the requester's prior filter (last-writer-wins on
- * [FilterSync.updatedAt]); an empty rule list clears it. Persisted as JSON in Preferences DataStore and
- * mirrored in [filters] for the Devices UI. This device never *generates* filters (Android mirroring is
+ * [FilterSync.updatedAt]); an empty rule list clears it. Persisted as one Operational Room row per peer
+ * after cutover and mirrored in [filters] for the Devices UI. This device never *generates* filters (Android mirroring is
  * customised with notification channels); it only honors inbound ones.
  */
-class NotificationFilterStore(
-    private val store: DataStore<Preferences>,
+class NotificationFilterStore internal constructor(
     private val scope: CoroutineScope,
+    private val operationalState: OperationalApplicationState,
 ) {
-    private val key = stringPreferencesKey("received_notification_filters_json")
     private val _filters = MutableStateFlow(load())
 
     /** requesterClientId → the filter snapshot it asked this device to apply. */
     val filters: StateFlow<Map<String, FilterSync>> = _filters
 
     private fun load(): Map<String, FilterSync> = runBlocking {
-        store.data.first()[key]?.let {
-            runCatching { ProtocolCodec.decodeFromJson<Map<String, FilterSync>>(it) }.getOrDefault(emptyMap())
-        } ?: emptyMap()
+        operationalState.incomingNotificationFilters().mapNotNull { row ->
+            runCatching {
+                row.requesterClientId to ProtocolCodec.decodeFromJson<FilterSync>(row.filterJson)
+            }.getOrNull()
+        }.toMap()
     }
 
     /**
@@ -63,7 +61,7 @@ class NotificationFilterStore(
             val existing = current[id]
             if (existing != null && filter.updatedAt < existing.updatedAt) current else current + (id to filter)
         }
-        persist()
+        persist(id)
         return (before?.rules?.toSet() ?: emptySet()) != filter.rules.toSet()
     }
 
@@ -72,7 +70,7 @@ class NotificationFilterStore(
         val id = requesterId.value
         if (id !in _filters.value) return
         _filters.update { it - id }
-        persist()
+        persist(id)
     }
 
     /** The filter a [requesterId] currently asks us to apply — for the Devices "filters" sheet. */
@@ -93,9 +91,21 @@ class NotificationFilterStore(
             .mapTo(mutableSetOf()) { (id, _) -> ClientId(id) }
     }
 
-    private fun persist() {
-        val json = ProtocolCodec.encodeToJson(_filters.value)
-        scope.launch { store.edit { it[key] = json } }
+    private fun persist(requesterClientId: String) {
+        scope.launch {
+            val current = _filters.value[requesterClientId]
+            if (current == null) {
+                operationalState.deleteIncomingNotificationFilter(requesterClientId)
+            } else {
+                operationalState.upsertIncomingNotificationFilter(
+                    IncomingNotificationFilterEntity(
+                        requesterClientId = requesterClientId,
+                        filterJson = ProtocolCodec.encodeToJson(current),
+                        updatedAt = current.updatedAt,
+                    ),
+                )
+            }
+        }
     }
 
     companion object {
