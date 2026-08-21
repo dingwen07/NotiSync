@@ -85,9 +85,11 @@ public final class NotiSyncCaptureBackend {
         try {
             // ACTION_UP for KEYCODE_UNKNOWN is a no-op, but InputManager still performs the
             // privileged injection permission check and reports whether it accepted the event.
+            // Queue acceptance is sufficient here; waiting for dispatch can stall while no app
+            // window is focused, which must never hold the NotiSync readiness probe.
             if (Device.supportsInputEvents(0)
                     && Device.injectKeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_UNKNOWN, 0, 0, 0,
-                    Device.INJECT_MODE_WAIT_FOR_RESULT)) {
+                    Device.INJECT_MODE_ASYNC)) {
                 result |= PROBE_INPUT_INJECTION;
             }
         } catch (Throwable error) {

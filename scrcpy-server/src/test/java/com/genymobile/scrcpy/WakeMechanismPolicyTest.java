@@ -39,6 +39,8 @@ public final class WakeMechanismPolicyTest {
         assertTrue(device.contains("INJECT_MODE_WAIT_FOR_FINISH"));
         assertFalse(backend.contains("Device.wakeUp(0)"));
         assertFalse(backend.contains("wakePrimaryDisplayOnce"));
+        assertTrue(backend.contains("Device.INJECT_MODE_ASYNC"));
+        assertFalse(backend.contains("Device.INJECT_MODE_WAIT_FOR_RESULT"));
         assertTrue(controller.contains("Device.wakeUp(displayId)"));
         assertTrue(controller.contains("Device.togglePrimaryDisplayPower()"));
 

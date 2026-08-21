@@ -10,15 +10,24 @@ import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.core.net.toUri
 import java.io.Closeable
+import java.util.concurrent.Callable
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.FutureTask
+import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
 import net.extrawdw.apps.notisync.BuildConfig
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
@@ -67,9 +76,22 @@ data class PrivilegedSessionPipes(
 class PrivilegedCaptureStartException(val backendStatus: Int) :
     Exception("screen backend rejected session ($backendStatus)")
 
+internal data class ScreenBackendProbeSnapshot(
+    val backendStatus: Int?,
+    val availableCodecBits: Int,
+    val probeBits: Int,
+)
+
 /** Owns Shizuku permission/readiness and the lifecycle of the non-daemon privileged UserService. */
 class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     private val appContext = context.applicationContext
+    private val backendProbeScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val backendProbeRequests = Channel<IScreenMirrorUserService>(Channel.CONFLATED)
+    private val backendProbeExecutor = ScheduledThreadPoolExecutor(1) { runnable ->
+        Thread(runnable, "notisync-screen-backend-probe").apply { isDaemon = true }
+    }.apply {
+        setRemoveOnCancelPolicy(true)
+    }
     private val binding = AtomicBoolean(false)
     private val bindLock = Any()
     @Volatile private var bindGeneration = 0L
@@ -147,9 +169,10 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                 _status.value = ShizukuScreenStatus.ERROR
                 return
             }
-            service = IScreenMirrorUserService.Stub.asInterface(binder)
-            serviceFlow.value = service
-            refreshBackendStatus()
+            val remote = IScreenMirrorUserService.Stub.asInterface(binder)
+            service = remote
+            serviceFlow.value = remote
+            requestBackendStatusRefresh(remote)
         }
 
         override fun onServiceDisconnected(name: ComponentName) = handleDisconnected()
@@ -158,6 +181,11 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     }
 
     init {
+        backendProbeScope.launch {
+            for (remote in backendProbeRequests) {
+                refreshBackendStatus(remote)
+            }
+        }
         Shizuku.addBinderReceivedListenerSticky(binderReceivedListener)
         Shizuku.addBinderDeadListener(binderDeadListener)
         Shizuku.addRequestPermissionResultListener(permissionListener)
@@ -308,6 +336,8 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         service = null
         serviceFlow.value = null
         binding.set(false)
+        _availableCodecBits.value = 0
+        _probeBits.value = 0
         val removed = connection == null || runScreenTeardownWithTimeout(PRIVILEGED_REMOVE_TIMEOUT_MS) {
             Shizuku.unbindUserService(userServiceArgs, connection, true)
             true
@@ -331,6 +361,9 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         service = null
         serviceFlow.value = null
         binding.set(false)
+        backendProbeRequests.close()
+        backendProbeScope.cancel()
+        backendProbeExecutor.shutdownNow()
         connection?.let { runCatching { Shizuku.unbindUserService(userServiceArgs, it, true) } }
         Shizuku.removeBinderReceivedListener(binderReceivedListener)
         Shizuku.removeBinderDeadListener(binderDeadListener)
@@ -346,7 +379,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                     _status.value = ShizukuScreenStatus.ROOT_UNSUPPORTED
                 Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED ->
                     _status.value = ShizukuScreenStatus.PERMISSION_REQUIRED
-                service != null -> refreshBackendStatus()
+                service != null -> requestBackendStatusRefresh()
                 binding.compareAndSet(false, true) -> {
                     if (_status.value != ShizukuScreenStatus.READY) {
                         _status.value = ShizukuScreenStatus.BINDING
@@ -368,13 +401,36 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
         }
     }
 
-    private fun refreshBackendStatus() {
-        val backendStatus = runCatching { service?.backendStatus }.getOrNull()
+    /** Never performs Binder work on the lifecycle or ServiceConnection callback thread. */
+    private fun requestBackendStatusRefresh() {
+        val remote = service ?: return
+        requestBackendStatusRefresh(remote)
+    }
+
+    private fun requestBackendStatusRefresh(remote: IScreenMirrorUserService) {
+        if (service?.asBinder() !== remote.asBinder()) return
+        _status.value = ShizukuScreenStatus.BINDING
+        _availableCodecBits.value = 0
+        _probeBits.value = 0
+        backendProbeRequests.trySend(remote)
+    }
+
+    private fun refreshBackendStatus(remote: IScreenMirrorUserService) {
+        val snapshot = probeScreenBackendWithTimeout(
+            executor = backendProbeExecutor,
+            timeoutMillis = PRIVILEGED_PROBE_TIMEOUT_MS,
+            backendStatus = { remote.backendStatus },
+            probeHardwareCodecs = { remote.probeHardwareCodecs() },
+            probeCapabilities = { remote.probeCapabilities() },
+        )
+        // A disconnected or rebound service must not publish a late result from its old Binder.
+        if (service?.asBinder() !== remote.asBinder()) return
+        val backendStatus = snapshot?.backendStatus
         if (backendStatus == ScreenMirrorBackendStatus.READY) {
             // Publish READY only after every setup probe has completed, so opt-in cannot observe a
             // transient zero bitmask while the privileged binder calls are still in flight.
-            _availableCodecBits.value = runCatching { service?.probeHardwareCodecs() ?: 0 }.getOrDefault(0)
-            _probeBits.value = runCatching { service?.probeCapabilities() ?: 0 }.getOrDefault(0)
+            _availableCodecBits.value = snapshot.availableCodecBits
+            _probeBits.value = snapshot.probeBits
             _status.value = ShizukuScreenStatus.READY
             return
         }
@@ -398,17 +454,54 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     private companion object {
         const val MIN_SHIZUKU_API = 13
         // Increment per Release Candidate, NOT during development
-        const val USER_SERVICE_REVISION = 1
+        const val USER_SERVICE_REVISION = 2
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920
         const val DEFAULT_MAX_FPS = 60
         const val DEFAULT_BITRATE_BPS = 8_000_000
         const val SERVICE_BIND_TIMEOUT_MS = 10_000L
+        const val PRIVILEGED_PROBE_TIMEOUT_MS = 3_000L
         const val PRIVILEGED_RECOVERY_TIMEOUT_MS = 750L
         const val PRIVILEGED_RESTART_TIMEOUT_MS = 1_500L
         const val PRIVILEGED_STOP_TIMEOUT_MS = 3_000L
         const val PRIVILEGED_REMOVE_TIMEOUT_MS = 3_000L
+    }
+}
+
+/** Runs the whole readiness transaction on one bounded worker so a wedged Binder cannot block UI. */
+internal fun probeScreenBackendWithTimeout(
+    executor: ExecutorService,
+    timeoutMillis: Long,
+    backendStatus: () -> Int,
+    probeHardwareCodecs: () -> Int,
+    probeCapabilities: () -> Int,
+): ScreenBackendProbeSnapshot? {
+    require(timeoutMillis > 0)
+    val task = executor.submit(Callable {
+        val status = runCatching(backendStatus).getOrNull()
+        if (status == ScreenMirrorBackendStatus.READY) {
+            ScreenBackendProbeSnapshot(
+                backendStatus = status,
+                availableCodecBits = runCatching(probeHardwareCodecs).getOrDefault(0),
+                probeBits = runCatching(probeCapabilities).getOrDefault(0),
+            )
+        } else {
+            ScreenBackendProbeSnapshot(status, availableCodecBits = 0, probeBits = 0)
+        }
+    })
+    return try {
+        task.get(timeoutMillis, TimeUnit.MILLISECONDS)
+    } catch (_: TimeoutException) {
+        task.cancel(true)
+        null
+    } catch (_: InterruptedException) {
+        task.cancel(true)
+        Thread.currentThread().interrupt()
+        null
+    } catch (_: Throwable) {
+        task.cancel(true)
+        null
     }
 }
 
