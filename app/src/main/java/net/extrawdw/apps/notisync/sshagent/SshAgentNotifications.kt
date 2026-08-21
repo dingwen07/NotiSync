@@ -239,7 +239,16 @@ class SshAgentNotificationPresenter(
         return true
     }
 
-    fun dismiss(requestId: String) = NotificationManagerCompat.from(context).cancel(notificationId(requestId))
+    fun dismiss(requestId: String) {
+        PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            SshAgentReviewActivity.autoOpenIntent(context, requestId),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )?.cancel()
+        NotificationManagerCompat.from(context).cancel(notificationId(requestId))
+    }
 
     private fun ensureChannel() {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(

@@ -8,6 +8,7 @@ import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+import androidx.lifecycle.Lifecycle
 
 /** Distinguishes a system-triggered request-page launch from an ordinary notification tap. */
 internal const val ACTION_AUTO_OPEN_REQUEST_PAGE =
@@ -21,8 +22,16 @@ internal fun retainAutomaticRequestPageOwnership(
     incomingAction: String?,
 ): Boolean = currentlyAutomatic && isAutomaticRequestPageLaunch(incomingAction)
 
+/**
+ * A full-screen intent can be created behind the keyguard and remain stopped until unlock. Keep
+ * auto-owned pages observing there so a terminal request removes its hidden task before it can flash.
+ */
+internal fun requestPageObservationState(autoLaunchOwned: Boolean): Lifecycle.State =
+    if (autoLaunchOwned) Lifecycle.State.CREATED else Lifecycle.State.STARTED
+
 /** Removes a standalone request task without ever removing an unrelated task that hosts the activity. */
 internal fun Activity.finishAutoOpenedRequestPage() {
+    overrideActivityTransition(Activity.OVERRIDE_TRANSITION_CLOSE, 0, 0)
     if (isTaskRoot) finishAndRemoveTask() else finish()
 }
 

@@ -44,7 +44,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import java.security.MessageDigest
@@ -59,6 +58,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
 import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
 import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.requestPageObservationState
 import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
@@ -147,7 +147,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                 ?: return@launch showError(getString(R.string.seal_not_ready))
             var approveOnFirstLoad = approveAfterLoad
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
+            repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
                 graph.openPgpSignStore.requests
                     .map { requests -> requests.firstOrNull { it.request.requestId == requestId } }
                     .distinctUntilChanged()
