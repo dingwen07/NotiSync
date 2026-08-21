@@ -1,14 +1,9 @@
 package net.extrawdw.apps.notisync.ios
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
@@ -43,23 +38,10 @@ internal object IosBundleIdExclusions {
  * discovered set persists so previously seen apps survive process death, and a forgotten app reappears the
  * next time ANCS reports it. Both states share one Operational Room row per bundle after cutover.
  */
-class IosAppRegistry private constructor(
-    private val store: DataStore<Preferences>,
+class IosAppRegistry internal constructor(
     private val scope: CoroutineScope,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>, scope: CoroutineScope) : this(store, scope, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        scope: CoroutineScope,
-        operationalState: OperationalApplicationState,
-    ) : this(store, scope, operationalState, Unit)
-
-    private val enabledKey = stringPreferencesKey("ancs_enabled_bundles_json")
-    private val discoveredKey = stringPreferencesKey("ancs_discovered_apps_json")
-
     // Start empty and hydrate asynchronously: a blocking storage read in the constructor would stall the
     // main thread if another caller constructs this outside AppGraph's I/O init. The bridge takes seconds to connect,
     // so the load lands well before the first notification; the UI just fills in once it arrives.
@@ -77,36 +59,18 @@ class IosAppRegistry private constructor(
     init {
         scope.launch {
             try {
-                if (operationalState != null) {
-                    val rows = runCatching { operationalState.iosApps() }.getOrNull()
-                    if (rows != null) {
-                        val loadedEnabled = IosBundleIdExclusions.filterEnabled(
-                            rows.asSequence().filter { it.enabled }.map { it.bundleId }.toSet(),
-                        )
-                        val loadedDiscovered = rows.mapNotNull { row ->
-                            val name = row.displayName ?: return@mapNotNull null
-                            val lastSeen = row.lastSeenAt ?: return@mapNotNull null
-                            row.bundleId to IosApp(row.bundleId, name, lastSeen)
-                        }.toMap()
-                        _enabled.update { inSession -> loadedEnabled + inSession }
-                        _discovered.update { inSession -> loadedDiscovered + inSession }
-                    }
-                } else {
-                    val prefs = runCatching { store.data.first() }.getOrNull()
-                    if (prefs != null) {
-                        prefs[enabledKey]?.let { json ->
-                            runCatching { ProtocolCodec.decodeFromJson<Set<String>>(json) }.getOrNull()
-                        }
-                            ?.let { loaded ->
-                                _enabled.update { inSession ->
-                                    IosBundleIdExclusions.filterEnabled(loaded) + inSession
-                                }
-                            }
-                        prefs[discoveredKey]?.let { json ->
-                            runCatching { ProtocolCodec.decodeFromJson<Map<String, IosApp>>(json) }.getOrNull()
-                        }
-                            ?.let { loaded -> _discovered.update { inSession -> loaded + inSession } }
-                    }
+                val rows = runCatching { operationalState.iosApps() }.getOrNull()
+                if (rows != null) {
+                    val loadedEnabled = IosBundleIdExclusions.filterEnabled(
+                        rows.asSequence().filter { it.enabled }.map { it.bundleId }.toSet(),
+                    )
+                    val loadedDiscovered = rows.mapNotNull { row ->
+                        val name = row.displayName ?: return@mapNotNull null
+                        val lastSeen = row.lastSeenAt ?: return@mapNotNull null
+                        row.bundleId to IosApp(row.bundleId, name, lastSeen)
+                    }.toMap()
+                    _enabled.update { inSession -> loadedEnabled + inSession }
+                    _discovered.update { inSession -> loadedDiscovered + inSession }
                 }
             } finally {
                 hydrated.complete(Unit) // always release awaiters, even on a failed/cancelled load
@@ -160,17 +124,12 @@ class IosAppRegistry private constructor(
         // live in memory for sort order and is flushed opportunistically with the next new-app / rename write.
         if (existing == null || existing.displayName != displayName) {
             scope.launch {
-                if (operationalState != null) {
-                    _discovered.value[bundleId]?.let { current ->
-                        operationalState.recordIosApp(
-                            current.bundleId,
-                            current.displayName,
-                            current.lastSeen,
-                        )
-                    }
-                } else {
-                    val json = ProtocolCodec.encodeToJson(_discovered.value)
-                    store.edit { it[discoveredKey] = json }
+                _discovered.value[bundleId]?.let { current ->
+                    operationalState.recordIosApp(
+                        current.bundleId,
+                        current.displayName,
+                        current.lastSeen,
+                    )
                 }
             }
         }
@@ -181,20 +140,14 @@ class IosAppRegistry private constructor(
         if (bundleId !in _discovered.value) return
         _discovered.update { it - bundleId }
         scope.launch {
-            operationalState?.forgetIosApp(bundleId) ?: run {
-                val json = ProtocolCodec.encodeToJson(_discovered.value)
-                store.edit { it[discoveredKey] = json }
-            }
+            operationalState.forgetIosApp(bundleId)
         }
     }
 
     private fun persistEnabled() {
         scope.launch {
             val snapshot = IosBundleIdExclusions.filterEnabled(_enabled.value)
-            operationalState?.replaceEnabledIosApps(snapshot) ?: run {
-                val json = ProtocolCodec.encodeToJson(snapshot)
-                store.edit { it[enabledKey] = json }
-            }
+            operationalState.replaceEnabledIosApps(snapshot)
         }
     }
 }

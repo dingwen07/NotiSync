@@ -1,13 +1,8 @@
 package net.extrawdw.apps.notisync.screen
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,10 +16,8 @@ import net.extrawdw.notisync.protocol.TrustStatus
 
 /** Local, per-source codec preferences. Absence means automatic selection. */
 internal class ScreenMirrorCodecPreferenceStore(
-    private val store: DataStore<Preferences>,
-    private val operationalState: OperationalApplicationState? = null,
+    private val operationalState: OperationalApplicationState,
 ) {
-    private val key = stringPreferencesKey("screen_mirror_codec_preferences_v1")
     private val mutex = Mutex()
     private val _preferredCodecs = MutableStateFlow(load())
     val preferredCodecs: StateFlow<Map<String, ScreenMirrorCodec>> = _preferredCodecs.asStateFlow()
@@ -51,57 +44,27 @@ internal class ScreenMirrorCodecPreferenceStore(
         transform: (Map<String, ScreenMirrorCodec>) -> Map<String, ScreenMirrorCodec>,
     ) {
         var next = emptyMap<String, ScreenMirrorCodec>()
-        if (operationalState != null) {
-            val current = loadRoom()
-            next = transform(current)
-                .entries
-                .sortedBy { it.key }
-                .associate { it.toPair() }
-            operationalState.replaceScreenCodecPreferences(
-                next.map { (peerId, codec) ->
-                    ScreenCodecPreferenceEntity(peerId, codec.name.lowercase())
-                },
-            )
-        } else {
-            store.edit { preferences ->
-                val current = decode(preferences[key])
-                next = transform(current)
-                    .entries
-                    .sortedBy { it.key }
-                    .associate { it.toPair() }
-                if (next.isEmpty()) {
-                    preferences.remove(key)
-                } else {
-                    preferences[key] = encode(next)
-                }
-            }
-        }
+        val current = loadRoom()
+        next = transform(current)
+            .entries
+            .sortedBy { it.key }
+            .associate { it.toPair() }
+        operationalState.replaceScreenCodecPreferences(
+            next.map { (peerId, codec) ->
+                ScreenCodecPreferenceEntity(peerId, codec.name.lowercase())
+            },
+        )
         _preferredCodecs.value = next
     }
 
     private fun load(): Map<String, ScreenMirrorCodec> = runCatching {
-        runBlocking {
-            operationalState?.let { loadRoom() } ?: decode(store.data.first()[key])
-        }
+        runBlocking { loadRoom() }
     }.getOrDefault(emptyMap())
 
     private suspend fun loadRoom(): Map<String, ScreenMirrorCodec> =
-        operationalState?.screenCodecPreferences().orEmpty()
+        operationalState.screenCodecPreferences()
             .mapNotNull { row -> decodeEntry(row.peerId, row.codec) }
             .toMap()
-
-    private fun encode(value: Map<String, ScreenMirrorCodec>): String = ProtocolCodec.encodeToJson(
-        value.mapValues { (_, codec) -> codec.name.lowercase() },
-    )
-
-    private fun decode(encoded: String?): Map<String, ScreenMirrorCodec> {
-        if (encoded == null) return emptyMap()
-        val raw = runCatching {
-            ProtocolCodec.decodeFromJson<Map<String, String>>(encoded)
-        }.getOrDefault(emptyMap())
-        if (raw.size > MAX_PREFERENCES) return emptyMap()
-        return raw.mapNotNull { (peerId, codecName) -> decodeEntry(peerId, codecName) }.toMap()
-    }
 
     private fun decodeEntry(peerId: String, codecName: String): Pair<String, ScreenMirrorCodec>? {
         if (peerId.isBlank() || peerId.length > MAX_PEER_ID_LENGTH || peerId.any(Char::isISOControl)) {
@@ -114,7 +77,6 @@ internal class ScreenMirrorCodecPreferenceStore(
     }
 
     private companion object {
-        const val MAX_PREFERENCES = 256
         const val MAX_PEER_ID_LENGTH = 128
     }
 }

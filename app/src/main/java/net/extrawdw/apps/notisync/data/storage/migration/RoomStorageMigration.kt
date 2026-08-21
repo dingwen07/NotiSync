@@ -13,11 +13,15 @@ import androidx.datastore.preferences.preferencesDataStore
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.first
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonPrimitive
 import net.extrawdw.apps.notisync.data.PerAppConfig
 import net.extrawdw.apps.notisync.data.SeenChannel
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabaseFactory
-import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
 import net.extrawdw.apps.notisync.ios.IosApp
@@ -27,10 +31,13 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 internal val Context.notiSyncDataStore: DataStore<Preferences> by
     preferencesDataStore(name = "notisync")
 
-internal data class PreparedStorage(
-    val usesRoom: Boolean,
-    val migrationFailure: Throwable? = null,
-)
+internal object LegacyDatabaseNames {
+    const val MESSAGE_LEDGER = "message_ledger.db"
+    const val RUNS = "runs.db"
+    const val RUN_CONTROL_OUTBOX = "run_control_outbox.db"
+    const val OPENPGP_SIGNING = "openpgp_signing.db"
+    const val SSH_KEY_PROVIDER = "ssh-key-provider.sqlite3"
+}
 
 /**
  * The only custom storage cutover. An absent flag in the existing Preferences DataStore rebuilds
@@ -45,36 +52,27 @@ internal class RoomStorageMigration(
 ) {
     private val appContext = context.applicationContext
 
-    suspend fun prepare(): PreparedStorage {
-        val legacyPreferences = runCatching {
-            preferences.data.first()
-        }.getOrElse { failure ->
-            Log.e(TAG, "Could not read Room migration state; using retained legacy storage", failure)
-            return PreparedStorage(
-                usesRoom = false,
-                migrationFailure = failure,
-            )
+    suspend fun prepare() {
+        val legacyPreferences = preferences.data.first()
+        if (legacyPreferences[MIGRATION_COMPLETE] == true) {
+            openRoomStorage()
+            return
         }
-        if (legacyPreferences[MIGRATION_COMPLETE] == true) return openRoomStorage()
 
-        return runCatching {
+        try {
             rebuildV1Targets(legacyPreferences)
-            val prepared = openRoomStorage()
+            openRoomStorage()
             // Written only after both targets were copied, integrity-checked, and reopened by Room.
             // Every legacy SQLite file and DataStore entry remains available for an explicit rehearsal.
             preferences.edit { it[MIGRATION_COMPLETE] = true }
-            prepared
-        }.getOrElse { failure ->
-            Log.e(TAG, "Legacy-to-Room v1 migration failed; using retained legacy storage", failure)
+        } catch (failure: Throwable) {
+            Log.e(TAG, "Legacy-to-Room v1 migration failed", failure)
             closeAndDeleteTargets()
-            PreparedStorage(
-                usesRoom = false,
-                migrationFailure = failure,
-            )
+            throw failure
         }
     }
 
-    private suspend fun openRoomStorage(): PreparedStorage {
+    private suspend fun openRoomStorage() {
         val core = CoreDatabaseFactory.get(appContext)
         try {
             core.metadata().schemaObjectCount()
@@ -88,9 +86,6 @@ internal class RoomStorageMigration(
         } finally {
             operational.close()
         }
-        return PreparedStorage(
-            usesRoom = true,
-        )
     }
 
     private suspend fun rebuildV1Targets(legacyPreferences: Preferences) {
@@ -150,22 +145,25 @@ internal class RoomStorageMigration(
         legacyPreferences: Preferences? = null,
     ) {
         val destinationFile = appContext.getDatabasePath(destinationName)
-        val attached = sources.mapNotNull { source ->
-            val file = appContext.getDatabasePath(source.databaseName)
-            if (file.isFile) AttachedSource(source, file) else null
-        }
+        val readableSources = sources.mapNotNull(::readableSource)
         val database = SQLiteDatabase.openDatabase(
             destinationFile.absolutePath,
             null,
             SQLiteDatabase.OPEN_READWRITE,
         )
+        val attached = mutableListOf<AttachedSource>()
         try {
-            database.execSQL("PRAGMA foreign_keys=OFF")
-            attached.forEach { source ->
-                database.execSQL(
-                    "ATTACH DATABASE ? AS ${source.spec.alias}",
-                    arrayOf(source.file.absolutePath),
-                )
+            database.setForeignKeyConstraintsEnabled(true)
+            readableSources.forEach { source ->
+                runCatching {
+                    database.execSQL(
+                        "ATTACH DATABASE ? AS ${identifier(source.spec.alias)}",
+                        arrayOf(source.file.absolutePath),
+                    )
+                    attached += source
+                }.onFailure { failure ->
+                    Log.w(TAG, "Skipping unreadable legacy database ${source.spec.databaseName}", failure)
+                }
             }
             database.beginTransaction()
             try {
@@ -178,7 +176,6 @@ internal class RoomStorageMigration(
             } finally {
                 database.endTransaction()
             }
-            attached.forEach { database.execSQL("DETACH DATABASE ${it.spec.alias}") }
             database.rawQuery("PRAGMA integrity_check", emptyArray()).use { cursor ->
                 check(cursor.moveToFirst() && cursor.getString(0) == "ok") {
                     "$databaseLabel v1 integrity check failed"
@@ -188,28 +185,81 @@ internal class RoomStorageMigration(
                 check(!cursor.moveToFirst()) { "$databaseLabel v1 foreign-key check failed" }
             }
         } finally {
+            attached.forEach { source ->
+                runCatching { database.execSQL("DETACH DATABASE ${identifier(source.spec.alias)}") }
+            }
             database.close()
         }
     }
 
+    private fun readableSource(source: LegacySource): AttachedSource? {
+        val file = appContext.getDatabasePath(source.databaseName)
+        if (!file.isFile) return null
+        return runCatching {
+            SQLiteDatabase.openDatabase(
+                file.absolutePath,
+                null,
+                SQLiteDatabase.OPEN_READONLY,
+            ).use { database ->
+                database.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
+                    check(cursor.moveToFirst() && cursor.getString(0) == "ok")
+                }
+            }
+            AttachedSource(source, file)
+        }.onFailure { failure ->
+            Log.w(TAG, "Skipping corrupt legacy database ${source.databaseName}", failure)
+        }.getOrNull()
+    }
+
     private fun copySource(database: SQLiteDatabase, source: LegacySource) {
         source.tables.forEach { table ->
-            check(sourceTableExists(database, source.alias, table.name)) {
-                "${source.databaseName} is missing known-good table ${table.name}"
+            runCatching {
+                copyTable(database, source, table)
+            }.onFailure { failure ->
+                Log.w(
+                    TAG,
+                    "Skipping incompatible legacy table ${source.databaseName}/${table.name}",
+                    failure,
+                )
             }
-            val actualColumns = sourceColumns(database, source.alias, table.name)
-            check(actualColumns.containsAll(table.columns)) {
-                "${source.databaseName}/${table.name} is missing known-good columns"
+        }
+    }
+
+    private fun copyTable(database: SQLiteDatabase, source: LegacySource, table: LegacyTable) {
+        if (!sourceTableExists(database, source.alias, table.name)) {
+            Log.i(TAG, "Legacy table absent; skipping ${source.databaseName}/${table.name}")
+            return
+        }
+        val actualColumns = sourceColumns(database, source.alias, table.name)
+        val columns = table.columns.filter(actualColumns::contains)
+        if (columns.isEmpty()) {
+            Log.w(TAG, "Legacy table has no compatible columns; skipping ${source.databaseName}/${table.name}")
+            return
+        }
+        val before = rowCount(database, identifier(table.name))
+        val columnList = columns.joinToString(",") { identifier(it) }
+        val sourceAlias = identifier(source.alias)
+        val tableName = identifier(table.name)
+        val foreignKeyFilters = targetForeignKeys(database, table.name)
+            .filter { it.childColumn in columns }
+            .joinToString(" AND ") { foreignKey ->
+                "EXISTS (SELECT 1 FROM ${identifier(foreignKey.parentTable)} AS parent " +
+                    "WHERE parent.${identifier(foreignKey.parentColumn)}=" +
+                    "source.${identifier(foreignKey.childColumn)})"
             }
-            val columns = table.columns.joinToString(",")
-            database.execSQL(
-                "INSERT INTO ${table.name}($columns) SELECT $columns FROM ${source.alias}.${table.name}",
+        val whereClause = if (foreignKeyFilters.isEmpty()) "" else " WHERE $foreignKeyFilters"
+        database.execSQL(
+            "INSERT OR IGNORE INTO $tableName($columnList) " +
+                "SELECT $columnList FROM $sourceAlias.$tableName AS source$whereClause",
+        )
+        val copied = rowCount(database, tableName) - before
+        val available = rowCount(database, "$sourceAlias.$tableName")
+        if (copied != available) {
+            Log.w(
+                TAG,
+                "Migrated $copied of $available rows from ${source.databaseName}/${table.name}; " +
+                    "invalid or incomplete rows were skipped",
             )
-            val sourceCount = rowCount(database, "${source.alias}.${table.name}")
-            val targetCount = rowCount(database, table.name)
-            check(sourceCount == targetCount) {
-                "${source.databaseName}/${table.name} row count changed during migration"
-            }
         }
     }
 
@@ -233,6 +283,26 @@ internal class RoomStorageMigration(
             cursor.getLong(0)
         }
 
+    private fun targetForeignKeys(database: SQLiteDatabase, table: String): List<ForeignKey> =
+        database.rawQuery("PRAGMA foreign_key_list(${identifier(table)})", emptyArray()).use { cursor ->
+            buildList {
+                val parentTable = cursor.getColumnIndexOrThrow("table")
+                val childColumn = cursor.getColumnIndexOrThrow("from")
+                val parentColumn = cursor.getColumnIndexOrThrow("to")
+                while (cursor.moveToNext()) {
+                    add(
+                        ForeignKey(
+                            parentTable = cursor.getString(parentTable),
+                            childColumn = cursor.getString(childColumn),
+                            parentColumn = cursor.getString(parentColumn),
+                        ),
+                    )
+                }
+            }
+        }
+
+    private fun identifier(value: String): String = "\"${value.replace("\"", "\"\"")}\""
+
     private fun seedSshProviderState(database: SQLiteDatabase) {
         if (rowCount(database, "provider_state") != 0L) return
         database.execSQL(
@@ -247,9 +317,15 @@ internal class RoomStorageMigration(
             arrayOf(values[LAST_SEEN_POST_TIME] ?: 0L),
         )
 
-        val enabledPackages = decodeSetOrEmpty<String>(values[ENABLED_PACKAGES])
-        val configs = decodeMapOrEmpty<String, PerAppConfig>(values[PER_APP_CONFIG])
-        val seenChannels = decodeMapOrEmpty<String, List<SeenChannel>>(values[PER_APP_SEEN_CHANNELS])
+        val enabledPackages = decodeStringSet(values[ENABLED_PACKAGES], "enabled Android packages")
+            .filter(::validStorageKey)
+            .toSet()
+        val configs = decodeStringMap<PerAppConfig>(values[PER_APP_CONFIG], "Android app configurations")
+            .filterKeys(::validStorageKey)
+        val seenChannels = decodeStringMap<List<SeenChannel>>(
+            values[PER_APP_SEEN_CHANNELS],
+            "Android seen channels",
+        ).filterKeys(::validStorageKey)
         (enabledPackages + configs.keys + seenChannels.keys).sorted().forEach { packageName ->
             database.execSQL(
                 "INSERT INTO android_apps(package_name, enabled, config_json, seen_channels_json) " +
@@ -263,7 +339,8 @@ internal class RoomStorageMigration(
             )
         }
 
-        decodeMapOrEmpty<String, FilterSync>(values[RECEIVED_NOTIFICATION_FILTERS])
+        decodeStringMap<FilterSync>(values[RECEIVED_NOTIFICATION_FILTERS], "notification filters")
+            .filterKeys(::validStorageKey)
             .toSortedMap()
             .forEach { (requesterClientId, filter) ->
                 database.execSQL(
@@ -273,8 +350,11 @@ internal class RoomStorageMigration(
                 )
             }
 
-        val enabledBundles = decodeSetOrEmpty<String>(values[ANCS_ENABLED_BUNDLES])
-        val discoveredApps = decodeMapOrEmpty<String, IosApp>(values[ANCS_DISCOVERED_APPS])
+        val enabledBundles = decodeStringSet(values[ANCS_ENABLED_BUNDLES], "enabled iOS bundles")
+            .filter(::validStorageKey)
+            .toSet()
+        val discoveredApps = decodeStringMap<IosApp>(values[ANCS_DISCOVERED_APPS], "discovered iOS apps")
+            .filterKeys(::validStorageKey)
         (enabledBundles + discoveredApps.keys).sorted().forEach { bundleId ->
             val discovered = discoveredApps[bundleId]
             database.execSQL(
@@ -295,15 +375,25 @@ internal class RoomStorageMigration(
                 ") VALUES(1, ?, ?, ?, ?, ?, ?)",
             arrayOf<Any?>(
                 if (values[SCREEN_MIRRORING_ENABLED] == true) 1 else 0,
-                values[SCREEN_AUTHORIZED_PEERS] ?: ProtocolCodec.encodeToJson(emptySet<String>()),
-                values[SCREEN_REQUEST_REPLAY],
+                ProtocolCodec.encodeToJson<Set<String>>(
+                    decodeStringSet(values[SCREEN_AUTHORIZED_PEERS], "screen authorizations")
+                        .filter(::validStorageKey)
+                        .toSet(),
+                ),
+                decodeStringMap<Long>(values[SCREEN_REQUEST_REPLAY], "screen replay rows")
+                    .filter { (digest, expiresAt) -> validReplayDigest(digest) && expiresAt > 0L }
+                    .takeIf(Map<String, Long>::isNotEmpty)
+                    ?.let(ProtocolCodec::encodeToJson),
                 if (values[SCREEN_REPLAY_BLOCKED] == true) 1 else 0,
                 values[SCREEN_REPLAY_QUARANTINE_DIGEST],
                 values[SCREEN_REPLAY_QUARANTINED_AT],
             ),
         )
 
-        decodeMapOrEmpty<String, String>(values[SCREEN_CODEC_PREFERENCES])
+        decodeStringMap<String>(values[SCREEN_CODEC_PREFERENCES], "screen codec preferences")
+            .filter { (peerId, codec) ->
+                validStorageKey(peerId) && codec.lowercase() in VALID_SCREEN_CODECS
+            }
             .toSortedMap()
             .forEach { (peerId, codec) ->
                 database.execSQL(
@@ -312,31 +402,67 @@ internal class RoomStorageMigration(
                 )
             }
 
+        val provider = values[OPENPGP_PROVIDER]
+        val providerReference = values[OPENPGP_PROVIDER_REFERENCE]
+        val primaryKeyId = values[OPENPGP_PRIMARY_KEY_ID]
+        val displayIdentity = values[OPENPGP_DISPLAY_IDENTITY]
+        val validEnrollment = values[OPENPGP_ENABLED] == true &&
+            !provider.isNullOrBlank() && !providerReference.isNullOrBlank() &&
+            primaryKeyId?.matches(OPENPGP_KEY_ID) == true && !displayIdentity.isNullOrBlank()
         database.execSQL(
             "INSERT INTO openpgp_enrollment(" +
                 "singleton_id, enabled, provider_id, provider_key_reference, primary_key_id, " +
                 "display_identity, enrolled_at" +
                 ") VALUES(1, ?, ?, ?, ?, ?, ?)",
             arrayOf<Any?>(
-                if (values[OPENPGP_ENABLED] == true) 1 else 0,
-                values[OPENPGP_PROVIDER],
-                values[OPENPGP_PROVIDER_REFERENCE],
-                values[OPENPGP_PRIMARY_KEY_ID],
-                values[OPENPGP_DISPLAY_IDENTITY],
-                values[OPENPGP_ENROLLED_AT],
+                if (validEnrollment) 1 else 0,
+                provider.takeIf { validEnrollment },
+                providerReference.takeIf { validEnrollment },
+                primaryKeyId.takeIf { validEnrollment },
+                displayIdentity.takeIf { validEnrollment },
+                values[OPENPGP_ENROLLED_AT].takeIf { validEnrollment },
             ),
         )
     }
 
-    private inline fun <reified T> decodeSetOrEmpty(encoded: String?): Set<T> = encoded?.let {
-        runCatching { ProtocolCodec.decodeFromJson<Set<T>>(it) }.getOrDefault(emptySet())
-    } ?: emptySet()
+    private fun decodeStringSet(encoded: String?, label: String): Set<String> {
+        if (encoded == null) return emptySet()
+        val array = decodeJsonContainer<JsonArray>(encoded, label) ?: return emptySet()
+        return array.mapNotNull { element ->
+            (element as? JsonPrimitive)?.takeIf(JsonPrimitive::isString)?.content
+        }.toSet()
+    }
 
-    private inline fun <reified K, reified V> decodeMapOrEmpty(encoded: String?): Map<K, V> = encoded?.let {
-        runCatching { ProtocolCodec.decodeFromJson<Map<K, V>>(it) }.getOrDefault(emptyMap())
-    } ?: emptyMap()
+    private inline fun <reified V> decodeStringMap(encoded: String?, label: String): Map<String, V> {
+        if (encoded == null) return emptyMap()
+        val value = decodeJsonContainer<JsonObject>(encoded, label) ?: return emptyMap()
+        return buildMap {
+            value.forEach { (key, element) ->
+                runCatching { ProtocolCodec.decodeFromJson<V>(element.toString()) }
+                    .onSuccess { decoded -> put(key, decoded) }
+                    .onFailure { failure -> Log.w(TAG, "Skipping invalid $label row $key", failure) }
+            }
+        }
+    }
+
+    private inline fun <reified T> decodeJsonContainer(encoded: String, label: String): T? =
+        runCatching { Json.parseToJsonElement(encoded) as? T }
+            .onFailure { failure -> Log.w(TAG, "Skipping malformed $label", failure) }
+            .getOrNull()
+
+    private fun validStorageKey(value: String): Boolean =
+        value.isNotBlank() && value.length <= MAX_STORAGE_KEY_LENGTH && value.none(Char::isISOControl)
+
+    private fun validReplayDigest(value: String): Boolean =
+        value.length == SHA256_BASE64URL_LENGTH && value.all { it in BASE64URL_CHARS }
 
     private data class AttachedSource(val spec: LegacySource, val file: File)
+
+    private data class ForeignKey(
+        val parentTable: String,
+        val childColumn: String,
+        val parentColumn: String,
+    )
 
     private data class LegacySource(
         val databaseName: String,
@@ -348,6 +474,11 @@ internal class RoomStorageMigration(
 
     private companion object {
         const val TAG = "RoomStorageMigration"
+        const val MAX_STORAGE_KEY_LENGTH = 512
+        const val SHA256_BASE64URL_LENGTH = 43
+        const val BASE64URL_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        val VALID_SCREEN_CODECS = setOf("av1", "h265", "h264")
+        val OPENPGP_KEY_ID = Regex("[0-9A-F]{16}")
         val MIGRATION_COMPLETE = booleanPreferencesKey("known_good_to_room_v1_complete")
         val ENABLED_PACKAGES = stringPreferencesKey("enabled_packages_json")
         val PER_APP_CONFIG = stringPreferencesKey("per_app_config_json")

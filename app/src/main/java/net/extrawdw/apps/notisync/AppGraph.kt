@@ -59,11 +59,9 @@ import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
-import net.extrawdw.apps.notisync.data.storage.RoomStorageSelection
-import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
 import net.extrawdw.apps.notisync.data.storage.migration.RoomStorageMigration
 import net.extrawdw.apps.notisync.data.storage.migration.notiSyncDataStore
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
+import net.extrawdw.apps.notisync.data.storage.operational.RoomOperationalApplicationState
 import net.extrawdw.apps.notisync.ios.IosBridgeManager
 import net.extrawdw.apps.notisync.ios.IosBridgeService
 import net.extrawdw.apps.notisync.ios.IosCompanion
@@ -349,16 +347,10 @@ class AppGraph(private val app: Application) {
         initSpan.metric("identity_load_ms", (System.nanoTime() - identityStartNanos) / 1_000_000)
         val vault = KeyVault()
         val ds = app.dataStore
-        val operationalApplicationState = if (app.usesRoomStorage) {
-            OperationalApplicationState(app)
-        } else {
-            null
-        }
-        settings = operationalApplicationState?.let { SettingsRepository(ds, scope, it) }
-            ?: SettingsRepository(ds, scope)
+        val operationalApplicationState = RoomOperationalApplicationState(app)
+        settings = SettingsRepository(ds, scope, operationalApplicationState)
         openPgpProvider = OpenKeychainSigningProvider(app)
-        openPgpEnrollment = operationalApplicationState?.let { OpenPgpEnrollmentStore(ds, scope, it) }
-            ?: OpenPgpEnrollmentStore(ds, scope)
+        openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
         sshKeyProviderStore = SshKeyProviderStore(app)
@@ -381,16 +373,11 @@ class AppGraph(private val app: Application) {
         trust = TrustStore(ds, identity)
         // TrustStore opens + verifies the signed roster (SQLite-backed) — the other notable cold-start cost.
         initSpan.metric("truststore_open_ms", (System.nanoTime() - trustStartNanos) / 1_000_000)
-        appSelection = operationalApplicationState?.let { AppSelectionRepository(ds, scope, it) }
-            ?: AppSelectionRepository(ds, scope)
-        appConfig = operationalApplicationState?.let { AppConfigRepository(ds, scope, it) }
-            ?: AppConfigRepository(ds, scope)
-        notificationFilters = operationalApplicationState?.let { NotificationFilterStore(ds, scope, it) }
-            ?: NotificationFilterStore(ds, scope)
-        screenMirrorAuthorizations = operationalApplicationState?.let {
-            ScreenMirrorAuthorizationStore(ds, it)
-        } ?: ScreenMirrorAuthorizationStore(ds)
-        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(ds, operationalApplicationState)
+        appSelection = AppSelectionRepository(scope, operationalApplicationState)
+        appConfig = AppConfigRepository(scope, operationalApplicationState)
+        notificationFilters = NotificationFilterStore(scope, operationalApplicationState)
+        screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(operationalApplicationState)
+        screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(operationalApplicationState)
         screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
         screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
@@ -656,8 +643,7 @@ class AppGraph(private val app: Application) {
         // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the
         // BLE manager that turns ANCS events into CapturedNotifications, then dispatches them to local display
         // and/or the own mesh — reusing the same capture/render pipeline as a local Android capture.
-        val registry = operationalApplicationState?.let { IosAppRegistry(ds, scope, it) }
-            ?: IosAppRegistry(ds, scope)
+        val registry = IosAppRegistry(scope, operationalApplicationState)
         iosAppRegistry = registry
         iosBridgeManager = IosBridgeManager(
             context = app,
@@ -1534,11 +1520,8 @@ class AppGraph(private val app: Application) {
 }
 
 /** Application entry point: builds the dependency graph. */
-class NotiSyncApp : Application(), RoomStorageSelection {
+class NotiSyncApp : Application() {
     lateinit var graph: AppGraph
-        private set
-
-    override var usesRoomStorage: Boolean = false
         private set
 
     private val initScope =
@@ -1554,8 +1537,7 @@ class NotiSyncApp : Application(), RoomStorageSelection {
         super.onCreate()
         initScope.launch {
             runCatching {
-                val storage = RoomStorageMigration(this@NotiSyncApp).prepare()
-                usesRoomStorage = storage.usesRoom
+                RoomStorageMigration(this@NotiSyncApp).prepare()
                 storageDeferred.complete(Unit)
                 graph = AppGraph(this@NotiSyncApp)
                 // Cold-start init runs off the main thread (so the automatic `_app_start` trace can't see

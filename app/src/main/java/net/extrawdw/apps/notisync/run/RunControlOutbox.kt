@@ -8,9 +8,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunControl
-import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 
 internal interface RunControlQueue {
     fun enqueue(control: RunControl)
@@ -28,28 +26,19 @@ internal enum class QueuedRunControlDisposition { SEND, RETAIN, DROP }
 internal class RunControlOutbox(context: Context) :
     SQLiteOpenHelper(
         context.applicationContext,
-        context.operationalDatabaseName(DB_NAME),
+        OperationalDatabase.DATABASE_NAME,
         null,
-        context.operationalDatabaseVersion(VERSION),
+        OperationalDatabase.VERSION,
     ),
     RunControlQueue {
     init {
         setWriteAheadLoggingEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            "CREATE TABLE controls (" +
-                "request_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL, payload BLOB NOT NULL)"
-        )
-        db.execSQL("CREATE INDEX controls_order_idx ON controls(requested_at, request_id)")
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnRunControlSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // This outbox has not shipped; replacing its private schema is safe until the first release.
-        db.execSQL("DROP TABLE IF EXISTS controls")
-        onCreate(db)
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+        roomMustOwnRunControlSchema()
 
     @Synchronized
     override fun enqueue(control: RunControl) {
@@ -95,10 +84,11 @@ internal class RunControlOutbox(context: Context) :
     ).use { it.moveToFirst() }
 
     companion object {
-        private const val DB_NAME = LegacyDatabaseNames.RUN_CONTROL_OUTBOX
-        private const val VERSION = 1
     }
 }
+
+private fun roomMustOwnRunControlSchema(): Nothing =
+    error("Room must create and migrate Operational storage before RunControlOutbox opens")
 
 /** Single-process serialization between the receiver's fast path and WorkManager's durable drain. */
 internal object RunControlOutboxDrainer {

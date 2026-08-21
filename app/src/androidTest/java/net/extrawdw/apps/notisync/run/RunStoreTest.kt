@@ -3,7 +3,9 @@ package net.extrawdw.apps.notisync.run
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import net.extrawdw.apps.notisync.testsupport.LegacyStorageTestContext
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
+import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
@@ -19,11 +21,15 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class RunStoreTest {
-    private val context: Context = LegacyStorageTestContext(ApplicationProvider.getApplicationContext())
+    private val context: Context = RoomStorageTestContext(
+        ApplicationProvider.getApplicationContext(),
+        "run-store",
+    )
 
     @Before
     fun clearBefore() {
         context.deleteDatabase(DB_NAME)
+        initializeOperationalTestDatabase(context)
     }
 
     @After
@@ -238,6 +244,6 @@ class RunStoreTest {
     )
 
     companion object {
-        private const val DB_NAME = "runs.db"
+        private const val DB_NAME = OperationalDatabase.DATABASE_NAME
     }
 }

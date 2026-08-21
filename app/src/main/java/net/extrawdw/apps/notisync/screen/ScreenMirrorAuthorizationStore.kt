@@ -1,17 +1,10 @@
 package net.extrawdw.apps.notisync.screen
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.booleanPreferencesKey
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.longPreferencesKey
-import androidx.datastore.preferences.core.stringPreferencesKey
 import java.security.MessageDigest
 import java.util.Base64
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
@@ -34,25 +27,10 @@ private class CorruptScreenReplayState(message: String, cause: Throwable? = null
  * Authorizations never converge through the peer trust table: control of this phone is an explicit local
  * decision. Replay rows contain only SHA-256 digests and expiry times, never rendezvous tokens or PSKs.
  */
-class ScreenMirrorAuthorizationStore private constructor(
-    private val store: DataStore<Preferences>,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+class ScreenMirrorAuthorizationStore internal constructor(
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>) : this(store, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        operationalState: OperationalApplicationState,
-    ) : this(store, operationalState, Unit)
-
     private val lock = Any()
-    private val authorizedKey = stringPreferencesKey("screen_mirror_authorized_peer_ids")
-    private val replayKey = stringPreferencesKey("screen_mirror_request_replay_v1")
-    private val replayBlockedKey = booleanPreferencesKey("screen_mirror_request_replay_v1_blocked")
-    private val replayQuarantineDigestKey = stringPreferencesKey("screen_mirror_request_replay_v1_quarantine_digest")
-    private val replayQuarantinedAtKey = longPreferencesKey("screen_mirror_request_replay_v1_quarantined_at")
-    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
 
     private val _authorizedPeerIds = MutableStateFlow(loadAuthorized())
     val authorizedPeerIds: StateFlow<Set<String>> = _authorizedPeerIds.asStateFlow()
@@ -126,39 +104,20 @@ class ScreenMirrorAuthorizationStore private constructor(
         var accepted = false
         var encodedReplay: String? = null
         try {
-            if (operationalState != null) {
-                runBlocking {
-                    operationalState.updateScreenMirrorState { state ->
-                        if (state.replayBlocked) {
-                            throw CorruptScreenReplayState("screen replay state is quarantined")
-                        }
-                        encodedReplay = state.requestReplayJson
-                        val rows = consumeReplayRows(
-                            encodedReplay = encodedReplay,
-                            sessionId = sessionId,
-                            routingToken = routingToken,
-                            expiresAt = expiresAt,
-                            now = now,
-                        ) { accepted = it }
-                        state.copy(requestReplayJson = ProtocolCodec.encodeToJson(rows))
+            runBlocking {
+                operationalState.updateScreenMirrorState { state ->
+                    if (state.replayBlocked) {
+                        throw CorruptScreenReplayState("screen replay state is quarantined")
                     }
-                }
-            } else {
-                runBlocking {
-                    store.edit { preferences ->
-                        if (preferences[replayBlockedKey] == true) {
-                            throw CorruptScreenReplayState("screen replay state is quarantined")
-                        }
-                        encodedReplay = preferences[replayKey]
-                        val rows = consumeReplayRows(
-                            encodedReplay = encodedReplay,
-                            sessionId = sessionId,
-                            routingToken = routingToken,
-                            expiresAt = expiresAt,
-                            now = now,
-                        ) { accepted = it }
-                        preferences[replayKey] = ProtocolCodec.encodeToJson(rows)
-                    }
+                    encodedReplay = state.requestReplayJson
+                    val rows = consumeReplayRows(
+                        encodedReplay = encodedReplay,
+                        sessionId = sessionId,
+                        routingToken = routingToken,
+                        expiresAt = expiresAt,
+                        now = now,
+                    ) { accepted = it }
+                    state.copy(requestReplayJson = ProtocolCodec.encodeToJson(rows))
                 }
             }
             accepted
@@ -176,25 +135,14 @@ class ScreenMirrorAuthorizationStore private constructor(
     /** Explicit recovery hook. Call only from a user-visible repair action while mirroring is disabled. */
     fun repairReplayState() = synchronized(lock) {
         try {
-            if (operationalState != null) {
-                runBlocking {
-                    operationalState.updateScreenMirrorState {
-                        it.copy(
-                            requestReplayJson = null,
-                            replayBlocked = false,
-                            replayQuarantineDigest = null,
-                            replayQuarantinedAt = null,
-                        )
-                    }
-                }
-            } else {
-                runBlocking {
-                    store.edit { preferences ->
-                        preferences.remove(replayKey)
-                        preferences.remove(replayBlockedKey)
-                        preferences.remove(replayQuarantineDigestKey)
-                        preferences.remove(replayQuarantinedAtKey)
-                    }
+            runBlocking {
+                operationalState.updateScreenMirrorState {
+                    it.copy(
+                        requestReplayJson = null,
+                        replayBlocked = false,
+                        replayQuarantineDigest = null,
+                        replayQuarantinedAt = null,
+                    )
                 }
             }
             _replayStateHealth.value = ScreenReplayStateHealth.HEALTHY
@@ -204,16 +152,12 @@ class ScreenMirrorAuthorizationStore private constructor(
     }
 
     private fun loadAuthorized(): Set<String> = runBlocking {
-        decodeAuthorized(
-            operationalState?.screenMirrorState()?.authorizedPeerIdsJson
-                ?: store.data.first()[authorizedKey],
-        )
+        decodeAuthorized(operationalState.screenMirrorState().authorizedPeerIdsJson)
     }
 
     private suspend fun persistAuthorized(value: Set<String>) {
         val encoded = ProtocolCodec.encodeToJson(value.sorted().toSet())
-        operationalState?.updateScreenMirrorState { it.copy(authorizedPeerIdsJson = encoded) }
-            ?: store.edit { it[authorizedKey] = encoded }
+        operationalState.updateScreenMirrorState { it.copy(authorizedPeerIdsJson = encoded) }
     }
 
     /**
@@ -245,15 +189,9 @@ class ScreenMirrorAuthorizationStore private constructor(
     private fun inspectAndQuarantineReplayState(): ScreenReplayStateHealth = runBlocking {
         val blocked: Boolean
         val encoded: String?
-        if (operationalState != null) {
-            val state = operationalState.screenMirrorState()
-            blocked = state.replayBlocked
-            encoded = state.requestReplayJson
-        } else {
-            val preferences = store.data.first()
-            blocked = preferences[replayBlockedKey] == true
-            encoded = preferences[replayKey]
-        }
+        val state = operationalState.screenMirrorState()
+        blocked = state.replayBlocked
+        encoded = state.requestReplayJson
         if (blocked) return@runBlocking ScreenReplayStateHealth.CORRUPT
         if (encoded == null) return@runBlocking ScreenReplayStateHealth.HEALTHY
         try {
@@ -269,32 +207,16 @@ class ScreenMirrorAuthorizationStore private constructor(
         _replayStateHealth.value = ScreenReplayStateHealth.CORRUPT
         runCatching {
             runBlocking {
-                if (operationalState != null) {
-                    operationalState.updateScreenMirrorState { state ->
-                        state.copy(
-                            requestReplayJson = null,
-                            replayBlocked = true,
-                            replayQuarantineDigest = encoded?.let {
-                                digest(CORRUPT_REPLAY_DOMAIN, it.toByteArray(Charsets.UTF_8))
-                            },
-                            replayQuarantinedAt = detectedAt,
-                            enabled = false,
-                        )
-                    }
-                } else {
-                    store.edit { preferences ->
-                        encoded?.let {
-                            preferences[replayQuarantineDigestKey] = digest(
-                                CORRUPT_REPLAY_DOMAIN,
-                                it.toByteArray(Charsets.UTF_8),
-                            )
-                        }
-                        preferences[replayQuarantinedAtKey] = detectedAt
-                        preferences[replayBlockedKey] = true
-                        preferences.remove(replayKey)
-                        // A corrupt replay ledger must also remove routing authority until an explicit repair.
-                        preferences[screenMirroringEnabledKey] = false
-                    }
+                operationalState.updateScreenMirrorState { state ->
+                    state.copy(
+                        requestReplayJson = null,
+                        replayBlocked = true,
+                        replayQuarantineDigest = encoded?.let {
+                            digest(CORRUPT_REPLAY_DOMAIN, it.toByteArray(Charsets.UTF_8))
+                        },
+                        replayQuarantinedAt = detectedAt,
+                        enabled = false,
+                    )
                 }
             }
         }

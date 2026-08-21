@@ -30,12 +30,10 @@ import net.extrawdw.apps.notisync.data.NotificationFilterStore
 import net.extrawdw.apps.notisync.data.PerAppConfig
 import net.extrawdw.apps.notisync.data.SeenChannel
 import net.extrawdw.apps.notisync.data.SettingsRepository
-import net.extrawdw.apps.notisync.data.storage.RoomStorageSelection
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabaseFactory
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
-import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
+import net.extrawdw.apps.notisync.data.storage.operational.RoomOperationalApplicationState
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
 import net.extrawdw.apps.notisync.ios.IosApp
 import net.extrawdw.apps.notisync.ios.IosAppRegistry
@@ -84,7 +82,7 @@ class RoomStorageMigrationAndroidTest {
     }
 
     @Test
-    fun firstInitCopiesKnownGoodSourcesAndSecondInitUsesRoomAuthority() = runBlocking {
+    fun firstInitCopiesPlayV51SourcesAndSecondInitUsesRoomAuthority() = runBlocking {
         val androidConfig = PerAppConfig(mirrorOngoing = true, updateIntervalSec = 15)
         val seenChannel = SeenChannel("messages", "Messages", "social", "Social")
         val incomingFilter = FilterSync(
@@ -126,9 +124,8 @@ class RoomStorageMigrationAndroidTest {
         createKnownGoodSources()
 
         val migrator = RoomStorageMigration(context, preferences)
-        val first = migrator.prepare()
+        migrator.prepare()
 
-        assertTrue(first.usesRoom)
         val migratedPreferences = preferences.data.first()
         assertEquals("Retained phone", migratedPreferences[stringPreferencesKey("device_name")])
         assertTrue(migratedPreferences[booleanPreferencesKey("known_good_to_room_v1_complete")] == true)
@@ -148,8 +145,8 @@ class RoomStorageMigrationAndroidTest {
             assertFalse(database.tableExists("dedup"))
             assertTrue(database.tableExists("mirror_lifecycle"))
             assertEquals(1L, database.count("mirror_msg"))
-            assertEquals(1L, database.count("ssh_known_hosts"))
-            assertEquals("known-host", database.knownHostName())
+            assertEquals(0L, database.count("ssh_known_hosts"))
+            assertEquals(1L, database.count("provider_state"))
             assertEquals(1L, database.count("android_apps"))
             assertEquals(1L, database.count("incoming_notification_filters"))
             assertEquals(3L, database.count("ios_apps"))
@@ -157,51 +154,50 @@ class RoomStorageMigrationAndroidTest {
             assertEquals(1L, database.count("screen_codec_preferences"))
             assertEquals(1L, database.count("openpgp_enrollment"))
         }
-        val roomContext = RoomSelectedContext(context)
-        val applicationState = OperationalApplicationState(roomContext)
+        val applicationState = RoomOperationalApplicationState(context)
         val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         assertEquals(456L, SettingsRepository(preferences, repositoryScope, applicationState).lastSeenPostTime())
         assertTrue(SettingsRepository(preferences, repositoryScope, applicationState).screenMirroringEnabledNow())
         assertTrue(
-            AppSelectionRepository(preferences, repositoryScope, applicationState)
+            AppSelectionRepository(repositoryScope, applicationState)
                 .isEnabled("com.example.enabled"),
         )
         assertEquals(
             androidConfig,
-            AppConfigRepository(preferences, repositoryScope, applicationState)
+            AppConfigRepository(repositoryScope, applicationState)
                 .configFor("com.example.enabled"),
         )
         assertEquals(
             incomingFilter,
-            NotificationFilterStore(preferences, repositoryScope, applicationState)
+            NotificationFilterStore(repositoryScope, applicationState)
                 .filterFor(ClientId("filtering-peer")),
         )
-        assertTrue(IosAppRegistry(preferences, repositoryScope, applicationState).isEnabled("com.example.ios"))
+        assertTrue(IosAppRegistry(repositoryScope, applicationState).isEnabled("com.example.ios"))
         assertTrue(
-            ScreenMirrorAuthorizationStore(preferences, applicationState)
+            ScreenMirrorAuthorizationStore(applicationState)
                 .isAuthorized(ClientId("screen-peer")),
         )
         assertEquals(
             ScreenMirrorCodec.H265,
-            ScreenMirrorCodecPreferenceStore(preferences, applicationState)
+            ScreenMirrorCodecPreferenceStore(applicationState)
                 .preferredCodec(ClientId("screen-peer")),
         )
         assertEquals(
             "0123456789ABCDEF",
-            OpenPgpEnrollmentStore(preferences, repositoryScope, applicationState)
+            OpenPgpEnrollmentStore(applicationState)
                 .enrollment.value.primaryKeyId,
         )
-        val messageStore = MessageStore(roomContext)
-        val runStore = RunStore(roomContext)
-        val controlOutbox = RunControlOutbox(roomContext)
-        val signStore = OpenPgpSignStore(roomContext)
-        val sshStore = SshKeyProviderStore(roomContext)
+        val messageStore = MessageStore(context)
+        val runStore = RunStore(context)
+        val controlOutbox = RunControlOutbox(context)
+        val signStore = OpenPgpSignStore(context)
+        val sshStore = SshKeyProviderStore(context)
         try {
             assertTrue(messageStore.seen("migrated-message"))
             assertTrue("migrated-pending-ack" in messageStore.pendingAcks())
             messageStore.onDismissed(ClientId("source-client"), "source-key")
             assertTrue("mirror-message" in messageStore.pendingAcks())
-            assertEquals("known-host", sshStore.knownHostHostname(ByteArray(32) { it.toByte() }))
+            assertEquals(null, sshStore.knownHostHostname(ByteArray(32) { it.toByte() }))
             listOf(
                 messageStore.readableDatabase,
                 runStore.readableDatabase,
@@ -225,12 +221,11 @@ class RoomStorageMigrationAndroidTest {
             it[stringPreferencesKey("enabled_packages_json")] =
                 ProtocolCodec.encodeToJson(setOf("com.example.stale-legacy"))
         }
-        val second = migrator.prepare()
+        migrator.prepare()
 
-        assertTrue(second.usesRoom)
         openCore().use { database ->
-            assertEquals(1L, database.count("dedup"))
-            assertFalse(database.containsMessage("added-after-cutover"))
+            assertEquals(2L, database.count("dedup"))
+            assertTrue(database.containsMessage("added-after-cutover"))
         }
         openOperational().use { database ->
             assertEquals(1L, database.count("android_apps"))
@@ -240,54 +235,105 @@ class RoomStorageMigrationAndroidTest {
     }
 
     @Test
-    fun incompatibleSourceLeavesFlagIncompleteAndFallsBackWithoutPartialTargets() = runBlocking {
+    fun ancientIncompleteAndCorruptSourcesAreSkipped() = runBlocking {
+        val enabledPackagesJson = """["com.example.retained",7,""]"""
         preferences.edit {
-            it[stringPreferencesKey("enabled_packages_json")] =
-                ProtocolCodec.encodeToJson(setOf("com.example.retained"))
+            it[stringPreferencesKey("enabled_packages_json")] = enabledPackagesJson
+            it[stringPreferencesKey("screen_mirror_codec_preferences_v1")] =
+                """{"screen-peer":"h264","unsupported":"vp9","wrong-type":7}"""
+            it[booleanPreferencesKey("openpgp_sign_enabled")] = true
+            it[stringPreferencesKey("openpgp_sign_provider")] = "openkeychain"
         }
         SQLiteDatabase.openOrCreateDatabase(
             context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER),
             null,
         ).also { database ->
             database.execSQL("CREATE TABLE dedup(message_id TEXT PRIMARY KEY)")
+            database.execSQL("INSERT INTO dedup(message_id) VALUES('missing-handled-at')")
+            database.execSQL("CREATE TABLE pending_ack(message_id TEXT, queued_at INTEGER)")
+            database.execSQL("INSERT INTO pending_ack VALUES('valid-ack', 1)")
+            database.execSQL("INSERT INTO pending_ack VALUES('invalid-ack', NULL)")
             database.close()
         }
+        context.getDatabasePath(LegacyDatabaseNames.RUNS).writeBytes("not a sqlite database".toByteArray())
 
-        val prepared = RoomStorageMigration(context, preferences).prepare()
+        RoomStorageMigration(context, preferences).prepare()
 
-        assertFalse(prepared.usesRoom)
-        assertTrue(prepared.migrationFailure != null)
-        assertFalse(context.getDatabasePath(CoreDatabase.DATABASE_NAME).exists())
-        assertFalse(context.getDatabasePath(OperationalDatabase.DATABASE_NAME).exists())
+        assertTrue(context.getDatabasePath(CoreDatabase.DATABASE_NAME).exists())
+        assertTrue(context.getDatabasePath(OperationalDatabase.DATABASE_NAME).exists())
+        openCore().use { database ->
+            assertEquals(0L, database.count("dedup"))
+            assertEquals(1L, database.count("pending_ack"))
+        }
+        openOperational().use { database ->
+            assertTrue(database.androidAppEnabled("com.example.retained"))
+            assertEquals(1L, database.count("android_apps"))
+            assertEquals(0L, database.count("runs"))
+            assertEquals(1L, database.count("screen_codec_preferences"))
+            assertEquals(0, database.openPgpEnrollmentEnabled())
+        }
         assertEquals(
-            setOf("com.example.retained"),
-            ProtocolCodec.decodeFromJson<Set<String>>(
-                checkNotNull(preferences.data.first()[stringPreferencesKey("enabled_packages_json")]),
-            ),
+            enabledPackagesJson,
+            preferences.data.first()[stringPreferencesKey("enabled_packages_json")],
         )
-        assertFalse(
+        assertTrue(
             preferences.data.first()[booleanPreferencesKey("known_good_to_room_v1_complete")] == true,
         )
     }
 
     private fun createKnownGoodSources() {
-        MessageStore(context).also { store ->
-            store.record("migrated-message")
-            store.enqueueAck("migrated-pending-ack")
-            store.recordMirror(ClientId("source-client"), "source-key", "mirror-message")
-            store.close()
-        }
-        RunStore(context).close()
-        RunControlOutbox(context).close()
-        OpenPgpSignStore(context).close()
-        SshKeyProviderStore(context).also { store ->
-            store.writableDatabase.execSQL(
-                "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
-                    "VALUES (?, ?, 1, 1)",
-                arrayOf(ByteArray(32) { it.toByte() }, "known-host"),
+        createDatabase(LegacyDatabaseNames.MESSAGE_LEDGER) { database ->
+            database.execSQL("CREATE TABLE dedup(message_id TEXT PRIMARY KEY, handled_at INTEGER NOT NULL)")
+            database.execSQL("CREATE TABLE pending_ack(message_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)")
+            database.execSQL(
+                "CREATE TABLE mirror_msg(source_client TEXT NOT NULL, source_key TEXT NOT NULL, " +
+                    "message_id TEXT NOT NULL, recorded_at INTEGER NOT NULL, " +
+                    "PRIMARY KEY(source_client, source_key))",
             )
-            store.close()
+            database.execSQL(
+                "CREATE TABLE relay_inbox(message_id TEXT PRIMARY KEY, envelope BLOB NOT NULL, " +
+                    "accepted_at INTEGER NOT NULL, delivery_mode TEXT NOT NULL, received_at INTEGER NOT NULL, " +
+                    "early_ack INTEGER NOT NULL)",
+            )
+            database.execSQL("CREATE TABLE message_meta(name TEXT PRIMARY KEY, long_value INTEGER NOT NULL)")
+            database.execSQL(
+                "CREATE TABLE mirror_lifecycle(source_client TEXT NOT NULL, source_key TEXT NOT NULL, " +
+                    "post_time INTEGER, dismissed_at INTEGER, updated_at INTEGER NOT NULL, " +
+                    "PRIMARY KEY(source_client, source_key))",
+            )
+            database.execSQL("INSERT INTO dedup VALUES('migrated-message', 1)")
+            database.execSQL("INSERT INTO pending_ack VALUES('migrated-pending-ack', 1)")
+            database.execSQL(
+                "INSERT INTO mirror_msg VALUES('source-client', 'source-key', 'mirror-message', 1)",
+            )
         }
+        createDatabase(LegacyDatabaseNames.RUNS) { database ->
+            database.execSQL(
+                "CREATE TABLE runs(host_client TEXT NOT NULL, run_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
+                    "presented_revision INTEGER NOT NULL, active INTEGER NOT NULL, updated_at INTEGER NOT NULL, " +
+                    "ended_at INTEGER, received_at INTEGER NOT NULL, payload BLOB NOT NULL, " +
+                    "PRIMARY KEY(host_client, run_id))",
+            )
+        }
+        createDatabase(LegacyDatabaseNames.RUN_CONTROL_OUTBOX) { database ->
+            database.execSQL(
+                "CREATE TABLE controls(request_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL, " +
+                    "payload BLOB NOT NULL)",
+            )
+        }
+        createDatabase(LegacyDatabaseNames.OPENPGP_SIGNING) { database ->
+            database.execSQL(
+                "CREATE TABLE sign_requests(request_id TEXT PRIMARY KEY, requester_client_id TEXT NOT NULL, " +
+                    "sender_client_id TEXT NOT NULL, primary_key_id TEXT NOT NULL, issued_at INTEGER NOT NULL, " +
+                    "expires_at INTEGER NOT NULL, payload_sha256 BLOB NOT NULL, object_kind TEXT NOT NULL, " +
+                    "payload BLOB, state TEXT NOT NULL, encoded_response BLOB, updated_at INTEGER NOT NULL, " +
+                    "commit_details BLOB, result TEXT, working_directory TEXT)",
+            )
+        }
+    }
+
+    private inline fun createDatabase(name: String, block: (SQLiteDatabase) -> Unit) {
+        SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name), null).use(block)
     }
 
     private fun openOperational(): SQLiteDatabase = SQLiteDatabase.openDatabase(
@@ -320,12 +366,6 @@ class RoomStorageMigrationAndroidTest {
             cursor.getString(0)
         }
 
-    private fun SQLiteDatabase.knownHostName(): String =
-        rawQuery("SELECT hostname FROM ssh_known_hosts", emptyArray()).use { cursor ->
-            check(cursor.moveToFirst())
-            cursor.getString(0)
-        }
-
     private fun SQLiteDatabase.containsMessage(messageId: String): Boolean =
         rawQuery("SELECT 1 FROM dedup WHERE message_id=?", arrayOf(messageId)).use { it.moveToFirst() }
 
@@ -335,6 +375,12 @@ class RoomStorageMigrationAndroidTest {
             arrayOf(packageName),
         ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
 
+    private fun SQLiteDatabase.openPgpEnrollmentEnabled(): Int =
+        rawQuery("SELECT enabled FROM openpgp_enrollment WHERE singleton_id=1", emptyArray()).use { cursor ->
+            check(cursor.moveToFirst())
+            cursor.getInt(0)
+        }
+
     private class IsolatedDatabaseContext(base: Context, private val root: File) : ContextWrapper(base) {
         override fun getApplicationContext(): Context = this
 
@@ -343,13 +389,6 @@ class RoomStorageMigrationAndroidTest {
 
         override fun deleteDatabase(name: String): Boolean =
             SQLiteDatabase.deleteDatabase(getDatabasePath(name))
-    }
-
-    private class RoomSelectedContext(base: Context) :
-        ContextWrapper(base),
-        RoomStorageSelection {
-        override fun getApplicationContext(): Context = this
-        override val usesRoomStorage: Boolean = true
     }
 
     private class InMemoryPreferencesDataStore : DataStore<Preferences> {

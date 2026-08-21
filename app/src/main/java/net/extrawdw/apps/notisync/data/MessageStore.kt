@@ -5,10 +5,7 @@ import android.content.Context
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
-import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
-import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.notisync.peer.channel.MessageDedup
 import net.extrawdw.apps.notisync.domain.MirrorAckIndex
 import net.extrawdw.apps.notisync.domain.MirrorLifecycleStore
@@ -49,20 +46,19 @@ enum class InboxInsertResult { INSERTED, EXISTS, FAILED }
 class MessageStore(context: Context) :
     SQLiteOpenHelper(
         context.applicationContext,
-        context.operationalDatabaseName(DB_NAME),
+        OperationalDatabase.DATABASE_NAME,
         null,
-        context.operationalDatabaseVersion(VERSION),
+        OperationalDatabase.VERSION,
     ),
     MessageDedup,
     MirrorAckIndex,
     MirrorLifecycleStore {
     private val appContext = context.applicationContext
-    private val coreHelper =
-        if (appContext.usesRoomStorage) CoreMessageStoreHelper(appContext) else null
+    private val coreHelper = CoreMessageStoreHelper(appContext)
     private val coreReadableDatabase: SQLiteDatabase
-        get() = coreHelper?.readableDatabase ?: readableDatabase
+        get() = coreHelper.readableDatabase
     private val coreWritableDatabase: SQLiteDatabase
-        get() = coreHelper?.writableDatabase ?: writableDatabase
+        get() = coreHelper.writableDatabase
 
     init {
         // Every legacy helper sharing a Room-owned file must request WAL before its first connection.
@@ -71,19 +67,13 @@ class MessageStore(context: Context) :
 
     private fun now(): Long = System.currentTimeMillis()
 
-    override fun onCreate(db: SQLiteDatabase) {
-        // The retained legacy database owns both groups. After cutover Room creates each target before
-        // this helper opens it, so this callback is only a defensive additive fallback.
-        if (!appContext.usesRoomStorage) createCoreMessageTables(db)
-        createOperationalMessageTables(db)
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        onCreate(db) // additive only — preserve handled-message history across upgrades
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+        roomMustOwnSchema()
 
     override fun close() {
-        coreHelper?.close()
+        coreHelper.close()
         super.close()
     }
 
@@ -445,8 +435,6 @@ class MessageStore(context: Context) :
     }
 
     companion object {
-        private const val DB_NAME = LegacyDatabaseNames.MESSAGE_LEDGER
-        private const val VERSION = 2
         private const val META_LAST_DEFERRED_AT = "last_deferred_at"
         private const val INBOX_PAGE_SIZE = 128
 
@@ -466,37 +454,11 @@ private class CoreMessageStoreHelper(context: Context) :
         setWriteAheadLoggingEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        createCoreMessageTables(db)
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        createCoreMessageTables(db)
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+        roomMustOwnSchema()
 }
 
-private fun createCoreMessageTables(db: SQLiteDatabase) {
-    // Additive definitions exactly mirror the known-good message ledger.
-    db.execSQL("CREATE TABLE IF NOT EXISTS dedup (message_id TEXT PRIMARY KEY, handled_at INTEGER NOT NULL)")
-    db.execSQL("CREATE TABLE IF NOT EXISTS pending_ack (message_id TEXT PRIMARY KEY, queued_at INTEGER NOT NULL)")
-    db.execSQL(
-        "CREATE TABLE IF NOT EXISTS relay_inbox (" +
-            "message_id TEXT PRIMARY KEY, envelope BLOB NOT NULL, accepted_at INTEGER NOT NULL, " +
-            "delivery_mode TEXT NOT NULL, received_at INTEGER NOT NULL, early_ack INTEGER NOT NULL)"
-    )
-    db.execSQL("CREATE TABLE IF NOT EXISTS message_meta (name TEXT PRIMARY KEY, long_value INTEGER NOT NULL)")
-    db.execSQL("CREATE INDEX IF NOT EXISTS relay_inbox_accepted_idx ON relay_inbox (accepted_at, received_at)")
-}
-
-private fun createOperationalMessageTables(db: SQLiteDatabase) {
-    db.execSQL(
-        "CREATE TABLE IF NOT EXISTS mirror_msg (" +
-            "source_client TEXT NOT NULL, source_key TEXT NOT NULL, message_id TEXT NOT NULL, " +
-            "recorded_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
-    )
-    db.execSQL(
-        "CREATE TABLE IF NOT EXISTS mirror_lifecycle (" +
-            "source_client TEXT NOT NULL, source_key TEXT NOT NULL, post_time INTEGER, " +
-            "dismissed_at INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (source_client, source_key))"
-    )
-}
+private fun roomMustOwnSchema(): Nothing =
+    error("Room must create and migrate NotiSync databases before runtime stores open")

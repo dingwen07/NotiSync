@@ -1,11 +1,9 @@
 package net.extrawdw.apps.notisync.data
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.PreferenceDataStoreFactory
-import androidx.datastore.preferences.core.Preferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.testsupport.InMemoryOperationalApplicationState
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
@@ -15,7 +13,6 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 
 /**
  * Unit tests for the source-side filter matching contract — the half that must agree, byte for byte, with
@@ -75,13 +72,11 @@ class NotificationFilterStoreTest {
         assertFalse(NotificationFilterStore.matches(app, OriginPlatform.IOS_ANCS, "com.apple.MobileSMS", null))
     }
 
-    // ---- DataStore-backed apply/exclude/clear behavior (drives the activity-log "changed" gate) ----
+    // ---- Room-backed apply/exclude/clear behavior (drives the activity-log "changed" gate) ----
 
     private fun newStore(): NotificationFilterStore {
         val scope = CoroutineScope(Dispatchers.Unconfined)
-        val file = File.createTempFile("filters-${System.nanoTime()}", ".preferences_pb").also { it.delete() }
-        val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
-        return NotificationFilterStore(ds, scope)
+        return NotificationFilterStore(scope, InMemoryOperationalApplicationState())
     }
 
     private fun androidNotif(pkg: String, channel: String? = null) = CapturedNotification(

@@ -23,20 +23,11 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import java.net.URI
 
 /** Global app + transport configuration in DataStore, with application runtime state in Operational Room. */
-class SettingsRepository private constructor(
+class SettingsRepository internal constructor(
     private val store: DataStore<Preferences>,
     private val scope: CoroutineScope,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>, scope: CoroutineScope) : this(store, scope, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        scope: CoroutineScope,
-        operationalState: OperationalApplicationState,
-    ) : this(store, scope, operationalState, Unit)
-
     private val brokerUrlKey = stringPreferencesKey("broker_url")
     private val deviceNameKey = stringPreferencesKey("device_name")
     private val deviceNameUpdatedKey = longPreferencesKey("device_name_updated_at")
@@ -48,7 +39,6 @@ class SettingsRepository private constructor(
     private val groupKey = stringPreferencesKey("group_id")
     private val epochKey = intPreferencesKey("route_epoch")
     private val fcmRouteRefKey = stringPreferencesKey("fcm_route_ref")
-    private val lastSeenPostKey = longPreferencesKey("last_seen_post_time")
     private val selfEpochActivatedKey = longPreferencesKey("self_epoch_activated_at")
     private val iosBridgeKey = booleanPreferencesKey("ancs_bridge_enabled")
     private val iosLocalKey = booleanPreferencesKey("ancs_local_display")
@@ -57,7 +47,6 @@ class SettingsRepository private constructor(
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
-    private val screenMirroringEnabledKey = booleanPreferencesKey("screen_mirroring_enabled")
     private val unverifiedDeviceCleanupV1CompletedKey =
         booleanPreferencesKey("unverified_device_cleanup_v1_completed")
 
@@ -138,19 +127,12 @@ class SettingsRepository private constructor(
         store.edit { it[lockScreenPublicIdentityKey] = on }
 
     /** Master opt-in for accepting screen-control requests from individually authorized own devices. */
-    val screenMirroringEnabled: StateFlow<Boolean> =
-        operationalState?.screenMirroringEnabled
-            ?: store.data.map { it[screenMirroringEnabledKey] ?: false }.stateInEager(scope, false)
+    val screenMirroringEnabled: StateFlow<Boolean> = operationalState.screenMirroringEnabled
 
     /** Direct persisted read for cold FCM/foreground-service starts; avoids relying on a not-yet-loaded flow. */
-    suspend fun screenMirroringEnabledNow(): Boolean =
-        operationalState?.screenMirroringEnabled?.value
-            ?: (store.data.first()[screenMirroringEnabledKey] ?: false)
+    suspend fun screenMirroringEnabledNow(): Boolean = operationalState.screenMirroringEnabled.value
 
-    suspend fun setScreenMirroringEnabled(on: Boolean) {
-        operationalState?.setScreenMirroringEnabled(on)
-            ?: store.edit { it[screenMirroringEnabledKey] = on }
-    }
+    suspend fun setScreenMirroringEnabled(on: Boolean) = operationalState.setScreenMirroringEnabled(on)
 
     /** The PERSISTED switch, read directly from DataStore — use this (not [iosBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
@@ -240,16 +222,11 @@ class SettingsRepository private constructor(
     }
 
     /** High-water mark of post times we've mirrored — used to gate the listener backfill after a restart. */
-    suspend fun lastSeenPostTime(): Long =
-        operationalState?.lastSeenPostTime() ?: (store.data.first()[lastSeenPostKey] ?: 0L)
+    suspend fun lastSeenPostTime(): Long = operationalState.lastSeenPostTime()
 
     fun updateLastSeenPostTime(timeMillis: Long) {
         scope.launch {
-            operationalState?.advanceLastSeenPostTime(timeMillis) ?: run {
-                store.edit { prefs ->
-                    if (timeMillis > (prefs[lastSeenPostKey] ?: 0L)) prefs[lastSeenPostKey] = timeMillis
-                }
-            }
+            operationalState.advanceLastSeenPostTime(timeMillis)
         }
     }
 
@@ -281,21 +258,10 @@ internal fun upgradeLegacyDefaultBrokerUrl(value: String): String {
  * Also tracks which apps have posted notifications (in-memory) so the picker can surface and sort
  * by recently-active apps.
  */
-class AppSelectionRepository private constructor(
-    private val store: DataStore<Preferences>,
+class AppSelectionRepository internal constructor(
     private val scope: CoroutineScope,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>, scope: CoroutineScope) : this(store, scope, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        scope: CoroutineScope,
-        operationalState: OperationalApplicationState,
-    ) : this(store, scope, operationalState, Unit)
-
-    private val enabledKey = stringPreferencesKey("enabled_packages_json")
     private val _enabled = MutableStateFlow(load())
     val enabled: StateFlow<Set<String>> = _enabled
 
@@ -303,10 +269,7 @@ class AppSelectionRepository private constructor(
     val lastSeen: StateFlow<Map<String, Long>> = _lastSeen
 
     private fun load(): Set<String> = runBlocking {
-        operationalState?.androidApps()?.asSequence()?.filter { it.enabled }?.map { it.packageName }?.toSet()
-            ?: (store.data.first()[enabledKey]?.let {
-                runCatching { ProtocolCodec.decodeFromJson<Set<String>>(it) }.getOrDefault(emptySet())
-            } ?: emptySet())
+        operationalState.androidApps().asSequence().filter { it.enabled }.map { it.packageName }.toSet()
     }
 
     fun isEnabled(packageName: String): Boolean = packageName in _enabled.value
@@ -334,10 +297,7 @@ class AppSelectionRepository private constructor(
     private fun persistEnabled() {
         scope.launch {
             val snapshot = _enabled.value
-            operationalState?.replaceAndroidEnabledPackages(snapshot) ?: run {
-                val json = ProtocolCodec.encodeToJson(snapshot)
-                store.edit { it[enabledKey] = json }
-            }
+            operationalState.replaceAndroidEnabledPackages(snapshot)
         }
     }
 }
@@ -353,23 +313,10 @@ class AppSelectionRepository private constructor(
  * capture-hot-path safe ([configFor]/[isChannelSuppressed], and
  * [recordSeenChannel] on every post); writes are fire-and-forget like [AppSelectionRepository].
  */
-class AppConfigRepository private constructor(
-    private val store: DataStore<Preferences>,
+class AppConfigRepository internal constructor(
     private val scope: CoroutineScope,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>, scope: CoroutineScope) : this(store, scope, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        scope: CoroutineScope,
-        operationalState: OperationalApplicationState,
-    ) : this(store, scope, operationalState, Unit)
-
-    private val configKey = stringPreferencesKey("per_app_config_json")
-    private val seenKey = stringPreferencesKey("per_app_seen_channels_json")
-
     private val _configs = MutableStateFlow(loadConfigs())
     /** pkg -> the user's per-app config; an absent pkg means all-defaults ([PerAppConfig]). */
     val configs: StateFlow<Map<String, PerAppConfig>> = _configs
@@ -379,25 +326,21 @@ class AppConfigRepository private constructor(
     val seenChannels: StateFlow<Map<String, List<SeenChannel>>> = _seenChannels
 
     private fun loadConfigs(): Map<String, PerAppConfig> = runBlocking {
-        operationalState?.androidApps()?.mapNotNull { row ->
+        operationalState.androidApps().mapNotNull { row ->
             row.configJson?.let { json ->
                 runCatching { row.packageName to ProtocolCodec.decodeFromJson<PerAppConfig>(json) }.getOrNull()
             }
-        }?.toMap() ?: (store.data.first()[configKey]?.let {
-            runCatching { ProtocolCodec.decodeFromJson<Map<String, PerAppConfig>>(it) }.getOrDefault(emptyMap())
-        } ?: emptyMap())
+        }.toMap()
     }
 
     private fun loadSeen(): Map<String, List<SeenChannel>> = runBlocking {
-        operationalState?.androidApps()?.mapNotNull { row ->
+        operationalState.androidApps().mapNotNull { row ->
             row.seenChannelsJson?.let { json ->
                 runCatching {
                     row.packageName to ProtocolCodec.decodeFromJson<List<SeenChannel>>(json)
                 }.getOrNull()
             }
-        }?.toMap() ?: (store.data.first()[seenKey]?.let {
-            runCatching { ProtocolCodec.decodeFromJson<Map<String, List<SeenChannel>>>(it) }.getOrDefault(emptyMap())
-        } ?: emptyMap())
+        }.toMap()
     }
 
     /** The stored config for [packageName], or all-defaults when none is set. */
@@ -492,20 +435,14 @@ class AppConfigRepository private constructor(
     private fun persistConfig(packageName: String) {
         scope.launch {
             val config = checkNotNull(_configs.value[packageName])
-            operationalState?.setAndroidAppConfig(packageName, ProtocolCodec.encodeToJson(config)) ?: run {
-                val json = ProtocolCodec.encodeToJson(_configs.value)
-                store.edit { it[configKey] = json }
-            }
+            operationalState.setAndroidAppConfig(packageName, ProtocolCodec.encodeToJson(config))
         }
     }
 
     private fun persistSeenChannels(packageName: String) {
         scope.launch {
             val channels = _seenChannels.value[packageName].orEmpty()
-            operationalState?.setAndroidSeenChannels(packageName, ProtocolCodec.encodeToJson(channels)) ?: run {
-                val json = ProtocolCodec.encodeToJson(_seenChannels.value)
-                store.edit { it[seenKey] = json }
-            }
+            operationalState.setAndroidSeenChannels(packageName, ProtocolCodec.encodeToJson(channels))
         }
     }
 }

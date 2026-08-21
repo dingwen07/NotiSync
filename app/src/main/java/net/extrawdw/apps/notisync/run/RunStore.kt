@@ -12,9 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
-import net.extrawdw.apps.notisync.data.storage.operational.LegacyDatabaseNames
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseName
-import net.extrawdw.apps.notisync.data.storage.operational.operationalDatabaseVersion
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 
 /** Stable local identity for one run. Run ids are scoped by their authenticated host. */
 data class RunKey(val hostClientId: String, val runId: String) {
@@ -80,12 +78,12 @@ class RunStore(
     private val maxStorageBytes: Long = MAX_STORAGE_BYTES,
 ) : SQLiteOpenHelper(
     context.applicationContext,
-    context.operationalDatabaseName(DB_NAME),
+    OperationalDatabase.DATABASE_NAME,
     null,
-    context.operationalDatabaseVersion(VERSION),
+    OperationalDatabase.VERSION,
 ), RunRepository {
     private val databaseFile: File = context.applicationContext.getDatabasePath(
-        context.operationalDatabaseName(DB_NAME),
+        OperationalDatabase.DATABASE_NAME,
     )
     private val _runs = MutableStateFlow<List<StoredRun>>(emptyList())
     override val runs: StateFlow<List<StoredRun>> = _runs.asStateFlow()
@@ -102,24 +100,10 @@ class RunStore(
         db.setForeignKeyConstraintsEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase) {
-        db.execSQL(
-            "CREATE TABLE runs (" +
-                "host_client TEXT NOT NULL, run_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
-                "presented_revision INTEGER NOT NULL, " +
-                "active INTEGER NOT NULL, updated_at INTEGER NOT NULL, ended_at INTEGER, " +
-                "received_at INTEGER NOT NULL, payload BLOB NOT NULL, " +
-                "PRIMARY KEY (host_client, run_id))"
-        )
-        db.execSQL("CREATE INDEX runs_order_idx ON runs(active DESC, updated_at DESC)")
-        db.execSQL("CREATE INDEX runs_retention_idx ON runs(active, received_at)")
-    }
+    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnRunSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Run history has never shipped. Until it does, schema changes replace this private cache directly.
-        db.execSQL("DROP TABLE IF EXISTS runs")
-        onCreate(db)
-    }
+    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+        roomMustOwnRunSchema()
 
     @Synchronized
     override fun apply(state: RunState): RunApplyResult {
@@ -436,8 +420,6 @@ class RunStore(
     private data class SizedRunKey(val key: RunKey, val bytes: Long)
 
     companion object {
-        private const val DB_NAME = LegacyDatabaseNames.RUNS
-        private const val VERSION = 2
         internal const val ACTIVE_STALE_AFTER_MS = 3L * 60 * 60 * 1000
         private const val COMPLETED_RETENTION_MS = 30L * 24 * 60 * 60 * 1000
         private const val MAX_STORAGE_BYTES = 100L * 1024 * 1024
@@ -447,3 +429,6 @@ class RunStore(
             .thenByDescending { it.state.updatedAt }
     }
 }
+
+private fun roomMustOwnRunSchema(): Nothing =
+    error("Room must create and migrate Operational storage before RunStore opens")

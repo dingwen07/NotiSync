@@ -7,7 +7,6 @@ import androidx.room3.Query
 import androidx.room3.Room
 import androidx.room3.RoomDatabase
 import androidx.sqlite.driver.AndroidSQLiteDriver
-import net.extrawdw.apps.notisync.data.storage.usesRoomStorage
 
 /**
  * Operational v1 contains application-domain state. Table and column names remain unchanged so the
@@ -79,26 +78,4 @@ internal object OperationalDatabaseFactory {
 internal interface OperationalMetadataDao {
     @Query("SELECT COUNT(*) FROM sqlite_master")
     suspend fun schemaObjectCount(): Int
-}
-
-internal fun Context.operationalDatabaseName(legacyName: String): String =
-    if (usesRoomStorage) {
-        OperationalDatabase.DATABASE_NAME
-    } else {
-        legacyName
-    }
-
-internal fun Context.operationalDatabaseVersion(legacyVersion: Int): Int =
-    if (usesRoomStorage) {
-        OperationalDatabase.VERSION
-    } else {
-        legacyVersion
-    }
-
-internal object LegacyDatabaseNames {
-    const val MESSAGE_LEDGER = "message_ledger.db"
-    const val RUNS = "runs.db"
-    const val RUN_CONTROL_OUTBOX = "run_control_outbox.db"
-    const val OPENPGP_SIGNING = "openpgp_signing.db"
-    const val SSH_KEY_PROVIDER = "ssh-key-provider.sqlite3"
 }

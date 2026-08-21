@@ -3,7 +3,9 @@ package net.extrawdw.apps.notisync.seal
 import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import net.extrawdw.apps.notisync.testsupport.LegacyStorageTestContext
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
+import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
@@ -22,11 +24,15 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class OpenPgpSignStoreTest {
-    private val context: Context = LegacyStorageTestContext(ApplicationProvider.getApplicationContext())
+    private val context: Context = RoomStorageTestContext(
+        ApplicationProvider.getApplicationContext(),
+        "openpgp-sign-store",
+    )
 
     @Before
     fun clearBefore() {
         context.deleteDatabase(DB_NAME)
+        initializeOperationalTestDatabase(context)
     }
 
     @After
@@ -123,7 +129,7 @@ class OpenPgpSignStoreTest {
     }
 
     private companion object {
-        const val DB_NAME = "openpgp_signing.db"
+        const val DB_NAME = OperationalDatabase.DATABASE_NAME
         const val ARMOR = "-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n"
     }
 }

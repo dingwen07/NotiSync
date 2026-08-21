@@ -1,13 +1,8 @@
 package net.extrawdw.apps.notisync.data
 
-import androidx.datastore.core.DataStore
-import androidx.datastore.preferences.core.Preferences
-import androidx.datastore.preferences.core.edit
-import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
@@ -31,34 +26,21 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
  * after cutover and mirrored in [filters] for the Devices UI. This device never *generates* filters (Android mirroring is
  * customised with notification channels); it only honors inbound ones.
  */
-class NotificationFilterStore private constructor(
-    private val store: DataStore<Preferences>,
+class NotificationFilterStore internal constructor(
     private val scope: CoroutineScope,
-    private val operationalState: OperationalApplicationState?,
-    @Suppress("UNUSED_PARAMETER") constructorMarker: Unit,
+    private val operationalState: OperationalApplicationState,
 ) {
-    constructor(store: DataStore<Preferences>, scope: CoroutineScope) : this(store, scope, null, Unit)
-
-    internal constructor(
-        store: DataStore<Preferences>,
-        scope: CoroutineScope,
-        operationalState: OperationalApplicationState,
-    ) : this(store, scope, operationalState, Unit)
-
-    private val key = stringPreferencesKey("received_notification_filters_json")
     private val _filters = MutableStateFlow(load())
 
     /** requesterClientId → the filter snapshot it asked this device to apply. */
     val filters: StateFlow<Map<String, FilterSync>> = _filters
 
     private fun load(): Map<String, FilterSync> = runBlocking {
-        operationalState?.incomingNotificationFilters()?.mapNotNull { row ->
+        operationalState.incomingNotificationFilters().mapNotNull { row ->
             runCatching {
                 row.requesterClientId to ProtocolCodec.decodeFromJson<FilterSync>(row.filterJson)
             }.getOrNull()
-        }?.toMap() ?: (store.data.first()[key]?.let {
-            runCatching { ProtocolCodec.decodeFromJson<Map<String, FilterSync>>(it) }.getOrDefault(emptyMap())
-        } ?: emptyMap())
+        }.toMap()
     }
 
     /**
@@ -111,28 +93,19 @@ class NotificationFilterStore private constructor(
 
     private fun persist(requesterClientId: String) {
         scope.launch {
-            if (operationalState != null) {
-                val current = _filters.value[requesterClientId]
-                if (current == null) {
-                    operationalState.deleteIncomingNotificationFilter(requesterClientId)
-                } else {
-                    operationalState.upsertIncomingNotificationFilter(
-                        IncomingNotificationFilterEntity(
-                            requesterClientId = requesterClientId,
-                            filterJson = ProtocolCodec.encodeToJson(current),
-                            updatedAt = current.updatedAt,
-                        ),
-                    )
-                }
+            val current = _filters.value[requesterClientId]
+            if (current == null) {
+                operationalState.deleteIncomingNotificationFilter(requesterClientId)
             } else {
-                persistDataStore()
+                operationalState.upsertIncomingNotificationFilter(
+                    IncomingNotificationFilterEntity(
+                        requesterClientId = requesterClientId,
+                        filterJson = ProtocolCodec.encodeToJson(current),
+                        updatedAt = current.updatedAt,
+                    ),
+                )
             }
         }
-    }
-
-    private suspend fun persistDataStore() {
-        val json = ProtocolCodec.encodeToJson(_filters.value)
-        store.edit { it[key] = json }
     }
 
     companion object {
