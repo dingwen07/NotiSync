@@ -22,6 +22,7 @@ import net.extrawdw.notisync.protocol.SshImportSourceType
 class SshAgentNotificationPresenter(
     private val context: Context,
     private val store: SshKeyProviderStore,
+    private val openRequestPageAutomatically: () -> Boolean = { false },
 ) {
     fun post(stored: StoredSshProviderRequest, requesterName: String): Boolean {
         ensureChannel()
@@ -134,6 +135,11 @@ class SshAgentNotificationPresenter(
                     approve,
                 ).setAuthenticationRequired(true).build(),
             )
+            .apply {
+                if (openRequestPageAutomatically()) {
+                    setFullScreenIntent(review, true)
+                }
+            }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)
         return true

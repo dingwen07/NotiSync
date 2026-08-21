@@ -46,6 +46,8 @@ class SettingsRepository internal constructor(
     private val iosMediaKey = booleanPreferencesKey("ancs_media_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
+    private val autoOpenOpenPgpRequestKey = booleanPreferencesKey("auto_open_openpgp_request")
+    private val autoOpenSshRequestKey = booleanPreferencesKey("auto_open_ssh_request")
     private val lockScreenPublicIdentityKey = booleanPreferencesKey("lock_screen_public_identity")
     private val unverifiedDeviceCleanupV1CompletedKey =
         booleanPreferencesKey("unverified_device_cleanup_v1_completed")
@@ -58,6 +60,7 @@ class SettingsRepository internal constructor(
         }
         upgraded
     }
+    private val initialRequestPagePreferences: Preferences = runBlocking { store.data.first() }
 
     val brokerUrl: StateFlow<String> =
         store.data.map { upgradeLegacyDefaultBrokerUrl(it[brokerUrlKey] ?: DEFAULT_BROKER) }
@@ -117,6 +120,22 @@ class SettingsRepository internal constructor(
         store.data.map { it[callRingerKey] ?: false }.stateInEager(scope, false)
 
     suspend fun setCallRingerEnabled(on: Boolean) = store.edit { it[callRingerKey] = on }
+
+    /** Open the OpenPGP signing request page from a newly posted request notification. Default off. */
+    val autoOpenOpenPgpRequest: StateFlow<Boolean> =
+        store.data.map { it[autoOpenOpenPgpRequestKey] ?: false }
+            .stateInEager(scope, initialRequestPagePreferences[autoOpenOpenPgpRequestKey] ?: false)
+
+    suspend fun setAutoOpenOpenPgpRequest(on: Boolean) =
+        store.edit { it[autoOpenOpenPgpRequestKey] = on }
+
+    /** Open the SSH request page from a newly posted request notification. Default off. */
+    val autoOpenSshRequest: StateFlow<Boolean> =
+        store.data.map { it[autoOpenSshRequestKey] ?: false }
+            .stateInEager(scope, initialRequestPagePreferences[autoOpenSshRequestKey] ?: false)
+
+    suspend fun setAutoOpenSshRequest(on: Boolean) =
+        store.edit { it[autoOpenSshRequestKey] = on }
 
     /** Show source app identity (app name + icon) in the lock-screen public version of mirrored
      *  notifications while keeping mirrored content private. Default on; users can disable it in Settings. */
