@@ -21,6 +21,7 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
+import net.extrawdw.apps.notisync.ui.SshKeyImportSheet
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.SshImportSourceType
@@ -34,6 +35,8 @@ class SshAgentReviewActivity : ComponentActivity() {
     private var screen by mutableStateOf<SshReviewScreenState>(SshReviewScreenState.Loading)
     private var storage by mutableStateOf(SshKeyStorageSelection(allowExport = true))
     private var passphrase by mutableStateOf("")
+    private var importName by mutableStateOf("")
+    private var showImportSheet by mutableStateOf(false)
     private var busy by mutableStateOf(false)
     private var pendingSignature: Pair<SshAgentProviderEngine, PreparedSshSignature>? = null
     private var pendingImportStorage: Pair<SshAgentProviderEngine, PreparedSshImportStorage>? = null
@@ -50,17 +53,41 @@ class SshAgentReviewActivity : ComponentActivity() {
             NotiSyncTheme {
                 SshReviewContent(
                     state = screen,
-                    storage = storage,
-                    passphrase = passphrase,
                     busy = busy,
-                    onStorageChange = { storage = it },
-                    onPassphraseChange = ::changePassphrase,
-                    onPreviewImport = ::previewImport,
-                    onApprove = ::approve,
+                    onApprove = ::beginApproval,
                     onReject = ::reject,
                     onRemember = ::authenticateRemember,
                     onClose = ::finish,
                 )
+                val details = screen as? SshReviewScreenState.Details
+                if (showImportSheet && details?.request?.kind == SshProviderRequestKind.IMPORT) {
+                    SshKeyImportSheet(
+                        privateKeyText = null,
+                        encrypted = details.encryptedImport,
+                        preview = details.keyPreview,
+                        name = importName,
+                        nameEditable = false,
+                        passphrase = passphrase,
+                        storage = storage,
+                        error = details.errorMessage,
+                        previewing = busy,
+                        importing = false,
+                        onPrivateKeyTextChange = {},
+                        onPaste = {},
+                        onNameChange = {},
+                        onPassphraseChange = ::changePassphrase,
+                        onStorageChange = { storage = it },
+                        onContinueClipboard = {},
+                        onPreview = ::previewImport,
+                        onImport = ::approve,
+                        onDismiss = {
+                            if (!busy) {
+                                showImportSheet = false
+                                changePassphrase("")
+                            }
+                        },
+                    )
+                }
             }
         }
         load(approveAfterLoad)
@@ -73,6 +100,8 @@ class SshAgentReviewActivity : ComponentActivity() {
         val approveAfterLoad = intent.action == ACTION_APPROVE
         intent.action = null
         setIntent(intent)
+        showImportSheet = false
+        passphrase = ""
         screen = SshReviewScreenState.Loading
         load(approveAfterLoad)
     }
@@ -168,8 +197,9 @@ class SshAgentReviewActivity : ComponentActivity() {
                 requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
                 destinationHostname = destinationHostname,
             )
+            importName = keyName
             if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
-                approve()
+                beginApproval()
             }
         }
     }
@@ -221,6 +251,17 @@ class SshAgentReviewActivity : ComponentActivity() {
         }
     }
 
+    private fun beginApproval() {
+        if (busy) return
+        val details = screen as? SshReviewScreenState.Details ?: return
+        if (details.request.state != SshProviderRequestState.PENDING_REVIEW) return
+        if (details.request.kind == SshProviderRequestKind.IMPORT) {
+            showImportSheet = true
+        } else {
+            approve()
+        }
+    }
+
     private fun approve() {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
@@ -262,13 +303,15 @@ class SshAgentReviewActivity : ComponentActivity() {
                                 authenticateImportStorage(engine, outcome.prepared, details)
                             null -> {
                                 busy = false
-                                screen = details.copy(errorMessage = getString(R.string.ssh_agent_import_unavailable))
+                                screen = details.afterImportFailure(
+                                    getString(R.string.ssh_agent_import_unavailable),
+                                )
                             }
                         }
                     }.onFailure {
                         busy = false
-                        screen = details.copy(
-                            errorMessage = it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                        screen = details.afterImportFailure(
+                            it.message ?: getString(R.string.ssh_agent_invalid_private_key),
                         )
                     }
                 }
@@ -367,7 +410,7 @@ class SshAgentReviewActivity : ComponentActivity() {
                 withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
                 pendingImportStorage = null
                 busy = false
-                screen = details.copy(errorMessage = message)
+                screen = details.afterImportFailure(message)
             }
         }
         val storage = prepared.keyStorage
@@ -419,22 +462,22 @@ class SshAgentReviewActivity : ComponentActivity() {
                                     }
                                     null -> {
                                         withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
-                                        pendingImportStorage = null
-                                        busy = false
-                                        screen = details.copy(
-                                            errorMessage = getString(R.string.ssh_agent_import_unavailable),
-                                        )
+                        pendingImportStorage = null
+                        busy = false
+                        screen = details.afterImportFailure(
+                            getString(R.string.ssh_agent_import_unavailable),
+                        )
                                     }
                                 }
                             }.onFailure {
                                 withContext(Dispatchers.IO) { engine.cancelPreparedImport(prepared) }
-                                pendingImportStorage = null
-                                busy = false
-                                screen = details.copy(
-                                    errorMessage = it.sshKeyStorageUserMessage(
-                                        this@SshAgentReviewActivity,
-                                        R.string.ssh_agent_store_private_key_failed,
-                                    ),
+                        pendingImportStorage = null
+                        busy = false
+                        screen = details.afterImportFailure(
+                            it.sshKeyStorageUserMessage(
+                                this@SshAgentReviewActivity,
+                                R.string.ssh_agent_store_private_key_failed,
+                            ),
                                 )
                             }
                         }
@@ -516,6 +559,12 @@ class SshAgentReviewActivity : ComponentActivity() {
         busy = false
         screen = SshReviewScreenState.Error(message)
     }
+
+    private fun SshReviewScreenState.Details.afterImportFailure(message: String): SshReviewScreenState.Details =
+        copy(
+            keyPreview = keyPreview.takeUnless { encryptedImport },
+            errorMessage = message,
+        )
 
     private fun showSignResult(result: SshSignResult?) {
         when (result?.kind) {

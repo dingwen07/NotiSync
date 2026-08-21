@@ -44,6 +44,7 @@
     <string name="ssh_agent_public_key">Public Key</string>
     <string name="ssh_agent_fingerprint">Fingerprint</string>
     <string name="ssh_agent_passphrase">Passphrase</string>
+    <string name="ssh_agent_import_passphrase_prompt">This private key is protected. Enter its passphrase to review it.</string>
     <string name="ssh_agent_import_storage_help">OpenSSH and PuTTY PPK v2/v3 keys are supported. Signing always uses a non-exportable Android Keystore key; the export copy is separate and optional.</string>
     <string name="ssh_agent_import_text">Paste key</string>
     <string name="ssh_agent_export">Export private key</string>
@@ -104,7 +105,7 @@
     <string name="ssh_agent_approval_policy">Approval policy</string>
     <string name="ssh_agent_approval_always">Always ask</string>
     <string name="ssh_agent_approval_remember">Allow remembering</string>
-    <string name="ssh_agent_approval_help">Allow remembering adds a Remember action to eligible approvals. Choosing Always ask removes this key’s saved authorizations.</string>
+    <string name="ssh_agent_approval_help">Long-pressing Approve when reviewing a request to remember authorization</string>
     <string name="ssh_agent_remembered_authorizations">Remembered authorizations</string>
     <string name="ssh_agent_no_remembered_authorizations">No remembered authorizations for this key.</string>
     <string name="ssh_agent_remembered_peer_scope">All hosts</string>

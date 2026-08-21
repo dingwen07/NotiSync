@@ -40,6 +40,7 @@
     <string name="ssh_agent_public_key">公钥</string>
     <string name="ssh_agent_fingerprint">指纹</string>
     <string name="ssh_agent_passphrase">密码</string>
+    <string name="ssh_agent_import_passphrase_prompt">此私钥受密码保护。请输入密码以检查密钥。</string>
     <string name="ssh_agent_import_storage_help">支持 OpenSSH 和 PuTTY PPK v2/v3 密钥。签名始终使用不可导出的 Android Keystore 密钥；导出副本独立且可选。</string>
     <string name="ssh_agent_import_text">粘贴密钥</string>
     <string name="ssh_agent_export">导出私钥</string>
@@ -98,7 +99,7 @@
     <string name="ssh_agent_approval_policy">批准策略</string>
     <string name="ssh_agent_approval_always">始终询问</string>
     <string name="ssh_agent_approval_remember">允许记住</string>
-    <string name="ssh_agent_approval_help">允许记住会在符合条件的批准中添加“记住”操作。选择“始终询问”会移除此密钥已保存的授权。</string>
+    <string name="ssh_agent_approval_help">在批准请求时长按“允许”按钮来记住授权。</string>
     <string name="ssh_agent_remembered_authorizations">已记住的授权</string>
     <string name="ssh_agent_no_remembered_authorizations">此密钥没有已记住的授权。</string>
     <string name="ssh_agent_remembered_peer_scope">所有主机</string>

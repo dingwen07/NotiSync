@@ -51,7 +51,6 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -69,7 +68,6 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.Role
@@ -79,8 +77,6 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
-import net.extrawdw.apps.notisync.ui.SshKeyStorageOptions
-import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.protocol.SshRememberScope
@@ -182,12 +178,6 @@ internal fun SshHistoryRequestDetail(
             requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
             destinationHostname = knownHostname,
         ),
-        storage = SshKeyStorageSelection(),
-        passphrase = "",
-        busy = false,
-        onStorageChange = {},
-        onPassphraseChange = {},
-        onPreviewImport = {},
         contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
         showSheetHeader = true,
         onBack = onBack,
@@ -197,12 +187,7 @@ internal fun SshHistoryRequestDetail(
 @Composable
 internal fun SshReviewContent(
     state: SshReviewScreenState,
-    storage: SshKeyStorageSelection,
-    passphrase: String,
     busy: Boolean,
-    onStorageChange: (SshKeyStorageSelection) -> Unit,
-    onPassphraseChange: (String) -> Unit,
-    onPreviewImport: () -> Unit,
     onApprove: () -> Unit,
     onReject: () -> Unit,
     onRemember: (SshRememberScope) -> Unit,
@@ -259,7 +244,7 @@ internal fun SshReviewContent(
                         } else {
                             null
                         },
-                        enabled = !busy && details.canApprove(passphrase),
+                        enabled = !busy,
                     ) {
                         if (busy) {
                             CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -267,11 +252,7 @@ internal fun SshReviewContent(
                         }
                         Text(
                             stringResource(
-                                if (details.request.kind == SshProviderRequestKind.IMPORT) {
-                                    R.string.ssh_agent_import_action
-                                } else {
-                                    R.string.action_approve
-                                },
+                                R.string.action_approve,
                             ),
                         )
                     }
@@ -306,12 +287,6 @@ internal fun SshReviewContent(
             }
             is SshReviewScreenState.Details -> SshRequestDetail(
                 details = state,
-                storage = storage,
-                passphrase = passphrase,
-                busy = busy,
-                onStorageChange = onStorageChange,
-                onPassphraseChange = onPassphraseChange,
-                onPreviewImport = onPreviewImport,
                 contentPadding = PaddingValues(
                     start = 20.dp,
                     end = 20.dp,
@@ -376,12 +351,6 @@ private fun LongClickButton(
 @Composable
 internal fun SshRequestDetail(
     details: SshReviewScreenState.Details,
-    storage: SshKeyStorageSelection,
-    passphrase: String,
-    busy: Boolean,
-    onStorageChange: (SshKeyStorageSelection) -> Unit,
-    onPassphraseChange: (String) -> Unit,
-    onPreviewImport: () -> Unit,
     contentPadding: PaddingValues,
     modifier: Modifier = Modifier,
     showSheetHeader: Boolean = false,
@@ -460,14 +429,7 @@ internal fun SshRequestDetail(
             CenteredRequestItem {
                 when (request.kind) {
                     SshProviderRequestKind.SIGN -> SignRequestCard(details)
-                    SshProviderRequestKind.IMPORT -> ImportRequestCard(
-                        details = details,
-                        storage = storage,
-                        passphrase = passphrase,
-                        pending = pending,
-                        onStorageChange = onStorageChange,
-                        onPassphraseChange = onPassphraseChange,
-                    )
+                    SshProviderRequestKind.IMPORT -> ImportRequestCard(details)
                 }
             }
         }
@@ -479,24 +441,10 @@ internal fun SshRequestDetail(
                     showFullPublicKey = request.kind == SshProviderRequestKind.IMPORT,
                     titleIcon = Icons.Outlined.Key,
                     emptyContent = {
-                        if (pending && request.kind == SshProviderRequestKind.IMPORT) {
-                            OutlinedButton(
-                                onClick = onPreviewImport,
-                                enabled = !busy && (!details.encryptedImport || passphrase.isNotBlank()),
-                                modifier = Modifier.fillMaxWidth(),
-                            ) {
-                                if (busy) {
-                                    CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
-                                    Spacer(Modifier.size(8.dp))
-                                }
-                                Text(stringResource(R.string.ssh_agent_review_key))
-                            }
-                        } else {
-                            Text(
-                                stringResource(R.string.ssh_agent_key_preview_unavailable),
-                                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            )
-                        }
+                        Text(
+                            stringResource(R.string.ssh_agent_key_preview_unavailable),
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
                     },
                 )
             }
@@ -752,11 +700,6 @@ private fun HostKeyDetailLine(details: SshReviewScreenState.Details) {
 @Composable
 private fun ImportRequestCard(
     details: SshReviewScreenState.Details,
-    storage: SshKeyStorageSelection,
-    passphrase: String,
-    pending: Boolean,
-    onStorageChange: (SshKeyStorageSelection) -> Unit,
-    onPassphraseChange: (String) -> Unit,
 ) {
     val history = details.request.history
     RequestCard(stringResource(R.string.ssh_agent_request_import), Icons.Outlined.Key) {
@@ -771,26 +714,6 @@ private fun ImportRequestCard(
                 },
             ),
         )
-        if (pending && details.encryptedImport) {
-            HorizontalDivider()
-            OutlinedTextField(
-                value = passphrase,
-                onValueChange = onPassphraseChange,
-                label = { Text(stringResource(R.string.ssh_agent_passphrase)) },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        if (pending) {
-            HorizontalDivider()
-            SshKeyStorageOptions(storage, onStorageChange)
-            Text(
-                stringResource(R.string.ssh_agent_import_storage_help),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
         details.errorMessage?.let {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
@@ -977,10 +900,6 @@ internal fun List<DesktopProcessIdentity>.toProcessTreeText(showFullPaths: Boole
 private fun StoredSshProviderRequest.requestedAt(): Long = history.requestedAt
 private fun StoredSshProviderRequest.expiresAt(): Long = history.expiresAt
 private fun StoredSshProviderRequest.payloadSize(): Int = history.payloadSize
-
-private fun SshReviewScreenState.Details.canApprove(passphrase: String): Boolean =
-    request.kind == SshProviderRequestKind.SIGN ||
-        (keyPreview != null && (!encryptedImport || passphrase.isNotBlank()))
 
 private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
