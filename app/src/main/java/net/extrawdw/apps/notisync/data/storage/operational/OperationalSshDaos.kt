@@ -93,6 +93,28 @@ internal abstract class SshKeyDao {
     @Insert(onConflict = OnConflictStrategy.ABORT)
     abstract suspend fun addLifecycleCandidate(entity: SshKeyLifecycleCandidateEntity)
 
+    @Query(
+        "DELETE FROM ssh_key_lifecycle_candidate WHERE provider_key_id = :providerKeyId " +
+            "AND purpose = :purpose",
+    )
+    abstract suspend fun deleteLifecycleCandidate(
+        providerKeyId: String,
+        purpose: SshLifecycleCandidatePurpose,
+    ): Int
+
+    @Query(
+        "UPDATE ssh_key_lifecycle SET storage_kind = :replacement, updated_at = :updatedAt " +
+            "WHERE provider_key_id = :providerKeyId AND state = :provisioningState " +
+            "AND storage_kind = :expected AND updated_at <= :updatedAt",
+    )
+    protected abstract suspend fun transitionProvisioningStorageKindInternal(
+        providerKeyId: String,
+        expected: SshStorageKind,
+        replacement: SshStorageKind,
+        updatedAt: Long,
+        provisioningState: SshKeyLifecycleState = SshKeyLifecycleState.PROVISIONING,
+    ): Int
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     protected abstract suspend fun insertKeyInternal(entity: SshKeyEntity)
 
@@ -139,6 +161,28 @@ internal abstract class SshKeyDao {
             "SSH provisioning operational alias is already in use"
         }
         insertLifecycleInternal(lifecycle)
+    }
+
+    @Transaction
+    open suspend fun transitionProvisioningStorageKind(
+        providerKeyId: String,
+        expected: SshStorageKind,
+        replacement: SshStorageKind,
+        updatedAt: Long,
+    ) {
+        require(expected != replacement) { "SSH provisioning storage kind did not change" }
+        require(updatedAt > 0) { "SSH provisioning storage transition time must be positive" }
+        require(findCandidates(providerKeyId).isEmpty()) {
+            "SSH provisioning storage cannot change after protected material is journaled"
+        }
+        check(
+            transitionProvisioningStorageKindInternal(
+                providerKeyId = providerKeyId,
+                expected = expected,
+                replacement = replacement,
+                updatedAt = updatedAt,
+            ) == 1,
+        ) { "SSH provisioning storage transition was lost" }
     }
 
     @Query("DELETE FROM ssh_key_lifecycle WHERE provider_key_id = :providerKeyId")
@@ -352,7 +396,7 @@ internal abstract class SshKeyDao {
             "SSH export-copy StrongBox facts are inconsistent"
         }
         require(backendPolicy != SshExportBackendToken.TEE_ONLY || !strongBoxAttempted) {
-            "TEE-only SSH export copy attempted StrongBox"
+            "default-backend SSH export copy attempted StrongBox"
         }
         require(lastVerifiedAt > 0) { "SSH export-copy verification time must be positive" }
     }

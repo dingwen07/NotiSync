@@ -759,6 +759,25 @@ class OperationalDatabaseTest {
             }
 
             val ssh = database.sshKeyDao()
+            ssh.beginProvisioningHeader(
+                SshKeyLifecycleEntity(
+                    providerKeyId = "key-transition",
+                    operationalAlias = "ssh-operational-transition",
+                    storageKind = SshStorageKind.DIRECT,
+                    state = SshKeyLifecycleState.PROVISIONING,
+                    createdAt = 1,
+                    updatedAt = 1,
+                ),
+            )
+            ssh.transitionProvisioningStorageKind(
+                "key-transition",
+                SshStorageKind.DIRECT,
+                SshStorageKind.WRAPPED,
+                2,
+            )
+            assertEquals(SshStorageKind.WRAPPED, ssh.findLifecycle("key-transition")?.storageKind)
+            assertEquals(1, ssh.deleteLifecycle("key-transition"))
+
             val operational = candidate("key-1", SshLifecycleCandidatePurpose.OPERATIONAL, "ssh-operational-key-1", 1)
             val export = candidate("key-1", SshLifecycleCandidatePurpose.EXPORT, "ssh-export-key-1", 2)
             ssh.beginLifecycle(
@@ -773,6 +792,9 @@ class OperationalDatabaseTest {
                 listOf(operational, export),
             )
             assertEquals(2, ssh.findCandidates("key-1").size)
+            assertEquals(1, ssh.deleteLifecycleCandidate("key-1", SshLifecycleCandidatePurpose.EXPORT))
+            assertNull(ssh.findCandidate("key-1", SshLifecycleCandidatePurpose.EXPORT))
+            ssh.addLifecycleCandidate(export)
             ssh.finalizeWrappedProvisioning(
                 key = sshKey("key-1"),
                 operationalKey = SshOperationalKeyEntity(

@@ -207,6 +207,5 @@ internal fun strongBoxFactsAreValid(
     strongBoxAttempted: Boolean,
     strongBoxFallback: Boolean,
 ): Boolean =
-    (!strongBoxFallback || (strongBoxAttempted && securityLevel == SshSecurityLevelToken.TRUSTED_ENVIRONMENT)) &&
-        (securityLevel != SshSecurityLevelToken.STRONGBOX || strongBoxAttempted) &&
+    (!strongBoxFallback || strongBoxAttempted) &&
         (!strongBoxAttempted || strongBoxFallback || securityLevel == SshSecurityLevelToken.STRONGBOX)

@@ -38,7 +38,7 @@ class SshKeyStoragePolicyTest {
     }
 
     @Test
-    fun teeOnlyAffectsExportCopyCandidate() {
+    fun defaultBackendSelectionSkipsExportStrongBoxCandidate() {
         assertTrue(
             SshKeyStoragePolicy.shouldAttemptExportStrongBox(
                 strongBoxAvailable = true,

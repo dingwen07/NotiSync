@@ -1671,6 +1671,9 @@ private fun SshKeyDescriptor.storageLabel(): String = stringResource(
 private fun SshStorageSecurityLevel.labelResource(): Int = when (this) {
     SshStorageSecurityLevel.STRONGBOX -> R.string.ssh_agent_security_strongbox
     SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> R.string.ssh_agent_security_tee
+    SshStorageSecurityLevel.SOFTWARE -> R.string.key_backing_software
+    SshStorageSecurityLevel.UNKNOWN_SECURE -> R.string.key_backing_unknown_secure
+    SshStorageSecurityLevel.UNKNOWN -> R.string.key_backing_unknown
 }
 
 private fun Context.reportSshKeyStorageFailure(

@@ -68,8 +68,8 @@
     <string name="ssh_agent_rsa_key_size">RSA 密钥大小</string>
     <string name="ssh_agent_export_settings">导出</string>
     <string name="ssh_agent_keep_export_backup">保留导出副本</string>
-    <string name="ssh_agent_export_copy_force_tee">导出副本使用 TEE</string>
-    <string name="ssh_agent_export_copy_auth_help">每次导出都需要强生物识别或设备 PIN、图案或密码。除非选择 TEE，否则会先尝试 StrongBox。</string>
+    <string name="ssh_agent_export_copy_force_tee">导出副本使用 Android Keystore 默认后端</string>
+    <string name="ssh_agent_export_copy_auth_help">每次导出都需要强生物识别或设备 PIN、图案或密码。除非选择默认后端，否则会优先尝试 StrongBox；创建后会显示实际安全级别。</string>
     <string name="ssh_agent_signing_storage">签名密钥</string>
     <string name="ssh_agent_export_auth_unavailable">导出副本需要强生物识别或设备屏幕锁定。</string>
     <string name="ssh_agent_require_biometric_each_use">每次签名都要求强生物识别验证</string>

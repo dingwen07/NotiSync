@@ -23,7 +23,11 @@ internal enum class SshApprovalPolicyToken(override val token: String) : Operati
 }
 
 internal enum class SshSecurityLevelToken(override val token: String) : OperationalStorageToken {
-    TRUSTED_ENVIRONMENT("trusted_environment"), STRONGBOX("strongbox");
+    TRUSTED_ENVIRONMENT("trusted_environment"),
+    STRONGBOX("strongbox"),
+    SOFTWARE("software"),
+    UNKNOWN_SECURE("unknown_secure"),
+    UNKNOWN("unknown");
     companion object { fun decode(value: String): SshSecurityLevelToken = decodeOperationalToken(value, entries.toTypedArray()) }
 }
 

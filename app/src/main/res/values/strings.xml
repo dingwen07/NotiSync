@@ -72,8 +72,8 @@
     <string name="ssh_agent_rsa_key_size">RSA key size</string>
     <string name="ssh_agent_export_settings">Export</string>
     <string name="ssh_agent_keep_export_backup">Keep an export copy</string>
-    <string name="ssh_agent_export_copy_force_tee">Use TEE for the export copy</string>
-    <string name="ssh_agent_export_copy_auth_help">Every export requires a strong biometric or the device PIN, pattern, or password. StrongBox is tried first unless TEE is selected.</string>
+    <string name="ssh_agent_export_copy_force_tee">Use the default Android Keystore backend for the export copy</string>
+    <string name="ssh_agent_export_copy_auth_help">Every export requires a strong biometric or the device PIN, pattern, or password. StrongBox is preferred first unless the default backend is selected; the actual security level is shown after creation.</string>
     <string name="ssh_agent_signing_storage">Signing key</string>
     <string name="ssh_agent_export_auth_unavailable">An export copy requires a strong biometric or device screen lock.</string>
     <string name="ssh_agent_require_biometric_each_use">Require strong biometric for every signature</string>

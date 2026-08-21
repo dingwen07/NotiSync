@@ -3,7 +3,10 @@ package net.extrawdw.apps.notisync.data.ssh
 import android.content.Context
 import android.content.pm.PackageManager
 import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyInfo
 import android.security.keystore.KeyProperties
+import android.security.keystore.KeyProtection
+import java.math.BigInteger
 import java.security.KeyFactory
 import java.security.KeyPair
 import java.security.KeyPairGenerator
@@ -13,9 +16,11 @@ import java.security.PrivateKey
 import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.Signature
+import java.security.cert.Certificate
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.PKCS8EncodedKeySpec
 import java.security.spec.X509EncodedKeySpec
+import java.util.Date
 import javax.crypto.Cipher
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
@@ -86,7 +91,13 @@ import net.extrawdw.apps.notisync.sshagent.PendingSshKeyProvisioning
 import net.extrawdw.apps.notisync.sshagent.PendingSshKeyRecord
 import net.extrawdw.apps.notisync.sshagent.ProtectedSshKeyMaterial
 import net.extrawdw.apps.notisync.sshagent.SshImportApprovalOutcome
+import net.extrawdw.apps.notisync.sshagent.SshExportCandidateException
+import net.extrawdw.apps.notisync.sshagent.SshExportOperationException
+import net.extrawdw.apps.notisync.sshagent.SshKeyStoragePolicy
 import net.extrawdw.apps.notisync.sshagent.SshKeyStorageResult
+import net.extrawdw.apps.notisync.sshagent.SshOperationalCandidateException
+import net.extrawdw.apps.notisync.sshagent.SshOperationalCandidateStage
+import net.extrawdw.apps.notisync.sshagent.SshOperationalOperationException
 import net.extrawdw.apps.notisync.sshagent.PreparedSshResponse
 import net.extrawdw.apps.notisync.sshagent.SshProviderAcceptResult
 import net.extrawdw.apps.notisync.sshagent.SshProviderRequestKind
@@ -102,6 +113,7 @@ import net.extrawdw.apps.notisync.sshagent.StoredSshProviderRequest
 import net.extrawdw.apps.notisync.sshagent.SshAgentProviderRepository
 import net.extrawdw.apps.notisync.sshagent.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshagent.SshWrappedOperationalKeyVault
+import net.extrawdw.apps.notisync.sshagent.SshWrappedOperationalOperationException
 import net.extrawdw.apps.notisync.sshagent.SshExportKeyVault
 import net.extrawdw.apps.notisync.sshagent.SensitiveBytes
 import net.extrawdw.apps.notisync.sshagent.SshKeystoreJca
@@ -109,6 +121,7 @@ import net.extrawdw.apps.notisync.sshagent.SshAuthenticationPolicy
 import net.extrawdw.apps.notisync.sshagent.SshRememberAuthorizationPolicy
 import net.extrawdw.apps.notisync.sshagent.SshRememberAuthorizationStorage
 import net.extrawdw.apps.notisync.sshagent.authorizationStorage
+import net.extrawdw.apps.notisync.sshagent.toSshStorageSecurityLevel
 import net.extrawdw.notisync.ssh.core.SshKeyType
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import net.extrawdw.notisync.ssh.core.EcdsaSignatureTranscoder
@@ -152,6 +165,10 @@ import net.extrawdw.notisync.protocol.SshSignatureResult
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import org.bouncycastle.jce.provider.BouncyCastleProvider
+import org.bouncycastle.asn1.x500.X500Name
+import org.bouncycastle.cert.jcajce.JcaX509CertificateConverter
+import org.bouncycastle.cert.jcajce.JcaX509v3CertificateBuilder
+import org.bouncycastle.operator.jcajce.JcaContentSignerBuilder
 
 /**
  * Room authority for SSH provider state. All durable reads/writes are suspend operations so Android UI and
@@ -295,6 +312,7 @@ internal class RoomSshProviderRepository(
             key.algorithm.toProtocol(),
             key.publicHash,
             copy.securityLevel.toProtocol(),
+            strongBoxCandidate = copy.keyAlias == exportVault.alias(providerKeyId, true),
         )
         PreparedSshKeyExport(providerKeyId, prepared.cipher, key.publicHash.copyOf(), prepared, copy.securityLevel.toProtocol())
     }
@@ -331,33 +349,47 @@ internal class RoomSshProviderRepository(
         try {
             when (val stage = prepared.stage) {
                 is PreparedStorageStage.OperationalWrapEncrypt -> {
-                    prepared.provisioning.wrappedOperationalMaterial = wrappedVault.completeProtect(
-                        stage.protection,
+                    completeWrappedOperationalEncryption(
+                        prepared.provisioning,
+                        stage,
                         requireNotNull(authenticatedCipher),
                     )
-                    continueSoftwareProvisioning(prepared.provisioning)
                 }
                 is PreparedStorageStage.ExportEncrypt -> {
-                    prepared.provisioning.exportMaterial = exportVault.completeProtect(
-                        stage.protection,
+                    completeExportEncryption(
+                        prepared.provisioning,
+                        stage,
                         requireNotNull(authenticatedCipher),
                     )
-                    finalizeSoftwareProvisioning(prepared.provisioning)
                 }
                 is PreparedStorageStage.OperationalWrapDecrypt -> {
-                    val opened = wrappedVault.completeUnwrap(stage.unwrap, requireNotNull(authenticatedCipher))
-                    opened.use { bytes ->
-                        require(MessageDigest.isEqual(bytes.bytes, requireNotNull(prepared.provisioning.privateKeyPkcs8).bytes))
-                    }
-                    continueSoftwareProvisioning(prepared.provisioning)
+                    completeWrappedOperationalValidation(
+                        prepared.provisioning,
+                        stage,
+                        requireNotNull(authenticatedCipher),
+                    )
                 }
-                is PreparedStorageStage.OperationalSelfTest -> error("direct SSH authentication stage is unsupported")
-                is PreparedStorageStage.ExportDecrypt -> error("export validation must be completed by export flow")
+                is PreparedStorageStage.OperationalSelfTest -> {
+                    completeOperationalSelfTest(
+                        prepared.provisioning,
+                        stage,
+                        requireNotNull(authenticatedSignature),
+                    )
+                }
+                is PreparedStorageStage.ExportDecrypt -> {
+                    completeExportValidation(
+                        prepared.provisioning,
+                        stage,
+                        requireNotNull(authenticatedCipher),
+                    )
+                }
             }
         } catch (failure: CancellationException) {
+            closePreparedStorageStage(prepared.stage)
             abortProvisioning(prepared.provisioning)
             throw failure
         } catch (failure: Exception) {
+            closePreparedStorageStage(prepared.stage)
             abortProvisioning(prepared.provisioning)
             throw failure
         }
@@ -365,6 +397,7 @@ internal class RoomSshProviderRepository(
 
     override suspend fun cancelPreparedKeyStorage(prepared: PreparedSshKeyStorage) = withContext(NonCancellable + ioDispatcher) {
         if (prepared.owner !== this@RoomSshProviderRepository || prepared.provisioning.finished) return@withContext
+        closePreparedStorageStage(prepared.stage)
         abortProvisioning(prepared.provisioning)
     }
 
@@ -972,22 +1005,71 @@ internal class RoomSshProviderRepository(
     ): SshKeyStorageResult {
         val id = randomId()
         val alias = "notisync_ssh_identity_$id"
-        val header = lifecycleHeader(id, alias, SshStorageKind.DIRECT, at)
-        keyDao.beginProvisioningHeader(header)
+        var provisioning: PendingSshKeyProvisioning? = null
+        keyDao.beginProvisioningHeader(lifecycleHeader(id, alias, SshStorageKind.DIRECT, at))
         try {
-            val attemptedStrongBox = false
-            val pair = generateAndroidKeyPair(algorithm, alias, attemptedStrongBox, verification, rsaBits)
-            val publicBlob = SshPublicKeyCodec.encode(pair.public, algorithm.toCoreType())
-            val hash = sha256(publicBlob)
-            val key = SshKeyEntity(id, publicBlob, hash, algorithm.toToken(), name, SshKeyOriginToken.GENERATED, SshApprovalPolicyToken.ALWAYS_ASK, at, null, at)
-            val op = SshOperationalKeyEntity(id, alias, SshSecurityLevelToken.TRUSTED_ENVIRONMENT, verification.toToken(), false, false, at)
-            keyDao.finalizeDirectProvisioning(key, op, null, nextProviderState(at))
-            bumpChange()
-            return SshKeyStorageResult.Stored(
-                key.toDescriptor(op, wrapped = false, export = null, namespaces = emptyList()),
+            val attemptedStrongBox = SshKeyStoragePolicy.shouldAttemptOperationalStrongBox(
+                strongBoxAvailable,
+                algorithm,
             )
+            var strongBoxFallback = false
+            val candidate = try {
+                generateOperationalKeyPair(algorithm, alias, attemptedStrongBox, verification, rsaBits)
+            } catch (failure: SshOperationalCandidateException) {
+                if (!attemptedStrongBox || !failure.strongBox) throw failure
+                deleteAliasOrThrow(alias)
+                strongBoxFallback = true
+                generateOperationalKeyPair(algorithm, alias, false, verification, rsaBits)
+            }
+            val publicBlob = SshPublicKeyCodec.encode(candidate.pair.public, algorithm.toCoreType())
+            val hash = sha256(publicBlob)
+            provisioning = PendingSshKeyProvisioning(
+                record = PendingSshKeyRecord(
+                    providerKeyId = id,
+                    publicBlob = publicBlob,
+                    publicHash = hash,
+                    algorithm = algorithm,
+                    displayName = name,
+                    origin = SshKeyOrigin.GENERATED,
+                    operationalProvider = SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+                    operationalSecurityLevel = candidate.securityLevel,
+                    operationalStrongBoxAttempted = attemptedStrongBox,
+                    operationalStrongBoxFallback = strongBoxFallback,
+                    userVerificationPolicy = verification,
+                    keyAlias = alias,
+                    createdAt = at,
+                    expiresAt = null,
+                ),
+                privateKeyPkcs8 = null,
+                sourcePublicKey = null,
+                exportCopyBackendPolicy = null,
+                rsaKeySizeBits = rsaBits,
+            )
+            return validateOperationalOrContinue(provisioning, candidate.pair.public)
         } catch (failure: Exception) {
-            abortProvisioning(PendingSshKeyProvisioning(PendingSshKeyRecord(id, ByteArray(0), ByteArray(0), algorithm, name, SshKeyOrigin.GENERATED, SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY, SshStorageSecurityLevel.TRUSTED_ENVIRONMENT, false, false, verification, alias, at, null), null, null, null, rsaBits))
+            val active = provisioning ?: PendingSshKeyProvisioning(
+                PendingSshKeyRecord(
+                    id,
+                    ByteArray(0),
+                    ByteArray(0),
+                    algorithm,
+                    name,
+                    SshKeyOrigin.GENERATED,
+                    SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+                    SshStorageSecurityLevel.UNKNOWN,
+                    false,
+                    false,
+                    verification,
+                    alias,
+                    at,
+                    null,
+                ),
+                null,
+                null,
+                null,
+                rsaBits,
+            )
+            abortProvisioning(active)
             throw failure
         }
     }
@@ -1008,30 +1090,95 @@ internal class RoomSshProviderRepository(
         val hash = sha256(publicBlob)
         // The self-test and all subsequent operations are inside the cleanup scope below. This
         // closes the sensitive source bytes even when validation itself is interrupted.
-        val record = PendingSshKeyRecord(id, publicBlob.copyOf(), hash, algorithm, displayName, origin, SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED, SshStorageSecurityLevel.TRUSTED_ENVIRONMENT, false, false, userVerificationPolicy, alias, now, null)
-        val provisioning = PendingSshKeyProvisioning(record, privateBytes, pair.public, exportPolicy, 3072)
+        val attemptStrongBox = SshKeyStoragePolicy.shouldAttemptOperationalStrongBox(
+            strongBoxAvailable,
+            algorithm,
+        )
+        val record = PendingSshKeyRecord(
+            id,
+            publicBlob.copyOf(),
+            hash,
+            algorithm,
+            displayName,
+            origin,
+            SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+            if (attemptStrongBox) SshStorageSecurityLevel.STRONGBOX else SshStorageSecurityLevel.UNKNOWN,
+            attemptStrongBox,
+            false,
+            userVerificationPolicy,
+            alias,
+            now,
+            null,
+        )
+        val provisioning = PendingSshKeyProvisioning(
+            record,
+            privateBytes,
+            pair.public,
+            exportPolicy,
+            (pair.public as? java.security.interfaces.RSAPublicKey)?.modulus?.bitLength() ?: 3072,
+        )
         var ownershipTransferred = false
         try {
             selfTestSoftware(pair.private, pair.public, algorithm)
-            keyDao.beginProvisioningHeader(lifecycleHeader(id, alias, SshStorageKind.WRAPPED, now))
-            val prepared = wrappedVault.prepareProtect(alias, id, privateBytes, algorithm, hash, false, userVerificationPolicy)
-            if (userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
-                val result = SshKeyStorageResult.AuthenticationRequired(
-                    PreparedSshKeyStorage(
-                        prepared.cipher,
-                        null,
-                        SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,
-                        this,
-                        0,
-                        provisioning,
-                        PreparedStorageStage.OperationalWrapEncrypt(prepared, false),
-                    ),
+            keyDao.beginProvisioningHeader(lifecycleHeader(id, alias, SshStorageKind.DIRECT, now))
+            var fallback = false
+            val securityLevel = try {
+                installOperationalKey(
+                    alias,
+                    privateBytes.bytes,
+                    pair.public,
+                    algorithm,
+                    now,
+                    attemptStrongBox,
+                    userVerificationPolicy,
                 )
-                ownershipTransferred = true
-                return result
+            } catch (failure: SshOperationalCandidateException) {
+                if (attemptStrongBox && failure.strongBox) {
+                    deleteAliasOrThrow(alias)
+                    fallback = true
+                    installOperationalKey(
+                        alias,
+                        privateBytes.bytes,
+                        pair.public,
+                        algorithm,
+                        now,
+                        false,
+                        userVerificationPolicy,
+                    )
+                } else if (
+                    failure.stage == SshOperationalCandidateStage.DIRECT_PRIVATE_KEY_IMPORT &&
+                    SshKeyStoragePolicy.shouldUseWrappedOperationalFallback(algorithm)
+                ) {
+                    deleteAliasOrThrow(alias)
+                    keyDao.transitionProvisioningStorageKind(
+                        id,
+                        SshStorageKind.DIRECT,
+                        SshStorageKind.WRAPPED,
+                        now,
+                    )
+                    val wrappedStrongBox = wrappedVault.shouldAttemptStrongBox()
+                    provisioning.record = provisioning.record.copy(
+                        operationalProvider = SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+                        operationalSecurityLevel = if (wrappedStrongBox) {
+                            SshStorageSecurityLevel.STRONGBOX
+                        } else {
+                            SshStorageSecurityLevel.UNKNOWN
+                        },
+                        operationalStrongBoxAttempted = wrappedStrongBox,
+                        operationalStrongBoxFallback = false,
+                    )
+                    val result = prepareWrappedOperationalEncryption(provisioning, wrappedStrongBox)
+                    if (result is SshKeyStorageResult.AuthenticationRequired) ownershipTransferred = true
+                    return result
+                } else {
+                    throw failure
+                }
             }
-            provisioning.wrappedOperationalMaterial = wrappedVault.completeProtect(prepared)
-            val result = continueSoftwareProvisioning(provisioning)
+            provisioning.record = provisioning.record.copy(
+                operationalSecurityLevel = securityLevel,
+                operationalStrongBoxFallback = fallback,
+            )
+            val result = validateOperationalOrContinue(provisioning, pair.public)
             if (result is SshKeyStorageResult.AuthenticationRequired) ownershipTransferred = true
             return result
         } finally {
@@ -1039,60 +1186,479 @@ internal class RoomSshProviderRepository(
         }
     }
 
-    private suspend fun continueSoftwareProvisioning(provisioning: PendingSshKeyProvisioning): SshKeyStorageResult {
-        val record = provisioning.record
-        val material = requireNotNull(provisioning.wrappedOperationalMaterial)
-        keyDao.addLifecycleCandidate(SshKeyLifecycleCandidateEntity(record.providerKeyId, SshLifecycleCandidatePurpose.OPERATIONAL, record.keyAlias, material.ciphertext.copyOf(), material.nonce.copyOf(), material.securityLevel.toToken()))
-        val opened = wrappedVault.prepareUnwrap(record.keyAlias, record.providerKeyId, material.ciphertext, material.nonce, record.algorithm, record.publicHash, material.securityLevel, record.userVerificationPolicy)
-        wrappedVault.completeUnwrap(opened).use { bytes -> require(MessageDigest.isEqual(bytes.bytes, requireNotNull(provisioning.privateKeyPkcs8).bytes)) }
-        val exportPolicy = provisioning.exportCopyBackendPolicy
-        if (exportPolicy != null && provisioning.exportMaterial == null) {
-            val exportPrepared = exportVault.prepareProtect(record.providerKeyId, requireNotNull(provisioning.privateKeyPkcs8), record.algorithm, record.publicHash, exportVault.shouldAttemptStrongBox(exportPolicy))
-            // Export-copy AES keys always require per-use biometric/device-credential authorization,
-            // independently of the operational signing-key verification policy. Completing this cipher
-            // directly makes Keystore reject updateAAD with KEY_USER_NOT_AUTHENTICATED.
-            return SshKeyStorageResult.AuthenticationRequired(
-                PreparedSshKeyStorage(
-                    exportPrepared.cipher,
-                    null,
-                    SshAuthenticationPolicy.EXPORT_PROMPT_AUTHENTICATORS,
-                    this,
-                    0,
-                    provisioning,
-                    PreparedStorageStage.ExportEncrypt(
-                        exportPrepared,
-                        exportPrepared.securityLevel == SshStorageSecurityLevel.STRONGBOX,
-                    ),
-                ),
-            )
+    private suspend fun completeWrappedOperationalEncryption(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage.OperationalWrapEncrypt,
+        authenticatedCipher: Cipher,
+    ): SshKeyStorageResult {
+        provisioning.wrappedOperationalMaterial = try {
+            wrappedVault.completeProtect(stage.protection, authenticatedCipher)
+        } catch (failure: SshWrappedOperationalOperationException) {
+            if (stage.strongBox && failure.strongBox) return retryWrappedOperationalWithDefault(provisioning)
+            throw failure
         }
-        return finalizeSoftwareProvisioning(provisioning)
+        return persistAndValidateWrappedOperational(provisioning, stage.strongBox)
     }
 
-    private suspend fun finalizeSoftwareProvisioning(provisioning: PendingSshKeyProvisioning): SshKeyStorageResult.Stored {
+    private suspend fun prepareWrappedOperationalEncryption(
+        provisioning: PendingSshKeyProvisioning,
+        strongBox: Boolean,
+    ): SshKeyStorageResult {
         val record = provisioning.record
-        val op = SshOperationalKeyEntity(record.providerKeyId, record.keyAlias, record.operationalSecurityLevel.toToken(), record.userVerificationPolicy.toToken(), false, false, record.createdAt)
+        val prepared = try {
+            wrappedVault.prepareProtect(
+                record.keyAlias,
+                record.providerKeyId,
+                requireNotNull(provisioning.privateKeyPkcs8),
+                record.algorithm,
+                record.publicHash,
+                strongBox,
+                record.userVerificationPolicy,
+            )
+        } catch (failure: SshOperationalCandidateException) {
+            if (strongBox && failure.strongBox) return retryWrappedOperationalWithDefault(provisioning)
+            throw failure
+        }
+        provisioning.record = record.copy(operationalSecurityLevel = prepared.securityLevel)
+        val stage = PreparedStorageStage.OperationalWrapEncrypt(prepared, strongBox)
+        return if (record.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+            authenticationRequired(
+                provisioning,
+                stage,
+                prepared.cipher,
+                SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,
+            )
+        } else {
+            completeWrappedOperationalEncryption(provisioning, stage, prepared.cipher)
+        }
+    }
+
+    private suspend fun persistAndValidateWrappedOperational(
+        provisioning: PendingSshKeyProvisioning,
+        strongBox: Boolean,
+    ): SshKeyStorageResult {
+        val record = provisioning.record
         val material = requireNotNull(provisioning.wrappedOperationalMaterial)
-        val export = provisioning.exportMaterial?.let { m -> SshExportCopyEntity(record.providerKeyId, exportVault.alias(record.providerKeyId, m.securityLevel == SshStorageSecurityLevel.STRONGBOX), m.ciphertext.copyOf(), m.nonce.copyOf(), m.securityLevel.toToken(), (provisioning.exportCopyBackendPolicy ?: SshExportCopyBackendPolicy.BEST_AVAILABLE).toToken(), SshExportAuthenticationToken.STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE, m.securityLevel == SshStorageSecurityLevel.STRONGBOX, false, record.createdAt) }
-        if (export != null && keyDao.findCandidate(record.providerKeyId, SshLifecycleCandidatePurpose.EXPORT) == null) {
-            keyDao.addLifecycleCandidate(
-                SshKeyLifecycleCandidateEntity(
-                    record.providerKeyId,
-                    SshLifecycleCandidatePurpose.EXPORT,
-                    export.keyAlias,
-                    export.privateKeyCiphertext.copyOf(),
-                    export.privateKeyNonce.copyOf(),
-                    export.securityLevel,
+        keyDao.addLifecycleCandidate(
+            SshKeyLifecycleCandidateEntity(
+                record.providerKeyId,
+                SshLifecycleCandidatePurpose.OPERATIONAL,
+                record.keyAlias,
+                material.ciphertext.copyOf(),
+                material.nonce.copyOf(),
+                material.securityLevel.toToken(),
+            ),
+        )
+        val opened = try {
+            wrappedVault.prepareUnwrap(
+                record.keyAlias,
+                record.providerKeyId,
+                material.ciphertext,
+                material.nonce,
+                record.algorithm,
+                record.publicHash,
+                material.securityLevel,
+                record.userVerificationPolicy,
+            )
+        } catch (failure: SshOperationalCandidateException) {
+            if (strongBox && failure.strongBox) return retryWrappedOperationalWithDefault(provisioning)
+            throw failure
+        }
+        val stage = PreparedStorageStage.OperationalWrapDecrypt(opened, material, strongBox)
+        return if (record.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+            authenticationRequired(
+                provisioning,
+                stage,
+                opened.cipher,
+                SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,
+            )
+        } else {
+            completeWrappedOperationalValidation(provisioning, stage, opened.cipher)
+        }
+    }
+
+    private suspend fun completeWrappedOperationalValidation(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage.OperationalWrapDecrypt,
+        authenticatedCipher: Cipher,
+    ): SshKeyStorageResult {
+        val decrypted = try {
+            wrappedVault.completeUnwrap(stage.unwrap, authenticatedCipher)
+        } catch (failure: SshWrappedOperationalOperationException) {
+            if (stage.strongBox && failure.strongBox) return retryWrappedOperationalWithDefault(provisioning)
+            throw failure
+        }
+        decrypted.use { candidate ->
+            val original = requireNotNull(provisioning.privateKeyPkcs8).bytes
+            check(MessageDigest.isEqual(candidate.bytes, original)) {
+                "Wrapped SSH operational key did not reproduce the original private key"
+            }
+            selfTestSoftware(
+                softwarePrivateKey(provisioning.record.algorithm, candidate.bytes),
+                requireNotNull(provisioning.sourcePublicKey),
+                provisioning.record.algorithm,
+            )
+        }
+        return continueAfterOperationalValidation(provisioning)
+    }
+
+    private suspend fun retryWrappedOperationalWithDefault(
+        provisioning: PendingSshKeyProvisioning,
+    ): SshKeyStorageResult {
+        provisioning.wrappedOperationalMaterial?.ciphertext?.fill(0)
+        provisioning.wrappedOperationalMaterial?.nonce?.fill(0)
+        provisioning.wrappedOperationalMaterial = null
+        wrappedVault.delete(provisioning.record.keyAlias)
+        keyDao.deleteLifecycleCandidate(
+            provisioning.record.providerKeyId,
+            SshLifecycleCandidatePurpose.OPERATIONAL,
+        )
+        provisioning.record = provisioning.record.copy(
+            operationalSecurityLevel = SshStorageSecurityLevel.UNKNOWN,
+            operationalStrongBoxFallback = true,
+        )
+        return prepareWrappedOperationalEncryption(provisioning, false)
+    }
+
+    private suspend fun validateOperationalOrContinue(
+        provisioning: PendingSshKeyProvisioning,
+        publicKey: PublicKey,
+    ): SshKeyStorageResult {
+        val record = provisioning.record
+        val privateKey = try {
+            loadPrivateKey(record.keyAlias)
+        } catch (failure: Exception) {
+            if (record.isActiveStrongBoxCandidate()) return retryOperationalWithDefault(provisioning)
+            throw SshOperationalOperationException(failure)
+        }
+        return if (record.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
+            val challenge = ByteArray(32).also(RANDOM::nextBytes)
+            val signature = try {
+                SshKeystoreJca.signature(record.algorithm.selfTestMethod().jcaName).apply {
+                    initSign(privateKey)
+                }
+            } catch (failure: Exception) {
+                challenge.fill(0)
+                if (record.isActiveStrongBoxCandidate()) return retryOperationalWithDefault(provisioning)
+                throw SshOperationalOperationException(failure)
+            }
+            signatureAuthenticationRequired(
+                provisioning,
+                PreparedStorageStage.OperationalSelfTest(
+                    signature,
+                    challenge,
+                    publicKey,
+                    record.isActiveStrongBoxCandidate(),
                 ),
+                signature,
+            )
+        } else {
+            try {
+                selfTestOperational(privateKey, publicKey, record.algorithm)
+            } catch (failure: SshOperationalOperationException) {
+                if (record.isActiveStrongBoxCandidate()) return retryOperationalWithDefault(provisioning)
+                throw failure
+            }
+            continueAfterOperationalValidation(provisioning)
+        }
+    }
+
+    private suspend fun completeOperationalSelfTest(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage.OperationalSelfTest,
+        authenticatedSignature: Signature,
+    ): SshKeyStorageResult {
+        require(authenticatedSignature === stage.signature) { "SSH operational signing operation changed" }
+        val rawSignature = try {
+            authenticatedSignature.update(stage.challenge)
+            authenticatedSignature.sign()
+        } catch (failure: Exception) {
+            stage.challenge.fill(0)
+            if (stage.strongBox) return retryOperationalWithDefault(provisioning)
+            throw SshOperationalOperationException(failure)
+        }
+        try {
+            check(
+                verifySelfTest(
+                    stage.publicKey,
+                    provisioning.record.algorithm,
+                    stage.challenge,
+                    rawSignature,
+                ),
+            ) { "Android Keystore SSH signing key failed its authenticated self-test" }
+        } finally {
+            stage.challenge.fill(0)
+            rawSignature.fill(0)
+        }
+        return continueAfterOperationalValidation(provisioning)
+    }
+
+    private suspend fun retryOperationalWithDefault(
+        provisioning: PendingSshKeyProvisioning,
+    ): SshKeyStorageResult {
+        val old = provisioning.record
+        deleteAliasOrThrow(old.keyAlias)
+        val publicKey: PublicKey
+        val securityLevel: SshStorageSecurityLevel
+        val privateBytes = provisioning.privateKeyPkcs8
+        if (privateBytes != null) {
+            publicKey = requireNotNull(provisioning.sourcePublicKey)
+            securityLevel = installOperationalKey(
+                old.keyAlias,
+                privateBytes.bytes,
+                publicKey,
+                old.algorithm,
+                old.createdAt,
+                false,
+                old.userVerificationPolicy,
+            )
+        } else {
+            val candidate = generateOperationalKeyPair(
+                old.algorithm,
+                old.keyAlias,
+                false,
+                old.userVerificationPolicy,
+                provisioning.rsaKeySizeBits,
+            )
+            publicKey = candidate.pair.public
+            securityLevel = candidate.securityLevel
+            val publicBlob = SshPublicKeyCodec.encode(publicKey, old.algorithm.toCoreType())
+            provisioning.record = old.copy(
+                publicBlob = publicBlob,
+                publicHash = sha256(publicBlob),
+            )
+        }
+        provisioning.record = provisioning.record.copy(
+            operationalSecurityLevel = securityLevel,
+            operationalStrongBoxFallback = true,
+        )
+        return validateOperationalOrContinue(provisioning, publicKey)
+    }
+
+    private fun PendingSshKeyRecord.isActiveStrongBoxCandidate(): Boolean =
+        operationalStrongBoxAttempted &&
+            !operationalStrongBoxFallback &&
+            operationalSecurityLevel == SshStorageSecurityLevel.STRONGBOX
+
+    private suspend fun continueAfterOperationalValidation(
+        provisioning: PendingSshKeyProvisioning,
+    ): SshKeyStorageResult {
+        val exportPolicy = provisioning.exportCopyBackendPolicy
+        return if (exportPolicy == null) {
+            finalizeProvisioning(provisioning)
+        } else {
+            prepareExportEncryption(provisioning, exportVault.shouldAttemptStrongBox(exportPolicy))
+        }
+    }
+
+    private suspend fun prepareExportEncryption(
+        provisioning: PendingSshKeyProvisioning,
+        strongBox: Boolean,
+    ): SshKeyStorageResult.AuthenticationRequired {
+        val record = provisioning.record
+        if (strongBox) provisioning.exportStrongBoxAttempted = true
+        val prepared = try {
+            exportVault.prepareProtect(
+                record.providerKeyId,
+                requireNotNull(provisioning.privateKeyPkcs8),
+                record.algorithm,
+                record.publicHash,
+                strongBox,
+            )
+        } catch (failure: SshExportCandidateException) {
+            if (strongBox && failure.strongBox) return retryExportWithDefault(provisioning)
+            throw failure
+        }
+        return authenticationRequired(
+            provisioning,
+            PreparedStorageStage.ExportEncrypt(prepared, strongBox),
+            prepared.cipher,
+            SshAuthenticationPolicy.EXPORT_PROMPT_AUTHENTICATORS,
+        )
+    }
+
+    private suspend fun completeExportEncryption(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage.ExportEncrypt,
+        authenticatedCipher: Cipher,
+    ): SshKeyStorageResult {
+        val material = try {
+            exportVault.completeProtect(stage.protection, authenticatedCipher)
+        } catch (failure: SshExportOperationException) {
+            if (stage.strongBox && failure.strongBox) return retryExportWithDefault(provisioning)
+            throw failure
+        }
+        provisioning.exportMaterial = material
+        keyDao.addLifecycleCandidate(
+            SshKeyLifecycleCandidateEntity(
+                provisioning.record.providerKeyId,
+                SshLifecycleCandidatePurpose.EXPORT,
+                exportVault.alias(provisioning.record.providerKeyId, stage.strongBox),
+                material.ciphertext.copyOf(),
+                material.nonce.copyOf(),
+                material.securityLevel.toToken(),
+            ),
+        )
+        return prepareExportValidation(provisioning, material, stage.strongBox)
+    }
+
+    private suspend fun prepareExportValidation(
+        provisioning: PendingSshKeyProvisioning,
+        material: ProtectedSshKeyMaterial,
+        strongBox: Boolean,
+    ): SshKeyStorageResult.AuthenticationRequired {
+        val record = provisioning.record
+        val opened = try {
+            exportVault.prepareUnwrap(
+                record.providerKeyId,
+                material.ciphertext,
+                material.nonce,
+                record.algorithm,
+                record.publicHash,
+                material.securityLevel,
+                strongBoxCandidate = strongBox,
+            )
+        } catch (failure: SshExportCandidateException) {
+            if (strongBox && failure.strongBox) return retryExportWithDefault(provisioning)
+            throw failure
+        }
+        return authenticationRequired(
+            provisioning,
+            PreparedStorageStage.ExportDecrypt(opened, material, strongBox),
+            opened.cipher,
+            SshAuthenticationPolicy.EXPORT_PROMPT_AUTHENTICATORS,
+        )
+    }
+
+    private suspend fun completeExportValidation(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage.ExportDecrypt,
+        authenticatedCipher: Cipher,
+    ): SshKeyStorageResult {
+        val decrypted = try {
+            exportVault.completeUnwrap(stage.unwrap, authenticatedCipher)
+        } catch (failure: SshExportOperationException) {
+            if (stage.strongBox && failure.strongBox) return retryExportWithDefault(provisioning)
+            throw failure
+        }
+        decrypted.use { candidate ->
+            val original = requireNotNull(provisioning.privateKeyPkcs8).bytes
+            check(MessageDigest.isEqual(candidate.bytes, original)) {
+                "SSH export copy did not reproduce the original private key"
+            }
+            selfTestSoftware(
+                softwarePrivateKey(provisioning.record.algorithm, candidate.bytes),
+                requireNotNull(provisioning.sourcePublicKey),
+                provisioning.record.algorithm,
+            )
+        }
+        return finalizeProvisioning(provisioning)
+    }
+
+    private suspend fun retryExportWithDefault(
+        provisioning: PendingSshKeyProvisioning,
+    ): SshKeyStorageResult.AuthenticationRequired {
+        provisioning.exportMaterial?.ciphertext?.fill(0)
+        provisioning.exportMaterial?.nonce?.fill(0)
+        provisioning.exportMaterial = null
+        exportVault.deleteCandidate(provisioning.record.providerKeyId, true)
+        keyDao.deleteLifecycleCandidate(
+            provisioning.record.providerKeyId,
+            SshLifecycleCandidatePurpose.EXPORT,
+        )
+        provisioning.exportStrongBoxFallback = true
+        return prepareExportEncryption(provisioning, false)
+    }
+
+    private fun authenticationRequired(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage,
+        cipher: Cipher,
+        promptAuthenticators: Int,
+    ) = SshKeyStorageResult.AuthenticationRequired(
+        PreparedSshKeyStorage(
+            cipher,
+            null,
+            promptAuthenticators,
+            this,
+            0,
+            provisioning,
+            stage,
+        ),
+    )
+
+    private fun signatureAuthenticationRequired(
+        provisioning: PendingSshKeyProvisioning,
+        stage: PreparedStorageStage,
+        signature: Signature,
+    ) = SshKeyStorageResult.AuthenticationRequired(
+        PreparedSshKeyStorage(
+            null,
+            signature,
+            SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,
+            this,
+            0,
+            provisioning,
+            stage,
+        ),
+    )
+
+    private fun closePreparedStorageStage(stage: PreparedStorageStage) {
+        when (stage) {
+            is PreparedStorageStage.OperationalSelfTest -> stage.challenge.fill(0)
+            is PreparedStorageStage.OperationalWrapEncrypt -> stage.protection.close()
+            is PreparedStorageStage.OperationalWrapDecrypt -> stage.unwrap.close()
+            is PreparedStorageStage.ExportEncrypt -> stage.protection.close()
+            is PreparedStorageStage.ExportDecrypt -> stage.unwrap.close()
+        }
+    }
+
+    private suspend fun finalizeProvisioning(provisioning: PendingSshKeyProvisioning): SshKeyStorageResult.Stored {
+        val record = provisioning.record
+        val op = SshOperationalKeyEntity(record.providerKeyId, record.keyAlias, record.operationalSecurityLevel.toToken(), record.userVerificationPolicy.toToken(), record.operationalStrongBoxAttempted, record.operationalStrongBoxFallback, record.createdAt)
+        val export = provisioning.exportMaterial?.let { material ->
+            SshExportCopyEntity(
+                record.providerKeyId,
+                exportVault.alias(
+                    record.providerKeyId,
+                    provisioning.exportStrongBoxAttempted && !provisioning.exportStrongBoxFallback,
+                ),
+                material.ciphertext.copyOf(),
+                material.nonce.copyOf(),
+                material.securityLevel.toToken(),
+                requireNotNull(provisioning.exportCopyBackendPolicy).toToken(),
+                SshExportAuthenticationToken.STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE,
+                provisioning.exportStrongBoxAttempted,
+                provisioning.exportStrongBoxFallback,
+                record.createdAt,
             )
         }
         val key = SshKeyEntity(record.providerKeyId, record.publicBlob.copyOf(), record.publicHash.copyOf(), record.algorithm.toToken(), record.displayName, record.origin.toToken(), SshApprovalPolicyToken.ALWAYS_ASK, record.createdAt, record.expiresAt, record.createdAt)
-        keyDao.finalizeWrappedProvisioning(key, op, SshWrappedOperationalMaterialEntity(record.providerKeyId, material.ciphertext.copyOf(), material.nonce.copyOf()), export, nextProviderState(record.createdAt))
+        val wrapped = record.operationalProvider == SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED
+        if (wrapped) {
+            val material = requireNotNull(provisioning.wrappedOperationalMaterial)
+            keyDao.finalizeWrappedProvisioning(
+                key,
+                op,
+                SshWrappedOperationalMaterialEntity(
+                    record.providerKeyId,
+                    material.ciphertext.copyOf(),
+                    material.nonce.copyOf(),
+                ),
+                export,
+                nextProviderState(record.createdAt),
+            )
+        } else {
+            check(provisioning.wrappedOperationalMaterial == null) {
+                "Direct SSH provisioning retained wrapped operational material"
+            }
+            keyDao.finalizeDirectProvisioning(key, op, export, nextProviderState(record.createdAt))
+        }
         provisioning.finished = true
         provisioning.close()
         bumpChange()
         return SshKeyStorageResult.Stored(
-            key.toDescriptor(op, wrapped = true, export = export, namespaces = emptyList()),
+            key.toDescriptor(op, wrapped = wrapped, export = export, namespaces = emptyList()),
         )
     }
 
@@ -1418,30 +1984,326 @@ internal class RoomSshProviderRepository(
     private fun randomId(): String = ByteArray(16).also(RANDOM::nextBytes).joinToString("") { "%02x".format(it) }
     private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
     private fun ByteArray.contentKey(): String = joinToString("") { "%02x".format(it) }
-    private fun deleteAlias(alias: String): Boolean = runCatching {
+    private fun deleteAliasOrThrow(alias: String): Boolean {
         val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         val existed = store.containsAlias(alias)
         if (existed) store.deleteEntry(alias)
-        existed
-    }.getOrDefault(false)
+        return existed
+    }
+    private fun deleteAlias(alias: String): Boolean = runCatching { deleteAliasOrThrow(alias) }.getOrDefault(false)
     private fun loadPrivateKey(alias: String): PrivateKey = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.getKey(alias, null) as? PrivateKey ?: error("SSH key alias is unavailable")
     private fun softwarePrivateKey(algorithm: SshKeyAlgorithm, bytes: ByteArray): PrivateKey =
         KeyFactory.getInstance(algorithm.toKeyFactory(), SOFTWARE_PROVIDER).generatePrivate(PKCS8EncodedKeySpec(bytes))
     private fun generateSoftwarePair(algorithm: SshKeyAlgorithm, rsaBits: Int): KeyPair =
         generateSoftwareSshKeyPair(algorithm, rsaBits)
-    private fun generateAndroidKeyPair(algorithm: SshKeyAlgorithm, alias: String, strongBox: Boolean, verification: SshUserVerificationPolicy, rsaBits: Int): KeyPair {
-        val builder = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN)
-        when (algorithm) {
-            SshKeyAlgorithm.SSH_ED25519 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("ed25519")).setDigests(KeyProperties.DIGEST_NONE)
-            SshKeyAlgorithm.SSH_RSA -> builder.setKeySize(rsaBits).setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512).setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
-            SshKeyAlgorithm.ECDSA_NISTP256 -> builder.setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1")).setDigests(KeyProperties.DIGEST_SHA256)
+    private fun generateOperationalKeyPair(
+        algorithm: SshKeyAlgorithm,
+        alias: String,
+        strongBox: Boolean,
+        verification: SshUserVerificationPolicy,
+        rsaBits: Int,
+    ): OperationalKeyCandidate {
+        val generatorAlgorithms = if (algorithm == SshKeyAlgorithm.SSH_ED25519) {
+            listOf("Ed25519", KeyProperties.KEY_ALGORITHM_EC)
+        } else {
+            listOf(algorithm.toKeyStoreAlgorithm())
         }
-        if (strongBox) builder.setIsStrongBoxBacked(true)
-        if (verification == SshUserVerificationPolicy.PER_USE) builder.setUserAuthenticationRequired(true).setUserAuthenticationParameters(0, SshAuthenticationPolicy.SIGNING_KEY_AUTHENTICATORS)
-        return SshKeystoreJca.keyPairGenerator(if (algorithm == SshKeyAlgorithm.SSH_ED25519) "EC" else algorithm.toKeyStoreAlgorithm()).run { initialize(builder.build()); generateKeyPair() }
+        var firstFailure: Exception? = null
+        for (generatorAlgorithm in generatorAlgorithms) {
+            check(!KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.containsAlias(alias)) {
+                "SSH operational alias already exists"
+            }
+            try {
+                val pair = generateAndroidKeyPair(
+                    algorithm,
+                    generatorAlgorithm,
+                    alias,
+                    strongBox,
+                    verification,
+                    rsaBits,
+                )
+                validateOperationalPublicKey(pair.public, algorithm)
+                val level = inspectKeyInfo(pair.private, algorithm, verification)
+                if (strongBox) {
+                    check(level == SshStorageSecurityLevel.STRONGBOX) {
+                        "Android Keystore did not honor the requested SSH signing StrongBox backend"
+                    }
+                }
+                return OperationalKeyCandidate(pair, level)
+            } catch (failure: Exception) {
+                runCatching { deleteAliasOrThrow(alias) }.exceptionOrNull()?.let { deletionFailure ->
+                    failure.addSuppressed(deletionFailure)
+                    throw SshOperationalCandidateException(strongBox, failure)
+                }
+                if (firstFailure == null) firstFailure = failure else firstFailure?.addSuppressed(failure)
+            }
+        }
+        throw SshOperationalCandidateException(strongBox, requireNotNull(firstFailure))
     }
-    private fun selfTestSoftware(privateKey: PrivateKey, publicKey: PublicKey, algorithm: SshKeyAlgorithm) { val data = ByteArray(32).also(RANDOM::nextBytes); val sig = signSoftwareRaw(algorithm.selfTestMethod(), privateKey, data); require(verifySelfTest(publicKey, algorithm, data, sig)); data.fill(0); sig.fill(0) }
-    private fun verifySelfTest(publicKey: PublicKey, algorithm: SshKeyAlgorithm, data: ByteArray, sig: ByteArray): Boolean = Signature.getInstance(algorithm.selfTestMethod().jcaName, SOFTWARE_PROVIDER).run { initVerify(publicKey); update(data); verify(sig) }
+
+    private fun generateAndroidKeyPair(
+        algorithm: SshKeyAlgorithm,
+        generatorAlgorithm: String,
+        alias: String,
+        strongBox: Boolean,
+        verification: SshUserVerificationPolicy,
+        rsaBits: Int,
+    ): KeyPair {
+        val builder = KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN).apply {
+            when (algorithm) {
+                SshKeyAlgorithm.SSH_ED25519 -> {
+                    setAlgorithmParameterSpec(ECGenParameterSpec("ed25519"))
+                    setDigests(KeyProperties.DIGEST_NONE)
+                }
+                SshKeyAlgorithm.SSH_RSA -> {
+                    setKeySize(rsaBits)
+                    setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+                    setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                }
+                SshKeyAlgorithm.ECDSA_NISTP256 -> {
+                    setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
+                    setDigests(KeyProperties.DIGEST_SHA256)
+                }
+            }
+            if (strongBox) setIsStrongBoxBacked(true)
+            if (verification == SshUserVerificationPolicy.PER_USE) {
+                setUserAuthenticationRequired(true)
+                setUserAuthenticationParameters(0, SshAuthenticationPolicy.SIGNING_KEY_AUTHENTICATORS)
+            }
+        }
+        return SshKeystoreJca.keyPairGenerator(generatorAlgorithm).run {
+            initialize(builder.build())
+            generateKeyPair()
+        }
+    }
+
+    private fun installOperationalKey(
+        alias: String,
+        privateKeyPkcs8: ByteArray,
+        publicKey: PublicKey,
+        algorithm: SshKeyAlgorithm,
+        at: Long,
+        strongBox: Boolean,
+        verification: SshUserVerificationPolicy,
+    ): SshStorageSecurityLevel {
+        val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        check(!store.containsAlias(alias)) { "SSH operational alias already exists" }
+        validateOperationalPublicKey(publicKey, algorithm)
+        // Source parsing and certificate construction are application invariants. Failures here must not be
+        // misclassified as evidence that a StrongBox import is unsupported.
+        val privateKey = softwarePrivateKey(algorithm, privateKeyPkcs8)
+        val certificate = createContainerCertificate(privateKey, publicKey, algorithm, at)
+        try {
+            installAndroidKeyStoreEntry(alias, privateKey, certificate, algorithm, strongBox, verification)
+        } catch (failure: Exception) {
+            runCatching { deleteAliasOrThrow(alias) }.exceptionOrNull()?.let(failure::addSuppressed)
+            throw SshOperationalCandidateException(
+                strongBox,
+                failure,
+                SshOperationalCandidateStage.DIRECT_PRIVATE_KEY_IMPORT,
+            )
+        }
+        try {
+            store.load(null)
+            val installed = store.getKey(alias, null) as? PrivateKey
+                ?: error("Imported Android Keystore SSH key is unavailable")
+            check(installed.encoded == null) { "Android Keystore SSH signing key is unexpectedly exportable" }
+            val level = inspectKeyInfo(installed, algorithm, verification)
+            if (strongBox) {
+                check(level == SshStorageSecurityLevel.STRONGBOX) {
+                    "Android Keystore did not honor the requested SSH signing StrongBox backend"
+                }
+            }
+            return level
+        } catch (failure: Exception) {
+            runCatching { deleteAliasOrThrow(alias) }.exceptionOrNull()?.let(failure::addSuppressed)
+            throw SshOperationalCandidateException(strongBox, cause = failure)
+        }
+    }
+
+    private fun installAndroidKeyStoreEntry(
+        alias: String,
+        privateKey: PrivateKey,
+        certificate: Certificate,
+        algorithm: SshKeyAlgorithm,
+        strongBox: Boolean,
+        verification: SshUserVerificationPolicy,
+    ) {
+        val protection = KeyProtection.Builder(KeyProperties.PURPOSE_SIGN).apply {
+            when (algorithm) {
+                SshKeyAlgorithm.SSH_ED25519 -> setDigests(KeyProperties.DIGEST_NONE)
+                SshKeyAlgorithm.SSH_RSA -> {
+                    setDigests(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+                    setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
+                }
+                SshKeyAlgorithm.ECDSA_NISTP256 -> setDigests(KeyProperties.DIGEST_SHA256)
+            }
+            if (strongBox) setIsStrongBoxBacked(true)
+            if (verification == SshUserVerificationPolicy.PER_USE) {
+                setUserAuthenticationRequired(true)
+                setUserAuthenticationParameters(0, SshAuthenticationPolicy.SIGNING_KEY_AUTHENTICATORS)
+            }
+        }.build()
+        KeyStore.getInstance("AndroidKeyStore").apply { load(null) }.setEntry(
+            alias,
+            KeyStore.PrivateKeyEntry(privateKey, arrayOf(certificate)),
+            protection,
+        )
+    }
+
+    private fun createContainerCertificate(
+        privateKey: PrivateKey,
+        publicKey: PublicKey,
+        algorithm: SshKeyAlgorithm,
+        at: Long,
+    ): Certificate {
+        val subject = X500Name("CN=NotiSync SSH key container")
+        val signer = JcaContentSignerBuilder(
+            when (algorithm) {
+                SshKeyAlgorithm.SSH_ED25519 -> "Ed25519"
+                SshKeyAlgorithm.SSH_RSA -> "SHA256withRSA"
+                SshKeyAlgorithm.ECDSA_NISTP256 -> "SHA256withECDSA"
+            },
+        ).setProvider(SOFTWARE_PROVIDER).build(privateKey)
+        val holder = JcaX509v3CertificateBuilder(
+            subject,
+            BigInteger(128, RANDOM).abs().max(BigInteger.ONE),
+            Date(at - CERTIFICATE_CLOCK_SKEW_MILLIS),
+            Date(at + CERTIFICATE_VALIDITY_MILLIS),
+            subject,
+            publicKey,
+        ).build(signer)
+        return JcaX509CertificateConverter().setProvider(SOFTWARE_PROVIDER).getCertificate(holder).also {
+            it.checkValidity(Date(at))
+            it.verify(publicKey)
+        }
+    }
+
+    private fun inspectKeyInfo(
+        privateKey: PrivateKey,
+        algorithm: SshKeyAlgorithm,
+        verification: SshUserVerificationPolicy,
+    ): SshStorageSecurityLevel {
+        val info = if (algorithm == SshKeyAlgorithm.SSH_ED25519) {
+            var found: KeyInfo? = null
+            var firstFailure: Exception? = null
+            for (factoryAlgorithm in listOf("Ed25519", "ED25519")) {
+                try {
+                    found = SshKeystoreJca.keyFactory(factoryAlgorithm)
+                        .getKeySpec(privateKey, KeyInfo::class.java)
+                    break
+                } catch (failure: Exception) {
+                    if (firstFailure == null) firstFailure = failure else firstFailure?.addSuppressed(failure)
+                }
+            }
+            found ?: throw IllegalStateException("Android Keystore exposes no Ed25519 KeyFactory", firstFailure)
+        } else {
+            SshKeystoreJca.keyFactory(algorithm.toKeyStoreAlgorithm())
+                .getKeySpec(privateKey, KeyInfo::class.java)
+        }
+        check(info.purposes and KeyProperties.PURPOSE_SIGN != 0) { "Android Keystore SSH key cannot sign" }
+        val requiredDigests = when (algorithm) {
+            SshKeyAlgorithm.SSH_ED25519 -> setOf(KeyProperties.DIGEST_NONE)
+            SshKeyAlgorithm.SSH_RSA -> setOf(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
+            SshKeyAlgorithm.ECDSA_NISTP256 -> setOf(KeyProperties.DIGEST_SHA256)
+        }
+        check(info.digests.toSet().containsAll(requiredDigests)) {
+            "Android Keystore did not authorize the required SSH signature digest"
+        }
+        when (verification) {
+            SshUserVerificationPolicy.NONE -> check(!info.isUserAuthenticationRequired) {
+                "Android Keystore unexpectedly requires SSH user authentication"
+            }
+            SshUserVerificationPolicy.PER_USE -> {
+                check(info.isUserAuthenticationRequired) {
+                    "Android Keystore did not bind SSH user authentication"
+                }
+                check(info.userAuthenticationValidityDurationSeconds == 0) {
+                    "Android Keystore did not bind SSH authentication to every use"
+                }
+                check(info.userAuthenticationType and KeyProperties.AUTH_BIOMETRIC_STRONG != 0) {
+                    "Android Keystore did not bind strong-biometric SSH authentication"
+                }
+            }
+        }
+        return info.securityLevel.toSshStorageSecurityLevel()
+    }
+
+    private fun validateOperationalPublicKey(publicKey: PublicKey, algorithm: SshKeyAlgorithm) {
+        SshPublicKeyCodec.encode(publicKey, algorithm.toCoreType())
+        if (algorithm == SshKeyAlgorithm.SSH_ED25519) {
+            val encoded = requireNotNull(publicKey.encoded) { "Ed25519 public key is not encodable" }
+            val spki = org.bouncycastle.asn1.x509.SubjectPublicKeyInfo.getInstance(encoded)
+            check(spki.algorithm.algorithm.id == ED25519_OID) { "Android Keystore did not create Ed25519" }
+            check(spki.publicKeyData.bytes.size == ED25519_PUBLIC_KEY_BYTES) {
+                "Android Keystore returned an invalid Ed25519 public key"
+            }
+        }
+    }
+
+    private fun selfTestOperational(
+        privateKey: PrivateKey,
+        publicKey: PublicKey,
+        algorithm: SshKeyAlgorithm,
+    ) {
+        val data = ByteArray(32).also(RANDOM::nextBytes)
+        val rawSignature = try {
+            SshKeystoreJca.signature(algorithm.selfTestMethod().jcaName).run {
+                initSign(privateKey)
+                update(data)
+                sign()
+            }
+        } catch (failure: Exception) {
+            data.fill(0)
+            throw SshOperationalOperationException(failure)
+        }
+        try {
+            check(verifySelfTest(publicKey, algorithm, data, rawSignature)) {
+                "Android Keystore SSH signing key failed its self-test"
+            }
+        } finally {
+            data.fill(0)
+            rawSignature.fill(0)
+        }
+    }
+
+    private fun selfTestSoftware(privateKey: PrivateKey, publicKey: PublicKey, algorithm: SshKeyAlgorithm) {
+        val data = ByteArray(32).also(RANDOM::nextBytes)
+        val signature = signSoftwareRaw(algorithm.selfTestMethod(), privateKey, data)
+        try {
+            check(verifySelfTest(publicKey, algorithm, data, signature)) {
+                "Imported SSH private key does not match its public key"
+            }
+        } finally {
+            data.fill(0)
+            signature.fill(0)
+        }
+    }
+
+    private fun verifySelfTest(
+        publicKey: PublicKey,
+        algorithm: SshKeyAlgorithm,
+        data: ByteArray,
+        signature: ByteArray,
+    ): Boolean {
+        val verificationKey = if (algorithm == SshKeyAlgorithm.SSH_ED25519) {
+            KeyFactory.getInstance("Ed25519", SOFTWARE_PROVIDER).generatePublic(
+                X509EncodedKeySpec(requireNotNull(publicKey.encoded) { "Ed25519 public key is not encodable" }),
+            )
+        } else {
+            publicKey
+        }
+        val verifier = if (algorithm == SshKeyAlgorithm.SSH_ED25519) {
+            Signature.getInstance(algorithm.selfTestMethod().jcaName, SOFTWARE_PROVIDER)
+        } else {
+            Signature.getInstance(algorithm.selfTestMethod().jcaName)
+        }
+        return verifier.run {
+            initVerify(verificationKey)
+            update(data)
+            verify(signature)
+        }
+    }
     private fun signSoftwareRaw(method: SshSignatureMethod, privateKey: PrivateKey, data: ByteArray): ByteArray = Signature.getInstance(method.jcaName, SOFTWARE_PROVIDER).run { initSign(privateKey); update(data); sign() }
     private fun signatureMethod(request: SshSignRequest): SshSignatureMethod = SshSignatureVerifier.methodFor(SshPublicKeyCodec.decode(request.publicKeyBlob).type, request.flags, false).also { require(it.toProtocol() == request.requestedSignatureAlgorithm) }
     private fun signedResult(request: SshSignRequest, provider: ClientId, at: Long, disposition: SshRememberDisposition, method: SshSignatureMethod, raw: ByteArray) = SshSignResult(
@@ -1708,12 +2570,23 @@ internal class RoomSshProviderRepository(
         val hostKeySha256: ByteArray?,
     )
 
+    private data class OperationalKeyCandidate(
+        val pair: KeyPair,
+        val securityLevel: SshStorageSecurityLevel,
+    )
+
     private fun net.extrawdw.notisync.ssh.core.SshKeyType.toProtocolAlgorithm(): SshKeyAlgorithm = when (this) {
         SshKeyType.ED25519 -> SshKeyAlgorithm.SSH_ED25519
         SshKeyType.RSA -> SshKeyAlgorithm.SSH_RSA
         SshKeyType.ECDSA_NISTP256 -> SshKeyAlgorithm.ECDSA_NISTP256
     }
-    private companion object { val RANDOM = SecureRandom() }
+    private companion object {
+        val RANDOM = SecureRandom()
+        const val ED25519_OID = "1.3.101.112"
+        const val ED25519_PUBLIC_KEY_BYTES = 32
+        const val CERTIFICATE_CLOCK_SKEW_MILLIS = 5L * 60L * 1_000L
+        const val CERTIFICATE_VALIDITY_MILLIS = 20L * 365L * 24L * 60L * 60L * 1_000L
+    }
 }
 
 private val SOFTWARE_PROVIDER = BouncyCastleProvider()

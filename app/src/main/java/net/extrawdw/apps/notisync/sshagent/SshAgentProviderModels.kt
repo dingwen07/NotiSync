@@ -242,6 +242,11 @@ internal class SshOperationalCandidateException(
     cause,
 )
 
+internal class SshOperationalOperationException(cause: Exception) : Exception(
+    "Android Keystore SSH signing operation failed: ${cause.failureSummary()}",
+    cause,
+)
+
 internal enum class SshOperationalCandidateStage {
     DIRECT_PRIVATE_KEY_IMPORT,
     OTHER,
