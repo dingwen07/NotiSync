@@ -1,0 +1,14 @@
+# Bouncy Castle discovers these JCA mappings and service implementations by class name. R8 cannot
+# infer those reflective edges from BouncyCastleProvider.loadAlgorithms(), so a minified build can
+# otherwise construct an almost-empty "BC" provider. Keep only the asymmetric algorithms and the
+# PKCS#8/X.509 services used by the SSH key generation, import, and export paths.
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.EC$Mappings { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.EdEC$Mappings { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.RSA$Mappings { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.X509$Mappings { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.ec.** { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.edec.** { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.rsa.** { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.asymmetric.x509.** { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.symmetric.AES** { *; }
+-keep,allowoptimization class org.bouncycastle.jcajce.provider.symmetric.PBEPBKDF2** { *; }
