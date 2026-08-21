@@ -7,11 +7,13 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 import net.extrawdw.notisync.desktop.SecureFileSystem
+import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.ssh.core.AgentMessageCodec
 import net.extrawdw.notisync.ssh.core.AgentNumbers
 import net.extrawdw.notisync.ssh.core.SshAgentFrameCodec
+import net.extrawdw.notisync.sshagent.cache.CachedProviderKeyRow
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -22,6 +24,55 @@ import org.newsclub.net.unix.AFUNIXSocket
 import org.newsclub.net.unix.AFUNIXSocketAddress
 
 class UnixAgentEndpointTest {
+    @Test
+    fun `control client reads key rows from the live agent endpoint`() {
+        val files = SecureFileSystem()
+        val temporaryRoot = Path.of(System.getProperty("java.io.tmpdir")).toRealPath()
+        val directory = files.ensurePrivateDirectory(Files.createTempDirectory(temporaryRoot, "nssa-control-"))
+        val socketPath = directory.resolve("S")
+        val ready = CountDownLatch(1)
+        val failure = AtomicReference<Throwable?>()
+        val rows = listOf(
+            CachedProviderKeyRow(ClientId("provider"), "key", "SHA256:fingerprint", "Main"),
+        )
+        val endpoint = UnixAgentEndpoint(
+            socketPath,
+            { socket ->
+                assertArrayEquals(
+                    AgentKeyListingExtension.request(),
+                    SshAgentFrameCodec.read(socket.getInputStream()),
+                )
+                SshAgentFrameCodec.write(
+                    socket.getOutputStream(),
+                    AgentKeyListingExtension.response(rows),
+                )
+            },
+            maximumConnections = 2,
+        )
+        val server = Thread.ofPlatform().name("unix-agent-control-test").start {
+            runCatching { endpoint.run(ready::countDown) }.exceptionOrNull()?.let(failure::set)
+        }
+        try {
+            assertTrue("endpoint did not become ready", ready.await(5, TimeUnit.SECONDS))
+            connectAgentEndpoint(socketPath.toString()).use { connection ->
+                SshAgentFrameCodec.write(connection.output, AgentKeyListingExtension.request())
+                assertEquals(
+                    rows,
+                    AgentKeyListingExtension.decodeResponse(
+                        requireNotNull(SshAgentFrameCodec.read(connection.input)),
+                    ),
+                )
+            }
+        } finally {
+            endpoint.close()
+            server.join(5_000)
+            assertFalse("endpoint thread did not stop", server.isAlive)
+            failure.get()?.let { throw AssertionError("endpoint failed", it) }
+            assertFalse(Files.exists(socketPath, LinkOption.NOFOLLOW_LINKS))
+            Files.deleteIfExists(directory)
+        }
+    }
+
     @Test
     fun `filesystem endpoint serves SSH framing and omits unavailable Windows process details`() {
         val files = SecureFileSystem()

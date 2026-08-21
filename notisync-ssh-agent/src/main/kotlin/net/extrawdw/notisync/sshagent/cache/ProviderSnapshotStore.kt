@@ -2,6 +2,7 @@ package net.extrawdw.notisync.sshagent.cache
 
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
@@ -27,6 +28,7 @@ data class AggregateIdentity(
     val canRemember: Boolean,
 )
 
+@Serializable
 data class CachedProviderKeyRow(
     val providerClientId: ClientId,
     val providerKeyId: String,

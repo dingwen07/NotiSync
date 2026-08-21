@@ -175,11 +175,16 @@ class AgentConnectionHandler(
         is AgentRequest.Extension -> when (request.name) {
             OpenSshSessionBind.QUERY_EXTENSION_NAME -> {
                 if (request.contents.isNotEmpty()) AgentMessageCodec.extensionFailure() else {
-                    AgentMessageCodec.extensionQueryResponse(listOf(OpenSshSessionBind.EXTENSION_NAME))
+                    AgentMessageCodec.extensionQueryResponse(
+                        listOf(OpenSshSessionBind.EXTENSION_NAME, AgentKeyListingExtension.NAME),
+                    )
                 }
             }
             OpenSshSessionBind.EXTENSION_NAME -> if (destination.bind(request.contents)) {
                 AgentMessageCodec.success()
+            } else AgentMessageCodec.extensionFailure()
+            AgentKeyListingExtension.NAME -> if (request.contents.isEmpty() && !lock.isLocked()) {
+                AgentKeyListingExtension.response(snapshots.keyRows())
             } else AgentMessageCodec.extensionFailure()
             else -> AgentMessageCodec.extensionFailure()
         }
