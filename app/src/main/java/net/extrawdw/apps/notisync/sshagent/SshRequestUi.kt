@@ -114,6 +114,12 @@ internal fun StoredSshProviderRequest.displayStatus(): SshRequestDisplayStatus =
 internal fun StoredSshProviderRequest.isActiveRequest(): Boolean =
     state == SshProviderRequestState.PENDING_REVIEW || state == SshProviderRequestState.RESPONSE_PENDING_SEND
 
+internal fun StoredSshProviderRequest.shouldCloseAutoOpenedReview(autoLaunchOwned: Boolean): Boolean =
+    autoLaunchOwned && displayStatus() in setOf(
+        SshRequestDisplayStatus.CANCELED,
+        SshRequestDisplayStatus.EXPIRED,
+    )
+
 @Composable
 internal fun SshRequestListItem(
     request: StoredSshProviderRequest,

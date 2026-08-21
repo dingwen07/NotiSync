@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.notification
 
+import android.app.Activity
 import android.app.ActivityOptions
 import android.app.KeyguardManager
 import android.app.PendingIntent
@@ -7,6 +8,23 @@ import android.content.Context
 import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
+
+/** Distinguishes a system-triggered request-page launch from an ordinary notification tap. */
+internal const val ACTION_AUTO_OPEN_REQUEST_PAGE =
+    "net.extrawdw.apps.notisync.action.AUTO_OPEN_REQUEST_PAGE"
+
+internal fun isAutomaticRequestPageLaunch(action: String?): Boolean =
+    action == ACTION_AUTO_OPEN_REQUEST_PAGE
+
+internal fun retainAutomaticRequestPageOwnership(
+    currentlyAutomatic: Boolean,
+    incomingAction: String?,
+): Boolean = currentlyAutomatic && isAutomaticRequestPageLaunch(incomingAction)
+
+/** Removes a standalone request task without ever removing an unrelated task that hosts the activity. */
+internal fun Activity.finishAutoOpenedRequestPage() {
+    if (isTaskRoot) finishAndRemoveTask() else finish()
+}
 
 /**
  * Supplies the BAL opt-in needed by request-page PendingIntents on newer Android versions.

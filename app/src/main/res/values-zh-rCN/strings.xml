@@ -75,7 +75,7 @@
     <string name="ssh_agent_rsa_key_size">RSA 密钥大小</string>
     <string name="ssh_agent_export_settings">导出</string>
     <string name="ssh_agent_keep_export_backup">允许导出此密钥</string>
-    <string name="ssh_agent_export_copy_skip_strongbox">使用 Android Keystore 的默认保护机制保护导出副本</string>
+    <string name="ssh_agent_export_copy_skip_strongbox">跳过 StrongBox（使用 Android Keystore 的默认保护机制保护导出副本）</string>
     <string name="ssh_agent_export_copy_auth_help">导出私钥时需要强生物识别或设备解锁凭据。优先使用 StrongBox 来保护导出用的私钥。</string>
     <string name="ssh_agent_signing_storage">签名密钥</string>
     <string name="ssh_agent_export_auth_unavailable">导出副本需要强生物识别或设备屏幕锁定。</string>
@@ -89,8 +89,8 @@
     <string name="ssh_agent_request_unavailable">此 SSH 签名请求已不可用。</string>
     <string name="ssh_agent_storage_auth_cancelled">已取消 SSH 密钥存储。</string>
     <string name="ssh_agent_storage_auth_lost">已验证的 SSH 密钥存储操作已丢失。</string>
-    <string name="ssh_agent_generated_device_bound">在 StrongBox 或 TEE 中生成。私钥材料不会进入应用处理器或内核可访问的内存，也无法导出。</string>
-    <string name="ssh_agent_generated_exportable">不在安全硬件中生成。设置期间，私钥材料会存在于应用处理器和内核可访问的主内存中；随后由 Android Keystore 保护，用于签名和导出。</string>
+    <string name="ssh_agent_generated_device_bound">在 StrongBox 或 TEE 中生成。私钥不会进入应用处理器或内核可访问的内存，也无法导出。</string>
+    <string name="ssh_agent_generated_exportable">不在安全硬件中生成密钥。设置期间，私钥会短暂存在于应用处理器和内核可访问的内存中；随后由 Android Keystore 保护，用于签名和导出。</string>
     <string name="ssh_agent_non_exportable">不可用</string>
     <string name="ssh_agent_key_details">密钥详情</string>
     <string name="ssh_agent_key_storage">密钥存储</string>
@@ -106,13 +106,14 @@
     <string name="ssh_agent_approval_always">始终询问</string>
     <string name="ssh_agent_approval_remember">允许记住</string>
     <string name="ssh_agent_approval_help">审核时长按“批准”可记住此授权。</string>
+    <string name="ssh_agent_approval_help_always_ask">每次请求都需要手动批准。</string>
     <string name="ssh_agent_remembered_authorizations">已记住的授权</string>
     <string name="ssh_agent_no_remembered_authorizations">此密钥没有已记住的授权。</string>
     <string name="ssh_agent_remembered_peer_scope">所有主机</string>
     <string name="ssh_agent_remembered_delete_title">忘记已记住的授权？</string>
     <string name="ssh_agent_remembered_delete_body">当未来来自 %1$s 的请求不再匹配其他已记住的授权时，将需要手动批准。</string>
     <string name="ssh_agent_remembered_delete_confirm">忘记授权</string>
-    <string name="ssh_agent_hardware_keystore_unavailable">硬件支持的 Android Keystore 不可用。模拟器通常只提供软件支持的密钥；请使用配备 TEE 或 StrongBox 的真机。</string>
+    <string name="ssh_agent_hardware_keystore_unavailable">硬件支持的 Android Keystore 不可用。</string>
     <string name="ssh_agent_section_keys">密钥</string>
     <string name="ssh_agent_section_hosts">已知主机</string>
     <string name="ssh_agent_section_active">进行中的请求</string>
@@ -139,8 +140,8 @@
     <string name="ssh_agent_send_complete_body">请在 %1$s 上审核并批准 SSH 密钥导入。</string>
     <string name="ssh_agent_send_peer_unavailable">所选设备已不再是符合条件的 SSH 密钥提供程序。</string>
     <string name="ssh_agent_send_failed">无法发送 SSH 密钥。</string>
-    <string name="ssh_agent_delete_title">移除 SSH 密钥？</string>
-    <string name="ssh_agent_delete_body">%1$s 将不再提供给任何已连接的 SSH Agent。</string>
+    <string name="ssh_agent_delete_title">删除 SSH 密钥？</string>
+    <string name="ssh_agent_delete_body">%1$s 将从设备上被删除并不再提供给任何受信任的设备，这项操作不可逆。\n\n如果该密钥在这台设备上的安全硬件内生成，或者没有可用的备份，你可能会永久失去对它的访问。</string>
     <string name="ssh_agent_request_sign">SSH 签名</string>
     <string name="ssh_agent_request_import">SSH 密钥导入</string>
     <string name="ssh_agent_state_pending">等待批准</string>
@@ -687,7 +688,7 @@
     <string name="screen_viewer_reorder_control">重新排列控制项</string>
     <string name="screen_viewer_toolbar_controls">固定的控制项</string>
     <plurals name="screen_viewer_toolbar_control_limit">
-        <item quantity="other">当前布局可直接显示 %1$d 个固定的控制项。多出的控制项仍会保留在更多选项菜单中。</item>
+        <item quantity="other">当前布局可直接显示 %1$d 个固定控制项。多出的控制项仍会保留在更多选项菜单中。</item>
     </plurals>
     <string name="screen_viewer_move_toolbar_top">将工具栏移到顶部</string>
     <string name="screen_viewer_move_toolbar_bottom">将工具栏移到底部</string>

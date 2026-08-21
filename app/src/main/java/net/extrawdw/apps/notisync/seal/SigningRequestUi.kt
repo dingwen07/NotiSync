@@ -103,6 +103,12 @@ internal fun StoredOpenPgpRequest.opensSealReview(): Boolean = state in setOf(
     OpenPgpRequestState.PROVIDER_INTERACTION,
 )
 
+internal fun StoredOpenPgpRequest.shouldCloseAutoOpenedReview(autoLaunchOwned: Boolean): Boolean =
+    autoLaunchOwned && sealDisplayStatus() in setOf(
+        SealDisplayStatus.CANCELED,
+        SealDisplayStatus.EXPIRED,
+    )
+
 @Composable
 internal fun sealStatusLabel(status: SealDisplayStatus): String = stringResource(
     when (status) {

@@ -7,6 +7,7 @@ import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SigningRequestUiTest {
@@ -28,6 +29,19 @@ class SigningRequestUiTest {
         assertEquals(SealDisplayStatus.CANCELED, cancelled.sealDisplayStatus())
         assertFalse(cancelled.isSealActive())
         assertFalse(cancelled.opensSealReview())
+    }
+
+    @Test
+    fun onlyAutoOpenedCancellationAndExpiryCloseTheReviewTask() {
+        val cancelled = stored(OpenPgpRequestState.SENT, OpenPgpRequestResult.CANCELED)
+        val expired = stored(OpenPgpRequestState.SENT, OpenPgpRequestResult.EXPIRED)
+        val rejected = stored(OpenPgpRequestState.SENT, OpenPgpRequestResult.REJECTED)
+
+        assertTrue(cancelled.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
+        assertTrue(expired.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
+        assertFalse(cancelled.shouldCloseAutoOpenedReview(autoLaunchOwned = false))
+        assertFalse(expired.shouldCloseAutoOpenedReview(autoLaunchOwned = false))
+        assertFalse(rejected.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
     }
 
     @Test

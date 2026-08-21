@@ -25,6 +25,10 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
+import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
+import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.SshKeyImportSheet
 import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
@@ -46,11 +50,14 @@ class SshAgentReviewActivity : ComponentActivity() {
     private var pendingSignature: Pair<SshAgentProviderEngine, PreparedSshSignature>? = null
     private var pendingImportStorage: Pair<SshAgentProviderEngine, PreparedSshImportStorage>? = null
     private var renderGeneration = 0L
+    private var autoLaunchOwned = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestId = requestIdFrom(intent) ?: return finish()
         val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        autoLaunchOwned = savedInstanceState?.getBoolean(STATE_AUTO_LAUNCH_OWNED)
+            ?: isAutomaticRequestPageLaunch(intent.action)
         intent.action = null
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
@@ -103,12 +110,20 @@ class SshAgentReviewActivity : ComponentActivity() {
         val reopenedRequestId = requestIdFrom(intent) ?: return finish()
         if (reopenedRequestId != requestId) return finish()
         val approveAfterLoad = intent.action == ACTION_APPROVE
+        // Once a notification interaction takes ownership of this task, a later automatic
+        // re-delivery must not make it auto-dismissible again.
+        autoLaunchOwned = retainAutomaticRequestPageOwnership(autoLaunchOwned, intent.action)
         intent.action = null
         setIntent(intent)
         showImportSheet = false
         passphrase = ""
         screen = SshReviewScreenState.Loading
         load(approveAfterLoad)
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_AUTO_LAUNCH_OWNED, autoLaunchOwned)
+        super.onSaveInstanceState(outState)
     }
 
     override fun onDestroy() {
@@ -167,6 +182,14 @@ class SshAgentReviewActivity : ComponentActivity() {
         generation: Long,
     ) {
         stored ?: return showErrorIfCurrent(generation, getString(R.string.ssh_agent_review_unavailable))
+        if (generation != renderGeneration) return
+        if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
+            busy = false
+            showImportSheet = false
+            passphrase = ""
+            finishAutoOpenedRequestPage()
+            return
+        }
         val rememberScopes = withContext(Dispatchers.IO) {
             graph.sshKeyProviderStore.availableRememberScopes(requestId)
         }
@@ -633,6 +656,7 @@ class SshAgentReviewActivity : ComponentActivity() {
     companion object {
         private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SSH_AGENT_APPROVE"
         private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
+        private const val STATE_AUTO_LAUNCH_OWNED = "auto_launch_owned"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "ssh-agent-review"
 
@@ -643,8 +667,11 @@ class SshAgentReviewActivity : ComponentActivity() {
         fun approveIntent(context: Context, requestId: String): Intent =
             intent(context, requestId).setAction(ACTION_APPROVE)
 
+        fun autoOpenIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_AUTO_OPEN_REQUEST_PAGE)
+
         private fun requestIdFrom(intent: Intent): String? {
-            if (intent.action != null && intent.action != ACTION_APPROVE) return null
+            if (intent.action !in setOf(null, ACTION_APPROVE, ACTION_AUTO_OPEN_REQUEST_PAGE)) return null
             val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
             return requestId.takeIf { intent.data == reviewUri(it) }
         }
