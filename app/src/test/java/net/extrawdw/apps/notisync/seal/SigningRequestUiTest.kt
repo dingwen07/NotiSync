@@ -5,6 +5,7 @@ import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Test
 
@@ -18,6 +19,15 @@ class SigningRequestUiTest {
             SealDisplayStatus.LEGACY_FINISHED,
             sent.copy(result = null).sealDisplayStatus(),
         )
+    }
+
+    @Test
+    fun cancelledRequestRendersAsTerminalAndCannotKeepApprovalActions() {
+        val cancelled = stored(OpenPgpRequestState.CANCELLED, OpenPgpRequestResult.CANCELED)
+
+        assertEquals(SealDisplayStatus.CANCELED, cancelled.sealDisplayStatus())
+        assertFalse(cancelled.isSealActive())
+        assertFalse(cancelled.opensSealReview())
     }
 
     @Test
