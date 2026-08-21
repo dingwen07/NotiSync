@@ -224,7 +224,8 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                             return@launch
                         }
                         graph.openPgpSignNotifications.dismiss(requestId)
-                        OpenPgpSignResponseWorker.enqueue(applicationContext, requestId)
+                        graph.openPgpSignEngine?.sendResponseNowOrEnqueue(requestId)
+                            ?: OpenPgpSignResponseWorker.enqueue(applicationContext, requestId)
                         clearInteractionBinding()
                         load()
                     }
@@ -256,7 +257,8 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return@launch
             if (graph.openPgpSignStore.storeReject(rejectedRequestId, reason, System.currentTimeMillis())) {
                 graph.openPgpSignNotifications.dismiss(rejectedRequestId)
-                OpenPgpSignResponseWorker.enqueue(applicationContext, rejectedRequestId)
+                graph.openPgpSignEngine?.sendResponseNowOrEnqueue(rejectedRequestId)
+                    ?: OpenPgpSignResponseWorker.enqueue(applicationContext, rejectedRequestId)
             }
             clearInteractionBinding()
             load()

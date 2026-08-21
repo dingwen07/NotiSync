@@ -409,7 +409,7 @@ class AppGraph internal constructor(
         sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
         sshAgentManagement.preload()
-        // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
+        // Schema/integrity checks and the screen's four reads happen on the runtime's I/O startup thread.
         initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
         sshAgentManagement.start()
         sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore)

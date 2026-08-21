@@ -4,8 +4,11 @@ import android.content.Context
 import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.math.abs
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.SecureChannel
@@ -42,6 +45,8 @@ internal class SshAgentProviderEngine(
     private val deviceNameOf: (ClientId) -> String?,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    private val responseSendMutex = Mutex()
+
     fun onSshAgentSync(message: InboundMessage, dataSync: DataSync) {
         scope.launch { handleSshAgentSync(message, dataSync) }
     }
@@ -99,7 +104,7 @@ internal class SshAgentProviderEngine(
         val result = store.approve(requestId, providerClientId, now())
         if (result != null) {
             notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+            sendResponseNowOrEnqueue(requestId)
         }
         return result
     }
@@ -122,7 +127,7 @@ internal class SshAgentProviderEngine(
         ) ?: return null
         if (outcome == SshImportApprovalOutcome.Completed) {
             notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+            sendResponseNowOrEnqueue(requestId)
             publishInventory()
         }
         return outcome
@@ -142,7 +147,7 @@ internal class SshAgentProviderEngine(
         )
         if (outcome == SshImportApprovalOutcome.Completed) {
             notifications.dismiss(prepared.requestId)
-            SshAgentResponseWorker.enqueue(context, prepared.requestId)
+            sendResponseNowOrEnqueue(prepared.requestId)
             publishInventory()
         }
         return outcome
@@ -154,7 +159,7 @@ internal class SshAgentProviderEngine(
         val prepared = store.prepareUserVerifiedSignature(requestId, providerClientId, now())
         if (prepared == null && store.find(requestId)?.state == SshProviderRequestState.RESPONSE_PENDING_SEND) {
             notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+            sendResponseNowOrEnqueue(requestId)
         }
         return prepared
     }
@@ -167,7 +172,7 @@ internal class SshAgentProviderEngine(
         val result = store.completeUserVerifiedSignature(prepared, signature, cipher, providerClientId, now())
         if (result != null) {
             notifications.dismiss(prepared.requestId)
-            SshAgentResponseWorker.enqueue(context, prepared.requestId)
+            sendResponseNowOrEnqueue(prepared.requestId)
         }
         return result
     }
@@ -178,14 +183,14 @@ internal class SshAgentProviderEngine(
         store.cancelPreparedSignature(prepared)
         if (store.failUserVerification(prepared.requestId, providerClientId, now(), code)) {
             notifications.dismiss(prepared.requestId)
-            SshAgentResponseWorker.enqueue(context, prepared.requestId)
+            sendResponseNowOrEnqueue(prepared.requestId)
         }
     }
 
     suspend fun reject(requestId: String) {
         if (store.reject(requestId, providerClientId, now())) {
             notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+            sendResponseNowOrEnqueue(requestId)
         }
     }
 
@@ -193,7 +198,7 @@ internal class SshAgentProviderEngine(
         val result = store.approveAndRemember(requestId, providerClientId, rememberScope, now())
         if (result != null) {
             notifications.dismiss(requestId)
-            SshAgentResponseWorker.enqueue(context, requestId)
+            sendResponseNowOrEnqueue(requestId)
             publishInventory()
         }
         return result
@@ -211,7 +216,7 @@ internal class SshAgentProviderEngine(
         }
     }
 
-    suspend fun sendPersistedResponse(requestId: String): Boolean {
+    suspend fun sendPersistedResponse(requestId: String): Boolean = responseSendMutex.withLock {
         val stored = store.find(requestId) ?: return true
         if (stored.state != SshProviderRequestState.RESPONSE_PENDING_SEND) return true
         val prepared = store.prepareResponse(requestId, now()) ?: return false
@@ -235,7 +240,19 @@ internal class SshAgentProviderEngine(
             }
             if (stored.kind == SshProviderRequestKind.IMPORT) broadcastSnapshot()
         }
-        return accepted
+        accepted
+    }
+
+    private suspend fun sendResponseNowOrEnqueue(requestId: String) {
+        val sent = try {
+            sendPersistedResponse(requestId)
+        } catch (cancelled: CancellationException) {
+            SshAgentResponseWorker.enqueue(context, requestId)
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+        if (!sent) SshAgentResponseWorker.enqueue(context, requestId)
     }
 
     fun reconcile() {
@@ -250,7 +267,7 @@ internal class SshAgentProviderEngine(
                 }
                 if (autoApproved != null) {
                     notifications.dismiss(request.requestId)
-                    SshAgentResponseWorker.enqueue(context, request.requestId)
+                    sendResponseNowOrEnqueue(request.requestId)
                 } else {
                     notifications.post(
                         request,
@@ -258,7 +275,7 @@ internal class SshAgentProviderEngine(
                     )
                 }
             }
-            store.pendingResponses().forEach { SshAgentResponseWorker.enqueue(context, it.requestId) }
+            store.pendingResponses().forEach { sendResponseNowOrEnqueue(it.requestId) }
         }
     }
 
@@ -332,7 +349,7 @@ internal class SshAgentProviderEngine(
                         val autoApproved = store.autoApproveRemembered(request.requestId, providerClientId, now())
                         if (autoApproved != null) {
                             notifications.dismiss(request.requestId)
-                            SshAgentResponseWorker.enqueue(context, request.requestId)
+                            sendResponseNowOrEnqueue(request.requestId)
                         } else {
                             notifications.post(
                                 stored,
@@ -340,7 +357,7 @@ internal class SshAgentProviderEngine(
                             )
                         }
                     }
-                    SshProviderRequestState.RESPONSE_PENDING_SEND -> SshAgentResponseWorker.enqueue(context, request.requestId)
+                    SshProviderRequestState.RESPONSE_PENDING_SEND -> sendResponseNowOrEnqueue(request.requestId)
                     else -> Unit
                 }
             }
@@ -370,7 +387,7 @@ internal class SshAgentProviderEngine(
                         stored,
                         deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
                     )
-                    SshProviderRequestState.RESPONSE_PENDING_SEND -> SshAgentResponseWorker.enqueue(context, request.requestId)
+                    SshProviderRequestState.RESPONSE_PENDING_SEND -> sendResponseNowOrEnqueue(request.requestId)
                     else -> Unit
                 }
             }

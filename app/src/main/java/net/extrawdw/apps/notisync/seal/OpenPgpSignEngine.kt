@@ -2,8 +2,11 @@ package net.extrawdw.apps.notisync.seal
 
 import android.content.Context
 import java.security.MessageDigest
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
@@ -29,6 +32,8 @@ class OpenPgpSignEngine(
     private val deviceNameOf: (ClientId) -> String?,
     private val now: () -> Long = System::currentTimeMillis,
 ) {
+    private val responseSendMutex = Mutex()
+
     /** Called inline by FoundationEngine; persistence must complete before the relay item is acknowledged. */
     fun onOpenPgpSignSync(message: InboundMessage, sync: DataSync) {
         runBlocking(Dispatchers.IO) {
@@ -82,7 +87,7 @@ class OpenPgpSignEngine(
                         postNotification(stored)
                         OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
                     }
-                    in OUTBOX_STATES -> OpenPgpSignResponseWorker.enqueue(context, request.requestId)
+                    in OUTBOX_STATES -> sendResponseNowOrEnqueue(request.requestId)
                     else -> Unit
                 }
             }
@@ -107,7 +112,7 @@ class OpenPgpSignEngine(
         }
     }
 
-    suspend fun sendPersistedResponse(requestId: String): Boolean {
+    suspend fun sendPersistedResponse(requestId: String): Boolean = responseSendMutex.withLock {
         val stored = store.find(requestId) ?: return true
         if (stored.state !in OUTBOX_STATES && stored.state != OpenPgpRequestState.REJECTED_PENDING_SEND) return true
         val currentTime = now()
@@ -133,7 +138,7 @@ class OpenPgpSignEngine(
             !MessageDigest.isEqual(response.payloadSha256, stored.request.payloadSha256) ||
             response.validationError(::sha256) != null
         ) return false.also { encoded.fill(0) }
-        return try {
+        try {
             val accepted = channel.send(
                 MessageType.DATA_SYNC,
                 ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.OPENPGP_SIGN, openPgpSign = response)),
@@ -152,6 +157,18 @@ class OpenPgpSignEngine(
         }
     }
 
+    internal suspend fun sendResponseNowOrEnqueue(requestId: String) {
+        val sent = try {
+            sendPersistedResponse(requestId)
+        } catch (cancelled: CancellationException) {
+            OpenPgpSignResponseWorker.enqueue(context, requestId)
+            throw cancelled
+        } catch (_: Exception) {
+            false
+        }
+        if (!sent) OpenPgpSignResponseWorker.enqueue(context, requestId)
+    }
+
     suspend fun reconcile() {
         val currentTime = now()
         store.expireDue(currentTime).forEach(notifications::dismiss)
@@ -166,7 +183,7 @@ class OpenPgpSignEngine(
                     )
                 }
                 OpenPgpRequestState.SIGNED_PENDING_SEND -> {
-                    OpenPgpSignResponseWorker.enqueue(context, stored.request.requestId)
+                    sendResponseNowOrEnqueue(stored.request.requestId)
                     OpenPgpSignExpiryWorker.enqueue(
                         context,
                         stored.request.requestId,

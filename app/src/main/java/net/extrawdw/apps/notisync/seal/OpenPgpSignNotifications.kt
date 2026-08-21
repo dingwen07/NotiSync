@@ -156,7 +156,8 @@ class OpenPgpSignActionReceiver : BroadcastReceiver() {
                     )
                 ) {
                     graph.openPgpSignNotifications.dismiss(requestId)
-                    OpenPgpSignResponseWorker.enqueue(context.applicationContext, requestId)
+                    graph.openPgpSignEngine?.sendResponseNowOrEnqueue(requestId)
+                        ?: OpenPgpSignResponseWorker.enqueue(context.applicationContext, requestId)
                 }
             } finally {
                 pendingResult.finish()
