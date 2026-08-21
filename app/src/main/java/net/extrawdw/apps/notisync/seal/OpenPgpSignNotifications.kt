@@ -136,6 +136,13 @@ class OpenPgpSignNotificationPresenter(
     }
 
     fun dismiss(requestId: String) {
+        PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            OpenPgpSignReviewActivity.autoOpenIntent(context, requestId),
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )?.cancel()
         NotificationManagerCompat.from(context).cancel(notificationId(requestId))
     }
 

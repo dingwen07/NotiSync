@@ -13,7 +13,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.concurrent.atomic.AtomicBoolean
@@ -28,6 +27,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
 import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
 import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.requestPageObservationState
 import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.SshKeyImportSheet
@@ -149,7 +149,7 @@ class SshAgentReviewActivity : ComponentActivity() {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
                 ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
             var approveOnFirstLoad = approveAfterLoad
-            repeatOnLifecycle(Lifecycle.State.STARTED) {
+            repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
                 graph.sshKeyProviderStore.changeVersion
                     .mapLatest {
                         val generation = nextRenderGeneration()
