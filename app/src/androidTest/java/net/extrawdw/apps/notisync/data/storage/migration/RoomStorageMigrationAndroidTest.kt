@@ -125,10 +125,12 @@ class RoomStorageMigrationAndroidTest {
         createKnownGoodSources()
         val legacyMessageHashes = legacyMessageFamily().associate { it.name to it.sha256() }
 
+        var migrationRequiredCount = 0
         val migrator = RoomStorageMigration(context, preferences)
-        migrator.prepare()
+        migrator.prepare { migrationRequiredCount += 1 }
 
         val migratedPreferences = preferences.data.first()
+        assertEquals(1, migrationRequiredCount)
         assertEquals("Retained phone", migratedPreferences[stringPreferencesKey("device_name")])
         assertTrue(migratedPreferences[booleanPreferencesKey("known_good_to_room_v1_complete")] == true)
         assertTrue(migratedPreferences[stringPreferencesKey("enabled_packages_json")] != null)
@@ -224,7 +226,8 @@ class RoomStorageMigrationAndroidTest {
             it[stringPreferencesKey("enabled_packages_json")] =
                 ProtocolCodec.encodeToJson(setOf("com.example.stale-legacy"))
         }
-        migrator.prepare()
+        migrator.prepare { migrationRequiredCount += 1 }
+        assertEquals(1, migrationRequiredCount)
 
         openCore().use { database ->
             assertEquals(3L, database.count("dedup"))

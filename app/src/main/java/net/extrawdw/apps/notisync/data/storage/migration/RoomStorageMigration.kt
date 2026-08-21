@@ -52,13 +52,17 @@ internal class RoomStorageMigration(
 ) {
     private val appContext = context.applicationContext
 
-    suspend fun prepare() {
+    suspend fun prepare(onMigrationRequired: () -> Unit = {}) {
         val legacyPreferences = preferences.data.first()
         if (legacyPreferences[MIGRATION_COMPLETE] == true) {
             openRoomStorage()
             return
         }
 
+        // Report the cutover before any rebuild work begins so the launch UI can show migration
+        // progress immediately. Keep this as a callback rather than a UI type: the importer remains
+        // usable from instrumentation and other non-Compose entry points.
+        onMigrationRequired()
         try {
             rebuildV1Targets(legacyPreferences)
             openRoomStorage()

@@ -1,6 +1,12 @@
 <resources>
     <!-- app_name is translatable="false" in the default strings; intentionally not overridden here. -->
 
+    <!-- 启动 -->
+    <string name="startup_checking_storage">正在检查应用数据…</string>
+    <string name="startup_importing_database">正在导入现有数据…</string>
+    <string name="startup_initializing_application">正在启动 NotiSync…</string>
+    <string name="startup_failed">NotiSync 无法启动。请关闭并重新打开应用后重试。</string>
+
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>

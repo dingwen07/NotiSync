@@ -1,6 +1,12 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
     <string name="app_name" translatable="false">NotiSync</string>
 
+    <!-- Startup -->
+    <string name="startup_checking_storage">Checking app data…</string>
+    <string name="startup_importing_database">Importing your existing data…</string>
+    <string name="startup_initializing_application">Starting NotiSync…</string>
+    <string name="startup_failed">NotiSync couldn’t start. Close and reopen the app to try again.</string>
+
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
