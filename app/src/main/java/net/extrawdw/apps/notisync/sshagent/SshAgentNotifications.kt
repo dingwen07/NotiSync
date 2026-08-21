@@ -94,10 +94,18 @@ class SshAgentNotificationPresenter(
             addAll(expandedDetails)
             add(context.getString(R.string.ssh_agent_notification_request, stored.requestId.take(8)))
         }.joinToString("\n")
+        val autoOpenEnabled = openRequestPageAutomatically()
         val review = PendingIntent.getActivity(
             context,
             notificationId(stored.requestId),
             SshAgentReviewActivity.intent(context, stored.requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )
+        val automaticReview = PendingIntent.getActivity(
+            context,
+            notificationId(stored.requestId),
+            SshAgentReviewActivity.autoOpenIntent(context, stored.requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             requestPagePendingIntentOptions(),
         )
@@ -143,14 +151,14 @@ class SshAgentNotificationPresenter(
                 ).setAuthenticationRequired(true).build(),
             )
             .apply {
-                if (openRequestPageAutomatically()) {
-                    setFullScreenIntent(review, true)
+                if (autoOpenEnabled) {
+                    setFullScreenIntent(automaticReview, true)
                 }
             }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(stored.requestId), notification)
-        if (openImmediately && openRequestPageAutomatically()) {
-            tryOpenRequestPageWhileUnlocked(context, review)
+        if (openImmediately && autoOpenEnabled) {
+            tryOpenRequestPageWhileUnlocked(context, automaticReview)
         }
         return true
     }

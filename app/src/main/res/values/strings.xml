@@ -79,7 +79,7 @@
     <string name="ssh_agent_rsa_key_size">RSA key size</string>
     <string name="ssh_agent_export_settings">Export</string>
     <string name="ssh_agent_keep_export_backup">Allow this key to be exported</string>
-    <string name="ssh_agent_export_copy_skip_strongbox">Use Android Keystore’s default protection level for the export copy</string>
+    <string name="ssh_agent_export_copy_skip_strongbox">Skip StrongBox (use Android Keystore’s default protection level for the export copy)</string>
     <string name="ssh_agent_export_copy_auth_help">A strong biometric or device passcode is required when exporting a private key. StrongBox is preferred when protecting the export copy.</string>
     <string name="ssh_agent_signing_storage">Signing key</string>
     <string name="ssh_agent_export_auth_unavailable">An export copy requires a strong biometric or device screen lock.</string>
@@ -93,8 +93,8 @@
     <string name="ssh_agent_request_unavailable">This SSH signature request is no longer available.</string>
     <string name="ssh_agent_storage_auth_cancelled">SSH key storage was cancelled.</string>
     <string name="ssh_agent_storage_auth_lost">The authenticated SSH key-storage operation was lost.</string>
-    <string name="ssh_agent_generated_device_bound">Generated inside StrongBox or the TEE. Private-key material is never present in application-processor or kernel-accessible memory, and cannot be exported.</string>
-    <string name="ssh_agent_generated_exportable">Generated outside secure hardware. During setup, private-key material is present in main memory accessible to the application processor and kernel; it is then protected by Android Keystore for signing and export.</string>
+    <string name="ssh_agent_generated_device_bound">Generated inside StrongBox or the TEE. Private key is never present in application-processor or kernel-accessible memory, and cannot be exported.</string>
+    <string name="ssh_agent_generated_exportable">Generated outside secure hardware. During setup, the private key is temporarily stored in main memory accessible to the application processor and the kernel; it is then protected by Android Keystore for signing and export.</string>
     <string name="ssh_agent_non_exportable">Unavailable</string>
     <string name="ssh_agent_key_details">Key details</string>
     <string name="ssh_agent_key_storage">Key Storage</string>
@@ -112,13 +112,14 @@
     <string name="ssh_agent_approval_always">Always ask</string>
     <string name="ssh_agent_approval_remember">Allow remembering</string>
     <string name="ssh_agent_approval_help">Long-press Approve during review to remember this authorization.</string>
+    <string name="ssh_agent_approval_help_always_ask">Every request requires manual approval.</string>
     <string name="ssh_agent_remembered_authorizations">Remembered authorizations</string>
     <string name="ssh_agent_no_remembered_authorizations">No remembered authorizations for this key.</string>
     <string name="ssh_agent_remembered_peer_scope">All hosts</string>
     <string name="ssh_agent_remembered_delete_title">Forget remembered authorization?</string>
     <string name="ssh_agent_remembered_delete_body">Future requests from %1$s will require approval when they no longer match another remembered authorization.</string>
     <string name="ssh_agent_remembered_delete_confirm">Forget authorization</string>
-    <string name="ssh_agent_hardware_keystore_unavailable">Hardware-backed Android Keystore is unavailable. Emulators commonly provide only software-backed keys; use a physical device with TEE or StrongBox.</string>
+    <string name="ssh_agent_hardware_keystore_unavailable">Hardware-backed Android Keystore is unavailable.</string>
     <string name="ssh_agent_section_keys">Keys</string>
     <string name="ssh_agent_section_hosts">Known Hosts</string>
     <string name="ssh_agent_section_active">Active requests</string>
@@ -145,8 +146,8 @@
     <string name="ssh_agent_send_complete_body">Review and approve the SSH key import on %1$s.</string>
     <string name="ssh_agent_send_peer_unavailable">The selected device is no longer an eligible SSH key provider.</string>
     <string name="ssh_agent_send_failed">Unable to send the SSH key.</string>
-    <string name="ssh_agent_delete_title">Remove SSH key?</string>
-    <string name="ssh_agent_delete_body">%1$s will no longer be available to any connected SSH Agent.</string>
+    <string name="ssh_agent_delete_title">Delete SSH key?</string>
+    <string name="ssh_agent_delete_body">%1$s will be deleted and no longer be available to any trusted devices; this cannot be undone.\n\nIf the key was generated within the security hardware on this device, or if no backup is available, you may permanently lose access to it.</string>
     <string name="ssh_agent_request_sign">SSH Signature</string>
     <string name="ssh_agent_request_import">SSH Key Import</string>
     <string name="ssh_agent_state_pending">Awaiting approval</string>

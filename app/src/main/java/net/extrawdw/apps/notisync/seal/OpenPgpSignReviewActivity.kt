@@ -56,6 +56,10 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.notification.ACTION_AUTO_OPEN_REQUEST_PAGE
+import net.extrawdw.apps.notisync.notification.finishAutoOpenedRequestPage
+import net.extrawdw.apps.notisync.notification.isAutomaticRequestPageLaunch
+import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
@@ -69,6 +73,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     private var interactionRequestId: String? = null
     private var interactionPayloadDigest: ByteArray? = null
     private var providerContinuation: Intent? = null
+    private var autoLaunchOwned = false
 
     private val providerInteraction = registerForActivityResult(
         ActivityResultContracts.StartIntentSenderForResult()
@@ -88,6 +93,8 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         requestId = requestIdFrom(intent) ?: return finish()
         val approveAfterLoad = savedInstanceState == null && intent.action == ACTION_APPROVE
+        autoLaunchOwned = savedInstanceState?.getBoolean(STATE_AUTO_LAUNCH_OWNED)
+            ?: isAutomaticRequestPageLaunch(intent.action)
         intent.action = null
         awaitingInteraction = savedInstanceState?.getBoolean(STATE_AWAITING_INTERACTION) == true
         interactionRequestId = savedInstanceState?.getString(STATE_INTERACTION_REQUEST_ID)
@@ -117,6 +124,9 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         val reopenedRequestId = requestIdFrom(intent) ?: return finish()
         if (reopenedRequestId != requestId) return finish()
         val approveAfterLoad = intent.action == ACTION_APPROVE
+        // Once a notification interaction takes ownership of this task, a later automatic
+        // re-delivery must not make it auto-dismissible again.
+        autoLaunchOwned = retainAutomaticRequestPageOwnership(autoLaunchOwned, intent.action)
         intent.action = null
         setIntent(intent)
         screen = ReviewScreenState.Loading
@@ -128,6 +138,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         outState.putString(STATE_INTERACTION_REQUEST_ID, interactionRequestId)
         outState.putByteArray(STATE_INTERACTION_DIGEST, interactionPayloadDigest)
         outState.putParcelable(STATE_PROVIDER_CONTINUATION, providerContinuation)
+        outState.putBoolean(STATE_AUTO_LAUNCH_OWNED, autoLaunchOwned)
         super.onSaveInstanceState(outState)
     }
 
@@ -162,6 +173,11 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         approveAfterLoad: Boolean,
     ) {
         stored ?: return showError(getString(R.string.seal_request_unavailable))
+        if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
+            clearInteractionBinding()
+            finishAutoOpenedRequestPage()
+            return
+        }
         val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
             ?: return showError(getString(R.string.seal_request_invalid))
         val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
@@ -312,6 +328,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         private const val STATE_INTERACTION_REQUEST_ID = "provider_interaction_request_id"
         private const val STATE_INTERACTION_DIGEST = "provider_interaction_payload_digest"
         private const val STATE_PROVIDER_CONTINUATION = "provider_continuation"
+        private const val STATE_AUTO_LAUNCH_OWNED = "auto_launch_owned"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "seal-review"
 
@@ -323,8 +340,11 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         fun approveIntent(context: Context, requestId: String): Intent =
             intent(context, requestId).setAction(ACTION_APPROVE)
 
+        fun autoOpenIntent(context: Context, requestId: String): Intent =
+            intent(context, requestId).setAction(ACTION_AUTO_OPEN_REQUEST_PAGE)
+
         private fun requestIdFrom(intent: Intent): String? {
-            if (intent.action != null && intent.action != ACTION_APPROVE) return null
+            if (intent.action !in setOf(null, ACTION_APPROVE, ACTION_AUTO_OPEN_REQUEST_PAGE)) return null
             val requestId = intent.getStringExtra(EXTRA_REQUEST_ID)?.takeIf(String::isNotBlank) ?: return null
             return requestId.takeIf { intent.data == reviewUri(it) }
         }

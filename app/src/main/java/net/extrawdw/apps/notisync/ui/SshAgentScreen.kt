@@ -1228,7 +1228,12 @@ private fun SshKeyApprovalPolicy(
             }
         }
         Text(
-            stringResource(R.string.ssh_agent_approval_help),
+            stringResource(
+                when (key.approvalPolicy) {
+                    SshApprovalPolicy.ALLOW_REMEMBER -> R.string.ssh_agent_approval_help
+                    SshApprovalPolicy.ALWAYS_ASK -> R.string.ssh_agent_approval_help_always_ask
+                },
+            ),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )

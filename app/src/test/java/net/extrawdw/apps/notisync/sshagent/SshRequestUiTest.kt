@@ -26,6 +26,19 @@ class SshRequestUiTest {
         assertTrue(pending.isActiveRequest())
     }
 
+    @Test
+    fun onlyAutoOpenedCancellationAndExpiryCloseTheReviewTask() {
+        val cancelled = stored(SshProviderRequestState.SENT, SshProviderRequestOutcome.CANCELLED)
+        val expired = stored(SshProviderRequestState.SENT, SshProviderRequestOutcome.EXPIRED)
+        val rejected = stored(SshProviderRequestState.SENT, SshProviderRequestOutcome.REJECTED)
+
+        assertTrue(cancelled.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
+        assertTrue(expired.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
+        assertFalse(cancelled.shouldCloseAutoOpenedReview(autoLaunchOwned = false))
+        assertFalse(expired.shouldCloseAutoOpenedReview(autoLaunchOwned = false))
+        assertFalse(rejected.shouldCloseAutoOpenedReview(autoLaunchOwned = true))
+    }
+
     private fun stored(
         state: SshProviderRequestState,
         outcome: SshProviderRequestOutcome? = null,

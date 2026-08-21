@@ -62,11 +62,18 @@ class OpenPgpSignNotificationPresenter(
             ?.let { context.getString(R.string.seal_notification_author, it) }
         val expandedText = listOfNotNull(requestText, authorText, identifiersText).joinToString("\n")
         val contentTitle = context.getString(R.string.seal_notification_title_with_commit, commitTitle)
-        val intent = OpenPgpSignReviewActivity.intent(context, requestId)
-        val pendingIntent = PendingIntent.getActivity(
+        val autoOpenEnabled = openRequestPageAutomatically()
+        val review = PendingIntent.getActivity(
             context,
             notificationId(requestId),
-            intent,
+            OpenPgpSignReviewActivity.intent(context, requestId),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
+        )
+        val automaticReview = PendingIntent.getActivity(
+            context,
+            notificationId(requestId),
+            OpenPgpSignReviewActivity.autoOpenIntent(context, requestId),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
             requestPagePendingIntentOptions(),
         )
@@ -110,20 +117,20 @@ class OpenPgpSignNotificationPresenter(
             .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
             .setPublicVersion(publicVersion)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setContentIntent(pendingIntent)
+            .setContentIntent(review)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
             .addAction(rejectAction)
             .addAction(approveAction)
             .apply {
-                if (openRequestPageAutomatically()) {
-                    setFullScreenIntent(pendingIntent, true)
+                if (autoOpenEnabled) {
+                    setFullScreenIntent(automaticReview, true)
                 }
             }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(requestId), notification)
-        if (openImmediately && openRequestPageAutomatically()) {
-            tryOpenRequestPageWhileUnlocked(context, pendingIntent)
+        if (openImmediately && autoOpenEnabled) {
+            tryOpenRequestPageWhileUnlocked(context, automaticReview)
         }
         return true
     }
