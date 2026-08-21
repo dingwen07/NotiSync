@@ -2,11 +2,11 @@ package net.extrawdw.notisync.sshagent
 
 import java.nio.file.Files
 import java.nio.file.Path
-import java.time.Instant
 import java.util.concurrent.TimeUnit
 import kotlin.system.exitProcess
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.UnixDaemonClient
@@ -47,6 +47,7 @@ class NotisyncSshAgentCommand(
     private val error: Appendable = System.err,
 ) {
     private val files = SecureFileSystem()
+    private val processInstances = ProcessInstanceIdentityResolver()
 
     fun run(arguments: List<String>): Int = try {
         val invocation = parseAgentInvocation(arguments)
@@ -95,6 +96,7 @@ class NotisyncSshAgentCommand(
         DaemonAutostarter(paths).connect()
         files.ensurePrivateDirectory(paths.logDirectory)
         files.ensurePrivateFile(paths.sshAgentLog)
+        val startupLogOffset = Files.size(paths.sshAgentLog)
         val java = Path.of(System.getProperty("java.home"), "bin", if (isWindows()) "java.exe" else "java")
         val command = buildList {
             add(java.toString())
@@ -124,11 +126,11 @@ class NotisyncSshAgentCommand(
                 return 0
             }
             if (!process.isAlive) {
-                throw IllegalStateException(startupFailureMessage("SSH Agent exited during startup"))
+                throw IllegalStateException(startupFailureMessage("SSH Agent exited during startup", startupLogOffset))
             }
             Thread.sleep(50)
         }
-        throw IllegalStateException(startupFailureMessage("SSH Agent did not become ready"))
+        throw IllegalStateException(startupFailureMessage("SSH Agent did not become ready", startupLogOffset))
     }
 
     private fun stop(): Int {
@@ -138,7 +140,8 @@ class NotisyncSshAgentCommand(
             return 0
         }
         val process = ProcessHandle.of(record.pid).orElse(null)
-            ?: throw IllegalStateException("SSH Agent PID disappeared")
+            ?.takeIf { processInstances.resolve(record.pid) == record.processIdentity }
+            ?: throw IllegalStateException("SSH Agent PID disappeared or was reused")
         check(process.destroy()) { "could not request SSH Agent shutdown" }
         process.onExit().get(10, TimeUnit.SECONDS)
         output.appendLine("notisync-ssh-agent stopped")
@@ -302,9 +305,7 @@ class NotisyncSshAgentCommand(
     private fun runningRecord(): AgentPidRecord? {
         val record = AgentInstanceLock.read(paths, files) ?: return null
         val handle = ProcessHandle.of(record.pid).orElse(null) ?: return null
-        val actualStart = handle.info().startInstant().orElse(null)
-        val expectedStart = record.processStartTime?.let { runCatching { Instant.parse(it) }.getOrNull() }
-        return record.takeIf { handle.isAlive && (expectedStart == null || expectedStart == actualStart) }
+        return record.takeIf { handle.isAlive && processInstances.resolve(record.pid) == record.processIdentity }
     }
 
     private fun resolveBindAddresses(explicitAddresses: List<String>): List<String> =
@@ -319,16 +320,18 @@ class NotisyncSshAgentCommand(
         return block()
     }
 
-    private fun startupFailureMessage(prefix: String): String {
+    private fun startupFailureMessage(prefix: String, startupLogOffset: Long): String {
         val detail = runCatching {
-            files.readPrivateBytes(paths.sshAgentLog, 1024 * 1024)
-                .decodeToString()
-                .lineSequence()
-                .lastOrNull { it.startsWith("notisync-ssh-agent:") }
-                ?.removePrefix("notisync-ssh-agent:")
-                ?.trim()
+            startupFailureDetail(
+                files.readPrivateBytes(paths.sshAgentLog, 1024 * 1024),
+                startupLogOffset,
+            )
         }.getOrNull()
-        return if (detail.isNullOrBlank()) "$prefix; see ${paths.sshAgentLog}" else "$prefix: $detail"
+        return if (detail.isNullOrBlank()) {
+            "$prefix; see ${paths.sshAgentLog}"
+        } else {
+            "$prefix: ${diagnostic(detail)}"
+        }
     }
 
     private fun diagnostic(message: String?): String = message.orEmpty().ifBlank { "operation failed" }
@@ -339,4 +342,17 @@ class NotisyncSshAgentCommand(
     private companion object {
         val CLIENT_ID = Regex("[a-z2-7]{32}")
     }
+}
+
+internal fun startupFailureDetail(log: ByteArray, startupLogOffset: Long): String? {
+    val offset = startupLogOffset.coerceIn(0, log.size.toLong()).toInt()
+    val lines = log.decodeToString(offset, log.size)
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .toList()
+    return lines.lastOrNull { it.startsWith("notisync-ssh-agent:") }
+        ?.removePrefix("notisync-ssh-agent:")
+        ?.trim()
+        ?: lines.firstOrNull()
 }

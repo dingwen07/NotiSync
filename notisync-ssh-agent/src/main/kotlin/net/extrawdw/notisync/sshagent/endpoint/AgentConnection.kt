@@ -49,7 +49,7 @@ class AgentConnectionHandler(
     fun handle(
         input: InputStream,
         output: OutputStream,
-        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
+        caller: LocalCallerSnapshot,
     ) {
         val connectionId = randomId()
         val destination = ConnectionDestinationState()
@@ -59,7 +59,7 @@ class AgentConnectionHandler(
                 dispatch(
                     AgentMessageCodec.decodeRequest(body),
                     connectionId,
-                    processContext,
+                    caller,
                     destination,
                 )
             }.getOrElse { AgentMessageCodec.failure() }
@@ -70,7 +70,7 @@ class AgentConnectionHandler(
     private fun dispatch(
         request: AgentRequest,
         connectionId: String,
-        processContext: net.extrawdw.notisync.protocol.DesktopProcessContext,
+        caller: LocalCallerSnapshot,
         destination: ConnectionDestinationState,
     ): ByteArray {
         return when (request) {
@@ -91,7 +91,7 @@ class AgentConnectionHandler(
                     request.data,
                     request.flags,
                     connectionId,
-                    callerResolver.refresh(processContext),
+                    callerResolver.refresh(caller),
                     resolved,
                 )) {
                     is SignDecision.Signed -> AgentMessageCodec.signResponse(decision.signatureBlob)

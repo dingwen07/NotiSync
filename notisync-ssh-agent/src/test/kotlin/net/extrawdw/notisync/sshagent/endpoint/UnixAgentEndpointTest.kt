@@ -35,7 +35,7 @@ class UnixAgentEndpointTest {
         val endpoint = UnixAgentEndpoint(
             socketPath,
             { socket ->
-                processContext.set(LocalCallerResolver().resolve(socket))
+                processContext.set(LocalCallerResolver().resolve(socket).processContext)
                 assertArrayEquals(
                     byteArrayOf(AgentNumbers.SSH_AGENTC_REQUEST_IDENTITIES.toByte()),
                     SshAgentFrameCodec.read(socket.getInputStream()),

@@ -14,12 +14,14 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentity
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.desktop.SecureFileSystem
 
 @Serializable
 data class AgentPidRecord(
     val pid: Long,
-    val processStartTime: String? = null,
+    val processIdentity: ProcessInstanceIdentity,
     val startedAt: String,
     val instanceId: String,
     val bindAddresses: List<String> = emptyList(),
@@ -89,12 +91,13 @@ class AgentInstanceLock private constructor(
                 throw AgentAlreadyRunningException(read(paths, files))
             }
             val record = AgentPidRecord(
-                ProcessHandle.current().pid(),
-                ProcessHandle.current().info().startInstant().orElse(null)?.toString(),
-                Instant.now().toString(),
-                UUID.randomUUID().toString(),
-                bindAddresses,
-                explicitBindAddresses,
+                pid = ProcessHandle.current().pid(),
+                processIdentity = ProcessInstanceIdentityResolver().resolve(ProcessHandle.current().pid())
+                    ?: error("cannot determine SSH Agent process identity"),
+                startedAt = Instant.now().toString(),
+                instanceId = UUID.randomUUID().toString(),
+                bindAddresses = bindAddresses,
+                explicitBindAddresses = explicitBindAddresses,
             )
             try {
                 files.atomicWrite(paths.sshAgentPid, JSON.encodeToString(record).encodeToByteArray())

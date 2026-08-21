@@ -18,6 +18,7 @@ import net.extrawdw.notisync.daemon.storage.DaemonPidRecord
 import net.extrawdw.notisync.daemon.storage.DaemonStorageLayout
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.desktop.SecureFileSystem
 import net.extrawdw.notisync.desktop.config.NotisyncdConfigStore
 import net.extrawdw.notisync.localapi.DaemonConfigPatch
@@ -36,6 +37,7 @@ class NotisyncdCli(
     private val layout = DaemonStorageLayout(paths.dataDirectory, paths.logDirectory)
     private val fileSystem = SecureFileSystem()
     private val daemonLogger = DaemonLogger("WARN", error)
+    private val processInstances = ProcessInstanceIdentityResolver()
     private var runningForeground = false
 
     fun run(arguments: Array<String>): Int {
@@ -217,9 +219,7 @@ class NotisyncdCli(
 
     private fun matchingProcess(record: DaemonPidRecord): ProcessHandle? {
         val process = ProcessHandle.of(record.pid).orElse(null) ?: return null
-        val recordedStart = record.processStartTime ?: return process
-        val actualStart = process.info().startInstant().orElse(null)?.toString()
-        return process.takeIf { actualStart == recordedStart }
+        return process.takeIf { process.isAlive && processInstances.resolve(record.pid) == record.processIdentity }
     }
 
     private fun restart(): Int {

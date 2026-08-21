@@ -7,13 +7,14 @@ data class DesktopPaths(
     /** Explicit roots stay self-contained; [default] uses the platform's user log location. */
     val logDirectory: Path = dataDirectory.resolve("logs"),
 ) {
+    val stateDirectory: Path = dataDirectory.resolve("state")
     val socket: Path = dataDirectory.resolve("S.notisyncd")
     val daemonConfig: Path = dataDirectory.resolve("notisyncd.conf")
     val nsrunConfig: Path = dataDirectory.resolve("nsrun.conf")
     val notisyncGpgConfig: Path = dataDirectory.resolve("notisync-gpg.conf")
     val sshAgentSocket: Path = dataDirectory.resolve("S.ssh-agent")
     val sshAgentConfig: Path = dataDirectory.resolve("notisync-ssh-agent.conf")
-    val sshAgentDatabase: Path = dataDirectory.resolve("notisync-ssh-agent.sqlite3")
+    val sshAgentDatabase: Path = stateDirectory.resolve("notisync-ssh-agent.db")
     val sshAgentPid: Path = dataDirectory.resolve("notisync-ssh-agent.pid")
     val sshAgentLock: Path = dataDirectory.resolve("notisync-ssh-agent.lock")
     val sshAgentLog: Path = logDirectory.resolve("notisync-ssh-agent.log")

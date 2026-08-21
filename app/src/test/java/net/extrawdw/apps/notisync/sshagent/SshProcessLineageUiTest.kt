@@ -183,7 +183,6 @@ class SshProcessLineageUiTest {
 
     private fun process(pid: Long, path: String, name: String) = DesktopProcessIdentity(
         pid = pid,
-        startEpochMillis = pid * 1_000,
         executablePath = path,
         displayName = name,
     )
