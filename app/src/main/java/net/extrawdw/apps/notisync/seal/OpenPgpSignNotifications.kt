@@ -20,7 +20,10 @@ import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
 /** Private notification-shade presentation for a pending signing decision. */
-class OpenPgpSignNotificationPresenter(private val context: Context) {
+class OpenPgpSignNotificationPresenter(
+    private val context: Context,
+    private val openRequestPageAutomatically: () -> Boolean = { false },
+) {
     fun post(stored: StoredOpenPgpRequest, requesterName: String): Boolean {
         ensureChannel()
         if (
@@ -105,6 +108,11 @@ class OpenPgpSignNotificationPresenter(private val context: Context) {
             .setOnlyAlertOnce(true)
             .addAction(rejectAction)
             .addAction(approveAction)
+            .apply {
+                if (openRequestPageAutomatically()) {
+                    setFullScreenIntent(pendingIntent, true)
+                }
+            }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(requestId), notification)
         return true

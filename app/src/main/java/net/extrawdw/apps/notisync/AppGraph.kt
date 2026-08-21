@@ -353,7 +353,9 @@ class AppGraph(private val app: Application) {
         openPgpProvider = OpenKeychainSigningProvider(app)
         openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
-        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app)
+        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app) {
+            settings.autoOpenOpenPgpRequest.value
+        }
         sshKeyProviderStore = SshKeyProviderStore(app)
         sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
@@ -361,7 +363,9 @@ class AppGraph(private val app: Application) {
         // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
         initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
         sshAgentManagement.start()
-        sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore)
+        sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore) {
+            settings.autoOpenSshRequest.value
+        }
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
         // eager `true` default), then re-apply on every toggle — DataStore stays the single source of

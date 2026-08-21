@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
@@ -68,6 +69,8 @@ fun SettingsScreen() {
     val advanced by graph.settings.advancedDiagnostics.collectAsStateWithLifecycle()
     val analytics by graph.settings.analyticsEnabled.collectAsStateWithLifecycle()
     val callRinger by graph.settings.callRingerEnabled.collectAsStateWithLifecycle()
+    val autoOpenOpenPgpRequest by graph.settings.autoOpenOpenPgpRequest.collectAsStateWithLifecycle()
+    val autoOpenSshRequest by graph.settings.autoOpenSshRequest.collectAsStateWithLifecycle()
     val lockScreenPublicIdentity by graph.settings.lockScreenPublicIdentity.collectAsStateWithLifecycle()
     val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
     val shizukuStatus by graph.screenMirrorShizuku.status.collectAsStateWithLifecycle()
@@ -134,8 +137,9 @@ fun SettingsScreen() {
         LazyColumn(
             modifier = modifier.fillMaxSize(),
             contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            item { SettingsSectionHeader(R.string.settings_section_connection) }
             item {
                 SettingsTextField(
                     value = deviceName,
@@ -161,10 +165,11 @@ fun SettingsScreen() {
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
+            item { SettingsSectionHeader(R.string.settings_section_notifications) }
             item {
                 ToggleRow(
                     stringResource(R.string.settings_call_ringer),
-                    callRinger
+                    callRinger,
                 ) { scope.launch { graph.settings.setCallRingerEnabled(it) } }
             }
             if (callRinger && !fullScreenAllowed) {
@@ -173,9 +178,16 @@ fun SettingsScreen() {
             item {
                 ToggleRow(
                     stringResource(R.string.settings_lock_screen_public_identity),
-                    lockScreenPublicIdentity
+                    lockScreenPublicIdentity,
                 ) { scope.launch { graph.settings.setLockScreenPublicIdentity(it) } }
             }
+            item {
+                ToggleRow(
+                    stringResource(R.string.settings_batch_low_priority),
+                    batchLow
+                ) { scope.launch { graph.settings.setBatchLowPriority(it) } }
+            }
+            item { SettingsSectionHeader(R.string.settings_section_screen_sharing) }
             item {
                 ScreenMirrorSettingsRow(
                     enabled = screenMirroringEnabled,
@@ -214,22 +226,30 @@ fun SettingsScreen() {
                     onOpenShizuku = { graph.screenMirrorShizuku.openManager() },
                 )
             }
+            item { SettingsSectionHeader(R.string.settings_section_seal_ssh) }
             item {
                 ToggleRow(
-                    stringResource(R.string.settings_batch_low_priority),
-                    batchLow
-                ) { scope.launch { graph.settings.setBatchLowPriority(it) } }
+                    stringResource(R.string.settings_auto_open_openpgp_request),
+                    autoOpenOpenPgpRequest,
+                ) { scope.launch { graph.settings.setAutoOpenOpenPgpRequest(it) } }
             }
             item {
                 ToggleRow(
+                    stringResource(R.string.settings_auto_open_ssh_request),
+                    autoOpenSshRequest,
+                ) { scope.launch { graph.settings.setAutoOpenSshRequest(it) } }
+            }
+            item { SettingsSectionHeader(R.string.settings_section_diagnostics) }
+            item {
+                ToggleRow(
                     stringResource(R.string.settings_analytics),
-                    analytics
+                    analytics,
                 ) { scope.launch { graph.settings.setAnalyticsEnabled(it) } }
             }
             item {
                 ToggleRow(
                     stringResource(R.string.settings_advanced_diagnostics),
-                    advanced
+                    advanced,
                 ) { scope.launch { graph.settings.setAdvancedDiagnostics(it) } }
             }
             if (advanced) {
@@ -428,14 +448,38 @@ private fun FullScreenIntentBlockedRow() {
 }
 
 @Composable
+private fun SettingsSectionHeader(@StringRes title: Int) {
+    Text(
+        stringResource(title),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+        style = MaterialTheme.typography.titleMedium,
+        color = MaterialTheme.colorScheme.primary,
+    )
+}
+
+@Composable
 private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Unit) {
     Row(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .padding(vertical = 2.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Text(label, style = MaterialTheme.typography.bodyLarge)
-        Switch(checked = checked, onCheckedChange = onChange)
+        Text(
+            label,
+            modifier = Modifier
+                .weight(1f)
+                .padding(end = 16.dp),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Switch(
+            checked = checked,
+            onCheckedChange = onChange,
+            modifier = Modifier.padding(start = 4.dp),
+        )
     }
 }
 
@@ -450,12 +494,24 @@ private fun ScreenMirrorSettingsRow(
 ) {
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
-            Modifier.fillMaxWidth(),
+            Modifier
+                .fillMaxWidth()
+                .padding(vertical = 4.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text(stringResource(R.string.screen_mirror_settings_title), style = MaterialTheme.typography.bodyLarge)
-            Switch(checked = enabled, onCheckedChange = onChange)
+            Text(
+                stringResource(R.string.screen_mirror_settings_title),
+                modifier = Modifier
+                    .weight(1f)
+                    .padding(end = 16.dp),
+                style = MaterialTheme.typography.bodyLarge,
+            )
+            Switch(
+                checked = enabled,
+                onCheckedChange = onChange,
+                modifier = Modifier.padding(start = 4.dp),
+            )
         }
         Text(
             stringResource(R.string.screen_mirror_settings_body),

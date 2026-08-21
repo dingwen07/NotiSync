@@ -444,11 +444,18 @@
     <string name="activity_title_paired">已配对</string>
 
     <!-- Settings screen -->
+    <string name="settings_section_connection">连接</string>
+    <string name="settings_section_notifications">通知</string>
+    <string name="settings_section_screen_sharing">屏幕共享</string>
+    <string name="settings_section_seal_ssh">Seal &amp; SSH</string>
+    <string name="settings_section_diagnostics">诊断</string>
     <string name="settings_device_name">设备名称</string>
     <string name="settings_broker_url">Broker 地址 (https://…)</string>
     <string name="settings_call_ringer">为镜像来电响铃</string>
     <string name="settings_call_ringer_fsi_blocked">全屏来电提醒已被阻止</string>
     <string name="settings_call_ringer_fsi_blocked_hint">请允许全屏通知，镜像来电才能在锁屏时显示来电界面。点按打开系统设置。</string>
+    <string name="settings_auto_open_openpgp_request">自动打开 OpenPGP 签名请求</string>
+    <string name="settings_auto_open_ssh_request">自动打开 SSH 请求</string>
     <string name="settings_lock_screen_public_identity">在锁屏显示应用名称和图标</string>
     <string name="settings_batch_low_priority">合并低优先级通知</string>
     <string name="settings_advanced_diagnostics">高级诊断</string>
