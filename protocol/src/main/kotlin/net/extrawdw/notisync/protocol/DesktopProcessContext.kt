@@ -35,12 +35,14 @@ enum class DesktopProcessContextSource {
 @Serializable
 data class DesktopProcessIdentity(
     @CborLabel(0) val pid: Long,
-    @CborLabel(1) val executablePath: String,
+    /** Best-effort executable path. Some platforms restrict this for processes owned by another user. */
+    @CborLabel(1) val executablePath: String? = null,
     @CborLabel(2) val displayName: String? = null,
 ) {
     fun validationError(): String? = when {
         pid <= 0 -> "process pid must be positive"
-        !executablePath.isBoundedDesktopExecutablePath() -> "process executable path is invalid"
+        executablePath != null && !executablePath.isBoundedDesktopExecutablePath() ->
+            "process executable path is invalid"
         displayName != null && !displayName.isBoundedDesktopProcessText(
             DesktopProcessContextLimits.MAX_DISPLAY_NAME_UTF8_BYTES,
         ) -> "process display name is invalid"
