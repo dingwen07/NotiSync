@@ -17,6 +17,8 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
+import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
+import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
 /** Private notification-shade presentation for a pending signing decision. */
@@ -24,7 +26,11 @@ class OpenPgpSignNotificationPresenter(
     private val context: Context,
     private val openRequestPageAutomatically: () -> Boolean = { false },
 ) {
-    fun post(stored: StoredOpenPgpRequest, requesterName: String): Boolean {
+    fun post(
+        stored: StoredOpenPgpRequest,
+        requesterName: String,
+        openImmediately: Boolean = false,
+    ): Boolean {
         ensureChannel()
         if (
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -62,6 +68,7 @@ class OpenPgpSignNotificationPresenter(
             notificationId(requestId),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+            requestPagePendingIntentOptions(),
         )
         val rejectIntent = PendingIntent.getBroadcast(
             context,
@@ -115,6 +122,9 @@ class OpenPgpSignNotificationPresenter(
             }
             .build()
         NotificationManagerCompat.from(context).notify(notificationId(requestId), notification)
+        if (openImmediately && openRequestPageAutomatically()) {
+            tryOpenRequestPageWhileUnlocked(context, pendingIntent)
+        }
         return true
     }
 
