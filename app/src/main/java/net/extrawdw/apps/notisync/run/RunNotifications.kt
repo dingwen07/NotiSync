@@ -29,7 +29,6 @@ import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withTimeoutOrNull
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
@@ -415,13 +414,9 @@ class RunActionReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO + crashGuard("RunActionReceiver")).launch {
             try {
-                val graph = app.awaitGraphReady(RECEIVER_GRAPH_WAIT_MS)
+                val graph = app.awaitGraphReady()
                 val engine = graph?.runEngine
-                val sent = engine?.let {
-                    withTimeoutOrNull(RECEIVER_SEND_JOIN_MS) {
-                        it.sendBestEffortControl(control)
-                    }
-                } == true
+                val sent = engine?.sendBestEffortControl(control) == true
                 if (!sent) {
                     RunNotificationActionGate.release(route.key)
                     ContextCompat.getMainExecutor(context).execute {
@@ -446,7 +441,5 @@ class RunActionReceiver : BroadcastReceiver() {
     companion object {
         const val ACTION_CONTROL = "net.extrawdw.apps.notisync.RUN_CONTROL"
         const val REMOTE_INPUT_KEY = "run_input"
-        private const val RECEIVER_GRAPH_WAIT_MS = 7_000L
-        private const val RECEIVER_SEND_JOIN_MS = 2_000L
     }
 }

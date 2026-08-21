@@ -3,6 +3,8 @@ package net.extrawdw.apps.notisync.messaging.inbound
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.data.relay.RelayBatchItem
 import net.extrawdw.apps.notisync.data.relay.RelayBatchPresentation
@@ -47,6 +49,8 @@ internal enum class RelayBatchDrainResult {
  * Feature and handled commits may stream before END, but network ACK and NotificationManager presentation never
  * do. The source port may return [RelayFiniteBatchFetchResult.COMPLETE] only after validating END/count; all other
  * exits clear scratch and leave the broker copy authoritative. Dismissals reconcile before notification posts.
+ * Concurrent batch drains are serialized, while the shared inbound gate covers only each owner/presentation step so
+ * a live WebSocket delivery is never parked behind batch network I/O.
  */
 internal class RelayBatchDrainCoordinator(
     private val processGate: InboundProcessGate,
@@ -57,12 +61,14 @@ internal class RelayBatchDrainCoordinator(
     private val exactSource: RelayExactFetchPort,
     private val pageSize: Int = DEFAULT_PAGE_SIZE,
 ) {
+    private val drainGate = Mutex()
+
     init {
         require(pageSize in 1..RelayLimits.MAX_BATCH_PAGE_ROWS) { "relay batch page size is outside its bound" }
     }
 
     suspend fun drain(continuity: RelayOperationalContinuity): RelayBatchDrainResult =
-        processGate.withInboundExclusive { drainExclusive(continuity) }
+        drainGate.withLock { drainExclusive(continuity) }
 
     private suspend fun drainExclusive(continuity: RelayOperationalContinuity): RelayBatchDrainResult {
         scratch.clearAtDrainBoundary()
@@ -72,23 +78,25 @@ internal class RelayBatchDrainCoordinator(
             val fetchResult = batchSource.fetch { arrival ->
                 currentCoroutineContext().ensureActive()
                 check(arrival.continuity == continuity) { "relay batch item crossed Operational continuity" }
-                val result = delivery.receiveForBatch(
-                    arrival,
-                    InboundBatchObservationPort { observation ->
-                        when (
-                            scratch.record(
-                                messageId = observation.messageId,
-                                authenticatedToken = observation.authenticatedToken,
-                                presentation = observation.prerequisite.toBatchPresentation(),
-                            )
-                        ) {
-                            RelayBatchRecordOutcome.INSERTED,
-                            RelayBatchRecordOutcome.EXACT,
-                            -> InboundBatchObservationResult.RECORDED
-                            RelayBatchRecordOutcome.CONFLICT -> InboundBatchObservationResult.CONFLICT
-                        }
-                    },
-                )
+                val result = processGate.withInboundExclusive {
+                    delivery.receiveForBatch(
+                        arrival,
+                        InboundBatchObservationPort { observation ->
+                            when (
+                                scratch.record(
+                                    messageId = observation.messageId,
+                                    authenticatedToken = observation.authenticatedToken,
+                                    presentation = observation.prerequisite.toBatchPresentation(),
+                                )
+                            ) {
+                                RelayBatchRecordOutcome.INSERTED,
+                                RelayBatchRecordOutcome.EXACT,
+                                -> InboundBatchObservationResult.RECORDED
+                                RelayBatchRecordOutcome.CONFLICT -> InboundBatchObservationResult.CONFLICT
+                            }
+                        },
+                    )
+                }
                 if (result !is InboundCoordinatorResult.AcknowledgementPending) retryRequired = true
             }
             if (fetchResult != RelayFiniteBatchFetchResult.COMPLETE) {
@@ -142,14 +150,16 @@ internal class RelayBatchDrainCoordinator(
                         retryRequired = true
                         return@page
                     }
-                    val replay = delivery.replayBatchPresentation(
-                        arrival = arrival,
-                        expected = InboundBatchObservation(
-                            messageId = row.messageId,
-                            authenticatedToken = row.authenticatedToken,
-                            prerequisite = kind.toAcknowledgementPrerequisite(),
-                        ),
-                    )
+                    val replay = processGate.withInboundExclusive {
+                        delivery.replayBatchPresentation(
+                            arrival = arrival,
+                            expected = InboundBatchObservation(
+                                messageId = row.messageId,
+                                authenticatedToken = row.authenticatedToken,
+                                prerequisite = kind.toAcknowledgementPrerequisite(),
+                            ),
+                        )
+                    }
                     val candidate = (replay as? InboundCoordinatorResult.AcknowledgementPending)?.candidate
                     if (
                         candidate == null ||

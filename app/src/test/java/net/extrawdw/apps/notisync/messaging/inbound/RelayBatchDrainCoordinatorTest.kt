@@ -4,7 +4,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runTest
-import kotlinx.coroutines.yield
 import net.extrawdw.apps.notisync.data.relay.AuthenticatedRelayToken
 import net.extrawdw.apps.notisync.data.relay.RelayBatchItem
 import net.extrawdw.apps.notisync.data.relay.RelayBatchPresentation
@@ -134,7 +133,7 @@ class RelayBatchDrainCoordinatorTest {
     }
 
     @Test
-    fun directDeliveryCannotRaceActiveFiniteDrainScratchOrPresentation() = runTest {
+    fun directDeliveryIsNotBlockedByFiniteBatchNetworkWait() = runTest {
         val gate = MutexInboundProcessGate()
         val enteredBatch = CompletableDeferred<Unit>()
         val releaseBatch = CompletableDeferred<Unit>()
@@ -168,13 +167,11 @@ class RelayBatchDrainCoordinatorTest {
         val draining = async { batch.drain(CONTINUITY) }
         enteredBatch.await()
         val directRun = async { direct.process(arrival("plain-1", CONTINUITY)) }
-        yield()
-        assertEquals(0, directCalls)
+        directRun.await()
+        assertEquals(1, directCalls)
 
         releaseBatch.complete(Unit)
         assertEquals(RelayBatchDrainResult.COMPLETE, draining.await())
-        directRun.await()
-        assertEquals(1, directCalls)
     }
 
     private fun fixture(

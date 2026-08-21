@@ -170,7 +170,7 @@ internal fun interface InboundDirectDeliveryPort {
     suspend fun receive(arrival: InboundEnvelopeArrival): InboundCoordinatorResult
 }
 
-/** One application-scoped serialization gate shared by live, exact-fetch, and finite-drain entry points. */
+/** Serializes individual owner/presentation steps shared by live, exact-fetch, and finite-drain entry points. */
 internal interface InboundProcessGate {
     suspend fun <T> withInboundExclusive(block: suspend () -> T): T
 }
