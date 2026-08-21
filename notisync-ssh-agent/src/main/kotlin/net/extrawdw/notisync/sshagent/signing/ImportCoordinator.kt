@@ -21,7 +21,7 @@ import net.extrawdw.notisync.sshagent.endpoint.IdentityImporter
 
 class ImportCoordinator(
     private val requesterClientId: ClientId,
-    private val config: AgentConfig,
+    private val config: () -> AgentConfig,
     private val roster: ProviderRoster,
     private val bridge: SshApplicationBridge,
     private val now: () -> Long = System::currentTimeMillis,
@@ -34,8 +34,7 @@ class ImportCoordinator(
     private val pending = java.util.concurrent.ConcurrentHashMap<String, Pending>()
 
     override fun import(identityPayload: ByteArray, parsed: ParsedAgentIdentity): Boolean {
-        val configured = config.defaultProviderClientId?.let(::ClientId) ?: return false
-        if (roster.activeProviderIds().none { it == configured }) return false
+        val configured = activeDefaultProvider(config, roster.activeProviderIds()) ?: return false
         val requestedAt = now()
         val request = SshImportRequest(
             requestId = randomId(),
@@ -81,6 +80,11 @@ class ImportCoordinator(
     private companion object {
         val RANDOM = SecureRandom()
     }
+}
+
+internal fun activeDefaultProvider(config: () -> AgentConfig, activeProviderIds: Set<ClientId>): ClientId? {
+    val configured = config().defaultProviderClientId?.let(::ClientId) ?: return null
+    return configured.takeIf { it in activeProviderIds }
 }
 
 /** Omits the optional protocol object when ssh-add supplied no constraints. */

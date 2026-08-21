@@ -1,10 +1,27 @@
 package net.extrawdw.notisync.sshagent
 
+import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.sshagent.cache.CachedProviderKeyRow
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertThrows
 import org.junit.Test
 
 class AgentInvocationTest {
+    @Test
+    fun `key row format includes fingerprint comment and named device identity`() {
+        val provider = ClientId("b".repeat(52))
+        val row = CachedProviderKeyRow(provider, "1".repeat(32), "SHA256:fingerprint", "Work key")
+
+        assertEquals(
+            "SHA256:fingerprint\tWork key\tPixel 9 (${provider.value})",
+            formatKeyRow(row, "Pixel 9"),
+        )
+        assertEquals(
+            "SHA256:fingerprint\tWork key\t${provider.value}",
+            formatKeyRow(row, null),
+        )
+    }
+
     @Test
     fun `bind addresses precede the command and may be repeated`() {
         assertEquals(

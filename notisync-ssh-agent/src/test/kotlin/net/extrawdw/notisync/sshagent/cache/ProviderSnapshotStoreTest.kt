@@ -61,6 +61,25 @@ class ProviderSnapshotStoreTest {
     }
 
     @Test
+    fun keyRowsListsEveryStoredProviderRowWithoutActiveProviderFiltering() {
+        withDatabase { database ->
+            val store = ProviderSnapshotStore(database)
+            val first = ClientId("b".repeat(52))
+            val second = ClientId("c".repeat(52))
+            val blob = SshPublicKeyCodec.encode(KeyPairGenerator.getInstance("Ed25519").generateKeyPair().public)
+            store.apply(first, snapshot(first, "1".repeat(32), 1, key("2".repeat(32), blob, "First")), 2_000)
+            store.apply(second, snapshot(second, "3".repeat(32), 1, key("4".repeat(32), blob, "Second")), 2_000)
+
+            val rows = store.keyRows()
+
+            assertEquals(listOf(first, second), rows.map(CachedProviderKeyRow::providerClientId))
+            assertEquals(listOf("First", "Second"), rows.map(CachedProviderKeyRow::comment))
+            assertEquals(2, rows.size)
+            assertEquals(rows[0].fingerprint, rows[1].fingerprint)
+        }
+    }
+
+    @Test
     fun rejectsConflictsStaleRevisionsAndRetiredGenerations() {
         withDatabase { database ->
             val store = ProviderSnapshotStore(database)
