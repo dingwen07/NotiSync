@@ -1020,7 +1020,7 @@ internal class RoomSshProviderRepository(
                     PreparedSshKeyStorage(
                         prepared.cipher,
                         null,
-                        SshAuthenticationPolicy.SIGNING_KEY_AUTHENTICATORS,
+                        SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS,
                         this,
                         0,
                         provisioning,
@@ -1047,13 +1047,24 @@ internal class RoomSshProviderRepository(
         wrappedVault.completeUnwrap(opened).use { bytes -> require(MessageDigest.isEqual(bytes.bytes, requireNotNull(provisioning.privateKeyPkcs8).bytes)) }
         val exportPolicy = provisioning.exportCopyBackendPolicy
         if (exportPolicy != null && provisioning.exportMaterial == null) {
-            val exportAlias = exportVault.alias(record.providerKeyId, exportVault.shouldAttemptStrongBox(exportPolicy))
             val exportPrepared = exportVault.prepareProtect(record.providerKeyId, requireNotNull(provisioning.privateKeyPkcs8), record.algorithm, record.publicHash, exportVault.shouldAttemptStrongBox(exportPolicy))
-            if (record.userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
-                return SshKeyStorageResult.AuthenticationRequired(PreparedSshKeyStorage(exportPrepared.cipher, null, SshAuthenticationPolicy.EXPORT_KEY_AUTHENTICATORS, this, 0, provisioning, PreparedStorageStage.ExportEncrypt(exportPrepared, exportPrepared.securityLevel == SshStorageSecurityLevel.STRONGBOX)))
-            }
-            provisioning.exportMaterial = exportVault.completeProtect(exportPrepared)
-            keyDao.addLifecycleCandidate(SshKeyLifecycleCandidateEntity(record.providerKeyId, SshLifecycleCandidatePurpose.EXPORT, exportAlias, provisioning.exportMaterial!!.ciphertext.copyOf(), provisioning.exportMaterial!!.nonce.copyOf(), provisioning.exportMaterial!!.securityLevel.toToken()))
+            // Export-copy AES keys always require per-use biometric/device-credential authorization,
+            // independently of the operational signing-key verification policy. Completing this cipher
+            // directly makes Keystore reject updateAAD with KEY_USER_NOT_AUTHENTICATED.
+            return SshKeyStorageResult.AuthenticationRequired(
+                PreparedSshKeyStorage(
+                    exportPrepared.cipher,
+                    null,
+                    SshAuthenticationPolicy.EXPORT_PROMPT_AUTHENTICATORS,
+                    this,
+                    0,
+                    provisioning,
+                    PreparedStorageStage.ExportEncrypt(
+                        exportPrepared,
+                        exportPrepared.securityLevel == SshStorageSecurityLevel.STRONGBOX,
+                    ),
+                ),
+            )
         }
         return finalizeSoftwareProvisioning(provisioning)
     }
