@@ -962,7 +962,7 @@ class ScreenMirrorSessionController(
         }
         if (
             !settings.screenMirroringEnabled.value ||
-            shizuku.status.value != ShizukuScreenStatus.READY ||
+            shizuku.status.value.invalidatesActiveScreenSession() ||
             requesters.any { !authorizations.isAuthorized(it) }
         ) {
             stop(notifyPeer = true)

@@ -10,6 +10,7 @@ import com.genymobile.scrcpy.NotiSyncCaptureBackend
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlin.system.exitProcess
 
 /** Configuration passed to the scrcpy-derived privileged backend. */
 data class PrivilegedCaptureConfig(
@@ -91,13 +92,39 @@ internal object PrivilegedCaptureBackendFactory {
     fun create(): PrivilegedCaptureBackend = ScrcpyCaptureBackend()
 }
 
+/** Owns the one-shot cleanup required by Shizuku's reserved UserService destroy transaction. */
+internal class ScreenMirrorUserServiceDestroyLifecycle(
+    private val closeBackend: () -> Unit,
+    private val terminateProcess: () -> Unit,
+) {
+    private val destroyed = AtomicBoolean(false)
+
+    val isDestroyed: Boolean
+        get() = destroyed.get()
+
+    fun destroy() {
+        if (!destroyed.compareAndSet(false, true)) return
+
+        try {
+            runCatching(closeBackend)
+        } finally {
+            // Shizuku removes the service record but deliberately leaves process termination to the
+            // reserved destroy transaction implemented by the UserService.
+            terminateProcess()
+        }
+    }
+}
+
 /**
  * Shizuku instantiates this class directly in a shell-uid app_process. It is intentionally absent from the
  * Android manifest: only Shizuku's provider may create it.
  */
 class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
     private val backend = AtomicReference(PrivilegedCaptureBackendFactory.create())
-    private val destroyed = AtomicBoolean(false)
+    private val destroyLifecycle = ScreenMirrorUserServiceDestroyLifecycle(
+        closeBackend = { backend.get().close() },
+        terminateProcess = { exitProcess(0) },
+    )
 
     /** Preferred API-13 constructor; Keep prevents R8 from removing reflective construction. */
     @Keep
@@ -105,17 +132,25 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
 
     override fun getBackendStatus(): Int =
         when {
-            destroyed.get() -> ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
+            destroyLifecycle.isDestroyed -> ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
             Os.getuid() == 0 -> ScreenMirrorBackendStatus.ROOT_UNSUPPORTED
             Os.getuid() != Process.SHELL_UID -> ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
             else -> backend.get().status
         }
 
     override fun probeHardwareCodecs(): Int =
-        if (destroyed.get() || Os.getuid() != Process.SHELL_UID) 0 else backend.get().probeHardwareCodecs()
+        if (destroyLifecycle.isDestroyed || Os.getuid() != Process.SHELL_UID) {
+            0
+        } else {
+            backend.get().probeHardwareCodecs()
+        }
 
     override fun probeCapabilities(): Int =
-        if (destroyed.get() || Os.getuid() != Process.SHELL_UID) 0 else backend.get().probeCapabilities()
+        if (destroyLifecycle.isDestroyed || Os.getuid() != Process.SHELL_UID) {
+            0
+        } else {
+            backend.get().probeCapabilities()
+        }
 
     override fun startSession(
         ownerToken: String,
@@ -128,7 +163,7 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         videoWriteFd: ParcelFileDescriptor,
         controlFd: ParcelFileDescriptor,
     ): Int {
-        if (destroyed.get()) {
+        if (destroyLifecycle.isDestroyed) {
             videoWriteFd.closeQuietly()
             controlFd.closeQuietly()
             return ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
@@ -183,10 +218,8 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         validOwnerToken(ownerToken) &&
             runCatching { backend.get().restartVideo(ownerToken) }.getOrDefault(false)
 
-    /** Reserved Shizuku destroy transaction. Shizuku owns process teardown after unbind. */
-    override fun destroy() {
-        if (destroyed.compareAndSet(false, true)) runCatching { backend.get().close() }
-    }
+    /** Reserved Shizuku destroy transaction; non-daemon UserServices must exit their own process. */
+    override fun destroy() = destroyLifecycle.destroy()
 
     private fun validOwnerToken(value: String): Boolean =
         value.isNotBlank() && value.length <= MAX_OWNER_TOKEN_CHARS && value.none(Char::isISOControl)

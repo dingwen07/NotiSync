@@ -44,6 +44,21 @@ enum class ShizukuScreenStatus {
     ERROR,
 }
 
+/**
+ * A newly bound UserService is probed asynchronously before it becomes ready. That expected BINDING
+ * transition must not revoke a session which was admitted while the manager was READY; every other
+ * non-ready state means the privileged transport can no longer be trusted to remain usable.
+ */
+internal fun ShizukuScreenStatus.invalidatesActiveScreenSession(): Boolean = when (this) {
+    ShizukuScreenStatus.READY,
+    ShizukuScreenStatus.BINDING -> false
+    ShizukuScreenStatus.NOT_RUNNING,
+    ShizukuScreenStatus.PERMISSION_REQUIRED,
+    ShizukuScreenStatus.ROOT_UNSUPPORTED,
+    ShizukuScreenStatus.BACKEND_UNAVAILABLE,
+    ShizukuScreenStatus.ERROR -> true
+}
+
 data class VideoEncoderRecoveryResult(
     val bitrateApplied: Boolean,
     val syncFrameRequested: Boolean,
