@@ -129,7 +129,7 @@ class PairingHostApduService : HostApduService() {
     private var selectedNdefFile: Int? = null
     private val pairingExchange by lazy {
         PairingPayloadExchange(
-            outgoingPayload = PairingCardStore::current,
+            outgoingPayload = PairingCardStore::currentWirePayload,
             onIncomingPayload = { PairingNfcInbox.offer(applicationContext, it) },
         )
     }

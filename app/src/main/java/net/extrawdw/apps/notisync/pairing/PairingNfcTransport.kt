@@ -39,7 +39,7 @@ import net.extrawdw.apps.notisync.R
  */
 internal object PairingCardStore {
     @Volatile
-    private var cachedPayload: String? = null
+    private var cachedPayload: CachedPayload? = null
 
     @Volatile
     private var loaded = false
@@ -47,23 +47,31 @@ internal object PairingCardStore {
     @Synchronized
     fun preload(context: Context) {
         if (loaded) return
-        cachedPayload = preferences(context).getString(KEY_OUTGOING_PAYLOAD, null)
-            ?.takeIf { runCatching { PairingNfcProtocol.payloadBytes(it) }.isSuccess }
+        cachedPayload = preferences(context).getString(KEY_OUTGOING_PAYLOAD, null)?.let { encoded ->
+            runCatching {
+                CachedPayload(encoded, PairingNfcProtocol.decodePayload(encoded))
+            }.getOrNull()
+        }
         loaded = true
     }
 
-    /** Memory-only HCE hot path. Application.onCreate always calls [preload] before services are created. */
-    fun current(): String? = cachedPayload
+    /** Canonical Base64URL form used by QR, links, NDEF, and the existing pairing verifier. */
+    fun current(): String? = cachedPayload?.encoded
+
+    /** Read-only decoded snapshot used directly by the memory-only HCE hot path. */
+    fun currentWirePayload(): ByteArray? = cachedPayload?.wire
 
     /** Called off-main when a new signed card is generated. */
     fun persist(context: Context, payload: String) {
-        PairingNfcProtocol.payloadBytes(payload)
+        val decoded = PairingNfcProtocol.decodePayload(payload)
         check(preferences(context).edit().putString(KEY_OUTGOING_PAYLOAD, payload).commit()) {
             "could not persist the NFC pairing card"
         }
-        cachedPayload = payload
+        cachedPayload = CachedPayload(payload, decoded)
         loaded = true
     }
+
+    private data class CachedPayload(val encoded: String, val wire: ByteArray)
 }
 
 /** One durable, untrusted pairing card received by the HCE side of a tap. */
@@ -78,13 +86,13 @@ internal object PairingNfcInbox {
     fun preload(context: Context) {
         if (loaded) return
         _pendingPayload.value = preferences(context).getString(KEY_INCOMING_PAYLOAD, null)
-            ?.takeIf { runCatching { PairingNfcProtocol.payloadBytes(it) }.isSuccess }
+            ?.takeIf { runCatching { PairingNfcProtocol.decodePayload(it) }.isSuccess }
         loaded = true
     }
 
     /** Non-blocking commit path used by HostApduService.processCommandApdu on the main thread. */
-    fun offer(context: Context, payload: String) {
-        PairingNfcProtocol.payloadBytes(payload)
+    fun offer(context: Context, wirePayload: ByteArray) {
+        val payload = PairingNfcProtocol.encodePayload(wirePayload)
         preferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
         _pendingPayload.value = payload
         // Android's NFC service binds HostApduService with BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS. Queue the
@@ -184,7 +192,7 @@ internal class PairingNfcReaderSession private constructor(
     private val onPayload: (String) -> Unit,
     private val onFailure: (Throwable) -> Unit,
 ) : Closeable, NfcAdapter.ReaderCallback {
-    private val ownPayloadBytes = PairingNfcProtocol.payloadBytes(ownPayload)
+    private val ownPayloadBytes = PairingNfcProtocol.decodePayload(ownPayload)
     private val active = AtomicBoolean(true)
     private val handling = AtomicBoolean(false)
 
@@ -256,7 +264,7 @@ internal class PairingNfcReaderSession private constructor(
             PairingNfcProtocol.requireSuccessfulResponse(
                 connection.transceive(PairingNfcProtocol.commitExchangeCommand)
             )
-            return PairingNfcProtocol.payloadString(remotePayload)
+            return PairingNfcProtocol.encodePayload(remotePayload)
         }
     }
 

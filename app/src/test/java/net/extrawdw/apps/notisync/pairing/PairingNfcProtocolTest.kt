@@ -18,9 +18,9 @@ class PairingNfcProtocolTest {
 
     @Test
     fun oneKilobytePayloadsAreExchangedBidirectionallyAndCommittedTogether() {
-        val hcePayload = payload(1_087, 'A')
-        val readerPayload = payload(1_213, 'a')
-        var receivedByHce: String? = null
+        val hcePayload = binaryPayload(1_087, 0xA5)
+        val readerPayload = binaryPayload(1_213, 0x3C)
+        var receivedByHce: ByteArray? = null
         val exchange = PairingPayloadExchange(
             outgoingPayload = { hcePayload },
             onIncomingPayload = { receivedByHce = it },
@@ -29,16 +29,15 @@ class PairingNfcProtocolTest {
         val selection = PairingNfcProtocol.parseSelectResponse(exchange.select())
         val downloaded = ByteArray(selection.payloadSize)
         selection.initialPayload.copyInto(downloaded)
-        val readerBytes = PairingNfcProtocol.payloadBytes(readerPayload)
         var readerOffset = 0
         var hceOffset = selection.initialPayload.size
         var exchangeCount = 0
 
-        while (readerOffset < readerBytes.size || hceOffset < downloaded.size) {
-            val readerLength = minOf(selection.maxChunkSize, readerBytes.size - readerOffset)
+        while (readerOffset < readerPayload.size || hceOffset < downloaded.size) {
+            val readerLength = minOf(selection.maxChunkSize, readerPayload.size - readerOffset)
             val hceLength = minOf(selection.maxChunkSize, downloaded.size - hceOffset)
             val command = PairingNfcProtocol.exchangePayloadCommand(
-                readerPayload = readerBytes,
+                readerPayload = readerPayload,
                 readerOffset = readerOffset,
                 readerLength = readerLength,
                 requestedPeerOffset = hceOffset,
@@ -58,18 +57,18 @@ class PairingNfcProtocolTest {
             PairingNfcProtocol.statusOk,
             exchange.process(PairingNfcProtocol.commitExchangeCommand),
         )
-        assertEquals(hcePayload, PairingNfcProtocol.payloadString(downloaded))
-        assertEquals(readerPayload, receivedByHce)
+        assertArrayEquals(hcePayload, downloaded)
+        assertArrayEquals(readerPayload, requireNotNull(receivedByHce))
     }
 
     @Test
     fun commitRejectsAnIncompleteReaderPayload() {
         val exchange = PairingPayloadExchange(
-            outgoingPayload = { payload(300, 'B') },
+            outgoingPayload = { binaryPayload(300, 0xB2) },
             onIncomingPayload = { error("must not publish a partial payload") },
         )
         val selection = PairingNfcProtocol.parseSelectResponse(exchange.select())
-        val reader = PairingNfcProtocol.payloadBytes(payload(300, 'C'))
+        val reader = binaryPayload(300, 0xC3)
         val remainingHce = selection.payloadSize - selection.initialPayload.size
 
         val partial = PairingNfcProtocol.exchangePayloadCommand(
@@ -91,11 +90,11 @@ class PairingNfcProtocolTest {
     fun commitRejectsUntilTheReaderHasDownloadedTheWholePeerPayload() {
         var published = false
         val exchange = PairingPayloadExchange(
-            outgoingPayload = { payload(600, 'F') },
+            outgoingPayload = { binaryPayload(600, 0xF6) },
             onIncomingPayload = { published = true },
         )
         val selection = PairingNfcProtocol.parseSelectResponse(exchange.select())
-        val reader = PairingNfcProtocol.payloadBytes(payload(20, 'G'))
+        val reader = binaryPayload(20, 0x17)
 
         val uploadsReaderButLeavesPeerUnread = PairingNfcProtocol.exchangePayloadCommand(
             readerPayload = reader,
@@ -116,11 +115,11 @@ class PairingNfcProtocolTest {
     @Test
     fun outOfOrderChunkIsRejectedWithoutAdvancingEitherDirection() {
         val exchange = PairingPayloadExchange(
-            outgoingPayload = { payload(400, 'D') },
+            outgoingPayload = { binaryPayload(400, 0xD4) },
             onIncomingPayload = {},
         )
         val selection = PairingNfcProtocol.parseSelectResponse(exchange.select())
-        val reader = PairingNfcProtocol.payloadBytes(payload(400, 'E'))
+        val reader = binaryPayload(400, 0xE5)
         val invalid = PairingNfcProtocol.exchangePayloadCommand(
             readerPayload = reader,
             readerOffset = 1,
@@ -240,18 +239,50 @@ class PairingNfcProtocolTest {
     }
 
     @Test
-    fun payloadSizeIsBoundedBeforeAllocation() {
-        val oversized = "A".repeat(PairingNfcProtocol.MAX_PAIRING_PAYLOAD_BYTES + 1)
-        assertTrue(runCatching { PairingNfcProtocol.payloadBytes(oversized) }.isFailure)
+    fun customApduCarriesDecodedBinaryRatherThanBase64Text() {
+        val wirePayload = byteArrayOf(
+            0x00,
+            0x01,
+            0x7F,
+            0x80.toByte(),
+            0xFB.toByte(),
+            0xFF.toByte(),
+        )
+
+        val encoded = PairingNfcProtocol.encodePayload(wirePayload)
+        val selection = PairingNfcProtocol.parseSelectResponse(
+            PairingNfcProtocol.selectResponse(PairingNfcProtocol.decodePayload(encoded))
+        )
+
+        assertArrayEquals(wirePayload, selection.initialPayload)
+        assertTrue('=' !in encoded && '+' !in encoded && '/' !in encoded)
     }
 
-    private fun payload(size: Int, seed: Char): String {
-        val alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-        val start = alphabet.indexOf(seed).coerceAtLeast(0)
-        return buildString(size) {
-            repeat(size) { append(alphabet[(start + it) % alphabet.length]) }
-        }
+    @Test
+    fun textBoundaryAcceptsOnlyCanonicalUnpaddedBase64Url() {
+        assertArrayEquals(byteArrayOf(0x01), PairingNfcProtocol.decodePayload("AQ"))
+        assertTrue(runCatching { PairingNfcProtocol.decodePayload("AQ==") }.isFailure)
+        assertTrue(runCatching { PairingNfcProtocol.decodePayload("") }.isFailure)
     }
+
+    @Test
+    fun wirePayloadSizeIsBoundedBeforeExchangeAllocation() {
+        val oversized = ByteArray(PairingNfcProtocol.MAX_PAIRING_WIRE_BYTES + 1)
+
+        assertTrue(runCatching { PairingNfcProtocol.selectResponse(oversized) }.isFailure)
+        assertTrue(runCatching {
+            PairingNfcProtocol.exchangePayloadCommand(
+                readerPayload = oversized,
+                readerOffset = 0,
+                readerLength = 0,
+                requestedPeerOffset = 0,
+                requestedPeerLength = 0,
+            )
+        }.isFailure)
+    }
+
+    private fun binaryPayload(size: Int, seed: Int): ByteArray =
+        ByteArray(size) { index -> (seed + index * 37).toByte() }
 
     private fun ByteArray.toHex(): String = joinToString(separator = "") { "%02X".format(it) }
 }

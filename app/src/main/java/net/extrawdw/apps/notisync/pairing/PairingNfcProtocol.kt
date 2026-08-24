@@ -1,21 +1,22 @@
 package net.extrawdw.apps.notisync.pairing
 
-import java.nio.charset.StandardCharsets
+import java.util.Base64
 import kotlin.math.min
 
 /**
- * Versioned ISO-DEP transport for an opaque, reciprocal pairing payload exchange.
+ * Versioned ISO-DEP transport for an opaque, reciprocal binary pairing payload exchange.
  *
- * Both sides already carry about 1 KiB. Every EXCHANGE_PAYLOAD command therefore uses a short APDU whose
- * request uploads the reader's next chunk while its response downloads the HCE peer's next chunk. ISO-DEP
- * handles RF-frame fragmentation; this application chunking avoids requiring extended-length APDUs.
+ * Text transports use canonical unpadded Base64URL, but this custom APDU protocol carries the decoded bytes
+ * directly. Every EXCHANGE_PAYLOAD command uses a short APDU whose request uploads the reader's next chunk
+ * while its response downloads the HCE peer's next chunk. ISO-DEP handles RF-frame fragmentation; this
+ * application chunking avoids requiring extended-length APDUs.
  */
 internal object PairingNfcProtocol {
     private const val EXCHANGE_HEADER_BYTES = 7
     private const val EXCHANGE_DATA_OFFSET = 5 + EXCHANGE_HEADER_BYTES
 
     const val APPLICATION_AID_HEX = "F04E6F746953796E63"
-    const val MAX_PAIRING_PAYLOAD_BYTES = 16 * 1024
+    const val MAX_PAIRING_WIRE_BYTES = 16 * 1024
 
     /** Seven bytes of exchange metadata leave 248 bytes in a standard 255-byte APDU data field. */
     const val MAX_EXCHANGE_CHUNK_BYTES = 0xFF - EXCHANGE_HEADER_BYTES
@@ -33,6 +34,8 @@ internal object PairingNfcProtocol {
 
     private val applicationAid = APPLICATION_AID_HEX.hexToBytes()
     private val responseMarker = byteArrayOf('N'.code.toByte(), 'S'.code.toByte())
+    private val payloadEncoder = Base64.getUrlEncoder().withoutPadding()
+    private val payloadDecoder = Base64.getUrlDecoder()
 
     val selectApplicationCommand: ByteArray =
         byteArrayOf(0x00, INS_SELECT.toByte(), 0x04, 0x00, applicationAid.size.toByte()) +
@@ -47,7 +50,6 @@ internal object PairingNfcProtocol {
 
     val statusOk = byteArrayOf(0x90.toByte(), 0x00)
     val statusFileNotFound = byteArrayOf(0x6A, 0x82.toByte())
-    val statusWrongData = byteArrayOf(0x6A, 0x80.toByte())
     val statusConditionsNotSatisfied = byteArrayOf(0x69, 0x85.toByte())
     val statusInstructionNotSupported = byteArrayOf(0x6D, 0x00)
     val statusWrongOffset = byteArrayOf(0x6B, 0x00)
@@ -76,7 +78,7 @@ internal object PairingNfcProtocol {
     }
 
     fun selectResponse(payload: ByteArray): ByteArray {
-        require(payload.size in 1..MAX_PAIRING_PAYLOAD_BYTES)
+        requireWirePayload(payload)
         val initial = payload.copyOf(min(payload.size, MAX_EXCHANGE_CHUNK_BYTES))
         return responseMarker + byteArrayOf(
             VERSION.toByte(),
@@ -93,7 +95,7 @@ internal object PairingNfcProtocol {
         ) { "unsupported NotiSync NFC response" }
         require(data.u(2) == VERSION) { "unsupported NotiSync NFC protocol version" }
         val payloadSize = (data.u(3) shl 8) or data.u(4)
-        require(payloadSize in 1..MAX_PAIRING_PAYLOAD_BYTES) { "invalid pairing payload length" }
+        require(payloadSize in 1..MAX_PAIRING_WIRE_BYTES) { "invalid pairing payload length" }
         val maxChunkSize = data.u(5)
         require(maxChunkSize in 1..MAX_EXCHANGE_CHUNK_BYTES) { "invalid NFC chunk size" }
         val initialPayload = data.copyOfRange(SELECT_METADATA_BYTES, data.size)
@@ -110,11 +112,11 @@ internal object PairingNfcProtocol {
         requestedPeerOffset: Int,
         requestedPeerLength: Int,
     ): ByteArray {
-        require(readerPayload.size in 1..MAX_PAIRING_PAYLOAD_BYTES)
+        requireWirePayload(readerPayload)
         require(readerOffset in 0..readerPayload.size)
         require(readerLength in 0..MAX_EXCHANGE_CHUNK_BYTES)
         require(readerOffset + readerLength <= readerPayload.size)
-        require(requestedPeerOffset in 0..MAX_PAIRING_PAYLOAD_BYTES)
+        require(requestedPeerOffset in 0..MAX_PAIRING_WIRE_BYTES)
         require(requestedPeerLength in 0..MAX_EXCHANGE_CHUNK_BYTES)
         val dataLength = EXCHANGE_HEADER_BYTES + readerLength
         val case3Command = byteArrayOf(
@@ -154,7 +156,7 @@ internal object PairingNfcProtocol {
         if (command.size != expectedCommandSize) return null
         if (requestedPeerLength > 0 && command.u(dataEnd) != requestedPeerLength) return null
         val readerChunk = command.copyOfRange(EXCHANGE_DATA_OFFSET, dataEnd)
-        if (readerPayloadSize !in 1..MAX_PAIRING_PAYLOAD_BYTES ||
+        if (readerPayloadSize !in 1..MAX_PAIRING_WIRE_BYTES ||
             readerChunk.size > MAX_EXCHANGE_CHUNK_BYTES ||
             requestedPeerLength !in 0..MAX_EXCHANGE_CHUNK_BYTES
         ) return null
@@ -186,22 +188,30 @@ internal object PairingNfcProtocol {
         return response.copyOf(response.size - statusOk.size)
     }
 
-    fun payloadBytes(payload: String): ByteArray {
-        val bytes = payload.toByteArray(StandardCharsets.US_ASCII)
-        require(bytes.size in 1..MAX_PAIRING_PAYLOAD_BYTES) { "pairing payload is too large for NFC" }
-        require(bytes.all(::isBase64UrlByte)) { "pairing payload is not base64url" }
-        return bytes
+    /** Decode canonical unpadded Base64URL used by QR/link/NDEF transports into the custom APDU wire form. */
+    fun decodePayload(encodedPayload: String): ByteArray {
+        require(encodedPayload.length in 2..MAX_ENCODED_PAYLOAD_CHARS) {
+            "pairing payload is too large for NFC"
+        }
+        val wirePayload = runCatching { payloadDecoder.decode(encodedPayload) }
+            .getOrElse { throw IllegalArgumentException("pairing payload is not base64url", it) }
+        requireWirePayload(wirePayload)
+        require(payloadEncoder.encodeToString(wirePayload) == encodedPayload) {
+            "pairing payload is not canonical unpadded base64url"
+        }
+        return wirePayload
     }
 
-    fun payloadString(payload: ByteArray): String {
-        require(payload.size in 1..MAX_PAIRING_PAYLOAD_BYTES)
-        require(payload.all(::isBase64UrlByte)) { "pairing payload is not base64url" }
-        return String(payload, StandardCharsets.US_ASCII)
+    /** Encode custom APDU wire bytes for the existing QR/link/NDEF pairing verifier. */
+    fun encodePayload(wirePayload: ByteArray): String {
+        requireWirePayload(wirePayload)
+        return payloadEncoder.encodeToString(wirePayload)
     }
 
-    private fun isBase64UrlByte(value: Byte): Boolean {
-        val char = value.toInt().toChar()
-        return char in 'A'..'Z' || char in 'a'..'z' || char in '0'..'9' || char == '-' || char == '_'
+    private fun requireWirePayload(wirePayload: ByteArray) {
+        require(wirePayload.size in 1..MAX_PAIRING_WIRE_BYTES) {
+            "pairing payload is too large for NFC"
+        }
     }
 
     private fun String.hexToBytes(): ByteArray {
@@ -210,12 +220,14 @@ internal object PairingNfcProtocol {
     }
 
     private fun ByteArray.u(index: Int): Int = this[index].toInt() and 0xFF
+
+    private const val MAX_ENCODED_PAYLOAD_CHARS = (MAX_PAIRING_WIRE_BYTES * 4 + 2) / 3
 }
 
 /** Stateful HCE side of one bidirectional payload exchange. */
 internal class PairingPayloadExchange(
-    private val outgoingPayload: () -> String?,
-    private val onIncomingPayload: (String) -> Unit,
+    private val outgoingPayload: () -> ByteArray?,
+    private val onIncomingPayload: (ByteArray) -> Unit,
 ) {
     private var selectedOutgoing: ByteArray? = null
     private var outgoingRead = 0
@@ -225,8 +237,8 @@ internal class PairingPayloadExchange(
 
     fun select(): ByteArray {
         reset()
-        val payload = outgoingPayload()?.let {
-            runCatching { PairingNfcProtocol.payloadBytes(it) }.getOrNull()
+        val payload = outgoingPayload()?.takeIf {
+            it.size in 1..PairingNfcProtocol.MAX_PAIRING_WIRE_BYTES
         } ?: return PairingNfcProtocol.statusFileNotFound
         selectedOutgoing = payload
         outgoingRead = min(payload.size, PairingNfcProtocol.MAX_EXCHANGE_CHUNK_BYTES)
@@ -276,9 +288,7 @@ internal class PairingPayloadExchange(
         val complete = incoming?.takeIf { incomingWritten == it.size }
             ?: return PairingNfcProtocol.statusConditionsNotSatisfied
         if (outgoingRead != outgoing.size) return PairingNfcProtocol.statusConditionsNotSatisfied
-        val payload = runCatching { PairingNfcProtocol.payloadString(complete) }.getOrNull()
-            ?: return PairingNfcProtocol.statusWrongData
-        return runCatching { onIncomingPayload(payload) }.fold(
+        return runCatching { onIncomingPayload(complete) }.fold(
             onSuccess = {
                 committed = true
                 incoming = null
