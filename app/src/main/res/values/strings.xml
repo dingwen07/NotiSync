@@ -743,7 +743,7 @@
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="pair_nfc_service_description">NotiSync Device Pairing</string>
+    <string name="notisync_nfc_service_description">NotiSync NFC</string>
     <string name="pair_nfc_notification_channel">Pairing requests</string>
     <string name="pair_nfc_notification_title">Review device pairing</string>
     <string name="pair_nfc_notification_text">Tap to verify and approve the other device.</string>

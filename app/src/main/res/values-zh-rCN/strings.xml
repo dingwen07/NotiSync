@@ -716,7 +716,7 @@
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
     <string name="pair_verification_number">验证码：%1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="pair_nfc_service_description">NotiSync 设备配对</string>
+    <string name="notisync_nfc_service_description">NotiSync NFC</string>
     <string name="pair_nfc_notification_channel">配对请求</string>
     <string name="pair_nfc_notification_title">审核设备配对</string>
     <string name="pair_nfc_notification_text">点按以验证并批准另一台设备。</string>

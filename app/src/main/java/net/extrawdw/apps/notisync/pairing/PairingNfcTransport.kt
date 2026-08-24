@@ -30,6 +30,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.nfc.NotiSyncNfcProtocol
 
 /**
  * Device-protected, no-backup cache of the last locally generated public pairing card.
@@ -49,7 +50,7 @@ internal object PairingCardStore {
         if (loaded) return
         cachedPayload = preferences(context).getString(KEY_OUTGOING_PAYLOAD, null)?.let { encoded ->
             runCatching {
-                CachedPayload(encoded, PairingNfcProtocol.decodePayload(encoded))
+                CachedPayload(encoded, PairingNfcPayloadCodec.decode(encoded))
             }.getOrNull()
         }
         loaded = true
@@ -63,7 +64,7 @@ internal object PairingCardStore {
 
     /** Called off-main when a new signed card is generated. */
     fun persist(context: Context, payload: String) {
-        val decoded = PairingNfcProtocol.decodePayload(payload)
+        val decoded = PairingNfcPayloadCodec.decode(payload)
         check(preferences(context).edit().putString(KEY_OUTGOING_PAYLOAD, payload).commit()) {
             "could not persist the NFC pairing card"
         }
@@ -86,13 +87,13 @@ internal object PairingNfcInbox {
     fun preload(context: Context) {
         if (loaded) return
         _pendingPayload.value = preferences(context).getString(KEY_INCOMING_PAYLOAD, null)
-            ?.takeIf { runCatching { PairingNfcProtocol.decodePayload(it) }.isSuccess }
+            ?.takeIf { runCatching { PairingNfcPayloadCodec.decode(it) }.isSuccess }
         loaded = true
     }
 
     /** Non-blocking commit path used by HostApduService.processCommandApdu on the main thread. */
     fun offer(context: Context, wirePayload: ByteArray) {
-        val payload = PairingNfcProtocol.encodePayload(wirePayload)
+        val payload = PairingNfcPayloadCodec.encode(wirePayload)
         preferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
         _pendingPayload.value = payload
         // Android's NFC service binds HostApduService with BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS. Queue the
@@ -192,7 +193,7 @@ internal class PairingNfcReaderSession private constructor(
     private val onPayload: (String) -> Unit,
     private val onFailure: (Throwable) -> Unit,
 ) : Closeable, NfcAdapter.ReaderCallback {
-    private val ownPayloadBytes = PairingNfcProtocol.decodePayload(ownPayload)
+    private val ownPayloadBytes = PairingNfcPayloadCodec.decode(ownPayload)
     private val active = AtomicBoolean(true)
     private val handling = AtomicBoolean(false)
 
@@ -228,10 +229,19 @@ internal class PairingNfcReaderSession private constructor(
         activeIsoDep = isoDep
         isoDep.use { connection ->
             connection.connect()
-            val selection = PairingNfcProtocol.parseSelectResponse(
-                connection.transceive(PairingNfcProtocol.selectApplicationCommand)
+            val discovery = NotiSyncNfcProtocol.parseApplicationSelectionResponse(
+                connection.transceive(NotiSyncNfcProtocol.selectApplicationCommand)
             )
-            val chunkSize = PairingNfcProtocol.readerChunkSize(
+            val operation = NotiSyncNfcProtocol.Operation.PAIRING
+            val version = NotiSyncNfcProtocol.negotiateVersion(discovery, operation)
+            val selection = NotiSyncNfcProtocol.parseOperationSelectionResponse(
+                response = connection.transceive(
+                    NotiSyncNfcProtocol.negotiateOperationCommand(operation, version)
+                ),
+                expectedOperation = operation,
+                expectedVersion = version,
+            )
+            val chunkSize = NotiSyncNfcProtocol.readerChunkSize(
                 maxTransceiveLength = connection.maxTransceiveLength,
                 peerMaxChunkSize = selection.maxChunkSize,
             )
@@ -243,9 +253,9 @@ internal class PairingNfcReaderSession private constructor(
             while (readerOffset < ownPayloadBytes.size || peerOffset < remotePayload.size) {
                 val readerLength = minOf(chunkSize, ownPayloadBytes.size - readerOffset)
                 val peerLength = minOf(chunkSize, remotePayload.size - peerOffset)
-                val peerChunk = PairingNfcProtocol.requireSuccessfulResponse(
+                val peerChunk = NotiSyncNfcProtocol.requireSuccessfulResponse(
                     connection.transceive(
-                        PairingNfcProtocol.exchangePayloadCommand(
+                        NotiSyncNfcProtocol.exchangePayloadCommand(
                             readerPayload = ownPayloadBytes,
                             readerOffset = readerOffset,
                             readerLength = readerLength,
@@ -261,10 +271,10 @@ internal class PairingNfcReaderSession private constructor(
                 readerOffset += readerLength
                 peerOffset += peerLength
             }
-            PairingNfcProtocol.requireSuccessfulResponse(
-                connection.transceive(PairingNfcProtocol.commitExchangeCommand)
+            NotiSyncNfcProtocol.requireSuccessfulResponse(
+                connection.transceive(NotiSyncNfcProtocol.commitExchangeCommand)
             )
-            return PairingNfcProtocol.encodePayload(remotePayload)
+            return PairingNfcPayloadCodec.encode(remotePayload)
         }
     }
 
