@@ -98,6 +98,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.sshagent.SshAgentReviewActivity
 import net.extrawdw.apps.notisync.sshagent.SshKeyExportActivity
 import net.extrawdw.apps.notisync.sshagent.SshKeySendActivity
+import net.extrawdw.apps.notisync.sshagent.SshWebAuthnOpenSshIdentityExportActivity
 import net.extrawdw.apps.notisync.sshagent.PreparedSshKeyStorage
 import net.extrawdw.apps.notisync.sshagent.SshRequestListItem
 import net.extrawdw.apps.notisync.sshagent.SshPrivateKeyFileParser
@@ -708,14 +709,22 @@ fun SshAgentScreen(
                 },
                 policyChangeBusy = showLoading,
                 onCopy = { copyPublicKey(context, key) },
-                onExport = if (key.exportCopy != null) {
-                    {
-                        context.startActivity(
-                            SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName),
-                        )
+                onExport = when {
+                    key.webAuthn?.backupEligible == false -> {
+                        {
+                            context.startActivity(
+                                SshWebAuthnOpenSshIdentityExportActivity.intent(context, key.providerKeyId),
+                            )
+                        }
                     }
-                } else {
-                    null
+                    key.exportCopy != null -> {
+                        {
+                            context.startActivity(
+                                SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName),
+                            )
+                        }
+                    }
+                    else -> null
                 },
                 onWebAuthnRecovery = if (key.webAuthn != null) {
                     {
@@ -1436,14 +1445,20 @@ private fun SshKeyDetailSheet(
                     IconButton(onClick = onExport) {
                         Icon(
                             Icons.Outlined.FileDownload,
-                            contentDescription = stringResource(R.string.ssh_agent_export),
+                            contentDescription = stringResource(
+                                if (isWebAuthn) {
+                                    R.string.ssh_agent_webauthn_export_action
+                                } else {
+                                    R.string.ssh_agent_export
+                                },
+                            ),
                         )
                     }
                 }
                 if (onWebAuthnRecovery != null) {
                     IconButton(onClick = onWebAuthnRecovery) {
                         Icon(
-                            Icons.Outlined.UploadFile,
+                            painter = painterResource(R.drawable.ic_settings_backup_restore),
                             contentDescription = stringResource(R.string.ssh_agent_webauthn_recovery_action),
                         )
                     }

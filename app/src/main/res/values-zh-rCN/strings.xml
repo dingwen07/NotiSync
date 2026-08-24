@@ -131,6 +131,13 @@
     <string name="ssh_agent_webauthn_recovery_copied">已复制恢复载荷</string>
     <string name="ssh_agent_webauthn_recovery_too_large">恢复载荷过大。</string>
     <string name="ssh_agent_webauthn_recovery_mismatch">此恢复载荷与所选 WebAuthn 密钥不匹配。请检查输入的记录是否正确，或选择对应的密钥。</string>
+    <string name="ssh_agent_webauthn_export_action">导出 OpenSSH 安全密钥身份文件</string>
+    <string name="ssh_agent_webauthn_export_preparing">正在准备 OpenSSH 安全密钥身份文件</string>
+    <string name="ssh_agent_webauthn_export_not_available">只有绑定到验证器的 WebAuthn 密钥才能导出为 OpenSSH 身份文件。</string>
+    <string name="ssh_agent_webauthn_export_writing">正在写入 OpenSSH 安全密钥身份文件</string>
+    <string name="ssh_agent_webauthn_export_complete">已导出 OpenSSH 安全密钥身份文件</string>
+    <string name="ssh_agent_webauthn_export_failed">无法导出 OpenSSH 安全密钥身份文件</string>
+    <string name="ssh_agent_webauthn_export_open_failed">无法打开所选身份文件</string>
     <string name="ssh_agent_webauthn_rp_id">WebAuthn RP ID</string>
     <string name="ssh_agent_webauthn_portability">凭据可移植性</string>
     <string name="ssh_agent_webauthn_authenticator_bound">仅绑定到其验证器 · 未备份</string>

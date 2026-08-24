@@ -184,6 +184,13 @@
             android:theme="@style/Theme.NotiSync" />
 
         <activity
+            android:name=".sshagent.SshWebAuthnOpenSshIdentityExportActivity"
+            android:enableOnBackInvokedCallback="true"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:theme="@style/Theme.NotiSync" />
+
+        <activity
             android:name=".sshagent.SshKeySendActivity"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"

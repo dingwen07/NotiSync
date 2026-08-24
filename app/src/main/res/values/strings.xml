@@ -136,6 +136,13 @@
     <string name="ssh_agent_webauthn_recovery_copied">Recovery payload copied</string>
     <string name="ssh_agent_webauthn_recovery_too_large">The recovery payload is too large.</string>
     <string name="ssh_agent_webauthn_recovery_mismatch">This recovery payload does not match the selected WebAuthn key. Check that you entered the right record or select the matching key.</string>
+    <string name="ssh_agent_webauthn_export_action">Export OpenSSH security-key identity</string>
+    <string name="ssh_agent_webauthn_export_preparing">Preparing OpenSSH security-key identity</string>
+    <string name="ssh_agent_webauthn_export_not_available">Only an authenticator-bound WebAuthn key can be exported as an OpenSSH identity.</string>
+    <string name="ssh_agent_webauthn_export_writing">Writing OpenSSH security-key identity</string>
+    <string name="ssh_agent_webauthn_export_complete">OpenSSH security-key identity exported</string>
+    <string name="ssh_agent_webauthn_export_failed">Unable to export the OpenSSH security-key identity</string>
+    <string name="ssh_agent_webauthn_export_open_failed">The selected identity file could not be opened</string>
     <string name="ssh_agent_webauthn_rp_id">WebAuthn RP ID</string>
     <string name="ssh_agent_webauthn_portability">Credential portability</string>
     <string name="ssh_agent_webauthn_authenticator_bound">Bound to its authenticator · not backed up</string>
