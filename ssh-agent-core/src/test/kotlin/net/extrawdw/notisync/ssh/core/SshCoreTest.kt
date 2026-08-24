@@ -25,6 +25,7 @@ import java.security.interfaces.RSAPrivateCrtKey
 import java.security.spec.ECGenParameterSpec
 import java.security.spec.InvalidKeySpecException
 import java.security.spec.KeySpec
+import java.util.Base64
 
 class SshCoreTest {
     @Test
@@ -112,6 +113,107 @@ class SshCoreTest {
             SshSignatureVerifier.methodFor(
                 SshKeyType.RSA,
                 AgentNumbers.SSH_AGENT_RSA_SHA2_256 or AgentNumbers.SSH_AGENT_RSA_SHA2_512,
+            )
+        }
+    }
+
+    @Test
+    fun webAuthnSecurityKeyCodecAndVerifierMatchOpenSshWireFormat() {
+        val application = "notisync.apps.extrawdw.net"
+        val origin = "android:apk-key-hash:test-signing-certificate"
+        val data = "exact SSH agent signing request".encodeToByteArray()
+        val publicBlob = SshPublicKeyCodec.encodeWebAuthnEcdsaP256(ec.public, application)
+        val decoded = SshPublicKeyCodec.decode(publicBlob)
+        val challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(data)
+        val clientData =
+            "{\"type\":\"webauthn.get\",\"challenge\":\"$challenge\",\"origin\":\"$origin\",\"crossOrigin\":false}"
+                .encodeToByteArray()
+        val flags = WebAuthnSshSignatureCodec.FLAG_USER_PRESENT or
+            WebAuthnSshSignatureCodec.FLAG_USER_VERIFIED
+        val counter = 7L
+        val authenticatorData = java.security.MessageDigest.getInstance("SHA-256").digest(application.encodeToByteArray()) +
+            SshWireWriter(5).writeByte(flags).writeUInt32(counter).toByteArray()
+        val signed = authenticatorData +
+            java.security.MessageDigest.getInstance("SHA-256").digest(clientData)
+        val derSignature = Signature.getInstance("SHA256withECDSA").run {
+            initSign(ec.private)
+            update(signed)
+            sign()
+        }
+        val sshEcdsaSignature = EcdsaSignatureTranscoder.derToSsh(derSignature)
+        val signatureBlob = WebAuthnSshSignatureCodec.encode(
+            WebAuthnSshSignature(
+                ecdsaSignature = sshEcdsaSignature,
+                flags = flags,
+                counter = counter,
+                origin = origin,
+                clientDataJson = clientData,
+                extensions = byteArrayOf(),
+            ),
+        )
+
+        assertEquals(SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256, decoded.type)
+        assertEquals(application, decoded.application)
+        assertEquals(SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256, SshSignatureCodec.decode(signatureBlob).method)
+        SshWireReader(signatureBlob).also { wire ->
+            assertEquals(SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256.wireName, wire.readUtf8())
+            assertArrayEquals(sshEcdsaSignature, wire.readString())
+            assertEquals(flags, wire.readByte())
+            assertEquals(counter, wire.readUInt32())
+            assertEquals(origin, wire.readUtf8())
+            assertArrayEquals(clientData, wire.readString())
+            assertArrayEquals(byteArrayOf(), wire.readString())
+            wire.requireEnd()
+        }
+        assertEquals(
+            SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            SshSignatureVerifier.methodFor(decoded.type, 0),
+        )
+        assertTrue(
+            SshSignatureVerifier.verify(
+                publicBlob,
+                data,
+                signatureBlob,
+                SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            ),
+        )
+        assertFalse(
+            SshSignatureVerifier.verify(
+                publicBlob,
+                data + byteArrayOf(0),
+                signatureBlob,
+                SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            ),
+        )
+
+        val missingUv = WebAuthnSshSignatureCodec.encode(
+            WebAuthnSshSignature(
+                EcdsaSignatureTranscoder.derToSsh(derSignature),
+                WebAuthnSshSignatureCodec.FLAG_USER_PRESENT,
+                counter,
+                origin,
+                clientData,
+                byteArrayOf(),
+            ),
+        )
+        assertFalse(
+            SshSignatureVerifier.verify(
+                publicBlob,
+                data,
+                missingUv,
+                SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            ),
+        )
+        assertThrows(SshWireException::class.java) {
+            WebAuthnSshSignatureCodec.encode(
+                WebAuthnSshSignature(
+                    EcdsaSignatureTranscoder.derToSsh(derSignature),
+                    flags,
+                    counter,
+                    origin,
+                    clientData,
+                    byteArrayOf(1),
+                ),
             )
         }
     }

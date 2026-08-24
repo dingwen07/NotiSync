@@ -103,6 +103,23 @@
     <string name="ssh_agent_export_copy_protection">Protected by Android Keystore · %1$s</string>
     <string name="ssh_agent_storage_android_keystore">Android Keystore</string>
     <string name="ssh_agent_storage_android_keystore_wrapped">Software Wrapped</string>
+    <string name="ssh_agent_storage_credential_manager_webauthn">Credential Manager · WebAuthn</string>
+    <string name="ssh_agent_webauthn_create_action">Create WebAuthn key</string>
+    <string name="ssh_agent_webauthn_create_title">Create WebAuthn SSH key</string>
+    <string name="ssh_agent_webauthn_default_name">NotiSync WebAuthn SSH Key</string>
+    <string name="ssh_agent_webauthn_create_help">Your credential provider creates a discoverable WebAuthn credential. NotiSync stores only its public SSH metadata, always asks before signing, and cannot export the private key.</string>
+    <string name="ssh_agent_webauthn_create_confirm">Continue</string>
+    <string name="ssh_agent_webauthn_activity_required">WebAuthn credential creation is unavailable from this screen.</string>
+    <string name="ssh_agent_webauthn_create_failed">Unable to create the WebAuthn SSH key.</string>
+    <string name="ssh_agent_webauthn_rp_id">WebAuthn RP ID</string>
+    <string name="ssh_agent_webauthn_portability">Credential portability</string>
+    <string name="ssh_agent_webauthn_device_bound">Device-bound</string>
+    <string name="ssh_agent_webauthn_backed_up">Backed up by the credential provider</string>
+    <string name="ssh_agent_webauthn_backup_pending">Backup-eligible, but not currently backed up</string>
+    <string name="ssh_agent_webauthn_managed_export">Managed by the credential provider. NotiSync cannot export the private key.</string>
+    <string name="ssh_agent_webauthn_always_ask_help">Every request requires manual approval followed by credential-provider verification. Authorization cannot be remembered.</string>
+    <string name="ssh_agent_webauthn_each_use_enabled">Credential-provider verification required for every signature</string>
+    <string name="ssh_agent_webauthn_delete_body">%1$s will be removed from NotiSync and no longer offered to trusted devices. The WebAuthn credential remains in your credential provider; remove it there separately if desired.</string>
     <string name="ssh_agent_security_strongbox" translatable="false">StrongBox</string>
     <string name="ssh_agent_security_tee" translatable="false">TEE</string>
     <string name="ssh_agent_biometric_each_use_enabled">Strong biometric required for every signature</string>

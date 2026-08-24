@@ -6,10 +6,13 @@ import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
+import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshKeysSnapshot
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 import net.extrawdw.notisync.ssh.core.SshFingerprint
+import net.extrawdw.notisync.ssh.core.SshKeyType
+import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 
 enum class SnapshotApplyResult { APPLIED, IDEMPOTENT, STALE, RETIRED_GENERATION, CONFLICT }
 
@@ -48,6 +51,7 @@ class ProviderSnapshotStore(private val database: AgentDatabase) {
         require(snapshot.validationError(::sha256) == null) {
             snapshot.validationError(::sha256) ?: "invalid provider snapshot"
         }
+        snapshot.keys.forEach(::validatePublicKey)
         val canonicalHash = sha256(ProtocolCodec.encodeToCbor(snapshot))
         return database.transaction { connection ->
             connection.prepareStatement(
@@ -243,6 +247,26 @@ class ProviderSnapshotStore(private val database: AgentDatabase) {
             statement.setString(2, generation)
             statement.executeQuery().use { it.next() }
         }
+
+    private fun validatePublicKey(descriptor: SshKeyDescriptor) {
+        val decoded = runCatching { SshPublicKeyCodec.decode(descriptor.publicKeyBlob) }.getOrElse {
+            throw IllegalArgumentException("provider snapshot contains an invalid SSH public key", it)
+        }
+        val expectedType = when (descriptor.algorithm) {
+            SshKeyAlgorithm.SSH_ED25519 -> SshKeyType.ED25519
+            SshKeyAlgorithm.SSH_RSA -> SshKeyType.RSA
+            SshKeyAlgorithm.ECDSA_NISTP256 -> SshKeyType.ECDSA_NISTP256
+            SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 -> SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256
+        }
+        require(decoded.type == expectedType) {
+            "provider snapshot SSH public key does not match its declared algorithm"
+        }
+        descriptor.webAuthn?.let { webAuthn ->
+            require(decoded.application == webAuthn.rpId) {
+                "provider snapshot WebAuthn RP ID does not match the SSH application"
+            }
+        }
+    }
 
     private fun sha256(bytes: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(bytes)
     private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }

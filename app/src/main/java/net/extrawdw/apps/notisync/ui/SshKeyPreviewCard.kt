@@ -123,4 +123,5 @@ private fun SshKeyAlgorithm.displayName(preview: SshKeyPreview): String = when (
         (SshPublicKeyCodec.decode(preview.publicKeyBlob).publicKey as RSAPublicKey).modulus.bitLength()
     }.getOrNull()?.let { "RSA $it" } ?: "RSA"
     SshKeyAlgorithm.ECDSA_NISTP256 -> "ECDSA P-256"
+    SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 -> "WebAuthn ECDSA-SK P-256"
 }

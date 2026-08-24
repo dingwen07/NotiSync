@@ -49,11 +49,13 @@ enum class SshAgentSyncKind {
 }
 
 @Serializable
-enum class SshKeyAlgorithm { SSH_ED25519, SSH_RSA, ECDSA_NISTP256 }
+enum class SshKeyAlgorithm { SSH_ED25519, SSH_RSA, ECDSA_NISTP256, WEBAUTHN_SK_ECDSA_NISTP256 }
 @Serializable
-enum class SshSignatureAlgorithm { SSH_ED25519, RSA_SHA2_256, RSA_SHA2_512, ECDSA_NISTP256, RSA_SHA1_LEGACY }
+enum class SshSignatureAlgorithm {
+    SSH_ED25519, RSA_SHA2_256, RSA_SHA2_512, ECDSA_NISTP256, WEBAUTHN_SK_ECDSA_NISTP256, RSA_SHA1_LEGACY,
+}
 @Serializable
-enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD }
+enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD, WEBAUTHN_CREATED }
 @Serializable
 enum class SshOperationalKeyProvider {
     /** The non-exportable private key signs entirely through Android Keystore. */
@@ -61,9 +63,12 @@ enum class SshOperationalKeyProvider {
 
     /** Android Keystore AES protects PKCS#8 at rest; each signature briefly unwraps it in the app process. */
     ANDROID_KEYSTORE_AES_WRAPPED,
+
+    /** A discoverable WebAuthn credential retained and used by an Android credential provider. */
+    CREDENTIAL_MANAGER_WEBAUTHN,
 }
 @Serializable
-enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT }
+enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT, CREDENTIAL_PROVIDER }
 @Serializable
 enum class SshExportCopyBackendPolicy { BEST_AVAILABLE, TEE_ONLY }
 @Serializable
@@ -153,7 +158,14 @@ data class SshOperationalKeyProtection(
     @CborLabel(4) val strongBoxFallback: Boolean,
 ) {
     fun validationError(): String? = when {
-        securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+        provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+            "WebAuthn operational storage must use a credential provider"
+        provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            (strongBoxAttempted || strongBoxFallback) ->
+            "WebAuthn operational storage cannot report StrongBox state"
+        provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            securityLevel != SshStorageSecurityLevel.STRONGBOX &&
             securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
             "operational key must be hardware-backed"
         securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
@@ -196,6 +208,21 @@ data class SshExportCopyProtection(
 }
 
 @Serializable
+data class SshWebAuthnCredentialProtection(
+    @CborLabel(0) val rpId: String,
+    @CborLabel(1) val backupEligible: Boolean,
+    @CborLabel(2) val backupState: Boolean,
+) {
+    fun validationError(): String? = when {
+        rpId.isBlank() || rpId.encodeToByteArray().size > SshAgentLimits.MAX_CONTEXT_TEXT_UTF8_BYTES ||
+            rpId.any { it !in 'a'..'z' && it !in '0'..'9' && it != '.' && it != '-' } ->
+            "WebAuthn RP ID is outside the allowed bounds"
+        backupState && !backupEligible -> "WebAuthn backup state requires backup eligibility"
+        else -> null
+    }
+}
+
+@Serializable
 data class SshKeyDescriptor(
     @CborLabel(0) val providerKeyId: String,
     @CborLabel(1) @ByteString val publicKeyBlob: ByteArray,
@@ -208,6 +235,7 @@ data class SshKeyDescriptor(
     @CborLabel(8) val approvalPolicy: SshApprovalPolicy,
     @CborLabel(9) val rememberedNamespaces: List<SshRememberedNamespace> = emptyList(),
     @CborLabel(10) val createdAt: Long,
+    @CborLabel(11) val webAuthn: SshWebAuthnCredentialProtection? = null,
 ) {
     fun validationError(sha256: ((ByteArray) -> ByteArray)? = null): String? = when {
         !providerKeyId.isSshOperationId() -> "invalid provider key id"
@@ -223,9 +251,34 @@ data class SshKeyDescriptor(
             .distinct().size != rememberedNamespaces.size -> "duplicate remembered namespace"
         operationalKey.validationError() != null -> operationalKey.validationError()
         exportCopy?.validationError() != null -> exportCopy.validationError()
+        webAuthn?.validationError() != null -> webAuthn.validationError()
         operationalKey.provider == SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED &&
             algorithm != SshKeyAlgorithm.SSH_ED25519 ->
             "wrapped operational storage is allowed only for Ed25519"
+        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            algorithm != SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            "Credential Manager WebAuthn credentials require the ECDSA-SK algorithm"
+        algorithm == SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 &&
+            operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
+            "WebAuthn ECDSA-SK keys require the Credential Manager provider"
+        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            origin != SshKeyOrigin.WEBAUTHN_CREATED ->
+            "Credential Manager WebAuthn credentials require a WebAuthn creation origin"
+        origin == SshKeyOrigin.WEBAUTHN_CREATED &&
+            operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
+            "WebAuthn creation origin requires the Credential Manager provider"
+        (operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN) != (webAuthn != null) ->
+            "WebAuthn metadata must appear exactly for Credential Manager keys"
+        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            operationalKey.securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+            "Credential Manager WebAuthn credentials must report credential-provider storage"
+        operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            operationalKey.securityLevel == SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+            "Android Keystore keys cannot report credential-provider storage"
+        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
+            (operationalKey.userVerificationPolicy != SshUserVerificationPolicy.PER_USE ||
+                approvalPolicy != SshApprovalPolicy.ALWAYS_ASK || exportCopy != null || rememberedNamespaces.isNotEmpty()) ->
+            "WebAuthn-backed SSH keys require per-use verification and cannot be exported or remembered"
         operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE &&
             approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER -> "per-use verification cannot allow remember"
         createdAt <= 0 -> "createdAt must be positive"

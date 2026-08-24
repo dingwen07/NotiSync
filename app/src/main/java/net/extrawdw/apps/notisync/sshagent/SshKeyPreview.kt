@@ -66,5 +66,6 @@ object SshImportPreviewParser {
         SshKeyType.ED25519 -> SshKeyAlgorithm.SSH_ED25519
         SshKeyType.RSA -> SshKeyAlgorithm.SSH_RSA
         SshKeyType.ECDSA_NISTP256 -> SshKeyAlgorithm.ECDSA_NISTP256
+        SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 -> SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256
     }
 }

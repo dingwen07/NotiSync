@@ -13,6 +13,8 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.credentials.exceptions.GetCredentialCancellationException
+import androidx.credentials.exceptions.NoCredentialException
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.concurrent.atomic.AtomicBoolean
@@ -48,6 +50,7 @@ class SshAgentReviewActivity : ComponentActivity() {
     private var showImportSheet by mutableStateOf(false)
     private var busy by mutableStateOf(false)
     private var pendingSignature: Pair<SshAgentProviderEngine, PreparedSshSignature>? = null
+    private var pendingWebAuthnSignature: Pair<SshAgentProviderEngine, PreparedSshWebAuthnSignature>? = null
     private var pendingImportStorage: Pair<SshAgentProviderEngine, PreparedSshImportStorage>? = null
     private var renderGeneration = 0L
     private var autoLaunchOwned = false
@@ -134,6 +137,13 @@ class SshAgentReviewActivity : ComponentActivity() {
                 signature.first.cancelPreparedSignature(signature.second)
             }
         }
+        val webAuthnSignature = pendingWebAuthnSignature
+        pendingWebAuthnSignature = null
+        if (webAuthnSignature != null) {
+            (application as? NotiSyncApp)?.graphIfReady?.scope?.launch(Dispatchers.IO) {
+                webAuthnSignature.first.cancelPreparedWebAuthnSignature(webAuthnSignature.second)
+            }
+        }
         val pending = pendingImportStorage
         pendingImportStorage = null
         if (pending != null) {
@@ -192,6 +202,9 @@ class SshAgentReviewActivity : ComponentActivity() {
         }
         val rememberScopes = withContext(Dispatchers.IO) {
             graph.sshKeyProviderStore.availableRememberScopes(requestId)
+        }
+        val requiresWebAuthn = stored.kind == SshProviderRequestKind.SIGN && withContext(Dispatchers.IO) {
+            graph.sshKeyProviderStore.requiresWebAuthnUserVerification(requestId)
         }
         val destinationHostname = stored.signRequest?.destinationContext?.let { destination ->
             withContext(Dispatchers.IO) {
@@ -269,7 +282,7 @@ class SshAgentReviewActivity : ComponentActivity() {
             destinationHostname = destinationHostname,
         )
         importName = keyName
-        if (approveAfterLoad && stored.state == SshProviderRequestState.PENDING_REVIEW) {
+        if (approveAfterLoad && !requiresWebAuthn && stored.state == SshProviderRequestState.PENDING_REVIEW) {
             beginApproval()
         }
     }
@@ -394,10 +407,21 @@ class SshAgentReviewActivity : ComponentActivity() {
                     }
                 }
                 SshProviderRequestKind.SIGN -> {
-                    val perUse = withContext(Dispatchers.IO) {
-                        graph.sshKeyProviderStore.requiresPerUseUserVerification(requestId)
+                    val webAuthn = withContext(Dispatchers.IO) {
+                        graph.sshKeyProviderStore.requiresWebAuthnUserVerification(requestId)
                     }
-                    if (!perUse) {
+                    if (webAuthn) {
+                        val prepared = runCatching {
+                            withContext(Dispatchers.IO) { engine.prepareWebAuthnSignature(requestId) }
+                        }.getOrElse {
+                            showError(it.message ?: getString(R.string.ssh_agent_prepare_auth_failed))
+                            return@launch
+                        } ?: return@launch showError(getString(R.string.ssh_agent_request_unavailable))
+                        authenticateWebAuthnSignature(engine, prepared)
+                    } else if (!withContext(Dispatchers.IO) {
+                            graph.sshKeyProviderStore.requiresPerUseUserVerification(requestId)
+                        }
+                    ) {
                         showSignResult(withContext(Dispatchers.IO) { engine.approve(requestId) })
                     } else {
                         val prepared = runCatching {
@@ -409,6 +433,34 @@ class SshAgentReviewActivity : ComponentActivity() {
                         authenticateSignature(engine, prepared)
                     }
                 }
+            }
+        }
+    }
+
+    private fun authenticateWebAuthnSignature(
+        engine: SshAgentProviderEngine,
+        prepared: PreparedSshWebAuthnSignature,
+    ) {
+        pendingWebAuthnSignature = engine to prepared
+        lifecycleScope.launch {
+            try {
+                val responseJson = SshWebAuthnCredentialManager.get(this@SshAgentReviewActivity, prepared.requestJson)
+                val result = withContext(Dispatchers.IO) {
+                    engine.completeWebAuthnSignature(prepared, responseJson)
+                }
+                pendingWebAuthnSignature = null
+                showSignResult(result)
+            } catch (failure: Exception) {
+                val code = when (failure) {
+                    is GetCredentialCancellationException -> SshProviderFailureCode.USER_VERIFICATION_CANCELLED
+                    is NoCredentialException -> SshProviderFailureCode.KEY_NOT_FOUND
+                    else -> SshProviderFailureCode.INTERNAL_FAILURE
+                }
+                withContext(Dispatchers.IO) {
+                    engine.failPreparedWebAuthnSignature(prepared, code)
+                }
+                pendingWebAuthnSignature = null
+                finish()
             }
         }
     }

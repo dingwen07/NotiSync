@@ -33,9 +33,13 @@ object SshUserAuthParser {
         val publicKeyAlgorithm = reader.readUtf8(128)
         val publicKeyBlob = reader.readString(SshPublicKeyCodec.MAXIMUM_PUBLIC_KEY_BLOB_SIZE)
         val decoded = SshPublicKeyCodec.decode(publicKeyBlob)
-        val signatureMethod = SshSignatureMethod.entries.firstOrNull { it.wireName == publicKeyAlgorithm }
-            ?: return null
-        if (!SshSignatureVerifier.methodMatchesKey(signatureMethod, decoded.type)) return null
+        val algorithmMatches = if (decoded.type == SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256) {
+            publicKeyAlgorithm == decoded.wireName
+        } else {
+            SshSignatureMethod.entries.firstOrNull { it.wireName == publicKeyAlgorithm }
+                ?.let { SshSignatureVerifier.methodMatchesKey(it, decoded.type) } == true
+        }
+        if (!algorithmMatches) return null
         val serverHostKeyBlob = if (method == HOST_BOUND_METHOD) {
             reader.readString(SshPublicKeyCodec.MAXIMUM_PUBLIC_KEY_BLOB_SIZE).also(SshPublicKeyCodec::decode)
         } else null

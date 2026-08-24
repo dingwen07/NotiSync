@@ -41,10 +41,10 @@ class SshKeyProviderDatabaseTest {
     }
 
     @Test
-    fun newDatabaseUsesReleaseSchemaOne() {
+    fun newDatabaseUsesCurrentReleaseSchema() {
         store = SshKeyProviderStore(context)
         val database = requireNotNull(store).readableDatabase
-        assertEquals(1, database.version)
+        assertEquals(2, database.version)
         val columns = database.rawQuery("PRAGMA table_info(provider_requests)", null).use { cursor ->
             buildSet {
                 val nameIndex = cursor.getColumnIndexOrThrow("name")
@@ -55,6 +55,7 @@ class SshKeyProviderDatabaseTest {
         assertTrue("history_nonce" in columns)
         assertTrue(database.hasTable("ssh_remembered_authorizations"))
         assertTrue(database.hasTable("ssh_known_hosts"))
+        assertTrue(database.hasTable("ssh_webauthn_credentials"))
         assertFalse(database.hasTable("remember_rules"))
         assertThrows(SQLiteConstraintException::class.java) {
             database.execSQL(
@@ -216,7 +217,7 @@ class SshKeyProviderDatabaseTest {
 
     @Test
     fun newerDatabaseFailsClosedWithoutDeletingOrRewritingIt() {
-        createMarkerDatabase(version = 2)
+        createMarkerDatabase(version = 3)
 
         store = SshKeyProviderStore(context)
         assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
@@ -224,7 +225,7 @@ class SshKeyProviderDatabaseTest {
         store = null
 
         SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
-            assertEquals(2, database.version)
+            assertEquals(3, database.version)
             database.rawQuery("SELECT value FROM release_marker", null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("preserve-me", cursor.getString(0))
@@ -234,7 +235,7 @@ class SshKeyProviderDatabaseTest {
 
     @Test
     fun sameVersionWithWrongTablesFailsClosedWithoutResettingIt() {
-        createMarkerDatabase(version = 1)
+        createMarkerDatabase(version = 2)
 
         store = SshKeyProviderStore(context)
         assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
@@ -242,7 +243,7 @@ class SshKeyProviderDatabaseTest {
         store = null
 
         SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
-            assertEquals(1, database.version)
+            assertEquals(2, database.version)
             database.rawQuery("SELECT value FROM release_marker", null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("preserve-me", cursor.getString(0))

@@ -90,7 +90,21 @@ class ProviderSnapshotStoreTest {
             assertEquals(SnapshotApplyResult.STALE, store.apply(provider, first.copy(revision = 1), 1_002))
             assertEquals(
                 SnapshotApplyResult.CONFLICT,
-                store.apply(provider, first.copy(keys = listOf(key("2".repeat(32), byteArrayOf(9), "Conflict"))), 1_003),
+                store.apply(
+                    provider,
+                    first.copy(
+                        keys = listOf(
+                            key(
+                                "2".repeat(32),
+                                SshPublicKeyCodec.encode(
+                                    KeyPairGenerator.getInstance("Ed25519").generateKeyPair().public,
+                                ),
+                                "Conflict",
+                            ),
+                        ),
+                    ),
+                    1_003,
+                ),
             )
             assertEquals(SnapshotApplyResult.APPLIED, store.apply(provider, snapshot(provider, "3".repeat(32), 1), 1_004))
             assertEquals(SnapshotApplyResult.RETIRED_GENERATION, store.apply(provider, first.copy(revision = 3), 1_005))

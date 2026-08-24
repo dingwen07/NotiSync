@@ -23,6 +23,7 @@ enum class SshKeyType(val wireName: String) {
     ED25519("ssh-ed25519"),
     RSA("ssh-rsa"),
     ECDSA_NISTP256("ecdsa-sha2-nistp256"),
+    WEBAUTHN_SK_ECDSA_NISTP256("sk-ecdsa-sha2-nistp256@openssh.com"),
 }
 
 data class DecodedSshPublicKey(
@@ -30,6 +31,8 @@ data class DecodedSshPublicKey(
     val wireName: String,
     val blob: ByteArray,
     val publicKey: PublicKey,
+    /** OpenSSH security-key application / WebAuthn RP ID; absent for ordinary SSH keys. */
+    val application: String? = null,
 )
 
 object SshPublicKeyCodec {
@@ -44,13 +47,14 @@ object SshPublicKeyCodec {
         val reader = SshWireReader(blob, MAXIMUM_PUBLIC_KEY_BLOB_SIZE)
         val algorithm = reader.readUtf8(128)
         val decoded = when (algorithm) {
-            SshKeyType.ED25519.wireName -> decodeEd25519(reader)
-            SshKeyType.RSA.wireName -> decodeRsa(reader)
-            SshKeyType.ECDSA_NISTP256.wireName -> decodeEcdsaP256(reader)
+            SshKeyType.ED25519.wireName -> decodeEd25519(reader).let { Triple(it.first, it.second, null) }
+            SshKeyType.RSA.wireName -> decodeRsa(reader).let { Triple(it.first, it.second, null) }
+            SshKeyType.ECDSA_NISTP256.wireName -> decodeEcdsaP256(reader).let { Triple(it.first, it.second, null) }
+            SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256.wireName -> decodeWebAuthnEcdsaP256(reader)
             else -> throw SshWireException("unsupported SSH public key algorithm $algorithm")
         }
         reader.requireEnd()
-        return DecodedSshPublicKey(decoded.first, algorithm, blob.copyOf(), decoded.second)
+        return DecodedSshPublicKey(decoded.first, algorithm, blob.copyOf(), decoded.second, decoded.third)
     }
 
     fun encode(publicKey: PublicKey): ByteArray = when {
@@ -82,6 +86,18 @@ object SshPublicKeyCodec {
             publicKey as? ECPublicKey
                 ?: throw SshWireException("provider did not return an ECDSA public key"),
         )
+        SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            throw SshWireException("WebAuthn SSH public keys require an application / RP ID")
+    }
+
+    fun encodeWebAuthnEcdsaP256(publicKey: PublicKey, application: String): ByteArray {
+        val ecPublicKey = publicKey as? ECPublicKey
+            ?: throw SshWireException("WebAuthn SSH keys require an ECDSA public key")
+        validateApplication(application)
+        return encodeEcdsaP256Fields(
+            publicKey = ecPublicKey,
+            wireName = SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256.wireName,
+        ).writeUtf8(application).toByteArray()
     }
 
     private fun decodeEd25519(reader: SshWireReader): Pair<SshKeyType, PublicKey> {
@@ -105,6 +121,17 @@ object SshPublicKeyCodec {
     }
 
     private fun decodeEcdsaP256(reader: SshWireReader): Pair<SshKeyType, PublicKey> {
+        return SshKeyType.ECDSA_NISTP256 to decodeEcdsaP256Fields(reader)
+    }
+
+    private fun decodeWebAuthnEcdsaP256(reader: SshWireReader): Triple<SshKeyType, PublicKey, String> {
+        val publicKey = decodeEcdsaP256Fields(reader)
+        val application = reader.readUtf8(MAXIMUM_APPLICATION_UTF8_BYTES)
+        validateApplication(application)
+        return Triple(SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256, publicKey, application)
+    }
+
+    private fun decodeEcdsaP256Fields(reader: SshWireReader): PublicKey {
         val curve = reader.readUtf8(32)
         if (curve != "nistp256") throw SshWireException("unsupported ECDSA curve $curve")
         val encodedPoint = reader.readString(65)
@@ -116,8 +143,7 @@ object SshPublicKeyCodec {
         val parameters = p256Parameters()
         val point = ECPoint(x, y)
         if (!isPointOnCurve(point, parameters)) throw SshWireException("P-256 public point is not on the curve")
-        val key = generateSoftwarePublicKey("EC", ECPublicKeySpec(point, parameters))
-        return SshKeyType.ECDSA_NISTP256 to key
+        return generateSoftwarePublicKey("EC", ECPublicKeySpec(point, parameters))
     }
 
     private fun encodeEd25519(publicKey: EdECPublicKey): ByteArray {
@@ -162,6 +188,10 @@ object SshPublicKeyCodec {
     }
 
     private fun encodeEcdsaP256(publicKey: ECPublicKey): ByteArray {
+        return encodeEcdsaP256Fields(publicKey, SshKeyType.ECDSA_NISTP256.wireName).toByteArray()
+    }
+
+    private fun encodeEcdsaP256Fields(publicKey: ECPublicKey, wireName: String): SshWireWriter {
         if (publicKey.params.curve.field.fieldSize != 256 || !isPointOnCurve(publicKey.w, p256Parameters())) {
             throw SshWireException("only ECDSA P-256 public keys are supported")
         }
@@ -169,10 +199,17 @@ object SshPublicKeyCodec {
             toFixedUnsigned(publicKey.w.affineX, 32) +
             toFixedUnsigned(publicKey.w.affineY, 32)
         return SshWireWriter()
-            .writeUtf8(SshKeyType.ECDSA_NISTP256.wireName)
+            .writeUtf8(wireName)
             .writeUtf8("nistp256")
             .writeString(encodedPoint)
-            .toByteArray()
+    }
+
+    private fun validateApplication(application: String) {
+        if (application.isBlank() || application.encodeToByteArray().size > MAXIMUM_APPLICATION_UTF8_BYTES ||
+            application.any { it <= '\u001f' || it == '\u007f' }
+        ) {
+            throw SshWireException("SSH security-key application is outside the allowed bounds")
+        }
     }
 
     private fun p256Parameters() = AlgorithmParameters.getInstance("EC").run {
@@ -207,6 +244,8 @@ object SshPublicKeyCodec {
     private val ED25519_SPKI_PREFIX = byteArrayOf(
         0x30, 0x2a, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x03, 0x21, 0x00,
     )
+
+    private const val MAXIMUM_APPLICATION_UTF8_BYTES = 1024
 }
 
 object SshFingerprint {

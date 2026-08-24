@@ -70,6 +70,7 @@ import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserRejection
 import net.extrawdw.notisync.protocol.SshUserRejectionReason
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
+import net.extrawdw.notisync.protocol.SshWebAuthnCredentialProtection
 import net.extrawdw.notisync.ssh.core.AgentAddIdentityParser
 import net.extrawdw.notisync.ssh.core.EcdsaSignatureTranscoder
 import net.extrawdw.notisync.ssh.core.SshFingerprint
@@ -171,6 +172,17 @@ class PreparedSshSignature internal constructor(
     override fun close() {
         requestFingerprint.fill(0)
         (operation as? PreparedSignatureOperation.Wrapped)?.unwrap?.close()
+    }
+}
+
+class PreparedSshWebAuthnSignature internal constructor(
+    val requestId: String,
+    val requestFingerprint: ByteArray,
+    val requestJson: String,
+    internal val credential: StoredSshWebAuthnCredential,
+) : AutoCloseable {
+    override fun close() {
+        requestFingerprint.fill(0)
     }
 }
 
@@ -334,6 +346,9 @@ class SshKeyProviderStore(context: Context) :
     private val auditWrapping = AndroidKeyWrapping(AUDIT_KEY_ALIAS)
     private val wrappedOperationalVault = SshWrappedOperationalKeyVault(strongBoxAvailable)
     private val exportVault = SshExportKeyVault(strongBoxAvailable)
+    private val trustedWebAuthnOrigins by lazy(LazyThreadSafetyMode.PUBLICATION) {
+        SshWebAuthnCredentialManager.trustedOrigins(appContext)
+    }
     private val _changeVersion = MutableStateFlow(0L)
     val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
     private var resetEpoch = 0L
@@ -441,9 +456,11 @@ class SshKeyProviderStore(context: Context) :
                 "o.provider_kind, o.security_level, o.user_verification_policy, o.strongbox_attempted, " +
                 "o.strongbox_fallback, " +
                 "e.security_level, e.backend_policy, e.authentication, e.strongbox_attempted, " +
-                "e.strongbox_fallback, k.approval_policy, k.created_at " +
+                "e.strongbox_fallback, k.approval_policy, k.created_at, " +
+                "w.rp_id, w.backup_eligible, w.backup_state " +
                 "FROM ssh_keys k JOIN ssh_operational_keys o ON o.provider_key_id=k.provider_key_id " +
                 "LEFT JOIN ssh_export_copies e ON e.provider_key_id=k.provider_key_id " +
+                "LEFT JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
                 "ORDER BY k.provider_key_id",
             emptyArray(),
         ).use { cursor ->
@@ -478,6 +495,11 @@ class SshKeyProviderStore(context: Context) :
                             approvalPolicy = SshApprovalPolicy.valueOf(cursor.getString(16)),
                             rememberedNamespaces = remembered[cursor.getString(0)].orEmpty(),
                             createdAt = cursor.getLong(17),
+                            webAuthn = if (cursor.isNull(18)) null else SshWebAuthnCredentialProtection(
+                                rpId = cursor.getString(18),
+                                backupEligible = cursor.getInt(19) != 0,
+                                backupState = cursor.getInt(20) != 0,
+                            ),
                         ),
                     )
                 }
@@ -599,6 +621,105 @@ class SshKeyProviderStore(context: Context) :
     }
 
     @Synchronized
+    fun webAuthnCredentialIds(): List<ByteArray> = readableDatabase.rawQuery(
+        "SELECT credential_id FROM ssh_webauthn_credentials ORDER BY provider_key_id",
+        emptyArray(),
+    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getBlob(0)) } }
+
+    @Synchronized
+    fun storeWebAuthnCredential(
+        credential: RegisteredSshWebAuthnCredential,
+        displayName: String,
+        now: Long,
+    ): SshKeyDescriptor {
+        require(now > 0) { "credential creation time must be positive" }
+        val name = displayName.trim()
+        require(name.isNotEmpty() && name.encodeToByteArray().size <= SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) {
+            "key name is outside the allowed bounds"
+        }
+        val decoded = SshPublicKeyCodec.decode(credential.publicKeyBlob)
+        require(decoded.type == SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 && decoded.application == credential.rpId) {
+            "WebAuthn credential does not contain the expected SSH ECDSA-SK public key"
+        }
+        require(credential.rpId == SshWebAuthnCredential.RP_ID) { "unsupported WebAuthn RP ID" }
+        require(credential.credentialId.isNotEmpty() && credential.credentialId.size <= 1024) {
+            "WebAuthn credential ID is outside the allowed bounds"
+        }
+        require(credential.userHandle.size == 32 && credential.cosePublicKey.isNotEmpty()) {
+            "WebAuthn public metadata is outside the allowed bounds"
+        }
+        require(credential.createdOrigin in trustedWebAuthnOrigins) { "WebAuthn origin is not trusted" }
+        require(!credential.backupState || credential.backupEligible) {
+            "WebAuthn backup state requires backup eligibility"
+        }
+        val publicHash = sha256(credential.publicKeyBlob)
+        check(findKeyId(publicHash) == null) { "WebAuthn SSH key already exists" }
+        val providerKeyId = randomId()
+        val operationalAlias = WEBAUTHN_ALIAS_PREFIX + providerKeyId
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            database.insertOrThrow("ssh_keys", null, ContentValues().apply {
+                put("provider_key_id", providerKeyId)
+                put("public_blob", credential.publicKeyBlob)
+                put("public_hash", publicHash)
+                put("algorithm", SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256.name)
+                put("display_name", name)
+                put("origin", SshKeyOrigin.WEBAUTHN_CREATED.name)
+                put("approval_policy", SshApprovalPolicy.ALWAYS_ASK.name)
+                put("created_at", now)
+            })
+            database.insertOrThrow("ssh_operational_keys", null, ContentValues().apply {
+                put("provider_key_id", providerKeyId)
+                put("provider_kind", SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN.name)
+                put("key_alias", operationalAlias)
+                put("security_level", SshStorageSecurityLevel.CREDENTIAL_PROVIDER.name)
+                put("user_verification_policy", SshUserVerificationPolicy.PER_USE.name)
+                put("strongbox_attempted", false)
+                put("strongbox_fallback", false)
+            })
+            database.insertOrThrow("ssh_webauthn_credentials", null, ContentValues().apply {
+                put("provider_key_id", providerKeyId)
+                put("credential_id", credential.credentialId)
+                put("user_handle", credential.userHandle)
+                put("rp_id", credential.rpId)
+                put("cose_public_key", credential.cosePublicKey)
+                put("created_origin", credential.createdOrigin)
+                put("backup_eligible", credential.backupEligible)
+                put("backup_state", credential.backupState)
+            })
+            bumpRevision(database)
+            database.setTransactionSuccessful()
+        } finally {
+            database.endTransaction()
+        }
+        notifyChanged()
+        return SshKeyDescriptor(
+            providerKeyId = providerKeyId,
+            publicKeyBlob = credential.publicKeyBlob.copyOf(),
+            publicKeyBlobSha256 = publicHash,
+            algorithm = SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256,
+            displayName = name,
+            origin = SshKeyOrigin.WEBAUTHN_CREATED,
+            operationalKey = SshOperationalKeyProtection(
+                provider = SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+                securityLevel = SshStorageSecurityLevel.CREDENTIAL_PROVIDER,
+                userVerificationPolicy = SshUserVerificationPolicy.PER_USE,
+                strongBoxAttempted = false,
+                strongBoxFallback = false,
+            ),
+            exportCopy = null,
+            approvalPolicy = SshApprovalPolicy.ALWAYS_ASK,
+            createdAt = now,
+            webAuthn = SshWebAuthnCredentialProtection(
+                credential.rpId,
+                credential.backupEligible,
+                credential.backupState,
+            ),
+        ).also { check(it.validationError(::sha256) == null) }
+    }
+
+    @Synchronized
     fun generateKey(
         algorithm: SshKeyAlgorithm,
         displayName: String,
@@ -609,6 +730,9 @@ class SshKeyProviderStore(context: Context) :
         rsaKeySizeBits: Int = DEFAULT_RSA_KEY_SIZE_BITS,
     ): SshKeyStorageResult {
         require(now > 0) { "key creation time must be positive" }
+        require(algorithm != SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256) {
+            "WebAuthn SSH keys must be created through Credential Manager"
+        }
         require(algorithm != SshKeyAlgorithm.SSH_RSA || rsaKeySizeBits in SUPPORTED_RSA_KEY_SIZE_BITS) {
             "unsupported RSA key size"
         }
@@ -655,6 +779,8 @@ class SshKeyProviderStore(context: Context) :
                 initialize(ECGenParameterSpec("secp256r1"))
                 generateKeyPair()
             }
+            SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                error("WebAuthn SSH keys must be created through Credential Manager")
         }
         return storeImportedKey(
             privateKey = pair.private,
@@ -1606,6 +1732,8 @@ class SshKeyProviderStore(context: Context) :
                     setSignaturePaddings(KeyProperties.SIGNATURE_PADDING_RSA_PKCS1)
                 }
                 SshKeyAlgorithm.ECDSA_NISTP256 -> setDigests(KeyProperties.DIGEST_SHA256)
+                SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                    error("WebAuthn SSH keys cannot be installed in Android Keystore")
             }
             if (strongBox) setIsStrongBoxBacked(true)
             if (userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
@@ -1632,6 +1760,8 @@ class SshKeyProviderStore(context: Context) :
                 SshKeyAlgorithm.SSH_ED25519 -> "Ed25519"
                 SshKeyAlgorithm.SSH_RSA -> "SHA256withRSA"
                 SshKeyAlgorithm.ECDSA_NISTP256 -> "SHA256withECDSA"
+                SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                    error("WebAuthn SSH keys cannot use Android Keystore certificates")
             },
         ).setProvider(BOUNCY_CASTLE).build(privateKey)
         val holder = JcaX509v3CertificateBuilder(
@@ -1651,21 +1781,23 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun deleteKey(providerKeyId: String): Boolean {
         val stored = readableDatabase.rawQuery(
-            "SELECT o.key_alias, e.provider_key_id IS NOT NULL FROM ssh_keys k " +
+            "SELECT o.key_alias, e.provider_key_id IS NOT NULL, o.provider_kind FROM ssh_keys k " +
                 "JOIN ssh_operational_keys o ON o.provider_key_id=k.provider_key_id " +
                 "LEFT JOIN ssh_export_copies e ON e.provider_key_id=k.provider_key_id WHERE k.provider_key_id=?",
             arrayOf(providerKeyId),
         ).use { cursor ->
             if (!cursor.moveToFirst()) return false
-            cursor.getString(0) to (cursor.getInt(1) != 0)
+            Triple(cursor.getString(0), cursor.getInt(1) != 0, SshOperationalKeyProvider.valueOf(cursor.getString(2)))
         }
-        writableDatabase.insertOrThrow("ssh_key_lifecycle", null, ContentValues().apply {
-            put("provider_key_id", providerKeyId)
-            put("operational_alias", stored.first)
-            put("state", "DELETING")
-            put("created_at", System.currentTimeMillis())
-        })
-        deleteAndroidKeyStoreAlias(stored.first)
+        if (stored.third != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN) {
+            writableDatabase.insertOrThrow("ssh_key_lifecycle", null, ContentValues().apply {
+                put("provider_key_id", providerKeyId)
+                put("operational_alias", stored.first)
+                put("state", "DELETING")
+                put("created_at", System.currentTimeMillis())
+            })
+            deleteAndroidKeyStoreAlias(stored.first)
+        }
         if (stored.second) exportVault.deleteAll(providerKeyId)
         val database = writableDatabase
         database.beginTransaction()
@@ -1716,6 +1848,7 @@ class SshKeyProviderStore(context: Context) :
             database.delete("authorization_floors", null, null)
             database.delete("ssh_known_hosts", null, null)
             database.delete("ssh_export_copies", null, null)
+            database.delete("ssh_webauthn_credentials", null, null)
             database.delete("ssh_operational_keys", null, null)
             database.delete("ssh_key_lifecycle", null, null)
             database.delete("ssh_keys", null, null)
@@ -1747,6 +1880,13 @@ class SshKeyProviderStore(context: Context) :
         val name = displayName.trim()
         require(name.isNotEmpty() && name.encodeToByteArray().size <= SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) {
             "key name is outside the allowed bounds"
+        }
+        val isWebAuthn = readableDatabase.rawQuery(
+            "SELECT 1 FROM ssh_webauthn_credentials WHERE provider_key_id=?",
+            arrayOf(providerKeyId),
+        ).use { it.moveToFirst() }
+        require(!isWebAuthn || approvalPolicy == SshApprovalPolicy.ALWAYS_ASK) {
+            "WebAuthn SSH keys cannot allow remembered authorization"
         }
         val database = writableDatabase
         database.beginTransaction()
@@ -1889,6 +2029,13 @@ class SshKeyProviderStore(context: Context) :
     }
 
     @Synchronized
+    fun requiresWebAuthnUserVerification(requestId: String): Boolean {
+        val request = find(requestId)?.signRequest ?: return false
+        return findKeyMaterial(request.publicKeyBlob)?.provider ==
+            SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN
+    }
+
+    @Synchronized
     fun approve(requestId: String, provider: ClientId, now: Long): SshSignResult? {
         val stored = find(requestId) ?: return null
         if (stored.state != SshProviderRequestState.PENDING_REVIEW) return null
@@ -1968,6 +2115,7 @@ class SshKeyProviderStore(context: Context) :
                         operation = PreparedSignatureOperation.Wrapped(unwrap),
                     )
                 }
+                SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN -> null
             }
         } catch (failure: Exception) {
             failPreparation(failure.signingFailureCode())
@@ -2052,6 +2200,120 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun cancelPreparedSignature(prepared: PreparedSshSignature) {
         prepared.close()
+    }
+
+    @Synchronized
+    fun prepareWebAuthnSignature(
+        requestId: String,
+        provider: ClientId,
+        now: Long,
+    ): PreparedSshWebAuthnSignature? {
+        val stored = find(requestId) ?: return null
+        val request = stored.signRequest ?: return null
+        if (stored.state != SshProviderRequestState.PENDING_REVIEW || stored.expiresAt() < now) return null
+        if (request.authorizationEpoch <= authorizationFloor(
+                request.requesterClientId,
+                request.authorizationGeneration,
+            )
+        ) return null
+        fun failPreparation(code: SshProviderFailureCode): PreparedSshWebAuthnSignature? {
+            storeResponse(stored, signFailure(request, provider, now, code), now)
+            return null
+        }
+        val credential = findWebAuthnCredential(request.publicKeyBlob)
+            ?: return failPreparation(SshProviderFailureCode.KEY_NOT_FOUND)
+        return try {
+            require(signatureMethod(request) == SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256)
+            PreparedSshWebAuthnSignature(
+                requestId = requestId,
+                requestFingerprint = stored.requestFingerprint.copyOf(),
+                requestJson = SshWebAuthnCredential.assertionRequestJson(credential, request.data),
+                credential = credential,
+            )
+        } catch (_: Exception) {
+            failPreparation(SshProviderFailureCode.INTERNAL_FAILURE)
+        }
+    }
+
+    @Synchronized
+    fun completeWebAuthnSignature(
+        prepared: PreparedSshWebAuthnSignature,
+        responseJson: String,
+        provider: ClientId,
+        now: Long,
+    ): SshSignResult? {
+        val stored = find(prepared.requestId) ?: run {
+            prepared.close()
+            return null
+        }
+        val request = stored.signRequest ?: run {
+            prepared.close()
+            return null
+        }
+        if (stored.state != SshProviderRequestState.PENDING_REVIEW || stored.expiresAt() < now ||
+            !MessageDigest.isEqual(stored.requestFingerprint, prepared.requestFingerprint) ||
+            request.authorizationEpoch <= authorizationFloor(
+                request.requesterClientId,
+                request.authorizationGeneration,
+            ) ||
+            findKeyMaterial(request.publicKeyBlob)?.provider !=
+            SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN
+        ) {
+            prepared.close()
+            return null
+        }
+        val result = try {
+            val assertion = SshWebAuthnCredential.parseAssertion(
+                stored = prepared.credential,
+                challenge = request.data,
+                responseJson = responseJson,
+                allowedOrigins = trustedWebAuthnOrigins,
+            )
+            updateWebAuthnBackupState(prepared.credential, assertion)
+            signedResultFromBlob(
+                request,
+                provider,
+                now,
+                SshRememberDisposition.NONE,
+                SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+                assertion.signatureBlob,
+            )
+        } catch (failure: Exception) {
+            Log.w(SSH_STORAGE_LOG_TAG, "Credential Manager WebAuthn assertion failed", failure)
+            signFailure(request, provider, now, SshProviderFailureCode.INTERNAL_FAILURE)
+        } finally {
+            prepared.close()
+        }
+        return result.takeIf { storeUserApprovedSignResponse(stored, it, now) }
+    }
+
+    @Synchronized
+    fun cancelPreparedWebAuthnSignature(prepared: PreparedSshWebAuthnSignature) {
+        prepared.close()
+    }
+
+    @Synchronized
+    fun failPreparedWebAuthnSignature(
+        prepared: PreparedSshWebAuthnSignature,
+        provider: ClientId,
+        now: Long,
+        code: SshProviderFailureCode,
+    ): Boolean {
+        require(
+            code == SshProviderFailureCode.USER_VERIFICATION_CANCELLED ||
+                code == SshProviderFailureCode.KEY_NOT_FOUND ||
+                code == SshProviderFailureCode.INTERNAL_FAILURE,
+        ) { "invalid WebAuthn failure code" }
+        val stored = find(prepared.requestId)
+        return try {
+            val request = stored?.signRequest ?: return false
+            if (stored.state != SshProviderRequestState.PENDING_REVIEW || stored.expiresAt() < now ||
+                !MessageDigest.isEqual(stored.requestFingerprint, prepared.requestFingerprint)
+            ) return false
+            storeResponse(stored, signFailure(request, provider, now, code), now)
+        } finally {
+            prepared.close()
+        }
     }
 
     @Synchronized
@@ -2568,6 +2830,18 @@ class SshKeyProviderStore(context: Context) :
             jcaSignature
         }
         val signatureBlob = SshSignatureCodec.encode(method, raw)
+        return signedResultFromBlob(request, provider, now, rememberDisposition, method, signatureBlob)
+    }
+
+    private fun signedResultFromBlob(
+        request: SshSignRequest,
+        provider: ClientId,
+        now: Long,
+        rememberDisposition: SshRememberDisposition,
+        method: SshSignatureMethod,
+        signatureBlob: ByteArray,
+    ): SshSignResult {
+        check(method.toProtocol() == request.requestedSignatureAlgorithm)
         check(
             SshSignatureVerifier.verify(
                 publicKeyBlob = request.publicKeyBlob,
@@ -2618,6 +2892,56 @@ class SshKeyProviderStore(context: Context) :
             securityLevel = SshStorageSecurityLevel.valueOf(cursor.getString(7)),
             userVerificationPolicy = SshUserVerificationPolicy.valueOf(cursor.getString(8)),
         )
+    }
+
+    private fun findWebAuthnCredential(publicBlob: ByteArray): StoredSshWebAuthnCredential? =
+        readableDatabase.rawQuery(
+            "SELECT k.provider_key_id, k.public_blob, w.credential_id, w.user_handle, w.rp_id, " +
+                "w.cose_public_key, w.created_origin, w.backup_eligible, w.backup_state " +
+                "FROM ssh_keys k JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
+                "WHERE hex(k.public_hash)=?",
+            arrayOf(sha256(publicBlob).toHex().uppercase()),
+        ).use { cursor ->
+            if (!cursor.moveToFirst()) null else StoredSshWebAuthnCredential(
+                providerKeyId = cursor.getString(0),
+                publicKeyBlob = cursor.getBlob(1),
+                credentialId = cursor.getBlob(2),
+                userHandle = cursor.getBlob(3),
+                rpId = cursor.getString(4),
+                cosePublicKey = cursor.getBlob(5),
+                createdOrigin = cursor.getString(6),
+                backupEligible = cursor.getInt(7) != 0,
+                backupState = cursor.getInt(8) != 0,
+            )
+        }
+
+    private fun updateWebAuthnBackupState(
+        credential: StoredSshWebAuthnCredential,
+        assertion: ParsedSshWebAuthnAssertion,
+    ) {
+        if (credential.backupEligible == assertion.backupEligible && credential.backupState == assertion.backupState) {
+            return
+        }
+        require(!assertion.backupState || assertion.backupEligible)
+        val database = writableDatabase
+        database.beginTransaction()
+        try {
+            val changed = database.update(
+                "ssh_webauthn_credentials",
+                ContentValues().apply {
+                    put("backup_eligible", assertion.backupEligible)
+                    put("backup_state", assertion.backupState)
+                },
+                "provider_key_id=?",
+                arrayOf(credential.providerKeyId),
+            ) == 1
+            check(changed) { "WebAuthn credential disappeared during assertion" }
+            bumpRevision(database)
+            database.setTransactionSuccessful()
+        } finally {
+            database.endTransaction()
+        }
+        notifyChanged()
     }
 
     private fun import(
@@ -3191,6 +3515,8 @@ class SshKeyProviderStore(context: Context) :
                     setAlgorithmParameterSpec(ECGenParameterSpec("secp256r1"))
                     setDigests(KeyProperties.DIGEST_SHA256)
                 }
+                SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                    error("WebAuthn SSH keys cannot be generated in Android Keystore")
             }
             if (strongBox) setIsStrongBoxBacked(true)
             if (userVerificationPolicy == SshUserVerificationPolicy.PER_USE) {
@@ -3353,6 +3679,8 @@ class SshKeyProviderStore(context: Context) :
             SshKeyAlgorithm.SSH_ED25519 -> setOf(KeyProperties.DIGEST_NONE)
             SshKeyAlgorithm.SSH_RSA -> setOf(KeyProperties.DIGEST_SHA256, KeyProperties.DIGEST_SHA512)
             SshKeyAlgorithm.ECDSA_NISTP256 -> setOf(KeyProperties.DIGEST_SHA256)
+            SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                error("WebAuthn SSH keys have no Android Keystore KeyInfo")
         }
         check(info.digests.toSet().containsAll(requiredDigests)) {
             "Android Keystore did not authorize the required SSH signature digest"
@@ -3473,6 +3801,8 @@ class SshKeyProviderStore(context: Context) :
                 signSoftwareRaw(method, softwarePrivateKey(algorithm, privateBytes.bytes), data)
             }
         }
+        SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
+            error("WebAuthn SSH signatures require a Credential Manager assertion")
     }
 
     private class AndroidKeyWrapping(private val alias: String) {
@@ -3517,12 +3847,15 @@ class SshKeyProviderStore(context: Context) :
         SshKeyType.ED25519 -> SshKeyAlgorithm.SSH_ED25519
         SshKeyType.RSA -> SshKeyAlgorithm.SSH_RSA
         SshKeyType.ECDSA_NISTP256 -> SshKeyAlgorithm.ECDSA_NISTP256
+        SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 -> SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256
     }
 
     private fun SshKeyAlgorithm.toKeyFactory(): String = when (this) {
         SshKeyAlgorithm.SSH_ED25519 -> "Ed25519"
         SshKeyAlgorithm.SSH_RSA -> "RSA"
         SshKeyAlgorithm.ECDSA_NISTP256 -> "EC"
+        SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            error("WebAuthn SSH keys have no exportable private-key factory")
     }
 
     private fun softwarePrivateKey(algorithm: SshKeyAlgorithm, encoded: ByteArray): PrivateKey {
@@ -3567,18 +3900,23 @@ class SshKeyProviderStore(context: Context) :
         SshKeyAlgorithm.SSH_ED25519 -> "Ed25519"
         SshKeyAlgorithm.SSH_RSA -> "SHA256withRSA"
         SshKeyAlgorithm.ECDSA_NISTP256 -> "SHA256withECDSA"
+        SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            error("WebAuthn SSH keys are self-tested by assertion verification")
     }
 
     private fun SshKeyAlgorithm.keyStoreAlgorithm(): String = when (this) {
         SshKeyAlgorithm.SSH_ED25519 -> KeyProperties.KEY_ALGORITHM_EC
         SshKeyAlgorithm.SSH_RSA -> KeyProperties.KEY_ALGORITHM_RSA
         SshKeyAlgorithm.ECDSA_NISTP256 -> KeyProperties.KEY_ALGORITHM_EC
+        SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            error("WebAuthn SSH keys are not Android Keystore keys")
     }
 
     private fun SshKeyAlgorithm.toCoreType(): SshKeyType = when (this) {
         SshKeyAlgorithm.SSH_ED25519 -> SshKeyType.ED25519
         SshKeyAlgorithm.SSH_RSA -> SshKeyType.RSA
         SshKeyAlgorithm.ECDSA_NISTP256 -> SshKeyType.ECDSA_NISTP256
+        SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 -> SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256
     }
 
     private fun SshSignatureMethod.toProtocol(): SshSignatureAlgorithm = when (this) {
@@ -3586,6 +3924,8 @@ class SshKeyProviderStore(context: Context) :
         SshSignatureMethod.RSA_SHA2_256 -> SshSignatureAlgorithm.RSA_SHA2_256
         SshSignatureMethod.RSA_SHA2_512 -> SshSignatureAlgorithm.RSA_SHA2_512
         SshSignatureMethod.ECDSA_NISTP256 -> SshSignatureAlgorithm.ECDSA_NISTP256
+        SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            SshSignatureAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256
         SshSignatureMethod.RSA_SHA1_LEGACY -> SshSignatureAlgorithm.RSA_SHA1_LEGACY
     }
 
@@ -3698,6 +4038,7 @@ class SshKeyProviderStore(context: Context) :
         const val SSH_KEYSTORE_ALIAS_PREFIX = "notisync_ssh_"
         const val AUDIT_KEY_ALIAS = "notisync_ssh_audit_wrapping_v1"
         const val KEY_ALIAS_PREFIX = "notisync_ssh_identity_"
+        const val WEBAUTHN_ALIAS_PREFIX = "notisync_ssh_webauthn_"
         const val EXPORT_COPY_ALIAS_PREFIX = "notisync_ssh_export_copy_"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ED25519_OID = "1.3.101.112"
@@ -3726,6 +4067,10 @@ class SshKeyProviderStore(context: Context) :
             "ssh_operational_keys" to setOf(
                 "provider_key_id", "provider_kind", "key_alias", "ciphertext", "nonce", "security_level",
                 "user_verification_policy", "strongbox_attempted", "strongbox_fallback",
+            ),
+            "ssh_webauthn_credentials" to setOf(
+                "provider_key_id", "credential_id", "user_handle", "rp_id", "cose_public_key",
+                "created_origin", "backup_eligible", "backup_state",
             ),
             "ssh_export_copies" to setOf(
                 "provider_key_id", "key_alias", "ciphertext", "nonce", "security_level", "backend_policy",

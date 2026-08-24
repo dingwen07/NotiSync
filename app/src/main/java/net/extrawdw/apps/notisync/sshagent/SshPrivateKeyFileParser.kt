@@ -284,6 +284,8 @@ object SshPrivateKeyFileParser {
             SshKeyType.ED25519 -> "Ed25519"
             SshKeyType.RSA -> "SHA256withRSA"
             SshKeyType.ECDSA_NISTP256 -> "SHA256withECDSA"
+            SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                error("WebAuthn SSH credentials cannot be imported from private-key files")
         }
         val challenge = byteArrayOf(0x4e, 0x6f, 0x74, 0x69, 0x53, 0x79, 0x6e, 0x63)
         val signature = Signature.getInstance(jcaName, BOUNCY_CASTLE).run {
@@ -304,6 +306,8 @@ object SshPrivateKeyFileParser {
                 SshKeyType.ED25519 -> SshKeyAlgorithm.SSH_ED25519
                 SshKeyType.RSA -> SshKeyAlgorithm.SSH_RSA
                 SshKeyType.ECDSA_NISTP256 -> SshKeyAlgorithm.ECDSA_NISTP256
+                SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                    error("WebAuthn SSH credentials cannot be imported from private-key files")
             },
             publicKeyBlob = publicBlob,
             pkcs8PrivateKey = privateBytes,

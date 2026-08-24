@@ -339,6 +339,8 @@ class SignCoordinator(
         SshSignatureMethod.RSA_SHA2_256 -> SshSignatureAlgorithm.RSA_SHA2_256
         SshSignatureMethod.RSA_SHA2_512 -> SshSignatureAlgorithm.RSA_SHA2_512
         SshSignatureMethod.ECDSA_NISTP256 -> SshSignatureAlgorithm.ECDSA_NISTP256
+        SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256 ->
+            SshSignatureAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256
         SshSignatureMethod.RSA_SHA1_LEGACY -> SshSignatureAlgorithm.RSA_SHA1_LEGACY
     }
 
