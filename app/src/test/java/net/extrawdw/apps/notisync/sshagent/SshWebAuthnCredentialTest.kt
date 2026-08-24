@@ -205,6 +205,32 @@ class SshWebAuthnCredentialTest {
     }
 
     @Test
+    fun recoveryRecordSupportsSingleDeviceWebAuthnCredential() {
+        val keyPair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1"))
+            generateKeyPair()
+        }
+        val origin = "android:apk-key-hash:${base64Url(ByteArray(32) { 4 })}"
+        val registration = SshWebAuthnCredential.prepareRegistration("Security key")
+        val registered = SshWebAuthnCredential.parseRegistration(
+            registration,
+            registrationResponse(registration, keyPair, ByteArray(32) { 12 }, origin),
+            setOf(origin),
+        ).copy(
+            backupEligible = false,
+            backupState = false,
+        )
+
+        val record = SshWebAuthnCredential.decodeRecoveryRecord(
+            SshWebAuthnCredential.encodeRecoveryRecord(registered, "Security key", 456L),
+        )
+
+        assertFalse(record.backupEligible)
+        assertFalse(record.backupState)
+        assertFalse(record.registeredCredential().backupEligible)
+    }
+
+    @Test
     fun recoveryRecordRejectsMismatchedPublicMetadata() {
         val keyPair = KeyPairGenerator.getInstance("EC").run {
             initialize(ECGenParameterSpec("secp256r1"))

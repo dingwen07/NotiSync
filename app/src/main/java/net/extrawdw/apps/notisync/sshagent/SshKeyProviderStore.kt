@@ -741,7 +741,6 @@ class SshKeyProviderStore(context: Context) :
         if (!cursor.moveToFirst()) {
             null
         } else {
-            check(cursor.getInt(8) != 0) { "device-bound WebAuthn credentials cannot be recovered on another device" }
             SshWebAuthnRecoverySource(
                 credential = RegisteredSshWebAuthnCredential(
                     publicKeyBlob = cursor.getBlob(0),
@@ -750,7 +749,7 @@ class SshKeyProviderStore(context: Context) :
                     rpId = cursor.getString(5),
                     cosePublicKey = cursor.getBlob(6),
                     createdOrigin = cursor.getString(7),
-                    backupEligible = true,
+                    backupEligible = cursor.getInt(8) != 0,
                     backupState = cursor.getInt(9) != 0,
                 ),
                 displayName = cursor.getString(1),

@@ -637,7 +637,7 @@ fun SshAgentScreen(
                 } else {
                     null
                 },
-                onWebAuthnRecovery = if (key.webAuthn?.backupEligible == true) {
+                onWebAuthnRecovery = if (key.webAuthn != null) {
                     {
                         selectedKeyId = null
                         openWebAuthnRecoveryActions(key)
@@ -761,12 +761,8 @@ fun SshAgentScreen(
                                 createdAt,
                             )
                         }
-                        val recoveryPayload = if (credential.backupEligible) {
-                            withContext(Dispatchers.Default) {
-                                SshWebAuthnCredential.encodeRecoveryRecord(credential, name, createdAt)
-                            }
-                        } else {
-                            null
+                        val recoveryPayload = withContext(Dispatchers.Default) {
+                            SshWebAuthnCredential.encodeRecoveryRecord(credential, name, createdAt)
                         }
                         CreatedWebAuthnKey(credential, recoveryPayload)
                     }
@@ -777,16 +773,14 @@ fun SshAgentScreen(
                         loading = false
                         return@launch
                     }
-                    created.recoveryPayload?.let { payload ->
-                        runCatching {
-                            SshWebAuthnCredentialManager.saveRecoveryRecord(
-                                activity,
-                                created.credential.userHandle,
-                                payload,
-                            )
-                        }.onFailure {
-                            error = resources.getString(R.string.ssh_agent_webauthn_recovery_not_saved)
-                        }
+                    runCatching {
+                        SshWebAuthnCredentialManager.saveRecoveryRecord(
+                            activity,
+                            created.credential.userHandle,
+                            created.recoveryPayload,
+                        )
+                    }.onFailure {
+                        error = resources.getString(R.string.ssh_agent_webauthn_recovery_not_saved)
                     }
                     graph.sshAgentProviderEngine?.publishInventory()
                     refresh()
@@ -1480,7 +1474,7 @@ private fun SshKeyDetailSheet(
                     label = stringResource(R.string.ssh_agent_webauthn_portability),
                     value = stringResource(
                         when {
-                            !webAuthn.backupEligible -> R.string.ssh_agent_webauthn_device_bound
+                            !webAuthn.backupEligible -> R.string.ssh_agent_webauthn_authenticator_bound
                             webAuthn.backupState -> R.string.ssh_agent_webauthn_backed_up
                             else -> R.string.ssh_agent_webauthn_backup_pending
                         },
@@ -2176,7 +2170,7 @@ private fun authenticatePreparedStorage(
 
 private data class CreatedWebAuthnKey(
     val credential: net.extrawdw.apps.notisync.sshagent.RegisteredSshWebAuthnCredential,
-    val recoveryPayload: String?,
+    val recoveryPayload: String,
 )
 
 private data class WebAuthnRecoveryActions(

@@ -470,8 +470,8 @@ object SshWebAuthnCredential {
             "WebAuthn recovery display name is outside the allowed bounds"
         }
         require(record.createdAt > 0) { "WebAuthn recovery creation time is invalid" }
-        require(record.backupEligible && (!record.backupState || record.backupEligible)) {
-            "WebAuthn recovery requires a backup-eligible credential"
+        require(!record.backupState || record.backupEligible) {
+            "WebAuthn recovery backup state requires backup eligibility"
         }
     }
 
