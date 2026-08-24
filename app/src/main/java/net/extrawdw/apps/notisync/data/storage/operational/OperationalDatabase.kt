@@ -49,7 +49,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 2
+        const val VERSION = 3
 
         val MIGRATION_1_2 = Migration(1, 2) { connection ->
             connection.execSQL(
@@ -77,11 +77,15 @@ internal abstract class OperationalDatabase : RoomDatabase() {
             )
         }
 
+        val MIGRATION_2_3 = Migration(2, 3) { connection ->
+            connection.execSQL("ALTER TABLE `ssh_webauthn_credentials` DROP COLUMN `created_origin`")
+        }
+
         fun create(context: Context): OperationalDatabase =
             Room.databaseBuilder<OperationalDatabase>(context.applicationContext, DATABASE_NAME)
                 .setDriver(AndroidSQLiteDriver())
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .build()
     }
 }

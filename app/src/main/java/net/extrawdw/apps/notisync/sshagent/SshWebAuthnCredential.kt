@@ -33,7 +33,6 @@ data class RegisteredSshWebAuthnCredential(
     val userHandle: ByteArray,
     val rpId: String,
     val cosePublicKey: ByteArray,
-    val createdOrigin: String,
     val backupEligible: Boolean,
     val backupState: Boolean,
 )
@@ -45,7 +44,6 @@ data class StoredSshWebAuthnCredential(
     val userHandle: ByteArray,
     val rpId: String,
     val cosePublicKey: ByteArray,
-    val createdOrigin: String,
     val backupEligible: Boolean,
     val backupState: Boolean,
 )
@@ -67,7 +65,6 @@ data class SshWebAuthnRecoveryRecord(
     val rpId: String,
     val cosePublicKey: ByteArray,
     val publicKeyBlob: ByteArray,
-    val createdOrigin: String,
     val displayName: String,
     val createdAt: Long,
     val backupEligible: Boolean,
@@ -80,7 +77,6 @@ data class SshWebAuthnRecoveryRecord(
         userHandle = userHandle.copyOf(),
         rpId = rpId,
         cosePublicKey = cosePublicKey.copyOf(),
-        createdOrigin = createdOrigin,
         backupEligible = backupEligible,
         backupState = backupState,
     )
@@ -91,7 +87,6 @@ data class SshWebAuthnRecoveryRecord(
         userHandle = userHandle.copyOf(),
         rpId = rpId,
         cosePublicKey = cosePublicKey.copyOf(),
-        createdOrigin = createdOrigin,
         backupEligible = assertion.backupEligible,
         backupState = assertion.backupState,
     )
@@ -102,7 +97,6 @@ data class SshWebAuthnRecoveryRecord(
         userHandle = userHandle.copyOf(),
         rpId = rpId,
         cosePublicKey = cosePublicKey.copyOf(),
-        createdOrigin = createdOrigin,
         backupEligible = backupEligible,
         backupState = backupState,
     )
@@ -222,7 +216,6 @@ object SshWebAuthnCredential {
             rpId = credential.rpId,
             cosePublicKey = credential.cosePublicKey.copyOf(),
             publicKeyBlob = credential.publicKeyBlob.copyOf(),
-            createdOrigin = credential.createdOrigin,
             displayName = displayName.trim(),
             createdAt = createdAt,
             backupEligible = credential.backupEligible,
@@ -236,7 +229,6 @@ object SshWebAuthnCredential {
             put("rpId", record.rpId)
             put("cosePublicKey", base64Url(record.cosePublicKey))
             put("publicKeyBlob", base64Url(record.publicKeyBlob))
-            put("createdOrigin", record.createdOrigin)
             put("displayName", record.displayName)
             put("createdAt", record.createdAt)
             put("backupEligible", record.backupEligible)
@@ -253,9 +245,18 @@ object SshWebAuthnCredential {
             "WebAuthn recovery record is too large"
         }
         val json = parseJsonObject(encoded, "WebAuthn recovery record")
-        require(json.keys == RECOVERY_RECORD_FIELDS) { "WebAuthn recovery record has unexpected fields" }
-        require(json["version"]?.jsonPrimitive?.content?.toIntOrNull() == RECOVERY_RECORD_VERSION) {
-            "unsupported WebAuthn recovery record version"
+        val version = json["version"]?.jsonPrimitive?.content?.toIntOrNull()
+            ?: error("WebAuthn recovery record has an invalid version")
+        val expectedFields = when (version) {
+            RECOVERY_RECORD_VERSION -> RECOVERY_RECORD_FIELDS
+            LEGACY_RECOVERY_RECORD_VERSION -> LEGACY_RECOVERY_RECORD_FIELDS
+            else -> error("unsupported WebAuthn recovery record version")
+        }
+        require(json.keys == expectedFields) { "WebAuthn recovery record has unexpected fields" }
+        if (version == LEGACY_RECOVERY_RECORD_VERSION) {
+            require(json.requiredString("createdOrigin").encodeToByteArray().size <= 1024) {
+                "WebAuthn recovery creation origin is outside the allowed bounds"
+            }
         }
         return SshWebAuthnRecoveryRecord(
             credentialId = json.requiredBase64Url("credentialId", 1024),
@@ -263,7 +264,6 @@ object SshWebAuthnCredential {
             rpId = json.requiredString("rpId"),
             cosePublicKey = json.requiredBase64Url("cosePublicKey", 2048),
             publicKeyBlob = json.requiredBase64Url("publicKeyBlob", 16 * 1024),
-            createdOrigin = json.requiredString("createdOrigin"),
             displayName = json.requiredString("displayName"),
             createdAt = json["createdAt"]?.jsonPrimitive?.content?.toLongOrNull()
                 ?: error("WebAuthn recovery record has an invalid creation time"),
@@ -285,7 +285,7 @@ object SshWebAuthnCredential {
         val credentialId = root.credentialId()
         val response = root.requiredObject("response")
         val clientData = response.requiredBase64Url("clientDataJSON", MAX_CLIENT_DATA_BYTES)
-        val client = validateClientData(clientData, "webauthn.create", prepared.challenge, allowedOrigins)
+        validateClientData(clientData, "webauthn.create", prepared.challenge, allowedOrigins)
         val attestationObject = response.requiredBase64Url("attestationObject", MAX_ATTESTATION_BYTES)
         val attestation = CborReader.decodeExact(attestationObject).asTextMap("attestation object")
         require(attestation.requiredText("fmt") == "none") { "only none WebAuthn credential attestation is supported" }
@@ -301,7 +301,6 @@ object SshWebAuthnCredential {
             userHandle = prepared.userId.copyOf(),
             rpId = prepared.rpId,
             cosePublicKey = parsed.cosePublicKey,
-            createdOrigin = client.origin,
             backupEligible = parsed.backupEligible,
             backupState = parsed.backupState,
         )
@@ -463,9 +462,6 @@ object SshWebAuthnCredential {
         require(decoded.type == net.extrawdw.notisync.ssh.core.SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 &&
             decoded.application == record.rpId
         ) { "WebAuthn recovery SSH key is invalid" }
-        require(record.createdOrigin.isNotBlank() && record.createdOrigin.encodeToByteArray().size <= 1024) {
-            "WebAuthn recovery creation origin is outside the allowed bounds"
-        }
         require(record.displayName.isNotBlank() && record.displayName.encodeToByteArray().size <= 256) {
             "WebAuthn recovery display name is outside the allowed bounds"
         }
@@ -554,13 +550,15 @@ object SshWebAuthnCredential {
     private const val MAX_ATTESTATION_BYTES = 64 * 1024
     private const val MAX_AUTHENTICATOR_DATA_BYTES = 16 * 1024
     private const val MAX_RECOVERY_RECORD_BYTES = 64 * 1024
-    private const val RECOVERY_RECORD_VERSION = 1
+    private const val LEGACY_RECOVERY_RECORD_VERSION = 1
+    private const val RECOVERY_RECORD_VERSION = 2
     private const val WEBAUTHN_USER_ID_PREFIX = "notisync-ssh:"
     private const val WEBAUTHN_USER_ID_RANDOM_BYTES = 32
     private val RECOVERY_RECORD_FIELDS = setOf(
         "version", "credentialId", "userHandle", "rpId", "cosePublicKey", "publicKeyBlob",
-        "createdOrigin", "displayName", "createdAt", "backupEligible", "backupState",
+        "displayName", "createdAt", "backupEligible", "backupState",
     )
+    private val LEGACY_RECOVERY_RECORD_FIELDS = RECOVERY_RECORD_FIELDS + "createdOrigin"
 
     private fun generateWebAuthnUserId(random: SecureRandom): ByteArray {
         val randomBytes = ByteArray(WEBAUTHN_USER_ID_RANDOM_BYTES).also(random::nextBytes)

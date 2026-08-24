@@ -58,7 +58,6 @@ class SshWebAuthnCredentialTest {
             userHandle = registered.userHandle,
             rpId = registered.rpId,
             cosePublicKey = registered.cosePublicKey,
-            createdOrigin = registered.createdOrigin,
             backupEligible = registered.backupEligible,
             backupState = registered.backupState,
         )
@@ -109,7 +108,6 @@ class SshWebAuthnCredentialTest {
             userHandle = registered.userHandle,
             rpId = registered.rpId,
             cosePublicKey = registered.cosePublicKey,
-            createdOrigin = registered.createdOrigin,
             backupEligible = true,
             backupState = true,
         )
@@ -166,6 +164,8 @@ class SshWebAuthnCredentialTest {
             "Recovery key",
             1_725_000_000_000L,
         )
+        assertTrue(encoded.contains("\"version\":2"))
+        assertFalse(encoded.contains("createdOrigin"))
         val record = SshWebAuthnCredential.decodeRecoveryRecord(encoded)
 
         assertArrayEquals(credentialId, record.credentialId)
@@ -202,6 +202,31 @@ class SshWebAuthnCredentialTest {
         assertArrayEquals(registered.credentialId, recovered.credentialId)
         assertTrue(recovered.backupEligible)
         assertTrue(recovered.backupState)
+    }
+
+    @Test
+    fun legacyRecoveryRecordIgnoresHistoricalCreatedOrigin() {
+        val keyPair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1"))
+            generateKeyPair()
+        }
+        val origin = "android:apk-key-hash:${base64Url(ByteArray(32) { 8 })}"
+        val registration = SshWebAuthnCredential.prepareRegistration("Legacy recovery key")
+        val registered = SshWebAuthnCredential.parseRegistration(
+            registration,
+            registrationResponse(registration, keyPair, ByteArray(32) { 14 }, origin),
+            setOf(origin),
+        )
+        val current = SshWebAuthnCredential.encodeRecoveryRecord(registered, "Legacy recovery key", 789L)
+        val legacy = current.replace(
+            "\"version\":2",
+            "\"version\":1,\"createdOrigin\":\"$origin\"",
+        )
+
+        val decoded = SshWebAuthnCredential.decodeRecoveryRecord(legacy)
+
+        assertArrayEquals(registered.credentialId, decoded.credentialId)
+        assertEquals("Legacy recovery key", decoded.displayName)
     }
 
     @Test

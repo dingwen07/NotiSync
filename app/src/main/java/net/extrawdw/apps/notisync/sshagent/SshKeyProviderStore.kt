@@ -656,7 +656,6 @@ class SshKeyProviderStore(context: Context) :
             "WebAuthn public metadata is outside the allowed bounds"
         }
         SshWebAuthnCredential.passwordRecordId(credential.userHandle)
-        require(credential.createdOrigin in trustedWebAuthnOrigins) { "WebAuthn origin is not trusted" }
         require(!credential.backupState || credential.backupEligible) {
             "WebAuthn backup state requires backup eligibility"
         }
@@ -695,7 +694,6 @@ class SshKeyProviderStore(context: Context) :
                 put("user_handle", credential.userHandle)
                 put("rp_id", credential.rpId)
                 put("cose_public_key", credential.cosePublicKey)
-                put("created_origin", credential.createdOrigin)
                 put("backup_eligible", credential.backupEligible)
                 put("backup_state", credential.backupState)
             })
@@ -733,7 +731,7 @@ class SshKeyProviderStore(context: Context) :
     @Synchronized
     fun webAuthnRecoverySource(providerKeyId: String): SshWebAuthnRecoverySource? = readableDatabase.rawQuery(
         "SELECT k.public_blob, k.display_name, k.created_at, w.credential_id, w.user_handle, " +
-            "w.rp_id, w.cose_public_key, w.created_origin, w.backup_eligible, w.backup_state " +
+            "w.rp_id, w.cose_public_key, w.backup_eligible, w.backup_state " +
             "FROM ssh_keys k JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
             "WHERE k.provider_key_id=?",
         arrayOf(providerKeyId),
@@ -748,9 +746,8 @@ class SshKeyProviderStore(context: Context) :
                     userHandle = cursor.getBlob(4),
                     rpId = cursor.getString(5),
                     cosePublicKey = cursor.getBlob(6),
-                    createdOrigin = cursor.getString(7),
-                    backupEligible = cursor.getInt(8) != 0,
-                    backupState = cursor.getInt(9) != 0,
+                    backupEligible = cursor.getInt(7) != 0,
+                    backupState = cursor.getInt(8) != 0,
                 ),
                 displayName = cursor.getString(1),
                 createdAt = cursor.getLong(2),
@@ -2936,7 +2933,7 @@ class SshKeyProviderStore(context: Context) :
     private fun findWebAuthnCredential(publicBlob: ByteArray): StoredSshWebAuthnCredential? =
         readableDatabase.rawQuery(
             "SELECT k.provider_key_id, k.public_blob, w.credential_id, w.user_handle, w.rp_id, " +
-                "w.cose_public_key, w.created_origin, w.backup_eligible, w.backup_state " +
+                "w.cose_public_key, w.backup_eligible, w.backup_state " +
                 "FROM ssh_keys k JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
                 "WHERE hex(k.public_hash)=?",
             arrayOf(sha256(publicBlob).toHex().uppercase()),
@@ -2948,9 +2945,8 @@ class SshKeyProviderStore(context: Context) :
                 userHandle = cursor.getBlob(3),
                 rpId = cursor.getString(4),
                 cosePublicKey = cursor.getBlob(5),
-                createdOrigin = cursor.getString(6),
-                backupEligible = cursor.getInt(7) != 0,
-                backupState = cursor.getInt(8) != 0,
+                backupEligible = cursor.getInt(6) != 0,
+                backupState = cursor.getInt(7) != 0,
             )
         }
 
@@ -4109,7 +4105,7 @@ class SshKeyProviderStore(context: Context) :
             ),
             "ssh_webauthn_credentials" to setOf(
                 "provider_key_id", "credential_id", "user_handle", "rp_id", "cose_public_key",
-                "created_origin", "backup_eligible", "backup_state",
+                "backup_eligible", "backup_state",
             ),
             "ssh_export_copies" to setOf(
                 "provider_key_id", "key_alias", "ciphertext", "nonce", "security_level", "backend_policy",

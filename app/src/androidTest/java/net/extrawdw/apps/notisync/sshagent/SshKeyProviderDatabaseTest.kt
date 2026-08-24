@@ -44,7 +44,7 @@ class SshKeyProviderDatabaseTest {
     fun newDatabaseUsesCurrentReleaseSchema() {
         store = SshKeyProviderStore(context)
         val database = requireNotNull(store).readableDatabase
-        assertEquals(2, database.version)
+        assertEquals(3, database.version)
         val columns = database.rawQuery("PRAGMA table_info(provider_requests)", null).use { cursor ->
             buildSet {
                 val nameIndex = cursor.getColumnIndexOrThrow("name")
@@ -217,7 +217,7 @@ class SshKeyProviderDatabaseTest {
 
     @Test
     fun newerDatabaseFailsClosedWithoutDeletingOrRewritingIt() {
-        createMarkerDatabase(version = 3)
+        createMarkerDatabase(version = 4)
 
         store = SshKeyProviderStore(context)
         assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
@@ -225,7 +225,7 @@ class SshKeyProviderDatabaseTest {
         store = null
 
         SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
-            assertEquals(3, database.version)
+            assertEquals(4, database.version)
             database.rawQuery("SELECT value FROM release_marker", null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("preserve-me", cursor.getString(0))
@@ -235,7 +235,7 @@ class SshKeyProviderDatabaseTest {
 
     @Test
     fun sameVersionWithWrongTablesFailsClosedWithoutResettingIt() {
-        createMarkerDatabase(version = 2)
+        createMarkerDatabase(version = 3)
 
         store = SshKeyProviderStore(context)
         assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
@@ -243,7 +243,7 @@ class SshKeyProviderDatabaseTest {
         store = null
 
         SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
-            assertEquals(2, database.version)
+            assertEquals(3, database.version)
             database.rawQuery("SELECT value FROM release_marker", null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("preserve-me", cursor.getString(0))

@@ -128,7 +128,6 @@ class SshWebAuthnOpenSshIdentityFileTest {
             userHandle = "notisync-ssh:test".encodeToByteArray(),
             rpId = SshWebAuthnCredential.RP_ID,
             cosePublicKey = byteArrayOf(1),
-            createdOrigin = "android:apk-key-hash:test",
             backupEligible = false,
             backupState = false,
         )

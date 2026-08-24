@@ -151,7 +151,6 @@ internal data class SshWebAuthnCredentialEntity(
     @ColumnInfo(name = "user_handle", typeAffinity = ColumnInfo.BLOB) val userHandle: ByteArray,
     @ColumnInfo(name = "rp_id") val rpId: String,
     @ColumnInfo(name = "cose_public_key", typeAffinity = ColumnInfo.BLOB) val cosePublicKey: ByteArray,
-    @ColumnInfo(name = "created_origin") val createdOrigin: String,
     @ColumnInfo(name = "backup_eligible") val backupEligible: Int,
     @ColumnInfo(name = "backup_state") val backupState: Int,
 )
