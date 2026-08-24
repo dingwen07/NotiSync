@@ -1,7 +1,9 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.content.Intent
+import android.content.res.Resources
 import android.graphics.Bitmap
+import android.nfc.TagLostException
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.Image
@@ -68,6 +70,7 @@ import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 
 @Composable
@@ -169,7 +172,12 @@ fun PairingScreen(
                 ownPayload = ownPayload,
                 onPayload = ::inspect,
                 onFailure = {
-                    showScanFailure(resources.getString(R.string.pair_could_not_pair, it.message))
+                    showScanFailure(
+                        resources.getString(
+                            R.string.pair_could_not_pair,
+                            resources.nfcPairingFailureDetail(it),
+                        )
+                    )
                 },
             )
         }
@@ -380,6 +388,19 @@ private fun AutomaticTimeWarning(onOpenSettings: () -> Unit) {
             }
         }
     }
+}
+
+private fun Resources.nfcPairingFailureDetail(failure: Throwable): String {
+    val causes = generateSequence(failure) { current ->
+        current.cause?.takeUnless { it === current }
+    }.take(16).toList()
+    return getString(
+        when {
+            causes.any { it is TagLostException } -> R.string.pair_nfc_connection_lost
+            causes.any { it is IOException } -> R.string.pair_nfc_communication_failed
+            else -> R.string.pair_nfc_exchange_failed
+        }
+    )
 }
 
 @Composable

@@ -731,6 +731,9 @@
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>
+    <string name="pair_nfc_connection_lost">The NFC connection was lost. Keep the devices together until pairing finishes, then try again.</string>
+    <string name="pair_nfc_communication_failed">NFC communication failed. Keep the devices together and try again.</string>
+    <string name="pair_nfc_exchange_failed">The NFC exchange could not be completed. Try again.</string>
     <string name="pair_paired_with">Paired with %1$s</string>
     <string name="pair_could_not_open_link">Could not open pairing link: %1$s</string>
     <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
