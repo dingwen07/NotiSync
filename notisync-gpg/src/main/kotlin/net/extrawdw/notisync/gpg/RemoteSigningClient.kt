@@ -8,9 +8,9 @@ import java.time.Duration
 import java.util.Base64
 import kotlinx.serialization.json.JsonPrimitive
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.DaemonLocalApi
 import net.extrawdw.notisync.desktop.api.LocalApiDeadline
-import net.extrawdw.notisync.desktop.api.UnixDaemonClient
 import net.extrawdw.notisync.localapi.ApplicationRegistrationRequest
 import net.extrawdw.notisync.localapi.MessageFilter
 import net.extrawdw.notisync.localapi.ReceiveRecordType
@@ -36,13 +36,14 @@ sealed interface RemoteSigningOutcome {
 class RemoteSigningClient(
     private val paths: DesktopPaths,
     private val config: NotisyncGpgConfig,
-    private val api: DaemonLocalApi = UnixDaemonClient(paths.socket),
+    private val connectToDaemon: () -> DaemonLocalApi = { DaemonAutostarter(paths).connect() },
     private val random: SecureRandom = SecureRandom(),
     private val now: () -> Long = System::currentTimeMillis,
     private val onRequestSubmitted: (OpenPgpSignSync) -> Unit = {},
     private val workingDirectory: () -> String? = ::currentWorkingDirectoryContext,
 ) {
     fun sign(payload: ByteArray, certificate: ResolvedOpenPgpCertificate): RemoteSigningOutcome {
+        val api = connectToDaemon()
         val status = api.status()
         val requesterId = ClientId(requireNotNull(status.clientId) { "notisyncd has no local client identity" })
         api.putApplication(

@@ -40,11 +40,12 @@ class DaemonAutostarter(
 }
 
 private fun resolveNotisyncdExecutable(): Path? {
+    val osName = System.getProperty("os.name")
     System.getProperty("notisyncd.executable")?.let { configured ->
-        Path.of(configured).takeIf(::isLauncherFile)?.let { return it }
+        Path.of(configured).takeIf { isLauncherFile(it, osName) }?.let { return it }
     }
     ProcessHandle.current().info().command().orElse(null)?.let { current ->
-        Path.of(current).parent?.let(::findLauncher)?.let { return it }
+        Path.of(current).parent?.let { findLauncher(it, osName) }?.let { return it }
     }
     // Gradle's application scripts exec java, so ProcessHandle points at the JVM rather than bin/nsrun.
     // In an installed distribution the code source is lib/<jar>; resolve the sibling bin launcher.
@@ -52,24 +53,33 @@ private fun resolveNotisyncdExecutable(): Path? {
         val location = DaemonAutostarter::class.java.protectionDomain.codeSource.location.toURI()
         val codeSource = Path.of(location)
         val distribution = if (Files.isDirectory(codeSource)) codeSource else codeSource.parent?.parent
-        distribution?.resolve("bin")?.let(::findLauncher)
+        distribution?.resolve("bin")?.let { findLauncher(it, osName) }
     }.getOrNull()?.let { return it }
     val path = System.getenv("PATH").orEmpty()
     for (directory in path.split(java.io.File.pathSeparatorChar)) {
         if (directory.isBlank()) continue
-        findLauncher(Path.of(directory))?.let { return it }
+        findLauncher(Path.of(directory), osName)?.let { return it }
     }
     return null
 }
 
-private fun findLauncher(directory: Path): Path? = listOf("notisyncd", "notisyncd.bat", "notisyncd.cmd")
+internal fun findLauncher(directory: Path, osName: String): Path? = launcherNames(osName)
     .asSequence()
     .map(directory::resolve)
-    .firstOrNull(::isLauncherFile)
+    .firstOrNull { isLauncherFile(it, osName) }
 
-private fun isLauncherFile(path: Path): Boolean =
-    Files.isRegularFile(path) && (Files.isExecutable(path) || isWindows())
+internal fun launcherNames(osName: String): List<String> = if (isWindows(osName)) {
+    // Gradle installs the POSIX shell launcher beside the Windows batch launcher. Never pass that
+    // extensionless shell script to CreateProcess; it fails with ERROR_BAD_EXE_FORMAT (193).
+    listOf("notisyncd.exe", "notisyncd.bat", "notisyncd.cmd")
+} else {
+    listOf("notisyncd")
+}
 
-private fun isWindows(): Boolean = System.getProperty("os.name").contains("windows", ignoreCase = true)
+private fun isLauncherFile(path: Path, osName: String): Boolean =
+    Files.isRegularFile(path) && (Files.isExecutable(path) || isWindows(osName))
 
-private fun nullDevice(): java.io.File = if (isWindows()) Path.of("NUL").toFile() else Path.of("/dev/null").toFile()
+private fun isWindows(osName: String): Boolean = osName.contains("windows", ignoreCase = true)
+
+private fun nullDevice(): java.io.File =
+    if (isWindows(System.getProperty("os.name"))) Path.of("NUL").toFile() else Path.of("/dev/null").toFile()

@@ -190,7 +190,7 @@ class NotisyncSshAgentCommand(
             runningRecord()?.bindAddresses?.takeIf { it.isNotEmpty() }
                 ?: agentEndpointAddresses(paths, config)
         }
-        val daemon = UnixDaemonClient(paths.socket).status()
+        val daemon = DaemonAutostarter(paths).connect().status()
         require(!daemon.clientId.isNullOrBlank()) { "notisyncd has no local identity" }
         files.ensurePrivateDirectory(paths.dataDirectory)
         output.appendLine("Configuration: OK")

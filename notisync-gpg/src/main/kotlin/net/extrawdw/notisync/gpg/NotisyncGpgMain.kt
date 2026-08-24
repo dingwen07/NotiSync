@@ -6,7 +6,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import net.extrawdw.notisync.desktop.DesktopPaths
-import net.extrawdw.notisync.desktop.api.UnixDaemonClient
+import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.protocol.GitCommitPayloadParser
 
 fun main(arguments: Array<String>) {
@@ -73,7 +73,7 @@ class NotisyncGpgCommand(
             maximumOutputBytes = 64 * 1024,
         )
         require(version.exitCode == 0) { "real GPG failed its version check" }
-        val daemon = UnixDaemonClient(paths.socket).status()
+        val daemon = DaemonAutostarter(paths).connect().status()
         require(!daemon.clientId.isNullOrBlank()) { "notisyncd has no local identity" }
         stdout.println("Configuration: OK")
         stdout.println("Real GPG: ${config.realGpgPath}")

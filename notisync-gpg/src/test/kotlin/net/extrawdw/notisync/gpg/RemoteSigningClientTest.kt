@@ -41,7 +41,10 @@ class RemoteSigningClientTest {
         val outcome = RemoteSigningClient(
             paths,
             config,
-            api = api,
+            connectToDaemon = {
+                api.calls += "connect"
+                api
+            },
             now = { 1_000 },
             workingDirectory = { "C:\\work\\NotiSync" },
         ).sign(
@@ -53,7 +56,21 @@ class RemoteSigningClientTest {
             RemoteSigningOutcome.Rejected(OpenPgpRejectReason.USER_REJECTED.name),
             outcome,
         )
-        assertEquals(listOf("status", "register", "open", "send", "next", "complete", "send", "close", "unregister"), api.calls)
+        assertEquals(
+            listOf(
+                "connect",
+                "status",
+                "register",
+                "open",
+                "send",
+                "next",
+                "complete",
+                "send",
+                "close",
+                "unregister",
+            ),
+            api.calls,
+        )
         assertEquals(Urgency.HIGH, api.sends.first().urgency)
         assertEquals("C:\\work\\NotiSync", api.decodeRequest(api.sends.first()).workingDirectory)
         assertEquals(Urgency.NORMAL, api.sends.last().urgency)
