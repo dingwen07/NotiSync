@@ -10,7 +10,10 @@ import android.nfc.NdefRecord
 import android.nfc.NfcAdapter
 import android.nfc.cardemulation.CardEmulation
 import android.nfc.cardemulation.HostApduService
+import android.os.Build
 import android.os.Bundle
+import android.os.UserManager
+import android.util.Log
 import kotlin.math.min
 
 /** Foreground-only compatibility routing for NFC Forum Type 4 NDEF. */
@@ -50,8 +53,35 @@ internal object PairingNfcController {
         }
     }
 
-    /** Repairs a dynamic NDEF route left behind by process death before an Activity pause callback. */
-    fun restoreBackgroundRouting(context: Context) = disableForegroundNdef(context.applicationContext)
+    /** Repairs foreground-only routing and installs the Observe Mode rendezvous filter. */
+    fun restoreBackgroundRouting(context: Context) {
+        val appContext = context.applicationContext
+        disableForegroundNdef(appContext)
+        registerPollingLoopFilter(appContext)
+    }
+
+    private fun registerPollingLoopFilter(context: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.VANILLA_ICE_CREAM) return
+
+        // Android only auto-transacts when this service is preferred or no other service owns the same
+        // filter. Installing NotiSync in both the primary user and a work/private profile would otherwise
+        // make the shared marker ambiguous. The proprietary AID remains registered in every profile; only
+        // the primary profile owns the automatic background rendezvous.
+        val isProfile = runCatching {
+            context.getSystemService(UserManager::class.java).isProfile
+        }.getOrDefault(false)
+        if (isProfile) return
+
+        val cardEmulation = cardEmulation(context) ?: return
+        val registered = runCatching {
+            cardEmulation.registerPollingLoopFilterForService(
+                serviceComponent(context),
+                PairingNfcPolling.FILTER_HEX,
+                true,
+            )
+        }.getOrDefault(false)
+        if (!registered) Log.w(TAG, "Could not register the NFC pairing polling-loop filter")
+    }
 
     private fun serviceComponent(context: Context) =
         ComponentName(context.applicationContext, PairingHostApduService::class.java)
@@ -70,6 +100,8 @@ internal object PairingNfcController {
         is ContextWrapper -> baseContext.findActivity()
         else -> null
     }
+
+    private const val TAG = "PairingNfcController"
 }
 
 class PairingHostApduService : HostApduService() {

@@ -7,6 +7,16 @@ import org.junit.Test
 
 class PairingNfcProtocolTest {
     @Test
+    fun pollingLoopAnnotationMatchesItsExactFirmwareFilter() {
+        val annotation = PairingNfcPolling.annotationBytes()
+
+        assertEquals(PairingNfcPolling.FILTER_HEX, annotation.toHex())
+        assertTrue(annotation.size in 1..16)
+        annotation[0] = 0
+        assertEquals(PairingNfcPolling.FILTER_HEX, PairingNfcPolling.annotationBytes().toHex())
+    }
+
+    @Test
     fun oneKilobytePayloadsAreExchangedBidirectionallyAndCommittedTogether() {
         val hcePayload = payload(1_087, 'A')
         val readerPayload = payload(1_213, 'a')
@@ -143,4 +153,6 @@ class PairingNfcProtocolTest {
             repeat(size) { append(alphabet[(start + it) % alphabet.length]) }
         }
     }
+
+    private fun ByteArray.toHex(): String = joinToString(separator = "") { "%02X".format(it) }
 }

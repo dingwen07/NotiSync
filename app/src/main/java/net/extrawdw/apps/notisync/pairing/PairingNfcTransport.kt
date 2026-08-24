@@ -13,6 +13,8 @@ import android.content.pm.PackageManager
 import android.nfc.NfcAdapter
 import android.nfc.Tag
 import android.nfc.tech.IsoDep
+import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
@@ -282,7 +284,7 @@ internal class PairingNfcReaderSession private constructor(
                     activity,
                     session,
                     NfcAdapter.FLAG_READER_NFC_A or NfcAdapter.FLAG_READER_SKIP_NDEF_CHECK,
-                    null,
+                    adapter.pairingReaderModeExtras(),
                 )
                 session
             }.getOrElse {
@@ -291,6 +293,18 @@ internal class PairingNfcReaderSession private constructor(
                 null
             }
         }
+    }
+}
+
+private fun NfcAdapter.pairingReaderModeExtras(): Bundle? {
+    if (Build.VERSION.SDK_INT < 37) return null
+    val annotationsSupported = runCatching { isReaderModeAnnotationSupported }.getOrDefault(false)
+    if (!annotationsSupported) return null
+    return Bundle().apply {
+        putByteArray(
+            NfcAdapter.EXTRA_READER_TECH_A_POLLING_LOOP_ANNOTATION,
+            PairingNfcPolling.annotationBytes(),
+        )
     }
 }
 
