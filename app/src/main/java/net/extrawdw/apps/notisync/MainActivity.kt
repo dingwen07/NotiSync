@@ -389,10 +389,15 @@ fun NotiSyncRoot(
     }
 
     // Compatibility path for Android NDEF readers and iPhone: add the Type 4 AID only while this Activity is
-    // resumed outside the pairing page. PairingNfcController always keeps the custom AID in the dynamic group.
-    LifecycleResumeEffect(showPairing, foregroundPairingUrl) {
-        if (!showPairing) {
-            foregroundPairingUrl?.let { PairingNfcController.enableForegroundNdef(context, it) }
+    // resumed outside pairing UI. While approval is pending, withhold NDEF to prevent another system tag
+    // dispatch but keep the proprietary AID preferred; the sheet must not switch this device to reader mode.
+    LifecycleResumeEffect(showPairing, pairingReview != null, foregroundPairingUrl) {
+        when {
+            showPairing -> Unit
+            pairingReview != null -> PairingNfcController.enableForegroundCustomAidOnly(context)
+            else -> foregroundPairingUrl?.let {
+                PairingNfcController.enableForegroundNdef(context, it)
+            }
         }
         onPauseOrDispose { PairingNfcController.disableForegroundNdef(context) }
     }

@@ -223,13 +223,10 @@ internal class PairingNfcReaderSession private constructor(
             val selection = PairingNfcProtocol.parseSelectResponse(
                 connection.transceive(PairingNfcProtocol.selectApplicationCommand)
             )
-            require(connection.maxTransceiveLength >= PairingNfcProtocol.EXCHANGE_COMMAND_OVERHEAD) {
-                "NFC adapter APDU limit is too small"
-            }
-            val chunkSize = minOf(
-                selection.maxChunkSize,
-                connection.maxTransceiveLength - PairingNfcProtocol.EXCHANGE_COMMAND_OVERHEAD,
-            ).coerceAtLeast(1)
+            val chunkSize = PairingNfcProtocol.readerChunkSize(
+                maxTransceiveLength = connection.maxTransceiveLength,
+                peerMaxChunkSize = selection.maxChunkSize,
+            )
 
             val remotePayload = ByteArray(selection.payloadSize)
             selection.initialPayload.copyInto(remotePayload)

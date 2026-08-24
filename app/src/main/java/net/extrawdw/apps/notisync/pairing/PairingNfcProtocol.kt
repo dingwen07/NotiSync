@@ -12,13 +12,16 @@ import kotlin.math.min
  */
 internal object PairingNfcProtocol {
     private const val EXCHANGE_HEADER_BYTES = 7
+    private const val EXCHANGE_DATA_OFFSET = 5 + EXCHANGE_HEADER_BYTES
 
     const val APPLICATION_AID_HEX = "F04E6F746953796E63"
     const val MAX_PAIRING_PAYLOAD_BYTES = 16 * 1024
 
     /** Seven bytes of exchange metadata leave 248 bytes in a standard 255-byte APDU data field. */
     const val MAX_EXCHANGE_CHUNK_BYTES = 0xFF - EXCHANGE_HEADER_BYTES
-    const val EXCHANGE_COMMAND_OVERHEAD = 5 + EXCHANGE_HEADER_BYTES
+
+    /** Case 4 fixed bytes: four-byte header, Lc, seven metadata bytes, and Le. */
+    const val EXCHANGE_COMMAND_OVERHEAD = 6 + EXCHANGE_HEADER_BYTES
 
     private const val VERSION = 1
     private const val INS_SELECT = 0xA4
@@ -39,7 +42,6 @@ internal object PairingNfcProtocol {
         NOTISYNC_CLA.toByte(),
         INS_EXCHANGE_PAYLOAD.toByte(),
         EXCHANGE_COMMIT.toByte(),
-        0x00,
         0x00,
     )
 
@@ -115,7 +117,7 @@ internal object PairingNfcProtocol {
         require(requestedPeerOffset in 0..MAX_PAIRING_PAYLOAD_BYTES)
         require(requestedPeerLength in 0..MAX_EXCHANGE_CHUNK_BYTES)
         val dataLength = EXCHANGE_HEADER_BYTES + readerLength
-        return byteArrayOf(
+        val case3Command = byteArrayOf(
             NOTISYNC_CLA.toByte(),
             INS_EXCHANGE_PAYLOAD.toByte(),
             EXCHANGE_TRANSFER.toByte(),
@@ -129,20 +131,29 @@ internal object PairingNfcProtocol {
             requestedPeerOffset.toByte(),
             requestedPeerLength.toByte(),
         ) + readerPayload.copyOfRange(readerOffset, readerOffset + readerLength)
+        return if (requestedPeerLength > 0) {
+            case3Command + byteArrayOf(requestedPeerLength.toByte())
+        } else {
+            case3Command
+        }
     }
 
     fun parseTransfer(command: ByteArray): Transfer? {
-        if (command.size < EXCHANGE_COMMAND_OVERHEAD) return null
+        if (command.size < EXCHANGE_DATA_OFFSET) return null
         if (command.u(0) != NOTISYNC_CLA || command.u(1) != INS_EXCHANGE_PAYLOAD ||
             command.u(2) != EXCHANGE_TRANSFER || command.u(3) != 0x00
         ) return null
         val dataLength = command.u(4)
-        if (dataLength !in EXCHANGE_HEADER_BYTES..0xFF || command.size != 5 + dataLength) return null
+        if (dataLength !in EXCHANGE_HEADER_BYTES..0xFF) return null
+        val dataEnd = 5 + dataLength
         val readerPayloadSize = (command.u(5) shl 8) or command.u(6)
         val readerOffset = (command.u(7) shl 8) or command.u(8)
         val requestedPeerOffset = (command.u(9) shl 8) or command.u(10)
         val requestedPeerLength = command.u(11)
-        val readerChunk = command.copyOfRange(EXCHANGE_COMMAND_OVERHEAD, command.size)
+        val expectedCommandSize = dataEnd + if (requestedPeerLength > 0) 1 else 0
+        if (command.size != expectedCommandSize) return null
+        if (requestedPeerLength > 0 && command.u(dataEnd) != requestedPeerLength) return null
+        val readerChunk = command.copyOfRange(EXCHANGE_DATA_OFFSET, dataEnd)
         if (readerPayloadSize !in 1..MAX_PAIRING_PAYLOAD_BYTES ||
             readerChunk.size > MAX_EXCHANGE_CHUNK_BYTES ||
             requestedPeerLength !in 0..MAX_EXCHANGE_CHUNK_BYTES
@@ -157,9 +168,16 @@ internal object PairingNfcProtocol {
     }
 
     fun isCommitExchange(command: ByteArray): Boolean =
-        command.size == 5 &&
+        command.size == 4 &&
             command.u(0) == NOTISYNC_CLA && command.u(1) == INS_EXCHANGE_PAYLOAD &&
-            command.u(2) == EXCHANGE_COMMIT && command.u(3) == 0x00 && command.u(4) == 0x00
+            command.u(2) == EXCHANGE_COMMIT && command.u(3) == 0x00
+
+    fun readerChunkSize(maxTransceiveLength: Int, peerMaxChunkSize: Int): Int {
+        require(peerMaxChunkSize in 1..MAX_EXCHANGE_CHUNK_BYTES)
+        val adapterChunkSize = maxTransceiveLength - EXCHANGE_COMMAND_OVERHEAD
+        require(adapterChunkSize >= 1) { "NFC adapter APDU limit is too small" }
+        return minOf(peerMaxChunkSize, MAX_EXCHANGE_CHUNK_BYTES, adapterChunkSize)
+    }
 
     fun requireSuccessfulResponse(response: ByteArray): ByteArray {
         require(response.size >= 2 &&

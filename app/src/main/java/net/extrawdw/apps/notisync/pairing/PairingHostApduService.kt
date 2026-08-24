@@ -41,6 +41,24 @@ internal object PairingNfcController {
         }
     }
 
+    /** Keep proprietary pairing HCE preferred while withholding the foreground-only NDEF application. */
+    fun enableForegroundCustomAidOnly(context: Context) {
+        ForegroundNdefSession.clear()
+        val cardEmulation = cardEmulation(context) ?: return
+        val component = serviceComponent(context)
+        val registered = runCatching {
+            cardEmulation.registerAidsForService(
+                component,
+                CardEmulation.CATEGORY_OTHER,
+                listOf(PairingNfcProtocol.APPLICATION_AID_HEX),
+            )
+        }.getOrDefault(false)
+        if (!registered) return disableForegroundNdef(context)
+        context.findActivity()?.let { activity ->
+            runCatching { cardEmulation.setPreferredService(activity, component) }
+        }
+    }
+
     /** Remove the dynamic group so Android restores the manifest's always-on proprietary AID. */
     fun disableForegroundNdef(context: Context) {
         ForegroundNdefSession.clear()

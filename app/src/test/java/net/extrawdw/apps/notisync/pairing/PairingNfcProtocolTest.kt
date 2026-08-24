@@ -44,7 +44,7 @@ class PairingNfcProtocolTest {
                 requestedPeerOffset = hceOffset,
                 requestedPeerLength = hceLength,
             )
-            assertTrue(command.size <= 260) // standard short command APDU maximum
+            assertTrue(command.size <= 261) // standard short Case 4 command APDU maximum
             val hceChunk = PairingNfcProtocol.requireSuccessfulResponse(exchange.process(command))
             assertEquals(hceLength, hceChunk.size)
             hceChunk.copyInto(downloaded, destinationOffset = hceOffset)
@@ -138,6 +138,105 @@ class PairingNfcProtocolTest {
             requestedPeerLength = 10,
         )
         assertEquals(10, PairingNfcProtocol.requireSuccessfulResponse(exchange.process(valid)).size)
+    }
+
+    @Test
+    fun zeroLengthPeerReadUsesCase3WithoutLe() {
+        val command = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = "ABC".toByteArray(),
+            readerOffset = 1,
+            readerLength = 2,
+            requestedPeerOffset = 0x0123,
+            requestedPeerLength = 0,
+        )
+
+        assertEquals("80E0000009000300010123004243", command.toHex())
+        assertArrayEquals("BC".toByteArray(), PairingNfcProtocol.parseTransfer(command)?.readerChunk)
+    }
+
+    @Test
+    fun positivePeerReadUsesCase4WithMatchingLeAfterTheLcData() {
+        val command = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = "ABC".toByteArray(),
+            readerOffset = 1,
+            readerLength = 2,
+            requestedPeerOffset = 0x0123,
+            requestedPeerLength = 2,
+        )
+
+        assertEquals("80E000000900030001012302424302", command.toHex())
+        val transfer = PairingNfcProtocol.parseTransfer(command)
+        assertEquals(2, transfer?.requestedPeerLength)
+        assertArrayEquals("BC".toByteArray(), transfer?.readerChunk)
+    }
+
+    @Test
+    fun positivePeerReadRejectsMissingOrMismatchedLe() {
+        val command = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = "ABC".toByteArray(),
+            readerOffset = 0,
+            readerLength = 3,
+            requestedPeerOffset = 0,
+            requestedPeerLength = 2,
+        )
+
+        assertEquals(null, PairingNfcProtocol.parseTransfer(command.copyOf(command.size - 1)))
+        val mismatched = command.copyOf().apply { this[lastIndex] = 3 }
+        assertEquals(null, PairingNfcProtocol.parseTransfer(mismatched))
+    }
+
+    @Test
+    fun zeroLengthPeerReadRejectsAnUnexpectedLe() {
+        val case3 = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = "ABC".toByteArray(),
+            readerOffset = 0,
+            readerLength = 3,
+            requestedPeerOffset = 0,
+            requestedPeerLength = 0,
+        )
+
+        assertEquals(null, PairingNfcProtocol.parseTransfer(case3 + byteArrayOf(0)))
+    }
+
+    @Test
+    fun commitUsesCase1AndRejectsTheOldFiveByteEncoding() {
+        assertEquals("80E00100", PairingNfcProtocol.commitExchangeCommand.toHex())
+        assertTrue(PairingNfcProtocol.isCommitExchange(PairingNfcProtocol.commitExchangeCommand))
+        assertTrue(!PairingNfcProtocol.isCommitExchange(byteArrayOf(
+            0x80.toByte(), 0xE0.toByte(), 0x01, 0x00, 0x00,
+        )))
+    }
+
+    @Test
+    fun maximumChunksFitShortCase3AndCase4Commands() {
+        val readerPayload = ByteArray(PairingNfcProtocol.MAX_EXCHANGE_CHUNK_BYTES) { 'A'.code.toByte() }
+        val case3 = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = readerPayload,
+            readerOffset = 0,
+            readerLength = readerPayload.size,
+            requestedPeerOffset = 0,
+            requestedPeerLength = 0,
+        )
+        val case4 = PairingNfcProtocol.exchangePayloadCommand(
+            readerPayload = readerPayload,
+            readerOffset = 0,
+            readerLength = readerPayload.size,
+            requestedPeerOffset = 0,
+            requestedPeerLength = PairingNfcProtocol.MAX_EXCHANGE_CHUNK_BYTES,
+        )
+
+        assertEquals(260, case3.size)
+        assertEquals(261, case4.size)
+        assertEquals(PairingNfcProtocol.MAX_EXCHANGE_CHUNK_BYTES, case4.last().toInt() and 0xFF)
+    }
+
+    @Test
+    fun readerChunkCalculationNeverExceedsTheAdapterLimit() {
+        assertEquals(248, PairingNfcProtocol.readerChunkSize(261, 248))
+        assertEquals(247, PairingNfcProtocol.readerChunkSize(260, 248))
+        assertEquals(100, PairingNfcProtocol.readerChunkSize(261, 100))
+        assertEquals(1, PairingNfcProtocol.readerChunkSize(14, 248))
+        assertTrue(runCatching { PairingNfcProtocol.readerChunkSize(13, 248) }.isFailure)
     }
 
     @Test
