@@ -310,6 +310,17 @@ private enum class FeatureDestination(
     SSH_AGENT(Route.SshAgent, R.string.tab_ssh_agent, Icons.Outlined.Key),
 }
 
+private enum class PairingReviewSource {
+    INTERACTIVE,
+    DEEP_LINK,
+    HCE,
+}
+
+private data class PairingReview(
+    val candidate: PairingCandidate,
+    val source: PairingReviewSource,
+)
+
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
 // for the others), so its taller silhouette reads as raised. Render just the iOS glyph slightly
 // smaller, inside the same 24dp box, so its visual height matches the rest of the set.
@@ -354,7 +365,7 @@ fun NotiSyncRoot(
     // whole navigation suite so the Devices tab (and bar) stay visible as the page folds away.
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
-    var pairingCandidate by remember { mutableStateOf<PairingCandidate?>(null) }
+    var pairingReview by remember { mutableStateOf<PairingReview?>(null) }
     var pairingApprovalInProgress by remember { mutableStateOf(false) }
     var pairingApprovalError by remember { mutableStateOf<String?>(null) }
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
@@ -386,27 +397,33 @@ fun NotiSyncRoot(
         onPauseOrDispose { PairingNfcController.disableForegroundNdef(context) }
     }
 
-    fun openPairingCandidate(candidate: PairingCandidate) {
+    fun openPairingCandidate(
+        candidate: PairingCandidate,
+        source: PairingReviewSource = PairingReviewSource.INTERACTIVE,
+    ) {
         // Reader mode suppresses this device's HCE mode. Remove the pairing page first, then show approval
         // above Devices so the reciprocal peer can continue to address our always-on custom AID.
         showPairing = false
         navController.navigateToTopLevel(TopLevelDestination.DEVICES)
         pairingApprovalError = null
-        pairingCandidate = candidate
+        pairingReview = PairingReview(candidate, source)
     }
 
-    fun approvePairing(candidate: PairingCandidate, ownDevice: Boolean) {
+    fun approvePairing(review: PairingReview, ownDevice: Boolean) {
         if (pairingApprovalInProgress) return
         pairingApprovalInProgress = true
         pairingApprovalError = null
         pairingScope.launch {
             runCatching {
                 graph.durableTrustMutations.run {
-                    pairing.accept(candidate.payload, ownDevice).getOrThrow()
+                    pairing.accept(review.candidate.payload, ownDevice).getOrThrow()
                 }
             }.fold(
                 onSuccess = { card ->
-                    pairingCandidate = null
+                    if (review.source == PairingReviewSource.HCE) {
+                        onPendingHcePairingPayloadConsumed(review.candidate.payload)
+                    }
+                    pairingReview = null
                     Toast.makeText(
                         context,
                         context.getString(R.string.pair_paired_with, card.displayName),
@@ -427,8 +444,19 @@ fun NotiSyncRoot(
         val fromDeepLink = pendingPairingPayload != null
         val payload = pendingPairingPayload ?: pendingHcePairingPayload ?: return@LaunchedEffect
         navController.navigateToTopLevel(TopLevelDestination.DEVICES)
-        withContext(Dispatchers.Default) { pairing.inspect(payload) }.fold(
-            onSuccess = ::openPairingCandidate,
+        val inspection = withContext(Dispatchers.Default) { pairing.inspect(payload) }
+        inspection.fold(
+            onSuccess = { candidate ->
+                val source = if (fromDeepLink) {
+                    PairingReviewSource.DEEP_LINK
+                } else {
+                    PairingReviewSource.HCE
+                }
+                if (source == PairingReviewSource.HCE) {
+                    PairingNfcInbox.dismissNotification(context)
+                }
+                openPairingCandidate(candidate, source)
+            },
             onFailure = {
                 val message = if (fromDeepLink) {
                     context.getString(R.string.pair_could_not_open_link, it.message)
@@ -440,7 +468,9 @@ fun NotiSyncRoot(
         )
         if (fromDeepLink) {
             onPendingPairingPayloadConsumed()
-        } else {
+        } else if (inspection.isFailure) {
+            // Keep a verified HCE card durable until the user approves or dismisses the review. Invalid
+            // input is terminal and should not reopen on every future app launch.
             onPendingHcePairingPayloadConsumed(payload)
         }
     }
@@ -605,20 +635,23 @@ fun NotiSyncRoot(
             PairingOverlay(
                 pairButtonBounds = pairButtonBounds,
                 onClose = { showPairing = false },
-                onPairingCandidate = ::openPairingCandidate,
+                onPairingCandidate = { openPairingCandidate(it) },
             )
         }
 
-        pairingCandidate?.let { candidate ->
+        pairingReview?.let { review ->
             PairingApprovalSheet(
-                candidate = candidate,
+                candidate = review.candidate,
                 approving = pairingApprovalInProgress,
                 error = pairingApprovalError,
-                onTrustOwn = { approvePairing(candidate, ownDevice = true) },
-                onTrustOther = { approvePairing(candidate, ownDevice = false) },
+                onTrustOwn = { approvePairing(review, ownDevice = true) },
+                onTrustOther = { approvePairing(review, ownDevice = false) },
                 onDismiss = {
+                    if (review.source == PairingReviewSource.HCE) {
+                        onPendingHcePairingPayloadConsumed(review.candidate.payload)
+                    }
                     pairingApprovalError = null
-                    pairingCandidate = null
+                    pairingReview = null
                 },
             )
         }

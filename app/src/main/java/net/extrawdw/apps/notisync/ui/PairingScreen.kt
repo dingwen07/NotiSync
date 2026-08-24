@@ -34,7 +34,6 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -474,13 +473,6 @@ internal fun PairingApprovalSheet(
                 modifier = Modifier.fillMaxWidth(),
             ) {
                 Text(stringResource(R.string.pair_trust_other))
-            }
-            TextButton(
-                onClick = onDismiss,
-                enabled = !approving,
-                modifier = Modifier.align(Alignment.End),
-            ) {
-                Text(stringResource(R.string.action_cancel))
             }
         }
     }

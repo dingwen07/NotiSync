@@ -741,9 +741,9 @@
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
     <string name="pair_nfc_service_description">NotiSync Device Pairing</string>
-    <string name="pair_nfc_notification_channel">Device pairing</string>
-    <string name="pair_nfc_notification_title">Pairing card received</string>
-    <string name="pair_nfc_notification_text">Open NotiSync to verify and approve the other device.</string>
+    <string name="pair_nfc_notification_channel">Pairing requests</string>
+    <string name="pair_nfc_notification_title">Review device pairing</string>
+    <string name="pair_nfc_notification_text">Tap to verify and approve the other device.</string>
     <string name="pair_no_code">No code detected</string>
     <string name="pair_scan_failed">Scan failed: %1$s</string>
     <string name="pair_scanning">Scanning…</string>

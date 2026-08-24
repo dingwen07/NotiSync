@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.pairing
 
 import android.Manifest
 import android.app.Activity
+import android.app.KeyguardManager
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -14,6 +15,7 @@ import android.nfc.Tag
 import android.nfc.tech.IsoDep
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
@@ -83,12 +85,11 @@ internal object PairingNfcInbox {
         PairingNfcProtocol.payloadBytes(payload)
         preferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
         _pendingPayload.value = payload
-        // processCommandApdu runs on the main thread. Queue notification-manager work behind its response;
-        // the in-memory inbox and async preference write above are enough to acknowledge the NFC commit.
+        // Android's NFC service binds HostApduService with BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS. Queue the
+        // launch behind processCommandApdu's response, then fall back to a heads-up notification if the
+        // Activity did not become visible (for example because the device is locked or an OEM blocks it).
         Handler(Looper.getMainLooper()).post {
-            if (!ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
-                showPairingNotification(context.applicationContext)
-            }
+            surfacePairingReview(context.applicationContext, payload)
         }
     }
 
@@ -96,7 +97,41 @@ internal object PairingNfcInbox {
         if (_pendingPayload.value != payload) return
         preferences(context).edit().remove(KEY_INCOMING_PAYLOAD).apply()
         _pendingPayload.value = null
+        dismissNotification(context)
+    }
+
+    fun dismissNotification(context: Context) {
         NotificationManagerCompat.from(context).cancel(PAIRING_NOTIFICATION_ID)
+    }
+
+    private fun surfacePairingReview(context: Context, payload: String) {
+        if (ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+            return
+        }
+        val interactive = context.getSystemService(PowerManager::class.java).isInteractive
+        val unlocked = !context.getSystemService(KeyguardManager::class.java).isDeviceLocked
+        if (!interactive || !unlocked) {
+            showPairingNotification(context)
+            return
+        }
+
+        val launchSucceeded = runCatching {
+            context.startActivity(pairingReviewIntent(context))
+        }.isSuccess
+        if (!launchSucceeded) {
+            showPairingNotification(context)
+            return
+        }
+        Handler(Looper.getMainLooper()).postDelayed(
+            {
+                if (_pendingPayload.value == payload &&
+                    !ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+                ) {
+                    showPairingNotification(context)
+                }
+            },
+            PAIRING_ACTIVITY_LAUNCH_GRACE_MILLIS,
+        )
     }
 
     private fun showPairingNotification(context: Context) {
@@ -108,16 +143,13 @@ internal object PairingNfcInbox {
             NotificationChannel(
                 PAIRING_NOTIFICATION_CHANNEL,
                 context.getString(R.string.pair_nfc_notification_channel),
-                NotificationManager.IMPORTANCE_DEFAULT,
+                NotificationManager.IMPORTANCE_HIGH,
             )
         )
         val open = PendingIntent.getActivity(
             context,
             PAIRING_NOTIFICATION_ID,
-            Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP
-                putExtra(MainActivity.EXTRA_OPEN_DEVICES, true)
-            },
+            pairingReviewIntent(context),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         NotificationManagerCompat.from(context).notify(
@@ -128,9 +160,17 @@ internal object PairingNfcInbox {
                 .setContentText(context.getString(R.string.pair_nfc_notification_text))
                 .setContentIntent(open)
                 .setAutoCancel(true)
-                .setCategory(NotificationCompat.CATEGORY_RECOMMENDATION)
+                .setCategory(NotificationCompat.CATEGORY_EVENT)
+                .setPriority(NotificationCompat.PRIORITY_HIGH)
+                .setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
                 .build(),
         )
+    }
+
+    private fun pairingReviewIntent(context: Context) = Intent(context, MainActivity::class.java).apply {
+        flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or
+            Intent.FLAG_ACTIVITY_SINGLE_TOP
+        putExtra(MainActivity.EXTRA_OPEN_DEVICES, true)
     }
 }
 
@@ -269,3 +309,4 @@ private const val KEY_OUTGOING_PAYLOAD = "outgoing_payload"
 private const val KEY_INCOMING_PAYLOAD = "incoming_payload"
 private const val PAIRING_NOTIFICATION_CHANNEL = "notisync.pairing"
 private const val PAIRING_NOTIFICATION_ID = 0x4E534643
+private const val PAIRING_ACTIVITY_LAUNCH_GRACE_MILLIS = 1_000L
