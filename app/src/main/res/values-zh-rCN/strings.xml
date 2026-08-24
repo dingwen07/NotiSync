@@ -728,7 +728,7 @@
     <string name="pair_auto_time_warning_title">自动日期和时间已关闭</string>
     <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。</string>
     <string name="pair_auto_time_open_settings">设置</string>
-    <string name="pair_trust_title">信任此设备？</string>
+    <string name="pair_trust_title">设备配对</string>
     <string name="pair_trust_body">此配对卡的数字签名有效。请将下方的验证码与另一台设备上显示的验证码进行比较。</string>
     <string name="pair_field_name">名称</string>
     <string name="pair_field_platform">平台</string>
