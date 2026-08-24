@@ -99,7 +99,7 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="true"
             android:launchMode="singleTask"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:theme="@style/Theme.NotiSync"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -137,7 +137,7 @@
             android:enableOnBackInvokedCallback="true"
             android:exported="false"
             android:label="@string/screen_viewer_task_title"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:supportsPictureInPicture="true"
             android:taskAffinity="${applicationId}.screen_viewer"
             android:theme="@style/Theme.NotiSync"
@@ -146,7 +146,7 @@
         <activity
             android:name=".seal.OpenPgpEnrollmentActivity"
             android:exported="false"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:theme="@style/Theme.NotiSync" />
 
         <activity
@@ -156,7 +156,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="standard"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 
@@ -167,7 +167,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="standard"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync" />
 
@@ -176,7 +176,7 @@
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:theme="@style/Theme.NotiSync" />
 
         <activity
@@ -184,7 +184,7 @@
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:theme="@style/Theme.NotiSync" />
 
         <!-- Before Android 16, URL NDEF records are delivered as ACTION_NDEF_DISCOVERED rather than
@@ -235,7 +235,7 @@
             android:excludeFromRecents="true"
             android:exported="false"
             android:launchMode="singleTask"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             android:showWhenLocked="true"
             android:taskAffinity=""
             android:theme="@style/Theme.NotiSync.CallScreen"
@@ -409,13 +409,13 @@
 
         <!-- play-services-code-scanner ships its scanner activity locked to PORTRAIT, which Play's
              large-screen check flags (and Android 16 ignores on large screens regardless). Relax it
-             to fullUser so it honors the device's rotation setting. -->
+             to user so it honors the device's normal rotation policy without forcing all four rotations. -->
         <activity
             android:name="com.google.mlkit.vision.codescanner.internal.GmsBarcodeScanningDelegateActivity"
-            android:screenOrientation="fullUser"
+            android:screenOrientation="user"
             tools:node="merge"
             tools:replace="android:screenOrientation"
-            tools:ignore="DiscouragedApi" /><!-- deliberate: fullUser RELAXES the 3rd-party PORTRAIT lock to the most adaptive setting -->
+            tools:ignore="DiscouragedApi" /><!-- deliberate: user relaxes the 3rd-party PORTRAIT lock while following the system rotation policy -->
     </application>
 
 </manifest>
