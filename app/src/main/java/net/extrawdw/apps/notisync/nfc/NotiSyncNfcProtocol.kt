@@ -13,7 +13,8 @@ import kotlin.math.min
 internal object NotiSyncNfcProtocol {
     private const val EXCHANGE_HEADER_BYTES = 7
     private const val EXCHANGE_DATA_OFFSET = 5 + EXCHANGE_HEADER_BYTES
-    private const val DISCOVERY_HEADER_BYTES = 4
+    private const val DISCOVERY_RESERVED_BYTES = 4
+    private const val DISCOVERY_HEADER_BYTES = 4 + DISCOVERY_RESERVED_BYTES
     private const val OPERATION_DESCRIPTOR_BYTES = 3
     private const val OPERATION_RESPONSE_METADATA_BYTES = 7
 
@@ -108,6 +109,7 @@ internal object NotiSyncNfcProtocol {
             add(responseMarker[0])
             add(responseMarker[1])
             add(DISCOVERY_FORMAT_VERSION.toByte())
+            repeat(DISCOVERY_RESERVED_BYTES) { add(0x00) }
             add(operations.size.toByte())
             operations.forEach { operation ->
                 add(operation.wireId.toByte())
@@ -126,7 +128,7 @@ internal object NotiSyncNfcProtocol {
         require(data.u(2) == DISCOVERY_FORMAT_VERSION) {
             "unsupported NotiSync NFC discovery format"
         }
-        val operationCount = data.u(3)
+        val operationCount = data.u(3 + DISCOVERY_RESERVED_BYTES)
         require(data.size == DISCOVERY_HEADER_BYTES + operationCount * OPERATION_DESCRIPTOR_BYTES) {
             "invalid NotiSync NFC operation list"
         }

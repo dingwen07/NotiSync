@@ -23,7 +23,7 @@ class NotiSyncNfcProtocolTest {
         val response = NotiSyncNfcProtocol.applicationSelectionResponse()
         val discovery = NotiSyncNfcProtocol.parseApplicationSelectionResponse(response)
 
-        assertEquals("4E5301010101019000", response.toHex())
+        assertEquals("4E530100000000010101019000", response.toHex())
         assertEquals(
             listOf(NotiSyncNfcProtocol.OperationSupport(wireId = 1, minVersion = 1, maxVersion = 1)),
             discovery.operations,
@@ -31,6 +31,16 @@ class NotiSyncNfcProtocolTest {
         assertEquals(
             1,
             NotiSyncNfcProtocol.negotiateVersion(discovery, NotiSyncNfcProtocol.Operation.PAIRING),
+        )
+        val nonZeroReservedBytes = response.copyOf().apply {
+            this[3] = 0x12
+            this[4] = 0x34
+            this[5] = 0x56
+            this[6] = 0x78
+        }
+        assertEquals(
+            discovery,
+            NotiSyncNfcProtocol.parseApplicationSelectionResponse(nonZeroReservedBytes),
         )
     }
 
