@@ -13,50 +13,54 @@ import android.nfc.cardemulation.HostApduService
 import android.os.Bundle
 import kotlin.math.min
 
-object PairingNfcController {
+/** Foreground-only compatibility routing for NFC Forum Type 4 NDEF. */
+internal object PairingNfcController {
     private const val NDEF_TAG_APPLICATION_AID = "D2760000850101"
 
-    fun enable(context: Context, pairingUrl: String) {
-        val cardEmulation = cardEmulation(context) ?: return PairingNfcSession.clear()
-        val component =
-            ComponentName(context.applicationContext, PairingHostApduService::class.java)
-        if (!PairingNfcSession.setPairingUrl(pairingUrl, context.applicationContext.packageName)) {
-            return PairingNfcSession.clear()
+    fun enableForegroundNdef(context: Context, pairingUrl: String) {
+        val cardEmulation = cardEmulation(context) ?: return ForegroundNdefSession.clear()
+        val component = serviceComponent(context)
+        if (!ForegroundNdefSession.setPairingUrl(pairingUrl, context.applicationContext.packageName)) {
+            return disableForegroundNdef(context)
         }
+        // Dynamic registration replaces the static category group. Include the proprietary AID so custom
+        // pairing remains routable while NDEF compatibility is temporarily added.
         val registered = runCatching {
             cardEmulation.registerAidsForService(
                 component,
                 CardEmulation.CATEGORY_OTHER,
-                listOf(NDEF_TAG_APPLICATION_AID),
+                listOf(PairingNfcProtocol.APPLICATION_AID_HEX, NDEF_TAG_APPLICATION_AID),
             )
         }.getOrDefault(false)
-        if (!registered) {
-            PairingNfcSession.clear()
-            return
-        }
+        if (!registered) return disableForegroundNdef(context)
         context.findActivity()?.let { activity ->
             runCatching { cardEmulation.setPreferredService(activity, component) }
         }
     }
 
-    fun disable(context: Context) {
-        PairingNfcSession.clear()
+    /** Remove the dynamic group so Android restores the manifest's always-on proprietary AID. */
+    fun disableForegroundNdef(context: Context) {
+        ForegroundNdefSession.clear()
         val cardEmulation = cardEmulation(context) ?: return
         context.findActivity()?.let { activity ->
             runCatching { cardEmulation.unsetPreferredService(activity) }
         }
         runCatching {
-            cardEmulation.removeAidsForService(
-                ComponentName(context.applicationContext, PairingHostApduService::class.java),
-                CardEmulation.CATEGORY_OTHER,
-            )
+            cardEmulation.removeAidsForService(serviceComponent(context), CardEmulation.CATEGORY_OTHER)
         }
     }
 
+    /** Repairs a dynamic NDEF route left behind by process death before an Activity pause callback. */
+    fun restoreBackgroundRouting(context: Context) = disableForegroundNdef(context.applicationContext)
+
+    private fun serviceComponent(context: Context) =
+        ComponentName(context.applicationContext, PairingHostApduService::class.java)
+
     private fun cardEmulation(context: Context): CardEmulation? {
         val appContext = context.applicationContext
-        val pm = appContext.packageManager
-        if (!pm.hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION)) return null
+        if (!appContext.packageManager.hasSystemFeature(PackageManager.FEATURE_NFC_HOST_CARD_EMULATION)) {
+            return null
+        }
         val adapter = NfcAdapter.getDefaultAdapter(appContext) ?: return null
         return runCatching { CardEmulation.getInstance(adapter) }.getOrNull()
     }
@@ -69,64 +73,88 @@ object PairingNfcController {
 }
 
 class PairingHostApduService : HostApduService() {
-    private var selectedFile: Int? = null
+    private enum class SelectedApplication { PAIRING, NDEF }
+
+    private var selectedApplication: SelectedApplication? = null
+    private var selectedNdefFile: Int? = null
+    private val pairingExchange by lazy {
+        PairingPayloadExchange(
+            outgoingPayload = PairingCardStore::current,
+            onIncomingPayload = { PairingNfcInbox.offer(applicationContext, it) },
+        )
+    }
 
     override fun processCommandApdu(commandApdu: ByteArray, extras: Bundle?): ByteArray {
-        if (commandApdu.isSelectNdefApplication()) {
-            selectedFile = null
-            return if (PairingNfcSession.isActive) STATUS_OK else STATUS_FILE_NOT_FOUND
+        if (PairingNfcProtocol.isSelectApplication(commandApdu)) {
+            selectedApplication = SelectedApplication.PAIRING
+            selectedNdefFile = null
+            return pairingExchange.select()
         }
-        if (!PairingNfcSession.isActive) return STATUS_FILE_NOT_FOUND
-
-        return when {
-            commandApdu.isSelectFile(CAPABILITY_CONTAINER_FILE_ID) -> {
-                selectedFile = CAPABILITY_CONTAINER_FILE_ID
-                STATUS_OK
+        if (commandApdu.isSelectNdefApplication()) {
+            selectedApplication = SelectedApplication.NDEF
+            selectedNdefFile = null
+            pairingExchange.reset()
+            return if (ForegroundNdefSession.isActive) {
+                PairingNfcProtocol.statusOk
+            } else {
+                PairingNfcProtocol.statusFileNotFound
             }
+        }
 
-            commandApdu.isSelectFile(NDEF_FILE_ID) -> {
-                selectedFile = NDEF_FILE_ID
-                STATUS_OK
-            }
-
-            commandApdu.isReadBinary() -> {
-                val file = selectedFile?.let(PairingNfcSession::file)
-                    ?: return STATUS_CONDITIONS_NOT_SATISFIED
-                commandApdu.readBinary(file)
-            }
-
-            else -> STATUS_INS_NOT_SUPPORTED
+        return when (selectedApplication) {
+            SelectedApplication.PAIRING -> pairingExchange.process(commandApdu)
+            SelectedApplication.NDEF -> processNdefCommand(commandApdu)
+            null -> PairingNfcProtocol.statusFileNotFound
         }
     }
 
     override fun onDeactivated(reason: Int) {
-        selectedFile = null
+        selectedApplication = null
+        selectedNdefFile = null
+        pairingExchange.reset()
+    }
+
+    private fun processNdefCommand(commandApdu: ByteArray): ByteArray = when {
+        !ForegroundNdefSession.isActive -> PairingNfcProtocol.statusFileNotFound
+
+        commandApdu.isSelectFile(CAPABILITY_CONTAINER_FILE_ID) -> {
+            selectedNdefFile = CAPABILITY_CONTAINER_FILE_ID
+            PairingNfcProtocol.statusOk
+        }
+
+        commandApdu.isSelectFile(NDEF_FILE_ID) -> {
+            selectedNdefFile = NDEF_FILE_ID
+            PairingNfcProtocol.statusOk
+        }
+
+        commandApdu.isReadBinary() -> {
+            val file = selectedNdefFile?.let(ForegroundNdefSession::file)
+                ?: return PairingNfcProtocol.statusConditionsNotSatisfied
+            commandApdu.readBinary(file)
+        }
+
+        else -> PairingNfcProtocol.statusInstructionNotSupported
     }
 
     private fun ByteArray.isSelectNdefApplication(): Boolean =
         size >= SELECT_NDEF_APPLICATION_PREFIX.size &&
-                SELECT_NDEF_APPLICATION_PREFIX.indices.all { this[it] == SELECT_NDEF_APPLICATION_PREFIX[it] }
+            SELECT_NDEF_APPLICATION_PREFIX.indices.all { this[it] == SELECT_NDEF_APPLICATION_PREFIX[it] }
 
     private fun ByteArray.isSelectFile(fileId: Int): Boolean =
         size >= 7 &&
-                u(0) == 0x00 &&
-                u(1) == 0xA4 &&
-                u(2) == 0x00 &&
-                (u(3) == 0x0C || u(3) == 0x00) &&
-                u(4) == 0x02 &&
-                u(5) == (fileId shr 8) &&
-                u(6) == (fileId and 0xFF)
+            u(0) == 0x00 && u(1) == 0xA4 && u(2) == 0x00 &&
+            (u(3) == 0x0C || u(3) == 0x00) && u(4) == 0x02 &&
+            u(5) == (fileId shr 8) && u(6) == (fileId and 0xFF)
 
     private fun ByteArray.isReadBinary(): Boolean =
-        size >= 5 && u(0) == 0x00 && u(1) == 0xB0
+        size == 5 && u(0) == 0x00 && u(1) == 0xB0
 
     private fun ByteArray.readBinary(file: ByteArray): ByteArray {
-        if (size < 5) return STATUS_WRONG_LENGTH
         val offset = (u(2) shl 8) or u(3)
-        if (offset > file.size) return STATUS_WRONG_P1P2
+        if (offset > file.size) return PairingNfcProtocol.statusWrongOffset
         val requested = u(4).let { if (it == 0) 256 else it }
         val end = min(file.size, offset + requested)
-        return file.copyOfRange(offset, end) + STATUS_OK
+        return file.copyOfRange(offset, end) + PairingNfcProtocol.statusOk
     }
 
     private fun ByteArray.u(index: Int): Int = this[index].toInt() and 0xFF
@@ -149,17 +177,11 @@ class PairingHostApduService : HostApduService() {
             0x01,
             0x01,
         )
-
-        private val STATUS_OK = byteArrayOf(0x90.toByte(), 0x00)
-        private val STATUS_FILE_NOT_FOUND = byteArrayOf(0x6A, 0x82.toByte())
-        private val STATUS_CONDITIONS_NOT_SATISFIED = byteArrayOf(0x69, 0x85.toByte())
-        private val STATUS_INS_NOT_SUPPORTED = byteArrayOf(0x6D, 0x00)
-        private val STATUS_WRONG_LENGTH = byteArrayOf(0x67, 0x00)
-        private val STATUS_WRONG_P1P2 = byteArrayOf(0x6B, 0x00)
     }
 }
 
-private object PairingNfcSession {
+/** Process-local Type 4 files; intentionally unavailable to a cold-started/background service. */
+private object ForegroundNdefSession {
     @Volatile
     private var files: Files? = null
 

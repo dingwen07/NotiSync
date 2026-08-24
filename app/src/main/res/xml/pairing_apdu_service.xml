@@ -5,6 +5,8 @@
     <aid-group
         android:category="other"
         android:description="@string/pair_nfc_service_description">
+        <!-- Always-on proprietary NotiSync AID. Foreground NDEF registration includes this AID too because
+             CardEmulation.registerAidsForService replaces, rather than augments, the static category group. -->
         <aid-filter android:name="F04E6F746953796E63" />
     </aid-group>
 </host-apdu-service>

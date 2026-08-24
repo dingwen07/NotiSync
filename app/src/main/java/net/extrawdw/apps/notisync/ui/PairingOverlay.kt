@@ -37,6 +37,7 @@ import kotlinx.coroutines.launch
 import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
+import net.extrawdw.apps.notisync.pairing.PairingCandidate
 
 // Tuning for the expand/collapse + predictive-back container transform. Mirrors the values used by
 // the AskMyTimeline "Chat history" overlay this is modelled on.
@@ -73,8 +74,7 @@ private val predictiveBackEasing: Easing = CubicBezierEasing(0.1f, 0.1f, 0f, 1f)
 internal fun PairingOverlay(
     pairButtonBounds: Rect?,
     onClose: () -> Unit,
-    initialPairingPayload: String? = null,
-    onInitialPairingPayloadConsumed: () -> Unit = {},
+    onPairingCandidate: (PairingCandidate) -> Unit,
 ) {
     TapjackingProtectionEffect()
     val scope = rememberCoroutineScope()
@@ -240,8 +240,7 @@ internal fun PairingOverlay(
         ) {
             PairingScreen(
                 onBack = { scope.launch { collapseToPairButton() } },
-                initialPairingPayload = initialPairingPayload,
-                onInitialPairingPayloadConsumed = onInitialPairingPayloadConsumed,
+                onPairingCandidate = onPairingCandidate,
             )
         }
     }

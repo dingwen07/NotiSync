@@ -734,13 +734,16 @@
     <string name="pair_paired_with">Paired with %1$s</string>
     <string name="pair_could_not_open_link">Could not open pairing link: %1$s</string>
     <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
-    <string name="pair_intro_nfc">You can also pair by tapping the other device against the back of this device.</string>
+    <string name="pair_intro_nfc">Or hold this device to another Android device. NotiSync exchanges both signed pairing cards in one tap.</string>
     <string name="pair_qr_code_desc">Pairing QR code</string>
     <string name="pair_signed_card_time">Created: %1$s</string>
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
     <string name="pair_nfc_service_description">NotiSync Device Pairing</string>
+    <string name="pair_nfc_notification_channel">Device pairing</string>
+    <string name="pair_nfc_notification_title">Pairing card received</string>
+    <string name="pair_nfc_notification_text">Open NotiSync to verify and approve the other device.</string>
     <string name="pair_no_code">No code detected</string>
     <string name="pair_scan_failed">Scan failed: %1$s</string>
     <string name="pair_scanning">Scanning…</string>

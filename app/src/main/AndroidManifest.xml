@@ -317,7 +317,9 @@
             android:name="firebase_messaging_installation_id_enabled"
             android:value="true" />
 
-        <!-- Pairing page only: dynamically swaps the static dummy AID for the NFC Forum NDEF AID. -->
+        <!-- The proprietary pairing AID is statically routable in the background. While MainActivity is
+             foreground outside the pairing page, it dynamically adds the NFC Forum NDEF AID to this same
+             service for legacy Android/iPhone pairing-link compatibility. -->
         <service
             android:name=".pairing.PairingHostApduService"
             android:exported="true"

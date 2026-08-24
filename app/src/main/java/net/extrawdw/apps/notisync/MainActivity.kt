@@ -6,6 +6,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.provider.Settings
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -79,10 +80,17 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
+import net.extrawdw.apps.notisync.pairing.PairingCandidate
+import net.extrawdw.apps.notisync.pairing.PairingCardStore
+import net.extrawdw.apps.notisync.pairing.PairingManager
+import net.extrawdw.apps.notisync.pairing.PairingNfcController
+import net.extrawdw.apps.notisync.pairing.PairingNfcInbox
 import net.extrawdw.apps.notisync.run.RunKey
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
 import net.extrawdw.apps.notisync.ui.ActivityScreen
@@ -92,6 +100,7 @@ import net.extrawdw.apps.notisync.ui.IosScreen
 import net.extrawdw.apps.notisync.ui.LocalFeatureDrawerOpener
 import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
+import net.extrawdw.apps.notisync.ui.PairingApprovalSheet
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.SignatureIcon
@@ -120,6 +129,7 @@ class MainActivity : ComponentActivity() {
             val graphReady by app.graphReady.collectAsStateWithLifecycle()
             val startupState by app.startupState.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
+            val hcePairingPayload by PairingNfcInbox.pendingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
@@ -159,6 +169,10 @@ class MainActivity : ComponentActivity() {
                         false -> NotiSyncRoot(
                             pendingPairingPayload = pairingPayload,
                             onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                            pendingHcePairingPayload = hcePairingPayload,
+                            onPendingHcePairingPayloadConsumed = { payload ->
+                                PairingNfcInbox.consume(applicationContext, payload)
+                            },
                             openDevices = openDevices,
                             onOpenDevicesConsumed = { pendingOpenDevices.value = false },
                             openRun = openRun,
@@ -306,6 +320,8 @@ private val TopLevelNavIosIconSize = 20.dp
 fun NotiSyncRoot(
     pendingPairingPayload: String? = null,
     onPendingPairingPayloadConsumed: () -> Unit = {},
+    pendingHcePairingPayload: String? = null,
+    onPendingHcePairingPayloadConsumed: (String) -> Unit = {},
     openDevices: Boolean = false,
     onOpenDevicesConsumed: () -> Unit = {},
     openRun: RunKey? = null,
@@ -313,6 +329,10 @@ fun NotiSyncRoot(
     openSshHistoryRequestId: String? = null,
     onOpenSshHistoryConsumed: () -> Unit = {},
 ) {
+    val context = LocalContext.current
+    val graph = rememberGraph()
+    val pairing = remember { PairingManager(graph) }
+    val pairingScope = rememberCoroutineScope()
     val navController = rememberNavController()
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
@@ -326,7 +346,7 @@ fun NotiSyncRoot(
 
     // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
     // this also blocks the deep-link path so a pairing link can't bypass the freeze.
-    val quarantined by rememberGraph().trust.quarantined.collectAsStateWithLifecycle()
+    val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
 
     // Pairing is a state-driven overlay rather than a nav destination, so it can expand out of — and
     // collapse back into — the "Pair a device" stripe with a predictive-back-driven container transform
@@ -334,11 +354,94 @@ fun NotiSyncRoot(
     // whole navigation suite so the Devices tab (and bar) stay visible as the page folds away.
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
+    var pairingCandidate by remember { mutableStateOf<PairingCandidate?>(null) }
+    var pairingApprovalInProgress by remember { mutableStateOf(false) }
+    var pairingApprovalError by remember { mutableStateOf<String?>(null) }
+    val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
+    var foregroundResumeGeneration by remember { mutableIntStateOf(0) }
+    var foregroundPairingUrl by remember {
+        mutableStateOf(PairingCardStore.current()?.let(PairingDeepLinks::create))
+    }
 
-    LaunchedEffect(pendingPairingPayload, quarantined) {
-        if (pendingPairingPayload != null && !quarantined) {
-            navController.navigateToTopLevel(TopLevelDestination.DEVICES)
-            showPairing = true
+    LifecycleResumeEffect(Unit) {
+        foregroundResumeGeneration += 1
+        onPauseOrDispose { }
+    }
+
+    // Refresh the signed public card on every foreground entry (and rename). The previously persisted card
+    // remains immediately usable while StrongBox signing runs off-main.
+    LaunchedEffect(showPairing, deviceName, foregroundResumeGeneration) {
+        if (!showPairing) {
+            withContext(Dispatchers.IO) { runCatching { pairing.myLink() } }
+                .onSuccess { foregroundPairingUrl = it.url }
+        }
+    }
+
+    // Compatibility path for Android NDEF readers and iPhone: add the Type 4 AID only while this Activity is
+    // resumed outside the pairing page. PairingNfcController always keeps the custom AID in the dynamic group.
+    LifecycleResumeEffect(showPairing, foregroundPairingUrl) {
+        if (!showPairing) {
+            foregroundPairingUrl?.let { PairingNfcController.enableForegroundNdef(context, it) }
+        }
+        onPauseOrDispose { PairingNfcController.disableForegroundNdef(context) }
+    }
+
+    fun openPairingCandidate(candidate: PairingCandidate) {
+        // Reader mode suppresses this device's HCE mode. Remove the pairing page first, then show approval
+        // above Devices so the reciprocal peer can continue to address our always-on custom AID.
+        showPairing = false
+        navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+        pairingApprovalError = null
+        pairingCandidate = candidate
+    }
+
+    fun approvePairing(candidate: PairingCandidate, ownDevice: Boolean) {
+        if (pairingApprovalInProgress) return
+        pairingApprovalInProgress = true
+        pairingApprovalError = null
+        pairingScope.launch {
+            runCatching {
+                graph.durableTrustMutations.run {
+                    pairing.accept(candidate.payload, ownDevice).getOrThrow()
+                }
+            }.fold(
+                onSuccess = { card ->
+                    pairingCandidate = null
+                    Toast.makeText(
+                        context,
+                        context.getString(R.string.pair_paired_with, card.displayName),
+                        Toast.LENGTH_LONG,
+                    ).show()
+                },
+                onFailure = {
+                    pairingApprovalError =
+                        context.getString(R.string.pair_could_not_pair, it.message)
+                },
+            )
+            pairingApprovalInProgress = false
+        }
+    }
+
+    LaunchedEffect(pendingPairingPayload, pendingHcePairingPayload, quarantined) {
+        if (quarantined) return@LaunchedEffect
+        val fromDeepLink = pendingPairingPayload != null
+        val payload = pendingPairingPayload ?: pendingHcePairingPayload ?: return@LaunchedEffect
+        navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+        withContext(Dispatchers.Default) { pairing.inspect(payload) }.fold(
+            onSuccess = ::openPairingCandidate,
+            onFailure = {
+                val message = if (fromDeepLink) {
+                    context.getString(R.string.pair_could_not_open_link, it.message)
+                } else {
+                    context.getString(R.string.pair_could_not_pair, it.message)
+                }
+                Toast.makeText(context, message, Toast.LENGTH_LONG).show()
+            },
+        )
+        if (fromDeepLink) {
+            onPendingPairingPayloadConsumed()
+        } else {
+            onPendingHcePairingPayloadConsumed(payload)
         }
     }
 
@@ -502,8 +605,21 @@ fun NotiSyncRoot(
             PairingOverlay(
                 pairButtonBounds = pairButtonBounds,
                 onClose = { showPairing = false },
-                initialPairingPayload = pendingPairingPayload,
-                onInitialPairingPayloadConsumed = onPendingPairingPayloadConsumed,
+                onPairingCandidate = ::openPairingCandidate,
+            )
+        }
+
+        pairingCandidate?.let { candidate ->
+            PairingApprovalSheet(
+                candidate = candidate,
+                approving = pairingApprovalInProgress,
+                error = pairingApprovalError,
+                onTrustOwn = { approvePairing(candidate, ownDevice = true) },
+                onTrustOther = { approvePairing(candidate, ownDevice = false) },
+                onDismiss = {
+                    pairingApprovalError = null
+                    pairingCandidate = null
+                },
             )
         }
     }
