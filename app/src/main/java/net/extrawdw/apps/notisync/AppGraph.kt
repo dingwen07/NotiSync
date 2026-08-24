@@ -100,6 +100,10 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
 import net.extrawdw.apps.notisync.pairing.automaticTimeEnabled
+import net.extrawdw.apps.notisync.pairing.PairingCardStore
+import net.extrawdw.apps.notisync.pairing.PairingManager
+import net.extrawdw.apps.notisync.pairing.PairingNfcController
+import net.extrawdw.apps.notisync.pairing.PairingNfcInbox
 import net.extrawdw.apps.notisync.run.RunEngine
 import net.extrawdw.apps.notisync.run.RunControlDrainWorker
 import net.extrawdw.apps.notisync.run.RunNotificationPresenter
@@ -217,6 +221,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
 )
 
 class AppGraph(private val app: Application) {
+    internal val applicationContext: Context get() = app
     val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default + crashGuard("AppGraph.scope"))
     internal val durableTrustMutations = DurableTrustMutations(scope)
     val activityLog = ActivityLog()
@@ -1556,6 +1561,11 @@ class NotiSyncApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // HCE may be the component that cold-starts this process. Load its tiny public-card cache before the
+        // service is created, and repair any foreground-only NDEF registration left by a prior process death.
+        PairingCardStore.preload(this)
+        PairingNfcInbox.preload(this)
+        PairingNfcController.restoreBackgroundRouting(this)
         initScope.launch {
             runCatching {
                 RoomStorageMigration(this@NotiSyncApp).prepare {
@@ -1575,6 +1585,10 @@ class NotiSyncApp : Application() {
                 _graphReady.value = true
                 graphDeferred.complete(graph)
                 _startupState.value = _startupState.value.copy(stage = AppStartupStage.READY)
+                // Refresh the persisted card after identity/profile/key initialization without delaying the UI.
+                graph.scope.launch(Dispatchers.IO) {
+                    runCatching { PairingManager(graph).myLink() }
+                }
             }.onFailure { t ->
                 Log.e("NotiSyncApp", "graph init failed", t)
                 _startupState.value = _startupState.value.copy(stage = AppStartupStage.FAILED)

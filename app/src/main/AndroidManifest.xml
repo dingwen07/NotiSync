@@ -317,9 +317,11 @@
             android:name="firebase_messaging_installation_id_enabled"
             android:value="true" />
 
-        <!-- Pairing page only: dynamically swaps the static dummy AID for the NFC Forum NDEF AID. -->
+        <!-- The proprietary NotiSync AID is statically routable in the background. While MainActivity is
+             foreground outside the pairing page, it dynamically adds the NFC Forum NDEF AID to this same
+             service for legacy Android/iPhone pairing-link compatibility. -->
         <service
-            android:name=".pairing.PairingHostApduService"
+            android:name=".nfc.NotiSyncHostApduService"
             android:exported="true"
             android:label="@string/app_name"
             android:permission="android.permission.BIND_NFC_SERVICE">
@@ -328,7 +330,7 @@
             </intent-filter>
             <meta-data
                 android:name="android.nfc.cardemulation.host_apdu_service"
-                android:resource="@xml/pairing_apdu_service" />
+                android:resource="@xml/notisync_apdu_service" />
         </service>
 
         <!-- Fires when the user swipes away a mirrored notification, to sync the dismissal. -->

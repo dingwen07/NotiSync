@@ -731,16 +731,22 @@
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>
+    <string name="pair_nfc_connection_lost">The NFC connection was lost. Keep the devices together until pairing finishes, then try again.</string>
+    <string name="pair_nfc_communication_failed">NFC communication failed. Keep the devices together and try again.</string>
+    <string name="pair_nfc_exchange_failed">The NFC exchange could not be completed. Try again.</string>
     <string name="pair_paired_with">Paired with %1$s</string>
     <string name="pair_could_not_open_link">Could not open pairing link: %1$s</string>
     <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
-    <string name="pair_intro_nfc">You can also pair by tapping the other device against the back of this device.</string>
+    <string name="pair_intro_nfc">Tap the backs of the two devices together to pair. Make sure the other device is unlocked and this pairing screen is not open.</string>
     <string name="pair_qr_code_desc">Pairing QR code</string>
     <string name="pair_signed_card_time">Created: %1$s</string>
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="pair_nfc_service_description">NotiSync Device Pairing</string>
+    <string name="notisync_nfc_service_description">NotiSync NFC</string>
+    <string name="pair_nfc_notification_channel">Pairing requests</string>
+    <string name="pair_nfc_notification_title">Review device pairing</string>
+    <string name="pair_nfc_notification_text">Tap to verify and approve the other device.</string>
     <string name="pair_no_code">No code detected</string>
     <string name="pair_scan_failed">Scan failed: %1$s</string>
     <string name="pair_scanning">Scanning…</string>
@@ -749,8 +755,8 @@
     <string name="pair_auto_time_warning_title">Automatic date and time is off</string>
     <string name="pair_auto_time_warning_body">Pairing cards include the current time. If this clock is incorrect, another device may reject this card.</string>
     <string name="pair_auto_time_open_settings">Settings</string>
-    <string name="pair_trust_title">Trust this device?</string>
-    <string name="pair_trust_body">NotiSync verified this signed pairing card. Add it as one of your own devices to mirror notifications, or as someone else\'s device to share only your device name.</string>
+    <string name="pair_trust_title">Device Pairing</string>
+    <string name="pair_trust_body">The pairing card has a valid digital signature. Compare the Verification Number below with the number shown on the other device.</string>
     <string name="pair_field_name">Name</string>
     <string name="pair_field_platform">Platform</string>
     <string name="pair_field_verification_number">Verification Number</string>

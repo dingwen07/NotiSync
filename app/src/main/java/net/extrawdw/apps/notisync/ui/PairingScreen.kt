@@ -1,18 +1,20 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.content.Intent
+import android.content.res.Resources
 import android.graphics.Bitmap
+import android.nfc.TagLostException
 import android.provider.Settings
 import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
@@ -22,7 +24,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.outlined.Share
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -31,12 +32,13 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -61,19 +63,20 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.pairing.KeyEpochStatus
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
-import net.extrawdw.apps.notisync.pairing.PairingNfcController
+import net.extrawdw.apps.notisync.pairing.PairingNfcReaderSession
 import net.extrawdw.apps.notisync.pairing.QrCodes
 import net.extrawdw.apps.notisync.pairing.formatPairingSystemTime
+import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.IOException
 import kotlin.coroutines.cancellation.CancellationException
 
 @Composable
 fun PairingScreen(
     onBack: () -> Unit,
-    initialPairingPayload: String? = null,
-    onInitialPairingPayloadConsumed: () -> Unit = {},
+    onPairingCandidate: (PairingCandidate) -> Unit,
 ) {
     val context = LocalContext.current
     // Resolve strings via LocalResources so they re-read on configuration changes (locale, etc.);
@@ -82,10 +85,8 @@ fun PairingScreen(
     val graph = rememberGraph()
     val pairing = remember { PairingManager(graph) }
     val scope = rememberCoroutineScope()
-    var result by remember { mutableStateOf<String?>(null) }
     var scanning by remember { mutableStateOf(false) }
     var inspecting by remember { mutableStateOf(false) }
-    var pendingCandidate by remember { mutableStateOf<PairingCandidate?>(null) }
     var codeGeneration by remember { mutableIntStateOf(0) }
     var hasResumed by remember { mutableStateOf(false) }
 
@@ -109,48 +110,17 @@ fun PairingScreen(
     }
 
     fun inspect(content: String) {
-        result = null
         inspecting = true
         scope.launch {
             withContext(Dispatchers.Default) { pairing.inspect(content) }
                 .fold(
-                    onSuccess = { pendingCandidate = it },
+                    onSuccess = onPairingCandidate,
                     onFailure = {
                         showScanFailure(resources.getString(R.string.pair_could_not_pair, it.message))
                     },
                 )
             inspecting = false
         }
-    }
-
-    fun trust(candidate: PairingCandidate, ownDevice: Boolean) {
-        pendingCandidate = null
-        result = null
-        inspecting = true
-        scope.launch {
-            result = graph.durableTrustMutations.run {
-                pairing.accept(candidate.payload, ownDevice).fold(
-                    onSuccess = { resources.getString(R.string.pair_paired_with, it.displayName) },
-                    onFailure = { resources.getString(R.string.pair_could_not_pair, it.message) },
-                )
-            }
-            inspecting = false
-        }
-    }
-
-    LaunchedEffect(initialPairingPayload) {
-        val payload = initialPairingPayload ?: return@LaunchedEffect
-        result = null
-        inspecting = true
-        withContext(Dispatchers.Default) { pairing.inspect(payload) }
-            .fold(
-                onSuccess = { pendingCandidate = it },
-                onFailure = {
-                    result = resources.getString(R.string.pair_could_not_open_link, it.message)
-                },
-            )
-        inspecting = false
-        onInitialPairingPayloadConsumed()
     }
 
     val codeState by produceState<PairingCodeState>(
@@ -163,6 +133,7 @@ fun PairingScreen(
             try {
                 val pairingLink = pairing.myLink()
                 PairingCodeState.Ready(
+                    payload = pairingLink.payload,
                     url = pairingLink.url,
                     bitmap = QrCodes.encode(pairingLink.url),
                     automaticTimeEnabled = pairingLink.automaticTimeEnabled,
@@ -177,6 +148,7 @@ fun PairingScreen(
         }
     }
     val pairingUrl = (codeState as? PairingCodeState.Ready)?.url
+    val pairingPayload = (codeState as? PairingCodeState.Ready)?.payload
 
     fun sharePairingUrl() {
         val url = pairingUrl ?: return
@@ -190,9 +162,26 @@ fun PairingScreen(
         context.startActivity(Intent.createChooser(shareIntent, title))
     }
 
-    LifecycleResumeEffect(pairingUrl) {
-        if (pairingUrl != null) PairingNfcController.enable(context, pairingUrl)
-        onPauseOrDispose { PairingNfcController.disable(context) }
+    // Reader mode disables this device's card-emulation mode by design. A verified result is handed to the
+    // root immediately, which removes this page before showing the Devices-page approval sheet and restores
+    // HCE for the next interaction.
+    LifecycleResumeEffect(pairingPayload) {
+        val readerSession = pairingPayload?.let { ownPayload ->
+            PairingNfcReaderSession.start(
+                context = context,
+                ownPayload = ownPayload,
+                onPayload = ::inspect,
+                onFailure = {
+                    showScanFailure(
+                        resources.getString(
+                            R.string.pair_could_not_pair,
+                            resources.nfcPairingFailureDetail(it),
+                        )
+                    )
+                },
+            )
+        }
+        onPauseOrDispose { readerSession?.close() }
     }
 
     val scannerOptions = remember {
@@ -307,7 +296,6 @@ fun PairingScreen(
 
             Button(
                 onClick = {
-                    result = null
                     scanning = true
                     GmsBarcodeScanning.getClient(context, scannerOptions).startScan()
                         .addOnSuccessListener { barcode ->
@@ -321,7 +309,6 @@ fun PairingScreen(
                             }
                         }
                         .addOnCanceledListener {
-                            result = null
                             scanning = false
                         }
                         .addOnFailureListener {
@@ -354,31 +341,14 @@ fun PairingScreen(
                 )
             }
 
-            result?.let { message ->
-                Card(Modifier.fillMaxWidth()) {
-                    Text(
-                        message,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.padding(16.dp)
-                    )
-                }
-            }
         }
-    }
-
-    pendingCandidate?.let { candidate ->
-        TrustDeviceDialog(
-            candidate = candidate,
-            onTrustOwn = { trust(candidate, ownDevice = true) },
-            onTrustOther = { trust(candidate, ownDevice = false) },
-            onDismiss = { pendingCandidate = null },
-        )
     }
 }
 
 private sealed interface PairingCodeState {
     data object Loading : PairingCodeState
     data class Ready(
+        val payload: String,
         val url: String,
         val bitmap: Bitmap,
         val automaticTimeEnabled: Boolean?,
@@ -420,17 +390,49 @@ private fun AutomaticTimeWarning(onOpenSettings: () -> Unit) {
     }
 }
 
+private fun Resources.nfcPairingFailureDetail(failure: Throwable): String {
+    val causes = generateSequence(failure) { current ->
+        current.cause?.takeUnless { it === current }
+    }.take(16).toList()
+    return getString(
+        when {
+            causes.any { it is TagLostException } -> R.string.pair_nfc_connection_lost
+            causes.any { it is IOException } -> R.string.pair_nfc_communication_failed
+            else -> R.string.pair_nfc_exchange_failed
+        }
+    )
+}
+
 @Composable
-private fun TrustDeviceDialog(
+internal fun PairingApprovalSheet(
     candidate: PairingCandidate,
+    approving: Boolean,
+    error: String?,
     onTrustOwn: () -> Unit,
     onTrustOther: () -> Unit,
     onDismiss: () -> Unit,
 ) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(stringResource(R.string.pair_trust_title)) },
-        text = {
+    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+
+    // This confirmation used to inherit protection from PairingOverlay. It now lives above Devices, so keep
+    // the same obscured-touch/tapjacking protection for the full sheet lifetime.
+    TapjackingProtectionEffect()
+    ModalBottomSheet(
+        onDismissRequest = { if (!approving) onDismiss() },
+        sheetState = sheetState,
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
+                .padding(start = 24.dp, end = 24.dp, bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            Text(
+                stringResource(R.string.pair_trust_title),
+                style = MaterialTheme.typography.headlineSmall,
+            )
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
@@ -468,19 +470,37 @@ private fun TrustDeviceDialog(
                     }
                 }
             }
-        },
-        confirmButton = {
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                TextButton(onClick = onTrustOther) { Text(stringResource(R.string.pair_trust_other)) }
-                TextButton(onClick = onTrustOwn) { Text(stringResource(R.string.pair_trust_own)) }
+
+            error?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.error,
+                )
             }
-        },
-        dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text(stringResource(R.string.action_cancel))
+            Button(
+                onClick = onTrustOwn,
+                enabled = !approving,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (approving) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                }
+                Text(stringResource(R.string.pair_trust_own))
             }
-        },
-    )
+            OutlinedButton(
+                onClick = onTrustOther,
+                enabled = !approving,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(stringResource(R.string.pair_trust_other))
+            }
+        }
+    }
 }
 
 /**

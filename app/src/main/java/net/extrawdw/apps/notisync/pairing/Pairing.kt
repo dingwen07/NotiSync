@@ -63,7 +63,11 @@ class PairingManager(private val graph: AppGraph) {
             // self-contained key-epoch is pulled from the broker afterward (so it stays relayable).
             epochBlob = graph.buildClientKeyEpochBlob(stripIdentity = true),
         )
+        // The HCE service can be cold-started in the background and must answer SELECT from memory. Persist
+        // the last complete public payload whenever we mint one; callers generate links off the main thread.
+        PairingCardStore.persist(graph.applicationContext, payload)
         return PairingLink(
+            payload = payload,
             url = PairingDeepLinks.create(payload),
             automaticTimeEnabled = generatedCard.automaticTimeEnabled,
             createdAt = generatedCard.createdAt,
@@ -108,6 +112,7 @@ class PairingManager(private val graph: AppGraph) {
 
 /** Pairing URL and the exact system-clock context of the self card embedded in it. */
 internal data class PairingLink(
+    val payload: String,
     val url: String,
     val automaticTimeEnabled: Boolean?,
     val createdAt: Long,

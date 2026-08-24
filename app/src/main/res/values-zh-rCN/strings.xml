@@ -704,16 +704,22 @@
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>
+    <string name="pair_nfc_connection_lost">NFC 连接已中断。请保持两台设备贴近，直到配对完成，然后重试。</string>
+    <string name="pair_nfc_communication_failed">NFC 通信失败。请保持两台设备贴近，然后重试。</string>
+    <string name="pair_nfc_exchange_failed">无法完成 NFC 数据交换。请重试。</string>
     <string name="pair_paired_with">已与 %1$s 配对</string>
     <string name="pair_could_not_open_link">无法打开配对链接：%1$s</string>
     <string name="pair_intro">在另一台设备上，使用 NotiSync 或相机应用扫描下面的二维码。</string>
-    <string name="pair_intro_nfc">您也可以通过将另一台设备贴在此设备的背面来配对。</string>
+    <string name="pair_intro_nfc">您也可以通过将两台设备的背面贴在一起来配对。请确保另一台设备已解锁，且未打开 NotiSync 设备配对界面。</string>
     <string name="pair_qr_code_desc">配对二维码</string>
     <string name="pair_signed_card_time">创建时间：%1$s</string>
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
     <string name="pair_verification_number">验证码：%1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="pair_nfc_service_description">NotiSync 设备配对</string>
+    <string name="notisync_nfc_service_description">NotiSync NFC</string>
+    <string name="pair_nfc_notification_channel">配对请求</string>
+    <string name="pair_nfc_notification_title">审核设备配对</string>
+    <string name="pair_nfc_notification_text">点按以验证并批准另一台设备。</string>
     <string name="pair_no_code">未检测到二维码</string>
     <string name="pair_scan_failed">扫描失败：%1$s</string>
     <string name="pair_scanning">正在扫描…</string>
@@ -722,8 +728,8 @@
     <string name="pair_auto_time_warning_title">自动日期和时间已关闭</string>
     <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。</string>
     <string name="pair_auto_time_open_settings">设置</string>
-    <string name="pair_trust_title">信任此设备？</string>
-    <string name="pair_trust_body">NotiSync 已验证此已签名的配对卡。将其添加为您自己的设备以镜像通知，或添加为他人的设备以仅共享您的设备名称。</string>
+    <string name="pair_trust_title">设备配对</string>
+    <string name="pair_trust_body">此配对卡的数字签名有效。请将下方的验证码与另一台设备上显示的验证码进行比较。</string>
     <string name="pair_field_name">名称</string>
     <string name="pair_field_platform">平台</string>
     <string name="pair_field_verification_number">验证码</string>
