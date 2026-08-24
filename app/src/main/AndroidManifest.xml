@@ -94,6 +94,10 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.NotiSync">
 
+        <meta-data
+            android:name="asset_statements"
+            android:resource="@string/asset_statements" />
+
         <activity
             android:name=".MainActivity"
             android:enableOnBackInvokedCallback="true"

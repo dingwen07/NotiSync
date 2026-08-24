@@ -24,7 +24,7 @@ data class PreparedSshWebAuthnRegistration(
     val requestJson: String,
     val rpId: String,
     val challenge: ByteArray,
-    val userHandle: ByteArray,
+    val userId: ByteArray,
 )
 
 data class RegisteredSshWebAuthnCredential(
@@ -56,6 +56,58 @@ data class ParsedSshWebAuthnAssertion(
     val backupState: Boolean,
 )
 
+data class PreparedSshWebAuthnRecovery(
+    val requestJson: String,
+    val challenge: ByteArray,
+)
+
+data class SshWebAuthnRecoveryRecord(
+    val credentialId: ByteArray,
+    val userHandle: ByteArray,
+    val rpId: String,
+    val cosePublicKey: ByteArray,
+    val publicKeyBlob: ByteArray,
+    val createdOrigin: String,
+    val displayName: String,
+    val createdAt: Long,
+    val backupEligible: Boolean,
+    val backupState: Boolean,
+) {
+    fun storedCredential(providerKeyId: String = "recovery") = StoredSshWebAuthnCredential(
+        providerKeyId = providerKeyId,
+        publicKeyBlob = publicKeyBlob.copyOf(),
+        credentialId = credentialId.copyOf(),
+        userHandle = userHandle.copyOf(),
+        rpId = rpId,
+        cosePublicKey = cosePublicKey.copyOf(),
+        createdOrigin = createdOrigin,
+        backupEligible = backupEligible,
+        backupState = backupState,
+    )
+
+    fun registeredCredential(assertion: ParsedSshWebAuthnAssertion) = RegisteredSshWebAuthnCredential(
+        publicKeyBlob = publicKeyBlob.copyOf(),
+        credentialId = credentialId.copyOf(),
+        userHandle = userHandle.copyOf(),
+        rpId = rpId,
+        cosePublicKey = cosePublicKey.copyOf(),
+        createdOrigin = createdOrigin,
+        backupEligible = assertion.backupEligible,
+        backupState = assertion.backupState,
+    )
+
+    fun registeredCredential() = RegisteredSshWebAuthnCredential(
+        publicKeyBlob = publicKeyBlob.copyOf(),
+        credentialId = credentialId.copyOf(),
+        userHandle = userHandle.copyOf(),
+        rpId = rpId,
+        cosePublicKey = cosePublicKey.copyOf(),
+        createdOrigin = createdOrigin,
+        backupEligible = backupEligible,
+        backupState = backupState,
+    )
+}
+
 /** Pure request/response codec for the Android Credential Manager WebAuthn boundary. */
 object SshWebAuthnCredential {
     const val RP_ID = "notisync.apps.extrawdw.net"
@@ -73,16 +125,16 @@ object SshWebAuthnCredential {
             "excluded WebAuthn credential IDs are outside the allowed bounds"
         }
         val challenge = ByteArray(32).also(random::nextBytes)
-        val userHandle = ByteArray(32).also(random::nextBytes)
-        val userName = "notisync-ssh-${base64Url(userHandle)}"
+        val userId = generateWebAuthnUserId(random)
+        val printableUserId = printableWebAuthnUserId(userId)
         val request = buildJsonObject {
             put("rp", buildJsonObject {
                 put("id", RP_ID)
                 put("name", "NotiSync SSH")
             })
             put("user", buildJsonObject {
-                put("id", base64Url(userHandle))
-                put("name", userName)
+                put("id", base64Url(userId))
+                put("name", printableUserId)
                 put("displayName", boundedName)
             })
             put("challenge", base64Url(challenge))
@@ -103,7 +155,7 @@ object SshWebAuthnCredential {
             })
             put("attestation", "none")
         }
-        return PreparedSshWebAuthnRegistration(request.toString(), RP_ID, challenge, userHandle)
+        return PreparedSshWebAuthnRegistration(request.toString(), RP_ID, challenge, userId)
     }
 
     fun assertionRequestJson(stored: StoredSshWebAuthnCredential, challenge: ByteArray): String {
@@ -116,6 +168,110 @@ object SshWebAuthnCredential {
             put("userVerification", "required")
             put("timeout", CREDENTIAL_TIMEOUT_MILLIS)
         }.toString()
+    }
+
+    fun prepareRecovery(random: SecureRandom = SecureRandom()): PreparedSshWebAuthnRecovery {
+        val challenge = ByteArray(32).also(random::nextBytes)
+        val request = buildJsonObject {
+            put("rpId", RP_ID)
+            put("challenge", base64Url(challenge))
+            put("userVerification", "required")
+            put("timeout", CREDENTIAL_TIMEOUT_MILLIS)
+        }
+        return PreparedSshWebAuthnRecovery(request.toString(), challenge)
+    }
+
+    fun assertionCredentialId(responseJson: String): ByteArray {
+        val root = parseJsonObject(responseJson, "WebAuthn credential recovery assertion")
+        require(root.requiredString("type") == PUBLIC_KEY_TYPE) { "unexpected WebAuthn credential type" }
+        return root.credentialId()
+    }
+
+    fun assertionUserHandle(responseJson: String): ByteArray {
+        val root = parseJsonObject(responseJson, "WebAuthn credential recovery assertion")
+        require(root.requiredString("type") == PUBLIC_KEY_TYPE) { "unexpected WebAuthn credential type" }
+        return root.requiredObject("response").requiredBase64Url("userHandle", 64).also(::passwordRecordId)
+    }
+
+    fun passwordRecordId(userId: ByteArray): String = printableWebAuthnUserId(userId)
+
+    private fun printableWebAuthnUserId(userId: ByteArray): String {
+        require(userId.isNotEmpty() && userId.size <= 64) { "WebAuthn user ID is invalid" }
+        val printableUserId = userId.decodeToString()
+        require(
+            printableUserId.encodeToByteArray().contentEquals(userId) &&
+                printableUserId.startsWith(WEBAUTHN_USER_ID_PREFIX),
+        ) {
+            "WebAuthn user ID is invalid"
+        }
+        val randomToken = printableUserId.removePrefix(WEBAUTHN_USER_ID_PREFIX)
+        require(decodeBase64Url(randomToken).size == WEBAUTHN_USER_ID_RANDOM_BYTES) {
+            "WebAuthn user ID is invalid"
+        }
+        return printableUserId
+    }
+
+    fun encodeRecoveryRecord(
+        credential: RegisteredSshWebAuthnCredential,
+        displayName: String,
+        createdAt: Long,
+    ): String {
+        val record = SshWebAuthnRecoveryRecord(
+            credentialId = credential.credentialId.copyOf(),
+            userHandle = credential.userHandle.copyOf(),
+            rpId = credential.rpId,
+            cosePublicKey = credential.cosePublicKey.copyOf(),
+            publicKeyBlob = credential.publicKeyBlob.copyOf(),
+            createdOrigin = credential.createdOrigin,
+            displayName = displayName.trim(),
+            createdAt = createdAt,
+            backupEligible = credential.backupEligible,
+            backupState = credential.backupState,
+        )
+        validateRecoveryRecord(record)
+        return buildJsonObject {
+            put("version", RECOVERY_RECORD_VERSION)
+            put("credentialId", base64Url(record.credentialId))
+            put("userHandle", base64Url(record.userHandle))
+            put("rpId", record.rpId)
+            put("cosePublicKey", base64Url(record.cosePublicKey))
+            put("publicKeyBlob", base64Url(record.publicKeyBlob))
+            put("createdOrigin", record.createdOrigin)
+            put("displayName", record.displayName)
+            put("createdAt", record.createdAt)
+            put("backupEligible", record.backupEligible)
+            put("backupState", record.backupState)
+        }.toString().also {
+            require(it.encodeToByteArray().size <= MAX_RECOVERY_RECORD_BYTES) {
+                "WebAuthn recovery record is too large"
+            }
+        }
+    }
+
+    fun decodeRecoveryRecord(encoded: String): SshWebAuthnRecoveryRecord {
+        require(encoded.encodeToByteArray().size <= MAX_RECOVERY_RECORD_BYTES) {
+            "WebAuthn recovery record is too large"
+        }
+        val json = parseJsonObject(encoded, "WebAuthn recovery record")
+        require(json.keys == RECOVERY_RECORD_FIELDS) { "WebAuthn recovery record has unexpected fields" }
+        require(json["version"]?.jsonPrimitive?.content?.toIntOrNull() == RECOVERY_RECORD_VERSION) {
+            "unsupported WebAuthn recovery record version"
+        }
+        return SshWebAuthnRecoveryRecord(
+            credentialId = json.requiredBase64Url("credentialId", 1024),
+            userHandle = json.requiredBase64Url("userHandle", 64),
+            rpId = json.requiredString("rpId"),
+            cosePublicKey = json.requiredBase64Url("cosePublicKey", 2048),
+            publicKeyBlob = json.requiredBase64Url("publicKeyBlob", 16 * 1024),
+            createdOrigin = json.requiredString("createdOrigin"),
+            displayName = json.requiredString("displayName"),
+            createdAt = json["createdAt"]?.jsonPrimitive?.content?.toLongOrNull()
+                ?: error("WebAuthn recovery record has an invalid creation time"),
+            backupEligible = json["backupEligible"]?.jsonPrimitive?.booleanOrNull
+                ?: error("WebAuthn recovery record has an invalid backup eligibility value"),
+            backupState = json["backupState"]?.jsonPrimitive?.booleanOrNull
+                ?: error("WebAuthn recovery record has an invalid backup state value"),
+        ).also(::validateRecoveryRecord)
     }
 
     fun parseRegistration(
@@ -142,7 +298,7 @@ object SshWebAuthnCredential {
         return RegisteredSshWebAuthnCredential(
             publicKeyBlob = parsed.publicKeyBlob,
             credentialId = credentialId,
-            userHandle = prepared.userHandle.copyOf(),
+            userHandle = prepared.userId.copyOf(),
             rpId = prepared.rpId,
             cosePublicKey = parsed.cosePublicKey,
             createdOrigin = client.origin,
@@ -290,6 +446,35 @@ object SshWebAuthnCredential {
         return SshPublicKeyCodec.encodeWebAuthnEcdsaP256(publicKey, rpId)
     }
 
+    private fun validateRecoveryRecord(record: SshWebAuthnRecoveryRecord) {
+        require(record.rpId == RP_ID) { "unsupported WebAuthn recovery RP ID" }
+        require(record.credentialId.isNotEmpty() && record.credentialId.size <= 1024) {
+            "WebAuthn recovery credential ID is outside the allowed bounds"
+        }
+        passwordRecordId(record.userHandle)
+        require(record.cosePublicKey.isNotEmpty() && record.cosePublicKey.size <= 2048) {
+            "WebAuthn recovery public key is outside the allowed bounds"
+        }
+        val publicFromCose = coseEcdsaP256PublicBlob(CborReader.decodeExact(record.cosePublicKey), record.rpId)
+        require(MessageDigest.isEqual(publicFromCose, record.publicKeyBlob)) {
+            "WebAuthn recovery public keys do not match"
+        }
+        val decoded = SshPublicKeyCodec.decode(record.publicKeyBlob)
+        require(decoded.type == net.extrawdw.notisync.ssh.core.SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 &&
+            decoded.application == record.rpId
+        ) { "WebAuthn recovery SSH key is invalid" }
+        require(record.createdOrigin.isNotBlank() && record.createdOrigin.encodeToByteArray().size <= 1024) {
+            "WebAuthn recovery creation origin is outside the allowed bounds"
+        }
+        require(record.displayName.isNotBlank() && record.displayName.encodeToByteArray().size <= 256) {
+            "WebAuthn recovery display name is outside the allowed bounds"
+        }
+        require(record.createdAt > 0) { "WebAuthn recovery creation time is invalid" }
+        require(record.backupEligible && (!record.backupState || record.backupEligible)) {
+            "WebAuthn recovery requires a backup-eligible credential"
+        }
+    }
+
     private fun validateClientData(
         bytes: ByteArray,
         expectedType: String,
@@ -368,6 +553,19 @@ object SshWebAuthnCredential {
     private const val MAX_CLIENT_DATA_BYTES = 12 * 1024
     private const val MAX_ATTESTATION_BYTES = 64 * 1024
     private const val MAX_AUTHENTICATOR_DATA_BYTES = 16 * 1024
+    private const val MAX_RECOVERY_RECORD_BYTES = 64 * 1024
+    private const val RECOVERY_RECORD_VERSION = 1
+    private const val WEBAUTHN_USER_ID_PREFIX = "notisync-ssh:"
+    private const val WEBAUTHN_USER_ID_RANDOM_BYTES = 32
+    private val RECOVERY_RECORD_FIELDS = setOf(
+        "version", "credentialId", "userHandle", "rpId", "cosePublicKey", "publicKeyBlob",
+        "createdOrigin", "displayName", "createdAt", "backupEligible", "backupState",
+    )
+
+    private fun generateWebAuthnUserId(random: SecureRandom): ByteArray {
+        val randomBytes = ByteArray(WEBAUTHN_USER_ID_RANDOM_BYTES).also(random::nextBytes)
+        return (WEBAUTHN_USER_ID_PREFIX + base64Url(randomBytes)).encodeToByteArray()
+    }
 }
 
 private sealed interface CborValue {

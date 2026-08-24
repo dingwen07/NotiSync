@@ -55,7 +55,7 @@ enum class SshSignatureAlgorithm {
     SSH_ED25519, RSA_SHA2_256, RSA_SHA2_512, ECDSA_NISTP256, WEBAUTHN_SK_ECDSA_NISTP256, RSA_SHA1_LEGACY,
 }
 @Serializable
-enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD, WEBAUTHN_CREATED }
+enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD, WEBAUTHN_CREATED, WEBAUTHN_RECOVERED }
 @Serializable
 enum class SshOperationalKeyProvider {
     /** The non-exportable private key signs entirely through Android Keystore. */
@@ -262,11 +262,11 @@ data class SshKeyDescriptor(
             operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
             "WebAuthn ECDSA-SK keys require the Credential Manager provider"
         operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            origin != SshKeyOrigin.WEBAUTHN_CREATED ->
-            "Credential Manager WebAuthn credentials require a WebAuthn creation origin"
-        origin == SshKeyOrigin.WEBAUTHN_CREATED &&
+            origin !in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) ->
+            "Credential Manager WebAuthn credentials require a WebAuthn origin"
+        origin in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) &&
             operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
-            "WebAuthn creation origin requires the Credential Manager provider"
+            "WebAuthn origin requires the Credential Manager provider"
         (operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN) != (webAuthn != null) ->
             "WebAuthn metadata must appear exactly for Credential Manager keys"
         operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&

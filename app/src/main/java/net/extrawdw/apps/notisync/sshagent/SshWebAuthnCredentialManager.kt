@@ -5,9 +5,12 @@ import android.content.Context
 import android.content.pm.PackageManager
 import androidx.credentials.CreatePublicKeyCredentialRequest
 import androidx.credentials.CreatePublicKeyCredentialResponse
+import androidx.credentials.CreatePasswordRequest
 import androidx.credentials.CredentialManager
 import androidx.credentials.GetCredentialRequest
+import androidx.credentials.GetPasswordOption
 import androidx.credentials.GetPublicKeyCredentialOption
+import androidx.credentials.PasswordCredential
 import androidx.credentials.PublicKeyCredential
 import java.security.MessageDigest
 import java.util.Base64
@@ -31,6 +34,42 @@ object SshWebAuthnCredentialManager {
         )
         return (response.credential as? PublicKeyCredential)?.authenticationResponseJson
             ?: error("Credential Manager returned an unexpected WebAuthn credential assertion response")
+    }
+
+    suspend fun saveRecoveryRecord(
+        activity: Activity,
+        userId: ByteArray,
+        encodedRecord: String,
+    ) {
+        CredentialManager.create(activity).createCredential(
+            context = activity,
+            request = CreatePasswordRequest(
+                id = SshWebAuthnCredential.passwordRecordId(userId),
+                password = encodedRecord,
+                isAutoSelectAllowed = false,
+            ),
+        )
+    }
+
+    suspend fun getRecoveryRecord(activity: Activity, userId: ByteArray): String {
+        val passwordRecordId = SshWebAuthnCredential.passwordRecordId(userId)
+        val response = CredentialManager.create(activity).getCredential(
+            context = activity,
+            request = GetCredentialRequest.Builder()
+                .addCredentialOption(
+                    GetPasswordOption(
+                        allowedUserIds = setOf(passwordRecordId),
+                        isAutoSelectAllowed = true,
+                    ),
+                )
+                .build(),
+        )
+        val credential = response.credential as? PasswordCredential
+            ?: error("Credential Manager returned an unexpected WebAuthn recovery response")
+        require(credential.id == passwordRecordId) {
+            "Credential Manager returned a mismatched WebAuthn recovery record"
+        }
+        return credential.password
     }
 
     fun trustedOrigins(context: Context): Set<String> {

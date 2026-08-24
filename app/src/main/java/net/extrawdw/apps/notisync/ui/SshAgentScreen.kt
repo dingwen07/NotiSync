@@ -10,6 +10,7 @@ import android.net.Uri
 import android.os.CancellationSignal
 import android.provider.OpenableColumns
 import android.util.Log
+import android.widget.Toast
 import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -75,9 +76,11 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -97,6 +100,7 @@ import net.extrawdw.apps.notisync.sshagent.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshagent.SshKeyStorageResult
 import net.extrawdw.apps.notisync.sshagent.SshWebAuthnCredential
 import net.extrawdw.apps.notisync.sshagent.SshWebAuthnCredentialManager
+import net.extrawdw.apps.notisync.sshagent.SshWebAuthnRecoverySource
 import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
 import net.extrawdw.apps.notisync.sshagent.SshHistoryRequestDetail
 import net.extrawdw.apps.notisync.sshagent.SshKnownHost
@@ -109,6 +113,7 @@ import net.extrawdw.apps.notisync.sshagent.sshKeyStorageUserMessage
 import net.extrawdw.apps.notisync.sshagent.eligibleSshKeyTransferPeers
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
+import net.extrawdw.notisync.protocol.SshKeyOrigin
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshOperationalKeyProvider
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
@@ -129,6 +134,7 @@ fun SshAgentScreen(
 ) {
     val graph = rememberGraph()
     val context = LocalContext.current
+    val resources = LocalResources.current
     val storageAuthUnavailable = stringResource(R.string.ssh_agent_storage_auth_unavailable)
     val defaultImportedKeyName = stringResource(R.string.ssh_agent_imported_key_default)
     val clipboardKeyTooLarge = stringResource(R.string.ssh_agent_clipboard_key_too_large)
@@ -147,6 +153,13 @@ fun SshAgentScreen(
     var error by remember { mutableStateOf<String?>(null) }
     var generating by remember { mutableStateOf(false) }
     var creatingWebAuthn by remember { mutableStateOf(false) }
+    var importingWebAuthn by remember { mutableStateOf(false) }
+    var webAuthnRecoveryPayload by remember { mutableStateOf("") }
+    var webAuthnImportError by remember { mutableStateOf<String?>(null) }
+    var pendingWebAuthnRecoverySelection by remember {
+        mutableStateOf<PendingWebAuthnRecoverySelection?>(null)
+    }
+    var webAuthnRecoveryActions by remember { mutableStateOf<WebAuthnRecoveryActions?>(null) }
     var privateKeyText by remember { mutableStateOf<String?>(null) }
     var validatingImportSource by remember { mutableStateOf(false) }
     var pendingImport by remember { mutableStateOf<PendingSshKeyImport?>(null) }
@@ -277,6 +290,140 @@ fun SshAgentScreen(
         }
     }
 
+    fun importWebAuthnRecovery(manualPayload: String?) {
+        val activity = context as? Activity
+        if (activity == null) {
+            error = resources.getString(R.string.ssh_agent_webauthn_activity_required)
+            return
+        }
+        importingWebAuthn = false
+        webAuthnImportError = null
+        loading = true
+        scope.launch {
+            runCatching {
+                val record: net.extrawdw.apps.notisync.sshagent.SshWebAuthnRecoveryRecord
+                val selection: PendingWebAuthnRecoverySelection?
+                if (manualPayload != null) {
+                    record = withContext(Dispatchers.Default) {
+                        SshWebAuthnCredential.decodeRecoveryRecord(manualPayload.trim())
+                    }
+                    selection = pendingWebAuthnRecoverySelection
+                } else {
+                    pendingWebAuthnRecoverySelection = null
+                    val prepared = withContext(Dispatchers.Default) { SshWebAuthnCredential.prepareRecovery() }
+                    val assertionResponse = SshWebAuthnCredentialManager.get(activity, prepared.requestJson)
+                    val credentialId = withContext(Dispatchers.Default) {
+                        SshWebAuthnCredential.assertionCredentialId(assertionResponse)
+                    }
+                    val userHandle = withContext(Dispatchers.Default) {
+                        SshWebAuthnCredential.assertionUserHandle(assertionResponse)
+                    }
+                    selection = PendingWebAuthnRecoverySelection(
+                        challenge = prepared.challenge.copyOf(),
+                        assertionResponse = assertionResponse,
+                        credentialId = credentialId.copyOf(),
+                        userHandle = userHandle.copyOf(),
+                    ).also { pendingWebAuthnRecoverySelection = it }
+                    val encodedRecord = SshWebAuthnCredentialManager.getRecoveryRecord(activity, userHandle)
+                    record = withContext(Dispatchers.Default) {
+                        SshWebAuthnCredential.decodeRecoveryRecord(encodedRecord)
+                    }
+                }
+                val recoveredCredential = if (selection == null) {
+                    record.registeredCredential()
+                } else {
+                    val mismatchMessage = resources.getString(R.string.ssh_agent_webauthn_recovery_mismatch)
+                    require(record.credentialId.contentEquals(selection.credentialId)) { mismatchMessage }
+                    require(record.userHandle.contentEquals(selection.userHandle)) { mismatchMessage }
+                    val assertion = runCatching {
+                        withContext(Dispatchers.Default) {
+                            SshWebAuthnCredential.parseAssertion(
+                                record.storedCredential(),
+                                selection.challenge,
+                                selection.assertionResponse,
+                                SshWebAuthnCredentialManager.trustedOrigins(activity),
+                            )
+                        }
+                    }.getOrElse { throw IllegalArgumentException(mismatchMessage, it) }
+                    record.registeredCredential(assertion)
+                }
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.storeWebAuthnCredential(
+                        credential = recoveredCredential,
+                        displayName = record.displayName,
+                        now = record.createdAt,
+                        origin = SshKeyOrigin.WEBAUTHN_RECOVERED,
+                    )
+                }
+            }.onSuccess {
+                webAuthnRecoveryPayload = ""
+                webAuthnImportError = null
+                pendingWebAuthnRecoverySelection = null
+                graph.sshAgentProviderEngine?.publishInventory()
+                refresh()
+            }.onFailure { failure ->
+                importingWebAuthn = true
+                if (failure !is GetCredentialCancellationException) {
+                    webAuthnImportError = failure.message
+                        ?: resources.getString(R.string.ssh_agent_webauthn_import_failed)
+                }
+                loading = false
+            }
+        }
+    }
+
+    fun openWebAuthnRecoveryActions(key: SshKeyDescriptor) {
+        loading = true
+        scope.launch {
+            runCatching {
+                val source = withContext(Dispatchers.IO) {
+                    requireNotNull(graph.sshKeyProviderStore.webAuthnRecoverySource(key.providerKeyId)) {
+                        "WebAuthn SSH key was not found"
+                    }
+                }
+                val payload = withContext(Dispatchers.Default) {
+                    SshWebAuthnCredential.encodeRecoveryRecord(
+                        source.credential,
+                        source.displayName,
+                        source.createdAt,
+                    )
+                }
+                WebAuthnRecoveryActions(source, payload)
+            }.onSuccess { webAuthnRecoveryActions = it }
+                .onFailure { error = it.message ?: resources.getString(R.string.ssh_agent_webauthn_recovery_prepare_failed) }
+            loading = false
+        }
+    }
+
+    fun saveWebAuthnRecovery(actions: WebAuthnRecoveryActions) {
+        val activity = context as? Activity
+        if (activity == null) {
+            error = resources.getString(R.string.ssh_agent_webauthn_activity_required)
+            return
+        }
+        webAuthnRecoveryActions = null
+        loading = true
+        scope.launch {
+            runCatching {
+                SshWebAuthnCredentialManager.saveRecoveryRecord(
+                    activity,
+                    actions.source.credential.userHandle,
+                    actions.payload,
+                )
+            }.onSuccess {
+                Toast.makeText(
+                    context,
+                    R.string.ssh_agent_webauthn_recovery_saved,
+                    Toast.LENGTH_SHORT,
+                ).show()
+                loading = false
+            }.onFailure {
+                error = resources.getString(R.string.ssh_agent_webauthn_recovery_not_saved)
+                loading = false
+            }
+        }
+    }
+
     fun pasteClipboardIntoImport(requirePrivateKey: Boolean) {
         val candidate = clipboardText(context) ?: return
         if (candidate.length > net.extrawdw.notisync.protocol.SshAgentLimits.MAX_IMPORT_BYTES) {
@@ -366,6 +513,13 @@ fun SshAgentScreen(
                         onCreateWebAuthn = {
                             error = null
                             creatingWebAuthn = true
+                        },
+                        onImportWebAuthn = {
+                            error = null
+                            webAuthnRecoveryPayload = ""
+                            webAuthnImportError = null
+                            pendingWebAuthnRecoverySelection = null
+                            importingWebAuthn = true
                         },
                         onImport = {
                             error = null
@@ -483,6 +637,14 @@ fun SshAgentScreen(
                 } else {
                     null
                 },
+                onWebAuthnRecovery = if (key.webAuthn?.backupEligible == true) {
+                    {
+                        selectedKeyId = null
+                        openWebAuthnRecoveryActions(key)
+                    }
+                } else {
+                    null
+                },
                 onSend = if (key.exportCopy != null && transferPeers.isNotEmpty()) {
                     {
                         context.startActivity(
@@ -571,12 +733,12 @@ fun SshAgentScreen(
                 creatingWebAuthn = false
                 val activity = context as? Activity
                 if (activity == null) {
-                    error = context.getString(R.string.ssh_agent_webauthn_activity_required)
+                    error = resources.getString(R.string.ssh_agent_webauthn_activity_required)
                     return@CreateWebAuthnCredentialDialog
                 }
                 loading = true
                 scope.launch {
-                    runCatching {
+                    val creation = runCatching {
                         val excludedCredentialIds = withContext(Dispatchers.IO) {
                             graph.sshKeyProviderStore.webAuthnCredentialIds()
                         }
@@ -591,24 +753,94 @@ fun SshAgentScreen(
                                 SshWebAuthnCredentialManager.trustedOrigins(activity),
                             )
                         }
+                        val createdAt = System.currentTimeMillis()
                         withContext(Dispatchers.IO) {
                             graph.sshKeyProviderStore.storeWebAuthnCredential(
                                 credential,
                                 name,
-                                System.currentTimeMillis(),
+                                createdAt,
                             )
                         }
-                    }.onSuccess {
-                        graph.sshAgentProviderEngine?.publishInventory()
-                        refresh()
-                    }.onFailure { failure ->
+                        val recoveryPayload = if (credential.backupEligible) {
+                            withContext(Dispatchers.Default) {
+                                SshWebAuthnCredential.encodeRecoveryRecord(credential, name, createdAt)
+                            }
+                        } else {
+                            null
+                        }
+                        CreatedWebAuthnKey(credential, recoveryPayload)
+                    }
+                    val created = creation.getOrElse { failure ->
                         if (failure !is CreateCredentialCancellationException) {
-                            error = failure.message ?: context.getString(R.string.ssh_agent_webauthn_create_failed)
+                            error = failure.message ?: resources.getString(R.string.ssh_agent_webauthn_create_failed)
                         }
                         loading = false
+                        return@launch
+                    }
+                    created.recoveryPayload?.let { payload ->
+                        runCatching {
+                            SshWebAuthnCredentialManager.saveRecoveryRecord(
+                                activity,
+                                created.credential.userHandle,
+                                payload,
+                            )
+                        }.onFailure {
+                            error = resources.getString(R.string.ssh_agent_webauthn_recovery_not_saved)
+                        }
+                    }
+                    graph.sshAgentProviderEngine?.publishInventory()
+                    refresh()
+                }
+            },
+        )
+    }
+
+    if (importingWebAuthn) {
+        ImportWebAuthnCredentialDialog(
+            payload = webAuthnRecoveryPayload,
+            error = webAuthnImportError,
+            onPayloadChange = {
+                if (it.length <= MAX_WEBAUTHN_RECOVERY_PAYLOAD_CHARS) {
+                    webAuthnRecoveryPayload = it
+                    webAuthnImportError = null
+                } else {
+                    webAuthnImportError = resources.getString(R.string.ssh_agent_webauthn_recovery_too_large)
+                }
+            },
+            onPaste = {
+                clipboardText(context)?.let {
+                    if (it.length <= MAX_WEBAUTHN_RECOVERY_PAYLOAD_CHARS) {
+                        webAuthnRecoveryPayload = it
+                        webAuthnImportError = null
+                    } else {
+                        webAuthnImportError = resources.getString(R.string.ssh_agent_webauthn_recovery_too_large)
                     }
                 }
             },
+            onPasswordManager = { importWebAuthnRecovery(null) },
+            onManualImport = { importWebAuthnRecovery(webAuthnRecoveryPayload) },
+            onDismiss = {
+                importingWebAuthn = false
+                webAuthnImportError = null
+                pendingWebAuthnRecoverySelection = null
+            },
+        )
+    }
+
+    webAuthnRecoveryActions?.let { actions ->
+        WebAuthnRecoveryActionsDialog(
+            payload = actions.payload,
+            onCopy = {
+                copyRecoveryPayload(context, actions.payload)
+                Toast.makeText(
+                    context,
+                    R.string.ssh_agent_webauthn_recovery_copied,
+                    Toast.LENGTH_SHORT,
+                ).show()
+                webAuthnRecoveryActions = null
+            },
+            onSave = { saveWebAuthnRecovery(actions) },
+            onDismiss = { webAuthnRecoveryActions = null },
         )
     }
 
@@ -961,6 +1193,7 @@ private fun ProviderCard(
     keyCount: Int,
     onGenerate: () -> Unit,
     onCreateWebAuthn: () -> Unit,
+    onImportWebAuthn: () -> Unit,
     onImport: () -> Unit,
     onPaste: () -> Unit,
 ) {
@@ -996,6 +1229,11 @@ private fun ProviderCard(
                     Icon(Icons.Outlined.Fingerprint, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_webauthn_create_action))
+                }
+                OutlinedButton(onClick = onImportWebAuthn, enabled = ready) {
+                    Icon(Icons.Outlined.ContentPaste, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.ssh_agent_webauthn_import_action))
                 }
                 OutlinedButton(onClick = onImport, enabled = ready) {
                     Icon(
@@ -1140,6 +1378,7 @@ private fun SshKeyDetailSheet(
     policyChangeBusy: Boolean,
     onCopy: () -> Unit,
     onExport: (() -> Unit)?,
+    onWebAuthnRecovery: (() -> Unit)?,
     onSend: (() -> Unit)?,
     onRename: () -> Unit,
     onApprovalPolicyChange: (SshApprovalPolicy) -> Unit,
@@ -1175,6 +1414,14 @@ private fun SshKeyDetailSheet(
                         Icon(
                             Icons.Outlined.FileDownload,
                             contentDescription = stringResource(R.string.ssh_agent_export),
+                        )
+                    }
+                }
+                if (onWebAuthnRecovery != null) {
+                    IconButton(onClick = onWebAuthnRecovery) {
+                        Icon(
+                            Icons.Outlined.UploadFile,
+                            contentDescription = stringResource(R.string.ssh_agent_webauthn_recovery_action),
                         )
                     }
                 }
@@ -1241,21 +1488,19 @@ private fun SshKeyDetailSheet(
                 )
             }
         }
-        item {
-            SshKeyDetailValue(
-                label = stringResource(R.string.ssh_agent_export_details),
-                value = if (isWebAuthn) {
-                    stringResource(R.string.ssh_agent_webauthn_managed_export)
-                } else {
-                    key.exportCopy?.let { exportCopy ->
+        if (!isWebAuthn) {
+            item {
+                SshKeyDetailValue(
+                    label = stringResource(R.string.ssh_agent_export_details),
+                    value = key.exportCopy?.let { exportCopy ->
                         stringResource(R.string.ssh_agent_export_available) + "\n" +
                             stringResource(
                                 R.string.ssh_agent_export_copy_protection,
                                 stringResource(exportCopy.securityLevel.labelResource()),
                             )
-                    } ?: stringResource(R.string.ssh_agent_non_exportable)
-                },
-            )
+                    } ?: stringResource(R.string.ssh_agent_non_exportable),
+                )
+            }
         }
         item { HorizontalDivider() }
         if (isWebAuthn) {
@@ -1517,6 +1762,116 @@ private fun CreateWebAuthnCredentialDialog(
 }
 
 @Composable
+private fun ImportWebAuthnCredentialDialog(
+    payload: String,
+    error: String?,
+    onPayloadChange: (String) -> Unit,
+    onPaste: () -> Unit,
+    onPasswordManager: () -> Unit,
+    onManualImport: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.ssh_agent_webauthn_import_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    stringResource(R.string.ssh_agent_webauthn_import_help),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                error?.let {
+                    Text(
+                        it,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.error,
+                    )
+                }
+                OutlinedTextField(
+                    value = payload,
+                    onValueChange = onPayloadChange,
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.ssh_agent_webauthn_recovery_payload)) },
+                    minLines = 4,
+                    maxLines = 8,
+                )
+                TextButton(onClick = onPaste) {
+                    Icon(Icons.Outlined.ContentPaste, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.action_paste))
+                }
+            }
+        },
+        confirmButton = {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onPasswordManager) {
+                    Text(stringResource(R.string.ssh_agent_webauthn_import_password_manager))
+                }
+                Button(onClick = onManualImport, enabled = payload.isNotBlank()) {
+                    Text(stringResource(R.string.ssh_agent_webauthn_import_payload))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+@Composable
+private fun WebAuthnRecoveryActionsDialog(
+    payload: String,
+    onCopy: () -> Unit,
+    onSave: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(stringResource(R.string.ssh_agent_webauthn_recovery_title)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text(
+                    stringResource(R.string.ssh_agent_webauthn_recovery_help),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                OutlinedTextField(
+                    value = payload,
+                    onValueChange = {},
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text(stringResource(R.string.ssh_agent_webauthn_recovery_payload)) },
+                    readOnly = true,
+                    minLines = 4,
+                    maxLines = 8,
+                )
+            }
+        },
+        confirmButton = {
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                OutlinedButton(onClick = onCopy) {
+                    Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                    Spacer(Modifier.width(8.dp))
+                    Text(stringResource(R.string.ssh_agent_webauthn_recovery_copy))
+                }
+                Button(onClick = onSave) {
+                    Text(stringResource(R.string.ssh_agent_webauthn_recovery_save))
+                }
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text(stringResource(R.string.action_cancel)) }
+        },
+    )
+}
+
+@Composable
 private fun GenerateKeyDialog(
     onDismiss: () -> Unit,
     onGenerate: (SshKeyAlgorithm, Int, String, SshKeyStorageSelection) -> Unit,
@@ -1678,6 +2033,7 @@ private fun SshKeyAlgorithm.shortDisplayLabel(): String = when (this) {
 }
 
 private const val DEFAULT_RSA_KEY_SIZE_BITS = 3072
+private const val MAX_WEBAUTHN_RECOVERY_PAYLOAD_CHARS = 64 * 1024
 private val RSA_KEY_SIZE_BITS = listOf(2048, DEFAULT_RSA_KEY_SIZE_BITS, 4096)
 private val REGULAR_SSH_KEY_ALGORITHMS = listOf(
     SshKeyAlgorithm.SSH_ED25519,
@@ -1719,6 +2075,11 @@ private fun Context.reportSshKeyStorageFailure(
 private fun copyPublicKey(context: Context, key: SshKeyDescriptor) {
     context.getSystemService(ClipboardManager::class.java)
         .setPrimaryClip(ClipData.newPlainText(key.displayName, key.authorizedPublicKey()))
+}
+
+private fun copyRecoveryPayload(context: Context, payload: String) {
+    context.getSystemService(ClipboardManager::class.java)
+        .setPrimaryClip(ClipData.newPlainText("NotiSync WebAuthn SSH recovery payload", payload))
 }
 
 private fun SshKeyDescriptor.authorizedPublicKey(): String {
@@ -1812,6 +2173,23 @@ private fun authenticatePreparedStorage(
         }
     }
 }
+
+private data class CreatedWebAuthnKey(
+    val credential: net.extrawdw.apps.notisync.sshagent.RegisteredSshWebAuthnCredential,
+    val recoveryPayload: String?,
+)
+
+private data class WebAuthnRecoveryActions(
+    val source: SshWebAuthnRecoverySource,
+    val payload: String,
+)
+
+private data class PendingWebAuthnRecoverySelection(
+    val challenge: ByteArray,
+    val assertionResponse: String,
+    val credentialId: ByteArray,
+    val userHandle: ByteArray,
+)
 
 private data class PendingSshKeyImport(
     val bytes: ByteArray,

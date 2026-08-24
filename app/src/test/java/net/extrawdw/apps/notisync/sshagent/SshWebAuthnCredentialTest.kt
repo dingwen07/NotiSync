@@ -35,6 +35,13 @@ class SshWebAuthnCredentialTest {
             registrationResponse(prepared, keyPair, credentialId, origin),
             setOf(origin),
         )
+        val printableUserId = prepared.userId.decodeToString()
+        assertEquals(printableUserId, SshWebAuthnCredential.passwordRecordId(prepared.userId))
+        assertTrue(printableUserId.startsWith("notisync-ssh:"))
+        assertEquals(56, prepared.userId.size)
+        assertTrue(prepared.requestJson.contains("\"id\":\"${base64Url(prepared.userId)}\""))
+        assertTrue(prepared.requestJson.contains("\"name\":\"$printableUserId\""))
+        assertArrayEquals(prepared.userId, registered.userHandle)
 
         val decoded = SshPublicKeyCodec.decode(registered.publicKeyBlob)
         assertEquals(SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256, decoded.type)
@@ -138,6 +145,86 @@ class SshWebAuthnCredentialTest {
                 )
             }.isFailure,
         )
+    }
+
+    @Test
+    fun recoveryRecordRoundTripsAndMatchesTheSameWebAuthnCredential() {
+        val keyPair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1"))
+            generateKeyPair()
+        }
+        val origin = "android:apk-key-hash:${base64Url(ByteArray(32) { 3 })}"
+        val credentialId = ByteArray(32) { (it + 11).toByte() }
+        val registration = SshWebAuthnCredential.prepareRegistration("Recovery key")
+        val registered = SshWebAuthnCredential.parseRegistration(
+            registration,
+            registrationResponse(registration, keyPair, credentialId, origin),
+            setOf(origin),
+        )
+        val encoded = SshWebAuthnCredential.encodeRecoveryRecord(
+            registered,
+            "Recovery key",
+            1_725_000_000_000L,
+        )
+        val record = SshWebAuthnCredential.decodeRecoveryRecord(encoded)
+
+        assertArrayEquals(credentialId, record.credentialId)
+        assertEquals("Recovery key", record.displayName)
+        assertEquals(
+            SshWebAuthnCredential.passwordRecordId(registered.userHandle),
+            SshWebAuthnCredential.passwordRecordId(record.userHandle),
+        )
+
+        val recovery = SshWebAuthnCredential.prepareRecovery()
+        assertFalse(recovery.requestJson.contains("allowCredentials"))
+        val assertionResponse = assertionResponse(
+            record.storedCredential(),
+            recovery.challenge,
+            keyPair,
+            origin,
+        )
+        assertArrayEquals(
+            credentialId,
+            SshWebAuthnCredential.assertionCredentialId(assertionResponse),
+        )
+        assertArrayEquals(
+            registered.userHandle,
+            SshWebAuthnCredential.assertionUserHandle(assertionResponse),
+        )
+        val assertion = SshWebAuthnCredential.parseAssertion(
+            record.storedCredential(),
+            recovery.challenge,
+            assertionResponse,
+            setOf(origin),
+        )
+        val recovered = record.registeredCredential(assertion)
+        assertArrayEquals(registered.publicKeyBlob, recovered.publicKeyBlob)
+        assertArrayEquals(registered.credentialId, recovered.credentialId)
+        assertTrue(recovered.backupEligible)
+        assertTrue(recovered.backupState)
+    }
+
+    @Test
+    fun recoveryRecordRejectsMismatchedPublicMetadata() {
+        val keyPair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1"))
+            generateKeyPair()
+        }
+        val origin = "android:apk-key-hash:${base64Url(ByteArray(32) { 5 })}"
+        val registration = SshWebAuthnCredential.prepareRegistration("Recovery key")
+        val registered = SshWebAuthnCredential.parseRegistration(
+            registration,
+            registrationResponse(registration, keyPair, ByteArray(32) { 6 }, origin),
+            setOf(origin),
+        )
+        val encoded = SshWebAuthnCredential.encodeRecoveryRecord(registered, "Recovery key", 123L)
+        val publicBlob = base64Url(registered.publicKeyBlob)
+        val changedBlob = registered.publicKeyBlob.copyOf().also {
+            it[it.lastIndex] = (it.last().toInt() xor 1).toByte()
+        }
+        val tampered = encoded.replace(publicBlob, base64Url(changedBlob))
+
+        assertTrue(runCatching { SshWebAuthnCredential.decodeRecoveryRecord(tampered) }.isFailure)
     }
 
     private fun registrationResponse(

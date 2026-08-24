@@ -103,6 +103,12 @@ data class SshAuthorizationForgetOutcome(
     val cancelledRequestIds: List<String>,
 )
 
+data class SshWebAuthnRecoverySource(
+    val credential: RegisteredSshWebAuthnCredential,
+    val displayName: String,
+    val createdAt: Long,
+)
+
 data class StoredSshProviderRequest(
     val requestId: String,
     val kind: SshProviderRequestKind,
@@ -631,6 +637,7 @@ class SshKeyProviderStore(context: Context) :
         credential: RegisteredSshWebAuthnCredential,
         displayName: String,
         now: Long,
+        origin: SshKeyOrigin = SshKeyOrigin.WEBAUTHN_CREATED,
     ): SshKeyDescriptor {
         require(now > 0) { "credential creation time must be positive" }
         val name = displayName.trim()
@@ -645,12 +652,16 @@ class SshKeyProviderStore(context: Context) :
         require(credential.credentialId.isNotEmpty() && credential.credentialId.size <= 1024) {
             "WebAuthn credential ID is outside the allowed bounds"
         }
-        require(credential.userHandle.size == 32 && credential.cosePublicKey.isNotEmpty()) {
+        require(credential.userHandle.isNotEmpty() && credential.userHandle.size <= 64 && credential.cosePublicKey.isNotEmpty()) {
             "WebAuthn public metadata is outside the allowed bounds"
         }
+        SshWebAuthnCredential.passwordRecordId(credential.userHandle)
         require(credential.createdOrigin in trustedWebAuthnOrigins) { "WebAuthn origin is not trusted" }
         require(!credential.backupState || credential.backupEligible) {
             "WebAuthn backup state requires backup eligibility"
+        }
+        require(origin in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED)) {
+            "WebAuthn SSH key has an invalid origin"
         }
         val publicHash = sha256(credential.publicKeyBlob)
         check(findKeyId(publicHash) == null) { "WebAuthn SSH key already exists" }
@@ -665,7 +676,7 @@ class SshKeyProviderStore(context: Context) :
                 put("public_hash", publicHash)
                 put("algorithm", SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256.name)
                 put("display_name", name)
-                put("origin", SshKeyOrigin.WEBAUTHN_CREATED.name)
+                put("origin", origin.name)
                 put("approval_policy", SshApprovalPolicy.ALWAYS_ASK.name)
                 put("created_at", now)
             })
@@ -700,7 +711,7 @@ class SshKeyProviderStore(context: Context) :
             publicKeyBlobSha256 = publicHash,
             algorithm = SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256,
             displayName = name,
-            origin = SshKeyOrigin.WEBAUTHN_CREATED,
+            origin = origin,
             operationalKey = SshOperationalKeyProtection(
                 provider = SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
                 securityLevel = SshStorageSecurityLevel.CREDENTIAL_PROVIDER,
@@ -717,6 +728,35 @@ class SshKeyProviderStore(context: Context) :
                 credential.backupState,
             ),
         ).also { check(it.validationError(::sha256) == null) }
+    }
+
+    @Synchronized
+    fun webAuthnRecoverySource(providerKeyId: String): SshWebAuthnRecoverySource? = readableDatabase.rawQuery(
+        "SELECT k.public_blob, k.display_name, k.created_at, w.credential_id, w.user_handle, " +
+            "w.rp_id, w.cose_public_key, w.created_origin, w.backup_eligible, w.backup_state " +
+            "FROM ssh_keys k JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
+            "WHERE k.provider_key_id=?",
+        arrayOf(providerKeyId),
+    ).use { cursor ->
+        if (!cursor.moveToFirst()) {
+            null
+        } else {
+            check(cursor.getInt(8) != 0) { "device-bound WebAuthn credentials cannot be recovered on another device" }
+            SshWebAuthnRecoverySource(
+                credential = RegisteredSshWebAuthnCredential(
+                    publicKeyBlob = cursor.getBlob(0),
+                    credentialId = cursor.getBlob(3),
+                    userHandle = cursor.getBlob(4),
+                    rpId = cursor.getString(5),
+                    cosePublicKey = cursor.getBlob(6),
+                    createdOrigin = cursor.getString(7),
+                    backupEligible = true,
+                    backupState = cursor.getInt(9) != 0,
+                ),
+                displayName = cursor.getString(1),
+                createdAt = cursor.getLong(2),
+            )
+        }
     }
 
     @Synchronized

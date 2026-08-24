@@ -226,6 +226,7 @@ class SshAgentProtocolTest {
         )
 
         assertNull(key.validationError(::sha256))
+        assertNull(key.copy(origin = SshKeyOrigin.WEBAUTHN_RECOVERED).validationError(::sha256))
         val decoded = ProtocolCodec.decodeFromCbor<SshKeyDescriptor>(ProtocolCodec.encodeToCbor(key))
         assertEquals(SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN, decoded.operationalKey.provider)
         assertEquals("notisync.apps.extrawdw.net", decoded.webAuthn?.rpId)
