@@ -152,6 +152,27 @@ notisync status
 notisync applications list
 ```
 
+### Agent skills for NotiSync Desktop
+
+The desktop distribution contains portable agent skills for `notisync`, `notisyncd`, NotiSync Run,
+NotiSync Seal, and NotiSync SSH Agent. Manage them with the `notisync` CLI:
+
+```bash
+notisync skills list
+notisync skills list --long
+notisync skills add notisync-seal
+notisync skills add --all
+notisync skills remove notisync-seal
+```
+
+Without `--agent`, add/remove targets the portable common agent directory plus supported agent
+environments detected for the current user. Use a comma-separated selection such as
+`--agent=common,codex`, or install into an existing project root with
+`--project=/absolute/path/to/project`. Supported target identifiers are `common`, `claude-code`,
+`codex`, `cursor`, `gemini`, `github-copilot`, `junie`, and `opencode`. Paths are resolved from the
+current user's home and, where applicable, absolute `CODEX_HOME` and `XDG_CONFIG_HOME` values; they
+do not depend on one machine's username or home layout.
+
 ### NotiSync Seal: remote Git commit and tag signing (Android)
 
 NotiSync can use a trusted Android device and OpenKeychain to approve ordinary OpenPGP-signed Git

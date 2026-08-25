@@ -1,0 +1,3 @@
+interface:
+  display_name: "NotiSync Daemon"
+  short_description: "Operate and troubleshoot the NotiSync daemon"

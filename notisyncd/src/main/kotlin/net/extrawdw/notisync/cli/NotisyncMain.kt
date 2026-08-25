@@ -7,6 +7,7 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import kotlinx.serialization.encodeToString
+import net.extrawdw.notisync.cli.skills.NotisyncSkillsCommand
 import net.extrawdw.notisync.daemon.NotisyncdCli
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
 import net.extrawdw.notisync.desktop.DesktopPaths
@@ -35,6 +36,7 @@ class NotisyncCli(
     private val clientFactory: (Path) -> DaemonAdministration = ::DaemonAdminClient,
     private val autostart: () -> Unit = { DaemonAutostarter(paths).connect() },
     private val daemonRunner: (Array<String>) -> Int = { NotisyncdCli(paths, output, error).run(it) },
+    private val skillsRunner: (List<String>) -> Int = { NotisyncSkillsCommand(output).run(it) },
 ) {
     fun run(arguments: Array<String>): Int = try {
         if (arguments.isEmpty() || arguments[0] in setOf("-h", "--help", "help")) {
@@ -42,6 +44,8 @@ class NotisyncCli(
             0
         } else if (arguments[0] == "daemon") {
             daemon(arguments.drop(1))
+        } else if (arguments[0] == "skills") {
+            skillsRunner(arguments.drop(1))
         } else {
             val client = clientFactory(paths.socket)
             when (arguments[0]) {
@@ -278,6 +282,7 @@ class NotisyncCli(
           applications [list]
           applications remove APPLICATION_ID
           quarantine approve|clear
+          skills [add|remove|list]
     """.trimIndent()
 
     private fun daemonUsage(): String = """

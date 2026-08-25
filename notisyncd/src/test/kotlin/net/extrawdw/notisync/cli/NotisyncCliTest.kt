@@ -90,6 +90,24 @@ class NotisyncCliTest {
     }
 
     @Test
+    fun `skills command stays local and does not autostart daemon`() {
+        val skillCommands = mutableListOf<List<String>>()
+        var autostarts = 0
+        val fixture = CliFixture(
+            autostart = { autostarts += 1 },
+            skillsRunner = {
+                skillCommands += it
+                0
+            },
+        )
+
+        assertEquals(0, fixture.cli.run(arrayOf("skills", "add", "notisync-seal")))
+        assertEquals(listOf(listOf("add", "notisync-seal")), skillCommands)
+        assertEquals(0, autostarts)
+        assertEquals("", fixture.error.toString())
+    }
+
+    @Test
     fun `device action accepts action followed by device id`() {
         val administration = FakeAdministration(mutableListOf(pending("pending-a"), pending("pending-b")))
         val fixture = CliFixture(administration)
@@ -208,6 +226,7 @@ class NotisyncCliTest {
         administration: FakeAdministration = FakeAdministration(mutableListOf()),
         autostart: () -> Unit = {},
         daemonRunner: (Array<String>) -> Int = { 0 },
+        skillsRunner: (List<String>) -> Int = { 0 },
     ) {
         val output = StringBuilder()
         val error = StringBuilder()
@@ -218,6 +237,7 @@ class NotisyncCliTest {
             clientFactory = { administration },
             autostart = autostart,
             daemonRunner = daemonRunner,
+            skillsRunner = skillsRunner,
         )
     }
 
