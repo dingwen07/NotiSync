@@ -133,6 +133,29 @@ internal data class SshOperationalKeyEntity(
 )
 
 @Entity(
+    tableName = "ssh_webauthn_credentials",
+    primaryKeys = ["provider_key_id"],
+    foreignKeys = [
+        ForeignKey(
+            entity = SshKeyEntity::class,
+            parentColumns = ["provider_key_id"],
+            childColumns = ["provider_key_id"],
+            onDelete = ForeignKey.CASCADE,
+        ),
+    ],
+    indices = [Index(value = ["credential_id"], unique = true, name = "ssh_webauthn_credential_id_unique")],
+)
+internal data class SshWebAuthnCredentialEntity(
+    @ColumnInfo(name = "provider_key_id") val providerKeyId: String,
+    @ColumnInfo(name = "credential_id", typeAffinity = ColumnInfo.BLOB) val credentialId: ByteArray,
+    @ColumnInfo(name = "user_handle", typeAffinity = ColumnInfo.BLOB) val userHandle: ByteArray,
+    @ColumnInfo(name = "rp_id") val rpId: String,
+    @ColumnInfo(name = "cose_public_key", typeAffinity = ColumnInfo.BLOB) val cosePublicKey: ByteArray,
+    @ColumnInfo(name = "backup_eligible") val backupEligible: Int,
+    @ColumnInfo(name = "backup_state") val backupState: Int,
+)
+
+@Entity(
     tableName = "ssh_export_copies",
     primaryKeys = ["provider_key_id"],
     foreignKeys = [

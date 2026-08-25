@@ -160,6 +160,8 @@ internal class SshExportKeyVault(private val strongBoxAvailable: Boolean) {
         val strongBox = when (securityLevel) {
             SshStorageSecurityLevel.STRONGBOX -> true
             SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> false
+            SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+                error("Credential-provider SSH keys have no export copy")
         }
         val cipher = try {
             val key = androidKeyStore().getKey(alias(providerKeyId, strongBox), null) as? SecretKey

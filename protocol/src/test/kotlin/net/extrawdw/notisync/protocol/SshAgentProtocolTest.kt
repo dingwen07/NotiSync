@@ -198,6 +198,55 @@ class SshAgentProtocolTest {
         )
     }
 
+    @Test
+    fun webAuthnKeyRoundTripsAndRequiresCredentialProviderPolicy() {
+        val publicBlob = "sk-ecdsa-sha2-nistp256@openssh.com public fields".encodeToByteArray()
+        val key = SshKeyDescriptor(
+            providerKeyId = id('6'),
+            publicKeyBlob = publicBlob,
+            publicKeyBlobSha256 = sha256(publicBlob),
+            algorithm = SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256,
+            displayName = "WebAuthn SSH key",
+            origin = SshKeyOrigin.WEBAUTHN_CREATED,
+            operationalKey = SshOperationalKeyProtection(
+                provider = SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+                securityLevel = SshStorageSecurityLevel.CREDENTIAL_PROVIDER,
+                userVerificationPolicy = SshUserVerificationPolicy.PER_USE,
+                strongBoxAttempted = false,
+                strongBoxFallback = false,
+            ),
+            exportCopy = null,
+            approvalPolicy = SshApprovalPolicy.ALWAYS_ASK,
+            createdAt = 1_000,
+            webAuthn = SshWebAuthnCredentialProtection(
+                rpId = "notisync.apps.extrawdw.net",
+                backupEligible = true,
+                backupState = true,
+            ),
+        )
+
+        assertNull(key.validationError(::sha256))
+        assertNull(key.copy(origin = SshKeyOrigin.WEBAUTHN_RECOVERED).validationError(::sha256))
+        val decoded = ProtocolCodec.decodeFromCbor<SshKeyDescriptor>(ProtocolCodec.encodeToCbor(key))
+        assertEquals(SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN, decoded.operationalKey.provider)
+        assertEquals("notisync.apps.extrawdw.net", decoded.webAuthn?.rpId)
+        assertNotNull(key.copy(webAuthn = null).validationError(::sha256))
+        assertNotNull(key.copy(approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER).validationError(::sha256))
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    provider = SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+                    securityLevel = SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+                ),
+                webAuthn = null,
+            ).validationError(::sha256),
+        )
+        assertNotNull(key.copy(origin = SshKeyOrigin.GENERATED).validationError(::sha256))
+        assertNotNull(
+            key.copy(webAuthn = key.webAuthn?.copy(backupEligible = false)).validationError(::sha256),
+        )
+    }
+
     private fun validKeysRequest() = SshKeysRequest(
         requestId = id('1'),
         requesterClientId = requester,

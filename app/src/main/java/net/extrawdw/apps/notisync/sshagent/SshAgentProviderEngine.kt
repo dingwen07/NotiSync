@@ -181,6 +181,41 @@ class SshAgentProviderEngine(
         }
     }
 
+    fun prepareWebAuthnSignature(requestId: String): PreparedSshWebAuthnSignature? {
+        val prepared = store.prepareWebAuthnSignature(requestId, providerClientId, now())
+        if (prepared == null && store.find(requestId)?.state == SshProviderRequestState.RESPONSE_PENDING_SEND) {
+            notifications.dismiss(requestId)
+            SshAgentResponseWorker.enqueue(context, requestId)
+        }
+        return prepared
+    }
+
+    fun completeWebAuthnSignature(
+        prepared: PreparedSshWebAuthnSignature,
+        responseJson: String,
+    ): SshSignResult? {
+        val result = store.completeWebAuthnSignature(prepared, responseJson, providerClientId, now())
+        if (result != null) {
+            notifications.dismiss(prepared.requestId)
+            SshAgentResponseWorker.enqueue(context, prepared.requestId)
+            publishInventory()
+        }
+        return result
+    }
+
+    fun cancelPreparedWebAuthnSignature(prepared: PreparedSshWebAuthnSignature) =
+        store.cancelPreparedWebAuthnSignature(prepared)
+
+    fun failPreparedWebAuthnSignature(
+        prepared: PreparedSshWebAuthnSignature,
+        code: SshProviderFailureCode,
+    ) {
+        if (store.failPreparedWebAuthnSignature(prepared, providerClientId, now(), code)) {
+            notifications.dismiss(prepared.requestId)
+            SshAgentResponseWorker.enqueue(context, prepared.requestId)
+        }
+    }
+
     fun reject(requestId: String) {
         if (store.reject(requestId, providerClientId, now())) {
             notifications.dismiss(requestId)

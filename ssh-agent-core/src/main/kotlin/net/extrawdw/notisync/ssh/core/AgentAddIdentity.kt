@@ -158,6 +158,8 @@ object AgentAddIdentityParser {
             SshKeyType.ED25519 -> "Ed25519"
             SshKeyType.RSA -> "SHA256withRSA"
             SshKeyType.ECDSA_NISTP256 -> "SHA256withECDSA"
+            SshKeyType.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                throw SshWireException("WebAuthn SSH credentials cannot be imported through ssh-add")
         }
         val challenge = ByteArray(32) { index -> (index * 13 + 7).toByte() }
         val signature = softwareSignature(algorithm).run {
