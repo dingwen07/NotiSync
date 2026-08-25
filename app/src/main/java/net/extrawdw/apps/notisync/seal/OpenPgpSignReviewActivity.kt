@@ -62,9 +62,10 @@ import net.extrawdw.apps.notisync.notification.requestPageObservationState
 import net.extrawdw.apps.notisync.notification.retainAutomaticRequestPageOwnership
 import net.extrawdw.apps.notisync.security.enableTapjackingProtection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
+import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
-/** Private user-presence surface for one exact, authenticated Git commit signing request. */
+/** Private user-presence surface for one exact, authenticated Git object signing request. */
 class OpenPgpSignReviewActivity : ComponentActivity() {
     private var screen by mutableStateOf<ReviewScreenState>(ReviewScreenState.Loading)
     private var requestId: String = ""
@@ -178,13 +179,23 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             finishAutoOpenedRequestPage()
             return
         }
-        val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
-            ?: return showError(getString(R.string.seal_request_invalid))
+        val displayRequest = when (stored.request.objectKind) {
+            OpenPgpObjectKind.GIT_COMMIT -> {
+                val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
+                    ?: return showError(getString(R.string.seal_request_invalid))
+                if (stored.commit == null) stored.copy(commit = commit) else stored
+            }
+            OpenPgpObjectKind.GIT_TAG -> {
+                val tag = stored.tag ?: stored.request.payload?.toTagDisplaySnapshot()
+                    ?: return showError(getString(R.string.seal_request_invalid))
+                if (stored.tag == null) stored.copy(tag = tag) else stored
+            }
+        }
         val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.senderClientId }
         val enrollment = graph.openPgpEnrollment.enrollment.value
         if (!stored.opensSealReview()) clearInteractionBinding()
         screen = ReviewScreenState.Details(
-            request = if (stored.commit == null) stored.copy(commit = commit) else stored,
+            request = displayRequest,
             requesterName = peer?.displayName ?: stored.senderClientId.shortForm(),
             requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
             signingIdentity = enrollment.displayIdentity ?: getString(R.string.seal_openpgp_identity),
@@ -471,7 +482,12 @@ private fun ReviewActionBar(
         } else {
             Column(Modifier.weight(1f)) {
                 Text(
-                    stringResource(R.string.seal_review_title),
+                    stringResource(
+                        when (stored.request.objectKind) {
+                            OpenPgpObjectKind.GIT_COMMIT -> R.string.seal_review_title
+                            OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_review_title
+                        }
+                    ),
                     style = MaterialTheme.typography.labelLarge,
                 )
                 Text(

@@ -42,7 +42,11 @@ class RemoteSigningClient(
     private val onRequestSubmitted: (OpenPgpSignSync) -> Unit = {},
     private val workingDirectory: () -> String? = ::currentWorkingDirectoryContext,
 ) {
-    fun sign(payload: ByteArray, certificate: ResolvedOpenPgpCertificate): RemoteSigningOutcome {
+    fun sign(
+        payload: ByteArray,
+        certificate: ResolvedOpenPgpCertificate,
+        objectKind: OpenPgpObjectKind = OpenPgpObjectKind.GIT_COMMIT,
+    ): RemoteSigningOutcome {
         val api = connectToDaemon()
         val status = api.status()
         val requesterId = ClientId(requireNotNull(status.clientId) { "notisyncd has no local client identity" })
@@ -65,7 +69,7 @@ class RemoteSigningClient(
             expiresAt = expiresAt,
             primaryKeyId = certificate.primaryKeyId,
             payloadSha256 = sha256(payload),
-            objectKind = OpenPgpObjectKind.GIT_COMMIT,
+            objectKind = objectKind,
             payload = payload,
             workingDirectory = workingDirectory(),
         )

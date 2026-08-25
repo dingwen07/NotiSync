@@ -9,7 +9,7 @@ import net.extrawdw.notisync.peer.channel.SecureChannel
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
-import net.extrawdw.notisync.protocol.GitCommitPayloadParser
+import net.extrawdw.notisync.protocol.GitSigningPayloadParser
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.OpenPgpSignLimits
@@ -50,7 +50,7 @@ class OpenPgpSignEngine(
             kotlin.math.abs(message.createdAt - request.issuedAt) > OpenPgpSignLimits.CLOCK_SKEW_MILLIS
         ) return
         val payload = request.payload ?: return
-        if (runCatching { GitCommitPayloadParser.parse(payload) }.isFailure) return
+        if (runCatching { GitSigningPayloadParser.parse(request.objectKind, payload) }.isFailure) return
 
         val enrollment = enrollmentStore.enrollment.value
         if (

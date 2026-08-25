@@ -15,6 +15,13 @@ class OpenPgpSignProtocolTest {
             "committer Bob <bob@example.com> 1700000001 +0800\n" +
             "encoding UTF-8\n\nSubject\n\nBody\r\n"
         ).encodeToByteArray()
+    private val tag = (
+        "object " + "c".repeat(40) + "\n" +
+            "type commit\n" +
+            "tag v1.0.0\n" +
+            "tagger Alice <alice@example.com> 1700000002 +0800\n\n" +
+            "Release v1.0.0\n\nStable release.\n"
+        ).encodeToByteArray()
 
     @Test
     fun allActionsRoundTripWithStableShape() {
@@ -104,6 +111,44 @@ class OpenPgpSignProtocolTest {
         assertEquals("UTF-8", parsed.headers.single { it.name == "encoding" }.value)
     }
 
+    @Test
+    fun tagParserPreservesBytesAndDerivesReviewFields() {
+        val parsed = GitTagPayloadParser.parse(tag)
+
+        assertArrayEquals(tag, parsed.bytes)
+        assertEquals("c".repeat(40), parsed.objectId)
+        assertEquals("commit", parsed.objectType)
+        assertEquals("v1.0.0", parsed.tagName)
+        assertEquals("Alice <alice@example.com> 1700000002 +0800", parsed.tagger)
+        assertEquals("Release v1.0.0\n\nStable release.\n", parsed.message)
+        assertEquals(OpenPgpObjectKind.GIT_TAG, GitSigningPayloadParser.parse(tag).objectKind)
+    }
+
+    @Test
+    fun tagRequestsRequireTheTagSigningCapability() {
+        val request = request().copy(
+            payloadSha256 = sha256(tag),
+            objectKind = OpenPgpObjectKind.GIT_TAG,
+            payload = tag,
+        )
+
+        assertNull(request.validationError(::sha256))
+        val decoded = ProtocolCodec.decodeFromCbor<DataSync>(
+            ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.OPENPGP_SIGN, openPgpSign = request))
+        ).openPgpSign!!
+        assertEquals(OpenPgpObjectKind.GIT_TAG, decoded.objectKind)
+        assertArrayEquals(tag, decoded.payload)
+        assertEquals(
+            setOf(
+                Capability.OPENPGP_SIGN_V1,
+                Capability.OPENPGP_SIGN_GIT_TAG_V1,
+                Capability.BACKGROUND_WAKE,
+                Capability.PUSH_FILTERING,
+            ),
+            request.requiredSignerCapabilities(),
+        )
+    }
+
     @Test(expected = IllegalArgumentException::class)
     fun commitParserRejectsExistingSignature() {
         GitCommitPayloadParser.parse(
@@ -117,6 +162,18 @@ class OpenPgpSignProtocolTest {
             ("object " + "a".repeat(40) + "\ntype commit\ntag v1\ntagger A <a@b> 1 +0000\n\ntag\n")
                 .encodeToByteArray()
         )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun tagParserRejectsMissingTagger() {
+        GitTagPayloadParser.parse(
+            ("object " + "a".repeat(40) + "\ntype commit\ntag v1\n\ntag\n").encodeToByteArray()
+        )
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun declaredObjectKindMustMatchThePayloadGrammar() {
+        GitSigningPayloadParser.parse(OpenPgpObjectKind.GIT_TAG, commit)
     }
 
     private fun request() = OpenPgpSignSync(

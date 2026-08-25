@@ -276,21 +276,22 @@
     <string name="ssh_agent_notification_channel_description">SSH key import and signing requests</string>
     <string name="ssh_agent_notification_public_content">An SSH request is waiting for review.</string>
 
-    <!-- NotiSync Seal: remote Git commit approval and OpenPGP signing -->
+    <!-- NotiSync Seal: remote Git commit/tag approval and OpenPGP signing -->
     <string name="seal_name" translatable="false">NotiSync Seal</string>
-    <string name="seal_intro">Approve Git commits from your trusted devices with the OpenPGP key on this device.</string>
+    <string name="seal_intro">Approve Git commits and annotated tags from your trusted devices with the OpenPGP key on this device.</string>
     <string name="seal_identity_title">Signing identity</string>
     <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP key %1$s</string>
     <string name="seal_identity_change">Change key</string>
     <string name="seal_identity_remove">Remove</string>
     <string name="seal_identity_setup">Set up signing</string>
-    <string name="seal_provider_unavailable">Install or enable OpenKeychain to approve commits on this device.</string>
+    <string name="seal_provider_unavailable">Install or enable OpenKeychain to approve Git signing requests on this device.</string>
     <string name="seal_section_active">Active</string>
     <string name="seal_section_history">History</string>
-    <string name="seal_empty_title">No commit requests yet</string>
+    <string name="seal_empty_title">No signing requests yet</string>
     <string name="seal_empty_body">Requests from your trusted devices will appear here.</string>
     <string name="seal_commit_untitled">Untitled Commit</string>
+    <string name="seal_tag_untitled">Unnamed Tag</string>
     <string name="seal_commit_initial">Initial Commit</string>
     <string name="seal_status_waiting">Awaiting approval</string>
     <string name="seal_status_signing">Signing</string>
@@ -302,12 +303,17 @@
     <string name="seal_result_legacy">Outcome unavailable</string>
     <string name="seal_review_title">Review Commit</string>
     <string name="seal_review_guidance">Did you recognize this signing request? Confirm the commit message, identity, and base revision before approving. The file diff isn’t shown.</string>
+    <string name="seal_tag_review_title">Review Tag</string>
+    <string name="seal_tag_review_guidance">Did you recognize this signing request? Confirm the tag name, message, tagger, and target object before approving.</string>
     <string name="seal_hash">Hash %1$s</string>
     <string name="seal_commit_section">Commit</string>
     <string name="seal_author">Author</string>
-    <string name="seal_committer">Committer</string>
+    <string name="seal_created_by">Created by</string>
     <string name="seal_tree">Tree</string>
     <string name="seal_parent">Parent Commit</string>
+    <string name="seal_tag_section">Annotated Tag</string>
+    <string name="seal_tag_target_type">Target Type</string>
+    <string name="seal_tag_target">Target Object</string>
     <string name="seal_extra_header">%1$s</string>
     <string name="seal_approval_section">Approval</string>
     <string name="seal_working_directory">Working Directory</string>
@@ -329,20 +335,24 @@
     <string name="seal_signing_action">Signing…</string>
     <string name="seal_close">Close</string>
     <string name="seal_back_to_history">Back to Seal history</string>
-    <string name="seal_details_unavailable">Commit details unavailable.</string>
-    <string name="seal_request_unavailable">This commit request is unavailable.</string>
-    <string name="seal_request_invalid">This commit request can’t be displayed.</string>
+    <string name="seal_details_unavailable">Git object details unavailable.</string>
+    <string name="seal_request_unavailable">This signing request is unavailable.</string>
+    <string name="seal_request_invalid">This signing request can’t be displayed.</string>
     <string name="seal_request_changed">This request changed. Review it again before signing.</string>
     <string name="seal_not_ready">NotiSync Seal isn’t ready yet.</string>
     <string name="seal_notification_title_with_commit">Git Commit Signing · %1$s</string>
+    <string name="seal_notification_title_with_tag">Git Tag Signing · %1$s</string>
     <string name="seal_notification_body">%1$s wants to sign a Git commit</string>
     <string name="seal_notification_body_with_repository">%1$s wants to sign a Git commit in %2$s</string>
+    <string name="seal_tag_notification_body">%1$s wants to sign Git tag %2$s</string>
+    <string name="seal_tag_notification_body_with_repository">%1$s wants to sign Git tag %2$s in %3$s</string>
     <string name="seal_notification_author">Author: %1$s</string>
+    <string name="seal_notification_tagger">Tagger: %1$s</string>
     <string name="seal_notification_identifiers">Request %1$s has hash %2$s</string>
     <string name="seal_notification_channel" translatable="false">NotiSync Seal</string>
-    <string name="seal_notification_channel_description">Git commit signing requests</string>
-    <string name="seal_notification_public_content">A Git commit signing request is waiting for review.</string>
-    <string name="seal_history_details_truncated">Some commit details are not shown.</string>
+    <string name="seal_notification_channel_description">Git commit and tag signing requests</string>
+    <string name="seal_notification_public_content">A Git signing request is waiting for review.</string>
+    <string name="seal_history_details_truncated">Some Git object details are not shown.</string>
 
     <!-- Run screen + locally-rendered Run live updates -->
     <string name="run_screen_title" translatable="false">NotiSync Run</string>
@@ -776,6 +786,7 @@
     <string name="device_capability_publish_runs">Publish NotiSync Run</string>
     <string name="device_capability_receive_runs">Receive NotiSync Run</string>
     <string name="device_capability_openpgp_sign">Approve OpenPGP signatures</string>
+    <string name="device_capability_openpgp_tag_sign">Approve OpenPGP Git tag signatures</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>

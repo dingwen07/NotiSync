@@ -12,6 +12,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.GitCommitPayloadParser
+import net.extrawdw.notisync.protocol.GitTagPayloadParser
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
@@ -35,7 +36,7 @@ enum class OpenPgpRequestState {
 enum class OpenPgpRequestResult { APPROVED, REJECTED, CANCELED, EXPIRED, FAILED }
 
 /**
- * Bounded rendering snapshot kept for the 10-year decision ledger. The byte-exact commit payload is
+ * Bounded commit rendering snapshot kept for the 10-year decision ledger. The byte-exact payload is
  * still erased at terminal state; this stores only the facts shown in Seal history.
  */
 @Serializable
@@ -53,6 +54,18 @@ data class GitCommitDisplaySnapshot(
 @Serializable
 data class GitCommitDisplayHeader(val name: String, val value: String)
 
+/** Bounded annotated-tag facts retained after the byte-exact signing payload is erased. */
+@Serializable
+data class GitTagDisplaySnapshot(
+    val objectId: String,
+    val objectType: String,
+    val tagName: String,
+    val tagger: String,
+    val message: String,
+    val payloadBytes: Int,
+    val truncated: Boolean = false,
+)
+
 data class StoredOpenPgpRequest(
     val request: OpenPgpSignSync,
     val senderClientId: ClientId,
@@ -60,6 +73,7 @@ data class StoredOpenPgpRequest(
     val encodedResponse: ByteArray? = null,
     val updatedAt: Long,
     val commit: GitCommitDisplaySnapshot? = null,
+    val tag: GitTagDisplaySnapshot? = null,
     val result: OpenPgpRequestResult? = null,
 )
 
@@ -310,8 +324,13 @@ class OpenPgpSignStore(context: Context) :
         put("state", state.name)
         put("updated_at", now)
         put("working_directory", request.workingDirectory)
-        request.payload?.toDisplaySnapshot()?.let {
-            put("commit_details", ProtocolCodec.encodeToCbor(it))
+        request.payload?.let { payload ->
+            when (request.objectKind) {
+                OpenPgpObjectKind.GIT_COMMIT -> payload.toDisplaySnapshot()
+                    ?.let { put("commit_details", ProtocolCodec.encodeToCbor(it)) }
+                OpenPgpObjectKind.GIT_TAG -> payload.toTagDisplaySnapshot()
+                    ?.let { put("commit_details", ProtocolCodec.encodeToCbor(it)) }
+            }
         }
     }
 
@@ -368,6 +387,9 @@ class OpenPgpSignStore(context: Context) :
     private fun Cursor.readRequest(): StoredOpenPgpRequest {
         val payload = getBlobOrNull(8)
         val response = getBlobOrNull(10)
+        val objectKind = OpenPgpObjectKind.valueOf(getString(7))
+        // The legacy column name is retained to avoid a schema migration; object_kind selects its codec.
+        val encodedDetails = getBlobOrNull(12)
         val base = OpenPgpSignSync(
             action = OpenPgpSignAction.REQUEST,
             requestId = getString(0),
@@ -376,7 +398,7 @@ class OpenPgpSignStore(context: Context) :
             expiresAt = getLong(5),
             primaryKeyId = getString(3),
             payloadSha256 = getBlob(6),
-            objectKind = OpenPgpObjectKind.valueOf(getString(7)),
+            objectKind = objectKind,
             payload = payload,
             workingDirectory = getStringOrNull(14),
         )
@@ -386,8 +408,13 @@ class OpenPgpSignStore(context: Context) :
             state = OpenPgpRequestState.valueOf(getString(9)),
             encodedResponse = response,
             updatedAt = getLong(11),
-            commit = getBlobOrNull(12)?.let { encoded ->
+            commit = encodedDetails?.takeIf { objectKind == OpenPgpObjectKind.GIT_COMMIT }?.let { encoded ->
                 runCatching { ProtocolCodec.decodeFromCbor<GitCommitDisplaySnapshot>(encoded) }
+                    .getOrNull()
+                    ?.boundedForHistory()
+            },
+            tag = encodedDetails?.takeIf { objectKind == OpenPgpObjectKind.GIT_TAG }?.let { encoded ->
+                runCatching { ProtocolCodec.decodeFromCbor<GitTagDisplaySnapshot>(encoded) }
                     .getOrNull()
                     ?.boundedForHistory()
             },
@@ -452,6 +479,18 @@ internal fun ByteArray.toDisplaySnapshot(): GitCommitDisplaySnapshot? = runCatch
     ).boundedForHistory()
 }.getOrNull()
 
+internal fun ByteArray.toTagDisplaySnapshot(): GitTagDisplaySnapshot? = runCatching {
+    val parsed = GitTagPayloadParser.parse(this)
+    GitTagDisplaySnapshot(
+        objectId = parsed.objectId,
+        objectType = parsed.objectType,
+        tagName = parsed.tagName,
+        tagger = parsed.tagger,
+        message = parsed.message,
+        payloadBytes = size,
+    ).boundedForHistory()
+}.getOrNull()
+
 private fun GitCommitDisplaySnapshot.boundedForHistory(): GitCommitDisplaySnapshot {
     val boundedParents = parentIds.take(MAX_HISTORY_PARENTS)
     val boundedAuthor = author.take(MAX_HISTORY_IDENTITY_CHARS)
@@ -474,12 +513,25 @@ private fun GitCommitDisplaySnapshot.boundedForHistory(): GitCommitDisplaySnapsh
     )
 }
 
+private fun GitTagDisplaySnapshot.boundedForHistory(): GitTagDisplaySnapshot {
+    val boundedTagName = tagName.take(MAX_HISTORY_TAG_NAME_CHARS)
+    val boundedTagger = tagger.take(MAX_HISTORY_IDENTITY_CHARS)
+    val boundedMessage = message.take(MAX_HISTORY_MESSAGE_CHARS)
+    return copy(
+        tagName = boundedTagName,
+        tagger = boundedTagger,
+        message = boundedMessage,
+        truncated = truncated || boundedTagName != tagName || boundedTagger != tagger || boundedMessage != message,
+    )
+}
+
 private const val MAX_HISTORY_PARENTS = 64
 private const val MAX_HISTORY_IDENTITY_CHARS = 1_024
 private const val MAX_HISTORY_MESSAGE_CHARS = 16 * 1_024
 private const val MAX_HISTORY_HEADERS = 64
 private const val MAX_HISTORY_HEADER_NAME_CHARS = 128
 private const val MAX_HISTORY_HEADER_VALUE_CHARS = 2 * 1_024
+private const val MAX_HISTORY_TAG_NAME_CHARS = 1_024
 
 private fun resultFor(reason: OpenPgpRejectReason): OpenPgpRequestResult = when (reason) {
     OpenPgpRejectReason.USER_REJECTED -> OpenPgpRequestResult.REJECTED

@@ -63,6 +63,7 @@ class PeerSelectorSerializationTest {
             Capability.entries.drop(12).take(8),
         )
         assertEquals(Capability.OPENPGP_SIGN_V1, Capability.entries[20])
+        assertEquals(Capability.OPENPGP_SIGN_GIT_TAG_V1, Capability.entries[23])
         assertEquals(Capability.SSH_KEY_PROVIDER_V1, Capability.entries[21])
         assertEquals(Capability.SSH_AGENT_V1, Capability.entries[22])
     }

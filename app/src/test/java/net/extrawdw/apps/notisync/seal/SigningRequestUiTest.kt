@@ -66,6 +66,26 @@ class SigningRequestUiTest {
     }
 
     @Test
+    fun tagSnapshotKeepsTheFactsRequiredForReviewAndHistory() {
+        val payload = (
+            "object 0123456789abcdef0123456789abcdef01234567\n" +
+                "type commit\n" +
+                "tag v1.0.0\n" +
+                "tagger Example <example@example.com> 1700000000 +0000\n\n" +
+                "Release v1.0.0\n\nStable release.\n"
+            ).encodeToByteArray()
+
+        val snapshot = requireNotNull(payload.toTagDisplaySnapshot())
+
+        assertEquals("v1.0.0", snapshot.tagName)
+        assertEquals("commit", snapshot.objectType)
+        assertEquals("0123456", snapshot.objectId.shortObjectId())
+        assertEquals("Release v1.0.0", snapshot.message.commitSubject())
+        assertEquals("Stable release.", snapshot.message.commitBody())
+        assertEquals(payload.size, snapshot.payloadBytes)
+    }
+
+    @Test
     fun commitMessageSeparatesSubjectFromBody() {
         val message = "Polish Seal notification\n\nShow repository context.\nKeep approval clear.\n"
 

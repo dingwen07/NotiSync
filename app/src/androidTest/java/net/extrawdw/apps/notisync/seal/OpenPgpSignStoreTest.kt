@@ -107,6 +107,26 @@ class OpenPgpSignStoreTest {
         store.close()
     }
 
+    @Test
+    fun annotatedTagSnapshotSurvivesReopenAndPayloadErasure() {
+        val request = tagRequest()
+        val store = OpenPgpSignStore(context)
+        assertEquals(OpenPgpAcceptResult.STORED, store.accept(request, request.requesterClientId, 1_100))
+        assertTrue(store.storeReject(request.requestId, OpenPgpRejectReason.USER_REJECTED, 1_200))
+        assertTrue(store.markSent(request.requestId, 1_300))
+        store.close()
+
+        val reopened = OpenPgpSignStore(context)
+        val stored = reopened.find(request.requestId)
+        assertNull(stored?.request?.payload)
+        assertNull(stored?.commit)
+        assertEquals("v1.0.0", stored?.tag?.tagName)
+        assertEquals("commit", stored?.tag?.objectType)
+        assertEquals("Release v1.0.0\n", stored?.tag?.message)
+        assertEquals(request.payload?.size, stored?.tag?.payloadBytes)
+        reopened.close()
+    }
+
     private fun request(id: String = "0123456789abcdef0123456789abcdef"): OpenPgpSignSync {
         val payload = (
             "tree 0123456789abcdef0123456789abcdef01234567\n" +
@@ -123,6 +143,28 @@ class OpenPgpSignStoreTest {
             primaryKeyId = "89ABCDEF01234567",
             payloadSha256 = MessageDigest.getInstance("SHA-256").digest(payload),
             objectKind = OpenPgpObjectKind.GIT_COMMIT,
+            payload = payload,
+            workingDirectory = "C:\\work\\NotiSync",
+        )
+    }
+
+    private fun tagRequest(): OpenPgpSignSync {
+        val payload = (
+            "object 0123456789abcdef0123456789abcdef01234567\n" +
+                "type commit\n" +
+                "tag v1.0.0\n" +
+                "tagger Example <example@example.com> 1700000000 +0000\n\n" +
+                "Release v1.0.0\n"
+            ).encodeToByteArray()
+        return OpenPgpSignSync(
+            action = OpenPgpSignAction.REQUEST,
+            requestId = "33333333333333333333333333333333",
+            requesterClientId = ClientId("desktop-client"),
+            issuedAt = 1_000,
+            expiresAt = 100_000,
+            primaryKeyId = "89ABCDEF01234567",
+            payloadSha256 = MessageDigest.getInstance("SHA-256").digest(payload),
+            objectKind = OpenPgpObjectKind.GIT_TAG,
             payload = payload,
             workingDirectory = "C:\\work\\NotiSync",
         )

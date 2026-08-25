@@ -457,9 +457,9 @@ enum class DataSyncKind {
 @Serializable
 enum class OpenPgpSignAction { REQUEST, RESULT, REJECT, CANCEL }
 
-/** The signed object grammar understood and rendered by protocol v1. Append-only. */
+/** The signed object grammars understood and rendered by protocol v1. Append-only. */
 @Serializable
-enum class OpenPgpObjectKind { GIT_COMMIT }
+enum class OpenPgpObjectKind { GIT_COMMIT, GIT_TAG }
 
 /** Stable, non-sensitive terminal reason returned to the requesting desktop. Append-only. */
 @Serializable
@@ -489,7 +489,7 @@ object OpenPgpSignLimits {
  * Flat, action-discriminated OpenPGP signing message. Every field is inside the authenticated,
  * end-to-end encrypted DATA_SYNC body. [workingDirectory] is optional, requester-reported review
  * context: it is authenticated as coming from the trusted device but is not part of the signed Git
- * commit payload.
+ * object payload.
  */
 @Serializable
 data class OpenPgpSignSync(
@@ -508,7 +508,10 @@ data class OpenPgpSignSync(
     @CborLabel(12) val actionAt: Long? = null,
     @CborLabel(13) val workingDirectory: String? = null,
 ) {
-    fun requiredSignerCapabilities(): Set<Capability> = OPENPGP_SIGNER_CAPABILITIES
+    fun requiredSignerCapabilities(): Set<Capability> = when (objectKind) {
+        OpenPgpObjectKind.GIT_COMMIT -> OPENPGP_SIGNER_CAPABILITIES
+        OpenPgpObjectKind.GIT_TAG -> OPENPGP_TAG_SIGNER_CAPABILITIES
+    }
 
     /** Returns null only for the canonical v1 action shape. */
     fun validationError(sha256: (ByteArray) -> ByteArray): String? {
@@ -521,7 +524,6 @@ data class OpenPgpSignSync(
         ) return "invalid request lifetime"
         if (!UPPER_HEX_64.matches(primaryKeyId)) return "primaryKeyId must be 64-bit uppercase hexadecimal"
         if (payloadSha256.size != OpenPgpSignLimits.PAYLOAD_SHA256_BYTES) return "invalid payload digest length"
-        if (objectKind != OpenPgpObjectKind.GIT_COMMIT) return "unsupported object kind"
         if (workingDirectory != null && (
                 workingDirectory.isBlank() ||
                     workingDirectory.encodeToByteArray().size >
@@ -572,6 +574,8 @@ data class OpenPgpSignSync(
             Capability.BACKGROUND_WAKE,
             Capability.PUSH_FILTERING,
         )
+        private val OPENPGP_TAG_SIGNER_CAPABILITIES = OPENPGP_SIGNER_CAPABILITIES +
+            Capability.OPENPGP_SIGN_GIT_TAG_V1
     }
 }
 
@@ -762,7 +766,7 @@ data class DataSync(
     @CborLabel(7) val run: RunSync? = null,
     /** Android screen-session rendezvous/status traffic — iff [kind] == [DataSyncKind.SCREEN_MIRRORING]. */
     @CborLabel(8) val screenMirror: ScreenMirrorSync? = null,
-    /** Byte-exact Git commit signing traffic, populated iff [kind] is [DataSyncKind.OPENPGP_SIGN]. */
+    /** Byte-exact Git object signing traffic, populated iff [kind] is [DataSyncKind.OPENPGP_SIGN]. */
     @CborLabel(9) val openPgpSign: OpenPgpSignSync? = null,
     /** SSH key inventory, signing, import, cancellation, and authorization traffic. */
     @CborLabel(10) val sshAgent: SshAgentSync? = null,

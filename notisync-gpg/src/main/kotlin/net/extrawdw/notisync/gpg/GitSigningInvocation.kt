@@ -6,7 +6,7 @@ sealed interface GitSigningInvocation {
 }
 
 object GitSigningInvocationParser {
-    /** Git's OpenPGP adapter contract is deliberately treated as one exact golden invocation. */
+    /** Git's commit/tag OpenPGP adapter contract is deliberately treated as one exact golden invocation. */
     fun parse(arguments: List<String>): GitSigningInvocation {
         if (arguments.size != 3 || arguments[0] != "--status-fd=2" || arguments[1] != "-bsau") {
             return GitSigningInvocation.Delegate

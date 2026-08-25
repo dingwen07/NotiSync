@@ -1,15 +1,23 @@
 package net.extrawdw.notisync.protocol
 
+/** A byte-exact Git object payload accepted for remote signing. */
+sealed interface GitSigningPayload {
+    val bytes: ByteArray
+    val objectKind: OpenPgpObjectKind
+}
+
 /** A read-only rendering of a canonical unsigned Git commit payload. [bytes] are never reconstructed. */
 data class GitCommitPayload(
-    val bytes: ByteArray,
+    override val bytes: ByteArray,
     val treeId: String,
     val parentIds: List<String>,
     val author: String,
     val committer: String,
     val message: String,
     val headers: List<GitCommitHeader>,
-)
+) : GitSigningPayload {
+    override val objectKind: OpenPgpObjectKind = OpenPgpObjectKind.GIT_COMMIT
+}
 
 data class GitCommitHeader(val name: String, val value: String)
 
@@ -79,4 +87,24 @@ object GitCommitPayloadParser {
     private val HEADER_NAME = Regex("[A-Za-z0-9-]+")
     private val OBJECT_ID = Regex("(?:[0-9a-f]{40}|[0-9a-f]{64})")
     private val IDENTITY = Regex(".+ <[^\\r\\n<>]+> [0-9]+ [+-][0-9]{4}")
+}
+
+/** Strictly classifies the Git payload before it is sent or rendered. */
+object GitSigningPayloadParser {
+    fun parse(bytes: ByteArray): GitSigningPayload = when {
+        bytes.startsWithAscii("tree ") -> GitCommitPayloadParser.parse(bytes)
+        bytes.startsWithAscii("object ") -> GitTagPayloadParser.parse(bytes)
+        else -> throw IllegalArgumentException("unsupported Git signing payload")
+    }
+
+    fun parse(objectKind: OpenPgpObjectKind, bytes: ByteArray): GitSigningPayload {
+        val parsed = parse(bytes)
+        require(parsed.objectKind == objectKind) { "Git payload does not match the declared object kind" }
+        return parsed
+    }
+
+    private fun ByteArray.startsWithAscii(prefix: String): Boolean {
+        val encoded = prefix.encodeToByteArray()
+        return size >= encoded.size && encoded.indices.all { this[it] == encoded[it] }
+    }
 }

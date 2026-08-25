@@ -6,7 +6,7 @@ import org.junit.Test
 
 class GitSigningInvocationParserTest {
     @Test
-    fun acceptsOnlyExactGitCommitSigningShape() {
+    fun acceptsOnlyExactGitObjectSigningShape() {
         val invocation = GitSigningInvocationParser.parse(
             listOf("--status-fd=2", "-bsau", "89ABCDEF01234567")
         )

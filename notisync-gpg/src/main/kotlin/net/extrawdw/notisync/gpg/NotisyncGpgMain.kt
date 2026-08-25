@@ -7,7 +7,7 @@ import java.nio.file.Path
 import kotlin.system.exitProcess
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
-import net.extrawdw.notisync.protocol.GitCommitPayloadParser
+import net.extrawdw.notisync.protocol.GitSigningPayloadParser
 
 fun main(arguments: Array<String>) {
     exitProcess(NotisyncGpgCommand().run(arguments.toList()))
@@ -91,7 +91,7 @@ class NotisyncGpgCommand(
               notisync-gpg doctor
 
             Configure this executable as Git's gpg.program after storing the absolute real-GPG path.
-            Other invocations are either handled as Git commit signing or delegated unchanged to real GPG.
+            Other invocations are either handled as Git commit/tag signing or delegated unchanged to real GPG.
             """.trimIndent()
         )
         return SUCCESS
@@ -104,7 +104,8 @@ class NotisyncGpgCommand(
             is GitSigningInvocation.Remote -> {
                 val certificate = GpgKeyResolver(config.realGpgPath).resolve(invocation.selector)
                 val payload = readBounded(System.`in`, config.maximumPayloadBytes)
-                if (runCatching { GitCommitPayloadParser.parse(payload) }.isFailure) {
+                val gitPayload = runCatching { GitSigningPayloadParser.parse(payload) }.getOrNull()
+                if (gitPayload == null) {
                     return ProcessExecution.delegate(config.realGpgPath, arguments, payload)
                 }
                 val notice = SigningRequestNotice()
@@ -116,7 +117,7 @@ class NotisyncGpgCommand(
                             notice.show(it)
                             Unit
                         },
-                    ).sign(payload, certificate)
+                    ).sign(payload, certificate, gitPayload.objectKind)
                 ) {
                     is RemoteSigningOutcome.Rejected -> throw IllegalStateException(
                         "signing request rejected (${outcome.reason})"
@@ -139,7 +140,7 @@ class NotisyncGpgCommand(
         while (true) {
             val read = input.read(buffer)
             if (read < 0) break
-            require(output.size() + read <= maximumBytes) { "Git commit payload exceeds configured bound" }
+            require(output.size() + read <= maximumBytes) { "Git signing payload exceeds configured bound" }
             output.write(buffer, 0, read)
         }
         return output.toByteArray()

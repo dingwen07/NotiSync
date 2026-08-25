@@ -15,9 +15,11 @@ import net.extrawdw.notisync.localapi.ReceiveRecordType
 import net.extrawdw.notisync.localapi.ReceiveRequest
 import net.extrawdw.notisync.localapi.SendAccepted
 import net.extrawdw.notisync.localapi.SendRequest
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.MessageType
+import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -77,10 +79,40 @@ class RemoteSigningClientTest {
         assertTrue(api.sends.last().submissionId!!.endsWith("-cancel"))
     }
 
+    @Test
+    fun annotatedTagUsesTheRemoteTagRequestShape() {
+        val api = FakeDaemonApi()
+        val certificate = ResolvedOpenPgpCertificate(
+            primaryFingerprint = "0123456789ABCDEF0123456789ABCDEF89ABCDEF",
+            primaryKeyId = "89ABCDEF89ABCDEF",
+            selectorNamedSubkey = false,
+        )
+
+        val outcome = RemoteSigningClient(
+            DesktopPaths(Path.of("build/test-remote-tag-signing")),
+            NotisyncGpgConfig(Path.of("unused-gpg"), timeoutSeconds = 30),
+            connectToDaemon = { api },
+            now = { 1_000 },
+            workingDirectory = { "/work/notisync" },
+        ).sign(validTag(), certificate, OpenPgpObjectKind.GIT_TAG)
+
+        assertEquals(RemoteSigningOutcome.Rejected(OpenPgpRejectReason.USER_REJECTED.name), outcome)
+        val request = api.decodeRequest(api.sends.first())
+        assertEquals(OpenPgpObjectKind.GIT_TAG, request.objectKind)
+        assertTrue(request.requiredSignerCapabilities().contains(Capability.OPENPGP_SIGN_GIT_TAG_V1))
+    }
+
     private fun validCommit() = (
         "tree ${"0".repeat(40)}\n" +
             "author A <a@example.com> 1 +0000\n" +
             "committer A <a@example.com> 1 +0000\n\nmessage\n"
+        ).encodeToByteArray()
+
+    private fun validTag() = (
+        "object ${"0".repeat(40)}\n" +
+            "type commit\n" +
+            "tag v1.0.0\n" +
+            "tagger A <a@example.com> 1 +0000\n\nRelease v1.0.0\n"
         ).encodeToByteArray()
 
     private class FakeDaemonApi : DaemonLocalApi {

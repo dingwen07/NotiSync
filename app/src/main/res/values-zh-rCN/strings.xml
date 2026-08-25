@@ -268,20 +268,21 @@
     <string name="ssh_agent_notification_channel_description">SSH 密钥导入和签名请求</string>
     <string name="ssh_agent_notification_public_content">有待审核的 SSH 请求。</string>
 
-    <!-- NotiSync Seal：远程 Git 提交审批与 OpenPGP 签名 -->
-    <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任设备的 Git 提交。</string>
+    <!-- NotiSync Seal：远程 Git 提交和标签审批与 OpenPGP 签名 -->
+    <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任设备的 Git 提交和附注标签。</string>
     <string name="seal_identity_title">签名身份</string>
     <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP 密钥 %1$s</string>
     <string name="seal_identity_change">更换密钥</string>
     <string name="seal_identity_remove">移除</string>
     <string name="seal_identity_setup">设置签名</string>
-    <string name="seal_provider_unavailable">请安装或启用 OpenKeychain，以便在此设备上批准提交。</string>
+    <string name="seal_provider_unavailable">请安装或启用 OpenKeychain，以便在此设备上批准 Git 签名请求。</string>
     <string name="seal_section_active">进行中</string>
     <string name="seal_section_history">历史</string>
-    <string name="seal_empty_title">暂无提交请求</string>
+    <string name="seal_empty_title">暂无签名请求</string>
     <string name="seal_empty_body">来自受信任设备的请求会显示在这里。</string>
     <string name="seal_commit_untitled">无标题提交</string>
+    <string name="seal_tag_untitled">未命名标签</string>
     <string name="seal_commit_initial">初始提交</string>
     <string name="seal_status_waiting">等待批准</string>
     <string name="seal_status_signing">正在签名</string>
@@ -293,12 +294,17 @@
     <string name="seal_result_legacy">结果不可用</string>
     <string name="seal_review_title">审核 Git 提交</string>
     <string name="seal_review_guidance">您是否识别此签名请求？批准前，请确认 Git 提交消息、身份和基础版本。此处不显示具体的文件更改。</string>
+    <string name="seal_tag_review_title">审核 Git 标签</string>
+    <string name="seal_tag_review_guidance">您是否识别此签名请求？批准前，请确认标签名称、消息、创建者和目标对象。</string>
     <string name="seal_hash">哈希 %1$s</string>
     <string name="seal_commit_section">Git 提交</string>
     <string name="seal_author">作者</string>
-    <string name="seal_committer">提交者</string>
+    <string name="seal_created_by">创建者</string>
     <string name="seal_tree">树</string>
     <string name="seal_parent">父提交</string>
+    <string name="seal_tag_section">附注标签</string>
+    <string name="seal_tag_target_type">目标类型</string>
+    <string name="seal_tag_target">目标对象</string>
     <string name="seal_extra_header">%1$s</string>
     <string name="seal_approval_section">审批</string>
     <string name="seal_working_directory">工作目录</string>
@@ -317,19 +323,23 @@
     <string name="seal_signing_action">正在签名…</string>
     <string name="seal_close">关闭</string>
     <string name="seal_back_to_history">返回 Seal 历史</string>
-    <string name="seal_details_unavailable">提交详情不可用。</string>
-    <string name="seal_request_unavailable">此提交请求不可用。</string>
-    <string name="seal_request_invalid">无法显示此提交请求。</string>
+    <string name="seal_details_unavailable">Git 对象详情不可用。</string>
+    <string name="seal_request_unavailable">此签名请求不可用。</string>
+    <string name="seal_request_invalid">无法显示此签名请求。</string>
     <string name="seal_request_changed">此请求已更改。请在签名前重新审核。</string>
     <string name="seal_not_ready">NotiSync Seal 尚未就绪。</string>
     <string name="seal_notification_title_with_commit">Git 提交签名 · %1$s</string>
+    <string name="seal_notification_title_with_tag">Git 标签签名 · %1$s</string>
     <string name="seal_notification_body">%1$s 请求为一个 Git 提交签名</string>
     <string name="seal_notification_body_with_repository">%1$s 请求为 %2$s 中的 Git 提交签名</string>
+    <string name="seal_tag_notification_body">%1$s 请求为 Git 标签 %2$s 签名</string>
+    <string name="seal_tag_notification_body_with_repository">%1$s 请求为 %3$s 中的 Git 标签 %2$s 签名</string>
     <string name="seal_notification_author">作者：%1$s</string>
+    <string name="seal_notification_tagger">标签创建者：%1$s</string>
     <string name="seal_notification_identifiers">请求 %1$s 的哈希为 %2$s</string>
-    <string name="seal_notification_channel_description">Git 提交签名请求</string>
-    <string name="seal_notification_public_content">有待审核的 Git 提交签名请求。</string>
-    <string name="seal_history_details_truncated">部分提交详情未显示。</string>
+    <string name="seal_notification_channel_description">Git 提交和标签签名请求</string>
+    <string name="seal_notification_public_content">有待审核的 Git 签名请求。</string>
+    <string name="seal_history_details_truncated">部分 Git 对象详情未显示。</string>
 
     <string name="run_notification_channel_description">来自 %1$s 的运行状态和警报</string>
     <string name="run_command_fallback">命令</string>
@@ -748,6 +758,7 @@
     <string name="device_capability_publish_runs">发布 NotiSync Run</string>
     <string name="device_capability_receive_runs">接收 NotiSync Run</string>
     <string name="device_capability_openpgp_sign">批准 OpenPGP 签名</string>
+    <string name="device_capability_openpgp_tag_sign">批准 OpenPGP Git 标签签名</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">无法配对：%1$s</string>

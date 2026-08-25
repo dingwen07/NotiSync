@@ -19,6 +19,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
 import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
+import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
 /** Private notification-shade presentation for a pending signing decision. */
@@ -38,30 +39,62 @@ class OpenPgpSignNotificationPresenter(
         ) return false
 
         val requestId = stored.request.requestId
-        val commitTitle = stored.commit?.message?.commitSubject()
-            ?.takeIf(String::isNotBlank)
-            ?.take(MAX_TITLE_CHARS)
-            ?: context.getString(R.string.seal_commit_untitled)
+        val objectTitle = when (stored.request.objectKind) {
+            OpenPgpObjectKind.GIT_COMMIT -> stored.commit?.message?.commitSubject()
+                ?.takeIf(String::isNotBlank)
+                ?.take(MAX_TITLE_CHARS)
+                ?: context.getString(R.string.seal_commit_untitled)
+            OpenPgpObjectKind.GIT_TAG -> stored.tag?.tagName
+                ?.takeIf(String::isNotBlank)
+                ?.take(MAX_TITLE_CHARS)
+                ?: context.getString(R.string.seal_tag_untitled)
+        }
         val repositoryName = stored.request.workingDirectory
             ?.workingDirectoryName()
             ?.takeIf(String::isNotBlank)
             ?.take(MAX_CONTEXT_CHARS)
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
-        val requestText = repositoryName?.let {
-            context.getString(R.string.seal_notification_body_with_repository, safeRequesterName, it)
-        } ?: context.getString(R.string.seal_notification_body, safeRequesterName)
+        val requestText = when (stored.request.objectKind) {
+            OpenPgpObjectKind.GIT_COMMIT -> repositoryName?.let {
+                context.getString(R.string.seal_notification_body_with_repository, safeRequesterName, it)
+            } ?: context.getString(R.string.seal_notification_body, safeRequesterName)
+            OpenPgpObjectKind.GIT_TAG -> repositoryName?.let {
+                context.getString(
+                    R.string.seal_tag_notification_body_with_repository,
+                    safeRequesterName,
+                    objectTitle,
+                    it,
+                )
+            } ?: context.getString(R.string.seal_tag_notification_body, safeRequesterName, objectTitle)
+        }
         val identifiersText = context.getString(
             R.string.seal_notification_identifiers,
             requestId.take(8),
             stored.request.payloadSha256.toHex().take(7),
         )
-        val authorText = stored.commit?.author
+        val identityText = (stored.commit?.author ?: stored.tag?.tagger)
             ?.trim()
             ?.takeIf(String::isNotBlank)
             ?.take(MAX_CONTEXT_CHARS)
-            ?.let { context.getString(R.string.seal_notification_author, it) }
-        val expandedText = listOfNotNull(requestText, authorText, identifiersText).joinToString("\n")
-        val contentTitle = context.getString(R.string.seal_notification_title_with_commit, commitTitle)
+            ?.let {
+                context.getString(
+                    if (stored.request.objectKind == OpenPgpObjectKind.GIT_TAG) {
+                        R.string.seal_notification_tagger
+                    } else {
+                        R.string.seal_notification_author
+                    },
+                    it,
+                )
+            }
+        val expandedText = listOfNotNull(requestText, identityText, identifiersText).joinToString("\n")
+        val contentTitle = context.getString(
+            if (stored.request.objectKind == OpenPgpObjectKind.GIT_TAG) {
+                R.string.seal_notification_title_with_tag
+            } else {
+                R.string.seal_notification_title_with_commit
+            },
+            objectTitle,
+        )
         val autoOpenEnabled = openRequestPageAutomatically()
         val review = PendingIntent.getActivity(
             context,
@@ -99,7 +132,7 @@ class OpenPgpSignNotificationPresenter(
             context.getString(R.string.action_approve),
             approveIntent,
         ).setAuthenticationRequired(true).build()
-        // Keep lock-screen content useful without exposing commit, repository, requester, author, or hash details.
+        // Keep lock-screen content useful without exposing Git object, repository, requester, identity, or hash details.
         val publicVersion = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notisync_mirror)
             .setContentTitle(context.getString(R.string.seal_name))

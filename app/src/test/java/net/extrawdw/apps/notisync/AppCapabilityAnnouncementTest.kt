@@ -22,6 +22,7 @@ class AppCapabilityAnnouncementTest {
                 Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
                 Capability.RECEIVE_RUNS,
                 Capability.OPENPGP_SIGN_V1,
+                Capability.OPENPGP_SIGN_GIT_TAG_V1,
                 Capability.SSH_KEY_PROVIDER_V1,
             ),
             ANDROID_SELF_CAPABILITIES,

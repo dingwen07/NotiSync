@@ -167,6 +167,38 @@ class SecureChannelPolicyTest {
                 )
             }
         }
+
+        val tagPayload = (
+            "object ${"0".repeat(40)}\n" +
+                "type commit\n" +
+                "tag v1.0.0\n" +
+                "tagger A <a@example.com> 1 +0000\n\nRelease v1.0.0\n"
+            ).encodeToByteArray()
+        val tagRequest = request.copy(
+            requestId = "fedcba9876543210fedcba9876543210",
+            payloadSha256 = MessageDigest.getInstance("SHA-256").digest(tagPayload),
+            objectKind = OpenPgpObjectKind.GIT_TAG,
+            payload = tagPayload,
+        )
+        val tagBody = ProtocolCodec.encodeToCbor(
+            DataSync(DataSyncKind.OPENPGP_SIGN, openPgpSign = tagRequest)
+        )
+        val tagExact = exact.copy(requiredCapabilities = tagRequest.requiredSignerCapabilities())
+
+        assertEquals(0, channel().send(MessageType.DATA_SYNC, tagBody, tagExact, Urgency.HIGH))
+        assertThrows(IllegalArgumentException::class.java) {
+            runBlocking {
+                channel().send(
+                    MessageType.DATA_SYNC,
+                    tagBody,
+                    tagExact.copy(
+                        requiredCapabilities = tagExact.requiredCapabilities -
+                            Capability.OPENPGP_SIGN_GIT_TAG_V1,
+                    ),
+                    Urgency.HIGH,
+                )
+            }
+        }
         assertThrows(IllegalArgumentException::class.java) {
             runBlocking {
                 channel().send(

@@ -152,13 +152,13 @@ notisync status
 notisync applications list
 ```
 
-### NotiSync Seal: remote Git commit signing (Android)
+### NotiSync Seal: remote Git commit and tag signing (Android)
 
 NotiSync can use a trusted Android device and OpenKeychain to approve ordinary OpenPGP-signed Git
-commits. The desktop still needs the public certificate and a real GPG installation: the
-`notisync-gpg` adapter uses that GPG to resolve the requested certificate, delegates every unsupported
-operation unchanged, and verifies the returned detached signature before Git receives it. No private
-OpenPGP key is required on the desktop for the remotely selected certificate.
+commits and annotated tags. The desktop still needs the public certificate and a real GPG installation.
+The `notisync-gpg` adapter uses that GPG to resolve the requested certificate, delegates every
+unsupported operation unchanged, and verifies the returned detached signature before Git receives it.
+No private OpenPGP key is required on the desktop for the remotely selected certificate.
 
 1. Before changing Git configuration, record the absolute path of the real GPG executable and store it:
 
@@ -188,6 +188,7 @@ OpenPGP key is required on the desktop for the remotely selected certificate.
    git config --global gpg.openpgp.program "$(command -v notisync-gpg)"
    git config --global user.signingKey FULL_PRIMARY_FINGERPRINT
    git config --global commit.gpgSign true
+   git config --global tag.gpgSign true
    ```
 
    On Windows PowerShell, use
@@ -195,13 +196,16 @@ OpenPGP key is required on the desktop for the remotely selected certificate.
    command. A 16-digit primary or signing-subkey long ID is also accepted, but a full fingerprint is
    less ambiguous. Git's `-S` override is honored because the adapter uses Git's final selector.
 
-Seal signs commit objects only. Annotated tags, exact-subkey selectors ending in `!`,
-short IDs, email selectors, verification, encryption, and all other GPG invocations go directly to the
-configured real GPG. A recognized remote request fails closed on timeout, rejection, provider failure,
-or an invalid response; it never silently falls back to local signing. The phone review shows the exact
-commit headers/message and payload hash, but it does not contain or claim to show the code diff. It also
-shows the desktop process's working directory as requester-reported context; that path is authenticated
-as coming from the trusted device but is not part of the Git commit or its OpenPGP signature.
+Seal signs commit objects and annotated tag objects. Exact-subkey selectors ending in `!`, lightweight
+tags, short IDs, email selectors, verification, encryption, and all other GPG invocations go directly
+to the configured real GPG. A recognized remote request fails closed on timeout, rejection, provider
+failure, or an invalid response; it never silently falls back to local signing. The phone review shows
+the exact commit or tag facts and payload hash; commit review does not contain or claim to show the code
+diff. It also shows the desktop process's working directory as requester-reported context; that path is
+authenticated as coming from the trusted device but is not part of the Git object or its OpenPGP
+signature.
+Tag requests are routed only to Android clients that advertise annotated-tag review support, so update
+both the desktop tools and the Android app before using remote tag signing.
 
 When Git is run from an interactive terminal, `notisync-gpg` prints a seven-character hash directly to
 that controlling terminal. Compare it with the hash in Seal before approving. The adapter

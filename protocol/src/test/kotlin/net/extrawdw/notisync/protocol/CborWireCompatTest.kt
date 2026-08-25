@@ -235,6 +235,21 @@ class CborWireCompatTest {
     }
 
     @Test
+    fun gitTagSigningCapabilityUsesPermanentId23() {
+        val profile = ProfileUpdate(
+            ClientId("tag-signer"),
+            "Tag signer",
+            "android",
+            listOf(Capability.OPENPGP_SIGN_GIT_TAG_V1),
+            1L,
+        )
+
+        val raw = ProtocolCodec.decodeFromCbor<RawCapabilityProfile>(ProtocolCodec.encodeToCbor(profile))
+
+        assertEquals(listOf(23), raw.capabilities)
+    }
+
+    @Test
     fun preScreenReadersDropNewCapabilitiesWithoutDroppingTheirContainers() {
         val capabilities = listOf(
             Capability.CAPTURE,

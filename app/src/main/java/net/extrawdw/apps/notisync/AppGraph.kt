@@ -217,6 +217,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.DISPLAY_ANDROID_GROUP_SUMMARIES,
     Capability.RECEIVE_RUNS,
     Capability.OPENPGP_SIGN_V1,
+    Capability.OPENPGP_SIGN_GIT_TAG_V1,
     Capability.SSH_KEY_PROVIDER_V1,
 )
 

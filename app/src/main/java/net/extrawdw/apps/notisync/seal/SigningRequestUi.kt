@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
+import androidx.compose.material.icons.automirrored.outlined.Label
 import androidx.compose.material.icons.outlined.AccountTree
 import androidx.compose.material.icons.outlined.Cancel
 import androidx.compose.material.icons.outlined.CheckCircle
@@ -57,6 +58,7 @@ import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
+import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 
 internal enum class SealDisplayStatus {
     WAITING,
@@ -131,12 +133,19 @@ internal fun SigningRequestListItem(
 ) {
     val status = stored.sealDisplayStatus()
     val commit = stored.commit
-    val headline = commit?.message?.commitSubject().orEmpty().ifBlank {
-        stringResource(R.string.seal_commit_untitled)
+    val tag = stored.tag
+    val headline = when (stored.request.objectKind) {
+        OpenPgpObjectKind.GIT_COMMIT -> commit?.message?.commitSubject().orEmpty().ifBlank {
+            stringResource(R.string.seal_commit_untitled)
+        }
+        OpenPgpObjectKind.GIT_TAG -> tag?.tagName.orEmpty().ifBlank {
+            stringResource(R.string.seal_tag_untitled)
+        }
     }
     val time = rememberShortTimeFormatter().format(Date(stored.updatedAt))
     val base = commit?.parentIds?.firstOrNull()?.shortObjectId()
         ?: commit?.treeId?.shortObjectId()
+        ?: tag?.objectId?.shortObjectId()
     val workingDirectory = stored.request.workingDirectory?.workingDirectoryName()
 
     Surface {
@@ -188,6 +197,7 @@ internal fun SigningRequestDetail(
 ) {
     val status = stored.sealDisplayStatus()
     val commit = stored.commit
+    val tag = stored.tag
     val formatter = rememberDateTimeFormatter()
 
     LazyColumn(
@@ -221,13 +231,19 @@ internal fun SigningRequestDetail(
             CenteredDetailItem {
                 SealHero(
                     status = status,
-                    subject = commit?.message?.commitSubject().orEmpty().ifBlank {
-                        stringResource(R.string.seal_commit_untitled)
+                    subject = when (stored.request.objectKind) {
+                        OpenPgpObjectKind.GIT_COMMIT -> commit?.message?.commitSubject().orEmpty().ifBlank {
+                            stringResource(R.string.seal_commit_untitled)
+                        }
+                        OpenPgpObjectKind.GIT_TAG -> tag?.tagName.orEmpty().ifBlank {
+                            stringResource(R.string.seal_tag_untitled)
+                        }
                     },
                     requesterName = requesterName,
                     workingDirectory = stored.request.workingDirectory,
                     reference = commit?.parentIds?.firstOrNull()?.shortObjectId()
-                        ?: commit?.treeId?.shortObjectId(),
+                        ?: commit?.treeId?.shortObjectId()
+                        ?: tag?.objectId?.shortObjectId(),
                     shortHash = stored.request.payloadSha256.toHex().take(7),
                 )
             }
@@ -248,7 +264,12 @@ internal fun SigningRequestDetail(
                         ) {
                             Icon(Icons.Outlined.Info, contentDescription = null)
                             Text(
-                                stringResource(R.string.seal_review_guidance),
+                                stringResource(
+                                    when (stored.request.objectKind) {
+                                        OpenPgpObjectKind.GIT_COMMIT -> R.string.seal_review_guidance
+                                        OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_review_guidance
+                                    }
+                                ),
                                 style = MaterialTheme.typography.bodyMedium,
                             )
                         }
@@ -257,11 +278,16 @@ internal fun SigningRequestDetail(
             }
         }
 
-        if (commit == null) {
+        if (commit == null && tag == null) {
             item {
                 CenteredDetailItem {
                     SealCard(
-                        title = stringResource(R.string.seal_commit_section),
+                        title = stringResource(
+                            when (stored.request.objectKind) {
+                                OpenPgpObjectKind.GIT_COMMIT -> R.string.seal_commit_section
+                                OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_section
+                            }
+                        ),
                         icon = Icons.Outlined.AccountTree,
                     ) {
                         Text(
@@ -271,10 +297,16 @@ internal fun SigningRequestDetail(
                     }
                 }
             }
-        } else {
+        } else if (commit != null) {
             item {
                 CenteredDetailItem {
                     CommitCard(commit)
+                }
+            }
+        } else if (tag != null) {
+            item {
+                CenteredDetailItem {
+                    TagCard(tag)
                 }
             }
         }
@@ -338,8 +370,8 @@ internal fun SigningRequestDetail(
                         stringResource(R.string.seal_payload),
                         pluralStringResource(
                             R.plurals.seal_payload_value,
-                            commit?.payloadBytes ?: 0,
-                            commit?.payloadBytes ?: 0,
+                            commit?.payloadBytes ?: tag?.payloadBytes ?: 0,
+                            commit?.payloadBytes ?: tag?.payloadBytes ?: 0,
                         ),
                         monospace = true,
                     )
@@ -438,7 +470,7 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
         HorizontalDivider()
         IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_author), commit.author)
         HorizontalDivider()
-        IdentityLine(Icons.Outlined.VerifiedUser, stringResource(R.string.seal_committer), commit.committer)
+        IdentityLine(Icons.Outlined.VerifiedUser, stringResource(R.string.seal_created_by), commit.committer)
         HorizontalDivider()
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -475,6 +507,47 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
             }
         }
         if (commit.truncated) {
+            HorizontalDivider()
+            Text(
+                stringResource(R.string.seal_history_details_truncated),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+private fun TagCard(tag: GitTagDisplaySnapshot) {
+    SealCard(
+        title = stringResource(R.string.seal_tag_section),
+        icon = Icons.AutoMirrored.Outlined.Label,
+    ) {
+        SelectionContainer {
+            Text(tag.tagName, style = MaterialTheme.typography.titleLarge)
+        }
+        val subject = tag.message.commitSubject()
+        val body = tag.message.commitBody()
+        if (subject.isNotEmpty()) {
+            SelectionContainer {
+                Text(subject, style = MaterialTheme.typography.titleMedium)
+            }
+        }
+        if (body.isNotEmpty()) {
+            SelectionContainer {
+                Text(
+                    body,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        HorizontalDivider()
+        IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_created_by), tag.tagger)
+        HorizontalDivider()
+        SealRecordLine(stringResource(R.string.seal_tag_target_type), tag.objectType)
+        SealRecordLine(stringResource(R.string.seal_tag_target), tag.objectId, monospace = true)
+        if (tag.truncated) {
             HorizontalDivider()
             Text(
                 stringResource(R.string.seal_history_details_truncated),
