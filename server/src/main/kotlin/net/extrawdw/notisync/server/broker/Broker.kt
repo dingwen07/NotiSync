@@ -291,9 +291,9 @@ class Broker(
         acceptedAt: Long,
     ): PushPayload {
         val b64env = b64.encodeToString(envelopeBytes)
-        // "mtyp" carries the E2E message type (broker-visible on the envelope) so APNs can branch
-        // alert+mutable-content (NOTIFICATION → NSE decrypts) vs silent background (DISMISSAL/DATA_SYNC).
-        // FCM/Android ignores it. "pnc" (NOTIFICATION only, when > 0) is the pending-DISMISSAL count
+        // "mtyp" carries the E2E message type (broker-visible on the envelope) for APNs delivery-class and
+        // recipient-side dispatch. APNs alerts for NOTIFICATION or any signed HIGH urgency override;
+        // FCM/Android ignores mtyp. "pnc" (NOTIFICATION only, when > 0) is the pending-DISMISSAL count
         // computed in [send]; capped so the value can't grow the payload past its accounted overhead.
         val base = buildMap {
             put("mtyp", messageType.name)

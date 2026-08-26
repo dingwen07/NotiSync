@@ -2151,7 +2151,10 @@ class SshKeyProviderStore(context: Context) :
                         operation = PreparedSignatureOperation.Wrapped(unwrap),
                     )
                 }
-                SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN -> null
+                SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+                SshOperationalKeyProvider.APPLE_KEYCHAIN,
+                SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+                -> null
             }
         } catch (failure: Exception) {
             failPreparation(failure.signingFailureCode())
@@ -3838,6 +3841,9 @@ class SshKeyProviderStore(context: Context) :
         }
         SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
             error("WebAuthn SSH signatures require a Credential Manager assertion")
+        SshOperationalKeyProvider.APPLE_KEYCHAIN,
+        SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+        -> error("Apple SSH key providers cannot sign through the Android provider store")
     }
 
     private class AndroidKeyWrapping(private val alias: String) {

@@ -44,6 +44,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         let info = notification.request.content.userInfo
+        // SSH review prompts and remembered-authorization audit alerts are security events,
+        // not mirrored app notifications. Always present them even when Android notification
+        // mirroring is disabled or filtered for the requesting device.
+        if info[SshKeyProviderNotificationPresentation.requestIdUserInfoKey] != nil {
+            return [.banner, .list, .sound]
+        }
         if NotificationFilterStore.shouldFilterNotification(
             originPlatform: info["originPlatform"] as? String,
             sourceClientId: info["sourceClientId"] as? String ?? "",

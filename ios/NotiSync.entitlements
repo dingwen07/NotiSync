@@ -15,11 +15,13 @@
 	<key>com.apple.developer.associated-domains</key>
 	<array>
 		<string>applinks:notisync.apps.extrawdw.net</string>
+		<string>webcredentials:notisync.apps.extrawdw.net</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync</string>
 		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync.shared</string>
+		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync.ssh</string>
 	</array>
 </dict>
 </plist>

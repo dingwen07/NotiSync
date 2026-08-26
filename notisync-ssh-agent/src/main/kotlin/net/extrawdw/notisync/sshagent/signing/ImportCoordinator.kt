@@ -4,8 +4,6 @@ import java.security.SecureRandom
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.TimeUnit
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.SshAgentSync
-import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshImportConstraints
 import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshImportResult
@@ -52,10 +50,7 @@ class ImportCoordinator(
         )
         check(pending.putIfAbsent(request.requestId, operation) == null)
         return try {
-            bridge.sendNormal(
-                SshAgentSync(kind = SshAgentSyncKind.IMPORT_REQUEST, importRequest = request),
-                listOf(configured),
-            )
+            bridge.sendImportRequest(request, configured)
             operation.future.get(5, TimeUnit.MINUTES)
         } catch (_: Exception) {
             false

@@ -57,6 +57,30 @@ nonisolated enum RelayClient {
                        keyEpochProvider: keyEpochProvider)
     }
 
+    /// Send a response envelope from the NSE without constructing the foreground BrokerClient. This uses the
+    /// same signed /v2/send contract and identity fallback as relay fetch/ack, and is intentionally limited to
+    /// an already-sealed envelope supplied by the extension-safe protocol engine.
+    static func sendEnvelope(
+        _ envelope: Envelope,
+        urgency: Urgency,
+        identitySigner: IdentitySigner,
+        operationalSigner: OperationalSigner,
+        keyEpochProvider: @Sendable () throws -> SignedBlob
+    ) async -> Bool {
+        guard let url = URL(string: base() + "/v2/send") else { return false }
+        let body = ProtocolCodec.encodeSendRequest(envelope, urgency: urgency)
+        guard let (_, response) = await send(
+            url: url,
+            method: "POST",
+            body: body,
+            contentType: "application/cbor",
+            identitySigner: identitySigner,
+            operationalSigner: operationalSigner,
+            keyEpochProvider: keyEpochProvider
+        ), let http = response as? HTTPURLResponse else { return false }
+        return (200..<300).contains(http.statusCode)
+    }
+
     /// Fetch a private asset blob for the NSE. Decrypting and persistence stay with the caller/AssetCache.
     static func fetchAsset(_ ref: PrivateAssetRef,
                            identitySigner: IdentitySigner,

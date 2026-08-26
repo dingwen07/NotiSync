@@ -2164,6 +2164,9 @@ private fun SshKeyDescriptor.storageLabel(): String = stringResource(
             R.string.ssh_agent_storage_android_keystore_wrapped
         SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
             R.string.ssh_agent_storage_credential_manager_webauthn
+        SshOperationalKeyProvider.APPLE_KEYCHAIN,
+        SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+        -> error("Apple SSH key providers cannot own an Android key")
     },
 ) + if (operationalKey.securityLevel == SshStorageSecurityLevel.CREDENTIAL_PROVIDER) {
     ""
@@ -2176,6 +2179,8 @@ private fun SshStorageSecurityLevel.labelResource(): Int = when (this) {
     SshStorageSecurityLevel.TRUSTED_ENVIRONMENT -> R.string.ssh_agent_security_tee
     SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
         error("Credential-provider storage has no Android Keystore security level label")
+    SshStorageSecurityLevel.KEYCHAIN ->
+        error("Apple Keychain storage has no Android Keystore security level label")
 }
 
 private fun Context.reportSshKeyStorageFailure(

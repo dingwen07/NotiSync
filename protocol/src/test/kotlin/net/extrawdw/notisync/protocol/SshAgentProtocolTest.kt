@@ -247,6 +247,149 @@ class SshAgentProtocolTest {
         )
     }
 
+    @Test
+    fun appleKeychainManagedKeyRoundTripsWithExistingImportOrigin() {
+        val publicBlob = "ecdsa-sha2-nistp256 public fields".encodeToByteArray()
+        val key = SshKeyDescriptor(
+            providerKeyId = id('7'),
+            publicKeyBlob = publicBlob,
+            publicKeyBlobSha256 = sha256(publicBlob),
+            algorithm = SshKeyAlgorithm.ECDSA_NISTP256,
+            displayName = "iPhone key",
+            origin = SshKeyOrigin.SAF_IMPORT,
+            operationalKey = SshOperationalKeyProtection(
+                provider = SshOperationalKeyProvider.APPLE_KEYCHAIN,
+                securityLevel = SshStorageSecurityLevel.KEYCHAIN,
+                userVerificationPolicy = SshUserVerificationPolicy.NONE,
+                strongBoxAttempted = false,
+                strongBoxFallback = false,
+            ),
+            exportCopy = null,
+            approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER,
+            createdAt = 1_000,
+        )
+
+        assertNull(key.validationError(::sha256))
+        val decoded = ProtocolCodec.decodeFromCbor<SshKeyDescriptor>(ProtocolCodec.encodeToCbor(key))
+        assertEquals(SshOperationalKeyProvider.APPLE_KEYCHAIN, decoded.operationalKey.provider)
+        assertEquals(SshStorageSecurityLevel.KEYCHAIN, decoded.operationalKey.securityLevel)
+        assertEquals(SshKeyOrigin.SAF_IMPORT, decoded.origin)
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    securityLevel = SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    securityLevel = SshStorageSecurityLevel.CREDENTIAL_PROVIDER,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(strongBoxAttempted = true),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(algorithm = SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    provider = SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+                ),
+            ).validationError(::sha256),
+        )
+    }
+
+    @Test
+    fun appleAuthenticationServicesWebAuthnRoundTripsWithSharedInvariants() {
+        val publicBlob = "sk-ecdsa-sha2-nistp256@openssh.com public fields".encodeToByteArray()
+        val key = SshKeyDescriptor(
+            providerKeyId = id('8'),
+            publicKeyBlob = publicBlob,
+            publicKeyBlobSha256 = sha256(publicBlob),
+            algorithm = SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256,
+            displayName = "Roaming passkey",
+            origin = SshKeyOrigin.WEBAUTHN_RECOVERED,
+            operationalKey = SshOperationalKeyProtection(
+                provider = SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+                securityLevel = SshStorageSecurityLevel.CREDENTIAL_PROVIDER,
+                userVerificationPolicy = SshUserVerificationPolicy.PER_USE,
+                strongBoxAttempted = false,
+                strongBoxFallback = false,
+            ),
+            exportCopy = null,
+            approvalPolicy = SshApprovalPolicy.ALWAYS_ASK,
+            createdAt = 1_000,
+            webAuthn = SshWebAuthnCredentialProtection(
+                rpId = "notisync.apps.extrawdw.net",
+                backupEligible = true,
+                backupState = true,
+            ),
+        )
+
+        assertNull(key.validationError(::sha256))
+        val decoded = ProtocolCodec.decodeFromCbor<SshKeyDescriptor>(ProtocolCodec.encodeToCbor(key))
+        assertEquals(
+            SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+            decoded.operationalKey.provider,
+        )
+        assertEquals(SshStorageSecurityLevel.CREDENTIAL_PROVIDER, decoded.operationalKey.securityLevel)
+        assertEquals(SshKeyOrigin.WEBAUTHN_RECOVERED, decoded.origin)
+        assertEquals("notisync.apps.extrawdw.net", decoded.webAuthn?.rpId)
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(securityLevel = SshStorageSecurityLevel.KEYCHAIN),
+            ).validationError(::sha256),
+        )
+        assertNotNull(key.copy(algorithm = SshKeyAlgorithm.ECDSA_NISTP256).validationError(::sha256))
+        assertNotNull(key.copy(webAuthn = null).validationError(::sha256))
+        assertNotNull(key.copy(origin = SshKeyOrigin.SAF_IMPORT).validationError(::sha256))
+        assertNotNull(
+            key.copy(
+                exportCopy = SshExportCopyProtection(
+                    securityLevel = SshStorageSecurityLevel.TRUSTED_ENVIRONMENT,
+                    backendPolicy = SshExportCopyBackendPolicy.BEST_AVAILABLE,
+                    authentication = SshExportCopyAuthentication.STRONG_BIOMETRIC_OR_DEVICE_CREDENTIAL_PER_USE,
+                    strongBoxAttempted = false,
+                    strongBoxFallback = false,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                rememberedNamespaces = listOf(
+                    SshRememberedNamespace(
+                        requesterClientId = requester,
+                        authorizationGeneration = id('9'),
+                        authorizationEpoch = 0,
+                        scopes = listOf(SshRememberScope.PEER),
+                    ),
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    userVerificationPolicy = SshUserVerificationPolicy.NONE,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(
+            key.copy(
+                operationalKey = key.operationalKey.copy(
+                    provider = SshOperationalKeyProvider.APPLE_KEYCHAIN,
+                    securityLevel = SshStorageSecurityLevel.KEYCHAIN,
+                ),
+            ).validationError(::sha256),
+        )
+        assertNotNull(key.copy(approvalPolicy = SshApprovalPolicy.ALLOW_REMEMBER).validationError(::sha256))
+    }
+
     private fun validKeysRequest() = SshKeysRequest(
         requestId = id('1'),
         requesterClientId = requester,

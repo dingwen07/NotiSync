@@ -15,6 +15,7 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SshAgentLimits
 import net.extrawdw.notisync.protocol.SshAgentSync
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
+import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshKeysRequest
 import net.extrawdw.notisync.protocol.SshSignRequest
 import net.extrawdw.notisync.protocol.Urgency
@@ -78,18 +79,25 @@ class SshApplicationBridge(
         require(eligible.size == request.eligibleProviderClientIds.size) {
             "sign request contains a provider that is no longer eligible"
         }
-        val partitions = listOf(
-            eligible.filter(ProviderPeer::supportsFilteredPush) to Urgency.HIGH,
-            eligible.filterNot(ProviderPeer::supportsFilteredPush) to Urgency.NORMAL,
+        api.send(
+            sendRequest(
+                SshAgentSync(kind = SshAgentSyncKind.SIGN_REQUEST, signRequest = request),
+                eligible.map(ProviderPeer::clientId),
+                Urgency.HIGH,
+            ),
         )
-        api.sendAll(
-            partitions.filter { it.first.isNotEmpty() }.map { (partition, urgency) ->
-                sendRequest(
-                    SshAgentSync(kind = SshAgentSyncKind.SIGN_REQUEST, signRequest = request),
-                    partition.map(ProviderPeer::clientId),
-                    urgency,
-                )
-            },
+    }
+
+    fun sendImportRequest(request: SshImportRequest, targetProviderId: ClientId) {
+        require(roster.eligibleProviders().any { it.clientId == targetProviderId }) {
+            "import target is no longer an eligible key provider"
+        }
+        api.send(
+            sendRequest(
+                SshAgentSync(kind = SshAgentSyncKind.IMPORT_REQUEST, importRequest = request),
+                listOf(targetProviderId),
+                Urgency.HIGH,
+            ),
         )
     }
 
@@ -105,10 +113,12 @@ class SshApplicationBridge(
             "SSH target provider set must be non-empty and unique"
         }
         if (urgency == Urgency.HIGH) validateHighRequest(sync, targetIds.toSet())
-        val required = if (urgency == Urgency.HIGH) {
-            SshAgentLimits.HIGH_PROVIDER_CAPABILITIES
-        } else {
-            SshAgentLimits.NORMAL_PROVIDER_CAPABILITIES
+        // Interactive sign/import requests always create review UI, so they do not need PUSH_FILTERING.
+        val required = when {
+            urgency != Urgency.HIGH -> SshAgentLimits.NORMAL_PROVIDER_CAPABILITIES
+            sync.kind == SshAgentSyncKind.SIGN_REQUEST -> SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES
+            sync.kind == SshAgentSyncKind.IMPORT_REQUEST -> SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES
+            else -> SshAgentLimits.HIGH_FILTERING_PROVIDER_CAPABILITIES
         }
         val body = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.SSH_AGENT, sshAgent = sync))
         return SendRequest(
@@ -134,11 +144,16 @@ class SshApplicationBridge(
             SshAgentSyncKind.SIGN_REQUEST -> {
                 val request = requireNotNull(sync.signRequest)
                 require(request.requesterClientId !in targets) { "SSH audience must exclude requester" }
-                require(request.eligibleProviderClientIds.toSet().containsAll(targets)) {
-                    "HIGH sign audience must be a subset of the signed eligible set"
+                require(targets == request.eligibleProviderClientIds.toSet()) {
+                    "HIGH sign audience must equal the signed eligible set"
                 }
             }
-            else -> throw IllegalArgumentException("only SSH keys/sign requests may use HIGH urgency")
+            SshAgentSyncKind.IMPORT_REQUEST -> {
+                val request = requireNotNull(sync.importRequest)
+                require(request.requesterClientId !in targets) { "SSH audience must exclude requester" }
+                require(targets.size == 1) { "HIGH import must target exactly one key provider" }
+            }
+            else -> throw IllegalArgumentException("only SSH keys/sign/import requests may use HIGH urgency")
         }
     }
 

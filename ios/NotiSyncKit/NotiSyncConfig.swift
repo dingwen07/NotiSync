@@ -8,15 +8,20 @@ private nonisolated struct SharedBrokerConfig: Codable, Sendable {
 
 /// Build-wide constants shared by the app and the Notification Service Extension.
 ///
-/// `appGroup` and keychain groups MUST match the entitlements of BOTH targets. The keychain groups are
-/// team-prefixed (`$(AppIdentifierPrefix)` resolves to the team id for this app) so the app and the
-/// NSE can share the private material and cached auth state needed while the device is locked.
+/// `appGroup`, `keychainGroup`, and `sshKeychainGroup` MUST match the entitlements of their consumers. Keychain
+/// groups are team-prefixed (`$(AppIdentifierPrefix)` resolves to the team id); the dedicated SSH group below is
+/// shared only by the app and NSE and holds both managed SSH keys and short-lived SSH request staging. The general
+/// shared group retains non-SSH app/NSE broker and operational credentials.
 nonisolated enum NotiSyncConfig {
     static let bundleId = "net.extrawdw.apps.NotiSync"
     static let appGroup = "group.net.extrawdw.apps.NotiSync"
     static let teamPrefix = "475KZ2S33S"
     static let signingKeychainGroup = "\(teamPrefix).\(bundleId)"
     static let keychainGroup = "\(teamPrefix).\(bundleId).shared"
+    /// Managed SSH private keys shared by the app and NSE. The Notification Content extension is excluded.
+    static let sshKeychainGroup = "\(teamPrefix).\(bundleId).ssh"
+    static let sshPasskeyRelyingPartyIdentifier = "notisync.apps.extrawdw.net"
+    static let sshPasskeyOrigin = "https://\(sshPasskeyRelyingPartyIdentifier)"
 
     static let platform = "ios"
 

@@ -23,9 +23,14 @@ import java.security.PrivateKey
 import java.time.Duration
 
 /**
- * APNs token-authenticated HTTP/2 adapter. NOTIFICATION envelopes are alert pushes carrying NotiSync's
- * opaque inline envelope (`ct`) or relay pointer (`mid`) for the NSE to decrypt and display; other message
- * types are priority-5 background pushes handled by the app process.
+ * APNs token-authenticated HTTP/2 adapter. NOTIFICATION envelopes and all HIGH-urgency envelopes are
+ * alert pushes carrying NotiSync's opaque inline envelope (`ct`) or relay pointer (`mid`) for the NSE to
+ * decrypt and handle. Other envelopes are priority-5 background pushes handled by the app process.
+ *
+ * A quiet-capable HIGH workflow must be addressed only to peers that advertise PUSH_FILTERING. Inherently
+ * visible review workflows (such as SSH SIGN_REQUEST) instead bind their audience to their provider capability
+ * and always post an alert. The sender resolves and signs that policy; the broker sees only concrete recipient
+ * ids and cannot reconstruct capability claims.
  */
 class ApnsPushTransport internal constructor(
     private val topic: String,
@@ -55,12 +60,16 @@ class ApnsPushTransport internal constructor(
                 // Match the wake TTL to the relay TTL (as FcmPushTransport does) so a deferred wake can't
                 // outlive the relay item it points to (else a wake delivered later is a dead pointer).
                 val expiration = (System.currentTimeMillis() + ttlMillis) / 1000
-                // Type-aware delivery class. A NOTIFICATION is delivered as an alert push with
-                // mutable-content so the iOS Notification Service Extension wakes, decrypts the inline
-                // ciphertext (or fetches the relay pointer) on-device, and replaces the placeholder before
-                // display — the broker still holds only ciphertext. DISMISSAL/DATA_SYNC stay silent
-                // background pushes handled by the app process. (FCM/Android is unaffected.)
-                val isAlert = data["mtyp"] == MessageType.NOTIFICATION.name
+                // NOTIFICATION retains its alert contract. An explicit HIGH urgency additionally promotes
+                // any envelope to alert+mutable-content so the iOS Notification Service Extension wakes and
+                // decrypts the inline ciphertext (or fetches the relay pointer) on-device. The signed
+                // SendRequest binds the urgency override to the sender's request. (FCM/Android is unaffected.)
+                val alertClass = when {
+                    data["mtyp"] == MessageType.NOTIFICATION.name -> ApnsAlertClass.NOTIFICATION
+                    urgency == Urgency.HIGH -> ApnsAlertClass.REVIEW_REQUEST
+                    else -> null
+                }
+                val isAlert = alertClass != null
                 val request = HttpRequest.newBuilder()
                     .uri(URI.create("$endpoint/3/device/${route.routeRef}"))
                     .timeout(Duration.ofSeconds(20))
@@ -70,7 +79,7 @@ class ApnsPushTransport internal constructor(
                     .header("apns-push-type", if (isAlert) "alert" else "background")
                     .header("apns-priority", if (isAlert) "10" else "5")
                     .header("apns-expiration", expiration.toString())
-                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data, isAlert)))
+                    .POST(HttpRequest.BodyPublishers.ofString(apnsPayload(data, alertClass)))
                     .build()
                 val response = client.send(request)
                 if (response.statusCode in 200..299) return@withContext PushOutcome.DELIVERED
@@ -95,19 +104,19 @@ class ApnsPushTransport internal constructor(
             }
         }
 
-    private fun apnsPayload(data: Map<String, String>, alert: Boolean): String {
+    private fun apnsPayload(data: Map<String, String>, alertClass: ApnsAlertClass?): String {
         val entries = data.entries.joinToString(",") { (k, v) -> "\"${jsonEscape(k)}\":\"${jsonEscape(v)}\"" }
-        val aps = if (alert) {
-            // mutable-content lets the NSE intercept + decrypt; the alert is a generic placeholder the NSE
-            // replaces (the broker never holds plaintext). The category is static because the broker cannot
-            // inspect encrypted actions, but it lets iOS select the generic content extension before the NSE
-            // rewrites the final dynamic action category.
-            """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default","category":"notisync.mirror"}"""
-        } else {
-            """"aps":{"content-available":1}"""
+        val aps = when (alertClass) {
+            ApnsAlertClass.NOTIFICATION ->
+                """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default","category":"notisync.mirror"}"""
+            ApnsAlertClass.REVIEW_REQUEST ->
+                """"aps":{"alert":{"title":"NotiSync","body":"Open NotiSync to review a request"},"mutable-content":1,"content-available":1,"sound":"default","category":"notisync.ssh.request"}"""
+            null -> """"aps":{"content-available":1}"""
         }
         return if (entries.isEmpty()) "{$aps}" else "{$aps,$entries}"
     }
+
+    private enum class ApnsAlertClass { NOTIFICATION, REVIEW_REQUEST }
 
     private fun jsonEscape(value: String): String = buildString(value.length + 8) {
         for (c in value) {

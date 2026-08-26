@@ -14,6 +14,7 @@
 	<array>
 		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync.shared</string>
 		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync</string>
+		<string>$(AppIdentifierPrefix)net.extrawdw.apps.NotiSync.ssh</string>
 	</array>
 </dict>
 </plist>

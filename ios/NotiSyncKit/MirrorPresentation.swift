@@ -651,6 +651,8 @@ nonisolated enum MirrorCategoryRegistry {
     private static func register(channelIds: Set<String>, actionCategories: [StoredActionCategory]) {
         var categories: [String: UNNotificationCategory] = [
             MirrorPresentation.baseCategoryId: MirrorPresentation.category(),
+            SshKeyProviderNotificationPresentation.categoryIdentifier:
+                SshKeyProviderNotificationPresentation.category(),
         ]
         for id in channelIds { categories[id] = MirrorPresentation.category(id: id) }
         for stored in actionCategories {

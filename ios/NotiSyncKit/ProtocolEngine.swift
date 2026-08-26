@@ -80,6 +80,7 @@ private nonisolated let iosSelfCapabilities: [Capability] = [
     .BACKGROUND_WAKE,
     .FOREGROUND_CONNECTION,
     .CAPABILITY_ROUTING_V1,
+    .SSH_KEY_PROVIDER_V1,
 ]
 
 nonisolated enum KeyEpochStatus: Sendable { case verified, absent, invalid }
@@ -394,6 +395,23 @@ nonisolated final class NotiSyncEngine: Sendable {
         let recipient = EnvelopeCrypto.RecipientKey(clientId: peer.clientId, hpkePublicKey: e.hpkePublicKey, recipientEpoch: e.epoch)
         return try EnvelopeCrypto.seal(signer: operationalSigner, typ: .DATA_SYNC, bodyPlaintext: body,
                                        recipients: [recipient], messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: Self.nowMillis())
+    }
+
+    /// Seal one SSH Agent protocol message to exactly one trusted own-mesh peer. SSH requests and results
+    /// contain private operational context and must never be broadcast to the rest of the mesh.
+    func sealSshAgentSync(_ sync: SshAgentSync, to recipientId: String) throws -> Envelope? {
+        guard recipientId != selfClientId,
+              let recipient = ownMeshRecipient(recipientId) else { return nil }
+        let body = ProtocolCodec.encode(DataSync(kind: .SSH_AGENT, sshAgent: sync))
+        return try EnvelopeCrypto.seal(
+            signer: operationalSigner,
+            typ: .DATA_SYNC,
+            bodyPlaintext: body,
+            recipients: [recipient],
+            messageId: Self.newMessageId(),
+            seq: Self.nextSeq(),
+            createdAt: Self.nowMillis()
+        )
     }
 
     /// Seal one screen-session lifecycle message to a trusted own Android source. REQUEST is additionally

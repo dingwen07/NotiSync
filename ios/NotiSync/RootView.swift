@@ -4,7 +4,7 @@ import UIKit
 
 /// Top-level tabs, tagged so flows (onboarding's "Go to Devices") can select one programmatically.
 enum RootTab: Hashable {
-    case inbox, devices, activity, settings
+    case inbox, devices, sshKeyProvider, activity, settings
 }
 
 struct RootView: View {
@@ -28,6 +28,9 @@ struct RootView: View {
                     DevicesView()
                         .tabItem { Label("Devices", systemImage: "iphone.gen3.radiowaves.left.and.right") }
                         .tag(RootTab.devices)
+                    SshKeyProviderView()
+                        .tabItem { Label("SSH Key Provider", systemImage: "key.horizontal") }
+                        .tag(RootTab.sshKeyProvider)
                     ActivityLogView()
                         .tabItem { Label("Activity", systemImage: "waveform.path.ecg") }
                         .tag(RootTab.activity)
@@ -57,6 +60,12 @@ struct RootView: View {
                 if confirmed { runtime.acceptPairing(candidate.payload, ownDevice: ownDevice) }
                 runtime.incomingPairing = nil
             }
+        }
+        .sheet(item: $runtime.sshKeyProviderSheetDestination, onDismiss: {
+            runtime.sshKeyProviderSheetDidDismiss()
+        }) { destination in
+            SshKeyProviderSheet(destination: destination)
+                .environmentObject(runtime)
         }
         .fullScreenCover(item: $runtime.screenMirrorPresentation) { source in
             ScreenMirrorPlayerView(sourceId: source.sourceId, sourceName: source.sourceName)
