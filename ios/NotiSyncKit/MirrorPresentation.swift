@@ -472,6 +472,11 @@ nonisolated enum MirrorPresentation {
 nonisolated enum MirrorCategoryRegistry {
     private static let key = "notisync.mirrorCategoryIds"
     private static let actionKey = "notisync.mirrorActionCategories"
+    /// iOS 26 currently persists at most 100 categories even though the public API documents no limit.
+    /// Stay at that observed ceiling so the system never chooses an arbitrary subset and drops the SSH
+    /// categories. Fixed product categories and the content-extension pool take precedence; the category
+    /// needed by the notification being processed is then pinned ahead of the remaining dynamic entries.
+    private static let maxRegisteredCategories = 100
     /// Distinct action-row signatures are few (apps reuse Reply / Mark as read); the cap only guards
     /// against pathological growth. Eviction is oldest-first (insertion order).
     private static let maxActionCategories = 128
@@ -557,14 +562,14 @@ nonisolated enum MirrorCategoryRegistry {
     /// Ensure `id`'s (actionless, per-channel) category is registered. No-op for the base category.
     static func ensureRegistered(_ id: String) {
         guard id != MirrorPresentation.baseCategoryId else { registerAll(); return }
-        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory])? in
+        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory]) in
             var ids = Set(defaults?.stringArray(forKey: key) ?? [])
-            guard !ids.contains(id) else { return nil }
-            ids.insert(id)
-            defaults?.set(Array(ids), forKey: key)
+            if ids.insert(id).inserted {
+                defaults?.set(Array(ids), forKey: key)
+            }
             return (ids, loadActionCategories())
         }
-        if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
+        register(channelIds: snapshot.0, actionCategories: snapshot.1, prioritizedCategoryId: id)
     }
 
     private static func ensureActionCategory(
@@ -583,15 +588,16 @@ nonisolated enum MirrorCategoryRegistry {
             openActionForegroundsApp: openActionForegroundsApp
         )
         // Same lock as the channel-id family: both mutations replace the one registered category set.
-        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory])? in
+        let snapshot = AppGroupStore.withLock(key) { () -> (Set<String>, [StoredActionCategory]) in
             var stack = loadActionCategories()
-            guard !stack.contains(where: { $0.id == id }) else { return nil }
-            stack.append(stored)
-            if stack.count > maxActionCategories { stack.removeFirst(stack.count - maxActionCategories) }
-            saveActionCategories(stack)
+            if !stack.contains(where: { $0.id == id }) {
+                stack.append(stored)
+                if stack.count > maxActionCategories { stack.removeFirst(stack.count - maxActionCategories) }
+                saveActionCategories(stack)
+            }
             return (Set(defaults?.stringArray(forKey: key) ?? []), stack)
         }
-        if let snapshot { register(channelIds: snapshot.0, actionCategories: snapshot.1) }
+        register(channelIds: snapshot.0, actionCategories: snapshot.1, prioritizedCategoryId: id)
     }
 
     private static func ensureContentExtensionActionCategory(
@@ -638,7 +644,10 @@ nonisolated enum MirrorCategoryRegistry {
             saveActionCategories(stack)
             return (id, Set(defaults?.stringArray(forKey: key) ?? []), stack, true)
         }
-        if snapshot.3 { register(channelIds: snapshot.1, actionCategories: snapshot.2) }
+        if snapshot.3 {
+            register(channelIds: snapshot.1, actionCategories: snapshot.2,
+                     prioritizedCategoryId: snapshot.0)
+        }
         return snapshot.0
     }
 
@@ -648,21 +657,58 @@ nonisolated enum MirrorCategoryRegistry {
                  actionCategories: loadActionCategories())
     }
 
-    private static func register(channelIds: Set<String>, actionCategories: [StoredActionCategory]) {
-        var categories: [String: UNNotificationCategory] = [
-            MirrorPresentation.baseCategoryId: MirrorPresentation.category(),
-            SshKeyProviderNotificationPresentation.categoryIdentifier:
-                SshKeyProviderNotificationPresentation.category(),
-        ]
-        for id in channelIds { categories[id] = MirrorPresentation.category(id: id) }
-        for stored in actionCategories {
-            categories[stored.id] = MirrorPresentation.category(id: stored.id,
-                                                                actions: stored.notificationActions,
-                                                                openActionTitle: stored.openActionTitle,
-                                                                openActionForegroundsApp:
-                                                                    stored.openActionForegroundsApp ?? false)
+    private static func register(
+        channelIds: Set<String>,
+        actionCategories: [StoredActionCategory],
+        prioritizedCategoryId: String? = nil
+    ) {
+        var categories: [UNNotificationCategory] = []
+        var categoryIds: Set<String> = []
+
+        func append(_ category: UNNotificationCategory) {
+            guard categories.count < maxRegisteredCategories,
+                  categoryIds.insert(category.identifier).inserted else { return }
+            categories.append(category)
         }
-        UNUserNotificationCenter.current().setNotificationCategories(Set(categories.values))
+
+        func category(for stored: StoredActionCategory) -> UNNotificationCategory {
+            MirrorPresentation.category(id: stored.id,
+                                        actions: stored.notificationActions,
+                                        openActionTitle: stored.openActionTitle,
+                                        openActionForegroundsApp:
+                                            stored.openActionForegroundsApp ?? false)
+        }
+
+        // These categories must never compete with the unbounded mirrored-notification families.
+        append(MirrorPresentation.category())
+        append(SshKeyProviderNotificationPresentation.category())
+        append(SshKeyProviderNotificationPresentation.auditCategory())
+
+        // Preserve every active content-extension slot so already-delivered rich notifications retain
+        // their custom UI. The pool is statically bounded at 32 entries.
+        for stored in actionCategories where isContentExtensionPoolCategory(stored.id) {
+            append(category(for: stored))
+        }
+
+        // Pin the category required by the notification currently being processed, even if it is old.
+        if let prioritizedCategoryId {
+            if let stored = actionCategories.last(where: { $0.id == prioritizedCategoryId }) {
+                append(category(for: stored))
+            } else if channelIds.contains(prioritizedCategoryId) {
+                append(MirrorPresentation.category(id: prioritizedCategoryId))
+            }
+        }
+
+        // Stored action categories are insertion-ordered; prefer the newest definitions. Channel-only
+        // categories are behaviorally identical, so a stable lexical order is sufficient for the remainder.
+        for stored in actionCategories.reversed() where !isContentExtensionPoolCategory(stored.id) {
+            append(category(for: stored))
+        }
+        for id in channelIds.sorted() {
+            append(MirrorPresentation.category(id: id))
+        }
+
+        UNUserNotificationCenter.current().setNotificationCategories(Set(categories))
     }
 
     private static func isContentExtensionPoolCategory(_ id: String) -> Bool {

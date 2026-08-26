@@ -71,6 +71,7 @@ nonisolated enum PairingNfcWireProtocol {
         case peerNotReady
         case peerRejected(UInt16)
         case pairingUnsupported
+
         case incompatiblePairingVersion
         case payloadTooLarge
         case incompletePayload

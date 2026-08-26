@@ -204,10 +204,10 @@ final class PairingNfcReaderSession: NSObject, NFCTagReaderSessionDelegate {
 }
 
 @MainActor
-private enum PairingNfcText {
+enum PairingNfcText {
     static let scanPrompt = String(
         localized: "pairing.nfc.scan.prompt",
-        defaultValue: "Hold the top of this iPhone near the supported device. Make sure the device is unlocked.",
+        defaultValue: "Hold the top of this iPhone near the back of the supported device. Make sure the device is unlocked.",
         comment: "Core NFC scan-sheet instruction for pairing with a supported device that emulates a card."
     )
     static let multipleDevices = String(
@@ -235,6 +235,16 @@ private enum PairingNfcText {
         defaultValue: "NFC pairing is unavailable on this device.",
         comment: "Error when Core NFC tag reading is unavailable."
     )
+    static let preparationFailure = String(
+        localized: "pairing.nfc.error.preparation",
+        defaultValue: "Could not prepare NFC pairing.",
+        comment: "Error when this iPhone's local pairing payload cannot be prepared for NFC."
+    )
+    static let verificationFailure = String(
+        localized: "pairing.nfc.error.notVerified",
+        defaultValue: "The NFC pairing information could not be verified.",
+        comment: "Error after NFC transport succeeds but the peer's signed pairing card does not verify."
+    )
 
     static func isRetryableConnectionError(_ error: Error) -> Bool {
         guard !(error is PairingNfcWireProtocol.ProtocolError) else { return false }
@@ -251,21 +261,17 @@ private enum PairingNfcText {
         case .peerNotReady:
             return String(
                 localized: "pairing.nfc.error.deviceNotReady",
-                defaultValue: "The device is not ready for NFC pairing. Open NotiSync on it, make sure it is unlocked, and try again.",
-                comment: "Error when the device has no cached local pairing payload."
+                defaultValue: "The other device is not ready for NFC pairing. Open NotiSync on it, make sure it is unlocked, and try again.",
+                comment: "Error when the other device has no cached local pairing payload."
             )
         case .pairingUnsupported, .incompatiblePairingVersion:
             return String(
                 localized: "pairing.nfc.error.incompatible",
-                defaultValue: "This device does not support NotiSync one-tap pairing.",
+                defaultValue: "The other device does not support NotiSync NFC pairing.",
                 comment: "Error when the Android HCE protocol does not support a compatible pairing operation."
             )
         case .invalidLocalPayload:
-            return String(
-                localized: "pairing.nfc.error.preparation",
-                defaultValue: "Could not prepare NFC pairing.",
-                comment: "Error when this iPhone's local pairing payload cannot be prepared for NFC."
-            )
+            return preparationFailure
         case .invalidResponse, .peerRejected, .payloadTooLarge, .incompletePayload:
             return String(
                 localized: "pairing.nfc.error.invalidExchange",

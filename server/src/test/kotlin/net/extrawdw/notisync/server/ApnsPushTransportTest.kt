@@ -157,8 +157,8 @@ class ApnsPushTransportTest {
         val body = requestBody(request)
         assertTrue(body.contains(""""mutable-content":1"""))
         assertTrue(body.contains(""""content-available":1"""))
-        assertTrue(body.contains("Open NotiSync to review a request"))
-        assertTrue(body.contains(""""category":"notisync.ssh.request""""))
+        assertTrue(body.contains("Open NotiSync to continue"))
+        assertFalse(body.contains(""""category":"notisync.ssh.request""""))
         assertFalse(body.contains("New notification"))
     }
 
@@ -177,7 +177,8 @@ class ApnsPushTransportTest {
         assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
         val body = requestBody(request)
         assertTrue(body.contains(""""mutable-content":1"""))
-        assertTrue(body.contains(""""category":"notisync.ssh.request""""))
+        assertTrue(body.contains("Open NotiSync to continue"))
+        assertFalse(body.contains(""""category":"notisync.ssh.request""""))
     }
 
     private fun apnsTransport(

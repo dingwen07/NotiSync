@@ -22,7 +22,7 @@ nonisolated struct IOSScreenMirrorPresentation: Identifiable, Sendable {
 
 struct SshKeyProviderSheetDestination: Identifiable {
     enum Kind {
-        case request(String)
+        case request(String, approveAfterPresentation: Bool)
         case keyDetails(String)
         case knownHost(Data)
         case generateManagedKey
@@ -33,6 +33,11 @@ struct SshKeyProviderSheetDestination: Identifiable {
 
     let id = UUID()
     var kind: Kind
+}
+
+private struct QueuedSshKeyProviderRequest {
+    var requestId: String
+    var approveAfterPresentation: Bool
 }
 
 /// App-process orchestration: owns the protocol engine + broker client and drives identity/auth, route
@@ -68,7 +73,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published private(set) var sshKeyProviderRevision = 0
     /// Notification/deep-link requests arriving while a key workflow is already using the one iOS sheet.
     /// Preserve the active form and present queued requests after dismissal instead of replacing user input.
-    private var queuedSshKeyProviderRequestIds: [String] = []
+    private var queuedSshKeyProviderRequests: [QueuedSshKeyProviderRequest] = []
 
     func replaceScreenMirrorSourceIds(_ sourceIds: Set<String>) {
         screenMirrorSourceIds = sourceIds
@@ -139,24 +144,45 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func bumpInboxRevision() { inboxRevision += 1 }
     func bumpSshKeyProviderRevision() { sshKeyProviderRevision += 1 }
 
-    func presentSshKeyProviderRequest(_ requestId: String) {
+    func presentSshKeyProviderRequest(_ requestId: String, approveAfterPresentation: Bool = false) {
         guard SshKeyProviderStore.request(id: requestId) != nil else { return }
         if let destination = sshKeyProviderSheetDestination {
-            if case .request(let currentId) = destination.kind, currentId == requestId { return }
-            guard !queuedSshKeyProviderRequestIds.contains(requestId),
-                  queuedSshKeyProviderRequestIds.count < 64 else { return }
-            queuedSshKeyProviderRequestIds.append(requestId)
+            if case .request(let currentId, let currentApproval) = destination.kind, currentId == requestId {
+                if approveAfterPresentation && !currentApproval {
+                    sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+                        kind: .request(requestId, approveAfterPresentation: true)
+                    )
+                }
+                return
+            }
+            if let index = queuedSshKeyProviderRequests.firstIndex(where: { $0.requestId == requestId }) {
+                queuedSshKeyProviderRequests[index].approveAfterPresentation =
+                    queuedSshKeyProviderRequests[index].approveAfterPresentation || approveAfterPresentation
+                return
+            }
+            guard queuedSshKeyProviderRequests.count < 64 else { return }
+            queuedSshKeyProviderRequests.append(QueuedSshKeyProviderRequest(
+                requestId: requestId,
+                approveAfterPresentation: approveAfterPresentation
+            ))
             return
         }
-        sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .request(requestId))
+        sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+            kind: .request(requestId, approveAfterPresentation: approveAfterPresentation)
+        )
     }
 
     func sshKeyProviderSheetDidDismiss() {
         guard sshKeyProviderSheetDestination == nil else { return }
-        while !queuedSshKeyProviderRequestIds.isEmpty {
-            let requestId = queuedSshKeyProviderRequestIds.removeFirst()
-            guard SshKeyProviderStore.request(id: requestId) != nil else { continue }
-            sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .request(requestId))
+        while !queuedSshKeyProviderRequests.isEmpty {
+            let queued = queuedSshKeyProviderRequests.removeFirst()
+            guard SshKeyProviderStore.request(id: queued.requestId) != nil else { continue }
+            sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+                kind: .request(
+                    queued.requestId,
+                    approveAfterPresentation: queued.approveAfterPresentation
+                )
+            )
             return
         }
     }
@@ -192,7 +218,6 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             guard let self else { return }
             await Task.detached(priority: .userInitiated) {
                 NotiSyncConfig.brokerURL = brokerURL
-                MirrorCategoryRegistry.registerAll()   // base + any persisted per-channel categories (#15)
                 ShownStore.clearSuspicions()
             }.value
             await self.bringUpCore()
@@ -478,6 +503,20 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         if let requestId = info[SshKeyProviderNotificationPresentation.requestIdUserInfoKey] as? String {
             guard id != UNNotificationDismissActionIdentifier else { return }
             await bringUpCore()
+            if id == SshKeyProviderNotificationPresentation.rejectActionIdentifier {
+                do {
+                    try await rejectSshRequest(id: requestId)
+                } catch {
+                    record(error: error, domain: .envelopeDelivery)
+                }
+                return
+            }
+            if id == SshKeyProviderNotificationPresentation.approveActionIdentifier {
+                presentSshKeyProviderRequest(requestId, approveAfterPresentation: true)
+                return
+            }
+            guard id == UNNotificationDefaultActionIdentifier ||
+                    id == SshKeyProviderNotificationPresentation.reviewActionIdentifier else { return }
             presentSshKeyProviderRequest(requestId)
             return
         }

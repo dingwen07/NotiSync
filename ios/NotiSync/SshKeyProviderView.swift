@@ -87,17 +87,15 @@ struct SshKeyProviderView: View {
                     }
                 } header: {
                     Text("Known Hosts")
-                } footer: {
-                    Text("Hostnames are display labels only. SSH trust is bound to the verified host-key fingerprint.")
                 }
 
                 if !history.isEmpty {
-                    Section("Signing and Import History") {
+                    Section("History") {
                         ForEach(history) { request in requestRow(request) }
                     }
                 }
             }
-            .navigationTitle("SSH Key Provider")
+            .navigationTitle("SSH Keys")
             .toolbar {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
@@ -107,17 +105,6 @@ struct SshKeyProviderView: View {
                             Label("Generate Managed Key", systemImage: "plus.circle")
                         }
                         Button {
-                            runtime.sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .createPasskey)
-                        } label: {
-                            Label("Create Passkey Key", systemImage: "person.badge.key")
-                        }
-                        Button {
-                            runtime.sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .recoverPasskey(nil))
-                        } label: {
-                            Label("Use Existing Passkey", systemImage: "arrow.clockwise.icloud")
-                        }
-                        Divider()
-                        Button {
                             showingFileImporter = true
                         } label: {
                             Label("Import from File", systemImage: "doc.badge.plus")
@@ -126,6 +113,17 @@ struct SshKeyProviderView: View {
                             importClipboard()
                         } label: {
                             Label("Import from Clipboard", systemImage: "doc.on.clipboard")
+                        }
+                        Divider()
+                        Button {
+                            runtime.sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .createPasskey)
+                        } label: {
+                            Label("Create Passkey Key", systemImage: "person.badge.key")
+                        }
+                        Button {
+                            runtime.sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(kind: .recoverPasskey(nil))
+                        } label: {
+                            Label("Use Existing Passkey", systemImage: "arrow.clockwise.icloud")
                         }
                     } label: {
                         Label("Add SSH Key", systemImage: "plus")
@@ -147,7 +145,7 @@ struct SshKeyProviderView: View {
                 allowsMultipleSelection: false,
                 onCompletion: importDocument
             )
-            .alert("SSH Key Import", isPresented: Binding(
+            .alert("Key Import", isPresented: Binding(
                 get: { errorMessage != nil },
                 set: { if !$0 { errorMessage = nil } }
             )) {
@@ -182,7 +180,7 @@ struct SshKeyProviderView: View {
                     .frame(width: 28)
                     .foregroundStyle(request.status == .pendingReview ? Color.orange : Color.secondary)
                 VStack(alignment: .leading, spacing: 3) {
-                    Text(request.kind == .sign ? "SSH signing request" : "SSH key import")
+                    Text(request.kind == .sign ? "Signing Request" : "Key Import")
                         .foregroundStyle(.primary)
                     Text(request.requesterDisplayName ?? shortId(request.requesterClientId))
                         .font(.subheadline)
@@ -297,8 +295,11 @@ struct SshKeyProviderSheet: View {
     var body: some View {
         NavigationStack {
             switch destination.kind {
-            case .request(let id):
-                SshRequestDetailView(requestId: id)
+            case .request(let id, let approveAfterPresentation):
+                SshRequestDetailView(
+                    requestId: id,
+                    approveAfterPresentation: approveAfterPresentation
+                )
             case .keyDetails(let id):
                 SshKeyDetailView(keyId: id)
             case .knownHost(let digest):
@@ -378,25 +379,35 @@ private struct SshKnownHostDetailView: View {
         SshKeyProviderStore.knownHost(hostKeyBlobSha256: hostKeyBlobSha256)
     }
 
+    private var proposedHostname: String? {
+        hostname.allSatisfy(\.isWhitespace) ? nil : hostname
+    }
+
+    private var storedHostname: String? {
+        guard let hostname = host?.hostname, !hostname.allSatisfy(\.isWhitespace) else { return nil }
+        return hostname
+    }
+
+    private var canSave: Bool {
+        !busy && hostname.utf8.count <= 1_024 && proposedHostname != storedHostname
+    }
+
     var body: some View {
         Group {
             if let host {
                 Form {
                     Section("Host Key") {
-                        LabeledContent("Name", value: host.hostname ?? String(localized: "Unknown Host"))
+                        LabeledContent("Hostname", value: host.hostname ?? String(localized: "Unknown Host"))
                         LabeledContent("Fingerprint", value: sshFingerprintDigest(host.hostKeyBlobSha256))
-                        LabeledContent("First Approved", value: dateText(host.firstApprovedAt))
-                        LabeledContent("Last Approved", value: dateText(host.lastApprovedAt))
+                        LabeledContent("First Used", value: dateText(host.firstApprovedAt))
+                        LabeledContent("Last Used", value: dateText(host.lastApprovedAt))
                     }
-                    Section("Display Label") {
+                    Section("Hostname") {
                         TextField("Hostname", text: $hostname)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
-                        Text("This is an unvalidated display label. It is never used to decide whether an SSH host key is trusted.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
                         Button("Save") { save() }
-                            .disabled(busy || hostname.utf8.count > 1_024)
+                            .disabled(!canSave)
                     }
                     Section {
                         Button("Forget Host", role: .destructive) { confirmingForget = true }
@@ -409,7 +420,16 @@ private struct SshKnownHostDetailView: View {
         .navigationTitle("Known Host")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
+            ToolbarItem(placement: .confirmationAction) {
+                Button("Done") {
+                    if proposedHostname == storedHostname {
+                        dismiss()
+                    } else {
+                        save(dismissWhenFinished: true)
+                    }
+                }
+                .disabled(busy || hostname.utf8.count > 1_024)
+            }
         }
         .onAppear { hostname = host?.hostname ?? "" }
         .onChange(of: runtime.sshKeyProviderRevision) { _, _ in
@@ -426,7 +446,7 @@ private struct SshKnownHostDetailView: View {
         )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
     }
 
-    private func save() {
+    private func save(dismissWhenFinished: Bool = false) {
         busy = true
         Task {
             do {
@@ -434,7 +454,9 @@ private struct SshKnownHostDetailView: View {
                     hostKeyBlobSha256: hostKeyBlobSha256,
                     hostname: hostname
                 )
+                hostname = SshKeyProviderStore.knownHost(hostKeyBlobSha256: hostKeyBlobSha256)?.hostname ?? ""
                 busy = false
+                if dismissWhenFinished { dismiss() }
             } catch {
                 busy = false
                 errorMessage = error.localizedDescription
@@ -462,6 +484,7 @@ private struct SshKeyDetailView: View {
     let keyId: String
     @State private var confirmingDelete = false
     @State private var authorizationToForget: SshRememberedAuthorizationRecord?
+    @State private var errorTitle = String(localized: "SSH Key")
     @State private var errorMessage: String?
 
     var body: some View {
@@ -523,6 +546,7 @@ private struct SshKeyDetailView: View {
                                         do {
                                             try await runtime.saveSshPasskeyRecoveryRecord(id: key.id)
                                         } catch {
+                                            errorTitle = String(localized: "Could Not Save Recovery Record")
                                             errorMessage = error.localizedDescription
                                         }
                                     }
@@ -589,6 +613,7 @@ private struct SshKeyDetailView: View {
                         try await runtime.deleteSshKey(id: keyId)
                         dismiss()
                     } catch {
+                        errorTitle = String(localized: "Could Not Delete Key")
                         errorMessage = error.localizedDescription
                     }
                 }
@@ -618,6 +643,7 @@ private struct SshKeyDetailView: View {
                             providerKeyId: keyId
                         )
                     } catch {
+                        errorTitle = String(localized: "Could Not Forget Authorization")
                         errorMessage = error.localizedDescription
                     }
                 }
@@ -625,7 +651,7 @@ private struct SshKeyDetailView: View {
         } message: {
             Text("Future requests from this device will require approval when they no longer match another remembered authorization.")
         }
-        .alert("Could Not Delete Key", isPresented: Binding(
+        .alert(errorTitle, isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
@@ -658,13 +684,16 @@ private struct SshRequestDetailView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
     let requestId: String
+    let approveAfterPresentation: Bool
     @State private var rememberChoice: SshApprovalRememberChoice = .none
     @State private var importName = ""
     @State private var importPassphrase = ""
     @State private var importPreview: SshPrivateKeyImportPreview?
     @State private var previewBusy = false
+    @State private var previewErrorMessage: String?
     @State private var busy = false
     @State private var errorMessage: String?
+    @State private var notificationApprovalStarted = false
 
     private var request: SshProviderRequestRecord? { SshKeyProviderStore.request(id: requestId) }
 
@@ -673,6 +702,7 @@ private struct SshRequestDetailView: View {
             if let request {
                 Form {
                     statusSection(request)
+                    if request.kind == .sign { destinationSection(request) }
                     requestContextSection(request)
                     if request.kind == .sign { signContextSection(request) } else { importContextSection(request) }
                     if request.status == .pendingReview, request.kind == .sign, !request.confirmationRequired,
@@ -687,7 +717,7 @@ private struct SshRequestDetailView: View {
                 ContentUnavailableView("Request Not Found", systemImage: "questionmark.folder")
             }
         }
-        .navigationTitle(request?.kind == .sign ? "SSH Signing" : "SSH Key Import")
+        .navigationTitle(request?.kind == .sign ? "Signing Request" : "Key Import")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
@@ -696,22 +726,44 @@ private struct SshRequestDetailView: View {
         }
         .onAppear {
             if let name = request?.importSuggestedName { importName = name }
+            beginNotificationApprovalIfNeeded()
         }
         .onChange(of: runtime.sshKeyProviderRevision) { _, _ in
-            if request?.status.isTerminal == true {
+            if request?.status != .pendingReview {
                 busy = false
                 previewBusy = false
                 importPreview = nil
+                previewErrorMessage = nil
                 importPassphrase.removeAll(keepingCapacity: false)
             }
         }
         .onChange(of: importPassphrase) { _, _ in
             importPreview = nil
+            previewErrorMessage = nil
+            previewBusy = false
         }
+        .task(id: importPassphrase) { await previewImportAutomatically() }
         .alert("SSH Request", isPresented: Binding(
             get: { errorMessage != nil },
             set: { if !$0 { errorMessage = nil } }
         )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
+    }
+
+    /// Mirrors Android's notification Approve route: signing begins after the authenticated foreground action
+    /// opens the review surface. Imports remain on this sheet because they may still need a name, preview, or
+    /// passphrase before they can be accepted safely.
+    private func beginNotificationApprovalIfNeeded() {
+        guard approveAfterPresentation, !notificationApprovalStarted,
+              let request, request.status == .pendingReview else { return }
+        notificationApprovalStarted = true
+        guard request.kind == .sign else { return }
+        act {
+            try await runtime.approveSshRequest(
+                id: request.id,
+                remember: .none,
+                importDisplayName: ""
+            )
+        }
     }
 
     @ViewBuilder
@@ -741,12 +793,15 @@ private struct SshRequestDetailView: View {
     private func requestContextSection(_ request: SshProviderRequestRecord) -> some View {
         Section("Request") {
             LabeledContent("Device", value: request.requesterDisplayName ?? shortId(request.requesterClientId))
-            auditValue("Device ID", request.requesterClientId)
+            auditValue("Safety Number", request.requesterClientId)
             auditValue("Request ID", request.id)
+            if let connectionId = request.connectionId { auditValue("Connection ID", connectionId) }
             auditValue("Request Digest", sshFingerprintDigest(request.requestDigest))
             LabeledContent("Requested", value: dateText(request.requestedAt))
             LabeledContent("Expires", value: dateText(request.expiresAt))
-            if let connectionId = request.connectionId { auditValue("Connection ID", connectionId) }
+            if let algorithm = request.requestedSignatureAlgorithm {
+                LabeledContent("Signature Algorithm", value: signatureAlgorithmTitle(algorithm))
+            }
             if let key = request.providerKeyId.flatMap({ SshKeyProviderStore.key(id: $0) }) {
                 LabeledContent("Key", value: key.displayName)
                 LabeledContent("Fingerprint", value: sshFingerprint(key.publicKeyBlob))
@@ -762,9 +817,6 @@ private struct SshRequestDetailView: View {
     @ViewBuilder
     private func signContextSection(_ request: SshProviderRequestRecord) -> some View {
         Section("SSH Signature") {
-            if let algorithm = request.requestedSignatureAlgorithm {
-                LabeledContent("Signature Algorithm", value: signatureAlgorithmTitle(algorithm))
-            }
             if let flags = request.flags { LabeledContent("Agent Flags", value: String(flags)) }
             LabeledContent(
                 "Confirmation",
@@ -777,8 +829,20 @@ private struct SshRequestDetailView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        if request.processSource != nil || !request.processLineage.isEmpty {
+            Section("Calling Process") {
+                SshProcessLineageView(processLineage: request.processLineage)
+                Text("Reported by the requesting computer")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func destinationSection(_ request: SshProviderRequestRecord) -> some View {
         if let destination = request.destination {
-            Section("SSH Destination") {
+            Section("Destination") {
                 let knownName = destination.serverHostKeyBlobSha256.flatMap {
                     SshKeyProviderStore.knownHost(hostKeyBlobSha256: $0)?.hostname
                 }
@@ -792,34 +856,9 @@ private struct SshRequestDetailView: View {
                 if let username = destination.username { LabeledContent("Username", value: username) }
                 LabeledContent("Direction", value: connectionDirectionTitle(destination.connectionDirection))
                 if let service = destination.service { LabeledContent("Service", value: service) }
-                if let method = destination.authenticationMethod {
-                    LabeledContent("Authentication", value: method)
-                }
-                LabeledContent("Evidence", value: destinationProvenanceTitle(destination.provenance))
                 if let digest = destination.serverHostKeyBlobSha256 {
                     LabeledContent("Host Key", value: sshFingerprintDigest(digest))
                 }
-            }
-        }
-        if request.processSource != nil || !request.processLineage.isEmpty {
-            Section("Requester-Reported Process") {
-                if let source = request.processSource {
-                    LabeledContent("Source", value: processSourceTitle(source))
-                }
-                ForEach(Array(request.processLineage.enumerated()), id: \.offset) { _, process in
-                    VStack(alignment: .leading) {
-                        Text(process.displayName ?? process.executablePath ?? String(
-                            localized: "Process \(process.pid)",
-                            comment: "Fallback display name for a requester-reported process. The value is its process identifier."
-                        ))
-                        if let path = process.executablePath {
-                            Text(path).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                        }
-                    }
-                }
-                Text("Process information is context only and is not a security boundary.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -844,25 +883,25 @@ private struct SshRequestDetailView: View {
             )
             if request.status == .pendingReview {
                 TextField("Key Name", text: $importName)
+                    .disabled(busy)
                 if request.importSourceType == "PRIVATE_KEY_FILE" {
                     SecureField("Passphrase, if encrypted", text: $importPassphrase)
+                        .disabled(busy)
                 }
                 if let preview = importPreview {
                     importPreviewRows(preview)
                 }
-                Button {
-                    previewImport(request)
-                } label: {
-                    if previewBusy {
-                        Label("Inspecting Key…", systemImage: "hourglass")
-                    } else {
-                        Label(
-                            importPreview == nil ? "Preview Key" : "Refresh Preview",
-                            systemImage: "key.viewfinder"
-                        )
+                if previewBusy {
+                    HStack {
+                        ProgressView()
+                        Text("Inspecting Key…")
                     }
+                    .foregroundStyle(.secondary)
+                } else if let previewErrorMessage {
+                    Text(previewErrorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
-                .disabled(busy || previewBusy)
             } else {
                 if let name = request.importResolvedDisplayName {
                     LabeledContent("Key Name", value: name)
@@ -906,21 +945,35 @@ private struct SshRequestDetailView: View {
             .foregroundStyle(.secondary)
     }
 
-    private func previewImport(_ request: SshProviderRequestRecord) {
+    private func previewImportAutomatically() async {
+        guard let request, request.kind == .importKey, request.status == .pendingReview else { return }
+        let passphrase = importPassphrase
+        if !passphrase.isEmpty {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+        }
+        guard !Task.isCancelled, importPassphrase == passphrase,
+              self.request?.status == .pendingReview else { return }
         previewBusy = true
         importPreview = nil
-        Task {
-            do {
-                importPreview = try await runtime.previewSshImportRequest(
-                    id: request.id,
-                    passphrase: importPassphrase.isEmpty ? nil : importPassphrase
-                )
-                previewBusy = false
-            } catch {
-                previewBusy = false
-                importPassphrase.removeAll(keepingCapacity: false)
-                errorMessage = error.localizedDescription
-            }
+        previewErrorMessage = nil
+        do {
+            let preview = try await runtime.previewSshImportRequest(
+                id: request.id,
+                passphrase: passphrase.isEmpty ? nil : passphrase
+            )
+            guard !Task.isCancelled, importPassphrase == passphrase,
+                  self.request?.status == .pendingReview else { return }
+            importPreview = preview
+            previewBusy = false
+        } catch {
+            guard !Task.isCancelled, importPassphrase == passphrase,
+                  self.request?.status == .pendingReview else { return }
+            previewBusy = false
+            previewErrorMessage = error.localizedDescription
         }
     }
 
@@ -948,7 +1001,7 @@ private struct SshRequestDetailView: View {
             } label: {
                 Text("Reject").frame(maxWidth: .infinity)
             }
-            .buttonStyle(.bordered)
+            .nativeGlassButton()
             .disabled(busy)
 
             Button {
@@ -965,7 +1018,7 @@ private struct SshRequestDetailView: View {
                 if busy { ProgressView().frame(maxWidth: .infinity) }
                 else { Text("Approve").frame(maxWidth: .infinity) }
             }
-            .buttonStyle(.borderedProminent)
+            .nativeGlassButton(prominent: true)
             .disabled(
                 busy || previewBusy ||
                     (request.kind == .importKey &&
@@ -991,6 +1044,62 @@ private struct SshRequestDetailView: View {
                 errorMessage = error.localizedDescription
             }
         }
+    }
+}
+
+/// Mirrors Android's compact root-to-leaf process hierarchy. The protocol carries a leaf-first snapshot, so the
+/// presentation reverses it and lets the user switch between friendly executable names and full paths in place.
+private struct SshProcessLineageView: View {
+    let processLineage: [SshProcessReviewItem]
+    @State private var showsFullPaths = false
+
+    var body: some View {
+        ScrollView(.horizontal) {
+            Text(treeText)
+                .font(.system(.body, design: .monospaced))
+                .fixedSize(horizontal: true, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    guard !processLineage.isEmpty else { return }
+                    showsFullPaths.toggle()
+                }
+                .textSelection(.enabled)
+                .accessibilityHint(
+                    showsFullPaths
+                        ? Text("Double tap to show process names")
+                        : Text("Double tap to show full executable paths")
+                )
+        }
+        .scrollIndicators(.hidden)
+    }
+
+    private var treeText: String {
+        guard !processLineage.isEmpty else { return String(localized: "Unavailable") }
+        return processLineage.reversed().enumerated().map { index, process in
+            let branch = index == 0 ? "" : String(repeating: "  ", count: index - 1) + "└─ "
+            let name = showsFullPaths
+                ? process.executablePath ?? nonEmpty(process.displayName)
+                : shortProcessName(process)
+            let pidLabel = "PID \(process.pid)"
+            if let name, name != pidLabel { return "\(branch)\(name) (\(process.pid))" }
+            return branch + pidLabel
+        }.joined(separator: "\n")
+    }
+
+    private func shortProcessName(_ process: SshProcessReviewItem) -> String {
+        if let displayName = nonEmpty(process.displayName) { return displayName }
+        if let path = nonEmpty(process.executablePath) {
+            let slashName = path.split(separator: "/", omittingEmptySubsequences: true).last.map(String.init) ?? path
+            return slashName.split(separator: "\\", omittingEmptySubsequences: true).last.map(String.init) ?? slashName
+        }
+        return "PID \(process.pid)"
+    }
+
+    private func nonEmpty(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 }
 
@@ -1064,6 +1173,7 @@ private struct SshLocalImportView: View {
     @State private var passphrase = ""
     @State private var preview: SshPrivateKeyImportPreview?
     @State private var previewBusy = false
+    @State private var previewErrorMessage: String?
     @State private var busy = false
     @State private var errorMessage: String?
 
@@ -1072,7 +1182,9 @@ private struct SshLocalImportView: View {
             Section("Private Key") {
                 LabeledContent("Size", value: ByteCountFormatter.string(fromByteCount: Int64(data.count), countStyle: .file))
                 TextField("Key Name", text: $name)
+                    .disabled(busy)
                 SecureField("Passphrase, if encrypted", text: $passphrase)
+                    .disabled(busy)
                 if let preview {
                     LabeledContent("Algorithm", value: algorithmTitle(preview.algorithm.rawValue))
                     LabeledContent("Fingerprint", value: sshFingerprint(preview.publicKeyBlob))
@@ -1086,16 +1198,17 @@ private struct SshLocalImportView: View {
                         .font(.footnote)
                         .foregroundStyle(.secondary)
                 }
-                Button {
-                    inspectKey()
-                } label: {
-                    if previewBusy {
-                        Label("Inspecting Key…", systemImage: "hourglass")
-                    } else {
-                        Label(preview == nil ? "Preview Key" : "Refresh Preview", systemImage: "key.viewfinder")
+                if previewBusy {
+                    HStack {
+                        ProgressView()
+                        Text("Inspecting Key…")
                     }
+                    .foregroundStyle(.secondary)
+                } else if let previewErrorMessage {
+                    Text(previewErrorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
                 }
-                .disabled(busy || previewBusy)
             }
             Section {
                 Text("Supported in this version: OpenSSH, PEM, and PKCS#8 private keys. PuTTY PPK files are not supported.")
@@ -1106,7 +1219,12 @@ private struct SshLocalImportView: View {
         .navigationTitle("Import SSH Key")
         .navigationBarTitleDisplayMode(.inline)
         .onAppear { if name.isEmpty { name = suggestedName ?? String(localized: "Imported SSH Key") } }
-        .onChange(of: passphrase) { _, _ in preview = nil }
+        .onChange(of: passphrase) { _, _ in
+            preview = nil
+            previewErrorMessage = nil
+            previewBusy = false
+        }
+        .task(id: passphrase) { await inspectKeyAutomatically() }
         .toolbar {
             ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
             ToolbarItem(placement: .confirmationAction) {
@@ -1141,21 +1259,31 @@ private struct SshLocalImportView: View {
         )) { Button("OK", role: .cancel) {} } message: { Text(errorMessage ?? "") }
     }
 
-    private func inspectKey() {
+    private func inspectKeyAutomatically() async {
+        let candidatePassphrase = passphrase
+        if !candidatePassphrase.isEmpty {
+            do {
+                try await Task.sleep(for: .milliseconds(300))
+            } catch {
+                return
+            }
+        }
+        guard !Task.isCancelled, passphrase == candidatePassphrase, !busy else { return }
         previewBusy = true
         preview = nil
-        Task {
-            do {
-                preview = try await runtime.previewManagedSshKey(
-                    data: data,
-                    passphrase: passphrase.isEmpty ? nil : passphrase
-                )
-                previewBusy = false
-            } catch {
-                previewBusy = false
-                passphrase.removeAll(keepingCapacity: false)
-                errorMessage = error.localizedDescription
-            }
+        previewErrorMessage = nil
+        do {
+            let inspected = try await runtime.previewManagedSshKey(
+                data: data,
+                passphrase: candidatePassphrase.isEmpty ? nil : candidatePassphrase
+            )
+            guard !Task.isCancelled, passphrase == candidatePassphrase, !busy else { return }
+            preview = inspected
+            previewBusy = false
+        } catch {
+            guard !Task.isCancelled, passphrase == candidatePassphrase, !busy else { return }
+            previewBusy = false
+            previewErrorMessage = error.localizedDescription
         }
     }
 }
@@ -1349,17 +1477,6 @@ private func algorithmTitle(_ raw: String) -> String {
     }
 }
 
-private func destinationProvenanceTitle(_ raw: String) -> String {
-    switch raw {
-    case "VERIFIED_SESSION_BIND": String(localized: "Verified session binding")
-    case "SIGNED_USERAUTH": String(localized: "Signed SSH user authentication")
-    case "KNOWN_HOSTS_MATCH": String(localized: "Known hosts match")
-    case "PROCESS_HINT": String(localized: "Process hint")
-    case "UNKNOWN": String(localized: "Unknown")
-    default: raw
-    }
-}
-
 private func signatureAlgorithmTitle(_ raw: String) -> String {
     switch raw {
     case "SSH_ED25519": "Ed25519"
@@ -1377,17 +1494,6 @@ private func connectionDirectionTitle(_ raw: String) -> String {
     case "DIRECT": String(localized: "Direct")
     case "FORWARDED": String(localized: "Forwarded")
     case "UNKNOWN": String(localized: "Unknown")
-    default: raw
-    }
-}
-
-private func processSourceTitle(_ raw: String) -> String {
-    switch raw {
-    case "PEER_CREDENTIALS": String(localized: "Local peer credentials")
-    case "NAMED_PIPE_CLIENT_PID": String(localized: "Named-pipe client process")
-    case "CURRENT_PROCESS": String(localized: "Current process")
-    case "BRIDGE_REPORTED": String(localized: "Desktop bridge report")
-    case "UNAVAILABLE": String(localized: "Unavailable")
     default: raw
     }
 }
@@ -1462,20 +1568,20 @@ private func statusColor(_ request: SshProviderRequestRecord) -> Color {
 
 private func statusHeading(_ request: SshProviderRequestRecord) -> String {
     switch request.status {
-    case .pendingReview: String(localized: "Waiting for your approval")
-    case .responsePendingSend: String(localized: "Sending response")
+    case .pendingReview: String(localized: "Waiting for Your Approval")
+    case .responsePendingSend: String(localized: "Sending Response")
     case .sent:
         switch request.outcome {
-        case .signed: String(localized: "Request signed")
-        case .imported: String(localized: "Key imported")
-        case .alreadyPresent: String(localized: "Key already present")
-        case .rejected: String(localized: "Request rejected")
-        case .failed: String(localized: "Request failed")
-        case .cancelled: String(localized: "Request cancelled")
-        case .expired: String(localized: "Request expired")
-        case nil: String(localized: "Request completed")
+        case .signed: String(localized: "Request Signed")
+        case .imported: String(localized: "Key Imported")
+        case .alreadyPresent: String(localized: "Key Already Present")
+        case .rejected: String(localized: "Request Rejected")
+        case .failed: String(localized: "Request Failed")
+        case .cancelled: String(localized: "Request Cancelled")
+        case .expired: String(localized: "Request Expired")
+        case nil: String(localized: "Request Completed")
         }
-    case .cancelled: String(localized: "Request cancelled")
-    case .expired: String(localized: "Request expired")
+    case .cancelled: String(localized: "Request Cancelled")
+    case .expired: String(localized: "Request Expired")
     }
 }

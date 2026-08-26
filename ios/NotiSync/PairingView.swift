@@ -71,7 +71,7 @@ struct PairingView: View {
                                 Label(
                                     String(
                                         localized: "pairing.nfc.action",
-                                        defaultValue: "Pair with NFC",
+                                        defaultValue: "Pair via NFC",
                                         comment: "Button that starts one-tap pairing by reading an Android HCE card."
                                     ),
                                     systemImage: "wave.3.right"
@@ -212,11 +212,7 @@ struct PairingView: View {
             nfcReaderSession = session
             session.begin()
         } catch {
-            scanError = String(
-                localized: "pairing.nfc.error.preparation",
-                defaultValue: "Could not prepare NFC pairing.",
-                comment: "Error when this iPhone's local pairing payload cannot be prepared for NFC."
-            )
+            scanError = PairingNfcText.preparationFailure
         }
     }
 
@@ -238,11 +234,7 @@ struct PairingView: View {
                 case .clipboard:
                     scanError = String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
                 case .nfc:
-                    scanError = String(
-                        localized: "pairing.nfc.error.notVerified",
-                        defaultValue: "The NFC pairing information could not be verified.",
-                        comment: "Error after NFC transport succeeds but the peer's signed pairing card does not verify."
-                    )
+                    scanError = PairingNfcText.verificationFailure
                 }
             }
         }
@@ -282,7 +274,7 @@ struct PairingConfirmView: View {
                         Text(verbatim: candidate.displayName)
                     }
                     LabeledContent("Platform", value: LocalizedText.platform(candidate.platform))
-                    VerificationValueRow("Safety number", value: candidate.safetyNumber)
+                    VerificationValueRow("Safety Number", value: candidate.safetyNumber)
                 }
                 Section("Keys") {
                     VerificationValueRow("Identity", value: candidate.identityKeyFingerprint)

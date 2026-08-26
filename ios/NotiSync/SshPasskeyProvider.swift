@@ -202,25 +202,25 @@ final class SshPasskeyProvider {
         for selection: SshPasskeyRecoverySelection,
         presentationAnchor: ASPresentationAnchor
     ) async throws -> String {
-        guard let expectedAccount = String(data: selection.userHandle, encoding: .utf8),
-              Data(expectedAccount.utf8) == selection.userHandle else {
-            throw SshPasskeyProviderError.invalidCredential("The passkey user handle is invalid.")
-        }
         let request = ASAuthorizationPasswordProvider().createRequest()
         let authorized = try await authorize(request, presentationAnchor: presentationAnchor)
         guard let password = authorized as? ASPasswordCredential else {
             throw SshPasskeyProviderError.unexpectedCredential
         }
-        guard password.user == expectedAccount else {
-            throw SshPasskeyProviderError.invalidCredential(
-                "The selected recovery record belongs to a different passkey."
-            )
-        }
         let record = password.password.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !record.isEmpty, record.lengthOfBytes(using: .utf8) <= 64 * 1_024 else {
             throw SshPasskeyProviderError.invalidCredential("The passkey recovery record is invalid.")
         }
-        _ = try SshPasskeyCodec.decodeRecoveryRecord(record)
+        // Password providers may omit or rewrite `ASPasswordCredential.user` for Android-created entries that
+        // have no website label. Treat it as presentation metadata. The record carries the stable passkey identity,
+        // and completeRecovery subsequently verifies the selected assertion against its public key.
+        let recoveryCredential = try SshPasskeyCodec.decodeRecoveryRecord(record)
+        guard recoveryCredential.credentialID == selection.credentialID,
+              recoveryCredential.userHandle == selection.userHandle else {
+            throw SshPasskeyProviderError.invalidCredential(
+                "The selected recovery record belongs to a different passkey."
+            )
+        }
         return record
     }
 
@@ -237,15 +237,13 @@ final class SshPasskeyProvider {
     ) async throws -> SshPasskeyRecoveryRecordSaveMethod {
         try SshPasskeyCodec.validateCredentialRecord(credential)
         let recoveryCredential = try SshPasskeyCodec.decodeRecoveryRecord(recoveryRecordJSON)
+        // A credential provider can update backup flags after registration, and NotiSync can use a local
+        // display name for a recovered key. Match only the stable credential and public-key identity here.
         guard recoveryCredential.credentialID == credential.credentialID,
               recoveryCredential.userHandle == credential.userHandle,
               recoveryCredential.relyingPartyID == credential.relyingPartyID,
               recoveryCredential.cosePublicKey == credential.cosePublicKey,
-              recoveryCredential.publicKeyBlob == credential.publicKeyBlob,
-              recoveryCredential.displayName == credential.displayName,
-              recoveryCredential.createdAt == credential.createdAt,
-              recoveryCredential.backupEligible == credential.backupEligible,
-              recoveryCredential.backupState == credential.backupState else {
+              recoveryCredential.publicKeyBlob == credential.publicKeyBlob else {
             throw SshPasskeyProviderError.invalidCredential(
                 "The passkey recovery record does not match the credential."
             )

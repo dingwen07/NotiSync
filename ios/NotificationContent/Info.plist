@@ -57,9 +57,11 @@
 				<string>notisync.mirror.29</string>
 				<string>notisync.mirror.30</string>
 				<string>notisync.mirror.31</string>
+				<string>notisync.ssh.request</string>
+				<string>notisync.ssh.audit</string>
 			</array>
 			<key>UNNotificationExtensionInitialContentSizeRatio</key>
-			<real>0</real>
+			<real>0.0</real>
 			<key>UNNotificationExtensionDefaultContentHidden</key>
 			<false/>
 			<key>UNNotificationExtensionUserInteractionEnabled</key>

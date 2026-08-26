@@ -29,7 +29,7 @@ struct RootView: View {
                         .tabItem { Label("Devices", systemImage: "iphone.gen3.radiowaves.left.and.right") }
                         .tag(RootTab.devices)
                     SshKeyProviderView()
-                        .tabItem { Label("SSH Key Provider", systemImage: "key.horizontal") }
+                        .tabItem { Label("SSH Keys", systemImage: "number") }
                         .tag(RootTab.sshKeyProvider)
                     ActivityLogView()
                         .tabItem { Label("Activity", systemImage: "waveform.path.ecg") }
@@ -565,6 +565,11 @@ struct DevicesView: View {
     @Query private var devices: [TrustedDevice]
     @Query private var settingsRows: [AppSettings]
     @State private var showingPairing = false
+    @State private var nfcPreparationTask: Task<Void, Never>?
+    @State private var nfcReaderSession: PairingNfcReaderSession?
+    @State private var nfcCandidate: PairingCandidate?
+    @State private var nfcError: String?
+    @State private var preparingNfcPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
     /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
     /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
@@ -640,10 +645,25 @@ struct DevicesView: View {
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button {
-                        Task { await runtime.publishCurrentRoute() }
+                        guard nfcPreparationTask == nil else { return }
+                        nfcPreparationTask = Task { @MainActor in
+                            await startDirectNfcPairing()
+                            nfcPreparationTask = nil
+                        }
                     } label: {
-                        Label("Publish Route", systemImage: "antenna.radiowaves.left.and.right")
+                        if preparingNfcPairing {
+                            ProgressView()
+                                .accessibilityLabel("Pair via NFC")
+                        } else {
+                            Label("Pair via NFC", systemImage: "wave.3.right")
+                        }
                     }
+                    .disabled(
+                        !PairingNfcReaderSession.isAvailable
+                            || nfcPreparationTask != nil
+                            || preparingNfcPairing
+                            || nfcReaderSession != nil
+                    )
                 }
             }
             .sheet(isPresented: $showingPairing) {
@@ -651,11 +671,84 @@ struct DevicesView: View {
                     .environmentObject(runtime)
                     .presentationSizing(.page)
             }
+            .sheet(item: $nfcCandidate) { candidate in
+                PairingConfirmView(candidate: candidate) { confirmed, ownDevice in
+                    if confirmed { runtime.acceptPairing(candidate.payload, ownDevice: ownDevice) }
+                    nfcCandidate = nil
+                }
+            }
             .sheet(item: $selectedFilterDevice) { selection in
                 AppFilterSheet(
                     title: selection.title(peerName: peerName),
                     selection: selection)
                     .environmentObject(runtime)
+            }
+            .alert(
+                "Pair via NFC",
+                isPresented: Binding(
+                    get: { nfcError != nil },
+                    set: { if !$0 { nfcError = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) { nfcError = nil }
+            } message: {
+                Text(verbatim: nfcError ?? "")
+            }
+            .onDisappear {
+                nfcPreparationTask?.cancel()
+                nfcPreparationTask = nil
+                preparingNfcPairing = false
+                nfcReaderSession?.cancel()
+                nfcReaderSession = nil
+            }
+        }
+    }
+
+    @MainActor
+    private func startDirectNfcPairing() async {
+        guard nfcReaderSession == nil else { return }
+        preparingNfcPairing = true
+        nfcError = nil
+        if runtime.pairingPayload == nil {
+            await runtime.makePairingPayloadAsync()
+        }
+        guard !Task.isCancelled else {
+            preparingNfcPairing = false
+            return
+        }
+        guard let ownPairingText = runtime.pairingPayload else {
+            preparingNfcPairing = false
+            nfcError = PairingNfcText.preparationFailure
+            return
+        }
+        do {
+            let session = try PairingNfcReaderSession(ownPairingText: ownPairingText) { outcome in
+                nfcReaderSession = nil
+                switch outcome {
+                case .success(let payload):
+                    inspectDirectNfcPairing(payload)
+                case .canceled:
+                    break
+                case .failure(let message):
+                    nfcError = message
+                }
+            }
+            nfcReaderSession = session
+            preparingNfcPairing = false
+            session.begin()
+        } catch {
+            preparingNfcPairing = false
+            nfcError = PairingNfcText.preparationFailure
+        }
+    }
+
+    @MainActor
+    private func inspectDirectNfcPairing(_ payload: String) {
+        Task { @MainActor in
+            if let candidate = await runtime.inspectPairingAsync(payload) {
+                nfcCandidate = candidate
+            } else {
+                nfcError = PairingNfcText.verificationFailure
             }
         }
     }
@@ -739,7 +832,7 @@ private struct TrustedPeerRow: View {
                             .font(.body.weight(.semibold))
                             .frame(width: 28, height: 28)
                     }
-                    .screenMirrorNativeButton()
+                    .nativeGlassButton()
                     .buttonBorderShape(.circle)
                     .controlSize(.small)
                     .accessibilityLabel("View Screen")
@@ -1333,6 +1426,13 @@ struct SettingsView: View {
             .navigationTitle("Settings")
             .onAppear { loadSettings(); runtime.refreshRotationInfo() }
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button {
+                        Task { await runtime.publishCurrentRoute() }
+                    } label: {
+                        Label("Publish Route", systemImage: "antenna.radiowaves.left.and.right")
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     SettingsRefreshToolbarButton(
                         onRefresh: { runtime.refreshForegroundNow() },

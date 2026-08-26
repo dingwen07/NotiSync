@@ -130,6 +130,9 @@ final class NotificationService: UNNotificationServiceExtension {
                         )
                     }.value
                     if case let .staged(providerRequest, _) = outcome {
+                        // The NSE can deliver an SSH alert before the updated app has launched. Register the
+                        // category now so its native request actions exist on this very first notification.
+                        MirrorCategoryRegistry.registerAll()
                         switch await autoApproveRememberedSshRequest(
                             providerRequest,
                             engine: engine

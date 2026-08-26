@@ -62,11 +62,13 @@ class ApnsPushTransport internal constructor(
                 val expiration = (System.currentTimeMillis() + ttlMillis) / 1000
                 // NOTIFICATION retains its alert contract. An explicit HIGH urgency additionally promotes
                 // any envelope to alert+mutable-content so the iOS Notification Service Extension wakes and
-                // decrypts the inline ciphertext (or fetches the relay pointer) on-device. The signed
+                // decrypts the inline ciphertext (or fetches the relay pointer) on-device. The broker cannot
+                // see an encrypted DATA_SYNC kind, so the opaque fallback stays category-neutral; the NSE sets
+                // an actionable category only after it authenticates and decodes the request. The signed
                 // SendRequest binds the urgency override to the sender's request. (FCM/Android is unaffected.)
                 val alertClass = when {
                     data["mtyp"] == MessageType.NOTIFICATION.name -> ApnsAlertClass.NOTIFICATION
-                    urgency == Urgency.HIGH -> ApnsAlertClass.REVIEW_REQUEST
+                    urgency == Urgency.HIGH -> ApnsAlertClass.HIGH_URGENCY
                     else -> null
                 }
                 val isAlert = alertClass != null
@@ -109,14 +111,14 @@ class ApnsPushTransport internal constructor(
         val aps = when (alertClass) {
             ApnsAlertClass.NOTIFICATION ->
                 """"aps":{"alert":{"title":"NotiSync","body":"New notification"},"mutable-content":1,"sound":"default","category":"notisync.mirror"}"""
-            ApnsAlertClass.REVIEW_REQUEST ->
-                """"aps":{"alert":{"title":"NotiSync","body":"Open NotiSync to review a request"},"mutable-content":1,"content-available":1,"sound":"default","category":"notisync.ssh.request"}"""
+            ApnsAlertClass.HIGH_URGENCY ->
+                """"aps":{"alert":{"title":"NotiSync","body":"Open NotiSync to continue"},"mutable-content":1,"content-available":1,"sound":"default"}"""
             null -> """"aps":{"content-available":1}"""
         }
         return if (entries.isEmpty()) "{$aps}" else "{$aps,$entries}"
     }
 
-    private enum class ApnsAlertClass { NOTIFICATION, REVIEW_REQUEST }
+    private enum class ApnsAlertClass { NOTIFICATION, HIGH_URGENCY }
 
     private fun jsonEscape(value: String): String = buildString(value.length + 8) {
         for (c in value) {

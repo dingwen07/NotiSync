@@ -903,7 +903,7 @@ struct ScreenMirrorPlayerView: View {
                         Text(error).multilineTextAlignment(.center)
                         HStack(spacing: 12) {
                             Button("Cancel", role: .cancel) { dismiss() }
-                                .screenMirrorNativeButton()
+                                .nativeGlassButton()
                             Button("Retry") {
                                 Task {
                                     await model.retry(
@@ -913,14 +913,14 @@ struct ScreenMirrorPlayerView: View {
                                     )
                                 }
                             }
-                            .screenMirrorNativeButton(prominent: true)
+                            .nativeGlassButton(prominent: true)
                         }
                     } else {
                         ProgressView().tint(.white)
                         Text(runtime.screenMirrorPhase ?? model.status)
                             .multilineTextAlignment(.center)
                         Button("Cancel", role: .cancel) { dismiss() }
-                            .screenMirrorNativeButton()
+                            .nativeGlassButton()
                     }
                 }
                 .foregroundStyle(.white)
@@ -1149,7 +1149,7 @@ struct ScreenMirrorPlayerView: View {
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
-        .screenMirrorNativeButton()
+        .nativeGlassButton()
         .buttonBorderShape(.circle)
         .controlSize(.small)
         .accessibilityLabel("More options")
@@ -1214,29 +1214,12 @@ struct ScreenMirrorPlayerView: View {
                 .frame(width: 28, height: 28)
                 .contentShape(Rectangle())
         }
-        .screenMirrorNativeButton()
+        .nativeGlassButton()
         .buttonBorderShape(.circle)
         .controlSize(.small)
         .accessibilityLabel(title)
     }
 
-}
-
-extension View {
-    @ViewBuilder
-    func screenMirrorNativeButton(prominent: Bool = false) -> some View {
-        if #available(iOS 26.0, *) {
-            if prominent {
-                buttonStyle(.glassProminent)
-            } else {
-                buttonStyle(.glass)
-            }
-        } else if prominent {
-            buttonStyle(.borderedProminent)
-        } else {
-            buttonStyle(.bordered)
-        }
-    }
 }
 
 private struct ScreenMirrorVideoSurface: UIViewRepresentable {
