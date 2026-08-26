@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.data
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.PreferenceDataStoreFactory
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.CoroutineScope
@@ -18,13 +19,21 @@ import java.io.File
 
 class SettingsRepositoryTest {
 
-    private fun newRepository(initialBrokerUrl: String? = null): SettingsRepository {
+    private fun newRepository(
+        initialBrokerUrl: String? = null,
+        initialOnboardingCompleted: Boolean? = null,
+    ): SettingsRepository {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         val file = File.createTempFile("settings-${System.nanoTime()}", ".preferences_pb")
             .also { it.delete() }
         val ds: DataStore<Preferences> = PreferenceDataStoreFactory.create(scope = scope) { file }
-        if (initialBrokerUrl != null) runBlocking {
-            ds.edit { it[stringPreferencesKey("broker_url")] = initialBrokerUrl }
+        if (initialBrokerUrl != null || initialOnboardingCompleted != null) runBlocking {
+            ds.edit {
+                initialBrokerUrl?.let { value -> it[stringPreferencesKey("broker_url")] = value }
+                initialOnboardingCompleted?.let { value ->
+                    it[booleanPreferencesKey("onboarding_completed")] = value
+                }
+            }
         }
         return SettingsRepository(ds, scope, InMemoryOperationalApplicationState())
     }
@@ -64,6 +73,17 @@ class SettingsRepositoryTest {
         val settings = newRepository()
 
         assertEquals(false, settings.callRingerEnabled.value)
+    }
+
+    @Test
+    fun onboardingCompletedIsSeededFromDiskAndUpdatesAfterWrite() = runBlocking {
+        val completed = newRepository(initialOnboardingCompleted = true)
+        val fresh = newRepository()
+
+        assertTrue(completed.onboardingCompleted.value)
+        assertFalse(fresh.onboardingCompleted.value)
+        fresh.setOnboardingCompleted()
+        assertTrue(fresh.onboardingCompleted.value)
     }
 
     @Test

@@ -60,7 +60,7 @@ class SettingsRepository internal constructor(
         }
         upgraded
     }
-    private val initialRequestPagePreferences: Preferences = runBlocking { store.data.first() }
+    private val initialPreferences: Preferences = runBlocking { store.data.first() }
 
     val brokerUrl: StateFlow<String> =
         store.data.map { upgradeLegacyDefaultBrokerUrl(it[brokerUrlKey] ?: DEFAULT_BROKER) }
@@ -124,7 +124,7 @@ class SettingsRepository internal constructor(
     /** Open the OpenPGP signing request page from a newly posted request notification. Default off. */
     val autoOpenOpenPgpRequest: StateFlow<Boolean> =
         store.data.map { it[autoOpenOpenPgpRequestKey] ?: false }
-            .stateInEager(scope, initialRequestPagePreferences[autoOpenOpenPgpRequestKey] ?: false)
+            .stateInEager(scope, initialPreferences[autoOpenOpenPgpRequestKey] ?: false)
 
     suspend fun setAutoOpenOpenPgpRequest(on: Boolean) =
         store.edit { it[autoOpenOpenPgpRequestKey] = on }
@@ -132,7 +132,7 @@ class SettingsRepository internal constructor(
     /** Open the SSH request page from a newly posted request notification. Default off. */
     val autoOpenSshRequest: StateFlow<Boolean> =
         store.data.map { it[autoOpenSshRequestKey] ?: false }
-            .stateInEager(scope, initialRequestPagePreferences[autoOpenSshRequestKey] ?: false)
+            .stateInEager(scope, initialPreferences[autoOpenSshRequestKey] ?: false)
 
     suspend fun setAutoOpenSshRequest(on: Boolean) =
         store.edit { it[autoOpenSshRequestKey] = on }
@@ -162,10 +162,12 @@ class SettingsRepository internal constructor(
     suspend fun setIosMeshMirror(on: Boolean) = store.edit { it[iosMeshKey] = on }
     suspend fun setIosMediaMirror(on: Boolean) = store.edit { it[iosMediaKey] = on }
 
-    /** Whether first-launch onboarding was finished (every step completed or skipped). Direct read only —
-     *  it gates what the launch frame shows, so an eager StateFlow's still-default value would flash
-     *  onboarding at already-onboarded users while DataStore loads. */
-    suspend fun onboardingCompletedNow(): Boolean = store.data.first()[onboardingDoneKey] ?: false
+    /** Whether first-launch onboarding was finished (every step completed or skipped). Seeded from the
+     *  persisted snapshot loaded during graph construction so the first READY frame is authoritative. */
+    val onboardingCompleted: StateFlow<Boolean> =
+        store.data.map { it[onboardingDoneKey] ?: false }
+            .stateInEager(scope, initialPreferences[onboardingDoneKey] ?: false)
+
     suspend fun setOnboardingCompleted() = store.edit { it[onboardingDoneKey] = true }
 
     suspend fun setBrokerUrl(url: String) = store.edit {

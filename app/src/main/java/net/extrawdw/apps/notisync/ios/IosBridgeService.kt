@@ -1,13 +1,11 @@
 package net.extrawdw.apps.notisync.ios
 
-import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.annotation.StringRes
@@ -179,13 +177,7 @@ class IosBridgeService : Service() {
 
         /** Permissions the `connectedDevice` FGS needs to start without throwing on API 34+. Resume paths
          *  (cold start, IosBridgeBootReceiver) must gate [start] on this — a missing-permission start throws. */
-        fun hasPermissions(context: Context): Boolean =
-            arrayOf(
-                Manifest.permission.BLUETOOTH_CONNECT,
-                Manifest.permission.BLUETOOTH_ADVERTISE
-            ).all {
-                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
+        fun hasPermissions(context: Context): Boolean = IosBluetoothPermissions.hasRequired(context)
 
         fun start(context: Context) =
             ContextCompat.startForegroundService(

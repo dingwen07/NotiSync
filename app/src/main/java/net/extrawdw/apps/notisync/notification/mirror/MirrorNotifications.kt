@@ -833,6 +833,22 @@ class RemoteNotificationPoster(
             post()
         }
         span.metric("notify_ms", (System.nanoTime() - notifyStartNanos) / 1_000_000)
+        // NotificationManagerService caches a valid long-lived conversation shortcut synchronously while
+        // notify() is posting it, specifically so the publisher can immediately remove its dynamic state.
+        // The cached copy keeps the notification in Android's conversation surfaces; removing only the
+        // dynamic copy keeps mirrored contacts out of the launcher long-press menu. If every post attempt
+        // failed, there is no notification for this newly published shortcut to serve, so unpublish it too.
+        shortcutId?.let { publishedShortcutId ->
+            runCatching {
+                ShortcutManagerCompat.removeDynamicShortcuts(context, listOf(publishedShortcutId))
+            }.onFailure {
+                Log.w(
+                    "MirrorNotifications",
+                    "failed to hide conversation shortcut from launcher: $publishedShortcutId",
+                    it,
+                )
+            }
+        }
         // Incoming-call ringer: a ringing call plays the phone ringtone + vibration itself (the mirror above is
         // posted silent). Start only on the genuine alerting post — a silent asset/backlog re-render of the same
         // call is already ringing — and stop on any non-ringing render of the same call (answered → ongoing/FGS).
@@ -1428,6 +1444,7 @@ class RemoteNotificationPoster(
             "net.extrawdw.notisync.run" to R.drawable.ic_terminal_notification,
             "com.google.android.apps.messaging" to R.drawable.ic_google_messages_notification,
             "com.android.mms" to R.drawable.ic_google_messages_notification,
+            "com.android.mms.service" to R.drawable.ic_google_messages_notification,
             "com.google.android.youtube" to R.drawable.ic_youtube_notification,
             "com.google.android.apps.youtube.music" to R.drawable.ic_youtube_music_notification,
             "com.spotify.music" to R.drawable.ic_spotify_notification,

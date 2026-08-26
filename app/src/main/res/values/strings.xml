@@ -898,6 +898,7 @@
     <string name="ios_pairing_accept_prompt">Accept the pairing request on both devices</string>
     <string name="ios_pairing_forget_prompt">The device may still be paired. You can unpair them in the Bluetooth settings.</string>
     <string name="ios_pairing_failed">Couldn\'t start pairing: %1$s</string>
+    <string name="ios_bluetooth_permission_required">Nearby devices permission is required to pair with and receive notifications from an iPhone.</string>
     <string name="ios_show_here">Mirror to this phone</string>
     <string name="ios_mirror_mesh">Mirror to my other devices</string>
     <string name="ios_mirror_media">Mirror media playback</string>

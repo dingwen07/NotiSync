@@ -5,6 +5,12 @@
         <item name="android:windowBackground">@color/window_background</item>
     </style>
 
+    <style name="Theme.NotiSync.Starting" parent="Theme.SplashScreen">
+        <item name="windowSplashScreenBackground">@color/window_background</item>
+        <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="postSplashScreenTheme">@style/Theme.NotiSync</item>
+    </style>
+
     <!-- Dark from the first frame so waking the display for an incoming call never flashes a light window. -->
     <style name="Theme.NotiSync.CallScreen" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@android:color/system_neutral1_900</item>

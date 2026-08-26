@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.ios
 
-import android.Manifest
 import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
@@ -17,7 +16,6 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
-import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
 import android.os.ParcelUuid
@@ -831,11 +829,7 @@ class IosBridgeManager(
     private fun prettyName(bundleId: String): String =
         bundleId.substringAfterLast('.').ifBlank { bundleId }.replaceFirstChar { it.uppercase() }
 
-    private fun hasPermissions(): Boolean =
-        granted(Manifest.permission.BLUETOOTH_CONNECT) && granted(Manifest.permission.BLUETOOTH_ADVERTISE)
-
-    private fun granted(permission: String): Boolean =
-        ContextCompat.checkSelfPermission(context, permission) == PackageManager.PERMISSION_GRANTED
+    private fun hasPermissions(): Boolean = IosBluetoothPermissions.hasRequired(context)
 
     private companion object {
         const val TAG = "IosBridgeManager"

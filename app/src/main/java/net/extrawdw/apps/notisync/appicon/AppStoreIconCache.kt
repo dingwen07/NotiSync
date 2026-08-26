@@ -90,7 +90,7 @@ class AppStoreIconCache(
 
     private companion object {
         const val DEFAULT_MAX_BYTES =
-            8L * 1024 * 1024 // tiny WebP icons; a few hundred fit comfortably
+            128L * 1024 * 1024 // tiny WebP icons; retain a broad long-tail catalog comfortably
         const val DEFAULT_NEGATIVE_TTL_MS = 24L * 60 * 60 * 1000
         val UNSAFE = Regex("[^a-z0-9._-]")
         val NEG_SERIALIZER = MapSerializer(String.serializer(), Long.serializer())

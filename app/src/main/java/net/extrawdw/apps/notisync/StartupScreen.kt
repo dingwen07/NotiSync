@@ -29,24 +29,17 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
-internal const val STARTUP_PROGRESS_DELAY_MS = 1_000L
+internal fun shouldShowCustomStartupScreen(startupState: AppStartupState): Boolean =
+    startupState.databaseImportRequired ||
+        startupState.stage == AppStartupStage.IMPORTING_DATABASE ||
+        startupState.stage == AppStartupStage.FAILED
 
-internal fun remainingStartupProgressDelayMillis(
-    startupStartedAtElapsedRealtime: Long,
-    nowElapsedRealtime: Long,
-): Long = (startupStartedAtElapsedRealtime + STARTUP_PROGRESS_DELAY_MS - nowElapsedRealtime)
-    .coerceAtLeast(0L)
-
-internal fun shouldShowStartupProgress(
-    startupState: AppStartupState,
-    normalStartupDelayElapsed: Boolean,
-): Boolean = startupState.stage != AppStartupStage.FAILED &&
-    (startupState.databaseImportRequired || normalStartupDelayElapsed)
+internal fun shouldKeepSystemSplash(startupState: AppStartupState): Boolean =
+    startupState.stage != AppStartupStage.READY && !shouldShowCustomStartupScreen(startupState)
 
 @Composable
 internal fun StartupScreen(
     stage: AppStartupStage,
-    showProgress: Boolean,
     modifier: Modifier = Modifier,
 ) {
     Column(
@@ -81,7 +74,7 @@ internal fun StartupScreen(
         ) {
             when {
                 stage == AppStartupStage.FAILED -> StartupStatusText(stage.statusTextResource())
-                showProgress -> Column(
+                else -> Column(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
@@ -121,7 +114,6 @@ private fun StartupScreenPreview() {
     NotiSyncTheme {
         StartupScreen(
             stage = AppStartupStage.IMPORTING_DATABASE,
-            showProgress = true,
         )
     }
 }

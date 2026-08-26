@@ -70,14 +70,8 @@ import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.ios.IosBluetoothPermissions
 import net.extrawdw.apps.notisync.ios.IosCompanion
-
-/** Runtime Bluetooth permissions needed before the iPhone pairing flow. */
-private val ONBOARDING_BT_PERMISSIONS = arrayOf(
-    Manifest.permission.BLUETOOTH_CONNECT,
-    Manifest.permission.BLUETOOTH_ADVERTISE,
-    Manifest.permission.BLUETOOTH_SCAN,
-)
 
 /** Ordered wizard steps. APPS (the choose-apps-to-mirror reminder) only shows once listener access exists. */
 private enum class OnboardingStep { WELCOME, NOTIFICATIONS, LISTENER, APPS, IPHONE, PAIR }
@@ -155,7 +149,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
             val picked = IosCompanion.deviceFromPickerResult(result.data)
-            IosCompanion.bondDevice(picked)
+            val pairingPromptExpected = IosCompanion.bondDevice(context, picked)
             cdmAssociated = IosCompanion.isAssociated(context)
             cdmDeviceName = IosCompanion.associatedDeviceName(context)
             if (cdmAssociated) {
@@ -163,7 +157,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                 graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
             }
             // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
-            if (picked != null) {
+            if (pairingPromptExpected) {
                 Toast.makeText(
                     context,
                     resources.getString(R.string.ios_pairing_accept_prompt),
@@ -214,6 +208,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                         IosCompanion.observePresence(context)
                         // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
                         IosCompanion.bondDevice(
+                            context,
                             runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull()
                         )
                         graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
@@ -236,27 +231,22 @@ fun OnboardingScreen(onFinish: () -> Unit) {
     // Same denied-once handling as POST_NOTIFICATIONS: a denied Bluetooth set auto-denies re-requests,
     // so "Pair iPhone" would no-op — route to the app's settings page (Permissions → Nearby devices).
     val btPermissionsGranted = remember(refresh) {
-        ONBOARDING_BT_PERMISSIONS.all {
-            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-        }
+        IosBluetoothPermissions.hasRequired(context)
     }
     var btDeniedOnce by remember { mutableStateOf(false) }
     LaunchedEffect(btPermissionsGranted) { if (btPermissionsGranted) btDeniedOnce = false }
     val btPermissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { result ->
+    ) {
         refresh++
-        if (result.values.all { it }) startAssociation() else btDeniedOnce = true
+        if (IosBluetoothPermissions.hasRequired(context)) startAssociation() else btDeniedOnce = true
     }
 
     fun startIphonePairing() {
-        if (ONBOARDING_BT_PERMISSIONS.all {
-                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
-            }
-        ) {
+        if (IosBluetoothPermissions.hasRequired(context)) {
             startAssociation()
         } else {
-            btPermissionLauncher.launch(ONBOARDING_BT_PERMISSIONS)
+            btPermissionLauncher.launch(IosBluetoothPermissions.requestPermissions())
         }
     }
 

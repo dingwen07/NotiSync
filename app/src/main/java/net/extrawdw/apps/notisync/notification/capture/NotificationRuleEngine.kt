@@ -23,12 +23,14 @@ data class GraphicsPlan(
     val largeIcon: LargeIconHandling,
     val bigPicture: GraphicsSlot,
     val avatar: GraphicsSlot,
+    /** Sender to use when [LargeIconHandling.AS_AVATAR] synthesizes a conversation. */
+    val conversationSenderOverride: String? = null,
 )
 
 /** A package-specific override applied on top of the default plan. */
 private interface NotificationRule {
     fun matches(notif: CapturedNotification): Boolean
-    fun apply(base: GraphicsPlan): GraphicsPlan
+    fun apply(notif: CapturedNotification, base: GraphicsPlan): GraphicsPlan
 }
 
 /**
@@ -41,8 +43,37 @@ private object WeChatRule : NotificationRule {
         notif.packageName == "com.tencent.mm" &&
                 (notif.isConversation || notif.category == MirrorCategory.MESSAGE)
 
-    override fun apply(base: GraphicsPlan): GraphicsPlan =
+    override fun apply(notif: CapturedNotification, base: GraphicsPlan): GraphicsPlan =
         base.copy(largeIcon = LargeIconHandling.AS_AVATAR)
+}
+
+/**
+ * QQ's normal message notifications have the same large-icon shape as WeChat, but current QQ builds
+ * don't identify them as MessagingStyle, conversations, or CATEGORY_MESSAGE. The normal-message
+ * channel and QQ's unread-count title suffix provide the additional message signals. The suffix is
+ * presentation metadata rather than part of the chat name, so don't expose it as the synthesized
+ * conversation sender/shortcut label.
+ */
+private object QQRule : NotificationRule {
+    private const val PACKAGE_NAME = "com.tencent.mobileqq"
+    private const val NORMAL_MESSAGE_CHANNEL_ID = "CHANNEL_ID_SHOW_BADGE"
+    private val unreadCountSuffix = Regex("""\s*[(（]\d+\+?\s*条新消息[)）]\s*$""")
+
+    override fun matches(notif: CapturedNotification): Boolean =
+        notif.packageName == PACKAGE_NAME &&
+            (notif.isConversation ||
+                notif.category == MirrorCategory.MESSAGE ||
+                notif.channelId == NORMAL_MESSAGE_CHANNEL_ID ||
+                notif.title?.contains(unreadCountSuffix) == true)
+
+    override fun apply(notif: CapturedNotification, base: GraphicsPlan): GraphicsPlan =
+        base.copy(
+            largeIcon = LargeIconHandling.AS_AVATAR,
+            conversationSenderOverride = notif.title
+                ?.replace(unreadCountSuffix, "")
+                ?.trim()
+                ?.takeIf(String::isNotEmpty),
+        )
 }
 
 /**
@@ -51,11 +82,11 @@ private object WeChatRule : NotificationRule {
  * present. The first matching [NotificationRule] refines the default (single match wins).
  */
 class NotificationRuleEngine {
-    private val rules = listOf(WeChatRule)
+    private val rules = listOf(WeChatRule, QQRule)
 
     fun plan(notif: CapturedNotification): GraphicsPlan {
         val base =
             GraphicsPlan(LargeIconHandling.MIRROR, GraphicsSlot.PRIVATE, GraphicsSlot.PRIVATE)
-        return rules.firstOrNull { it.matches(notif) }?.apply(base) ?: base
+        return rules.firstOrNull { it.matches(notif) }?.apply(notif, base) ?: base
     }
 }

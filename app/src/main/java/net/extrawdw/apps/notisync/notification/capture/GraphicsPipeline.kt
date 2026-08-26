@@ -48,7 +48,9 @@ class GraphicsPipeline(
                 val bytes = extractor.largeIcon(sbn)
                 span.metric("large_icon_ms", (System.nanoTime() - t0) / 1_000_000)
                 if (bytes == null) omitted++
-                else upload(bytes, AssetRole.AVATAR, captured)?.let { result = asConversation(result, it) }
+                else upload(bytes, AssetRole.AVATAR, captured)?.let {
+                    result = asConversation(result, it, plan.conversationSenderOverride)
+                }
             }
 
             LargeIconHandling.OMIT -> omitted++
@@ -158,7 +160,8 @@ class GraphicsPipeline(
     /** Render the notification as a conversation carrying [avatarRef] as the contact's avatar. */
     private fun asConversation(
         notif: CapturedNotification,
-        avatarRef: net.extrawdw.notisync.protocol.PrivateAssetRef
+        avatarRef: net.extrawdw.notisync.protocol.PrivateAssetRef,
+        senderOverride: String?,
     ): CapturedNotification {
         if (notif.style == NotificationStyle.MESSAGING) {
             // Attach the contact avatar to incoming messages that lack their own.
@@ -167,7 +170,9 @@ class GraphicsPipeline(
             })
         }
         // Synthesize a one-message conversation so the contact photo renders as the person avatar.
-        val sender = notif.title?.takeIf { it.isNotBlank() } ?: notif.appLabel
+        val sender = senderOverride?.takeIf { it.isNotBlank() }
+            ?: notif.title?.takeIf { it.isNotBlank() }
+            ?: notif.appLabel
         val message = ConversationMessage(
             sender = sender,
             text = notif.text ?: notif.bigText ?: "",

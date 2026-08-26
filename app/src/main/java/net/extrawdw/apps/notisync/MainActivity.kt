@@ -4,7 +4,6 @@ import android.Manifest
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
-import android.os.SystemClock
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -68,6 +67,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.navigation.NavController
@@ -79,7 +79,6 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -117,7 +116,12 @@ class MainActivity : ComponentActivity() {
     private val pendingOpenSshHistory = MutableStateFlow<String?>(null)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        val splashScreen = installSplashScreen()
         super.onCreate(savedInstanceState)
+        val app = applicationContext as NotiSyncApp
+        splashScreen.setKeepOnScreenCondition {
+            shouldKeepSystemSplash(app.startupState.value)
+        }
         updatePendingPairingPayload(intent)
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
@@ -125,71 +129,48 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         setContent {
-            val app = applicationContext as NotiSyncApp
-            val graphReady by app.graphReady.collectAsStateWithLifecycle()
             val startupState by app.startupState.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val hcePairingPayload by PairingNfcInbox.pendingPayload.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
-            var normalStartupDelayElapsed by remember { mutableStateOf(false) }
-            LaunchedEffect(app.startupStartedAtElapsedRealtime) {
-                val remainingDelay = remainingStartupProgressDelayMillis(
-                    startupStartedAtElapsedRealtime = app.startupStartedAtElapsedRealtime,
-                    nowElapsedRealtime = SystemClock.elapsedRealtime(),
-                )
-                delay(remainingDelay)
-                normalStartupDelayElapsed = true
-            }
-            val showStartupProgress = shouldShowStartupProgress(
-                startupState = startupState,
-                normalStartupDelayElapsed = normalStartupDelayElapsed,
-            )
             NotiSyncTheme {
-                if (graphReady) {
-                    val graph = remember { app.graph }
-                    // null = still reading DataStore. Gate on the PERSISTED flag (an eager StateFlow would
-                    // still report its false default here and flash onboarding at already-onboarded users).
-                    var showOnboarding by remember { mutableStateOf<Boolean?>(null) }
-                    LaunchedEffect(Unit) {
-                        showOnboarding = !graph.settings.onboardingCompletedNow()
+                when {
+                    startupState.stage == AppStartupStage.READY -> {
+                        val graph = remember { app.graph }
+                        val onboardingCompleted by
+                            graph.settings.onboardingCompleted.collectAsStateWithLifecycle()
+                        when (onboardingCompleted) {
+                            // Persist on the graph scope: the composable (and any rememberCoroutineScope) is
+                            // disposed when the flow updates, which would cancel the write mid-flight.
+                            false -> OnboardingScreen(
+                                onFinish = {
+                                    graph.scope.launch { graph.settings.setOnboardingCompleted() }
+                                },
+                            )
+                            // Finishing onboarding lands here with Devices as the NavHost start destination;
+                            // a pairing deep link received during onboarding is still pending and opens now.
+                            true -> NotiSyncRoot(
+                                pendingPairingPayload = pairingPayload,
+                                onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
+                                pendingHcePairingPayload = hcePairingPayload,
+                                onPendingHcePairingPayloadConsumed = { payload ->
+                                    PairingNfcInbox.consume(applicationContext, payload)
+                                },
+                                openDevices = openDevices,
+                                onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                                openRun = openRun,
+                                onOpenRunConsumed = { pendingOpenRun.value = null },
+                                openSshHistoryRequestId = openSshHistory,
+                                onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
+                            )
+                        }
                     }
-                    when (showOnboarding) {
-                        // Persist on the graph scope: the composable (and any rememberCoroutineScope) is
-                        // disposed the moment this flips, which would cancel the write mid-flight.
-                        true -> OnboardingScreen(
-                            onFinish = {
-                                graph.scope.launch { graph.settings.setOnboardingCompleted() }
-                                showOnboarding = false
-                            },
-                        )
-                        // Finishing onboarding lands here with Devices as the NavHost start destination;
-                        // a pairing deep link received during onboarding is still pending and opens now.
-                        false -> NotiSyncRoot(
-                            pendingPairingPayload = pairingPayload,
-                            onPendingPairingPayloadConsumed = { pendingPairingPayload.value = null },
-                            pendingHcePairingPayload = hcePairingPayload,
-                            onPendingHcePairingPayloadConsumed = { payload ->
-                                PairingNfcInbox.consume(applicationContext, payload)
-                            },
-                            openDevices = openDevices,
-                            onOpenDevicesConsumed = { pendingOpenDevices.value = false },
-                            openRun = openRun,
-                            onOpenRunConsumed = { pendingOpenRun.value = null },
-                            openSshHistoryRequestId = openSshHistory,
-                            onOpenSshHistoryConsumed = { pendingOpenSshHistory.value = null },
-                        )
-                        null -> StartupScreen(
-                            stage = AppStartupStage.INITIALIZING_APPLICATION,
-                            showProgress = showStartupProgress,
-                        )
-                    }
-                } else {
-                    StartupScreen(
-                        stage = startupState.stage,
-                        showProgress = showStartupProgress,
-                    )
+                    shouldShowCustomStartupScreen(startupState) ->
+                        StartupScreen(stage = startupState.stage)
+                    // Kept behind the system splash during ordinary checking and graph initialization.
+                    else -> Box(modifier = Modifier.fillMaxSize())
                 }
             }
         }

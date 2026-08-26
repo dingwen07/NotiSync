@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Handler
 import android.os.Looper
-import android.os.SystemClock
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
@@ -1087,15 +1086,19 @@ class AppGraph(private val app: Application) {
     /**
      * Bring the iOS bridge back after a process (re)start if the user left the switch on. Reads the
      * PERSISTED flag (the [SettingsRepository.iosBridgeEnabled] StateFlow is still its default here, before
-     * DataStore loads) and gates on BT permissions so the `connectedDevice` FGS start can't throw, then
-     * starts the bridge and re-arms CompanionDeviceManager presence. Guarded throughout: a background-start
-     * denial (no exemption) is harmless — the iOS tab, CDM presence, and
+     * DataStore loads). If the required Bluetooth permissions were revoked, clears the persisted opt-in so the
+     * UI and operational state cannot disagree. Otherwise starts the bridge and re-arms CompanionDeviceManager
+     * presence. Guarded throughout: a background-start denial (no exemption) is harmless — the iOS tab, CDM presence, and
      * [net.extrawdw.apps.notisync.ios.IosBridgeBootReceiver] are the other resume paths. Called from [init] (every
      * process spawn — cold start, FCM wake) and IosBridgeBootReceiver (reboot / app update).
      */
     suspend fun resumeIosBridgeIfEnabled() {
         if (!runCatching { settings.iosBridgeEnabledNow() }.getOrDefault(false)) return
-        if (!IosBridgeService.hasPermissions(app)) return
+        if (!IosBridgeService.hasPermissions(app)) {
+            runCatching { settings.setIosBridgeEnabled(false) }
+            runCatching { IosCompanion.stopObservingPresence(app) }
+            return
+        }
         runCatching { IosBridgeService.start(app) }
         runCatching { IosCompanion.observePresence(app) }
     }
@@ -1556,7 +1559,6 @@ class NotiSyncApp : Application() {
     val graphReady: StateFlow<Boolean> = _graphReady
     private val _startupState = MutableStateFlow(AppStartupState())
     internal val startupState: StateFlow<AppStartupState> = _startupState
-    internal val startupStartedAtElapsedRealtime: Long = SystemClock.elapsedRealtime()
     val isGraphReady: Boolean get() = _graphReady.value
     val graphIfReady: AppGraph? get() = if (isGraphReady && ::graph.isInitialized) graph else null
 

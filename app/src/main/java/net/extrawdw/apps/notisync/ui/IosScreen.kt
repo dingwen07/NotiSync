@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.ui
 
-import android.Manifest
 import android.app.Application
 import android.companion.AssociationInfo
 import android.companion.CompanionDeviceManager
@@ -65,11 +64,11 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import kotlinx.coroutines.Dispatchers
@@ -82,6 +81,7 @@ import kotlinx.coroutines.sync.withPermit
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ios.IosBridgeService
+import net.extrawdw.apps.notisync.ios.IosBluetoothPermissions
 import net.extrawdw.apps.notisync.ios.IosCompanion
 import net.extrawdw.apps.notisync.ios.IosBridgeStatus
 import net.extrawdw.apps.notisync.ios.IosApp
@@ -96,13 +96,6 @@ import kotlin.math.sign
 import kotlin.math.sin
 
 private const val ICON_PX = 128
-
-/** Runtime Bluetooth permissions needed to advertise + connect for the iOS BLE bridge. */
-private val BT_PERMISSIONS = arrayOf(
-    Manifest.permission.BLUETOOTH_CONNECT,
-    Manifest.permission.BLUETOOTH_ADVERTISE,
-    Manifest.permission.BLUETOOTH_SCAN,
-)
 
 /**
  * Resolves an icon per discovered iOS app off the main thread (PackageManager lookups + App Store fetches),
@@ -251,9 +244,28 @@ fun IosScreen() {
     var query by rememberSaveable { mutableStateOf("") }
     var mode by rememberSaveable { mutableStateOf(AppListMode.MIRRORING) }
 
-    val permissionLauncher =
-        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
-            if (result.values.all { it }) graph.setIosBridgeEnabled(true)
+    // A runtime permission can be revoked in system settings while the persisted bridge preference remains on.
+    // Reconcile that stale opt-in whenever this screen returns to the foreground so the switch reflects reality;
+    // the next user attempt to enable it goes through the permission launcher below.
+    LifecycleResumeEffect(bridgeEnabled) {
+        if (bridgeEnabled && !IosBluetoothPermissions.hasRequired(context)) {
+            graph.setIosBridgeEnabled(false)
+        }
+        onPauseOrDispose { }
+    }
+
+    val bridgePermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            if (IosBluetoothPermissions.hasRequired(context)) {
+                graph.setIosBridgeEnabled(true)
+            } else {
+                graph.setIosBridgeEnabled(false)
+                Toast.makeText(
+                    context,
+                    resources.getString(R.string.ios_bluetooth_permission_required),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
         }
 
     // If the bridge was left enabled but isn't running — after a process death (status OFF) or a transient
@@ -262,12 +274,7 @@ fun IosScreen() {
     // we don't retry it. (Re-entry is safe: the manager's own `running` guard no-ops a redundant start.)
     LaunchedEffect(bridgeEnabled, status) {
         if (bridgeEnabled && (status == IosBridgeStatus.OFF || status == IosBridgeStatus.ERROR) &&
-            BT_PERMISSIONS.all {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    it
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            } &&
+            IosBluetoothPermissions.hasRequired(context) &&
             // Re-confirm the PERSISTED intent: right after the user toggles off, `bridgeEnabled` (DataStore-backed)
             // can still read true here while `status` has already flipped to OFF — without this the effect would
             // restart the bridge it was just asked to stop. (setIosBridgeEnabled persists before stopping.)
@@ -278,15 +285,10 @@ fun IosScreen() {
     }
 
     fun enableBridge() {
-        if (BT_PERMISSIONS.all {
-                ContextCompat.checkSelfPermission(
-                    context,
-                    it
-                ) == android.content.pm.PackageManager.PERMISSION_GRANTED
-            }) {
+        if (IosBluetoothPermissions.hasRequired(context)) {
             graph.setIosBridgeEnabled(true)
         } else {
-            permissionLauncher.launch(BT_PERMISSIONS)
+            bridgePermissionLauncher.launch(IosBluetoothPermissions.requestPermissions())
         }
     }
 
@@ -298,7 +300,7 @@ fun IosScreen() {
         rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
             // Bond with the picked device here (the reliable path) — association alone doesn't pair the iPhone.
             val picked = IosCompanion.deviceFromPickerResult(result.data)
-            IosCompanion.bondDevice(picked)
+            val pairingPromptExpected = IosCompanion.bondDevice(context, picked)
             cdmAssociated = IosCompanion.isAssociated(context)
             cdmDeviceName = IosCompanion.associatedDeviceName(context)
             if (cdmAssociated) {
@@ -306,7 +308,7 @@ fun IosScreen() {
                 graph.setIosBridgeEnabled(true) // run the bridge so it connects once the iPhone bonds
             }
             // createBond() raises a pairing request on BOTH ends — remind the user to accept each.
-            if (picked != null) {
+            if (pairingPromptExpected) {
                 Toast.makeText(
                     context,
                     resources.getString(R.string.ios_pairing_accept_prompt),
@@ -359,7 +361,10 @@ fun IosScreen() {
                         cdmDeviceName = IosCompanion.associatedDeviceName(context)
                         IosCompanion.observePresence(context)
                         // Also bond here in case the result Intent didn't carry the device (belt-and-suspenders).
-                        IosCompanion.bondDevice(runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull())
+                        IosCompanion.bondDevice(
+                            context,
+                            runCatching { associationInfo.associatedDevice?.bluetoothDevice }.getOrNull(),
+                        )
                         graph.setIosBridgeEnabled(true) // run the bridge so it connects once bonded
                     }
 
@@ -374,6 +379,28 @@ fun IosScreen() {
                 resources.getString(R.string.ios_pairing_failed, it.message ?: ""),
                 Toast.LENGTH_LONG
             ).show()
+        }
+    }
+
+    val pairingPermissionLauncher =
+        rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+            if (IosBluetoothPermissions.hasRequired(context)) {
+                startPairing()
+            } else {
+                graph.setIosBridgeEnabled(false)
+                Toast.makeText(
+                    context,
+                    resources.getString(R.string.ios_bluetooth_permission_required),
+                    Toast.LENGTH_LONG,
+                ).show()
+            }
+        }
+
+    fun requestPairing() {
+        if (IosBluetoothPermissions.hasRequired(context)) {
+            startPairing()
+        } else {
+            pairingPermissionLauncher.launch(IosBluetoothPermissions.requestPermissions())
         }
     }
 
@@ -439,7 +466,7 @@ fun IosScreen() {
                     PairingCard(
                         associated = cdmAssociated,
                         pairedName = cdmDeviceName,
-                        onPair = ::startPairing,
+                        onPair = ::requestPairing,
                         onForget = {
                             IosCompanion.disassociateAll(context)
                             cdmAssociated = false

@@ -103,13 +103,35 @@ object IosCompanion {
      * Bond (pair) with [device] **from the Android side**, so the user doesn't have to pair via iOS Settings →
      * Bluetooth. The iPhone shows a pairing prompt; accepting it (with our ANCS solicitation already on air)
      * yields the encrypted link + "Share System Notifications". Association alone does NOT pair — this does.
+     *
+     * @return whether a system pairing confirmation is already pending or was successfully requested.
      */
-    @SuppressLint("MissingPermission")
-    fun bondDevice(device: BluetoothDevice?) {
-        device ?: run { Log.w(TAG, "no device to bond from CDM picker"); return }
-        if (device.bondState != BluetoothDevice.BOND_BONDED) {
-            Log.i(TAG, "CDM: initiating bond with ${device.address}")
-            runCatching { device.createBond() }.onFailure { Log.w(TAG, "createBond failed", it) }
+    @SuppressLint("MissingPermission") // guarded below; SecurityException also handles revocation races
+    fun bondDevice(context: Context, device: BluetoothDevice?): Boolean {
+        device ?: run { Log.w(TAG, "no device to bond from CDM picker"); return false }
+        if (!IosBluetoothPermissions.canConnect(context)) {
+            Log.w(TAG, "cannot bond device: BLUETOOTH_CONNECT is not granted")
+            return false
+        }
+        return try {
+            when (device.bondState) {
+                BluetoothDevice.BOND_BONDED -> false
+                BluetoothDevice.BOND_BONDING -> true
+                else -> {
+                    Log.i(TAG, "CDM: initiating bond with ${device.address}")
+                    device.createBond().also { started ->
+                        if (!started) Log.w(TAG, "createBond returned false")
+                    }
+                }
+            }
+        } catch (error: SecurityException) {
+            // Runtime permissions can change while the system-owned CDM picker is in front of the app.
+            Log.w(TAG, "cannot bond device: BLUETOOTH_CONNECT was revoked", error)
+            false
+        } catch (error: RuntimeException) {
+            // Bluetooth is optional to the rest of NotiSync; a stack/service failure must not crash the app.
+            Log.w(TAG, "bond request failed", error)
+            false
         }
     }
 

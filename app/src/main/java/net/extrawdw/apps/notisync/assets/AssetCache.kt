@@ -47,6 +47,6 @@ class AssetCache(baseDir: File, private val maxBytes: Long = DEFAULT_MAX_BYTES) 
     }
 
     private companion object {
-        const val DEFAULT_MAX_BYTES = 64L * 1024 * 1024
+        const val DEFAULT_MAX_BYTES = 512L * 1024 * 1024
     }
 }

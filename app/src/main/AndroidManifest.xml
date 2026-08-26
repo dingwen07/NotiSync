@@ -29,13 +29,10 @@
     <uses-permission android:name="android.permission.NFC" />
 
     <!-- iOS notification bridge (ANCS over BLE): advertise as a peripheral, connect to the iPhone, and
-         hold the link in a connectedDevice foreground service. SCAN declares neverForLocation (we don't
-         derive location from BLE). All are runtime permissions on minSdk 34. -->
+         hold the link in a connectedDevice foreground service. CompanionDeviceManager performs discovery
+         on the app's behalf, so the bridge does not need BLUETOOTH_SCAN. Both are runtime permissions. -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADVERTISE" />
-    <uses-permission
-        android:name="android.permission.BLUETOOTH_SCAN"
-        android:usesPermissionFlags="neverForLocation" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
     <uses-permission android:name="android.permission.REQUEST_COMPANION_RUN_IN_BACKGROUND" />
@@ -104,7 +101,7 @@
             android:exported="true"
             android:launchMode="singleTask"
             android:screenOrientation="user"
-            android:theme="@style/Theme.NotiSync"
+            android:theme="@style/Theme.NotiSync.Starting"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
