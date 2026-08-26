@@ -22,7 +22,6 @@
 		AC1F0000000000000000F313 /* UserNotificationsUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AC1F0000000000000000F312 /* UserNotificationsUI.framework */; };
 		B10000000000000000000001 /* OpenSSL in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000004 /* OpenSSL */; };
 		B10000000000000000000002 /* OpenSSL in Frameworks */ = {isa = PBXBuildFile; productRef = B10000000000000000000005 /* OpenSSL */; };
-		B10000000000000000000006 /* OpenSSL.framework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = B10000000000000000000008 /* OpenSSL.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		DC1B4BC713FCAD4503688855 /* NotificationService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D743FA77445C7AC5BB98D0A /* NotificationService.swift */; };
 /* End PBXBuildFile section */
 
@@ -56,17 +55,6 @@
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		B10000000000000000000007 /* Embed Frameworks */ = {
-			isa = PBXCopyFilesBuildPhase;
-			buildActionMask = 2147483647;
-			dstPath = "";
-			dstSubfolderSpec = 10;
-			files = (
-				B10000000000000000000006 /* OpenSSL.framework in Embed Frameworks */,
-			);
-			name = "Embed Frameworks";
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -78,7 +66,6 @@
 		AC1F0000000000000000F301 /* NotificationContent.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationContent.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC1F0000000000000000F310 /* MainInterface.storyboard */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = file.storyboard; path = MainInterface.storyboard; sourceTree = "<group>"; };
 		AC1F0000000000000000F312 /* UserNotificationsUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UserNotificationsUI.framework; path = System/Library/Frameworks/UserNotificationsUI.framework; sourceTree = SDKROOT; };
-		B10000000000000000000008 /* OpenSSL.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = OpenSSL.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		C207CE506E8E55724AF9B3F7 /* NotificationService.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = NotificationService.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -189,7 +176,6 @@
 			children = (
 				4374C60E2D5BE97C1B8C93DD /* iOS */,
 				AC1F0000000000000000F312 /* UserNotificationsUI.framework */,
-				B10000000000000000000008 /* OpenSSL.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -273,7 +259,6 @@
 			buildPhases = (
 				CF50B4C8A52588801BCC10F3 /* Sources */,
 				CACF9B0A0F1659EA5AC5ACA6 /* Frameworks */,
-				B10000000000000000000007 /* Embed Frameworks */,
 				2C07D085416E1ECFA10A71A6 /* Resources */,
 			);
 			buildRules = (
@@ -663,7 +648,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
-					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.extrawdw.apps.NotiSync.NotificationService;
@@ -700,7 +685,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 18.6;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
-					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
 				);
 				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = net.extrawdw.apps.NotiSync.NotificationService;
