@@ -139,6 +139,17 @@ nonisolated enum PairingLinks {
     static let scheme = "notisync"
     static func link(payload: String) -> String { "https://\(httpsHost)/pair?payload=\(payload)" }
 
+    /// Accept the raw Base64URL representation or either supported pairing-link form. NFC uses the raw
+    /// payload on the wire, while QR, clipboard, and sharing keep using the human-portable URL.
+    static func payload(from pairingText: String) -> String {
+        let trimmed = pairingText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let components = URLComponents(string: trimmed),
+           let payload = components.queryItems?.first(where: { $0.name == "payload" })?.value {
+            return payload
+        }
+        return trimmed
+    }
+
     /// True if `url` is a NotiSync pairing link — the custom scheme, or the universal-link host's `/pair` path.
     static func isPairing(_ url: URL) -> Bool {
         if url.scheme?.lowercased() == scheme { return true }

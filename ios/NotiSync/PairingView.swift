@@ -4,13 +4,14 @@ import CoreImage.CIFilterBuiltins
 import SwiftUI
 import UIKit
 
-/// Bidirectional QR pairing: show this device's code and scan a peer's. Scanning surfaces the verified
+/// Bidirectional pairing over QR/clipboard or reader-only NFC. Every transport surfaces the verified
 /// candidate (safety number + key fingerprints) for the user to confirm before trusting.
 struct PairingView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
     @State private var activeSheet: ActiveSheet?
     @State private var queuedCandidate: CandidateItem?
+    @State private var nfcReaderSession: PairingNfcReaderSession?
     @State private var qrImage: UIImage?
     @State private var scanError: String?
     @State private var experienceInProgress = false
@@ -39,17 +40,45 @@ struct PairingView: View {
                         scanError = nil
                         activeSheet = .scanner
                     } label: {
-                        Label("Scan a device's code", systemImage: "qrcode.viewfinder")
+                        Label("Scan pairing code", systemImage: "qrcode.viewfinder")
                     }
                     Button {
                         scanError = nil
                         if let text = UIPasteboard.general.string {
-                            inspectPairingCode(text, fromScanner: false)
+                            inspectPairingCode(text, source: .clipboard)
                         } else {
                             scanError = String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
                         }
                     } label: {
                         Label("Paste pairing code", systemImage: "doc.on.clipboard")
+                    }
+                    if PairingNfcReaderSession.isAvailable {
+                        Button {
+                            startNfcPairing()
+                        } label: {
+                            if nfcReaderSession != nil {
+                                HStack(spacing: 8) {
+                                    ProgressView()
+                                    Text(
+                                        String(
+                                            localized: "pairing.nfc.lookingForSupportedDevice",
+                                            defaultValue: "Looking for supported device",
+                                            comment: "Pairing button state while the Core NFC reader sheet is active."
+                                        )
+                                    )
+                                }
+                            } else {
+                                Label(
+                                    String(
+                                        localized: "pairing.nfc.action",
+                                        defaultValue: "Pair with NFC",
+                                        comment: "Button that starts one-tap pairing by reading an Android HCE card."
+                                    ),
+                                    systemImage: "wave.3.right"
+                                )
+                            }
+                        }
+                        .disabled(nfcReaderSession != nil || runtime.pairingPayload == nil)
                     }
                     Button {
                         startExperienceMode()
@@ -96,7 +125,7 @@ struct PairingView: View {
                             QRScannerView { result in
                                 switch result {
                                 case let .success(code):
-                                    inspectPairingCode(code, fromScanner: true)
+                                    inspectPairingCode(code, source: .scanner)
                                 case let .failure(message):
                                     scanError = message
                                     activeSheet = nil
@@ -119,6 +148,10 @@ struct PairingView: View {
                         activeSheet = nil
                     }
                 }
+            }
+            .onDisappear {
+                nfcReaderSession?.cancel()
+                nfcReaderSession = nil
             }
         }
     }
@@ -155,21 +188,62 @@ struct PairingView: View {
         }
     }
 
-    private func inspectPairingCode(_ code: String, fromScanner: Bool) {
+    private enum PairingInputSource: Equatable {
+        case scanner
+        case clipboard
+        case nfc
+    }
+
+    private func startNfcPairing() {
+        guard let ownPairingText = runtime.pairingPayload else { return }
+        scanError = nil
+        do {
+            let session = try PairingNfcReaderSession(ownPairingText: ownPairingText) { outcome in
+                nfcReaderSession = nil
+                switch outcome {
+                case .success(let payload):
+                    inspectPairingCode(payload, source: .nfc)
+                case .canceled:
+                    break
+                case .failure(let message):
+                    scanError = message
+                }
+            }
+            nfcReaderSession = session
+            session.begin()
+        } catch {
+            scanError = String(
+                localized: "pairing.nfc.error.preparation",
+                defaultValue: "Could not prepare NFC pairing.",
+                comment: "Error when this iPhone's local pairing payload cannot be prepared for NFC."
+            )
+        }
+    }
+
+    private func inspectPairingCode(_ code: String, source: PairingInputSource) {
         Task { @MainActor in
             if let candidate = await runtime.inspectPairingAsync(code) {
                 let item = CandidateItem(candidate: candidate)
-                if fromScanner {
+                if source == .scanner {
                     queuedCandidate = item
                     activeSheet = nil
                 } else {
                     activeSheet = .candidate(item)
                 }
             } else {
-                scanError = fromScanner
-                    ? String(localized: "pairing.error.codeNotVerified", defaultValue: "That code could not be verified.", comment: "Shown when a scanned QR pairing code cannot be verified.")
-                    : String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
-                activeSheet = fromScanner ? nil : activeSheet
+                switch source {
+                case .scanner:
+                    scanError = String(localized: "pairing.error.codeNotVerified", defaultValue: "That code could not be verified.", comment: "Shown when a scanned QR pairing code cannot be verified.")
+                    activeSheet = nil
+                case .clipboard:
+                    scanError = String(localized: "pairing.error.noValidClipboard", defaultValue: "No valid pairing code on the clipboard.", comment: "Shown when the clipboard does not contain a valid pairing code.")
+                case .nfc:
+                    scanError = String(
+                        localized: "pairing.nfc.error.notVerified",
+                        defaultValue: "The NFC pairing information could not be verified.",
+                        comment: "Error after NFC transport succeeds but the peer's signed pairing card does not verify."
+                    )
+                }
             }
         }
     }
@@ -238,7 +312,7 @@ struct PairingConfirmView: View {
                     Text("“My device” shares notifications, dismissals, and trust. “Someone else’s” only syncs their name.")
                 }
             }
-            .navigationTitle("Confirm Pairing")
+            .navigationTitle("Device Pairing")
         }
     }
 }

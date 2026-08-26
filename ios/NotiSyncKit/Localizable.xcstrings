@@ -1001,12 +1001,12 @@
         }
       }
     },
-    "Confirm Pairing" : {
+    "Device Pairing" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "确认配对"
+            "value" : "设备配对"
           }
         }
       }
@@ -3597,6 +3597,276 @@
         }
       }
     },
+    "pairing.nfc.action" : {
+      "comment" : "Button that starts one-tap pairing by reading an Android HCE card.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Pair with NFC"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "通过 NFC 配对"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.deviceNotReady" : {
+      "comment" : "Error when the device has no cached local pairing payload.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The device is not ready for NFC pairing. Open NotiSync on it, make sure it is unlocked, and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "设备尚未准备好进行 NFC 配对。请在该设备上打开 NotiSync，确保设备已解锁，然后重试。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.communication" : {
+      "comment" : "Generic NFC pairing communication error.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Could not exchange pairing information over NFC. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法通过 NFC 交换配对信息。请重试。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.incompatible" : {
+      "comment" : "Error when the Android HCE protocol does not support a compatible pairing operation.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "This device does not support NotiSync one-tap pairing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备不支持 NotiSync 一碰配对。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.invalidExchange" : {
+      "comment" : "Error when the Android HCE protocol response is malformed or rejects the exchange.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The NFC pairing information was invalid."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NFC 配对信息无效。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.notVerified" : {
+      "comment" : "Error after NFC transport succeeds but the peer's signed pairing card does not verify.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "The NFC pairing information could not be verified."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法验证 NFC 配对信息。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.preparation" : {
+      "comment" : "Error when this iPhone's local pairing payload cannot be prepared for NFC.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Could not prepare NFC pairing."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "无法准备 NFC 配对。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.timeout" : {
+      "comment" : "Error shown after the Core NFC reader session times out.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "NFC pairing timed out. Try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NFC 配对超时。请重试。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.error.unavailable" : {
+      "comment" : "Error when Core NFC tag reading is unavailable.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "NFC pairing is unavailable on this device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "此设备无法使用 NFC 配对。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.lookingForSupportedDevice" : {
+      "comment" : "Pairing button state while the Core NFC reader sheet is active.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Looking for supported device"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "正在查找受支持的设备"
+          }
+        }
+      }
+    },
+    "pairing.nfc.scan.connectionLost" : {
+      "comment" : "Core NFC scan-sheet instruction after losing the Android HCE connection.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Connection lost. Hold the devices together and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "连接已断开。请保持两台设备贴近，然后重试。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.scan.multipleDevices" : {
+      "comment" : "Core NFC scan-sheet instruction when multiple NFC devices are detected.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "More than one device detected. Move other NFC devices away and try again."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "检测到多台设备。请移开其他 NFC 设备，然后重试。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.scan.prompt" : {
+      "comment" : "Core NFC scan-sheet instruction for pairing with a supported device that emulates a card.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Hold the top of this iPhone near the supported device. Make sure the device is unlocked."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "将此 iPhone 的顶部靠近受支持的设备，并确保该设备已解锁。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.scan.success" : {
+      "comment" : "Core NFC scan-sheet success message after reciprocal pairing data exchange.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Pairing information exchanged."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "已交换配对信息。"
+          }
+        }
+      }
+    },
+    "pairing.nfc.scan.unsupportedCard" : {
+      "comment" : "Core NFC scan-sheet instruction after detecting a non-NotiSync card.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "That is not a compatible NotiSync device. Try another supported device."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "这不是兼容的 NotiSync 设备。请尝试另一台受支持的设备。"
+          }
+        }
+      }
+    },
     "Passkey" : {
       "comment" : "A heading for the SSH passkey.",
       "isCommentAutoGenerated" : true,
@@ -4533,12 +4803,12 @@
         }
       }
     },
-    "Scan a device's code" : {
+    "Scan pairing code" : {
       "localizations" : {
         "zh-Hans" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "扫描设备代码"
+            "value" : "扫描配对码"
           }
         }
       }

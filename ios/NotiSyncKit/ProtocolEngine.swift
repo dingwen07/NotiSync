@@ -848,11 +848,7 @@ nonisolated final class NotiSyncEngine: Sendable {
     // MARK: Helpers
 
     static func extractPairingPayload(_ scanned: String) -> String {
-        let trimmed = scanned.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let comps = URLComponents(string: trimmed), let item = comps.queryItems?.first(where: { $0.name == "payload" })?.value {
-            return item
-        }
-        return trimmed
+        PairingLinks.payload(from: scanned)
     }
 
     static func nowMillis() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
