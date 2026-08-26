@@ -1496,8 +1496,8 @@ class AppGraph(private val app: Application) {
      * wake → relay-fetch path: the exact flow the large-notification fix added. Returns the number of
      * peer devices it was sealed to (0 if none are paired, in which case nothing is sent).
      */
-    suspend fun sendOversizedDiagnostic(): Int {
-        val mirror = mirrorEngine ?: return 0
+    suspend fun sendOversizedDiagnostic(): Int = withContext(Dispatchers.IO) {
+        val mirror = mirrorEngine ?: return@withContext 0
         // ~8 KB of body text: comfortably past the 3 KB base64 inline budget once sealed + encoded.
         val filler =
             "NotiSync oversized diagnostic — this payload is deliberately too large to inline in " +
@@ -1518,7 +1518,7 @@ class AppGraph(private val app: Application) {
             channelName = "NotiSync Test"
         )
         val withAppIcon = graphicsPipeline?.attachAppIcon(notif) ?: notif
-        return mirror.captureLocal(withAppIcon)
+        mirror.captureLocal(withAppIcon)
     }
 
     companion object {
