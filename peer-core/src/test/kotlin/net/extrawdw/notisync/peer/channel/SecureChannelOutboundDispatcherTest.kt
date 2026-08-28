@@ -51,7 +51,7 @@ class SecureChannelOutboundDispatcherTest {
             )
 
             channel.send(
-                MessageType.NOTIFICATION,
+                MessageType.DATA_SYNC,
                 byteArrayOf(1),
                 Recipients.OwnMesh,
                 Urgency.HIGH,

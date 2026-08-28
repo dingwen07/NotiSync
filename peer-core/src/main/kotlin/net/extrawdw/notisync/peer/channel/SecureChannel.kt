@@ -166,7 +166,6 @@ class SecureChannel(
         urgency: Urgency,
         signWith: SignerSelection,
     ): Int {
-        validateOutboundPolicy(typ, bodies, scope, urgency)
         val recipients = directory.recipients(scope)
         // Send-initiated key-epoch repair (same handler as the receive-side unresolved-sender path): a trusted
         // peer this scope targets but that we can't currently seal to was filtered out of `recipients`, so
@@ -247,7 +246,6 @@ class SecureChannel(
         signWith: SignerSelection,
         onAccepted: (OutboundItem) -> Unit,
     ): Int {
-        validateOutboundPolicy(typ, items.map(OutboundItem::body), scope, urgency)
         if (items.isEmpty()) return 0
         require(items.all { it.messageId.isNotBlank() }) { "strict outbound messageId must not be blank" }
 
@@ -471,14 +469,4 @@ class SecureChannel(
     /** This device's id — exposed so callers can recognise self without reaching for the signer. */
     val clientId: ClientId get() = signer.clientId
 
-    private fun validateOutboundPolicy(
-        typ: MessageType,
-        bodies: List<ByteArray>,
-        scope: Recipients,
-        urgency: Urgency,
-    ) {
-        if (typ != MessageType.DATA_SYNC || urgency != Urgency.HIGH) return
-        if (bodies.isEmpty()) HighDataSyncPolicy.validateEmpty(scope)
-        else bodies.forEach { HighDataSyncPolicy.validate(it, scope, clientId) }
-    }
 }

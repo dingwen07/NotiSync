@@ -10,8 +10,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.DesktopProcessContextSource
-import net.extrawdw.notisync.protocol.SshAgentSync
-import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
@@ -199,18 +197,14 @@ class SignCoordinator(
     ) {
         if (providers.isEmpty() || reason == null) return
         runCatching {
-            bridge.sendNormal(
-                SshAgentSync(
-                    kind = SshAgentSyncKind.SIGN_REQUEST_CANCELLED,
-                    signRequestCancelled = SshSignRequestCancelled(
-                        operation.request.requestId,
-                        requesterClientId,
-                        now(),
-                        reason,
-                        providers.sortedBy(ClientId::value),
-                    ),
+            bridge.sendSignRequestCancelled(
+                SshSignRequestCancelled(
+                    operation.request.requestId,
+                    requesterClientId,
+                    now(),
+                    reason,
+                    providers.sortedBy(ClientId::value),
                 ),
-                providers,
             )
         }
     }
