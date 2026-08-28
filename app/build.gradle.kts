@@ -2,9 +2,6 @@ import java.util.Properties
 
 plugins {
     alias(libs.plugins.android.application)
-    // AGP 9.2.x compiles Kotlin via built-in Kotlin (bundled KGP 2.2.10) — do NOT apply
-    // org.jetbrains.kotlin.android (it conflicts). The compose + serialization compiler plugins
-    // coexist with built-in Kotlin. Room 3 uses KSP for the two versioned database schemas.
     alias(libs.plugins.ksp)
     alias(libs.plugins.room3)
     alias(libs.plugins.kotlin.compose)
@@ -33,8 +30,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 61
-        versionName = "2.4.1-rc.1"
+        versionCode = 62
+        versionName = "2.4.2-rc.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -102,11 +99,8 @@ dependencies {
     implementation(libs.androidx.compose.ui.graphics)
     implementation(libs.androidx.compose.ui.tooling.preview)
     implementation(libs.androidx.compose.material3)
-    implementation(libs.androidx.compose.material3.windowsizeclass)
     implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     implementation(libs.androidx.compose.material3.adaptive)
-    implementation(libs.androidx.compose.material3.adaptive.layout)
-    implementation(libs.androidx.compose.material3.adaptive.navigation)
     implementation(libs.androidx.compose.material.icons.extended)
     implementation(libs.androidx.navigation.compose)
 

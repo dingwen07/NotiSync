@@ -288,9 +288,6 @@ private fun RunListItem(
         ListItem(
             modifier = Modifier.fillMaxWidth().clickable { onSelect(run) },
             leadingContent = { RunPhaseIcon(state.phase) },
-            headlineContent = {
-                Text(commandLabel(state), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
             supportingContent = {
                 Column {
                     Text(
@@ -308,7 +305,9 @@ private fun RunListItem(
                     )
                 }
             },
-        )
+        ) {
+            Text(commandLabel(state), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
     HorizontalDivider()
 }

@@ -133,9 +133,6 @@ internal fun SshRequestListItem(
         ListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SshStatusIcon(status) },
-            headlineContent = {
-                Text(request.headline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
             supportingContent = {
                 Column {
                     Text(
@@ -153,7 +150,9 @@ internal fun SshRequestListItem(
                 }
             },
             trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
-        )
+        ) {
+            Text(request.headline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
     HorizontalDivider()
 }

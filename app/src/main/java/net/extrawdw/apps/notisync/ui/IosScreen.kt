@@ -591,7 +591,6 @@ private fun PairingCard(
 ) {
     Card(modifier = Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp)) {
         ListItem(
-            headlineContent = { Text(stringResource(R.string.ios_pairing_title)) },
             supportingContent = {
                 Text(
                     when {
@@ -605,7 +604,7 @@ private fun PairingCard(
                 if (associated) TextButton(onClick = onForget) { Text(stringResource(R.string.ios_pairing_forget)) }
                 else Button(onClick = onPair) { Text(stringResource(R.string.ios_pairing_setup)) }
             },
-        )
+        ) { Text(stringResource(R.string.ios_pairing_title)) }
     }
 }
 
@@ -671,7 +670,6 @@ private fun IosAppRow(
     ListItem(
         modifier = if (canToggle) Modifier.clickable { onToggle(!isOn) } else Modifier,
         leadingContent = { AppIconSquare(icon) },
-        headlineContent = { Text(app.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
                 app.bundleId,
@@ -694,7 +692,9 @@ private fun IosAppRow(
                 )
             }
         },
-    )
+    ) {
+        Text(app.displayName, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 @Composable

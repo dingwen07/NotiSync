@@ -41,13 +41,14 @@ class GpgKeyResolver(private val realGpgPath: Path) {
             val fields = line.split(':')
             when (fields.firstOrNull()) {
                 "pub" -> {
-                    current = Certificate(
+                    val certificate = Certificate(
                         primaryKeyId = fields.getOrNull(4).orEmpty().uppercase(),
                         primaryUsable = fields.usableRecord(),
                     )
-                    certificates += current!!
-                    current!!.identifiers += current!!.primaryKeyId
-                    if (fields.usableSigningRecord()) current!!.hasUsableSigningKey = true
+                    current = certificate
+                    certificates += certificate
+                    certificate.identifiers += certificate.primaryKeyId
+                    if (fields.usableSigningRecord()) certificate.hasUsableSigningKey = true
                     lastRecord = "pub"
                 }
                 "sub" -> {

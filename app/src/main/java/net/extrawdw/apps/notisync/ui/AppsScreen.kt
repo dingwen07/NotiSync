@@ -291,7 +291,6 @@ private fun AppRow(
             if (isOn) onOpenConfig(app) else selection.setEnabled(app.packageName, true)
         },
         leadingContent = { AppIcon(app.icon) },
-        headlineContent = { Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis) },
         supportingContent = {
             Text(
                 if (lastSeen != null) stringResource(
@@ -307,7 +306,9 @@ private fun AppRow(
                 checked = isOn,
                 onCheckedChange = { on -> selection.setEnabled(app.packageName, on) })
         },
-    )
+    ) {
+        Text(app.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
 }
 
 @Composable
