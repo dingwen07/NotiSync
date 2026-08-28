@@ -22,7 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.security.interfaces.RSAPublicKey
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyPreview
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 
