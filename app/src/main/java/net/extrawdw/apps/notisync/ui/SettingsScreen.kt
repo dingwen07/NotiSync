@@ -343,8 +343,8 @@ fun SettingsScreen() {
                                 }
                             }
                             val removedRequestIds = outcome.getOrNull()?.removedRequestIds ?: requestIds
-                            removedRequestIds.forEach(graph.sshAgentNotifications::dismiss)
-                            graph.sshAgentProviderEngine?.publishInventory()
+                            removedRequestIds.forEach(graph.sshKeyProviderNotifications::dismiss)
+                            graph.sshKeyProviderEngine?.publishInventory()
                             sshKeyStoreReset = outcome.fold(
                                 onSuccess = { SshKeyStoreResetState.Done(it.removedKeyCount) },
                                 onFailure = { SshKeyStoreResetState.Failed(it.message ?: it.javaClass.simpleName) },

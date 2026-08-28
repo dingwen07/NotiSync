@@ -4,7 +4,7 @@ import android.content.Context
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import net.extrawdw.apps.notisync.seal.OpenPgpSignReviewActivity
-import net.extrawdw.apps.notisync.sshagent.SshAgentReviewActivity
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderReviewActivity
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -27,9 +27,9 @@ class RequestReviewIntentIdentityTest {
     @Test
     fun sshNotificationAndAutomaticLaunchesHaveDistinctIntentIdentities() {
         assertDistinctLaunchIdentities(
-            notification = SshAgentReviewActivity.intent(context, REQUEST_ID),
-            automatic = SshAgentReviewActivity.autoOpenIntent(context, REQUEST_ID),
-            approval = SshAgentReviewActivity.approveIntent(context, REQUEST_ID),
+            notification = SshKeyProviderReviewActivity.intent(context, REQUEST_ID),
+            automatic = SshKeyProviderReviewActivity.autoOpenIntent(context, REQUEST_ID),
+            approval = SshKeyProviderReviewActivity.approveIntent(context, REQUEST_ID),
         )
     }
 

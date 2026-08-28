@@ -44,7 +44,7 @@ import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpEnrollmentStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorCodecPreferenceStore
-import net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.NotificationFilterRule

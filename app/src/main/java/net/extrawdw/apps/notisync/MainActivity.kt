@@ -105,7 +105,7 @@ import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
-import net.extrawdw.apps.notisync.ui.SshAgentScreen
+import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -599,7 +599,7 @@ fun NotiSyncRoot(
                 }
                 composable<Route.Seal> { SealScreen() }
                 composable<Route.SshAgent> {
-                    SshAgentScreen(
+                    SshKeyProviderScreen(
                         initialHistoryRequestId = latestOpenSshHistoryRequestId.value,
                         onInitialHistoryRequestConsumed = latestOnOpenSshHistoryConsumed.value,
                     )

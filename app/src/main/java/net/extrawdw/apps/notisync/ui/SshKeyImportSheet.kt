@@ -32,7 +32,7 @@ import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyPreview
 
 internal enum class SshKeyImportSheetStep {
     CLIPBOARD,
