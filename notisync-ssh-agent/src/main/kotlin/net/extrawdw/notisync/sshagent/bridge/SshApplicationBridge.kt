@@ -18,6 +18,7 @@ import net.extrawdw.notisync.protocol.SshAgentSyncKind
 import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshKeysRequest
 import net.extrawdw.notisync.protocol.SshSignRequest
+import net.extrawdw.notisync.protocol.SshSignRequestCancelled
 import net.extrawdw.notisync.protocol.Urgency
 
 class SshApplicationBridge(
@@ -101,6 +102,32 @@ class SshApplicationBridge(
         )
     }
 
+    fun sendSignRequestCancelled(cancellation: SshSignRequestCancelled) {
+        val validationError = cancellation.validationError()
+        require(validationError == null) { validationError ?: "invalid SSH sign cancellation" }
+        val filteredProviderIds = roster.eligibleProviders()
+            .filter(ProviderPeer::supportsFilteredPush)
+            .mapTo(hashSetOf(), ProviderPeer::clientId)
+        val partitions = listOf(
+            cancellation.targetProviderClientIds.filter(filteredProviderIds::contains) to Urgency.HIGH,
+            cancellation.targetProviderClientIds.filterNot(filteredProviderIds::contains) to Urgency.NORMAL,
+        )
+        val sends = partitions.filter { it.first.isNotEmpty() }.map { (targetIds, urgency) ->
+            val partitionedCancellation = cancellation.copy(
+                targetProviderClientIds = targetIds.sortedBy(ClientId::value),
+            )
+            sendRequest(
+                SshAgentSync(
+                    kind = SshAgentSyncKind.SIGN_REQUEST_CANCELLED,
+                    signRequestCancelled = partitionedCancellation,
+                ),
+                partitionedCancellation.targetProviderClientIds,
+                urgency,
+            )
+        }
+        api.sendAll(sends)
+    }
+
     fun sendNormal(sync: SshAgentSync, targetProviderIds: List<ClientId>) {
         require(targetProviderIds.isNotEmpty())
         api.send(sendRequest(sync, targetProviderIds.sortedBy(ClientId::value), Urgency.NORMAL))
@@ -153,7 +180,16 @@ class SshApplicationBridge(
                 require(request.requesterClientId !in targets) { "SSH audience must exclude requester" }
                 require(targets.size == 1) { "HIGH import must target exactly one key provider" }
             }
-            else -> throw IllegalArgumentException("only SSH keys/sign/import requests may use HIGH urgency")
+            SshAgentSyncKind.SIGN_REQUEST_CANCELLED -> {
+                val cancellation = requireNotNull(sync.signRequestCancelled)
+                require(cancellation.requesterClientId !in targets) { "SSH audience must exclude requester" }
+                require(targets == cancellation.targetProviderClientIds.toSet()) {
+                    "HIGH cancellation audience must equal the signed target set"
+                }
+            }
+            else -> throw IllegalArgumentException(
+                "only SSH keys/sign/import requests and sign cancellations may use HIGH urgency",
+            )
         }
     }
 

@@ -15,6 +15,7 @@ import net.extrawdw.notisync.localapi.ReceiveRecordType
 import net.extrawdw.notisync.localapi.ReceiveRequest
 import net.extrawdw.notisync.localapi.SendAccepted
 import net.extrawdw.notisync.localapi.SendRequest
+import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
@@ -75,7 +76,11 @@ class RemoteSigningClientTest {
         )
         assertEquals(Urgency.HIGH, api.sends.first().urgency)
         assertEquals("C:\\work\\NotiSync", api.decodeRequest(api.sends.first()).workingDirectory)
-        assertEquals(Urgency.NORMAL, api.sends.last().urgency)
+        assertEquals(Urgency.HIGH, api.sends.last().urgency)
+        assertEquals(OpenPgpSignAction.CANCEL, api.decodeRequest(api.sends.last()).action)
+        val cancelScope = api.sends.last().scope as Recipients.OwnMeshFiltered
+        assertTrue(Capability.PUSH_FILTERING in cancelScope.requiredCapabilities)
+        assertTrue(cancelScope.requireCapabilityRoutingV1)
         assertTrue(api.sends.last().submissionId!!.endsWith("-cancel"))
     }
 

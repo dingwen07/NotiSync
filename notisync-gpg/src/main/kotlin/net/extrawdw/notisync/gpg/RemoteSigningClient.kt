@@ -123,7 +123,7 @@ class RemoteSigningClient(
                 }
             }
         } finally {
-            if (submitted) runCatching { api.send(request.cancel(now()).toSendRequest(Urgency.NORMAL)) }
+            if (submitted) runCatching { api.send(request.cancel(now()).toSendRequest(Urgency.HIGH)) }
             runCatching { stream.close() }
             runCatching { api.unregisterReceive(interest) }
         }

@@ -23,14 +23,8 @@ import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.ActionKind
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.DataSync
-import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.notisync.protocol.ScreenMirrorAction
-import net.extrawdw.notisync.protocol.ScreenMirrorCodec
-import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
-import net.extrawdw.notisync.protocol.ScreenMirrorSync
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -131,117 +125,17 @@ class GenericSendResolverTest {
     }
 
     @Test
-    fun `high data sync requires a routed wakeable filtering audience`() {
+    fun `explicit high data sync passes through without body or audience inspection`() {
         val resolver = GenericSendResolver(applications, ActionOriginPolicy { false })
-        val required = setOf(
-            Capability.DISPLAY,
-            Capability.BACKGROUND_WAKE,
-            Capability.PUSH_FILTERING,
-            Capability.RECEIVE_RUNS,
-        )
-        val validScope = Recipients.OwnMeshFiltered(
-            requiredCapabilities = required,
-            requireCapabilityRoutingV1 = true,
-        )
-
-        val resolved = resolver.resolveAll(
-            listOf(request(MessageType.DATA_SYNC, urgency = Urgency.HIGH, scope = validScope)),
-        ).single()
-        assertEquals(validScope, resolved.scope)
-        assertEquals(Urgency.HIGH, resolved.urgency)
-
-        assertThrows(IllegalArgumentException::class.java) {
-            resolver.resolveAll(listOf(request(MessageType.DATA_SYNC, urgency = Urgency.HIGH)))
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            resolver.resolveAll(
-                listOf(
-                    request(
-                        MessageType.DATA_SYNC,
-                        urgency = Urgency.HIGH,
-                        scope = validScope.copy(requireCapabilityRoutingV1 = false),
-                    ),
-                ),
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            resolver.resolveAll(
-                listOf(
-                    request(
-                        MessageType.DATA_SYNC,
-                        urgency = Urgency.HIGH,
-                        scope = validScope.copy(
-                            requiredCapabilities = required - Capability.PUSH_FILTERING,
-                        ),
-                    ),
-                ),
-            )
-        }
-    }
-
-    @Test
-    fun `high screen request requires exact source and matching declared features`() {
-        val resolver = GenericSendResolver(applications, ActionOriginPolicy { false })
-        val source = ClientId("screen-source")
-        val mirror = ScreenMirrorSync(
-            action = ScreenMirrorAction.REQUEST,
-            sessionId = "session",
-            requesterPeerId = ClientId("desktop"),
-            sourcePeerId = source,
-            issuedAt = 1_000,
-            expiresAt = 301_000,
-            routingToken = ByteArray(16),
-            masterPsk = ByteArray(32),
-            codec = ScreenMirrorCodec.AV1,
-            requestControl = true,
-            requestClipboard = true,
-            candidates = listOf(
-                ScreenMirrorConnectionCandidate(
-                    ScreenMirrorConnectionCandidate.LAN_TCP,
-                    host = "192.0.2.20",
-                    port = 27_171,
-                ),
-            ),
-        )
-        val body = ProtocolCodec.encodeToCbor(
-            DataSync(DataSyncKind.SCREEN_MIRRORING, screenMirror = mirror),
-        )
-        val scope = Recipients.OnlyCapable(source, mirror.requiredSourceCapabilities())
+        val body = byteArrayOf(7)
+        val scope = Recipients.OwnMesh
 
         val resolved = resolver.resolveAll(
             listOf(request(MessageType.DATA_SYNC, body, urgency = Urgency.HIGH, scope = scope)),
         ).single()
+        assertTrue(body.contentEquals(resolved.body))
         assertEquals(scope, resolved.scope)
-
-        assertThrows(IllegalArgumentException::class.java) {
-            resolver.resolveAll(
-                listOf(
-                    request(
-                        MessageType.DATA_SYNC,
-                        body,
-                        urgency = Urgency.HIGH,
-                        scope = scope.copy(id = ClientId("another-source")),
-                    ),
-                ),
-            )
-        }
-        assertThrows(IllegalArgumentException::class.java) {
-            resolver.resolveAll(
-                listOf(
-                    request(
-                        MessageType.DATA_SYNC,
-                        ProtocolCodec.encodeToCbor(
-                            DataSync(
-                                DataSyncKind.SCREEN_MIRRORING,
-                                screenMirror = mirror.copy(action = ScreenMirrorAction.STATUS),
-                            ),
-                        ),
-                        urgency = Urgency.HIGH,
-                        scope = scope,
-                    ),
-                ),
-            )
-        }
+        assertEquals(Urgency.HIGH, resolved.urgency)
     }
 
     @Test
