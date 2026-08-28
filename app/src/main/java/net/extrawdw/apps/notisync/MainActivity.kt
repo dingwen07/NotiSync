@@ -41,7 +41,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -485,7 +485,7 @@ fun NotiSyncRoot(
     }
 
     val layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(
-        currentWindowAdaptiveInfo()
+        currentWindowAdaptiveInfoV2()
     )
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)

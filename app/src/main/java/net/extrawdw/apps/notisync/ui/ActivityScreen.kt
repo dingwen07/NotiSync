@@ -73,9 +73,8 @@ fun ActivityScreen() {
                                 )
                             )
                         },
-                        headlineContent = { Text(e.title) },
                         supportingContent = { Text(activityDetail(e)) },
-                    )
+                    ) { Text(e.title) }
                     HorizontalDivider()
                 }
             }

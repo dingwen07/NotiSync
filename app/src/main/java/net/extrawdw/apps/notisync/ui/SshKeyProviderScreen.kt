@@ -1792,16 +1792,14 @@ private fun WebAuthnFlowSheet(
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     ListItem(
-                        headlineContent = { Text(stringResource(R.string.ssh_agent_webauthn_generate_action)) },
                         supportingContent = { Text(stringResource(R.string.ssh_agent_webauthn_generate_help)) },
                         leadingContent = { Icon(Icons.Outlined.Add, contentDescription = null) },
                         trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(role = Role.Button, onClick = onGenerateStep),
-                    )
+                    ) { Text(stringResource(R.string.ssh_agent_webauthn_generate_action)) }
                     ListItem(
-                        headlineContent = { Text(stringResource(R.string.ssh_agent_webauthn_use_existing_action)) },
                         supportingContent = { Text(stringResource(R.string.ssh_agent_webauthn_use_existing_help)) },
                         leadingContent = {
                             Icon(painterResource(R.drawable.ic_webauthn), contentDescription = null)
@@ -1810,7 +1808,7 @@ private fun WebAuthnFlowSheet(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(role = Role.Button, onClick = onUseExisting),
-                    )
+                    ) { Text(stringResource(R.string.ssh_agent_webauthn_use_existing_action)) }
                 }
 
                 WebAuthnSheetStep.GENERATE -> Column(

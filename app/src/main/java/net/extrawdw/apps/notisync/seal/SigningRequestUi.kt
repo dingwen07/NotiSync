@@ -152,9 +152,6 @@ internal fun SigningRequestListItem(
         ListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SealStatusIcon(status) },
-            headlineContent = {
-                Text(headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
             supportingContent = {
                 Column {
                     Text(
@@ -179,7 +176,9 @@ internal fun SigningRequestListItem(
             trailingContent = {
                 Icon(Icons.Outlined.ChevronRight, contentDescription = null)
             },
-        )
+        ) {
+            Text(headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
     HorizontalDivider()
 }
