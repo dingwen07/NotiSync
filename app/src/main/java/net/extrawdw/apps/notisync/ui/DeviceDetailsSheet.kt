@@ -10,11 +10,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ScreenShare
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.outlined.Restore
-import androidx.compose.material.icons.outlined.Smartphone
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
+import net.extrawdw.apps.notisync.ui.icons.material.filled.delete as FilledDeleteIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.restore as RestoreIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -148,7 +147,7 @@ internal fun DeviceDetailsSheet(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(
-                            Icons.AutoMirrored.Outlined.ScreenShare,
+                            ScreenShareIcon,
                             contentDescription = null,
                             modifier = Modifier.size(ButtonDefaults.IconSize),
                         )
@@ -180,7 +179,7 @@ internal fun DeviceDetailsSheet(
                         modifier = Modifier.fillMaxWidth(),
                     ) {
                         Icon(
-                            Icons.Filled.Delete,
+                            FilledDeleteIcon,
                             contentDescription = null,
                             modifier = Modifier.size(ButtonDefaults.IconSize),
                         )
@@ -233,7 +232,7 @@ private fun RevokedDeviceActions(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(
-                Icons.Outlined.Restore,
+                RestoreIcon,
                 contentDescription = null,
                 modifier = Modifier.size(ButtonDefaults.IconSize),
             )
@@ -257,7 +256,7 @@ private fun RevokedDeviceActions(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(
-                Icons.Filled.Delete,
+                FilledDeleteIcon,
                 contentDescription = null,
                 modifier = Modifier.size(ButtonDefaults.IconSize),
             )
@@ -371,7 +370,7 @@ private fun DeviceDetailsHeader(name: String, platform: String, verified: Boolea
             contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
         ) {
             Icon(
-                Icons.Outlined.Smartphone,
+                SmartphoneIcon,
                 contentDescription = null,
                 modifier = Modifier.padding(12.dp).size(32.dp),
             )

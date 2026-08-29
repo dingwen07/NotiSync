@@ -64,21 +64,20 @@ import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.DragHandle
-import androidx.compose.material.icons.outlined.Home
-import androidx.compose.material.icons.outlined.Keyboard
-import androidx.compose.material.icons.outlined.MoreVert
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.PowerSettingsNew
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.VerticalAlignBottom
-import androidx.compose.material.icons.outlined.VerticalAlignTop
-import androidx.compose.material.icons.outlined.Visibility
-import androidx.compose.material.icons.outlined.VisibilityOff
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.drag_handle as DragHandleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.home as HomeIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.keyboard as KeyboardIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.more_vert as MoreVertIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications as NotificationsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.power_settings_new as PowerSettingsNewIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.vertical_align_bottom as VerticalAlignBottomIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.vertical_align_top as VerticalAlignTopIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility as VisibilityIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility_off as VisibilityOffIcon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
@@ -904,7 +903,7 @@ private fun AndroidScreenViewerToolbar(
             ) {
                 IconButton(onClick = onClose) {
                     Icon(
-                        Icons.Outlined.Close,
+                        CloseIcon,
                         contentDescription = stringResource(R.string.screen_viewer_close),
                     )
                 }
@@ -953,7 +952,7 @@ private fun AndroidScreenViewerToolbar(
                 Box {
                     IconButton(onClick = { menuExpanded = true }) {
                         Icon(
-                            Icons.Outlined.MoreVert,
+                            MoreVertIcon,
                             contentDescription = stringResource(R.string.screen_viewer_more_options),
                         )
                     }
@@ -982,7 +981,7 @@ private fun AndroidScreenViewerToolbar(
                         DropdownMenuItem(
                             text = { Text(stringResource(R.string.screen_viewer_customize_controls)) },
                             leadingIcon = {
-                                Icon(Icons.Outlined.Settings, contentDescription = null)
+                                Icon(SettingsIcon, contentDescription = null)
                             },
                             onClick = {
                                 menuExpanded = false
@@ -1004,9 +1003,9 @@ private fun AndroidScreenViewerToolbar(
                             leadingIcon = {
                                 Icon(
                                     if (edge == ScreenViewerToolbarEdge.TOP) {
-                                        Icons.Outlined.VerticalAlignBottom
+                                        VerticalAlignBottomIcon
                                     } else {
-                                        Icons.Outlined.VerticalAlignTop
+                                        VerticalAlignTopIcon
                                     },
                                     contentDescription = null,
                                 )
@@ -1037,9 +1036,9 @@ private fun AndroidScreenViewerToolbar(
                             leadingIcon = {
                                 Icon(
                                     if (statusBarVisible) {
-                                        Icons.Outlined.VisibilityOff
+                                        VisibilityOffIcon
                                     } else {
-                                        Icons.Outlined.Visibility
+                                        VisibilityIcon
                                     },
                                     contentDescription = null,
                                 )
@@ -1136,7 +1135,7 @@ private fun ScreenViewerControlDialog(
                                 onCheckedChange = null,
                             )
                             Icon(
-                                Icons.Outlined.DragHandle,
+                                DragHandleIcon,
                                 contentDescription = stringResource(
                                     R.string.screen_viewer_reorder_control,
                                 ),
@@ -1194,12 +1193,12 @@ private fun ScreenViewerControlDialog(
 }
 
 private fun ScreenViewerControl.icon(): androidx.compose.ui.graphics.vector.ImageVector = when (this) {
-    ScreenViewerControl.BACK -> Icons.AutoMirrored.Outlined.ArrowBack
-    ScreenViewerControl.HOME -> Icons.Outlined.Home
-    ScreenViewerControl.RECENTS -> Icons.Outlined.Apps
-    ScreenViewerControl.KEYBOARD -> Icons.Outlined.Keyboard
-    ScreenViewerControl.POWER -> Icons.Outlined.PowerSettingsNew
-    ScreenViewerControl.NOTIFICATION_PANEL -> Icons.Outlined.Notifications
+    ScreenViewerControl.BACK -> ArrowBackIcon
+    ScreenViewerControl.HOME -> HomeIcon
+    ScreenViewerControl.RECENTS -> AppsIcon
+    ScreenViewerControl.KEYBOARD -> KeyboardIcon
+    ScreenViewerControl.POWER -> PowerSettingsNewIcon
+    ScreenViewerControl.NOTIFICATION_PANEL -> NotificationsIcon
 }
 
 private fun ScreenViewerControl.labelResource(): Int = when (this) {

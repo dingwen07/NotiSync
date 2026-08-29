@@ -17,9 +17,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.VerifiedUser
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.verified_user as VerifiedUserIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -215,7 +214,7 @@ private fun SealRequestList(
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Icon(
-                        Icons.Outlined.VerifiedUser,
+                        VerifiedUserIcon,
                         contentDescription = null,
                         modifier = Modifier.size(48.dp),
                         tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -263,7 +262,7 @@ private fun SealIdentityCard(
                     contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
                 ) {
                     Box(Modifier.size(48.dp), contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Key, contentDescription = null)
+                        Icon(KeyIcon, contentDescription = null)
                     }
                 }
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {

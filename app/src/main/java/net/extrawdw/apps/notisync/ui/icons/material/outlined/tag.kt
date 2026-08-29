@@ -1,4 +1,4 @@
-package net.extrawdw.apps.notisync.ui.icons.materialsymbols.outlined
+package net.extrawdw.apps.notisync.ui.icons.material.outlined
 
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.PathFillType

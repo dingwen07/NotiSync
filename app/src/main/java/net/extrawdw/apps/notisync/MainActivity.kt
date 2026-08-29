@@ -23,13 +23,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Devices
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.PhoneIphone
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Terminal
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
@@ -105,7 +104,7 @@ import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
-import net.extrawdw.apps.notisync.ui.icons.materialsymbols.outlined.tag
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.tag
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -274,11 +273,11 @@ private enum class TopLevelDestination(
     @param:StringRes override val label: Int,
     override val icon: ImageVector,
 ) : AppDestination {
-    DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
-    APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
-    IOS(Route.Ios, R.string.tab_ios, Icons.Outlined.PhoneIphone),
-    ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),
-    SETTINGS(Route.Settings, R.string.tab_settings, Icons.Outlined.Settings),
+    DEVICES(Route.Devices, R.string.tab_devices, DevicesIcon),
+    APPS(Route.Apps, R.string.tab_apps, AppsIcon),
+    IOS(Route.Ios, R.string.tab_ios, PhoneIphoneIcon),
+    ACTIVITY(Route.Activity, R.string.tab_activity, HistoryIcon),
+    SETTINGS(Route.Settings, R.string.tab_settings, SettingsIcon),
 }
 
 private enum class FeatureDestination(
@@ -286,7 +285,7 @@ private enum class FeatureDestination(
     @param:StringRes override val label: Int,
     override val icon: ImageVector,
 ) : AppDestination {
-    RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
+    RUN(Route.Run, R.string.tab_run, TerminalIcon),
     SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
     SSH_AGENT(Route.SshAgent, R.string.ssh_agent_provider_title, tag),
 }

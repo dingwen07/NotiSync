@@ -21,14 +21,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.DeleteSweep
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.Refresh
-import androidx.compose.material.icons.outlined.Terminal
-import androidx.compose.material.icons.outlined.WarningAmber
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.delete_sweep as DeleteSweepIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.refresh as RefreshIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.warning_amber as WarningAmberIcon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -210,7 +209,7 @@ private fun RunList(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Icon(
-                Icons.Outlined.Terminal,
+                TerminalIcon,
                 contentDescription = null,
                 modifier = Modifier.size(48.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -267,7 +266,7 @@ private fun RunSectionHeader(title: String, onClear: (() -> Unit)? = null) {
         if (onClear != null) {
             IconButton(onClick = onClear) {
                 Icon(
-                    Icons.Outlined.DeleteSweep,
+                    DeleteSweepIcon,
                     contentDescription = stringResource(R.string.run_clear_history_action),
                 )
             }
@@ -363,7 +362,7 @@ private fun RunDetail(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Outlined.ArrowBack, contentDescription = stringResource(R.string.run_back))
+                    Icon(ArrowBackIcon, contentDescription = stringResource(R.string.run_back))
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -389,7 +388,7 @@ private fun RunDetail(
                         if (refreshing) {
                             CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
                         } else {
-                            Icon(Icons.Outlined.Refresh, contentDescription = stringResource(R.string.run_action_refresh))
+                            Icon(RefreshIcon, contentDescription = stringResource(R.string.run_action_refresh))
                         }
                     }
                 }
@@ -698,10 +697,10 @@ private fun DetailField(label: String, value: String, monospace: Boolean = false
 @Composable
 private fun RunPhaseIcon(phase: RunPhase) {
     val (icon, tint) = when (phase) {
-        RunPhase.RUNNING -> Icons.Outlined.Terminal to MaterialTheme.colorScheme.primary
-        RunPhase.BLOCKED -> Icons.Outlined.WarningAmber to MaterialTheme.colorScheme.tertiary
-        RunPhase.COMPLETED -> Icons.Outlined.CheckCircle to MaterialTheme.colorScheme.primary
-        RunPhase.FAILED_TO_START -> Icons.Outlined.ErrorOutline to MaterialTheme.colorScheme.error
+        RunPhase.RUNNING -> TerminalIcon to MaterialTheme.colorScheme.primary
+        RunPhase.BLOCKED -> WarningAmberIcon to MaterialTheme.colorScheme.tertiary
+        RunPhase.COMPLETED -> CheckCircleIcon to MaterialTheme.colorScheme.primary
+        RunPhase.FAILED_TO_START -> ErrorOutlineIcon to MaterialTheme.colorScheme.error
     }
     Icon(icon, contentDescription = null, tint = tint)
 }

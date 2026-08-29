@@ -8,8 +8,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Menu
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu as MenuIcon
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
@@ -45,7 +44,7 @@ internal val LocalFeatureDrawerOpener = compositionLocalOf<(() -> Unit)?> { null
 internal fun FeatureDrawerNavigationIcon() {
     LocalFeatureDrawerOpener.current?.let { open ->
         IconButton(onClick = open) {
-            Icon(Icons.Outlined.Menu, contentDescription = stringResource(R.string.open_features))
+            Icon(MenuIcon, contentDescription = stringResource(R.string.open_features))
         }
     }
 }

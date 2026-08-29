@@ -32,20 +32,19 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Add
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.ContentCopy
-import androidx.compose.material.icons.outlined.ContentPaste
-import androidx.compose.material.icons.outlined.Delete
-import androidx.compose.material.icons.outlined.Edit
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.FileDownload
-import androidx.compose.material.icons.outlined.Fingerprint
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.automirrored.outlined.Send
-import androidx.compose.material.icons.outlined.UploadFile
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.add as AddIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.content_copy as ContentCopyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.content_paste as ContentPasteIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.delete as DeleteIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.file_download as FileDownloadIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.fingerprint as FingerprintIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.send as SendIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.upload_file as UploadFileIcon
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -116,7 +115,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.fingerprint
 import net.extrawdw.apps.notisync.sshkeyprovider.toSshHostKeyFingerprint
 import net.extrawdw.apps.notisync.sshkeyprovider.sshKeyStorageUserMessage
 import net.extrawdw.apps.notisync.sshkeyprovider.eligibleSshKeyTransferPeers
-import net.extrawdw.apps.notisync.ui.icons.materialsymbols.outlined.passkey
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.passkey
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshKeyOrigin
@@ -1215,7 +1214,7 @@ private fun SshKnownHostDetailSheet(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             TextButton(onClick = onDelete) {
-                Icon(Icons.Outlined.Delete, contentDescription = null)
+                Icon(DeleteIcon, contentDescription = null)
                 Spacer(Modifier.width(4.dp))
                 Text(stringResource(R.string.ssh_agent_host_delete_confirm))
             }
@@ -1259,7 +1258,7 @@ private fun ProviderCard(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 Button(onClick = onGenerate, enabled = ready) {
-                    Icon(Icons.Outlined.Add, contentDescription = null)
+                    Icon(AddIcon, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_generate))
                 }
@@ -1270,7 +1269,7 @@ private fun ProviderCard(
                 }
                 OutlinedButton(onClick = onImport, enabled = ready) {
                     Icon(
-                        Icons.Outlined.UploadFile,
+                        UploadFileIcon,
                         contentDescription = null,
                     )
                     Spacer(Modifier.width(8.dp))
@@ -1278,7 +1277,7 @@ private fun ProviderCard(
                 }
                 OutlinedButton(onClick = onPaste, enabled = ready) {
                     Icon(
-                        Icons.Outlined.ContentPaste,
+                        ContentPasteIcon,
                         contentDescription = null,
                     )
                     Spacer(Modifier.width(8.dp))
@@ -1303,10 +1302,10 @@ private fun SshKeyProviderErrorCard(message: String, onDismiss: () -> Unit) {
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(Icons.Outlined.ErrorOutline, contentDescription = null)
+            Icon(ErrorOutlineIcon, contentDescription = null)
             Text(message, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodyMedium)
             IconButton(onClick = onDismiss) {
-                Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.ssh_agent_close))
+                Icon(CloseIcon, contentDescription = stringResource(R.string.ssh_agent_close))
             }
         }
     }
@@ -1334,7 +1333,7 @@ private fun SshKeyCard(
                     )
                 } else {
                     Icon(
-                        imageVector = Icons.Outlined.Key,
+                        imageVector = KeyIcon,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.primary,
                     )
@@ -1350,7 +1349,7 @@ private fun SshKeyCard(
                     Text(key.algorithmDisplayLabel(), style = MaterialTheme.typography.bodySmall)
                 }
                 Icon(
-                    Icons.Outlined.ChevronRight,
+                    ChevronRightIcon,
                     contentDescription = stringResource(R.string.ssh_agent_key_details),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -1389,7 +1388,7 @@ private fun SshKnownHostCard(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(Icons.Outlined.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Icon(FingerprintIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 Text(
                     host.hostname?.takeIf(String::isNotBlank) ?: stringResource(R.string.ssh_agent_unknown),
@@ -1406,10 +1405,10 @@ private fun SshKnownHostCard(
                 )
             }
             IconButton(onClick = onEdit) {
-                Icon(Icons.Outlined.Edit, contentDescription = stringResource(R.string.ssh_agent_host_set_hostname))
+                Icon(EditIcon, contentDescription = stringResource(R.string.ssh_agent_host_set_hostname))
             }
             IconButton(onClick = onDelete) {
-                Icon(Icons.Outlined.Delete, contentDescription = stringResource(R.string.ssh_agent_host_delete_confirm))
+                Icon(DeleteIcon, contentDescription = stringResource(R.string.ssh_agent_host_delete_confirm))
             }
         }
     }
@@ -1457,7 +1456,7 @@ private fun SshKeyDetailSheet(
                 if (onExport != null) {
                     IconButton(onClick = onExport) {
                         Icon(
-                            Icons.Outlined.FileDownload,
+                            FileDownloadIcon,
                             contentDescription = stringResource(
                                 if (isWebAuthn) {
                                     R.string.ssh_agent_webauthn_export_action
@@ -1479,20 +1478,20 @@ private fun SshKeyDetailSheet(
                 if (onSend != null) {
                     IconButton(onClick = onSend) {
                         Icon(
-                            Icons.AutoMirrored.Outlined.Send,
+                            SendIcon,
                             contentDescription = stringResource(R.string.ssh_agent_send),
                         )
                     }
                 }
                 IconButton(onClick = onRename) {
                     Icon(
-                        Icons.Outlined.Edit,
+                        EditIcon,
                         contentDescription = stringResource(R.string.ssh_agent_rename),
                     )
                 }
                 IconButton(onClick = onDelete) {
                     Icon(
-                        Icons.Outlined.Delete,
+                        DeleteIcon,
                         contentDescription = stringResource(R.string.action_remove),
                     )
                 }
@@ -1666,7 +1665,7 @@ private fun SshRememberedAuthorizationRow(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+            Icon(KeyIcon, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                 Text(requesterName, style = MaterialTheme.typography.titleSmall)
                 Text(
@@ -1702,7 +1701,7 @@ private fun SshRememberedAuthorizationRow(
             }
             IconButton(onClick = onDelete) {
                 Icon(
-                    Icons.Outlined.Delete,
+                    DeleteIcon,
                     contentDescription = stringResource(R.string.ssh_agent_remembered_delete_confirm),
                 )
             }
@@ -1732,7 +1731,7 @@ private fun SshPublicKeyCodeBlock(
                 ) {
                     IconButton(onClick = onCopy) {
                         Icon(
-                            Icons.Outlined.ContentCopy,
+                            ContentCopyIcon,
                             contentDescription = stringResource(R.string.ssh_agent_copy_public),
                         )
                     }
@@ -1806,8 +1805,8 @@ private fun WebAuthnFlowSheet(
                     )
                     ListItem(
                         supportingContent = { Text(stringResource(R.string.ssh_agent_webauthn_generate_help)) },
-                        leadingContent = { Icon(Icons.Outlined.Add, contentDescription = null) },
-                        trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
+                        leadingContent = { Icon(AddIcon, contentDescription = null) },
+                        trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(role = Role.Button, onClick = onGenerateStep),
@@ -1817,7 +1816,7 @@ private fun WebAuthnFlowSheet(
                         leadingContent = {
                             Icon(imageVector = passkey, contentDescription = null)
                         },
-                        trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
+                        trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable(role = Role.Button, onClick = onUseExisting),
@@ -1920,7 +1919,7 @@ private fun WebAuthnFlowSheet(
                         enabled = !busy,
                     )
                     TextButton(onClick = onPaste, enabled = !busy) {
-                        Icon(Icons.Outlined.ContentPaste, contentDescription = null)
+                        Icon(ContentPasteIcon, contentDescription = null)
                         Spacer(Modifier.width(8.dp))
                         Text(stringResource(R.string.action_paste))
                     }
@@ -1981,7 +1980,7 @@ private fun WebAuthnRecoveryActionsDialog(
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 OutlinedButton(onClick = onCopy) {
-                    Icon(Icons.Outlined.ContentCopy, contentDescription = null)
+                    Icon(ContentCopyIcon, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_webauthn_recovery_copy))
                 }
