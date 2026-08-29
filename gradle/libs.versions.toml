@@ -31,7 +31,6 @@ googleAuth = "1.43.0"
 # Android core
 coreKtx = "1.19.0"
 coreSplashscreen = "1.2.0"
-media = "1.8.0" # androidx.media — NotificationCompat.MediaStyle for mirrored MediaStyle notifications
 # Not a direct dependency: pins the transitive androidx.fragment that play-services-base/basement
 # drag in at 1.1.0 (flagged "outdated" by Play's SDK index). The app is pure Compose — no Fragments.
 fragment = "1.9.0"
@@ -124,7 +123,6 @@ google-auth-library-oauth2-http = { group = "com.google.auth", name = "google-au
 # --- Android: Compose / Material 3 Expressive ---
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
 androidx-core-splashscreen = { group = "androidx.core", name = "core-splashscreen", version.ref = "coreSplashscreen" }
-androidx-media = { group = "androidx.media", name = "media", version.ref = "media" }
 androidx-fragment = { group = "androidx.fragment", name = "fragment", version.ref = "fragment" }
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-credentials = { group = "androidx.credentials", name = "credentials", version.ref = "credentials" }

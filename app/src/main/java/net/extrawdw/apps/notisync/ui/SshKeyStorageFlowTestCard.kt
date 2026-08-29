@@ -115,7 +115,6 @@ fun SshKeyStorageFlowTestCard() {
                     val results = when (current) {
                         is SshKeyStorageFlowTestState.Running -> current.results
                         is SshKeyStorageFlowTestState.Done -> current.results
-                        else -> emptyList()
                     }
                     if (current is SshKeyStorageFlowTestState.Running && results.isEmpty()) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
