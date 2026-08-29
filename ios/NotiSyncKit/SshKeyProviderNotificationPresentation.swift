@@ -13,6 +13,7 @@ nonisolated enum SshKeyProviderNotificationPresentation {
     static let rejectActionIdentifier = "notisync.ssh.reject"
     static let requestIdUserInfoKey = "notisyncSshRequestId"
     static let expandedDetailsUserInfoKey = "notisyncSshExpandedDetails"
+    static let foregroundSheetPresentedUserInfoKey = "notisyncSshForegroundSheetPresented"
     private static let maximumContextCharacters = 160
 
     /// Built alongside the mirror categories because `setNotificationCategories` replaces the complete set.
@@ -54,7 +55,10 @@ nonisolated enum SshKeyProviderNotificationPresentation {
         )
     }
 
-    static func content(for request: SshProviderRequestRecord) -> UNNotificationContent {
+    static func content(
+        for request: SshProviderRequestRecord,
+        foregroundSheetPresented: Bool = false
+    ) -> UNNotificationContent {
         let content = UNMutableNotificationContent()
         let requester = requesterName(request)
         let key = keyName(request)
@@ -137,11 +141,14 @@ nonisolated enum SshKeyProviderNotificationPresentation {
         ), String(request.id.prefix(8))))
         content.categoryIdentifier = categoryIdentifier
         content.threadIdentifier = "notisync.ssh"
-        content.sound = .default
-        content.userInfo = [
+        content.sound = foregroundSheetPresented ? nil : .default
+        if foregroundSheetPresented { content.interruptionLevel = .passive }
+        var userInfo: [AnyHashable: Any] = [
             requestIdUserInfoKey: request.id,
             expandedDetailsUserInfoKey: expandedDetails.joined(separator: "\n"),
         ]
+        if foregroundSheetPresented { userInfo[foregroundSheetPresentedUserInfoKey] = true }
+        content.userInfo = userInfo
         return content
     }
 

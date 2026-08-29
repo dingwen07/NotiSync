@@ -18,7 +18,7 @@ import net.extrawdw.notisync.server.ServerConfig
 import net.extrawdw.notisync.server.crypto.Verification
 import net.extrawdw.notisync.server.delivery.PushOutcome
 import net.extrawdw.notisync.server.delivery.PushTransport
-import net.extrawdw.notisync.server.delivery.WebSocketHub
+import net.extrawdw.notisync.server.delivery.LiveDeliveryHub
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.PrivateAssetStore
 import net.extrawdw.notisync.server.data.RelayStore
@@ -32,15 +32,15 @@ import java.util.Base64
 
 /**
  * Broker orchestration: verify signed key-epochs/routes (never decrypt), store-and-forward encrypted
- * envelopes, and fan out via the best available route (live WebSocket, else APNs/FCM push, else
- * report a missing route so the caller can supply a signed claim).
+ * envelopes, and fan out via the best available route. HIGH traffic with an APNs route is push-first because
+ * APNs/NSE is its user-visible delivery contract; other traffic remains live-WebSocket-first for low latency.
  */
 class Broker(
     private val routes: RouteStore,
     private val relay: RelayStore,
     private val assets: PrivateAssetStore,
     private val epochs: EpochStore,
-    private val hub: WebSocketHub,
+    private val hub: LiveDeliveryHub,
     private val push: PushTransport,
     private val config: ServerConfig,
 ) {
@@ -184,7 +184,8 @@ class Broker(
                 if (envelope.typ == MessageType.NOTIFICATION) relay.countPending(recipient, MessageType.DISMISSAL.name)
                 else 0L
 
-            if (hub.isOnline(recipient)) {
+            suspend fun deliverLive(): Boolean {
+                if (!hub.isOnline(recipient)) return false
                 val frame = ProtocolCodec.encodeToJson(
                     WsMessage(
                         kind = WsKind.DELIVER,
@@ -194,14 +195,31 @@ class Broker(
                 )
                 if (hub.deliverText(recipient, frame)) {
                     delivered.add(recipient)
-                    continue
+                    return true
                 }
+                return false
             }
 
-            val candidates = routes.routesFor(recipient)
-                .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
-                .sortedBy { pushPreference(it.transport) }
+            var loadedCandidates: List<StoredRoute>? = null
+            suspend fun pushCandidates(): List<StoredRoute> {
+                loadedCandidates?.let { return it }
+                return routes.routesFor(recipient)
+                    .filter { it.transport == TransportType.APNS || it.transport == TransportType.FCM }
+                    .sortedBy { pushPreference(it.transport) }
+                    .also { loadedCandidates = it }
+            }
+
+            // A live WebSocket write is not a client ACK. During iOS backgrounding the broker may still see
+            // the socket briefly after the app can no longer surface a sheet, so suppressing a HIGH APNs alert
+            // here can hide the request until the next foreground reconnect. Prefer the explicit APNs/NSE
+            // contract for HIGH traffic; retain WebSocket-first delivery everywhere else.
+            val pushBeforeLive = urgency == Urgency.HIGH &&
+                pushCandidates().any { it.transport == TransportType.APNS }
+            if (!pushBeforeLive && deliverLive()) continue
+
+            val candidates = pushCandidates()
             if (candidates.isEmpty()) {
+                if (pushBeforeLive && deliverLive()) continue
                 missing.add(recipient)
                 continue
             }
@@ -247,6 +265,9 @@ class Broker(
                 }
             }
             if (pushed) continue
+            // APNs may be disabled or temporarily unavailable. The durable relay still owns the message, and
+            // an actually live app is a useful fallback once the user-visible push route could not accept it.
+            if (pushBeforeLive && deliverLive()) continue
             // A just-invalidated route is the more actionable signal, so it outranks a transient blip on a
             // different candidate; anything else (permanent/disabled/none) leaves the item for relay + WS.
             when {

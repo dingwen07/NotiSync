@@ -51,6 +51,11 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         // not mirrored app notifications. Always present them even when Android notification
         // mirroring is disabled or filtered for the requesting device.
         if info[SshKeyProviderNotificationPresentation.requestIdUserInfoKey] != nil {
+            // The live app path still creates the durable Notification Center item before opening the
+            // foreground sheet. Keep that copy silent: the sheet is already the visible review surface.
+            if info[SshKeyProviderNotificationPresentation.foregroundSheetPresentedUserInfoKey] as? Bool == true {
+                return [.list]
+            }
             return [.banner, .list, .sound]
         }
         if NotificationFilterStore.shouldFilterNotification(

@@ -83,6 +83,7 @@ import net.extrawdw.notisync.server.data.NotiSyncDb
 import net.extrawdw.notisync.server.data.StoredEpoch
 import net.extrawdw.notisync.server.data.StoredRoute
 import net.extrawdw.notisync.server.delivery.DisabledPushTransport
+import net.extrawdw.notisync.server.delivery.LiveDeliveryHub
 import net.extrawdw.notisync.server.delivery.PushOutcome
 import net.extrawdw.notisync.server.delivery.PushTransport
 import net.extrawdw.notisync.server.delivery.WebSocketHub
@@ -1239,6 +1240,81 @@ class BrokerFlowTest {
         broker.send(ProtocolCodec.encodeToCbor(second), second, Urgency.HIGH)
         assertEquals(MessageType.NOTIFICATION.name, captured.last()["mtyp"])
         assertNull(captured.last()["pnc"])
+    }
+
+    @Test
+    fun highApnsPrefersPushToOnlineWebSocket_andFallsBackWhenPushFails() = runBlocking {
+        val tmp = File.createTempFile("notisync-high-apns-route", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        val config = ServerConfig.fromEnv()
+        val db = NotiSyncDb.connect(config)
+        val liveFrames = mutableListOf<String>()
+        val liveHub = object : LiveDeliveryHub {
+            override fun isOnline(clientId: ClientId) = true
+            override suspend fun deliverText(clientId: ClientId, text: String): Boolean {
+                liveFrames += text
+                return true
+            }
+        }
+        data class PushAttempt(val data: Map<String, String>, val urgency: Urgency)
+        val pushAttempts = mutableListOf<PushAttempt>()
+        var pushOutcome = PushOutcome.DELIVERED
+        val capturingPush = object : PushTransport {
+            override suspend fun wake(
+                route: StoredRoute,
+                data: Map<String, String>,
+                urgency: Urgency,
+            ): PushOutcome {
+                pushAttempts += PushAttempt(data, urgency)
+                return pushOutcome
+            }
+        }
+        val broker = Broker(
+            RouteStore(db), RelayStore(db), PrivateAssetStore(db), EpochStore(db), liveHub, capturingPush, config
+        )
+
+        val sender = SoftwareIdentitySigner.generate()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        val recipientOp = SoftwareOperationalSigner.generate(recipient.clientId, signerEpoch = 1)
+        assertTrue(broker.uploadKeyEpoch(keyEpochBlob(recipient, recipientOp, recipientHpke, epoch = 1)))
+        assertEquals(
+            1,
+            broker.uploadRoutes(
+                listOf(routeBlob(recipient, "fake-apns-token", TransportType.APNS, RouteEnvironment.DEVELOPMENT))
+            ),
+        )
+        val recipientKeys = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset))
+        fun envelope(messageId: String, seq: Long) = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.DATA_SYNC,
+            bodyPlaintext = "opaque".toByteArray(),
+            recipients = recipientKeys,
+            messageId = messageId,
+            seq = seq,
+            createdAt = 1_750_000_000_000L + seq,
+        )
+
+        val high = envelope("01J0APNSWS01", 1L)
+        broker.send(ProtocolCodec.encodeToCbor(high), high, Urgency.HIGH)
+        assertEquals(1, pushAttempts.size)
+        assertEquals(Urgency.HIGH, pushAttempts.single().urgency)
+        assertEquals(MessageType.DATA_SYNC.name, pushAttempts.single().data["mtyp"])
+        assertTrue(liveFrames.isEmpty())
+
+        // APNs rejection does not strand the durable request: an actually live app remains the fallback.
+        pushOutcome = PushOutcome.TRANSIENT_FAILURE
+        val failedPush = envelope("01J0APNSWS02", 2L)
+        broker.send(ProtocolCodec.encodeToCbor(failedPush), failedPush, Urgency.HIGH)
+        assertEquals(2, pushAttempts.size)
+        assertEquals(1, liveFrames.size)
+
+        // NORMAL traffic keeps the existing low-latency WebSocket-first behavior and never calls push.
+        val normal = envelope("01J0APNSWS03", 3L)
+        broker.send(ProtocolCodec.encodeToCbor(normal), normal, Urgency.NORMAL)
+        assertEquals(2, pushAttempts.size)
+        assertEquals(2, liveFrames.size)
     }
 
     @Test

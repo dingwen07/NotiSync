@@ -155,14 +155,20 @@ extension NotiSyncRuntime {
                 )
             }.value
             switch outcome {
-            case .staged(let request, let inserted):
+            case .staged(let request, _):
                 bumpSshKeyProviderRevision()
                 if request.kind == .sign, await autoApproveRememberedSshRequest(request) {
                     // The response is durable before this returns, even if broker delivery must retry later.
-                } else if UIApplication.shared.applicationState == .active {
-                    presentSshKeyProviderRequest(request.id)
-                } else if inserted {
-                    await postSshKeyProviderReviewNotification(for: request)
+                } else {
+                    let presentForegroundSheet = UIApplication.shared.applicationState == .active
+                    // Notification Center is the durable user-visible owner even when the foreground sheet
+                    // opens immediately. The application-state snapshot controls only whether this copy is
+                    // silent, never whether the notification exists; this closes the active->background race.
+                    await postSshKeyProviderReviewNotification(
+                        for: request,
+                        foregroundSheetPresented: presentForegroundSheet
+                    )
+                    if presentForegroundSheet { presentSshKeyProviderRequest(request.id) }
                 }
                 return true
             case .alreadyHandled(let request):
@@ -610,10 +616,16 @@ extension NotiSyncRuntime {
         }
     }
 
-    private func postSshKeyProviderReviewNotification(for request: SshProviderRequestRecord) async {
+    private func postSshKeyProviderReviewNotification(
+        for request: SshProviderRequestRecord,
+        foregroundSheetPresented: Bool
+    ) async {
         let notification = UNNotificationRequest(
             identifier: "notisync.ssh.\(request.id)",
-            content: SshKeyProviderNotificationPresentation.content(for: request),
+            content: SshKeyProviderNotificationPresentation.content(
+                for: request,
+                foregroundSheetPresented: foregroundSheetPresented
+            ),
             trigger: nil
         )
         try? await UNUserNotificationCenter.current().add(notification)
