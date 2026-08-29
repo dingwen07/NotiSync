@@ -288,7 +288,7 @@
     <string name="seal_commit_initial">初始提交</string>
     <string name="seal_status_waiting">等待批准</string>
     <string name="seal_status_signing">正在签名</string>
-    <string name="seal_result_approved">已批准</string>
+    <string name="seal_result_signed">已签名</string>
     <string name="seal_result_rejected">已拒绝</string>
     <string name="seal_result_canceled">已取消</string>
     <string name="seal_result_expired">已过期</string>

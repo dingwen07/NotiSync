@@ -296,7 +296,7 @@
     <string name="seal_commit_initial">Initial Commit</string>
     <string name="seal_status_waiting">Awaiting approval</string>
     <string name="seal_status_signing">Signing</string>
-    <string name="seal_result_approved">Approved</string>
+    <string name="seal_result_signed">Signed</string>
     <string name="seal_result_rejected">Rejected</string>
     <string name="seal_result_canceled">Canceled</string>
     <string name="seal_result_expired">Expired</string>

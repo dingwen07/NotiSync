@@ -15,7 +15,7 @@ class SigningRequestUiTest {
     fun durableResultWinsAfterTransportAdvancesToSent() {
         val sent = stored(OpenPgpRequestState.SENT, OpenPgpRequestResult.APPROVED)
 
-        assertEquals(SealDisplayStatus.APPROVED, sent.sealDisplayStatus())
+        assertEquals(SealDisplayStatus.SIGNED, sent.sealDisplayStatus())
         assertEquals(
             SealDisplayStatus.LEGACY_FINISHED,
             sent.copy(result = null).sealDisplayStatus(),

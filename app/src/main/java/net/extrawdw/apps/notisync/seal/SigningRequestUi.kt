@@ -62,7 +62,7 @@ import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 internal enum class SealDisplayStatus {
     WAITING,
     SIGNING,
-    APPROVED,
+    SIGNED,
     REJECTED,
     CANCELED,
     EXPIRED,
@@ -71,7 +71,7 @@ internal enum class SealDisplayStatus {
 }
 
 internal fun StoredOpenPgpRequest.sealDisplayStatus(): SealDisplayStatus = when (result) {
-    OpenPgpRequestResult.APPROVED -> SealDisplayStatus.APPROVED
+    OpenPgpRequestResult.APPROVED -> SealDisplayStatus.SIGNED
     OpenPgpRequestResult.REJECTED -> SealDisplayStatus.REJECTED
     OpenPgpRequestResult.CANCELED -> SealDisplayStatus.CANCELED
     OpenPgpRequestResult.EXPIRED -> SealDisplayStatus.EXPIRED
@@ -115,7 +115,7 @@ internal fun sealStatusLabel(status: SealDisplayStatus): String = stringResource
     when (status) {
         SealDisplayStatus.WAITING -> R.string.seal_status_waiting
         SealDisplayStatus.SIGNING -> R.string.seal_status_signing
-        SealDisplayStatus.APPROVED -> R.string.seal_result_approved
+        SealDisplayStatus.SIGNED -> R.string.seal_result_signed
         SealDisplayStatus.REJECTED -> R.string.seal_result_rejected
         SealDisplayStatus.CANCELED -> R.string.seal_result_canceled
         SealDisplayStatus.EXPIRED -> R.string.seal_result_expired
@@ -699,7 +699,7 @@ private fun SealStatusIcon(status: SealDisplayStatus, modifier: Modifier = Modif
         imageVector = when (status) {
             SealDisplayStatus.WAITING -> ScheduleIcon
             SealDisplayStatus.SIGNING -> SyncIcon
-            SealDisplayStatus.APPROVED -> CheckCircleIcon
+            SealDisplayStatus.SIGNED -> CheckCircleIcon
             SealDisplayStatus.REJECTED, SealDisplayStatus.CANCELED -> CancelIcon
             SealDisplayStatus.EXPIRED -> ScheduleIcon
             SealDisplayStatus.FAILED -> ErrorOutlineIcon
@@ -713,7 +713,7 @@ private fun SealStatusIcon(status: SealDisplayStatus, modifier: Modifier = Modif
 
 @Composable
 private fun sealStatusColor(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.primary
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.error
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -722,7 +722,7 @@ private fun sealStatusColor(status: SealDisplayStatus): Color = when (status) {
 
 @Composable
 private fun sealStatusContainer(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.primaryContainer
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.errorContainer
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED ->
@@ -732,7 +732,7 @@ private fun sealStatusContainer(status: SealDisplayStatus): Color = when (status
 
 @Composable
 private fun sealStatusContent(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.onPrimaryContainer
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.onErrorContainer
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED -> MaterialTheme.colorScheme.onSurface
