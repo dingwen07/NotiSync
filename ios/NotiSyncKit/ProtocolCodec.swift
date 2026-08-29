@@ -115,11 +115,15 @@ nonisolated enum ProtocolCodec {
     }
 
     static func encodeWsAck(messageId: String) -> String {
-        kmp.encodeWsMessage(value: NotiSyncProtocol.WsMessage(kind: WsKind.ack, envelopeB64: nil, messageId: messageId))
+        kmp.encodeWsMessage(
+            value: NotiSyncProtocol.WsMessage(kind: WsKind.ack, envelopeB64: nil, messageId: messageId, acceptedAt: nil)
+        )
     }
 
     static func encodeWsPong() -> String {
-        kmp.encodeWsMessage(value: NotiSyncProtocol.WsMessage(kind: WsKind.pong, envelopeB64: nil, messageId: nil))
+        kmp.encodeWsMessage(
+            value: NotiSyncProtocol.WsMessage(kind: WsKind.pong, envelopeB64: nil, messageId: nil, acceptedAt: nil)
+        )
     }
 
     // MARK: Decode
@@ -443,7 +447,11 @@ nonisolated enum KMPProtocolBridge {
     }
 
     static func toKmp(_ value: DataSync) -> NotiSyncProtocol.DataSync {
-        NotiSyncProtocol.DataSync(
+        precondition(
+            (value.kind == .SSH_AGENT) == (value.sshAgent != nil),
+            "SSH_AGENT data-sync kind and payload must appear together"
+        )
+        return NotiSyncProtocol.DataSync(
             kind: kmp(value.kind),
             asset: value.asset.map { toKmp($0) },
             profile: value.profile.map { toKmp($0) },
@@ -452,7 +460,9 @@ nonisolated enum KMPProtocolBridge {
             filter: value.filter.map { toKmp($0) },
             notification: nil,
             run: nil,
-            screenMirror: value.screenMirror.map(toKmp)
+            screenMirror: value.screenMirror.map(toKmp),
+            openPgpSign: nil,
+            sshAgent: value.sshAgent.map(toKmp)
         )
     }
 
@@ -772,14 +782,21 @@ nonisolated enum KMPProtocolBridge {
     }
 
     static func fromKmp(_ value: NotiSyncProtocol.DataSync) throws -> DataSync {
-        DataSync(
-            kind: DataSyncKind(rawValue: value.kind.name) ?? .ASSET,
+        guard let kind = DataSyncKind(rawValue: value.kind.name) else {
+            throw CodecError.typeMismatch("dataSync.kind=\(value.kind.name)")
+        }
+        guard (kind == .SSH_AGENT) == (value.sshAgent != nil) else {
+            throw CodecError.typeMismatch("SSH_AGENT data-sync kind and payload must appear together")
+        }
+        return DataSync(
+            kind: kind,
             asset: value.asset.map(fromKmp),
             profile: fromKmp(value.profile),
             trust: fromKmp(value.trust),
             card: value.card.map(fromKmp),
             filter: fromKmp(value.filter),
-            screenMirror: fromKmp(value.screenMirror)
+            screenMirror: fromKmp(value.screenMirror),
+            sshAgent: try fromKmp(value.sshAgent)
         )
     }
 
@@ -826,7 +843,10 @@ nonisolated enum KMPProtocolBridge {
     }
 
     static func kmp(_ value: DataSyncKind) -> NotiSyncProtocol.DataSyncKind {
-        NotiSyncProtocol.DataSyncKind.entries.first { $0.name == value.rawValue } ?? NotiSyncProtocol.DataSyncKind.asset
+        guard let kind = NotiSyncProtocol.DataSyncKind.entries.first(where: { $0.name == value.rawValue }) else {
+            preconditionFailure("KMP protocol is missing native data-sync kind \(value.rawValue)")
+        }
+        return kind
     }
 
     static func kmp(_ value: ScreenMirrorAction) -> NotiSyncProtocol.ScreenMirrorAction {

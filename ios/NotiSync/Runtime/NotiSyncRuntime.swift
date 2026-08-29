@@ -20,6 +20,26 @@ nonisolated struct IOSScreenMirrorPresentation: Identifiable, Sendable {
     var sourceName: String
 }
 
+struct SshKeyProviderSheetDestination: Identifiable {
+    enum Kind {
+        case request(String, approveAfterPresentation: Bool)
+        case keyDetails(String)
+        case knownHost(Data)
+        case generateManagedKey
+        case importManagedKey(Data, suggestedName: String?)
+        case createPasskey
+        case recoverPasskey(String?)
+    }
+
+    let id = UUID()
+    var kind: Kind
+}
+
+private struct QueuedSshKeyProviderRequest {
+    var requestId: String
+    var approveAfterPresentation: Bool
+}
+
 /// App-process orchestration: owns the protocol engine + broker client and drives identity/auth, route
 /// publishing, inbound delivery (foreground WS / relay drain / silent push), dismissal sync + two-poll
 /// reconciliation, and pairing. The NSE handles the alert-push fast path independently (see the extension).
@@ -48,6 +68,12 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published private(set) var screenMirrorSourceIds: Set<String> = []
     @Published private(set) var screenMirrorPhase: String?
     @Published var screenMirrorPresentation: IOSScreenMirrorPresentation?
+    /// A single root-owned sheet route shared by live SSH approvals, terminal history, and key workflows.
+    @Published var sshKeyProviderSheetDestination: SshKeyProviderSheetDestination?
+    @Published private(set) var sshKeyProviderRevision = 0
+    /// Notification/deep-link requests arriving while a key workflow is already using the one iOS sheet.
+    /// Preserve the active form and present queued requests after dismissal instead of replacing user input.
+    private var queuedSshKeyProviderRequests: [QueuedSshKeyProviderRequest] = []
 
     func replaceScreenMirrorSourceIds(_ sourceIds: Set<String>) {
         screenMirrorSourceIds = sourceIds
@@ -81,6 +107,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     var createdSettingsThisLaunch = false
     var engine: NotiSyncEngine?
     var broker: BrokerClient?
+    let sshPasskeyProvider = SshPasskeyProvider()
     private var coreBringUpTask: Task<Void, Never>?
     var liveTask: Task<Void, Never>?
     private var foregroundSyncTask: Task<Void, Never>?
@@ -115,6 +142,50 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func bumpIconRevision() { iconRevision += 1 }
     func bumpNotificationFilterRevision() { notificationFilterRevision += 1 }
     func bumpInboxRevision() { inboxRevision += 1 }
+    func bumpSshKeyProviderRevision() { sshKeyProviderRevision += 1 }
+
+    func presentSshKeyProviderRequest(_ requestId: String, approveAfterPresentation: Bool = false) {
+        guard SshKeyProviderStore.request(id: requestId) != nil else { return }
+        if let destination = sshKeyProviderSheetDestination {
+            if case .request(let currentId, let currentApproval) = destination.kind, currentId == requestId {
+                if approveAfterPresentation && !currentApproval {
+                    sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+                        kind: .request(requestId, approveAfterPresentation: true)
+                    )
+                }
+                return
+            }
+            if let index = queuedSshKeyProviderRequests.firstIndex(where: { $0.requestId == requestId }) {
+                queuedSshKeyProviderRequests[index].approveAfterPresentation =
+                    queuedSshKeyProviderRequests[index].approveAfterPresentation || approveAfterPresentation
+                return
+            }
+            guard queuedSshKeyProviderRequests.count < 64 else { return }
+            queuedSshKeyProviderRequests.append(QueuedSshKeyProviderRequest(
+                requestId: requestId,
+                approveAfterPresentation: approveAfterPresentation
+            ))
+            return
+        }
+        sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+            kind: .request(requestId, approveAfterPresentation: approveAfterPresentation)
+        )
+    }
+
+    func sshKeyProviderSheetDidDismiss() {
+        guard sshKeyProviderSheetDestination == nil else { return }
+        while !queuedSshKeyProviderRequests.isEmpty {
+            let queued = queuedSshKeyProviderRequests.removeFirst()
+            guard SshKeyProviderStore.request(id: queued.requestId) != nil else { continue }
+            sshKeyProviderSheetDestination = SshKeyProviderSheetDestination(
+                kind: .request(
+                    queued.requestId,
+                    approveAfterPresentation: queued.approveAfterPresentation
+                )
+            )
+            return
+        }
+    }
 
     /// A local notification-filter setting changed: refresh dependent UI, then announce the new snapshot to the
     /// source peers it targets so they stop/resume delivering to us. A short debounce coalesces a rapid burst
@@ -147,7 +218,6 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
             guard let self else { return }
             await Task.detached(priority: .userInitiated) {
                 NotiSyncConfig.brokerURL = brokerURL
-                MirrorCategoryRegistry.registerAll()   // base + any persisted per-channel categories (#15)
                 ShownStore.clearSuspicions()
             }.value
             await self.bringUpCore()
@@ -306,6 +376,7 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
         await drainPendingInbox() // pull mirrors the NSE displayed-and-acked into the SwiftData Inbox
         await drainPendingDismissals() // ...then the dismissals its piggyback drain applied (rows exist first)
         await sweepTombstonedMirrors() // and remove any mirror that raced in after its dismissal
+        await reconcileSshKeyProvider()
         drainDeferredPerfTraces() // replay NSE-measured perf traces (the NSE has no Firebase) into Performance
         guard shouldContinueForegroundSync(generation) else { return }
         await refreshBrokerStatus()
@@ -429,6 +500,34 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     func handleNotificationResponse(_ response: UNNotificationResponse) async {
         let id = response.actionIdentifier
         let info = response.notification.request.content.userInfo
+        if let requestId = info[SshKeyProviderNotificationPresentation.requestIdUserInfoKey] as? String {
+            guard id != UNNotificationDismissActionIdentifier else { return }
+            await bringUpCore()
+            if id == SshKeyProviderNotificationPresentation.rejectActionIdentifier {
+                do {
+                    try await rejectSshRequest(id: requestId)
+                } catch {
+                    record(error: error, domain: .envelopeDelivery)
+                }
+                return
+            }
+            if id == SshKeyProviderNotificationPresentation.approveActionIdentifier {
+                presentSshKeyProviderRequest(requestId, approveAfterPresentation: true)
+                return
+            }
+            guard id == UNNotificationDefaultActionIdentifier ||
+                    id == SshKeyProviderNotificationPresentation.reviewActionIdentifier else { return }
+            presentSshKeyProviderRequest(requestId)
+            return
+        }
+        // NSE timeout/failure fallback: the broker's generic HIGH DATA_SYNC alert still carries the opaque
+        // envelope. Open and persist it now, then route the newest actionable SSH row into the same sheet.
+        if info["mtyp"] as? String == MessageType.DATA_SYNC.rawValue,
+           id == UNNotificationDefaultActionIdentifier || id == SshKeyProviderNotificationPresentation.reviewActionIdentifier {
+            _ = await handleRemoteNotification(info)
+            if let request = SshKeyProviderStore.pendingRequests().last { presentSshKeyProviderRequest(request.id) }
+            return
+        }
         guard let scid = info["sourceClientId"] as? String, let sk = info["sourceKey"] as? String else { return }
         if id == UNNotificationDismissActionIdentifier || id == MirrorPresentation.dismissActionId {
             await bringUpCore()

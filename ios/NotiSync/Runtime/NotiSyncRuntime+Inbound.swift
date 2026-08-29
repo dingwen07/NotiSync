@@ -94,6 +94,7 @@ extension NotiSyncRuntime {
             // One SQLite commit per envelope: the handler's Inbox upsert, activity rows, and the settings
             // stamp below all land in the batch's single save (which must complete before we return true —
             // the caller acks on true, and an acked-but-unpersisted envelope would be lost for good).
+            var durablyHandled = true
             await withCoalescedSaves {
                 switch opened.inbound {
                 case let .notification(n):
@@ -104,7 +105,7 @@ extension NotiSyncRuntime {
                     await removeRemoteDismissal(d)
                 case let .dataSync(ds):
                     span.attribute("inbound_kind", "data_sync")
-                    await handleDataSync(
+                    durablyHandled = await handleDataSync(
                         ds,
                         from: opened.env.signerId,
                         signerEpoch: opened.env.signerEpoch,
@@ -118,6 +119,12 @@ extension NotiSyncRuntime {
                 }
                 let s = settings()
                 if s.lastDeliveryMode != mode.rawValue { s.lastDeliveryMode = mode.rawValue }
+            }
+            guard durablyHandled else {
+                let dedupId = opened.dedupId
+                await Task.detached(priority: .userInitiated) { MessageDedupStore.release(dedupId) }.value
+                span.attribute("result", "not_durable")
+                return false
             }
             let dedupId = opened.dedupId
             // Mark handled only after the handler ran AND its writes are committed.
@@ -356,12 +363,12 @@ extension NotiSyncRuntime {
         from signerId: String,
         signerEpoch: Int,
         envelopeCreatedAt: Int64
-    ) async {
+    ) async -> Bool {
         switch ds.kind {
         case .CARD:
             // CARD (a self-authenticating client card and/or key-epoch relay) is own-mesh only — Android's
             // SendPolicy gate. Silent: Android logs NO activity for key-epoch convergence / card repair (#2).
-            guard let engine else { return }
+            guard let engine else { return false }
             let changed = await Task.detached(priority: .utility) {
                 guard engine.isOwnDevice(signerId) else { return false }
                 guard let delivery = ds.card else { return false }
@@ -388,7 +395,7 @@ extension NotiSyncRuntime {
             addActivity(.received, .assetSync, detail: .text, detailArg: ds.asset?.kind.rawValue ?? "")
         case .PROFILE:
             // #5 — a peer renamed itself (or changed platform); apply LWW and refresh its Devices row.
-            guard let engine, let p = ds.profile else { return }
+            guard let engine, let p = ds.profile else { return true }
             let changed = await Task.detached(priority: .utility) {
                 engine.applyProfile(p, from: signerId)
             }.value
@@ -441,7 +448,19 @@ extension NotiSyncRuntime {
             if let status = ds.screenMirror {
                 await handleScreenMirrorStatus(status, from: signerId, envelopeCreatedAt: envelopeCreatedAt)
             }
+        case .OPENPGP_SIGN:
+            // iOS does not currently provide OpenPGP signing. The strict codec still recognizes the kind so
+            // a future protocol addition cannot silently fall through to another DATA_SYNC payload.
+            break
+        case .SSH_AGENT:
+            guard let sshAgent = ds.sshAgent else { return true }
+            return await handleSshKeyProviderSync(
+                sshAgent,
+                from: signerId,
+                envelopeCreatedAt: envelopeCreatedAt
+            )
         }
+        return true
     }
 
     private func sendTrustRepairs(to recipientId: String, result: TrustTableApplyResult) async {

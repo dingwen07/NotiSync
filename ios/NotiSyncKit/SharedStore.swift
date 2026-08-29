@@ -58,6 +58,24 @@ nonisolated enum AppGroupStore {
         return body()
     }
 
+    /// Security-sensitive app/extension state must never degrade to the process-local fallback lock: doing
+    /// so would allow the app and NSE to mutate the same atomic file concurrently. A nil result means the
+    /// caller did not acquire the cross-process lock and must fail the operation without running `body`.
+    static func withRequiredLock<T>(_ name: String, _ body: () -> T) -> T? {
+        guard let lockURL = lockURL(name) else { return nil }
+        let fd = open(lockURL.path, O_CREAT | O_RDWR, S_IRUSR | S_IWUSR)
+        guard fd >= 0 else { return nil }
+        guard flock(fd, LOCK_EX) == 0 else {
+            close(fd)
+            return nil
+        }
+        defer {
+            flock(fd, LOCK_UN)
+            close(fd)
+        }
+        return body()
+    }
+
     static func readData(_ name: String) -> Data? {
         guard let url = url(name) else { return nil }
         return try? Data(contentsOf: url)
@@ -138,6 +156,7 @@ nonisolated enum AppGroupStore {
         static let filterAnnounce = "notification-filter-announce.json"
         static let perfEvents = "perf-events.json"
         static let mirrorDisplay = "mirror-display.json"
+        static let sshKeyProvider = "ssh-agent-state.json"
     }
 }
 

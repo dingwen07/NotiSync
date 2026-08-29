@@ -10,6 +10,21 @@ extern "C" {
 
 typedef struct NSScreenTLSListener NSScreenTLSListener;
 typedef struct NSScreenTLSConnection NSScreenTLSConnection;
+typedef struct NSSshManagedKey NSSshManagedKey;
+
+typedef enum NSSshManagedKeyAlgorithm {
+    NSSshManagedKeyAlgorithmEd25519 = 1,
+    NSSshManagedKeyAlgorithmRSA = 2,
+    NSSshManagedKeyAlgorithmECDSANistP256 = 3,
+} NSSshManagedKeyAlgorithm;
+
+typedef enum NSSshManagedSignatureAlgorithm {
+    NSSshManagedSignatureAlgorithmEd25519 = 1,
+    NSSshManagedSignatureAlgorithmRSASHA256 = 2,
+    NSSshManagedSignatureAlgorithmRSASHA512 = 3,
+    NSSshManagedSignatureAlgorithmECDSANistP256 = 4,
+    NSSshManagedSignatureAlgorithmRSASHA1Legacy = 5,
+} NSSshManagedSignatureAlgorithm;
 
 // Blocking callbacks used to nest the existing screen PSK-TLS protocol inside an ordered Relay
 // WebSocket byte stream. Return a positive byte count, 0 for EOF, -1 for failure, or -2 for timeout.
@@ -88,6 +103,104 @@ int NSScreenTLSConnectionWriteAll(
 
 void NSScreenTLSConnectionClose(NSScreenTLSConnection *connection);
 void NSScreenTLSConnectionDestroy(NSScreenTLSConnection *connection);
+
+// MARK: - App-managed SSH keys
+
+// The returned opaque keys own OpenSSL EVP_PKEY instances. All import and construction entry points
+// validate the algorithm, component bounds, and a private/public signing round trip before returning.
+NSSshManagedKey *NSSshManagedKeyGenerate(
+    NSSshManagedKeyAlgorithm algorithm,
+    int rsaBits,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+// Imports PEM (including encrypted PKCS#8/traditional PEM) or DER private-key material. OpenSSH-v1
+// containers are decoded by the bounded Swift parser and passed through the component constructors below.
+NSSshManagedKey *NSSshManagedKeyImport(
+    const uint8_t *encoded,
+    size_t encodedLength,
+    const uint8_t *passphrase,
+    size_t passphraseLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+NSSshManagedKey *NSSshManagedKeyCreateEd25519(
+    const uint8_t *seed,
+    size_t seedLength,
+    const uint8_t *expectedPublicKey,
+    size_t expectedPublicKeyLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+NSSshManagedKey *NSSshManagedKeyCreateRSA(
+    const uint8_t *modulus,
+    size_t modulusLength,
+    const uint8_t *publicExponent,
+    size_t publicExponentLength,
+    const uint8_t *privateExponent,
+    size_t privateExponentLength,
+    const uint8_t *coefficient,
+    size_t coefficientLength,
+    const uint8_t *primeP,
+    size_t primePLength,
+    const uint8_t *primeQ,
+    size_t primeQLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+NSSshManagedKey *NSSshManagedKeyCreateECDSANistP256(
+    const uint8_t *privateScalar,
+    size_t privateScalarLength,
+    const uint8_t *expectedPublicPoint,
+    size_t expectedPublicPointLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+NSSshManagedKeyAlgorithm NSSshManagedKeyGetAlgorithm(const NSSshManagedKey *key);
+
+// Output buffers are allocated by the bridge. Always release them with NSSshSensitiveBufferDestroy.
+int NSSshManagedKeyCopyPKCS8(
+    const NSSshManagedKey *key,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+int NSSshManagedKeyCopyPublicKeyBlob(
+    const NSSshManagedKey *key,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+// Returns the native signature bytes: raw Ed25519/RSA, or ASN.1 DER for ECDSA. Swift performs the
+// final SSH signature wrapper and DER-to-mpint conversion.
+int NSSshManagedKeySign(
+    const NSSshManagedKey *key,
+    NSSshManagedSignatureAlgorithm algorithm,
+    const uint8_t *message,
+    size_t messageLength,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+int NSSshManagedKeySelfTest(
+    const NSSshManagedKey *key,
+    char *errorBuffer,
+    size_t errorBufferLength
+);
+
+void NSSshManagedKeyDestroy(NSSshManagedKey *key);
+void NSSshSensitiveBufferDestroy(uint8_t *buffer, size_t length);
 
 #ifdef __cplusplus
 }

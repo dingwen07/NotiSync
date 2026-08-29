@@ -35,6 +35,8 @@
 	<string>NotiSync scans a device's QR code to pair it for end-to-end-encrypted notification sync.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>NotiSync connects directly to your trusted device to mirror and control its screen on your local network.</string>
+	<key>NFCReaderUsageDescription</key>
+	<string>NotiSync reads a nearby Android device's emulated card to exchange end-to-end-encrypted pairing information.</string>
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_notisync-screen._tcp</string>
@@ -42,6 +44,10 @@
 	<key>NSUserActivityTypes</key>
 	<array>
 		<string>INSendMessageIntent</string>
+	</array>
+	<key>com.apple.developer.nfc.readersession.iso7816.select-identifiers</key>
+	<array>
+		<string>F04E6F746953796E63</string>
 	</array>
 	<key>CFBundleName</key>
 	<string>$(PRODUCT_NAME)</string>

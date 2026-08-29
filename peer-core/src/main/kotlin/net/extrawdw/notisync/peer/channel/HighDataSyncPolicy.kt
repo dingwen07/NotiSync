@@ -8,6 +8,8 @@ import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorAction
+import net.extrawdw.notisync.protocol.SshAgentLimits
+import net.extrawdw.notisync.protocol.SshAgentSyncKind
 
 /** Shared validation for the exceptional DATA_SYNC messages allowed to request a high-priority wake. */
 object HighDataSyncPolicy {
@@ -17,7 +19,9 @@ object HighDataSyncPolicy {
      */
     fun validate(body: ByteArray, scope: Recipients, requesterId: ClientId? = null) {
         val sync = runCatching { ProtocolCodec.decodeFromCbor<DataSync>(body) }.getOrNull()
-        if (scope is Recipients.OnlyCapableSet) {
+        if (scope is Recipients.OnlyCapableSet && sync?.kind == DataSyncKind.SSH_AGENT) {
+            validateSshRequest(sync, scope, requesterId)
+        } else if (scope is Recipients.OnlyCapableSet) {
             validateExactPush(scope)
         } else if (sync?.kind == DataSyncKind.OPENPGP_SIGN) {
             validateOpenPgpRequest(sync, scope, requesterId)
@@ -39,6 +43,57 @@ object HighDataSyncPolicy {
                 scope.requiredCapabilities.contains(Capability.PUSH_FILTERING),
         ) {
             "HIGH exact-set DATA_SYNC requires capability routing and push filtering"
+        }
+    }
+
+    private fun validateSshRequest(sync: DataSync, scope: Recipients.OnlyCapableSet, requesterId: ClientId?) {
+        val ssh = requireNotNull(sync.sshAgent) { "HIGH SSH_AGENT requires an sshAgent body" }
+        val validationError = ssh.validationError(::sha256)
+        require(validationError == null) { validationError ?: "invalid SSH request" }
+        when (ssh.kind) {
+            SshAgentSyncKind.KEYS_REQUEST -> {
+                val request = requireNotNull(ssh.keysRequest)
+                requesterId?.let {
+                    require(request.requesterClientId == it) {
+                        "SSH inventory requesterClientId must be the envelope signer"
+                    }
+                }
+                require(request.startup && scope.ids == request.targetProviderClientIds.toSet()) {
+                    "HIGH SSH inventory requires its exact signed startup provider set"
+                }
+                require(scope.requiredCapabilities == SshAgentLimits.HIGH_FILTERING_PROVIDER_CAPABILITIES) {
+                    "HIGH SSH inventory requires capability routing, a key provider, and push filtering"
+                }
+            }
+            SshAgentSyncKind.SIGN_REQUEST -> {
+                val request = requireNotNull(ssh.signRequest)
+                requesterId?.let {
+                    require(request.requesterClientId == it) {
+                        "SSH sign requesterClientId must be the envelope signer"
+                    }
+                }
+                require(scope.ids == request.eligibleProviderClientIds.toSet()) {
+                    "HIGH SSH sign audience must equal the signed eligible provider set"
+                }
+                require(scope.requiredCapabilities == SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES) {
+                    "HIGH SSH sign requires capability routing and a key provider"
+                }
+            }
+            SshAgentSyncKind.IMPORT_REQUEST -> {
+                val request = requireNotNull(ssh.importRequest)
+                requesterId?.let {
+                    require(request.requesterClientId == it) {
+                        "SSH import requesterClientId must be the envelope signer"
+                    }
+                }
+                require(scope.ids.size == 1 && request.requesterClientId !in scope.ids) {
+                    "HIGH SSH import must target exactly one provider and exclude its requester"
+                }
+                require(scope.requiredCapabilities == SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES) {
+                    "HIGH SSH import requires capability routing and a key provider"
+                }
+            }
+            else -> throw IllegalArgumentException("only SSH keys/sign/import requests may use HIGH urgency")
         }
     }
 

@@ -12,6 +12,7 @@ import net.extrawdw.notisync.server.delivery.push.ApnsResponse
 import net.extrawdw.notisync.server.delivery.push.ApnsTokenProvider
 import net.extrawdw.notisync.server.data.StoredRoute
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.ByteArrayOutputStream
@@ -96,13 +97,17 @@ class ApnsPushTransportTest {
     }
 
     @Test
-    fun backgroundWakeUsesSandboxEndpointAndRequiredHeaders() = runBlocking {
+    fun normalDataSyncUsesBackgroundPush() = runBlocking {
         val requests = mutableListOf<HttpRequest>()
         val transport = apnsTransport(ApnsResponse(200, ""), requests)
 
         assertEquals(
             PushOutcome.DELIVERED,
-            transport.wake(apnsRoute(routeRef = "ABCD1234", environment = RouteEnvironment.DEVELOPMENT), pushData(), Urgency.NORMAL),
+            transport.wake(
+                apnsRoute(routeRef = "ABCD1234", environment = RouteEnvironment.DEVELOPMENT),
+                dataSyncData(),
+                Urgency.NORMAL,
+            ),
         )
 
         val request = requests.single()
@@ -112,25 +117,68 @@ class ApnsPushTransportTest {
         assertEquals("background", request.headers().firstValue("apns-push-type").orElse(null))
         assertEquals("5", request.headers().firstValue("apns-priority").orElse(null))
         assertEquals("application/json", request.headers().firstValue("content-type").orElse(null))
+        val body = requestBody(request)
+        assertTrue(body.contains(""""content-available":1"""))
+        assertFalse(body.contains(""""mutable-content":1"""))
     }
 
     @Test
-    fun notificationUsesAlertPushTypeAndPriority() = runBlocking {
+    fun notificationRetainsAlertPushTypeAtNormalUrgency() = runBlocking {
         val requests = mutableListOf<HttpRequest>()
         val transport = apnsTransport(ApnsResponse(200, ""), requests)
 
         assertEquals(
             PushOutcome.DELIVERED,
-            transport.wake(apnsRoute(routeRef = "ABCD1234"), notificationData(), Urgency.HIGH),
+            transport.wake(apnsRoute(routeRef = "ABCD1234"), notificationData(), Urgency.NORMAL),
         )
 
         val request = requests.single()
-        // A NOTIFICATION must be an alert push at priority 10 so the NSE wakes to decrypt + display.
         assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
         assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
         val body = requestBody(request)
         assertTrue(body.contains(""""mutable-content":1"""))
         assertTrue(body.contains(""""category":"notisync.mirror""""))
+    }
+
+    @Test
+    fun highDataSyncUsesAlertPushTypeAndPriorityForNse() = runBlocking {
+        val requests = mutableListOf<HttpRequest>()
+        val transport = apnsTransport(ApnsResponse(200, ""), requests)
+
+        assertEquals(
+            PushOutcome.DELIVERED,
+            transport.wake(apnsRoute(routeRef = "ABCD1234"), dataSyncData(), Urgency.HIGH),
+        )
+
+        val request = requests.single()
+        // HIGH DATA_SYNC must wake the NSE at APNs priority 10.
+        assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
+        assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
+        val body = requestBody(request)
+        assertTrue(body.contains(""""mutable-content":1"""))
+        assertTrue(body.contains(""""content-available":1"""))
+        assertTrue(body.contains("Open NotiSync to continue"))
+        assertFalse(body.contains(""""category":"notisync.ssh.request""""))
+        assertFalse(body.contains("New notification"))
+    }
+
+    @Test
+    fun highUrgencyOverridesMissingMessageTypeToAlert() = runBlocking {
+        val requests = mutableListOf<HttpRequest>()
+        val transport = apnsTransport(ApnsResponse(200, ""), requests)
+
+        assertEquals(
+            PushOutcome.DELIVERED,
+            transport.wake(apnsRoute(), pushData(), Urgency.HIGH),
+        )
+
+        val request = requests.single()
+        assertEquals("alert", request.headers().firstValue("apns-push-type").orElse(null))
+        assertEquals("10", request.headers().firstValue("apns-priority").orElse(null))
+        val body = requestBody(request)
+        assertTrue(body.contains(""""mutable-content":1"""))
+        assertTrue(body.contains("Open NotiSync to continue"))
+        assertFalse(body.contains(""""category":"notisync.ssh.request""""))
     }
 
     private fun apnsTransport(
@@ -165,6 +213,8 @@ class ApnsPushTransportTest {
     private fun pushData() = mapOf("typ" to "wake", "mid" to "01J0APNS001")
 
     private fun notificationData() = mapOf("mtyp" to "NOTIFICATION", "typ" to "notif", "mid" to "01J0APNS002", "ct" to "AAEC")
+
+    private fun dataSyncData() = mapOf("mtyp" to "DATA_SYNC", "typ" to "notif", "mid" to "01J0APNS003", "ct" to "AAEC")
 
     private fun requestBody(request: HttpRequest): String {
         val publisher = request.bodyPublisher().orElseThrow()

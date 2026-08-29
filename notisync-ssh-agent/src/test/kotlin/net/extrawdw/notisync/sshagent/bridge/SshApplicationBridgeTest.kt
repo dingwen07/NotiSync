@@ -19,8 +19,18 @@ import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.SshAgentLimits
 import net.extrawdw.notisync.protocol.SshAgentSyncKind
+import net.extrawdw.notisync.protocol.SshConnectionDirection
+import net.extrawdw.notisync.protocol.SshDestinationContext
+import net.extrawdw.notisync.protocol.SshDestinationProvenance
+import net.extrawdw.notisync.protocol.SshImportRequest
+import net.extrawdw.notisync.protocol.SshImportSourceType
+import net.extrawdw.notisync.protocol.SshSignRequest
+import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -71,6 +81,68 @@ class SshApplicationBridgeTest {
         assertEquals(SshAgentSyncKind.KEYS_REQUEST, decode(send).sshAgent?.kind)
         assertEquals(listOf(high, normal), request?.targetProviderClientIds)
         assertFalse(requireNotNull(request).startup)
+    }
+
+    @Test
+    fun signRequestIsHighForEveryKeyProviderWithoutPushFiltering() {
+        val api = FakeApi(requester, listOf(provider(high, push = true), provider(normal, push = false)))
+        val bridge = SshApplicationBridge(api, ProviderRoster(api), now = { 1_000 })
+        val request = SshSignRequest(
+            requestId = "1".repeat(32),
+            requesterClientId = requester,
+            requestedAt = 1_000,
+            expiresAt = 121_000,
+            publicKeyBlob = byteArrayOf(1),
+            data = byteArrayOf(2),
+            flags = 0,
+            requestedSignatureAlgorithm = SshSignatureAlgorithm.SSH_ED25519,
+            eligibleProviderClientIds = listOf(high, normal),
+            authorizationGeneration = "2".repeat(32),
+            authorizationEpoch = 0,
+            processContext = DesktopProcessContext(DesktopProcessContextSource.UNAVAILABLE),
+            destinationContext = SshDestinationContext(
+                SshDestinationProvenance.UNKNOWN,
+                SshConnectionDirection.UNKNOWN,
+            ),
+            connectionId = "3".repeat(32),
+        )
+
+        bridge.sendSignRequest(request)
+
+        val send = api.sends.single()
+        assertEquals(Urgency.HIGH, send.urgency)
+        val scope = send.scope as Recipients.OnlyCapableSet
+        assertEquals(setOf(high, normal), scope.ids)
+        assertEquals(SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES, scope.requiredCapabilities)
+        assertFalse(Capability.PUSH_FILTERING in scope.requiredCapabilities)
+        assertEquals(request.requestId, decode(send).sshAgent?.signRequest?.requestId)
+    }
+
+    @Test
+    fun importRequestIsHighForOneKeyProviderWithoutPushFiltering() {
+        val api = FakeApi(requester, listOf(provider(high, push = true), provider(normal, push = false)))
+        val bridge = SshApplicationBridge(api, ProviderRoster(api), now = { 1_000 })
+        val request = SshImportRequest(
+            requestId = "4".repeat(32),
+            requesterClientId = requester,
+            requestedAt = 1_000,
+            expiresAt = 301_000,
+            sourceType = SshImportSourceType.AGENT_IDENTITY,
+            agentIdentity = byteArrayOf(1, 2, 3),
+            suggestedName = "Imported key",
+        )
+
+        bridge.sendImportRequest(request, normal)
+
+        val send = api.sends.single()
+        assertEquals(Urgency.HIGH, send.urgency)
+        val scope = send.scope as Recipients.OnlyCapableSet
+        assertEquals(setOf(normal), scope.ids)
+        assertEquals(SshAgentLimits.HIGH_SIGN_PROVIDER_CAPABILITIES, scope.requiredCapabilities)
+        assertFalse(Capability.PUSH_FILTERING in scope.requiredCapabilities)
+        val decoded = decode(send).sshAgent
+        assertEquals(SshAgentSyncKind.IMPORT_REQUEST, decoded?.kind)
+        assertEquals(request.requestId, decoded?.importRequest?.requestId)
     }
 
     private fun decode(request: SendRequest): DataSync = ProtocolCodec.decodeFromCbor(

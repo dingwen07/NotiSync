@@ -8,6 +8,10 @@ private let log = Logger(subsystem: "net.extrawdw.apps.NotiSync", category: "Not
 /// Expanded-notification UI for optional rich content. It deliberately leaves the notification's native
 /// action row alone, including iOS's own text-input flow for remote-input actions.
 final class NotificationContentViewController: UIViewController, UNNotificationContentExtension {
+    private static let sshCategoryIdentifiers = Set(["notisync.ssh.request", "notisync.ssh.audit"])
+    private static let sshExpandedDetailsUserInfoKey = "notisyncSshExpandedDetails"
+    private static let sshRequestIdUserInfoKey = "notisyncSshRequestId"
+
     private enum Layout {
         static let appIconAttachmentIdentifier = "notisync.appicon"
         static let horizontalInset: CGFloat = 12
@@ -55,6 +59,8 @@ final class NotificationContentViewController: UIViewController, UNNotificationC
         textView.isScrollEnabled = false
         textView.dataDetectorTypes = [.link]
         textView.font = .preferredFont(forTextStyle: .body)
+        textView.adjustsFontForContentSizeCategory = true
+        textView.textColor = .label
         textView.textContainerInset = UIEdgeInsets(top: 8, left: Layout.horizontalInset, bottom: 8,
                                                    right: Layout.horizontalInset)
         textView.textContainer.lineFragmentPadding = 0
@@ -79,7 +85,6 @@ final class NotificationContentViewController: UIViewController, UNNotificationC
             appIconView.heightAnchor.constraint(equalToConstant: Layout.appIconSize),
             textHeightConstraint,
         ])
-        preferredContentSize = .zero
     }
 
     override func viewDidLayoutSubviews() {
@@ -88,17 +93,29 @@ final class NotificationContentViewController: UIViewController, UNNotificationC
     }
 
     func didReceive(_ notification: UNNotification) {
+        // The notification host may deliver content before it asks UIKit for our view. Populate only after
+        // viewDidLoad has built the hierarchy; otherwise viewDidLoad resets the preloaded values to hidden.
+        loadViewIfNeeded()
+
         let content = notification.request.content
         let body = content.body.trimmingCharacters(in: .whitespacesAndNewlines)
         let appIcon = appIconImage(from: content)
         let hasLinkBody = bodyContainsLink(body)
+        let sshExpandedDetails = (content.userInfo[Self.sshExpandedDetailsUserInfoKey] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let isSshNotification = Self.sshCategoryIdentifiers.contains(content.categoryIdentifier)
+            || content.userInfo[Self.sshRequestIdUserInfoKey] != nil
+            || sshExpandedDetails != nil
+        let expandedText = sshExpandedDetails?.isEmpty == false
+            ? sshExpandedDetails!
+            : (isSshNotification || hasLinkBody ? body : "")
 
         appIconView.image = appIcon
         appIconRow.isHidden = appIcon == nil
-        textView.text = hasLinkBody ? body : ""
-        textView.isHidden = !hasLinkBody
+        textView.text = expandedText
+        textView.isHidden = expandedText.isEmpty
 
-        guard appIcon != nil || hasLinkBody else {
+        guard appIcon != nil || !expandedText.isEmpty else {
             stackView.isHidden = true
             collapse()
             return
@@ -106,12 +123,9 @@ final class NotificationContentViewController: UIViewController, UNNotificationC
 
         stackView.isHidden = false
         updatePreferredContentSize()
-        log.info("content extension rendered category=\(content.categoryIdentifier, privacy: .public) appIcon=\(appIcon != nil) linkBody=\(hasLinkBody)")
-    }
-
-    func didReceive(_ response: UNNotificationResponse,
-                    completionHandler completion: @escaping (UNNotificationContentExtensionResponseOption) -> Void) {
-        completion(.dismissAndForwardAction)
+        view.setNeedsLayout()
+        view.layoutIfNeeded()
+        log.info("content extension rendered category=\(content.categoryIdentifier, privacy: .public) appIcon=\(appIcon != nil) richText=\(!expandedText.isEmpty)")
     }
 
     private func bodyContainsLink(_ body: String) -> Bool {
@@ -147,7 +161,10 @@ final class NotificationContentViewController: UIViewController, UNNotificationC
     }
 
     private func updatePreferredContentSize() {
-        let width = max(view.bounds.width, 1)
+        // A zero initial content ratio keeps ordinary mirror notifications free of blank custom padding. The
+        // extension can still receive its payload before it has a laid-out width, so use a realistic measuring
+        // width until the host supplies the final bounds; only the preferred height is significant to iOS.
+        let width = max(view.bounds.width, 320)
         var height: CGFloat = appIconRow.isHidden ? 0 : Layout.appIconRowHeight
         if textView.isHidden {
             textView.isScrollEnabled = false

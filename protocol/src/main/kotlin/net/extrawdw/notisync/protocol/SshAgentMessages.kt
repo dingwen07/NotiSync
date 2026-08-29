@@ -30,10 +30,16 @@ object SshAgentLimits {
     const val MAX_FORGET_LIFETIME_MILLIS = 5 * 60_000L
     const val MAX_AGENT_ADD_LIFETIME_SECONDS = 7 * 24 * 60 * 60L
 
-    val HIGH_PROVIDER_CAPABILITIES: Set<Capability> = setOf(
+    /** HIGH startup inventory can be quiet, so every target must be able to filter the push before display. */
+    val HIGH_FILTERING_PROVIDER_CAPABILITIES: Set<Capability> = setOf(
         Capability.CAPABILITY_ROUTING_V1,
         Capability.SSH_KEY_PROVIDER_V1,
         Capability.PUSH_FILTERING,
+    )
+    /** A sign request always produces a review notification; it does not require notification filtering. */
+    val HIGH_SIGN_PROVIDER_CAPABILITIES: Set<Capability> = setOf(
+        Capability.CAPABILITY_ROUTING_V1,
+        Capability.SSH_KEY_PROVIDER_V1,
     )
     val NORMAL_PROVIDER_CAPABILITIES: Set<Capability> = setOf(
         Capability.CAPABILITY_ROUTING_V1,
@@ -55,7 +61,9 @@ enum class SshSignatureAlgorithm {
     SSH_ED25519, RSA_SHA2_256, RSA_SHA2_512, ECDSA_NISTP256, WEBAUTHN_SK_ECDSA_NISTP256, RSA_SHA1_LEGACY,
 }
 @Serializable
-enum class SshKeyOrigin { GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD, WEBAUTHN_CREATED, WEBAUTHN_RECOVERED }
+enum class SshKeyOrigin {
+    GENERATED, SAF_IMPORT, DATA_SYNC_FILE, AGENT_ADD, WEBAUTHN_CREATED, WEBAUTHN_RECOVERED,
+}
 @Serializable
 enum class SshOperationalKeyProvider {
     /** The non-exportable private key signs entirely through Android Keystore. */
@@ -66,9 +74,15 @@ enum class SshOperationalKeyProvider {
 
     /** A discoverable WebAuthn credential retained and used by an Android credential provider. */
     CREDENTIAL_MANAGER_WEBAUTHN,
+
+    /** Private key material protected by the Apple Keychain. */
+    APPLE_KEYCHAIN,
+
+    /** A discoverable WebAuthn credential retained and used through Apple Authentication Services. */
+    APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
 }
 @Serializable
-enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT, CREDENTIAL_PROVIDER }
+enum class SshStorageSecurityLevel { STRONGBOX, TRUSTED_ENVIRONMENT, CREDENTIAL_PROVIDER, KEYCHAIN }
 @Serializable
 enum class SshExportCopyBackendPolicy { BEST_AVAILABLE, TEE_ONLY }
 @Serializable
@@ -157,25 +171,32 @@ data class SshOperationalKeyProtection(
     @CborLabel(3) val strongBoxAttempted: Boolean,
     @CborLabel(4) val strongBoxFallback: Boolean,
 ) {
-    fun validationError(): String? = when {
-        provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
-            "WebAuthn operational storage must use a credential provider"
-        provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            (strongBoxAttempted || strongBoxFallback) ->
-            "WebAuthn operational storage cannot report StrongBox state"
-        provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            securityLevel != SshStorageSecurityLevel.STRONGBOX &&
-            securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
-            "operational key must be hardware-backed"
-        securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
-            "operational StrongBox storage requires an attempt"
-        strongBoxFallback && !strongBoxAttempted -> "operational StrongBox fallback requires an attempt"
-        strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
-            "operational StrongBox fallback must end in TEE"
-        strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
-            "successful operational StrongBox attempt must report StrongBox"
-        else -> null
+    fun validationError(): String? {
+        val webAuthnProvider = provider.isWebAuthnProvider()
+        val androidManagedProvider = provider.isAndroidManagedProvider()
+        val appleManagedProvider = provider.isAppleManagedProvider()
+        return when {
+            webAuthnProvider && securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+                "WebAuthn operational storage must use a credential provider"
+            webAuthnProvider && (strongBoxAttempted || strongBoxFallback) ->
+                "WebAuthn operational storage cannot report StrongBox state"
+            androidManagedProvider &&
+                securityLevel != SshStorageSecurityLevel.STRONGBOX &&
+                securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+                "Android operational key must be hardware-backed"
+            appleManagedProvider && securityLevel != SshStorageSecurityLevel.KEYCHAIN ->
+                "Apple operational key must use Keychain storage"
+            appleManagedProvider && (strongBoxAttempted || strongBoxFallback) ->
+                "Apple Keychain storage cannot report StrongBox state"
+            securityLevel == SshStorageSecurityLevel.STRONGBOX && !strongBoxAttempted ->
+                "operational StrongBox storage requires an attempt"
+            strongBoxFallback && !strongBoxAttempted -> "operational StrongBox fallback requires an attempt"
+            strongBoxFallback && securityLevel != SshStorageSecurityLevel.TRUSTED_ENVIRONMENT ->
+                "operational StrongBox fallback must end in TEE"
+            strongBoxAttempted && !strongBoxFallback && securityLevel != SshStorageSecurityLevel.STRONGBOX ->
+                "successful operational StrongBox attempt must report StrongBox"
+            else -> null
+        }
     }
 }
 
@@ -237,53 +258,86 @@ data class SshKeyDescriptor(
     @CborLabel(10) val createdAt: Long,
     @CborLabel(11) val webAuthn: SshWebAuthnCredentialProtection? = null,
 ) {
-    fun validationError(sha256: ((ByteArray) -> ByteArray)? = null): String? = when {
-        !providerKeyId.isSshOperationId() -> "invalid provider key id"
-        publicKeyBlob.isEmpty() || publicKeyBlob.size > SshAgentLimits.MAX_PUBLIC_KEY_BLOB_BYTES ->
-            "public key blob is outside the allowed bounds"
-        publicKeyBlobSha256.size != SshAgentLimits.DIGEST_BYTES -> "invalid public key digest length"
-        sha256 != null && !publicKeyBlobSha256.contentEquals(sha256(publicKeyBlob)) -> "public key digest mismatch"
-        displayName.isBlank() || !displayName.isBoundedSshDisplayText(SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) ->
-            "display name is outside the allowed bounds"
-        rememberedNamespaces.size > SshAgentLimits.MAX_REMEMBERED_NAMESPACES -> "too many remembered namespaces"
-        rememberedNamespaces.any { it.validationError() != null } -> "invalid remembered namespace"
-        rememberedNamespaces.map { Triple(it.requesterClientId, it.authorizationGeneration, it.authorizationEpoch) }
-            .distinct().size != rememberedNamespaces.size -> "duplicate remembered namespace"
-        operationalKey.validationError() != null -> operationalKey.validationError()
-        exportCopy?.validationError() != null -> exportCopy.validationError()
-        webAuthn?.validationError() != null -> webAuthn.validationError()
-        operationalKey.provider == SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED &&
-            algorithm != SshKeyAlgorithm.SSH_ED25519 ->
-            "wrapped operational storage is allowed only for Ed25519"
-        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            algorithm != SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
-            "Credential Manager WebAuthn credentials require the ECDSA-SK algorithm"
-        algorithm == SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 &&
-            operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
-            "WebAuthn ECDSA-SK keys require the Credential Manager provider"
-        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            origin !in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) ->
-            "Credential Manager WebAuthn credentials require a WebAuthn origin"
-        origin in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) &&
-            operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN ->
-            "WebAuthn origin requires the Credential Manager provider"
-        (operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN) != (webAuthn != null) ->
-            "WebAuthn metadata must appear exactly for Credential Manager keys"
-        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            operationalKey.securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
-            "Credential Manager WebAuthn credentials must report credential-provider storage"
-        operationalKey.provider != SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            operationalKey.securityLevel == SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
-            "Android Keystore keys cannot report credential-provider storage"
-        operationalKey.provider == SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN &&
-            (operationalKey.userVerificationPolicy != SshUserVerificationPolicy.PER_USE ||
-                approvalPolicy != SshApprovalPolicy.ALWAYS_ASK || exportCopy != null || rememberedNamespaces.isNotEmpty()) ->
-            "WebAuthn-backed SSH keys require per-use verification and cannot be exported or remembered"
-        operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE &&
-            approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER -> "per-use verification cannot allow remember"
-        createdAt <= 0 -> "createdAt must be positive"
-        else -> null
+    fun validationError(sha256: ((ByteArray) -> ByteArray)? = null): String? {
+        val webAuthnProvider = operationalKey.provider.isWebAuthnProvider()
+        return when {
+            !providerKeyId.isSshOperationId() -> "invalid provider key id"
+            publicKeyBlob.isEmpty() || publicKeyBlob.size > SshAgentLimits.MAX_PUBLIC_KEY_BLOB_BYTES ->
+                "public key blob is outside the allowed bounds"
+            publicKeyBlobSha256.size != SshAgentLimits.DIGEST_BYTES -> "invalid public key digest length"
+            sha256 != null && !publicKeyBlobSha256.contentEquals(sha256(publicKeyBlob)) ->
+                "public key digest mismatch"
+            displayName.isBlank() || !displayName.isBoundedSshDisplayText(SshAgentLimits.MAX_DISPLAY_NAME_UTF8_BYTES) ->
+                "display name is outside the allowed bounds"
+            rememberedNamespaces.size > SshAgentLimits.MAX_REMEMBERED_NAMESPACES -> "too many remembered namespaces"
+            rememberedNamespaces.any { it.validationError() != null } -> "invalid remembered namespace"
+            rememberedNamespaces.map { Triple(it.requesterClientId, it.authorizationGeneration, it.authorizationEpoch) }
+                .distinct().size != rememberedNamespaces.size -> "duplicate remembered namespace"
+            operationalKey.validationError() != null -> operationalKey.validationError()
+            exportCopy?.validationError() != null -> exportCopy.validationError()
+            webAuthn?.validationError() != null -> webAuthn.validationError()
+            operationalKey.provider == SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED &&
+                algorithm != SshKeyAlgorithm.SSH_ED25519 ->
+                "wrapped operational storage is allowed only for Ed25519"
+            webAuthnProvider && algorithm != SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 ->
+                "WebAuthn credentials require the ECDSA-SK algorithm"
+            algorithm == SshKeyAlgorithm.WEBAUTHN_SK_ECDSA_NISTP256 &&
+                !webAuthnProvider ->
+                "WebAuthn ECDSA-SK keys require a WebAuthn provider"
+            webAuthnProvider &&
+                origin !in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) ->
+                "WebAuthn credentials require a WebAuthn origin"
+            origin in setOf(SshKeyOrigin.WEBAUTHN_CREATED, SshKeyOrigin.WEBAUTHN_RECOVERED) &&
+                !webAuthnProvider ->
+                "WebAuthn origin requires a WebAuthn provider"
+            webAuthnProvider != (webAuthn != null) ->
+                "WebAuthn metadata must appear exactly for WebAuthn keys"
+            webAuthnProvider &&
+                operationalKey.securityLevel != SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+                "WebAuthn credentials must report credential-provider storage"
+            !webAuthnProvider &&
+                operationalKey.securityLevel == SshStorageSecurityLevel.CREDENTIAL_PROVIDER ->
+                "managed keys cannot report credential-provider storage"
+            webAuthnProvider &&
+                (operationalKey.userVerificationPolicy != SshUserVerificationPolicy.PER_USE ||
+                    approvalPolicy != SshApprovalPolicy.ALWAYS_ASK || exportCopy != null ||
+                    rememberedNamespaces.isNotEmpty()) ->
+                "WebAuthn-backed SSH keys require per-use verification and cannot be exported or remembered"
+            operationalKey.userVerificationPolicy == SshUserVerificationPolicy.PER_USE &&
+                approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER -> "per-use verification cannot allow remember"
+            createdAt <= 0 -> "createdAt must be positive"
+            else -> null
+        }
     }
+}
+
+private fun SshOperationalKeyProvider.isWebAuthnProvider(): Boolean = when (this) {
+    SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+    SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+    -> true
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+    SshOperationalKeyProvider.APPLE_KEYCHAIN,
+    -> false
+}
+
+private fun SshOperationalKeyProvider.isAndroidManagedProvider(): Boolean = when (this) {
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+    -> true
+    SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+    SshOperationalKeyProvider.APPLE_KEYCHAIN,
+    SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+    -> false
+}
+
+private fun SshOperationalKeyProvider.isAppleManagedProvider(): Boolean = when (this) {
+    SshOperationalKeyProvider.APPLE_KEYCHAIN -> true
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_PRIVATE_KEY,
+    SshOperationalKeyProvider.ANDROID_KEYSTORE_AES_WRAPPED,
+    SshOperationalKeyProvider.CREDENTIAL_MANAGER_WEBAUTHN,
+    SshOperationalKeyProvider.APPLE_AUTHENTICATION_SERVICES_WEBAUTHN,
+    -> false
 }
 
 @Serializable

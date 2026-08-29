@@ -13,8 +13,10 @@ import UserNotifications
 /// Dismissals are never their own alert push: an NSE miss (BFU after reboot, memory kill, timeout) falls
 /// back to displaying the payload, and a dismissal has no legitimate visible form.
 final class NotificationService: UNNotificationServiceExtension {
+    private let deliveryStateLock = NSLock()
     private var contentHandler: ((UNNotificationContent) -> Void)?
     private var bestAttempt: UNNotificationContent?
+    private var extensionDeadlineReached = false
     private var processingTask: Task<Void, Never>?
     private var claimedDedupId: String?
 
@@ -37,9 +39,12 @@ final class NotificationService: UNNotificationServiceExtension {
 
     override func didReceive(_ request: UNNotificationRequest,
                              withContentHandler contentHandler: @escaping (UNNotificationContent) -> Void) {
-        self.contentHandler = contentHandler
         let best = (request.content.mutableCopy() as? UNMutableNotificationContent) ?? UNMutableNotificationContent()
-        self.bestAttempt = best
+        deliveryStateLock.lock()
+        self.contentHandler = contentHandler
+        bestAttempt = best
+        extensionDeadlineReached = false
+        deliveryStateLock.unlock()
 
         guard let engine = NotiSyncEngine(forExtension: true) else { reportPerf("no_engine"); finish(best); return }
         let info = request.content.userInfo
@@ -104,6 +109,139 @@ final class NotificationService: UNNotificationServiceExtension {
                     await MirrorRemoval.settle()
                     reportPerf("dismissal")
                     finish(Self.dismissalStubContent())
+                    return
+                }
+                // SSH signing requests are intentionally HIGH DATA_SYNC alerts. Unlike quiet filtering traffic,
+                // every accepted request needs a visible review surface, so iOS does not advertise or require
+                // PUSH_FILTERING. Remote imports use the same HIGH visible-review route. Commit metadata plus
+                // short-lived Keychain staging before acking, then replace the opaque fallback with the review alert.
+                if case let .dataSync(dataSync) = inbound,
+                   dataSync.kind == .SSH_AGENT,
+                   let sshAgent = dataSync.sshAgent,
+                   engine.isOwnDevice(env.signerId) {
+                    let requesterName = engine.trustedPeers().first { $0.clientId == env.signerId }?.displayName
+                    let outcome = await Task.detached(priority: .userInitiated) {
+                        SshKeyProviderInboundStager.stage(
+                            sshAgent,
+                            signerId: env.signerId,
+                            providerClientId: engine.selfClientId,
+                            requesterDisplayName: requesterName,
+                            envelopeCreatedAt: env.createdAt
+                        )
+                    }.value
+                    if case let .staged(providerRequest, _) = outcome {
+                        // The NSE can deliver an SSH alert before the updated app has launched. Register the
+                        // category now so its native request actions exist on this very first notification.
+                        MirrorCategoryRegistry.registerAll()
+                        switch await autoApproveRememberedSshRequest(
+                            providerRequest,
+                            engine: engine
+                        ) {
+                        case .approved(let content):
+                            setBestAttempt(content)
+                            guard !Task.isCancelled else { return }
+                            MessageDedupStore.record(messageId)
+                            clearClaim(dedupId)
+                            await RelayClient.ack(
+                                [messageId],
+                                identitySigner: engine.identitySigner,
+                                operationalSigner: engine.operationalSigner,
+                                keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                            )
+                            reportPerf("ssh_auto_approved")
+                            finish(content)
+                            return
+                        case .alreadyHandled:
+                            let content = SshKeyProviderNotificationPresentation.unavailableContent()
+                            setBestAttempt(content)
+                            guard !Task.isCancelled else { return }
+                            MessageDedupStore.record(messageId)
+                            clearClaim(dedupId)
+                            await RelayClient.ack(
+                                [messageId],
+                                identitySigner: engine.identitySigner,
+                                operationalSigner: engine.operationalSigner,
+                                keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                            )
+                            reportPerf("ssh_already_handled")
+                            finish(content)
+                            return
+                        case .notApproved:
+                            break
+                        }
+                        guard !Task.isCancelled else { return }
+                        let content = SshKeyProviderNotificationPresentation.content(for: providerRequest)
+                        setBestAttempt(content)
+                        MessageDedupStore.record(messageId)
+                        clearClaim(dedupId)
+                        await RelayClient.ack(
+                            [messageId],
+                            identitySigner: engine.identitySigner,
+                            operationalSigner: engine.operationalSigner,
+                            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                        )
+                        reportPerf("ssh_request")
+                        finish(content)
+                        return
+                    }
+                    if case .cancelled = outcome {
+                        let content = SshKeyProviderNotificationPresentation.cancelledContent()
+                        setBestAttempt(content)
+                        MessageDedupStore.record(messageId)
+                        clearClaim(dedupId)
+                        await RelayClient.ack(
+                            [messageId],
+                            identitySigner: engine.identitySigner,
+                            operationalSigner: engine.operationalSigner,
+                            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                        )
+                        reportPerf("ssh_cancelled")
+                        finish(content)
+                        return
+                    }
+                    if case .alreadyHandled = outcome {
+                        let content = SshKeyProviderNotificationPresentation.unavailableContent()
+                        setBestAttempt(content)
+                        MessageDedupStore.record(messageId)
+                        clearClaim(dedupId)
+                        await RelayClient.ack(
+                            [messageId],
+                            identitySigner: engine.identitySigner,
+                            operationalSigner: engine.operationalSigner,
+                            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                        )
+                        reportPerf("ssh_already_handled")
+                        finish(content)
+                        return
+                    }
+                    let failure: (request: SshSignRequest, code: SshProviderFailureCode)? = switch outcome {
+                    case .keyNotFound(let request): (request, .KEY_NOT_FOUND)
+                    case .authorizationInvalidated(let request): (request, .REQUEST_EXPIRED)
+                    default: nil
+                    }
+                    if let failure,
+                       await sendSshProviderFailure(
+                           request: failure.request,
+                           code: failure.code,
+                           engine: engine
+                       ) {
+                        let content = SshKeyProviderNotificationPresentation.unavailableContent()
+                        setBestAttempt(content)
+                        MessageDedupStore.record(messageId)
+                        clearClaim(dedupId)
+                        await RelayClient.ack(
+                            [messageId],
+                            identitySigner: engine.identitySigner,
+                            operationalSigner: engine.operationalSigner,
+                            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+                        )
+                        reportPerf("ssh_provider_failure")
+                        finish(content)
+                        return
+                    }
+                    releaseClaim(dedupId)
+                    reportPerf("ssh_not_staged")
+                    finish(best)
                     return
                 }
                 guard case let .notification(n) = inbound else {
@@ -172,9 +310,9 @@ final class NotificationService: UNNotificationServiceExtension {
                                                                 categoryIdentifier: categoryIdentifier)
                     fetch = icon.data == nil ? icon.fetch : nil
                 }
-                bestAttempt = filterAlert
+                setBestAttempt(filterAlert
                     ? MirrorPresentation.passiveContent(prepared, removeActions: true)
-                    : (n.silentUpdate ? MirrorPresentation.passiveContent(prepared) : prepared)
+                    : (n.silentUpdate ? MirrorPresentation.passiveContent(prepared) : prepared))
 
                 // Piggyback dismissal drain: the broker's `pnc` hint on this alert push says DISMISSAL
                 // envelopes are queued for us — pull + apply them while the NSE is awake. Runs after
@@ -191,7 +329,7 @@ final class NotificationService: UNNotificationServiceExtension {
                         suppressed = true
                         prepared = MirrorPresentation.passiveContent(prepared, removeActions: true)
                         fetch = nil
-                        bestAttempt = prepared
+                        setBestAttempt(prepared)
                     }
                 }
 
@@ -352,11 +490,198 @@ final class NotificationService: UNNotificationServiceExtension {
         }
     }
 
+    private func setBestAttempt(_ content: UNNotificationContent) {
+        deliveryStateLock.lock()
+        if !extensionDeadlineReached, contentHandler != nil { bestAttempt = content }
+        deliveryStateLock.unlock()
+    }
+
     private func finish(_ content: UNNotificationContent) {
-        guard let contentHandler else { return }
-        self.contentHandler = nil
+        deliveryStateLock.lock()
+        let handler = contentHandler
+        contentHandler = nil
         bestAttempt = nil
-        contentHandler(content)
+        deliveryStateLock.unlock()
+        handler?(content)
+    }
+
+    private func sendSshProviderFailure(
+        request: SshSignRequest,
+        code: SshProviderFailureCode,
+        engine: NotiSyncEngine
+    ) async -> Bool {
+        let result = SshSignResult(
+            requestId: request.requestId,
+            requesterClientId: request.requesterClientId,
+            publicKeyBlobSha256: NSHash.sha256(request.publicKeyBlob),
+            kind: .PROVIDER_FAILURE,
+            resultAt: NotiSyncEngine.nowMillis(),
+            providerClientId: engine.selfClientId,
+            signature: nil,
+            rejection: nil,
+            failure: SshProviderFailure(code: code, retryable: false, message: nil)
+        )
+        guard let envelope = try? engine.sealSshAgentSync(
+            SshAgentSync(kind: .SIGN_RESULT, signResult: result),
+            to: request.requesterClientId
+        ) else { return false }
+        return await RelayClient.sendEnvelope(
+            envelope,
+            urgency: .NORMAL,
+            identitySigner: engine.identitySigner,
+            operationalSigner: engine.operationalSigner,
+            keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+        )
+    }
+
+    /// Complete a remembered managed-key authorization entirely inside the NSE. The request remains a normal
+    /// review request unless every policy, freshness, key, and durable-state check succeeds. This path never
+    /// handles passkeys: Authentication Services requires a foreground user-verification ceremony.
+    private enum RememberedAutoApprovalOutcome {
+        case notApproved
+        case approved(UNNotificationContent)
+        case alreadyHandled
+    }
+
+    private func autoApproveRememberedSshRequest(
+        _ request: SshProviderRequestRecord,
+        engine: NotiSyncEngine
+    ) async -> RememberedAutoApprovalOutcome {
+        let now = NotiSyncEngine.nowMillis()
+        guard request.kind == .sign,
+              request.status == .pendingReview,
+              request.expiresAt > now,
+              !request.confirmationRequired,
+              let keyId = request.providerKeyId,
+              let key = SshKeyProviderStore.key(id: keyId),
+              SshKeyProviderStore.validKeyRecord(key),
+              !key.isWebAuthn,
+              key.approvalPolicy == SshApprovalPolicy.ALLOW_REMEMBER.rawValue,
+              (key.expiresAt ?? Int64.max) > now,
+              let account = request.stagedSecretAccount,
+              let signData = SshPendingSecretStore.load(account: account),
+              let generation = request.authorizationGeneration,
+              let epoch = request.authorizationEpoch,
+              epoch > SshKeyProviderStore.authorizationFloor(
+                  requesterClientId: request.requesterClientId,
+                  generation: generation
+              ),
+              let authorization = SshKeyProviderStore.rememberedAuthorization(
+                  providerKeyId: keyId,
+                  requesterClientId: request.requesterClientId,
+                  generation: generation,
+                  epoch: epoch,
+                  hostKeyBlobSha256: request.destination?.serverHostKeyBlobSha256,
+                  destinationProvenance: request.destination?.provenance
+              ),
+              let requestedAlgorithm = request.requestedSignatureAlgorithm,
+              let flags = request.flags,
+              let algorithm = managedSignatureAlgorithm(
+                  keyAlgorithm: key.algorithm,
+                  requestedAlgorithm: requestedAlgorithm,
+                  flags: flags
+              ), !Task.isCancelled else { return .notApproved }
+
+        let signatureBlob: Data
+        do {
+            signatureBlob = try SshManagedKeyProvider.sign(
+                keyId: key.id,
+                algorithm: algorithm,
+                data: signData
+            )
+        } catch {
+            // A locked/unavailable Keychain or a provider failure must remain visible and manually retryable.
+            return .notApproved
+        }
+        guard !Task.isCancelled else { return .notApproved }
+
+        let disposition: SshRememberDisposition = authorization.scope == SshRememberScope.PEER_HOST_KEY.rawValue
+            ? .MATCHED_PEER_HOST_KEY : .MATCHED_PEER
+        let result = SshSignResult(
+            requestId: request.id,
+            requesterClientId: request.requesterClientId,
+            publicKeyBlobSha256: request.publicKeyBlobSha256 ?? NSHash.sha256(key.publicKeyBlob),
+            kind: .SIGNED,
+            resultAt: now,
+            providerClientId: engine.selfClientId,
+            signature: SshSignatureResult(
+                signatureBlob: signatureBlob,
+                rememberDisposition: disposition,
+                authorizationGeneration: generation,
+                authorizationEpoch: epoch
+            ),
+            rejection: nil,
+            failure: nil
+        )
+        let sync = SshAgentSync(kind: .SIGN_RESULT, signResult: result)
+        let encoded = ProtocolCodec.encode(DataSync(kind: .SSH_AGENT, sshAgent: sync))
+        let content = SshKeyProviderNotificationPresentation.autoApprovedContent(for: request, key: key)
+
+        // Expiry and the security-sensitive response CAS are one in-process state transition. If the
+        // deadline acquires this lock first, no signature result is committed. If this block wins, the
+        // alerting audit content is installed before expiry can read the fallback. Never hold it across the
+        // relay network suspension below.
+        let (committed, deadlineWon) = deliveryStateLock.withLock { () -> (Bool, Bool) in
+            guard !extensionDeadlineReached, !Task.isCancelled else {
+                return (false, extensionDeadlineReached)
+            }
+            let committed = SshKeyProviderStore.markResponsePending(
+                id: request.id,
+                outcome: .signed,
+                encodedResponse: encoded,
+                expectedMatchedAuthorization: authorization,
+                approvalDisposition: disposition.rawValue
+            )
+            if committed { bestAttempt = content }
+            return (committed, extensionDeadlineReached)
+        }
+
+        guard committed else {
+            if deadlineWon || Task.isCancelled { return .notApproved }
+            // Cancellation, completion, revocation, expiry, key replacement, or another process may have
+            // won the CAS. Only a row that is still pending may fall back to a fresh manual-review prompt.
+            return SshKeyProviderStore.request(id: request.id)?.status == .pendingReview
+                ? .notApproved : .alreadyHandled
+        }
+
+        guard !Task.isCancelled else { return .approved(content) }
+
+        if let envelope = try? engine.sealSshAgentSync(sync, to: request.requesterClientId),
+           await RelayClient.sendEnvelope(
+               envelope,
+               urgency: .NORMAL,
+               identitySigner: engine.identitySigner,
+               operationalSigner: engine.operationalSigner,
+               keyEpochProvider: { try engine.buildClientKeyEpochBlob() }
+        ) {
+            _ = SshKeyProviderStore.markResponseSent(id: request.id)
+        }
+        return .approved(content)
+    }
+
+    private func managedSignatureAlgorithm(
+        keyAlgorithm: String,
+        requestedAlgorithm: String,
+        flags: Int64
+    ) -> SshManagedSignatureAlgorithm? {
+        switch SshKeyAlgorithm(rawValue: keyAlgorithm) {
+        case .SSH_ED25519:
+            guard flags == 0, requestedAlgorithm == SshSignatureAlgorithm.SSH_ED25519.rawValue else { return nil }
+            return .ed25519
+        case .ECDSA_NISTP256:
+            guard flags == 0, requestedAlgorithm == SshSignatureAlgorithm.ECDSA_NISTP256.rawValue else { return nil }
+            return .ecdsaNistP256
+        case .SSH_RSA:
+            if flags == 2, requestedAlgorithm == SshSignatureAlgorithm.RSA_SHA2_256.rawValue {
+                return .rsaSHA256
+            }
+            if flags == 4, requestedAlgorithm == SshSignatureAlgorithm.RSA_SHA2_512.rawValue {
+                return .rsaSHA512
+            }
+            return nil
+        case .WEBAUTHN_SK_ECDSA_NISTP256, nil:
+            return nil
+        }
     }
 
     /// Quiet stand-in for the shouldn't-happen alert-delivered dismissal: an alert push must deliver
@@ -414,9 +739,13 @@ final class NotificationService: UNNotificationServiceExtension {
 
     override func serviceExtensionTimeWillExpire() {
         processingTask?.cancel()
+        deliveryStateLock.lock()
+        extensionDeadlineReached = true
+        let deadlineContent = bestAttempt
+        deliveryStateLock.unlock()
         releaseClaim(claimedDedupId)
         reportPerf("expired")
-        if let bestAttempt { finish(bestAttempt) }
+        if let deadlineContent { finish(deadlineContent) }
     }
 
     private func clearClaim(_ id: String?) {

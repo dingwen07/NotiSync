@@ -33,6 +33,24 @@
       },
       "shouldTranslate" : false
     },
+    "NFCReaderUsageDescription" : {
+      "comment" : "Privacy - NFC Scan Usage Description",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "NotiSync reads a nearby Android device's emulated card to exchange end-to-end-encrypted pairing information."
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "NotiSync 会读取附近 Android 设备模拟的卡片，以交换用于端到端加密的配对信息。"
+          }
+        }
+      }
+    },
     "NSCameraUsageDescription" : {
       "comment" : "Privacy - Camera Usage Description",
       "extractionState" : "extracted_with_value",

@@ -1,15 +1,25 @@
 #include "NotiSyncOpenSSLBridge.h"
 
 #include <OpenSSL/crypto.h>
+#include <OpenSSL/bn.h>
+#include <OpenSSL/core_names.h>
+#include <OpenSSL/ec.h>
 #include <OpenSSL/err.h>
+#include <OpenSSL/evp.h>
+#include <OpenSSL/param_build.h>
+#include <OpenSSL/pem.h>
+#include <OpenSSL/rsa.h>
 #include <OpenSSL/ssl.h>
+#include <OpenSSL/x509.h>
 #include <arpa/inet.h>
 #include <dispatch/dispatch.h>
 #include <errno.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <stdatomic.h>
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -707,4 +717,766 @@ void NSScreenTLSConnectionDestroy(NSScreenTLSConnection *connection) {
         connection->streamTransport = NULL;
     }
     free(connection);
+}
+
+// MARK: - App-managed SSH keys
+
+enum {
+    NSSshMaximumEncodedKeyBytes = 256 * 1024,
+    NSSshMaximumPublicBlobBytes = 16 * 1024,
+    NSSshMaximumSignatureBytes = 16 * 1024,
+    NSSshMinimumRSABits = 2048,
+    NSSshMaximumRSABits = 16384,
+};
+
+struct NSSshManagedKey {
+    EVP_PKEY *pkey;
+    NSSshManagedKeyAlgorithm algorithm;
+};
+
+typedef struct NSSshOutputBuffer {
+    uint8_t *bytes;
+    size_t length;
+    size_t capacity;
+} NSSshOutputBuffer;
+
+typedef struct NSSshPassphrase {
+    const uint8_t *bytes;
+    size_t length;
+} NSSshPassphrase;
+
+static void NSSshSetError(
+    char *buffer,
+    size_t length,
+    const char *message
+) {
+    if (buffer == NULL || length == 0) return;
+    unsigned long error = ERR_peek_last_error();
+    if (error == 0) {
+        snprintf(buffer, length, "%s", message);
+        return;
+    }
+    char detail[256];
+    ERR_error_string_n(error, detail, sizeof(detail));
+    snprintf(buffer, length, "%s: %s", message, detail);
+}
+
+static NSSshManagedSignatureAlgorithm NSSshDefaultSignatureAlgorithm(
+    NSSshManagedKeyAlgorithm algorithm
+) {
+    switch (algorithm) {
+        case NSSshManagedKeyAlgorithmEd25519:
+            return NSSshManagedSignatureAlgorithmEd25519;
+        case NSSshManagedKeyAlgorithmRSA:
+            return NSSshManagedSignatureAlgorithmRSASHA256;
+        case NSSshManagedKeyAlgorithmECDSANistP256:
+            return NSSshManagedSignatureAlgorithmECDSANistP256;
+    }
+    return 0;
+}
+
+static NSSshManagedKeyAlgorithm NSSshAlgorithmForPKey(EVP_PKEY *pkey) {
+    if (pkey == NULL) return 0;
+    if (EVP_PKEY_is_a(pkey, "ED25519")) return NSSshManagedKeyAlgorithmEd25519;
+    if (EVP_PKEY_is_a(pkey, "RSA")) return NSSshManagedKeyAlgorithmRSA;
+    if (!EVP_PKEY_is_a(pkey, "EC")) return 0;
+
+    char group[80] = {0};
+    size_t groupLength = 0;
+    if (EVP_PKEY_get_utf8_string_param(
+            pkey, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof(group), &groupLength) != 1) {
+        return 0;
+    }
+    if (strcmp(group, "prime256v1") == 0 || strcmp(group, "secp256r1") == 0 ||
+        strcmp(group, "P-256") == 0) {
+        return NSSshManagedKeyAlgorithmECDSANistP256;
+    }
+    return 0;
+}
+
+static int NSSshValidateKeyParameters(
+    EVP_PKEY *pkey,
+    NSSshManagedKeyAlgorithm algorithm,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    if (pkey == NULL || algorithm == 0) {
+        NSSshSetError(errorBuffer, errorBufferLength, "unsupported SSH private-key algorithm");
+        return 0;
+    }
+    if (algorithm == NSSshManagedKeyAlgorithmRSA) {
+        int bits = EVP_PKEY_get_bits(pkey);
+        if (bits < NSSshMinimumRSABits || bits > NSSshMaximumRSABits) {
+            NSSshSetError(errorBuffer, errorBufferLength, "RSA key size is outside 2048...16384 bits");
+            return 0;
+        }
+    }
+
+    EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_from_pkey(NULL, pkey, NULL);
+    if (context == NULL) {
+        NSSshSetError(errorBuffer, errorBufferLength, "could not validate SSH private key");
+        return 0;
+    }
+    int privateResult = EVP_PKEY_private_check(context);
+    int publicResult = EVP_PKEY_public_check(context);
+    EVP_PKEY_CTX_free(context);
+    if (privateResult != 1 || publicResult != 1) {
+        NSSshSetError(errorBuffer, errorBufferLength, "SSH private-key parameters are invalid");
+        return 0;
+    }
+    return 1;
+}
+
+static NSSshManagedKey *NSSshWrapValidatedKey(
+    EVP_PKEY *pkey,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    NSSshManagedKeyAlgorithm algorithm = NSSshAlgorithmForPKey(pkey);
+    if (!NSSshValidateKeyParameters(pkey, algorithm, errorBuffer, errorBufferLength)) {
+        EVP_PKEY_free(pkey);
+        return NULL;
+    }
+    NSSshManagedKey *key = calloc(1, sizeof(*key));
+    if (key == NULL) {
+        EVP_PKEY_free(pkey);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not allocate SSH private key");
+        return NULL;
+    }
+    key->pkey = pkey;
+    key->algorithm = algorithm;
+    if (NSSshManagedKeySelfTest(key, errorBuffer, errorBufferLength) != 1) {
+        NSSshManagedKeyDestroy(key);
+        return NULL;
+    }
+    return key;
+}
+
+static int NSSshPassphraseCallback(char *buffer, int size, int writing, void *context) {
+    (void)writing;
+    NSSshPassphrase *passphrase = context;
+    if (buffer == NULL || size <= 0 || passphrase == NULL || passphrase->bytes == NULL ||
+        passphrase->length == 0 || passphrase->length > (size_t)size || passphrase->length > INT_MAX) {
+        return 0;
+    }
+    memcpy(buffer, passphrase->bytes, passphrase->length);
+    return (int)passphrase->length;
+}
+
+static int NSSshContainsPEMHeader(const uint8_t *bytes, size_t length) {
+    static const char header[] = "-----BEGIN ";
+    if (bytes == NULL || length < sizeof(header) - 1) return 0;
+    size_t scanLength = length < 128 ? length : 128;
+    for (size_t offset = 0; offset + sizeof(header) - 1 <= scanLength; offset++) {
+        if (memcmp(bytes + offset, header, sizeof(header) - 1) == 0) return 1;
+    }
+    return 0;
+}
+
+static int NSSshBIOHasOnlyWhitespace(BIO *bio) {
+    if (bio == NULL) return 0;
+    uint8_t chunk[128];
+    int count = 0;
+    while ((count = BIO_read(bio, chunk, sizeof(chunk))) > 0) {
+        for (int index = 0; index < count; index++) {
+            switch (chunk[index]) {
+                case ' ':
+                case '\t':
+                case '\r':
+                case '\n':
+                    break;
+                default:
+                    return 0;
+            }
+        }
+    }
+    return count == 0;
+}
+
+NSSshManagedKey *NSSshManagedKeyGenerate(
+    NSSshManagedKeyAlgorithm algorithm,
+    int rsaBits,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    const char *name = NULL;
+    switch (algorithm) {
+        case NSSshManagedKeyAlgorithmEd25519:
+            name = "ED25519";
+            break;
+        case NSSshManagedKeyAlgorithmRSA:
+            if (rsaBits != 2048 && rsaBits != 3072 && rsaBits != 4096) {
+                NSSshSetError(errorBuffer, errorBufferLength, "RSA generation supports 2048, 3072, or 4096 bits");
+                return NULL;
+            }
+            name = "RSA";
+            break;
+        case NSSshManagedKeyAlgorithmECDSANistP256:
+            name = "EC";
+            break;
+        default:
+            NSSshSetError(errorBuffer, errorBufferLength, "unsupported SSH key-generation algorithm");
+            return NULL;
+    }
+
+    EVP_PKEY_CTX *context = EVP_PKEY_CTX_new_from_name(NULL, name, NULL);
+    EVP_PKEY *pkey = NULL;
+    if (context == NULL || EVP_PKEY_keygen_init(context) != 1 ||
+        (algorithm == NSSshManagedKeyAlgorithmRSA &&
+         EVP_PKEY_CTX_set_rsa_keygen_bits(context, rsaBits) != 1) ||
+        (algorithm == NSSshManagedKeyAlgorithmECDSANistP256 &&
+         EVP_PKEY_CTX_set_group_name(context, "prime256v1") != 1) ||
+        EVP_PKEY_keygen(context, &pkey) != 1) {
+        EVP_PKEY_CTX_free(context);
+        EVP_PKEY_free(pkey);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not generate SSH private key");
+        return NULL;
+    }
+    EVP_PKEY_CTX_free(context);
+    return NSSshWrapValidatedKey(pkey, errorBuffer, errorBufferLength);
+}
+
+NSSshManagedKey *NSSshManagedKeyImport(
+    const uint8_t *encoded,
+    size_t encodedLength,
+    const uint8_t *passphrase,
+    size_t passphraseLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (encoded == NULL || encodedLength == 0 || encodedLength > NSSshMaximumEncodedKeyBytes ||
+        passphraseLength > 4096 || (passphraseLength > 0 && passphrase == NULL) || encodedLength > INT_MAX) {
+        NSSshSetError(errorBuffer, errorBufferLength, "SSH private-key input is outside the allowed bounds");
+        return NULL;
+    }
+
+    NSSshPassphrase password = { passphrase, passphraseLength };
+    EVP_PKEY *pkey = NULL;
+    if (NSSshContainsPEMHeader(encoded, encodedLength)) {
+        BIO *bio = BIO_new_mem_buf(encoded, (int)encodedLength);
+        if (bio != NULL) {
+            pkey = PEM_read_bio_PrivateKey(bio, NULL, NSSshPassphraseCallback, &password);
+            if (pkey != NULL && !NSSshBIOHasOnlyWhitespace(bio)) {
+                EVP_PKEY_free(pkey);
+                pkey = NULL;
+                ERR_clear_error();
+                ERR_raise(ERR_LIB_PEM, PEM_R_BAD_END_LINE);
+            }
+        }
+        BIO_free(bio);
+    } else {
+        BIO *bio = BIO_new_mem_buf(encoded, (int)encodedLength);
+        if (bio != NULL) {
+            pkey = d2i_PKCS8PrivateKey_bio(bio, NULL, NSSshPassphraseCallback, &password);
+            if (pkey != NULL && BIO_ctrl_pending(bio) != 0) {
+                EVP_PKEY_free(pkey);
+                pkey = NULL;
+            }
+        }
+        BIO_free(bio);
+        if (pkey == NULL) {
+            ERR_clear_error();
+            const unsigned char *cursor = encoded;
+            pkey = d2i_AutoPrivateKey(NULL, &cursor, (long)encodedLength);
+            if (pkey != NULL && cursor != encoded + encodedLength) {
+                EVP_PKEY_free(pkey);
+                pkey = NULL;
+            }
+        }
+    }
+    if (pkey == NULL) {
+        NSSshSetError(errorBuffer, errorBufferLength,
+                      passphraseLength == 0 ? "invalid private key or passphrase required" :
+                                              "invalid private key or passphrase");
+        return NULL;
+    }
+    return NSSshWrapValidatedKey(pkey, errorBuffer, errorBufferLength);
+}
+
+NSSshManagedKey *NSSshManagedKeyCreateEd25519(
+    const uint8_t *seed,
+    size_t seedLength,
+    const uint8_t *expectedPublicKey,
+    size_t expectedPublicKeyLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (seed == NULL || seedLength != 32 || expectedPublicKey == NULL || expectedPublicKeyLength != 32) {
+        NSSshSetError(errorBuffer, errorBufferLength, "Ed25519 identity components have invalid lengths");
+        return NULL;
+    }
+    EVP_PKEY *pkey = EVP_PKEY_new_raw_private_key_ex(NULL, "ED25519", NULL, seed, seedLength);
+    uint8_t derivedPublic[32];
+    size_t derivedPublicLength = sizeof(derivedPublic);
+    if (pkey == NULL || EVP_PKEY_get_raw_public_key(pkey, derivedPublic, &derivedPublicLength) != 1 ||
+        derivedPublicLength != expectedPublicKeyLength ||
+        CRYPTO_memcmp(derivedPublic, expectedPublicKey, expectedPublicKeyLength) != 0) {
+        OPENSSL_cleanse(derivedPublic, sizeof(derivedPublic));
+        EVP_PKEY_free(pkey);
+        NSSshSetError(errorBuffer, errorBufferLength, "Ed25519 private and public components do not match");
+        return NULL;
+    }
+    OPENSSL_cleanse(derivedPublic, sizeof(derivedPublic));
+    return NSSshWrapValidatedKey(pkey, errorBuffer, errorBufferLength);
+}
+
+static BIGNUM *NSSshBNFromBytes(const uint8_t *bytes, size_t length) {
+    if (bytes == NULL || length == 0 || length > 2048 || length > INT_MAX) return NULL;
+    return BN_bin2bn(bytes, (int)length, NULL);
+}
+
+NSSshManagedKey *NSSshManagedKeyCreateRSA(
+    const uint8_t *modulus,
+    size_t modulusLength,
+    const uint8_t *publicExponent,
+    size_t publicExponentLength,
+    const uint8_t *privateExponent,
+    size_t privateExponentLength,
+    const uint8_t *coefficient,
+    size_t coefficientLength,
+    const uint8_t *primeP,
+    size_t primePLength,
+    const uint8_t *primeQ,
+    size_t primeQLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    BIGNUM *n = NSSshBNFromBytes(modulus, modulusLength);
+    BIGNUM *e = NSSshBNFromBytes(publicExponent, publicExponentLength);
+    BIGNUM *d = NSSshBNFromBytes(privateExponent, privateExponentLength);
+    BIGNUM *iqmp = NSSshBNFromBytes(coefficient, coefficientLength);
+    BIGNUM *p = NSSshBNFromBytes(primeP, primePLength);
+    BIGNUM *q = NSSshBNFromBytes(primeQ, primeQLength);
+    BIGNUM *product = BN_new();
+    BIGNUM *inverse = NULL;
+    BIGNUM *pMinusOne = p == NULL ? NULL : BN_dup(p);
+    BIGNUM *qMinusOne = q == NULL ? NULL : BN_dup(q);
+    BIGNUM *dmp1 = BN_new();
+    BIGNUM *dmq1 = BN_new();
+    BN_CTX *bnContext = BN_CTX_new();
+    EVP_PKEY_CTX *keyContext = NULL;
+    OSSL_PARAM_BLD *builder = NULL;
+    OSSL_PARAM *parameters = NULL;
+    EVP_PKEY *pkey = NULL;
+
+    int valid = n != NULL && e != NULL && d != NULL && iqmp != NULL && p != NULL && q != NULL &&
+        product != NULL && pMinusOne != NULL && qMinusOne != NULL && dmp1 != NULL && dmq1 != NULL &&
+        bnContext != NULL && BN_num_bits(n) >= NSSshMinimumRSABits &&
+        BN_num_bits(n) <= NSSshMaximumRSABits && BN_cmp(e, BN_value_one()) > 0 && BN_is_odd(e) &&
+        BN_is_odd(p) && BN_is_odd(q) && BN_mul(product, p, q, bnContext) == 1 && BN_cmp(product, n) == 0 &&
+        (inverse = BN_mod_inverse(NULL, q, p, bnContext)) != NULL && BN_cmp(inverse, iqmp) == 0 &&
+        BN_sub_word(pMinusOne, 1) == 1 && BN_sub_word(qMinusOne, 1) == 1 &&
+        BN_mod(dmp1, d, pMinusOne, bnContext) == 1 && BN_mod(dmq1, d, qMinusOne, bnContext) == 1;
+    if (valid) {
+        builder = OSSL_PARAM_BLD_new();
+        valid = builder != NULL &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_N, n) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_E, e) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_D, d) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_FACTOR1, p) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_FACTOR2, q) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_EXPONENT1, dmp1) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_EXPONENT2, dmq1) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_RSA_COEFFICIENT1, iqmp) == 1 &&
+            (parameters = OSSL_PARAM_BLD_to_param(builder)) != NULL &&
+            (keyContext = EVP_PKEY_CTX_new_from_name(NULL, "RSA", NULL)) != NULL &&
+            EVP_PKEY_fromdata_init(keyContext) == 1 &&
+            EVP_PKEY_fromdata(keyContext, &pkey, EVP_PKEY_KEYPAIR, parameters) == 1;
+    }
+
+    EVP_PKEY_CTX_free(keyContext);
+    OSSL_PARAM_free(parameters);
+    OSSL_PARAM_BLD_free(builder);
+    BN_clear_free(n);
+    BN_clear_free(e);
+    BN_clear_free(d);
+    BN_clear_free(iqmp);
+    BN_clear_free(p);
+    BN_clear_free(q);
+    BN_clear_free(product);
+    BN_clear_free(inverse);
+    BN_clear_free(pMinusOne);
+    BN_clear_free(qMinusOne);
+    BN_clear_free(dmp1);
+    BN_clear_free(dmq1);
+    BN_CTX_free(bnContext);
+
+    if (!valid || pkey == NULL) {
+        EVP_PKEY_free(pkey);
+        NSSshSetError(errorBuffer, errorBufferLength, "RSA identity components are inconsistent");
+        return NULL;
+    }
+    return NSSshWrapValidatedKey(pkey, errorBuffer, errorBufferLength);
+}
+
+NSSshManagedKey *NSSshManagedKeyCreateECDSANistP256(
+    const uint8_t *privateScalar,
+    size_t privateScalarLength,
+    const uint8_t *expectedPublicPoint,
+    size_t expectedPublicPointLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (privateScalar == NULL || privateScalarLength == 0 || privateScalarLength > 32 ||
+        expectedPublicPoint == NULL || expectedPublicPointLength != 65 || expectedPublicPoint[0] != 4) {
+        NSSshSetError(errorBuffer, errorBufferLength, "P-256 identity components have invalid lengths");
+        return NULL;
+    }
+
+    BIGNUM *scalar = BN_bin2bn(privateScalar, (int)privateScalarLength, NULL);
+    BIGNUM *order = BN_new();
+    EC_GROUP *group = EC_GROUP_new_by_curve_name(NID_X9_62_prime256v1);
+    EC_POINT *expected = group == NULL ? NULL : EC_POINT_new(group);
+    EC_POINT *derived = group == NULL ? NULL : EC_POINT_new(group);
+    BN_CTX *bnContext = BN_CTX_new();
+    EVP_PKEY_CTX *keyContext = NULL;
+    OSSL_PARAM_BLD *builder = NULL;
+    OSSL_PARAM *parameters = NULL;
+    EVP_PKEY *pkey = NULL;
+
+    int valid = scalar != NULL && order != NULL && group != NULL && expected != NULL && derived != NULL &&
+        bnContext != NULL && !BN_is_zero(scalar) && !BN_is_negative(scalar) &&
+        EC_GROUP_get_order(group, order, bnContext) == 1 && BN_cmp(scalar, order) < 0 &&
+        EC_POINT_oct2point(group, expected, expectedPublicPoint, expectedPublicPointLength, bnContext) == 1 &&
+        EC_POINT_is_on_curve(group, expected, bnContext) == 1 &&
+        EC_POINT_mul(group, derived, scalar, NULL, NULL, bnContext) == 1 &&
+        EC_POINT_cmp(group, expected, derived, bnContext) == 0;
+    if (valid) {
+        builder = OSSL_PARAM_BLD_new();
+        valid = builder != NULL &&
+            OSSL_PARAM_BLD_push_utf8_string(builder, OSSL_PKEY_PARAM_GROUP_NAME, "prime256v1", 0) == 1 &&
+            OSSL_PARAM_BLD_push_BN(builder, OSSL_PKEY_PARAM_PRIV_KEY, scalar) == 1 &&
+            OSSL_PARAM_BLD_push_octet_string(
+                builder, OSSL_PKEY_PARAM_PUB_KEY, expectedPublicPoint, expectedPublicPointLength) == 1 &&
+            (parameters = OSSL_PARAM_BLD_to_param(builder)) != NULL &&
+            (keyContext = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL)) != NULL &&
+            EVP_PKEY_fromdata_init(keyContext) == 1 &&
+            EVP_PKEY_fromdata(keyContext, &pkey, EVP_PKEY_KEYPAIR, parameters) == 1;
+    }
+
+    EVP_PKEY_CTX_free(keyContext);
+    OSSL_PARAM_free(parameters);
+    OSSL_PARAM_BLD_free(builder);
+    BN_clear_free(scalar);
+    BN_clear_free(order);
+    EC_POINT_free(expected);
+    EC_POINT_free(derived);
+    EC_GROUP_free(group);
+    BN_CTX_free(bnContext);
+    if (!valid || pkey == NULL) {
+        EVP_PKEY_free(pkey);
+        NSSshSetError(errorBuffer, errorBufferLength, "P-256 private and public components do not match");
+        return NULL;
+    }
+    return NSSshWrapValidatedKey(pkey, errorBuffer, errorBufferLength);
+}
+
+NSSshManagedKeyAlgorithm NSSshManagedKeyGetAlgorithm(const NSSshManagedKey *key) {
+    return key == NULL ? 0 : key->algorithm;
+}
+
+static int NSSshOutputReserve(NSSshOutputBuffer *output, size_t additional) {
+    if (output == NULL || additional > NSSshMaximumPublicBlobBytes ||
+        output->length > NSSshMaximumPublicBlobBytes - additional) {
+        return 0;
+    }
+    size_t needed = output->length + additional;
+    if (needed <= output->capacity) return 1;
+    size_t capacity = output->capacity == 0 ? 128 : output->capacity;
+    while (capacity < needed) {
+        if (capacity > NSSshMaximumPublicBlobBytes / 2) {
+            capacity = NSSshMaximumPublicBlobBytes;
+            break;
+        }
+        capacity *= 2;
+    }
+    uint8_t *bytes = realloc(output->bytes, capacity);
+    if (bytes == NULL) return 0;
+    output->bytes = bytes;
+    output->capacity = capacity;
+    return 1;
+}
+
+static int NSSshOutputRaw(NSSshOutputBuffer *output, const void *bytes, size_t length) {
+    if ((length > 0 && bytes == NULL) || !NSSshOutputReserve(output, length)) return 0;
+    if (length > 0) memcpy(output->bytes + output->length, bytes, length);
+    output->length += length;
+    return 1;
+}
+
+static int NSSshOutputUInt32(NSSshOutputBuffer *output, uint32_t value) {
+    uint8_t encoded[4] = {
+        (uint8_t)(value >> 24), (uint8_t)(value >> 16), (uint8_t)(value >> 8), (uint8_t)value,
+    };
+    return NSSshOutputRaw(output, encoded, sizeof(encoded));
+}
+
+static int NSSshOutputString(NSSshOutputBuffer *output, const void *bytes, size_t length) {
+    return length <= UINT32_MAX && NSSshOutputUInt32(output, (uint32_t)length) &&
+        NSSshOutputRaw(output, bytes, length);
+}
+
+static int NSSshOutputCString(NSSshOutputBuffer *output, const char *value) {
+    return value != NULL && NSSshOutputString(output, value, strlen(value));
+}
+
+static int NSSshOutputBNMpInt(NSSshOutputBuffer *output, const BIGNUM *value) {
+    if (value == NULL || BN_is_negative(value)) return 0;
+    if (BN_is_zero(value)) return NSSshOutputString(output, NULL, 0);
+    size_t byteCount = (size_t)BN_num_bytes(value);
+    int prefix = BN_is_bit_set(value, (int)(byteCount * 8 - 1));
+    if (byteCount > NSSshMaximumPublicBlobBytes - (size_t)prefix ||
+        !NSSshOutputUInt32(output, (uint32_t)(byteCount + (size_t)prefix)) ||
+        (prefix && !NSSshOutputRaw(output, "\0", 1)) ||
+        !NSSshOutputReserve(output, byteCount)) {
+        return 0;
+    }
+    if (BN_bn2bin(value, output->bytes + output->length) != (int)byteCount) return 0;
+    output->length += byteCount;
+    return 1;
+}
+
+int NSSshManagedKeyCopyPKCS8(
+    const NSSshManagedKey *key,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (output == NULL || outputLength == NULL) return 0;
+    *output = NULL;
+    *outputLength = 0;
+    if (key == NULL || key->pkey == NULL) {
+        NSSshSetError(errorBuffer, errorBufferLength, "missing SSH private key");
+        return 0;
+    }
+    PKCS8_PRIV_KEY_INFO *info = EVP_PKEY2PKCS8(key->pkey);
+    int encodedLength = info == NULL ? 0 : i2d_PKCS8_PRIV_KEY_INFO(info, NULL);
+    if (encodedLength <= 0 || encodedLength > NSSshMaximumEncodedKeyBytes) {
+        PKCS8_PRIV_KEY_INFO_free(info);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not encode SSH private key");
+        return 0;
+    }
+    uint8_t *encoded = malloc((size_t)encodedLength);
+    unsigned char *cursor = encoded;
+    if (encoded == NULL || i2d_PKCS8_PRIV_KEY_INFO(info, &cursor) != encodedLength) {
+        PKCS8_PRIV_KEY_INFO_free(info);
+        NSSshSensitiveBufferDestroy(encoded, (size_t)encodedLength);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not encode SSH private key");
+        return 0;
+    }
+    PKCS8_PRIV_KEY_INFO_free(info);
+    *output = encoded;
+    *outputLength = (size_t)encodedLength;
+    return 1;
+}
+
+int NSSshManagedKeyCopyPublicKeyBlob(
+    const NSSshManagedKey *key,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (output == NULL || outputLength == NULL) return 0;
+    *output = NULL;
+    *outputLength = 0;
+    if (key == NULL || key->pkey == NULL) {
+        NSSshSetError(errorBuffer, errorBufferLength, "missing SSH public key");
+        return 0;
+    }
+    NSSshOutputBuffer encoded = {0};
+    int success = 0;
+    if (key->algorithm == NSSshManagedKeyAlgorithmEd25519) {
+        uint8_t publicKey[32];
+        size_t publicKeyLength = sizeof(publicKey);
+        success = EVP_PKEY_get_raw_public_key(key->pkey, publicKey, &publicKeyLength) == 1 &&
+            publicKeyLength == sizeof(publicKey) && NSSshOutputCString(&encoded, "ssh-ed25519") &&
+            NSSshOutputString(&encoded, publicKey, publicKeyLength);
+        OPENSSL_cleanse(publicKey, sizeof(publicKey));
+    } else if (key->algorithm == NSSshManagedKeyAlgorithmRSA) {
+        BIGNUM *modulus = NULL;
+        BIGNUM *exponent = NULL;
+        success = EVP_PKEY_get_bn_param(key->pkey, OSSL_PKEY_PARAM_RSA_N, &modulus) == 1 &&
+            EVP_PKEY_get_bn_param(key->pkey, OSSL_PKEY_PARAM_RSA_E, &exponent) == 1 &&
+            NSSshOutputCString(&encoded, "ssh-rsa") && NSSshOutputBNMpInt(&encoded, exponent) &&
+            NSSshOutputBNMpInt(&encoded, modulus);
+        BN_free(modulus);
+        BN_free(exponent);
+    } else if (key->algorithm == NSSshManagedKeyAlgorithmECDSANistP256) {
+        BIGNUM *x = NULL;
+        BIGNUM *y = NULL;
+        uint8_t point[65] = {4};
+        success = EVP_PKEY_get_bn_param(key->pkey, OSSL_PKEY_PARAM_EC_PUB_X, &x) == 1 &&
+            EVP_PKEY_get_bn_param(key->pkey, OSSL_PKEY_PARAM_EC_PUB_Y, &y) == 1 &&
+            BN_bn2binpad(x, point + 1, 32) == 32 && BN_bn2binpad(y, point + 33, 32) == 32 &&
+            NSSshOutputCString(&encoded, "ecdsa-sha2-nistp256") &&
+            NSSshOutputCString(&encoded, "nistp256") && NSSshOutputString(&encoded, point, sizeof(point));
+        BN_free(x);
+        BN_free(y);
+        OPENSSL_cleanse(point, sizeof(point));
+    }
+    if (!success || encoded.length == 0 || encoded.length > NSSshMaximumPublicBlobBytes) {
+        NSSshSensitiveBufferDestroy(encoded.bytes, encoded.capacity);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not encode SSH public key");
+        return 0;
+    }
+    *output = encoded.bytes;
+    *outputLength = encoded.length;
+    return 1;
+}
+
+static const EVP_MD *NSSshSignatureDigest(
+    NSSshManagedKeyAlgorithm keyAlgorithm,
+    NSSshManagedSignatureAlgorithm signatureAlgorithm
+) {
+    switch (signatureAlgorithm) {
+        case NSSshManagedSignatureAlgorithmEd25519:
+            return NULL; // Ed25519 signs the message directly; algorithm matching is checked separately.
+        case NSSshManagedSignatureAlgorithmRSASHA256:
+            return keyAlgorithm == NSSshManagedKeyAlgorithmRSA ? EVP_sha256() : NULL;
+        case NSSshManagedSignatureAlgorithmRSASHA512:
+            return keyAlgorithm == NSSshManagedKeyAlgorithmRSA ? EVP_sha512() : NULL;
+        case NSSshManagedSignatureAlgorithmECDSANistP256:
+            return keyAlgorithm == NSSshManagedKeyAlgorithmECDSANistP256 ? EVP_sha256() : NULL;
+        case NSSshManagedSignatureAlgorithmRSASHA1Legacy:
+            return keyAlgorithm == NSSshManagedKeyAlgorithmRSA ? EVP_sha1() : NULL;
+    }
+    return NULL;
+}
+
+static int NSSshSignatureAlgorithmMatches(
+    NSSshManagedKeyAlgorithm keyAlgorithm,
+    NSSshManagedSignatureAlgorithm signatureAlgorithm
+) {
+    return (keyAlgorithm == NSSshManagedKeyAlgorithmEd25519 &&
+            signatureAlgorithm == NSSshManagedSignatureAlgorithmEd25519) ||
+        (keyAlgorithm == NSSshManagedKeyAlgorithmRSA &&
+         (signatureAlgorithm == NSSshManagedSignatureAlgorithmRSASHA256 ||
+          signatureAlgorithm == NSSshManagedSignatureAlgorithmRSASHA512 ||
+          signatureAlgorithm == NSSshManagedSignatureAlgorithmRSASHA1Legacy)) ||
+        (keyAlgorithm == NSSshManagedKeyAlgorithmECDSANistP256 &&
+         signatureAlgorithm == NSSshManagedSignatureAlgorithmECDSANistP256);
+}
+
+static int NSSshConfigureSignatureContext(
+    EVP_PKEY_CTX *context,
+    NSSshManagedKeyAlgorithm keyAlgorithm
+) {
+    return keyAlgorithm != NSSshManagedKeyAlgorithmRSA ||
+        (context != NULL && EVP_PKEY_CTX_set_rsa_padding(context, RSA_PKCS1_PADDING) == 1);
+}
+
+int NSSshManagedKeySign(
+    const NSSshManagedKey *key,
+    NSSshManagedSignatureAlgorithm algorithm,
+    const uint8_t *message,
+    size_t messageLength,
+    uint8_t **output,
+    size_t *outputLength,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    ERR_clear_error();
+    if (output == NULL || outputLength == NULL) return 0;
+    *output = NULL;
+    *outputLength = 0;
+    if (key == NULL || key->pkey == NULL || (messageLength > 0 && message == NULL) ||
+        messageLength > NSSshMaximumEncodedKeyBytes ||
+        !NSSshSignatureAlgorithmMatches(key->algorithm, algorithm)) {
+        NSSshSetError(errorBuffer, errorBufferLength, "SSH signature algorithm does not match the key");
+        return 0;
+    }
+    const EVP_MD *digest = NSSshSignatureDigest(key->algorithm, algorithm);
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    EVP_PKEY_CTX *pkeyContext = NULL;
+    size_t signatureLength = 0;
+    uint8_t *signature = NULL;
+    int success = context != NULL &&
+        EVP_DigestSignInit(context, &pkeyContext, digest, NULL, key->pkey) == 1 &&
+        NSSshConfigureSignatureContext(pkeyContext, key->algorithm) &&
+        EVP_DigestSign(context, NULL, &signatureLength, message, messageLength) == 1 &&
+        signatureLength > 0 && signatureLength <= NSSshMaximumSignatureBytes &&
+        (signature = malloc(signatureLength)) != NULL &&
+        EVP_DigestSign(context, signature, &signatureLength, message, messageLength) == 1;
+    EVP_MD_CTX_free(context);
+    if (!success) {
+        NSSshSensitiveBufferDestroy(signature, signatureLength);
+        NSSshSetError(errorBuffer, errorBufferLength, "could not sign with SSH private key");
+        return 0;
+    }
+    *output = signature;
+    *outputLength = signatureLength;
+    return 1;
+}
+
+static int NSSshManagedKeyVerifyNative(
+    const NSSshManagedKey *key,
+    NSSshManagedSignatureAlgorithm algorithm,
+    const uint8_t *message,
+    size_t messageLength,
+    const uint8_t *signature,
+    size_t signatureLength
+) {
+    const EVP_MD *digest = NSSshSignatureDigest(key->algorithm, algorithm);
+    EVP_MD_CTX *context = EVP_MD_CTX_new();
+    EVP_PKEY_CTX *pkeyContext = NULL;
+    int verified = context != NULL &&
+        EVP_DigestVerifyInit(context, &pkeyContext, digest, NULL, key->pkey) == 1 &&
+        NSSshConfigureSignatureContext(pkeyContext, key->algorithm) &&
+        EVP_DigestVerify(context, signature, signatureLength, message, messageLength) == 1;
+    EVP_MD_CTX_free(context);
+    return verified;
+}
+
+int NSSshManagedKeySelfTest(
+    const NSSshManagedKey *key,
+    char *errorBuffer,
+    size_t errorBufferLength
+) {
+    static const uint8_t challenge[] = {
+        0x4e, 0x6f, 0x74, 0x69, 0x53, 0x79, 0x6e, 0x63,
+        0x2d, 0x53, 0x53, 0x48, 0x2d, 0x73, 0x65, 0x6c,
+        0x66, 0x2d, 0x74, 0x65, 0x73, 0x74, 0x2d, 0x76,
+        0x31, 0x00, 0xa5, 0x5a, 0x7c, 0x13, 0x82, 0xe1,
+    };
+    if (key == NULL) {
+        NSSshSetError(errorBuffer, errorBufferLength, "missing SSH private key");
+        return 0;
+    }
+    uint8_t *signature = NULL;
+    size_t signatureLength = 0;
+    NSSshManagedSignatureAlgorithm algorithm = NSSshDefaultSignatureAlgorithm(key->algorithm);
+    int signedResult = NSSshManagedKeySign(
+        key, algorithm, challenge, sizeof(challenge), &signature, &signatureLength,
+        errorBuffer, errorBufferLength);
+    int verified = signedResult == 1 && NSSshManagedKeyVerifyNative(
+        key, algorithm, challenge, sizeof(challenge), signature, signatureLength);
+    NSSshSensitiveBufferDestroy(signature, signatureLength);
+    if (!verified) {
+        NSSshSetError(errorBuffer, errorBufferLength, "SSH private/public key self-test failed");
+        return 0;
+    }
+    return 1;
+}
+
+void NSSshManagedKeyDestroy(NSSshManagedKey *key) {
+    if (key == NULL) return;
+    EVP_PKEY_free(key->pkey);
+    key->pkey = NULL;
+    OPENSSL_cleanse(key, sizeof(*key));
+    free(key);
+}
+
+void NSSshSensitiveBufferDestroy(uint8_t *buffer, size_t length) {
+    if (buffer == NULL) return;
+    if (length > 0) OPENSSL_cleanse(buffer, length);
+    free(buffer);
 }

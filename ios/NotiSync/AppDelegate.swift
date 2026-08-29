@@ -9,6 +9,9 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
     ) -> Bool {
         FirebaseBootstrap.configure()
         UNUserNotificationCenter.current().delegate = self
+        // Notification categories must exist before an alert or cold-launch response is delivered. In
+        // particular, do not wait for RootView/model configuration before registering the SSH request actions.
+        MirrorCategoryRegistry.registerAll()
         NotiSyncRuntime.shared.registerBackgroundTasks()
         GestureSymbolPrewarm.run()
         return true
@@ -44,6 +47,12 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         let info = notification.request.content.userInfo
+        // SSH review prompts and remembered-authorization audit alerts are security events,
+        // not mirrored app notifications. Always present them even when Android notification
+        // mirroring is disabled or filtered for the requesting device.
+        if info[SshKeyProviderNotificationPresentation.requestIdUserInfoKey] != nil {
+            return [.banner, .list, .sound]
+        }
         if NotificationFilterStore.shouldFilterNotification(
             originPlatform: info["originPlatform"] as? String,
             sourceClientId: info["sourceClientId"] as? String ?? "",
