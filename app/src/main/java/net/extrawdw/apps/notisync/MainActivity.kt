@@ -27,7 +27,6 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
 import androidx.compose.material.icons.outlined.Devices
 import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Key
 import androidx.compose.material.icons.outlined.PhoneIphone
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Terminal
@@ -106,6 +105,7 @@ import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
+import net.extrawdw.apps.notisync.ui.icons.materialsymbols.outlined.tag
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -288,7 +288,7 @@ private enum class FeatureDestination(
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
     SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
-    SSH_AGENT(Route.SshAgent, R.string.tab_ssh_agent, Icons.Outlined.Key),
+    SSH_AGENT(Route.SshAgent, R.string.ssh_agent_provider_title, tag),
 }
 
 private enum class PairingReviewSource {
@@ -684,9 +684,9 @@ private fun TopLevelNavIcon(dest: AppDestination) {
         if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
     Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
         Icon(
-            dest.icon,
+            imageVector = dest.icon,
             contentDescription = stringResource(dest.label),
-            modifier = Modifier.size(glyphSize)
+            modifier = Modifier.size(glyphSize),
         )
     }
 }

@@ -264,7 +264,7 @@
     <string name="ssh_agent_notification_key">SSH 密钥：%1$s</string>
     <string name="ssh_agent_notification_source">来源：%1$s</string>
     <string name="ssh_agent_notification_request">请求：%1$s</string>
-    <string name="ssh_agent_notification_channel">SSH Agent 请求</string>
+    <string name="ssh_agent_notification_channel">SSH 密钥提供程序请求</string>
     <string name="ssh_agent_notification_channel_description">SSH 密钥导入和签名请求</string>
     <string name="ssh_agent_notification_public_content">有待审核的 SSH 请求。</string>
 
@@ -578,11 +578,11 @@
     <string name="diag_channels_hint">通知渠道（类别）会在新通知到达时创建。来自 Android 的通知将与原始通知通道保持一致，而 iOS 应用则将使用单一通知通道。\n\n使用此选项来删除所有镜像通知渠道，这还会还原您对所有通知频道的自定义设置（包括声音、振动、弹出横幅、通知圆点等）。</string>
     <string name="diag_channels_reset">重置通知渠道</string>
     <string name="diag_ssh_key_store">SSH Agent 密钥存储</string>
-    <string name="diag_ssh_key_store_hint">SSH Agent 功能的恢复操作。此操作会从本设备移除所有 SSH 密钥、待处理请求、请求历史记录、已记住的 SSH 授权以及已保存的 SSH 主机指纹和主机名，不会影响 NotiSync 的其他密钥或数据。</string>
+    <string name="diag_ssh_key_store_hint">SSH 密钥提供程序功能的恢复操作。此操作会从本设备移除所有 SSH 密钥、待处理请求、请求历史记录、已记住的 SSH 授权以及已保存的 SSH 主机指纹和主机名，不会影响 NotiSync 的其他密钥或数据。</string>
     <string name="diag_ssh_key_store_reset">重置 SSH 密钥存储</string>
     <string name="diag_ssh_key_store_resetting">正在重置 SSH 密钥存储…</string>
     <string name="diag_ssh_key_store_reset_title">重置 SSH 密钥存储？</string>
-    <string name="diag_ssh_key_store_reset_body">本设备上的所有 SSH Agent 密钥、待处理请求、请求历史记录、已记住的授权以及已保存的主机指纹和主机名都将被永久删除。此操作无法撤销。</string>
+    <string name="diag_ssh_key_store_reset_body">NotiSync 管理的所有 SSH 密钥、待处理请求、请求历史记录、已记住的授权以及已保存的主机指纹和主机名都将被永久删除。此操作无法撤销。</string>
     <string name="diag_ssh_key_store_reset_confirm">重置 SSH 密钥存储</string>
     <string name="diag_ssh_key_store_reset_done">SSH 密钥存储已重置，已移除 %1$d 个密钥。</string>
     <string name="diag_ssh_key_store_reset_failed">SSH 密钥存储重置失败：%1$s</string>

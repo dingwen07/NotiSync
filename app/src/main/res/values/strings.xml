@@ -13,7 +13,6 @@
     <string name="tab_ios">iPhone</string>
     <string name="tab_run">Run</string>
     <string name="tab_seal" translatable="false">Seal</string>
-    <string name="tab_ssh_agent" translatable="false">SSH Agent</string>
     <string name="features_title">Tools</string>
     <string name="open_features">Open features</string>
     <string name="tab_activity">Activity</string>
@@ -272,7 +271,7 @@
     <string name="ssh_agent_notification_key">SSH Key: %1$s</string>
     <string name="ssh_agent_notification_source">Source: %1$s</string>
     <string name="ssh_agent_notification_request">Request: %1$s</string>
-    <string name="ssh_agent_notification_channel">SSH Agent requests</string>
+    <string name="ssh_agent_notification_channel">SSH Key Provider Requests</string>
     <string name="ssh_agent_notification_channel_description">SSH key import and signing requests</string>
     <string name="ssh_agent_notification_public_content">An SSH request is waiting for review.</string>
 
@@ -604,11 +603,11 @@
     <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
     <string name="diag_channels_reset">Reset notification channels</string>
     <string name="diag_ssh_key_store">SSH Agent key store</string>
-    <string name="diag_ssh_key_store_hint">Recovery action for the SSH Agent feature. This removes all SSH keys, pending requests, request history, remembered SSH approvals, and saved SSH host fingerprints and hostnames from this device. Other NotiSync keys and data are not affected.</string>
+    <string name="diag_ssh_key_store_hint">Recovery action for the SSH Key Provider feature. This removes all SSH keys, pending requests, request history, remembered SSH approvals, and saved SSH host fingerprints and hostnames from this device. Other NotiSync keys and data are not affected.</string>
     <string name="diag_ssh_key_store_reset">Reset SSH Key Store</string>
     <string name="diag_ssh_key_store_resetting">Resetting SSH Key Store…</string>
     <string name="diag_ssh_key_store_reset_title">Reset SSH Key Store?</string>
-    <string name="diag_ssh_key_store_reset_body">All SSH Agent keys, pending requests, request history, remembered approvals, and saved host fingerprints and hostnames on this device will be permanently deleted. This cannot be undone.</string>
+    <string name="diag_ssh_key_store_reset_body">All SSH keys managed by NotiSync, pending requests, request history, remembered approvals, and saved host fingerprints and hostnames on this device will be permanently deleted. This cannot be undone.</string>
     <string name="diag_ssh_key_store_reset_confirm">Reset SSH Key Store</string>
     <string name="diag_ssh_key_store_reset_done">SSH Key Store reset. Removed %1$d keys.</string>
     <string name="diag_ssh_key_store_reset_failed">SSH Key Store reset failed: %1$s</string>
