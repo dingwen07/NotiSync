@@ -116,6 +116,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.fingerprint
 import net.extrawdw.apps.notisync.sshkeyprovider.toSshHostKeyFingerprint
 import net.extrawdw.apps.notisync.sshkeyprovider.sshKeyStorageUserMessage
 import net.extrawdw.apps.notisync.sshkeyprovider.eligibleSshKeyTransferPeers
+import net.extrawdw.apps.notisync.ui.icons.materialsymbols.outlined.passkey
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 import net.extrawdw.notisync.protocol.SshKeyOrigin
@@ -573,7 +574,7 @@ fun SshKeyProviderScreen(
         modifier = Modifier.fillMaxSize(),
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.ssh_agent_name)) },
+                title = { Text(stringResource(R.string.ssh_agent_provider_title)) },
                 navigationIcon = { FeatureDrawerNavigationIcon() },
             )
         },
@@ -1263,7 +1264,7 @@ private fun ProviderCard(
                     Text(stringResource(R.string.ssh_agent_generate))
                 }
                 OutlinedButton(onClick = onWebAuthn, enabled = ready) {
-                    Icon(painterResource(R.drawable.ic_webauthn), contentDescription = null)
+                    Icon(imageVector = passkey, contentDescription = null)
                     Spacer(Modifier.width(8.dp))
                     Text(stringResource(R.string.ssh_agent_webauthn_action))
                 }
@@ -1325,7 +1326,19 @@ private fun SshKeyCard(
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Outlined.Key, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                if (key.webAuthn != null) {
+                    Icon(
+                        imageVector = passkey,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    Icon(
+                        imageVector = Icons.Outlined.Key,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                    )
+                }
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(
@@ -1802,7 +1815,7 @@ private fun WebAuthnFlowSheet(
                     ListItem(
                         supportingContent = { Text(stringResource(R.string.ssh_agent_webauthn_use_existing_help)) },
                         leadingContent = {
-                            Icon(painterResource(R.drawable.ic_webauthn), contentDescription = null)
+                            Icon(imageVector = passkey, contentDescription = null)
                         },
                         trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
                         modifier = Modifier
