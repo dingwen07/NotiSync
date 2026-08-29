@@ -178,7 +178,7 @@ internal fun SshHistoryRequestDetail(
             keyPreview = keyPreview,
             keyName = request.history.keyName
                 ?: request.history.suggestedName
-                ?: stringResource(R.string.ssh_agent_imported_key_default),
+                ?: stringResource(R.string.ssh_key_provider_imported_key_default),
             requesterName = requesterName,
             requesterIdentityKeyFingerprint = requesterIdentityKeyFingerprint,
             destinationHostname = knownHostname,
@@ -210,7 +210,7 @@ internal fun SshReviewContent(
                 title = { Text(stringResource(R.string.ssh_agent_name)) },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(CloseIcon, contentDescription = stringResource(R.string.ssh_agent_close))
+                        Icon(CloseIcon, contentDescription = stringResource(R.string.ssh_key_provider_close))
                     }
                 },
             )
@@ -225,15 +225,15 @@ internal fun SshReviewContent(
                         Text(
                             stringResource(
                                 if (details.request.kind == SshProviderRequestKind.IMPORT) {
-                                    R.string.ssh_agent_review_import_title
+                                    R.string.ssh_key_provider_review_import_title
                                 } else {
-                                    R.string.ssh_agent_review_sign_title
+                                    R.string.ssh_key_provider_review_sign_title
                                 },
                             ),
                             style = MaterialTheme.typography.labelLarge,
                         )
                         Text(
-                            stringResource(R.string.ssh_agent_expiry_time, formatTime(details.request.expiresAt())),
+                            stringResource(R.string.ssh_key_provider_expiry_time, formatTime(details.request.expiresAt())),
                             style = MaterialTheme.typography.bodySmall,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -266,7 +266,7 @@ internal fun SshReviewContent(
                     contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                 ) {
                     Spacer(Modifier.weight(1f))
-                    Button(onClick = onClose) { Text(stringResource(R.string.ssh_agent_close)) }
+                    Button(onClick = onClose) { Text(stringResource(R.string.ssh_key_provider_close)) }
                 }
             }
         },
@@ -287,7 +287,7 @@ internal fun SshReviewContent(
                 ) {
                     Icon(ErrorOutlineIcon, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                     Text(state.message, color = MaterialTheme.colorScheme.error)
-                    Button(onClick = onClose) { Text(stringResource(R.string.ssh_agent_close)) }
+                    Button(onClick = onClose) { Text(stringResource(R.string.ssh_key_provider_close)) }
                 }
             }
             is SshReviewScreenState.Details -> SshRequestDetail(
@@ -380,7 +380,7 @@ internal fun SshRequestDetail(
                         IconButton(onClick = onBack) {
                             Icon(
                                 ArrowBackIcon,
-                                contentDescription = stringResource(R.string.ssh_agent_back_to_history),
+                                contentDescription = stringResource(R.string.ssh_key_provider_back_to_history),
                             )
                         }
                         Text(
@@ -419,9 +419,9 @@ internal fun SshRequestDetail(
                             Text(
                                 stringResource(
                                     if (request.kind == SshProviderRequestKind.IMPORT) {
-                                        R.string.ssh_agent_import_guidance
+                                        R.string.ssh_key_provider_import_guidance
                                     } else {
-                                        R.string.ssh_agent_sign_guidance
+                                        R.string.ssh_key_provider_sign_guidance
                                     },
                                 ),
                             )
@@ -447,7 +447,7 @@ internal fun SshRequestDetail(
                     titleIcon = KeyIcon,
                     emptyContent = {
                         Text(
-                            stringResource(R.string.ssh_agent_key_preview_unavailable),
+                            stringResource(R.string.ssh_key_provider_key_preview_unavailable),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     },
@@ -457,7 +457,7 @@ internal fun SshRequestDetail(
         item {
             CenteredRequestItem {
                 RequestCard(
-                    title = stringResource(R.string.ssh_agent_request_section),
+                    title = stringResource(R.string.ssh_key_provider_request_section),
                     icon = FingerprintIcon,
                 ) {
                     RequestDeviceSubCard(
@@ -465,17 +465,17 @@ internal fun SshRequestDetail(
                         verificationNumber = request.requesterClientId.value,
                         identityKeyFingerprint = details.requesterIdentityKeyFingerprint,
                     )
-                    RecordLine(stringResource(R.string.ssh_agent_requested_at), formatter.format(Date(request.requestedAt())))
-                    RecordLine(stringResource(R.string.ssh_agent_updated_at), formatter.format(Date(request.resultAt ?: request.updatedAt)))
+                    RecordLine(stringResource(R.string.ssh_key_provider_requested_at), formatter.format(Date(request.requestedAt())))
+                    RecordLine(stringResource(R.string.ssh_key_provider_updated_at), formatter.format(Date(request.resultAt ?: request.updatedAt)))
                     request.approvalLabel()?.let {
-                        RecordLine(stringResource(R.string.ssh_agent_approval_method), it)
+                        RecordLine(stringResource(R.string.ssh_key_provider_approval_method), it)
                     }
-                    RecordLine(stringResource(R.string.ssh_agent_request_id), request.requestId.take(8), monospace = true)
+                    RecordLine(stringResource(R.string.ssh_key_provider_request_id), request.requestId.take(8), monospace = true)
                     RecordLine(stringResource(R.string.seal_sha256), request.requestFingerprint.toHex(), monospace = true)
                     RecordLine(
-                        stringResource(R.string.ssh_agent_payload),
+                        stringResource(R.string.ssh_key_provider_payload),
                         pluralStringResource(
-                            R.plurals.ssh_agent_payload_bytes,
+                            R.plurals.ssh_key_provider_payload_bytes,
                             request.payloadSize(),
                             request.payloadSize(),
                         ),
@@ -500,10 +500,10 @@ private fun RememberAuthorizationSheet(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {
-            Text(stringResource(R.string.ssh_agent_approve_remember), style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(R.string.ssh_key_provider_approve_remember), style = MaterialTheme.typography.headlineSmall)
         }
         item {
-            RequestCard(stringResource(R.string.ssh_agent_request_section), FingerprintIcon) {
+            RequestCard(stringResource(R.string.ssh_key_provider_request_section), FingerprintIcon) {
                 RequestDeviceSubCard(
                     deviceName = details.requesterName,
                     verificationNumber = details.request.requesterClientId.value,
@@ -512,7 +512,7 @@ private fun RememberAuthorizationSheet(
             }
         }
         item {
-            RequestCard(stringResource(R.string.ssh_agent_request_sign), TerminalIcon) {
+            RequestCard(stringResource(R.string.ssh_key_provider_request_sign), TerminalIcon) {
                 DestinationDetailLine(details)
                 HorizontalDivider()
                 HostKeyDetailLine(details)
@@ -520,7 +520,7 @@ private fun RememberAuthorizationSheet(
         }
         item {
             Text(
-                stringResource(R.string.ssh_agent_remember_pending_help),
+                stringResource(R.string.ssh_key_provider_remember_pending_help),
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
@@ -532,7 +532,7 @@ private fun RememberAuthorizationSheet(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        stringResource(R.string.ssh_agent_remember_peer_host, details.requesterName),
+                        stringResource(R.string.ssh_key_provider_remember_peer_host, details.requesterName),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -546,7 +546,7 @@ private fun RememberAuthorizationSheet(
                     modifier = Modifier.fillMaxWidth(),
                 ) {
                     Text(
-                        stringResource(R.string.ssh_agent_remember_peer, details.requesterName),
+                        stringResource(R.string.ssh_key_provider_remember_peer, details.requesterName),
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }
@@ -606,13 +606,13 @@ private fun SignRequestCard(
     val request = details.request
     val history = request.history
     val processLineage = request.processLineageForDisplay()
-    RequestCard(stringResource(R.string.ssh_agent_request_sign), TerminalIcon) {
+    RequestCard(stringResource(R.string.ssh_key_provider_request_sign), TerminalIcon) {
         DestinationDetailLine(details)
         HorizontalDivider()
         DetailLine(
             PersonIcon,
-            stringResource(R.string.ssh_agent_destination_username),
-            history.destinationUsername ?: stringResource(R.string.ssh_agent_unavailable),
+            stringResource(R.string.ssh_key_provider_destination_username),
+            history.destinationUsername ?: stringResource(R.string.ssh_key_provider_unavailable),
             true,
         )
         HorizontalDivider()
@@ -620,14 +620,14 @@ private fun SignRequestCard(
         HorizontalDivider()
         ProcessLineageLine(
             processLineage = processLineage,
-            unavailable = stringResource(R.string.ssh_agent_unavailable),
-            reportedByRequester = stringResource(R.string.ssh_agent_process_reported_by_requester),
+            unavailable = stringResource(R.string.ssh_key_provider_unavailable),
+            reportedByRequester = stringResource(R.string.ssh_key_provider_process_reported_by_requester),
         )
         HorizontalDivider()
         DetailLine(
             SignatureIcon,
-            stringResource(R.string.ssh_agent_signature_algorithm),
-            history.signatureAlgorithm?.name ?: stringResource(R.string.ssh_agent_unavailable),
+            stringResource(R.string.ssh_key_provider_signature_algorithm),
+            history.signatureAlgorithm?.name ?: stringResource(R.string.ssh_key_provider_unavailable),
             true,
         )
     }
@@ -652,7 +652,7 @@ private fun ProcessLineageLine(
         )
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
             Text(
-                stringResource(R.string.ssh_agent_process),
+                stringResource(R.string.ssh_key_provider_process),
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -685,9 +685,9 @@ private fun DestinationDetailLine(
 ) {
     DetailLine(
         ComputerIcon,
-        stringResource(R.string.ssh_agent_destination),
+        stringResource(R.string.ssh_key_provider_destination),
         details.request.approvalDestinationLabel(details.destinationHostname)
-            ?: stringResource(R.string.ssh_agent_unknown),
+            ?: stringResource(R.string.ssh_key_provider_unknown),
         true,
     )
 }
@@ -696,8 +696,8 @@ private fun DestinationDetailLine(
 private fun HostKeyDetailLine(details: SshReviewScreenState.Details) {
     DetailLine(
         FingerprintIcon,
-        stringResource(R.string.ssh_agent_destination_host_key_fingerprint),
-        details.request.history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_agent_unavailable),
+        stringResource(R.string.ssh_key_provider_destination_host_key_fingerprint),
+        details.request.history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_key_provider_unavailable),
         true,
     )
 }
@@ -707,15 +707,15 @@ private fun ImportRequestCard(
     details: SshReviewScreenState.Details,
 ) {
     val history = details.request.history
-    RequestCard(stringResource(R.string.ssh_agent_request_import), KeyIcon) {
+    RequestCard(stringResource(R.string.ssh_key_provider_request_import), KeyIcon) {
         DetailLine(
             TerminalIcon,
-            stringResource(R.string.ssh_agent_import_source),
+            stringResource(R.string.ssh_key_provider_import_source),
             stringResource(
                 if (history.importSourceType == SshImportSourceType.AGENT_IDENTITY) {
-                    R.string.ssh_agent_import_source_agent
+                    R.string.ssh_key_provider_import_source_agent
                 } else {
-                    R.string.ssh_agent_import_source_file
+                    R.string.ssh_key_provider_import_source_file
                 },
             ),
         )
@@ -812,16 +812,16 @@ private fun statusIcon(status: SshRequestDisplayStatus): ImageVector = when (sta
 @Composable
 private fun statusLabel(status: SshRequestDisplayStatus): String = stringResource(
     when (status) {
-        SshRequestDisplayStatus.WAITING -> R.string.ssh_agent_state_pending
-        SshRequestDisplayStatus.PROCESSING -> R.string.ssh_agent_state_sending
-        SshRequestDisplayStatus.SIGNED -> R.string.ssh_agent_result_signed
-        SshRequestDisplayStatus.IMPORTED -> R.string.ssh_agent_result_imported
-        SshRequestDisplayStatus.ALREADY_PRESENT -> R.string.ssh_agent_result_already_present
-        SshRequestDisplayStatus.REJECTED -> R.string.ssh_agent_result_rejected
-        SshRequestDisplayStatus.CANCELED -> R.string.ssh_agent_state_cancelled
-        SshRequestDisplayStatus.EXPIRED -> R.string.ssh_agent_state_expired
-        SshRequestDisplayStatus.FAILED -> R.string.ssh_agent_result_failed
-        SshRequestDisplayStatus.UNKNOWN -> R.string.ssh_agent_result_unknown
+        SshRequestDisplayStatus.WAITING -> R.string.ssh_key_provider_state_pending
+        SshRequestDisplayStatus.PROCESSING -> R.string.ssh_key_provider_state_sending
+        SshRequestDisplayStatus.SIGNED -> R.string.ssh_key_provider_result_signed
+        SshRequestDisplayStatus.IMPORTED -> R.string.ssh_key_provider_result_imported
+        SshRequestDisplayStatus.ALREADY_PRESENT -> R.string.ssh_key_provider_result_already_present
+        SshRequestDisplayStatus.REJECTED -> R.string.ssh_key_provider_result_rejected
+        SshRequestDisplayStatus.CANCELED -> R.string.ssh_key_provider_state_cancelled
+        SshRequestDisplayStatus.EXPIRED -> R.string.ssh_key_provider_state_expired
+        SshRequestDisplayStatus.FAILED -> R.string.ssh_key_provider_result_failed
+        SshRequestDisplayStatus.UNKNOWN -> R.string.ssh_key_provider_result_unknown
     },
 )
 
@@ -859,15 +859,15 @@ private fun StoredSshProviderRequest.headline(
         approvalDestinationLabel(knownHostname)
     } else {
         destinationLabel(knownHostname)
-    }) ?: stringResource(R.string.ssh_agent_request_sign)
-    SshProviderRequestKind.IMPORT -> history.suggestedName ?: stringResource(R.string.ssh_agent_imported_key_default)
+    }) ?: stringResource(R.string.ssh_key_provider_request_sign)
+    SshProviderRequestKind.IMPORT -> history.suggestedName ?: stringResource(R.string.ssh_key_provider_imported_key_default)
 }
 
 @Composable
 private fun StoredSshProviderRequest.approvalLabel(): String? = when (history.approvalKind) {
-    SshRequestApprovalKind.MANUAL -> stringResource(R.string.ssh_agent_approval_manual)
+    SshRequestApprovalKind.MANUAL -> stringResource(R.string.ssh_key_provider_approval_manual)
     SshRequestApprovalKind.REMEMBERED_AUTHORIZATION ->
-        stringResource(R.string.ssh_agent_approval_remembered)
+        stringResource(R.string.ssh_key_provider_approval_remembered)
     null -> null
 }
 

@@ -20,7 +20,7 @@ class SshKeyProviderResponseWorker(context: Context, parameters: WorkerParameter
     }
 
     companion object {
-        private const val KEY_REQUEST_ID = "ssh_agent_request_id"
+        private const val KEY_REQUEST_ID = "ssh_key_provider_request_id"
         fun enqueue(context: Context, requestId: String) {
             val request = OneTimeWorkRequestBuilder<SshKeyProviderResponseWorker>()
                 .setInputData(Data.Builder().putString(KEY_REQUEST_ID, requestId).build())

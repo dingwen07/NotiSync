@@ -84,7 +84,7 @@ internal fun SshKeyImportSheet(
             modifier = Modifier.fillMaxWidth(),
         ) {
             Text(
-                text = androidx.compose.ui.res.stringResource(R.string.ssh_agent_import_title),
+                text = androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_import_title),
                 modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.headlineSmall,
             )
@@ -106,7 +106,7 @@ internal fun SshKeyImportSheet(
                                 verticalAlignment = Alignment.CenterVertically,
                             ) {
                                 Text(
-                                    text = androidx.compose.ui.res.stringResource(R.string.ssh_agent_private_key_text),
+                                    text = androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_private_key_text),
                                     modifier = Modifier.weight(1f),
                                     style = MaterialTheme.typography.labelLarge,
                                 )
@@ -130,7 +130,7 @@ internal fun SshKeyImportSheet(
                     SshKeyImportSheetStep.PASSPHRASE -> {
                         item {
                             Text(
-                                androidx.compose.ui.res.stringResource(R.string.ssh_agent_import_passphrase_prompt),
+                                androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_import_passphrase_prompt),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
@@ -138,7 +138,7 @@ internal fun SshKeyImportSheet(
                             OutlinedTextField(
                                 value = passphrase,
                                 onValueChange = onPassphraseChange,
-                                label = { Text(androidx.compose.ui.res.stringResource(R.string.ssh_agent_passphrase)) },
+                                label = { Text(androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_passphrase)) },
                                 singleLine = true,
                                 visualTransformation = PasswordVisualTransformation(),
                                 keyboardOptions = KeyboardOptions(
@@ -156,7 +156,7 @@ internal fun SshKeyImportSheet(
                             OutlinedTextField(
                                 value = name,
                                 onValueChange = onNameChange,
-                                label = { Text(androidx.compose.ui.res.stringResource(R.string.ssh_agent_key_name)) },
+                                label = { Text(androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_key_name)) },
                                 singleLine = true,
                                 modifier = Modifier.fillMaxWidth().onFocusChanged { focusState ->
                                     if (focusState.isFocused) scope.launch { sheetState.expand() }
@@ -175,7 +175,7 @@ internal fun SshKeyImportSheet(
                         item { SshKeyStorageOptions(storage, onStorageChange) }
                         item {
                             Text(
-                                androidx.compose.ui.res.stringResource(R.string.ssh_agent_import_storage_help),
+                                androidx.compose.ui.res.stringResource(R.string.ssh_key_provider_import_storage_help),
                                 style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -220,8 +220,8 @@ internal fun SshKeyImportSheet(
                         androidx.compose.ui.res.stringResource(
                             when (step) {
                                 SshKeyImportSheetStep.CLIPBOARD -> R.string.action_continue
-                                SshKeyImportSheetStep.PASSPHRASE -> R.string.ssh_agent_review_key
-                                SshKeyImportSheetStep.REVIEW -> R.string.ssh_agent_import_action
+                                SshKeyImportSheetStep.PASSPHRASE -> R.string.ssh_key_provider_review_key
+                                SshKeyImportSheetStep.REVIEW -> R.string.ssh_key_provider_import_action
                             },
                         ),
                     )

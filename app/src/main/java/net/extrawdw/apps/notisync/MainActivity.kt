@@ -287,7 +287,7 @@ private enum class FeatureDestination(
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, TerminalIcon),
     SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
-    SSH_AGENT(Route.SshAgent, R.string.ssh_agent_tools_label, KeyIcon),
+    SSH_AGENT(Route.SshAgent, R.string.ssh_key_provider_tools_label, KeyIcon),
 }
 
 private enum class PairingReviewSource {

@@ -157,7 +157,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
     private fun observeRequest(approveAfterLoad: Boolean) {
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
+                ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             var approveOnFirstLoad = approveAfterLoad
             repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
                 graph.sshKeyProviderStore.changeVersion
@@ -179,7 +179,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         lifecycleScope.launch {
             val generation = nextRenderGeneration()
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showErrorIfCurrent(generation, getString(R.string.ssh_agent_not_ready))
+                ?: return@launch showErrorIfCurrent(generation, getString(R.string.ssh_key_provider_not_ready))
             val stored = withContext(Dispatchers.IO) { graph.sshKeyProviderStore.find(requestId) }
             renderRequest(graph, stored, approveAfterLoad, generation)
         }
@@ -191,7 +191,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         approveAfterLoad: Boolean,
         generation: Long,
     ) {
-        stored ?: return showErrorIfCurrent(generation, getString(R.string.ssh_agent_review_unavailable))
+        stored ?: return showErrorIfCurrent(generation, getString(R.string.ssh_key_provider_review_unavailable))
         if (generation != renderGeneration) return
         if (stored.shouldCloseAutoOpenedReview(autoLaunchOwned)) {
             busy = false
@@ -220,7 +220,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         }.getOrElse {
             return showErrorIfCurrent(
                 generation,
-                it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                it.message ?: getString(R.string.ssh_key_provider_invalid_private_key),
             )
         }
         val keyPreview = runCatching {
@@ -239,7 +239,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 }
             }
         }.getOrElse {
-            return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_agent_invalid_key))
+            return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_key_provider_invalid_key))
         }
         if (stored.kind == SshProviderRequestKind.IMPORT && keyPreview != null &&
             stored.state == SshProviderRequestState.PENDING_REVIEW
@@ -249,10 +249,10 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                     graph.sshKeyProviderStore.recordImportPreview(requestId, keyPreview.publicKeyBlob)
                 }
             }.getOrElse {
-                return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_agent_invalid_key))
+                return showErrorIfCurrent(generation, it.message ?: getString(R.string.ssh_key_provider_invalid_key))
             }
             if (!recorded) {
-                return showErrorIfCurrent(generation, getString(R.string.ssh_agent_review_unavailable))
+                return showErrorIfCurrent(generation, getString(R.string.ssh_key_provider_review_unavailable))
             }
         }
         val peer = graph.trust.roster.value.firstOrNull { it.clientId == stored.requesterClientId }
@@ -264,7 +264,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         val keyName = when (stored.kind) {
             SshProviderRequestKind.SIGN -> currentKeyName ?: stored.history.keyName
             SshProviderRequestKind.IMPORT -> stored.history.keyName ?: currentKeyName
-        } ?: stored.history.suggestedName ?: getString(R.string.ssh_agent_imported_key_default)
+        } ?: stored.history.suggestedName ?: getString(R.string.ssh_key_provider_imported_key_default)
         if (generation != renderGeneration) return
         if (stored.state != SshProviderRequestState.PENDING_REVIEW) {
             busy = false
@@ -324,17 +324,17 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                             ?.recordImportPreview(requestId, preview.publicKeyBlob) == true
                     }
                 }.getOrElse {
-                    screen = details.copy(errorMessage = it.message ?: getString(R.string.ssh_agent_invalid_key))
+                    screen = details.copy(errorMessage = it.message ?: getString(R.string.ssh_key_provider_invalid_key))
                     return@onSuccess
                 }
                 if (!recorded) {
-                    screen = details.copy(errorMessage = getString(R.string.ssh_agent_review_unavailable))
+                    screen = details.copy(errorMessage = getString(R.string.ssh_key_provider_review_unavailable))
                     return@onSuccess
                 }
                 screen = details.copy(keyPreview = preview, errorMessage = null)
             }.onFailure { failure ->
                 screen = details.copy(
-                    errorMessage = failure.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                    errorMessage = failure.message ?: getString(R.string.ssh_key_provider_invalid_private_key),
                 )
             }
         }
@@ -364,9 +364,9 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         busy = true
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
+                ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             val engine = graph.sshKeyProviderEngine
-                ?: return@launch showError(getString(R.string.ssh_agent_not_ready))
+                ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             when (details.request.kind) {
                 SshProviderRequestKind.IMPORT -> {
                     val secret = if (details.encryptedImport) passphrase.toCharArray() else null
@@ -395,14 +395,14 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                             null -> {
                                 busy = false
                                 screen = details.afterImportFailure(
-                                    getString(R.string.ssh_agent_import_unavailable),
+                                    getString(R.string.ssh_key_provider_import_unavailable),
                                 )
                             }
                         }
                     }.onFailure {
                         busy = false
                         screen = details.afterImportFailure(
-                            it.message ?: getString(R.string.ssh_agent_invalid_private_key),
+                            it.message ?: getString(R.string.ssh_key_provider_invalid_private_key),
                         )
                     }
                 }
@@ -414,9 +414,9 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         val prepared = runCatching {
                             withContext(Dispatchers.IO) { engine.prepareWebAuthnSignature(requestId) }
                         }.getOrElse {
-                            showError(it.message ?: getString(R.string.ssh_agent_prepare_auth_failed))
+                            showError(it.message ?: getString(R.string.ssh_key_provider_prepare_auth_failed))
                             return@launch
-                        } ?: return@launch showError(getString(R.string.ssh_agent_request_unavailable))
+                        } ?: return@launch showError(getString(R.string.ssh_key_provider_request_unavailable))
                         authenticateWebAuthnSignature(engine, prepared)
                     } else if (!withContext(Dispatchers.IO) {
                             graph.sshKeyProviderStore.requiresPerUseUserVerification(requestId)
@@ -427,9 +427,9 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         val prepared = runCatching {
                             withContext(Dispatchers.IO) { engine.prepareUserVerifiedSignature(requestId) }
                         }.getOrElse {
-                            showError(it.message ?: getString(R.string.ssh_agent_prepare_auth_failed))
+                            showError(it.message ?: getString(R.string.ssh_key_provider_prepare_auth_failed))
                             return@launch
-                        } ?: return@launch showError(getString(R.string.ssh_agent_request_unavailable))
+                        } ?: return@launch showError(getString(R.string.ssh_key_provider_request_unavailable))
                         authenticateSignature(engine, prepared)
                     }
                 }
@@ -477,8 +477,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
             }
         }
         val prompt = BiometricPrompt.Builder(this)
-            .setTitle(getString(R.string.ssh_agent_sign_auth_title))
-            .setSubtitle(getString(R.string.ssh_agent_sign_auth_subtitle))
+            .setTitle(getString(R.string.ssh_key_provider_sign_auth_title))
+            .setSubtitle(getString(R.string.ssh_key_provider_sign_auth_subtitle))
             .setAllowedAuthenticators(BiometricManager.Authenticators.BIOMETRIC_STRONG)
             .setNegativeButton(getString(R.string.action_cancel), mainExecutor) { _, _ ->
                 fail(SshProviderFailureCode.USER_VERIFICATION_CANCELLED)
@@ -547,15 +547,15 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         val allowsDeviceCredential = storage.promptAuthenticators and
             BiometricManager.Authenticators.DEVICE_CREDENTIAL != 0
         val builder = BiometricPrompt.Builder(this)
-            .setTitle(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_title))
-            .setSubtitle(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_subtitle))
+            .setTitle(getString(net.extrawdw.apps.notisync.R.string.ssh_key_provider_storage_auth_title))
+            .setSubtitle(getString(net.extrawdw.apps.notisync.R.string.ssh_key_provider_storage_auth_subtitle))
             .setAllowedAuthenticators(storage.promptAuthenticators)
         if (!allowsDeviceCredential) {
             builder.setNegativeButton(
                 getString(net.extrawdw.apps.notisync.R.string.action_cancel),
                 mainExecutor,
             ) { _, _ ->
-                cancel(getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_cancelled))
+                cancel(getString(net.extrawdw.apps.notisync.R.string.ssh_key_provider_storage_auth_cancelled))
             }
         }
         val cryptoObject = storage.signature?.let(BiometricPrompt::CryptoObject)
@@ -568,7 +568,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 object : BiometricPrompt.AuthenticationCallback() {
                     override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                         val authenticated = result.cryptoObject ?: return cancel(
-                            getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_lost),
+                            getString(net.extrawdw.apps.notisync.R.string.ssh_key_provider_storage_auth_lost),
                         )
                         if (!handled.compareAndSet(false, true)) return
                         lifecycleScope.launch {
@@ -595,7 +595,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         pendingImportStorage = null
                         busy = false
                         screen = details.afterImportFailure(
-                            getString(R.string.ssh_agent_import_unavailable),
+                            getString(R.string.ssh_key_provider_import_unavailable),
                         )
                                     }
                                 }
@@ -606,7 +606,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         screen = details.afterImportFailure(
                             it.sshKeyStorageUserMessage(
                                 this@SshKeyProviderReviewActivity,
-                                R.string.ssh_agent_store_private_key_failed,
+                                R.string.ssh_key_provider_store_private_key_failed,
                             ),
                                 )
                             }
@@ -619,7 +619,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 },
             )
         } catch (failure: Exception) {
-            cancel(failure.message ?: getString(net.extrawdw.apps.notisync.R.string.ssh_agent_storage_auth_failed))
+            cancel(failure.message ?: getString(net.extrawdw.apps.notisync.R.string.ssh_key_provider_storage_auth_failed))
         }
     }
 
@@ -642,18 +642,18 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         ) return
         val subtitle = when (scope) {
             SshRememberScope.PEER -> getString(
-                R.string.ssh_agent_remember_peer_subtitle,
+                R.string.ssh_key_provider_remember_peer_subtitle,
                 details.requesterName,
             )
             SshRememberScope.PEER_HOST_KEY -> getString(
-                R.string.ssh_agent_remember_peer_host_subtitle,
+                R.string.ssh_key_provider_remember_peer_host_subtitle,
                 details.requesterName,
             )
             SshRememberScope.APPLICATION_PROCESS -> return
         }
         busy = true
         val prompt = BiometricPrompt.Builder(this)
-            .setTitle(getString(R.string.ssh_agent_remember_auth_title))
+            .setTitle(getString(R.string.ssh_key_provider_remember_auth_title))
             .setSubtitle(subtitle)
             .setAllowedAuthenticators(
                 SshAuthenticationPolicy.REMEMBER_PROMPT_AUTHENTICATORS,
@@ -681,7 +681,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 },
             )
         } catch (_: Exception) {
-            showError(getString(R.string.ssh_agent_remember_auth_failed))
+            showError(getString(R.string.ssh_key_provider_remember_auth_failed))
         }
     }
 
@@ -699,7 +699,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
     private fun showSignResult(result: SshSignResult?) {
         when (result?.kind) {
             SshSignResultKind.SIGNED -> finish()
-            SshSignResultKind.PROVIDER_FAILURE -> showError(getString(R.string.ssh_agent_sign_failed))
+            SshSignResultKind.PROVIDER_FAILURE -> showError(getString(R.string.ssh_key_provider_sign_failed))
             SshSignResultKind.REJECTED_BY_USER -> finish()
             null -> load()
         }
@@ -707,7 +707,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
 
     companion object {
         private const val ACTION_APPROVE = "net.extrawdw.apps.notisync.action.SSH_AGENT_APPROVE"
-        private const val EXTRA_REQUEST_ID = "ssh_agent_request_id"
+        private const val EXTRA_REQUEST_ID = "ssh_key_provider_request_id"
         private const val STATE_AUTO_LAUNCH_OWNED = "auto_launch_owned"
         private const val REVIEW_SCHEME = "notisync"
         private const val REVIEW_AUTHORITY = "ssh-agent-review"

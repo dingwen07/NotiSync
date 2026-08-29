@@ -87,7 +87,7 @@ class SshKeySendActivity : ComponentActivity() {
 
         lifecycleScope.launch {
             val readyGraph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch showError(getString(R.string.ssh_agent_provider_unavailable))
+                ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             graph = readyGraph
             refreshPeers(readyGraph)
             screen = SendScreen.SELECT
@@ -108,23 +108,23 @@ class SshKeySendActivity : ComponentActivity() {
     }
 
     private fun beginSend() {
-        val graph = graph ?: return showError(getString(R.string.ssh_agent_provider_unavailable))
+        val graph = graph ?: return showError(getString(R.string.ssh_key_provider_not_ready))
         val targetId = selectedPeerId ?: return
         refreshPeers(graph)
         val target = peers.firstOrNull { it.clientId == targetId }
-            ?: return showError(getString(R.string.ssh_agent_send_peer_unavailable))
+            ?: return showError(getString(R.string.ssh_key_provider_send_peer_unavailable))
         val engine = graph.sshKeyProviderEngine
-            ?: return showError(getString(R.string.ssh_agent_provider_unavailable))
+            ?: return showError(getString(R.string.ssh_key_provider_not_ready))
 
         screen = SendScreen.WORKING
-        status = getString(R.string.ssh_agent_send_preparing)
+        status = getString(R.string.ssh_key_provider_send_preparing)
         error = null
         lifecycleScope.launch {
             val prepared = runCatching {
                 withContext(Dispatchers.IO) { graph.sshKeyProviderStore.prepareExport(providerKeyId) }
             }.getOrElse {
-                return@launch showError(it.message ?: getString(R.string.ssh_agent_export_prepare_failed))
-            } ?: return@launch showError(getString(R.string.ssh_agent_export_not_exportable))
+                return@launch showError(it.message ?: getString(R.string.ssh_key_provider_export_prepare_failed))
+            } ?: return@launch showError(getString(R.string.ssh_key_provider_export_not_exportable))
             pendingExport = prepared
             authenticateAndSend(graph, engine, prepared, target)
         }
@@ -143,8 +143,8 @@ class SshKeySendActivity : ComponentActivity() {
             showError(message)
         }
         val prompt = BiometricPrompt.Builder(this)
-            .setTitle(getString(R.string.ssh_agent_send_auth_title))
-            .setSubtitle(getString(R.string.ssh_agent_send_auth_subtitle, target.displayName))
+            .setTitle(getString(R.string.ssh_key_provider_send_auth_title))
+            .setSubtitle(getString(R.string.ssh_key_provider_send_auth_subtitle, target.displayName))
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
                     BiometricManager.Authenticators.DEVICE_CREDENTIAL,
@@ -155,15 +155,15 @@ class SshKeySendActivity : ComponentActivity() {
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 val cipher = result.cryptoObject?.cipher
-                    ?: return cancelPrepared(getString(R.string.ssh_agent_export_auth_lost))
+                    ?: return cancelPrepared(getString(R.string.ssh_key_provider_export_auth_lost))
                 if (!handled.compareAndSet(false, true)) return
                 authenticationCancellation = null
-                status = getString(R.string.ssh_agent_send_sending, target.displayName)
+                status = getString(R.string.ssh_key_provider_send_sending, target.displayName)
                 lifecycleScope.launch {
                     val sent = runCatching {
                         withContext(Dispatchers.IO) {
                             val privateBytes = graph.sshKeyProviderStore.completeExport(prepared, cipher)
-                                ?: error(getString(R.string.ssh_agent_export_key_changed))
+                                ?: error(getString(R.string.ssh_key_provider_export_key_changed))
                             try {
                                 val pem = SshPrivateKeyExportCodec.encode(privateBytes, null)
                                 try {
@@ -179,14 +179,14 @@ class SshKeySendActivity : ComponentActivity() {
                     pendingExport = null
                     sent.onSuccess { accepted ->
                         if (accepted) {
-                            status = getString(R.string.ssh_agent_send_complete_body, target.displayName)
+                            status = getString(R.string.ssh_key_provider_send_complete_body, target.displayName)
                             screen = SendScreen.COMPLETE
                         } else {
-                            showError(getString(R.string.ssh_agent_send_peer_unavailable))
+                            showError(getString(R.string.ssh_key_provider_send_peer_unavailable))
                         }
                     }.onFailure {
                         graph.sshKeyProviderStore.cancelExport(prepared)
-                        showError(it.message ?: getString(R.string.ssh_agent_send_failed))
+                        showError(it.message ?: getString(R.string.ssh_key_provider_send_failed))
                     }
                 }
             }
@@ -208,7 +208,7 @@ class SshKeySendActivity : ComponentActivity() {
         } catch (failure: Exception) {
             if (handled.compareAndSet(false, true)) {
                 authenticationCancellation = null
-                cancelPrepared(failure.message ?: getString(R.string.ssh_agent_export_prepare_failed))
+                cancelPrepared(failure.message ?: getString(R.string.ssh_key_provider_export_prepare_failed))
             }
         }
     }
@@ -246,8 +246,8 @@ private fun SshKeySendScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text(stringResource(R.string.ssh_agent_send_title)) },
-                actions = { TextButton(onClick = onClose) { Text(stringResource(R.string.ssh_agent_close)) } },
+                title = { Text(stringResource(R.string.ssh_key_provider_send_title)) },
+                actions = { TextButton(onClick = onClose) { Text(stringResource(R.string.ssh_key_provider_close)) } },
             )
         },
     ) { padding ->
@@ -268,7 +268,7 @@ private fun SshKeySendScreen(
                 modifier = Modifier.fillMaxSize().padding(padding),
             ) {
                 Text(
-                    stringResource(R.string.ssh_agent_send_help),
+                    stringResource(R.string.ssh_key_provider_send_help),
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -284,7 +284,7 @@ private fun SshKeySendScreen(
                 if (peers.isEmpty()) {
                     Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
                         Text(
-                            stringResource(R.string.ssh_agent_send_no_peers),
+                            stringResource(R.string.ssh_key_provider_send_no_peers),
                             modifier = Modifier.padding(24.dp),
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
@@ -323,7 +323,7 @@ private fun SshKeySendScreen(
                     enabled = selectedPeerId != null && peers.isNotEmpty(),
                     modifier = Modifier.align(Alignment.End).padding(24.dp),
                 ) {
-                    Text(stringResource(R.string.ssh_agent_send_action))
+                    Text(stringResource(R.string.ssh_key_provider_send_action))
                 }
             }
 
@@ -332,14 +332,14 @@ private fun SshKeySendScreen(
                 contentAlignment = Alignment.Center,
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(stringResource(R.string.ssh_agent_send_complete_title), style = MaterialTheme.typography.headlineSmall)
+                    Text(stringResource(R.string.ssh_key_provider_send_complete_title), style = MaterialTheme.typography.headlineSmall)
                     Text(
                         status,
                         modifier = Modifier.padding(top = 12.dp),
                         style = MaterialTheme.typography.bodyLarge,
                     )
                     Button(onClick = onClose, modifier = Modifier.padding(top = 20.dp)) {
-                        Text(stringResource(R.string.ssh_agent_close))
+                        Text(stringResource(R.string.ssh_key_provider_close))
                     }
                 }
             }

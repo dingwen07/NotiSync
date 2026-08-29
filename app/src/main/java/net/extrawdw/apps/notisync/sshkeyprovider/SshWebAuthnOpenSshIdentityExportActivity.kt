@@ -55,7 +55,7 @@ class SshWebAuthnOpenSshIdentityExportActivity : ComponentActivity() {
         if (providerKeyId.isEmpty()) return finish()
         enableEdgeToEdge()
         enableTapjackingProtection()
-        status = getString(R.string.ssh_agent_webauthn_export_preparing)
+        status = getString(R.string.ssh_key_provider_webauthn_export_preparing)
         setContent {
             NotiSyncTheme {
                 IdentityExportProgress(status, failed, ::finish)
@@ -73,39 +73,39 @@ class SshWebAuthnOpenSshIdentityExportActivity : ComponentActivity() {
     private fun prepareIdentityFile() {
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch fail(getString(R.string.ssh_agent_provider_unavailable))
+                ?: return@launch fail(getString(R.string.ssh_key_provider_not_ready))
             identityFile = runCatching {
                 withContext(Dispatchers.IO) {
                     val source = graph.sshKeyProviderStore.webAuthnRecoverySource(providerKeyId)
-                        ?: error(getString(R.string.ssh_agent_webauthn_export_not_available))
+                        ?: error(getString(R.string.ssh_key_provider_webauthn_export_not_available))
                     SshWebAuthnOpenSshIdentityFile.encode(source.credential, source.displayName)
                 }
             }.getOrElse {
-                return@launch fail(it.message ?: getString(R.string.ssh_agent_webauthn_export_failed))
+                return@launch fail(it.message ?: getString(R.string.ssh_key_provider_webauthn_export_failed))
             }
             createDocument.launch(SshWebAuthnOpenSshIdentityFile.DEFAULT_FILE_NAME)
         }
     }
 
     private fun writeIdentityFile(target: Uri) {
-        status = getString(R.string.ssh_agent_webauthn_export_writing)
+        status = getString(R.string.ssh_key_provider_webauthn_export_writing)
         lifecycleScope.launch {
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
-                    val bytes = identityFile ?: error(getString(R.string.ssh_agent_webauthn_export_failed))
+                    val bytes = identityFile ?: error(getString(R.string.ssh_key_provider_webauthn_export_failed))
                     contentResolver.openOutputStream(target, "wt")?.use { it.write(bytes) }
-                        ?: error(getString(R.string.ssh_agent_webauthn_export_open_failed))
+                        ?: error(getString(R.string.ssh_key_provider_webauthn_export_open_failed))
                 }
             }
             outcome.onSuccess {
                 Toast.makeText(
                     this@SshWebAuthnOpenSshIdentityExportActivity,
-                    R.string.ssh_agent_webauthn_export_complete,
+                    R.string.ssh_key_provider_webauthn_export_complete,
                     Toast.LENGTH_SHORT,
                 ).show()
                 finish()
             }.onFailure {
-                fail(it.message ?: getString(R.string.ssh_agent_webauthn_export_failed))
+                fail(it.message ?: getString(R.string.ssh_key_provider_webauthn_export_failed))
             }
         }
     }

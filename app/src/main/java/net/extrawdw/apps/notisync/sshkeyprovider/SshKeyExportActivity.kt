@@ -91,21 +91,21 @@ class SshKeyExportActivity : ComponentActivity() {
         clearExportPassword()
         exportPassword = password
         failed = false
-        status = getString(R.string.ssh_agent_export_choose_location)
+        status = getString(R.string.ssh_key_provider_export_choose_location)
         screen = ExportScreen.WORKING
         createDocument.launch(suggestedFileName)
     }
 
     private fun prepareExport(target: Uri) {
-        status = getString(R.string.ssh_agent_export_preparing)
+        status = getString(R.string.ssh_key_provider_export_preparing)
         lifecycleScope.launch {
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
-                ?: return@launch fail(getString(R.string.ssh_agent_provider_unavailable))
+                ?: return@launch fail(getString(R.string.ssh_key_provider_not_ready))
             val prepared = runCatching {
                 withContext(Dispatchers.IO) { graph.sshKeyProviderStore.prepareExport(providerKeyId) }
             }.getOrElse {
-                return@launch fail(it.message ?: getString(R.string.ssh_agent_export_prepare_failed))
-            } ?: return@launch fail(getString(R.string.ssh_agent_export_not_exportable))
+                return@launch fail(it.message ?: getString(R.string.ssh_key_provider_export_prepare_failed))
+            } ?: return@launch fail(getString(R.string.ssh_key_provider_export_not_exportable))
             authenticateAndWrite(graph.sshKeyProviderStore, prepared, target)
         }
     }
@@ -121,8 +121,8 @@ class SshKeyExportActivity : ComponentActivity() {
             fail(message)
         }
         val prompt = BiometricPrompt.Builder(this)
-            .setTitle(getString(R.string.ssh_agent_export_auth_title))
-            .setSubtitle(getString(R.string.ssh_agent_export_auth_subtitle))
+            .setTitle(getString(R.string.ssh_key_provider_export_auth_title))
+            .setSubtitle(getString(R.string.ssh_key_provider_export_auth_subtitle))
             .setAllowedAuthenticators(
                 BiometricManager.Authenticators.BIOMETRIC_STRONG or
                     BiometricManager.Authenticators.DEVICE_CREDENTIAL,
@@ -132,14 +132,14 @@ class SshKeyExportActivity : ComponentActivity() {
         val callback = object : BiometricPrompt.AuthenticationCallback() {
             override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
                 val cipher = result.cryptoObject?.cipher
-                    ?: return cancelPrepared(getString(R.string.ssh_agent_export_auth_lost))
+                    ?: return cancelPrepared(getString(R.string.ssh_key_provider_export_auth_lost))
                 if (!handled.compareAndSet(false, true)) return
-                status = getString(R.string.ssh_agent_export_writing)
+                status = getString(R.string.ssh_key_provider_export_writing)
                 lifecycleScope.launch {
                     val outcome = runCatching {
                         withContext(Dispatchers.IO) {
                             val privateBytes = store.completeExport(prepared, cipher)
-                                ?: error(getString(R.string.ssh_agent_export_key_changed))
+                                ?: error(getString(R.string.ssh_key_provider_export_key_changed))
                             try {
                                 writePkcs8Pem(target, privateBytes, exportPassword)
                             } finally {
@@ -149,10 +149,10 @@ class SshKeyExportActivity : ComponentActivity() {
                     }
                     clearExportPassword()
                     outcome.onSuccess {
-                        status = getString(R.string.ssh_agent_export_complete)
+                        status = getString(R.string.ssh_key_provider_export_complete)
                         finish()
                     }.onFailure {
-                        fail(it.message ?: getString(R.string.ssh_agent_export_failed))
+                        fail(it.message ?: getString(R.string.ssh_key_provider_export_failed))
                     }
                 }
             }
@@ -170,7 +170,7 @@ class SshKeyExportActivity : ComponentActivity() {
             )
         } catch (failure: Exception) {
             if (handled.compareAndSet(false, true)) {
-                cancelPrepared(failure.message ?: getString(R.string.ssh_agent_export_prepare_failed))
+                cancelPrepared(failure.message ?: getString(R.string.ssh_key_provider_export_prepare_failed))
             }
         }
     }
@@ -179,7 +179,7 @@ class SshKeyExportActivity : ComponentActivity() {
         val pem = SshPrivateKeyExportCodec.encode(privateBytes, password)
         try {
             contentResolver.openOutputStream(target, "wt")?.use { it.write(pem) }
-                ?: error(getString(R.string.ssh_agent_export_open_failed))
+                ?: error(getString(R.string.ssh_key_provider_export_open_failed))
         } finally {
             pem.fill(0)
         }
@@ -221,9 +221,9 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
         verticalArrangement = Arrangement.Center,
     ) {
         Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(stringResource(R.string.ssh_agent_export_title), style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(R.string.ssh_key_provider_export_title), style = MaterialTheme.typography.headlineSmall)
             Text(
-                stringResource(R.string.ssh_agent_export_password_help),
+                stringResource(R.string.ssh_key_provider_export_password_help),
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -231,7 +231,7 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
                 value = password,
                 onValueChange = { password = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text(stringResource(R.string.ssh_agent_export_password)) },
+                label = { Text(stringResource(R.string.ssh_key_provider_export_password)) },
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation(),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -240,11 +240,11 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
                 value = confirmation,
                 onValueChange = { confirmation = it },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text(stringResource(R.string.ssh_agent_export_password_confirm)) },
+                label = { Text(stringResource(R.string.ssh_key_provider_export_password_confirm)) },
                 singleLine = true,
                 isError = confirmation.isNotEmpty() && !matches,
                 supportingText = if (confirmation.isNotEmpty() && !matches) {
-                    { Text(stringResource(R.string.ssh_agent_export_password_mismatch)) }
+                    { Text(stringResource(R.string.ssh_key_provider_export_password_mismatch)) }
                 } else {
                     null
                 },
@@ -253,7 +253,7 @@ private fun ExportSetup(onContinue: (CharArray?) -> Unit) {
             )
             if (password.isEmpty()) {
                 Text(
-                    stringResource(R.string.ssh_agent_export_plaintext_warning),
+                    stringResource(R.string.ssh_key_provider_export_plaintext_warning),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
                 )
