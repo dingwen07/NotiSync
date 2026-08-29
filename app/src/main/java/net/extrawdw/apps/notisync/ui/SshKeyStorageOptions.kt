@@ -50,11 +50,11 @@ fun SshKeyStorageOptions(
         ) == BiometricManager.BIOMETRIC_SUCCESS
     val keepExportCopy = selection.allowExport
     Column {
-        Text(stringResource(R.string.ssh_agent_export_settings), style = MaterialTheme.typography.labelLarge)
+        Text(stringResource(R.string.ssh_key_provider_export_settings), style = MaterialTheme.typography.labelLarge)
         ToggleRow(
             checked = keepExportCopy,
             enabled = allowExportable && exportAuthenticationAvailable,
-            label = stringResource(R.string.ssh_agent_keep_export_backup),
+            label = stringResource(R.string.ssh_key_provider_keep_export_backup),
             onCheckedChange = {
                 onSelectionChange(
                     selection.copy(allowExport = it),
@@ -65,7 +65,7 @@ fun SshKeyStorageOptions(
             ToggleRow(
                 checked = selection.exportCopyBackendPolicy == SshExportCopyBackendPolicy.TEE_ONLY,
                 enabled = strongBoxAvailable,
-                label = stringResource(R.string.ssh_agent_export_copy_skip_strongbox),
+                label = stringResource(R.string.ssh_key_provider_export_copy_skip_strongbox),
                 onCheckedChange = {
                     onSelectionChange(
                         selection.copy(
@@ -79,17 +79,17 @@ fun SshKeyStorageOptions(
                 },
             )
             Text(
-                stringResource(R.string.ssh_agent_export_copy_auth_help),
+                stringResource(R.string.ssh_key_provider_export_copy_auth_help),
                 modifier = Modifier.padding(bottom = 12.dp),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        Text(stringResource(R.string.ssh_agent_signing_storage), style = MaterialTheme.typography.labelLarge)
+        Text(stringResource(R.string.ssh_key_provider_signing_storage), style = MaterialTheme.typography.labelLarge)
         ToggleRow(
             checked = selection.userVerificationPolicy == SshUserVerificationPolicy.PER_USE,
             enabled = strongBiometricAvailable,
-            label = stringResource(R.string.ssh_agent_require_biometric_each_use),
+            label = stringResource(R.string.ssh_key_provider_require_biometric_each_use),
             onCheckedChange = {
                 onSelectionChange(
                     selection.copy(
@@ -104,14 +104,14 @@ fun SshKeyStorageOptions(
         )
         if (!strongBiometricAvailable) {
             Text(
-                stringResource(R.string.ssh_agent_strong_biometric_unavailable),
+                stringResource(R.string.ssh_key_provider_strong_biometric_unavailable),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
         if (!exportAuthenticationAvailable) {
             Text(
-                stringResource(R.string.ssh_agent_export_auth_unavailable),
+                stringResource(R.string.ssh_key_provider_export_auth_unavailable),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

@@ -20,10 +20,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.outlined.QrCodeScanner
-import androidx.compose.material.icons.outlined.Share
+import net.extrawdw.apps.notisync.ui.icons.material.filled.arrow_back as FilledArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_scanner as QrCodeScannerIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.share as ShareIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -199,7 +198,7 @@ fun PairingScreen(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
                         Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
+                            FilledArrowBackIcon,
                             contentDescription = stringResource(R.string.action_back)
                         )
                     }
@@ -207,7 +206,7 @@ fun PairingScreen(
                 actions = {
                     IconButton(onClick = ::sharePairingUrl, enabled = pairingUrl != null) {
                         Icon(
-                            Icons.Outlined.Share,
+                            ShareIcon,
                             contentDescription = stringResource(R.string.pair_share_title)
                         )
                     }
@@ -327,7 +326,7 @@ fun PairingScreen(
                     )
                 } else {
                     Icon(
-                        Icons.Outlined.QrCodeScanner,
+                        QrCodeScannerIcon,
                         contentDescription = null,
                         modifier = Modifier.size(ButtonDefaults.IconSize)
                     )

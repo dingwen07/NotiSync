@@ -25,7 +25,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
-import net.extrawdw.apps.notisync.sshagent.SshKeyStorageFlowTest
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyStorageFlowTest
 import net.extrawdw.apps.notisync.ui.theme.SecurityGreenDark
 import net.extrawdw.apps.notisync.ui.theme.SecurityGreenLight
 import net.extrawdw.apps.notisync.ui.theme.SecurityRedDark
@@ -35,7 +35,7 @@ import net.extrawdw.apps.notisync.ui.theme.SecurityRedLight
  * Settings → Advanced card for the SSH Agent key-storage flow test.
  *
  * Self-contained on purpose: it resolves the graph, the activity, and its own state, and the runner
- * ([SshKeyStorageFlowTest]) only uses the public [net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore]
+ * ([SshKeyStorageFlowTest]) only uses the public [net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderStore]
  * API. Removing this feature means deleting this file, `SshKeyStorageFlowTest.kt`, and the single
  * `SshKeyStorageFlowTestCard()` list item in `SettingsScreen.kt` — nothing else.
  */
@@ -115,7 +115,6 @@ fun SshKeyStorageFlowTestCard() {
                     val results = when (current) {
                         is SshKeyStorageFlowTestState.Running -> current.results
                         is SshKeyStorageFlowTestState.Done -> current.results
-                        else -> emptyList()
                     }
                     if (current is SshKeyStorageFlowTestState.Running && results.isEmpty()) {
                         CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)

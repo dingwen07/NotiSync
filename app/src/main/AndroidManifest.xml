@@ -162,7 +162,7 @@
             android:theme="@style/Theme.NotiSync" />
 
         <activity
-            android:name=".sshagent.SshAgentReviewActivity"
+            android:name=".sshkeyprovider.SshKeyProviderReviewActivity"
             android:documentLaunchMode="intoExisting"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
@@ -173,7 +173,7 @@
             android:theme="@style/Theme.NotiSync" />
 
         <activity
-            android:name=".sshagent.SshKeyExportActivity"
+            android:name=".sshkeyprovider.SshKeyExportActivity"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
@@ -181,14 +181,14 @@
             android:theme="@style/Theme.NotiSync" />
 
         <activity
-            android:name=".sshagent.SshWebAuthnOpenSshIdentityExportActivity"
+            android:name=".sshkeyprovider.SshWebAuthnOpenSshIdentityExportActivity"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
             android:theme="@style/Theme.NotiSync" />
 
         <activity
-            android:name=".sshagent.SshKeySendActivity"
+            android:name=".sshkeyprovider.SshKeySendActivity"
             android:enableOnBackInvokedCallback="true"
             android:excludeFromRecents="true"
             android:exported="false"
@@ -362,7 +362,7 @@
             android:exported="false" />
 
         <receiver
-            android:name=".sshagent.SshAgentActionReceiver"
+            android:name=".sshkeyprovider.SshKeyProviderActionReceiver"
             android:exported="false" />
 
         <!-- MediaRoute2 provider that publishes the mirrored media source ("Dingwen's iPhone") as this app's

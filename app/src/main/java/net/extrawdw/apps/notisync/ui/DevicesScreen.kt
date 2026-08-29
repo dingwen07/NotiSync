@@ -11,12 +11,11 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ScreenShare
-import androidx.compose.material.icons.outlined.Contactless
-import androidx.compose.material.icons.outlined.NotificationsOff
-import androidx.compose.material.icons.outlined.QrCode2
-import androidx.compose.material.icons.outlined.Smartphone
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.contactless as ContactlessIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications_off as NotificationsOffIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -158,13 +157,13 @@ fun DevicesScreen(
                     modifier = Modifier.fillMaxWidth().then(pairButtonModifier)
                 ) {
                     Icon(
-                        Icons.Outlined.QrCode2,
+                        QrCode2Icon,
                         contentDescription = null,
                         modifier = Modifier.size(ButtonDefaults.IconSize)
                     )
                     Spacer(Modifier.size(4.dp))
                     Icon(
-                        Icons.Outlined.Contactless,
+                        ContactlessIcon,
                         contentDescription = null,
                         modifier = Modifier.size(ButtonDefaults.IconSize)
                     )
@@ -409,7 +408,7 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, backing: KeyBacki
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Icon(
-                Icons.Outlined.Smartphone,
+                SmartphoneIcon,
                 contentDescription = null,
                 modifier = Modifier.size(40.dp)
             )
@@ -495,7 +494,7 @@ private fun DeviceRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Icon(
-                Icons.Outlined.Smartphone,
+                SmartphoneIcon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
@@ -523,7 +522,7 @@ private fun DeviceRow(
                     if (device.supportsScreenMirrorRequest()) {
                         IconButton(onClick = onStartScreenMirror, enabled = enabled) {
                             Icon(
-                                Icons.AutoMirrored.Outlined.ScreenShare,
+                                ScreenShareIcon,
                                 contentDescription = stringResource(
                                     R.string.screen_mirror_device_start_desc,
                                     name,
@@ -535,7 +534,7 @@ private fun DeviceRow(
                     if (device.ownDevice) {
                         IconButton(onClick = onShowFilters, enabled = enabled && hasFilters) {
                             Icon(
-                                Icons.Outlined.NotificationsOff,
+                                NotificationsOffIcon,
                                 contentDescription = stringResource(R.string.device_filters_button_desc, name)
                             )
                         }

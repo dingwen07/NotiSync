@@ -18,7 +18,6 @@ import net.extrawdw.notisync.daemon.logging.DaemonLogger
 import net.extrawdw.notisync.localapi.SendAccepted
 import net.extrawdw.notisync.localapi.SendRequest
 import net.extrawdw.notisync.peer.channel.Recipients
-import net.extrawdw.notisync.peer.channel.HighDataSyncPolicy
 import net.extrawdw.notisync.peer.channel.SignerSelection
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.Capability
@@ -102,7 +101,6 @@ class GenericSendResolver(
             }
         }
         val urgency = request.urgency ?: defaultUrgency
-        validateHighDataSync(request.messageType, body, requireNotNull(scope), urgency)
         return ResolvedSend(
             applicationId = request.applicationId,
             messageType = request.messageType,
@@ -116,10 +114,6 @@ class GenericSendResolver(
         )
     }
 
-    private fun validateHighDataSync(type: MessageType, body: ByteArray, scope: Recipients, urgency: Urgency) {
-        if (type != MessageType.DATA_SYNC || urgency != Urgency.HIGH) return
-        HighDataSyncPolicy.validate(body, scope)
-    }
 }
 
 /** The runtime adapter around SecureChannel.sendAllStrict. */

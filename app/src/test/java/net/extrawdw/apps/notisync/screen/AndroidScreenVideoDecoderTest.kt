@@ -8,6 +8,8 @@ import java.nio.ByteOrder
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -149,7 +151,8 @@ class AndroidScreenVideoDecoderTest {
         private val prefix: ByteArray,
     ) : InputStream() {
         private var offset = 0
-        private val lock = Object()
+        private val lock = ReentrantLock()
+        private val changed = lock.newCondition()
         private val closedSignal = CountDownLatch(1)
 
         @Volatile
@@ -162,22 +165,22 @@ class AndroidScreenVideoDecoderTest {
         }
 
         override fun read(target: ByteArray, targetOffset: Int, length: Int): Int {
-            synchronized(lock) {
+            lock.withLock {
                 if (offset < prefix.size) {
                     val count = minOf(length, prefix.size - offset)
                     prefix.copyInto(target, targetOffset, offset, offset + count)
                     offset += count
                     return count
                 }
-                while (!closed) lock.wait()
+                while (!closed) changed.await()
                 return -1
             }
         }
 
         override fun close() {
-            synchronized(lock) {
+            lock.withLock {
                 closed = true
-                lock.notifyAll()
+                changed.signalAll()
             }
             closedSignal.countDown()
         }

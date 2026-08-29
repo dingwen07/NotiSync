@@ -7,8 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Computer
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.computer as ComputerIcon
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -41,7 +40,7 @@ internal fun RequestDeviceSubCard(
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Icon(Icons.Outlined.Computer, contentDescription = null)
+                Icon(ComputerIcon, contentDescription = null)
                 Text(deviceName, style = MaterialTheme.typography.titleSmall)
             }
             DeviceIdentityValue(

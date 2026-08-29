@@ -22,10 +22,10 @@ import java.util.concurrent.Executor
  *
  * SystemUI only swaps the chip for a named remote target when BOTH hold:
  *  1. the card's media session reports PLAYBACK_TYPE_REMOTE, and
- *  2. that session matches a live MediaRouter2 routing session of this package — matched by the session's
- *     `VolumeProvider.volumeControlId` equalling the routing session's provider-chosen id.
+ *  2. that session matches a live MediaRouter2 routing session of this package — matched by the native
+ *     remote [android.media.VolumeProvider]'s `volumeControlId` equalling the provider-chosen session id.
  *
- * [MirrorMediaSessions] supplies (1) and stamps [volumeControlIdFor] into every mirror session; this class
+ * [MirrorMediaSessions] supplies (1) and stamps [volumeControlIdFor] into every remote provider; this class
  * supplies (2): it publishes ONE MediaRoute2 route named after the elected source device — served by the
  * in-process [MirrorRouteProviderService] — and transfers this app's own media routing onto it, creating
  * the matching routing session. The Output Switcher then shows the source (smartphone icon, its name) as
@@ -267,8 +267,8 @@ class MirrorRouter(
 
         private fun sessionIdFor(clientId: ClientId) = SESSION_ID_PREFIX + clientId.value
 
-        /** What [MirrorMediaSessions] must stamp into a mirror session's VolumeProvider so SystemUI can
-         *  match the session to this source's routing session (equality with the session's chosen id). */
+        /** What [MirrorMediaSessions] stamps into the native VolumeProvider so SystemUI can match the session
+         *  to this source's routing session (equality with the provider-chosen session id). */
         fun volumeControlIdFor(clientId: ClientId): String = sessionIdFor(clientId)
 
         internal fun clientKeyOf(route: MediaRoute2Info): String? = route.extras?.getString(EXTRA_CLIENT_KEY)

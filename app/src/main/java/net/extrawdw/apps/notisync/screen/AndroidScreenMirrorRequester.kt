@@ -203,7 +203,7 @@ internal class AndroidScreenMirrorRequester(
                     lanListener = availableLan.track(
                         LanSessionListener.open(availableLan.addressProvider),
                     ).also { requestContext.lanListener = it }
-                    val firstCandidate = lanListener?.candidates?.firstOrNull()
+                    val firstCandidate = lanListener.candidates.firstOrNull()
                         ?: error("selected LAN has no listenable address")
                     advertisement = withTimeoutOrNull(NSD_REGISTRATION_TIMEOUT.toMillis()) {
                         availableLan.advertise(

@@ -37,11 +37,10 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Call
-import androidx.compose.material.icons.filled.CallEnd
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Smartphone
+import net.extrawdw.apps.notisync.ui.icons.material.filled.call as FilledCallIcon
+import net.extrawdw.apps.notisync.ui.icons.material.filled.call_end as FilledCallEndIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
 import androidx.compose.material3.FilledIconButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButtonDefaults
@@ -532,7 +531,7 @@ private fun DeviceIdentity(deviceName: String) {
             horizontalArrangement = Arrangement.spacedBy(10.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Icon(Icons.Outlined.Smartphone, contentDescription = null)
+            Icon(SmartphoneIcon, contentDescription = null)
             Text(
                 text = androidx.compose.ui.res.stringResource(
                     R.string.incoming_call_on_device,
@@ -563,14 +562,14 @@ private fun CallControls(
             CallActionButton(
                 label = declineLabel?.takeIf(String::isNotBlank)
                     ?: androidx.compose.ui.res.stringResource(R.string.incoming_call_decline),
-                icon = Icons.Filled.CallEnd,
+                icon = FilledCallEndIcon,
                 containerColor = Color(0xFFB3261E),
                 onClick = onDecline,
             )
         } else {
             CallActionButton(
                 label = androidx.compose.ui.res.stringResource(R.string.incoming_call_dismiss),
-                icon = Icons.Outlined.Close,
+                icon = CloseIcon,
                 containerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
                 onClick = onDismiss,
             )
@@ -579,7 +578,7 @@ private fun CallControls(
             CallActionButton(
                 label = answerLabel?.takeIf(String::isNotBlank)
                     ?: androidx.compose.ui.res.stringResource(R.string.incoming_call_answer),
-                icon = Icons.Filled.Call,
+                icon = FilledCallIcon,
                 containerColor = Color(0xFF287D3C),
                 onClick = onAnswer,
             )

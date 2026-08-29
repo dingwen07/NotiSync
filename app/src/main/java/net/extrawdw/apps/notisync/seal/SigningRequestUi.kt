@@ -17,23 +17,22 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.automirrored.outlined.Label
-import androidx.compose.material.icons.outlined.AccountTree
-import androidx.compose.material.icons.outlined.Cancel
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Commit
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.Fingerprint
-import androidx.compose.material.icons.outlined.Folder
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.VerifiedUser
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.label as LabelIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.account_tree as AccountTreeIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.cancel as CancelIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.commit as CommitIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.fingerprint as FingerprintIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.folder as FolderIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.person as PersonIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as ScheduleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.verified_user as VerifiedUserIcon
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -63,7 +62,7 @@ import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 internal enum class SealDisplayStatus {
     WAITING,
     SIGNING,
-    APPROVED,
+    SIGNED,
     REJECTED,
     CANCELED,
     EXPIRED,
@@ -72,7 +71,7 @@ internal enum class SealDisplayStatus {
 }
 
 internal fun StoredOpenPgpRequest.sealDisplayStatus(): SealDisplayStatus = when (result) {
-    OpenPgpRequestResult.APPROVED -> SealDisplayStatus.APPROVED
+    OpenPgpRequestResult.APPROVED -> SealDisplayStatus.SIGNED
     OpenPgpRequestResult.REJECTED -> SealDisplayStatus.REJECTED
     OpenPgpRequestResult.CANCELED -> SealDisplayStatus.CANCELED
     OpenPgpRequestResult.EXPIRED -> SealDisplayStatus.EXPIRED
@@ -116,7 +115,7 @@ internal fun sealStatusLabel(status: SealDisplayStatus): String = stringResource
     when (status) {
         SealDisplayStatus.WAITING -> R.string.seal_status_waiting
         SealDisplayStatus.SIGNING -> R.string.seal_status_signing
-        SealDisplayStatus.APPROVED -> R.string.seal_result_approved
+        SealDisplayStatus.SIGNED -> R.string.seal_result_signed
         SealDisplayStatus.REJECTED -> R.string.seal_result_rejected
         SealDisplayStatus.CANCELED -> R.string.seal_result_canceled
         SealDisplayStatus.EXPIRED -> R.string.seal_result_expired
@@ -152,9 +151,6 @@ internal fun SigningRequestListItem(
         ListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SealStatusIcon(status) },
-            headlineContent = {
-                Text(headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            },
             supportingContent = {
                 Column {
                     Text(
@@ -177,9 +173,11 @@ internal fun SigningRequestListItem(
                 }
             },
             trailingContent = {
-                Icon(Icons.Outlined.ChevronRight, contentDescription = null)
+                Icon(ChevronRightIcon, contentDescription = null)
             },
-        )
+        ) {
+            Text(headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
     }
     HorizontalDivider()
 }
@@ -214,7 +212,7 @@ internal fun SigningRequestDetail(
                     ) {
                         IconButton(onClick = onBack) {
                             Icon(
-                                Icons.AutoMirrored.Outlined.ArrowBack,
+                                ArrowBackIcon,
                                 contentDescription = stringResource(R.string.seal_back_to_history),
                             )
                         }
@@ -262,7 +260,7 @@ internal fun SigningRequestDetail(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.Top,
                         ) {
-                            Icon(Icons.Outlined.Info, contentDescription = null)
+                            Icon(InfoIcon, contentDescription = null)
                             Text(
                                 stringResource(
                                     when (stored.request.objectKind) {
@@ -288,7 +286,7 @@ internal fun SigningRequestDetail(
                                 OpenPgpObjectKind.GIT_TAG -> R.string.seal_tag_section
                             }
                         ),
-                        icon = Icons.Outlined.AccountTree,
+                        icon = AccountTreeIcon,
                     ) {
                         Text(
                             stringResource(R.string.seal_details_unavailable),
@@ -315,11 +313,11 @@ internal fun SigningRequestDetail(
             CenteredDetailItem {
                 SealCard(
                     title = stringResource(R.string.seal_approval_section),
-                    icon = Icons.Outlined.VerifiedUser,
+                    icon = VerifiedUserIcon,
                 ) {
                     stored.request.workingDirectory?.let { workingDirectory ->
                         SealDetailLine(
-                            icon = Icons.Outlined.Folder,
+                            icon = FolderIcon,
                             label = stringResource(R.string.seal_working_directory),
                             value = workingDirectory,
                             valueMonospace = true,
@@ -327,7 +325,7 @@ internal fun SigningRequestDetail(
                         HorizontalDivider()
                     }
                     SealDetailLine(
-                        icon = Icons.Outlined.Key,
+                        icon = KeyIcon,
                         label = stringResource(R.string.seal_signing_key),
                         value = signingIdentity,
                         supporting = stored.request.primaryKeyId.formattedKeyId(),
@@ -341,7 +339,7 @@ internal fun SigningRequestDetail(
             CenteredDetailItem {
                 SealCard(
                     title = stringResource(R.string.seal_request_section),
-                    icon = Icons.Outlined.Fingerprint,
+                    icon = FingerprintIcon,
                 ) {
                     RequestDeviceSubCard(
                         deviceName = requesterName,
@@ -450,7 +448,7 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
     val body = commit.message.commitBody()
     SealCard(
         title = stringResource(R.string.seal_commit_section),
-        icon = Icons.Outlined.AccountTree,
+        icon = AccountTreeIcon,
     ) {
         SelectionContainer {
             Text(
@@ -468,9 +466,9 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
             }
         }
         HorizontalDivider()
-        IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_author), commit.author)
+        IdentityLine(PersonIcon, stringResource(R.string.seal_author), commit.author)
         HorizontalDivider()
-        IdentityLine(Icons.Outlined.VerifiedUser, stringResource(R.string.seal_created_by), commit.committer)
+        IdentityLine(VerifiedUserIcon, stringResource(R.string.seal_created_by), commit.committer)
         HorizontalDivider()
         FlowRow(
             horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -478,19 +476,19 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
         ) {
             ReferencePill(
                 label = commit.treeId.shortObjectId(),
-                icon = Icons.Outlined.AccountTree,
+                icon = AccountTreeIcon,
                 iconContentDescription = stringResource(R.string.seal_tree),
             )
             if (commit.parentIds.isEmpty()) {
                 ReferencePill(
                     label = stringResource(R.string.seal_commit_initial),
-                    icon = Icons.Outlined.Commit,
+                    icon = CommitIcon,
                 )
             } else {
                 commit.parentIds.forEach { parent ->
                     ReferencePill(
                         label = parent.shortObjectId(),
-                        icon = Icons.Outlined.Commit,
+                        icon = CommitIcon,
                         iconContentDescription = stringResource(R.string.seal_parent),
                     )
                 }
@@ -521,7 +519,7 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
 private fun TagCard(tag: GitTagDisplaySnapshot) {
     SealCard(
         title = stringResource(R.string.seal_tag_section),
-        icon = Icons.AutoMirrored.Outlined.Label,
+        icon = LabelIcon,
     ) {
         SelectionContainer {
             Text(tag.tagName, style = MaterialTheme.typography.titleLarge)
@@ -543,7 +541,7 @@ private fun TagCard(tag: GitTagDisplaySnapshot) {
             }
         }
         HorizontalDivider()
-        IdentityLine(Icons.Outlined.Person, stringResource(R.string.seal_created_by), tag.tagger)
+        IdentityLine(PersonIcon, stringResource(R.string.seal_created_by), tag.tagger)
         HorizontalDivider()
         SealRecordLine(stringResource(R.string.seal_tag_target_type), tag.objectType)
         SealRecordLine(stringResource(R.string.seal_tag_target), tag.objectId, monospace = true)
@@ -699,13 +697,13 @@ private fun CenteredDetailItem(content: @Composable () -> Unit) {
 private fun SealStatusIcon(status: SealDisplayStatus, modifier: Modifier = Modifier) {
     Icon(
         imageVector = when (status) {
-            SealDisplayStatus.WAITING -> Icons.Outlined.Schedule
-            SealDisplayStatus.SIGNING -> Icons.Outlined.Sync
-            SealDisplayStatus.APPROVED -> Icons.Outlined.CheckCircle
-            SealDisplayStatus.REJECTED, SealDisplayStatus.CANCELED -> Icons.Outlined.Cancel
-            SealDisplayStatus.EXPIRED -> Icons.Outlined.Schedule
-            SealDisplayStatus.FAILED -> Icons.Outlined.ErrorOutline
-            SealDisplayStatus.LEGACY_FINISHED -> Icons.Outlined.Info
+            SealDisplayStatus.WAITING -> ScheduleIcon
+            SealDisplayStatus.SIGNING -> SyncIcon
+            SealDisplayStatus.SIGNED -> CheckCircleIcon
+            SealDisplayStatus.REJECTED, SealDisplayStatus.CANCELED -> CancelIcon
+            SealDisplayStatus.EXPIRED -> ScheduleIcon
+            SealDisplayStatus.FAILED -> ErrorOutlineIcon
+            SealDisplayStatus.LEGACY_FINISHED -> InfoIcon
         },
         contentDescription = sealStatusLabel(status),
         modifier = modifier,
@@ -715,7 +713,7 @@ private fun SealStatusIcon(status: SealDisplayStatus, modifier: Modifier = Modif
 
 @Composable
 private fun sealStatusColor(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.primary
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.error
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED -> MaterialTheme.colorScheme.onSurfaceVariant
@@ -724,7 +722,7 @@ private fun sealStatusColor(status: SealDisplayStatus): Color = when (status) {
 
 @Composable
 private fun sealStatusContainer(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.primaryContainer
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.errorContainer
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED ->
@@ -734,7 +732,7 @@ private fun sealStatusContainer(status: SealDisplayStatus): Color = when (status
 
 @Composable
 private fun sealStatusContent(status: SealDisplayStatus): Color = when (status) {
-    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.APPROVED ->
+    SealDisplayStatus.WAITING, SealDisplayStatus.SIGNING, SealDisplayStatus.SIGNED ->
         MaterialTheme.colorScheme.onPrimaryContainer
     SealDisplayStatus.REJECTED, SealDisplayStatus.FAILED -> MaterialTheme.colorScheme.onErrorContainer
     SealDisplayStatus.CANCELED, SealDisplayStatus.LEGACY_FINISHED -> MaterialTheme.colorScheme.onSurface

@@ -23,14 +23,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Devices
-import androidx.compose.material.icons.outlined.History
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.PhoneIphone
-import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material.icons.outlined.Terminal
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerValue
@@ -41,7 +40,7 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
-import androidx.compose.material3.adaptive.currentWindowAdaptiveInfo
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -105,7 +104,7 @@ import net.extrawdw.apps.notisync.ui.SettingsScreen
 import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
-import net.extrawdw.apps.notisync.ui.SshAgentScreen
+import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -274,11 +273,11 @@ private enum class TopLevelDestination(
     @param:StringRes override val label: Int,
     override val icon: ImageVector,
 ) : AppDestination {
-    DEVICES(Route.Devices, R.string.tab_devices, Icons.Outlined.Devices),
-    APPS(Route.Apps, R.string.tab_apps, Icons.Outlined.Apps),
-    IOS(Route.Ios, R.string.tab_ios, Icons.Outlined.PhoneIphone),
-    ACTIVITY(Route.Activity, R.string.tab_activity, Icons.Outlined.History),
-    SETTINGS(Route.Settings, R.string.tab_settings, Icons.Outlined.Settings),
+    DEVICES(Route.Devices, R.string.tab_devices, DevicesIcon),
+    APPS(Route.Apps, R.string.tab_apps, AppsIcon),
+    IOS(Route.Ios, R.string.tab_ios, PhoneIphoneIcon),
+    ACTIVITY(Route.Activity, R.string.tab_activity, HistoryIcon),
+    SETTINGS(Route.Settings, R.string.tab_settings, SettingsIcon),
 }
 
 private enum class FeatureDestination(
@@ -286,9 +285,9 @@ private enum class FeatureDestination(
     @param:StringRes override val label: Int,
     override val icon: ImageVector,
 ) : AppDestination {
-    RUN(Route.Run, R.string.tab_run, Icons.Outlined.Terminal),
+    RUN(Route.Run, R.string.tab_run, TerminalIcon),
     SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
-    SSH_AGENT(Route.SshAgent, R.string.tab_ssh_agent, Icons.Outlined.Key),
+    SSH_AGENT(Route.SshAgent, R.string.ssh_key_provider_tools_label, KeyIcon),
 }
 
 private enum class PairingReviewSource {
@@ -485,7 +484,7 @@ fun NotiSyncRoot(
     }
 
     val layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(
-        currentWindowAdaptiveInfo()
+        currentWindowAdaptiveInfoV2()
     )
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
@@ -599,7 +598,7 @@ fun NotiSyncRoot(
                 }
                 composable<Route.Seal> { SealScreen() }
                 composable<Route.SshAgent> {
-                    SshAgentScreen(
+                    SshKeyProviderScreen(
                         initialHistoryRequestId = latestOpenSshHistoryRequestId.value,
                         onInitialHistoryRequestConsumed = latestOnOpenSshHistoryConsumed.value,
                     )
@@ -684,9 +683,9 @@ private fun TopLevelNavIcon(dest: AppDestination) {
         if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
     Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
         Icon(
-            dest.icon,
+            imageVector = dest.icon,
             contentDescription = stringResource(dest.label),
-            modifier = Modifier.size(glyphSize)
+            modifier = Modifier.size(glyphSize),
         )
     }
 }

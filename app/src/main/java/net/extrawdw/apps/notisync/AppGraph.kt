@@ -113,10 +113,10 @@ import net.extrawdw.apps.notisync.seal.OpenPgpSignEngine
 import net.extrawdw.apps.notisync.seal.OpenPgpSignNotificationPresenter
 import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpSigningProvider
-import net.extrawdw.apps.notisync.sshagent.SshAgentManagementRepository
-import net.extrawdw.apps.notisync.sshagent.SshAgentNotificationPresenter
-import net.extrawdw.apps.notisync.sshagent.SshAgentProviderEngine
-import net.extrawdw.apps.notisync.sshagent.SshKeyProviderStore
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderManagementRepository
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderNotificationPresenter
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderEngine
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderStore
 import net.extrawdw.apps.notisync.screen.AndroidLanScreenSessionTransport
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderCapabilities
 import net.extrawdw.apps.notisync.screen.AndroidScreenDecoderSupport
@@ -296,11 +296,11 @@ class AppGraph(private val app: Application) {
         private set
     lateinit var sshKeyProviderStore: SshKeyProviderStore
         private set
-    lateinit var sshAgentManagement: SshAgentManagementRepository
+    lateinit var sshKeyProviderManagement: SshKeyProviderManagementRepository
         private set
-    lateinit var sshAgentNotifications: SshAgentNotificationPresenter
+    lateinit var sshKeyProviderNotifications: SshKeyProviderNotificationPresenter
         private set
-    var sshAgentProviderEngine: SshAgentProviderEngine? = null
+    var sshKeyProviderEngine: SshKeyProviderEngine? = null
         private set
     var graphicsPipeline: GraphicsPipeline? = null
         private set
@@ -362,13 +362,13 @@ class AppGraph(private val app: Application) {
             settings.autoOpenOpenPgpRequest.value
         }
         sshKeyProviderStore = SshKeyProviderStore(app)
-        sshAgentManagement = SshAgentManagementRepository(sshKeyProviderStore, identity.clientId, scope)
+        sshKeyProviderManagement = SshKeyProviderManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
-        sshAgentManagement.preload()
+        sshKeyProviderManagement.preload()
         // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
         initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
-        sshAgentManagement.start()
-        sshAgentNotifications = SshAgentNotificationPresenter(app, sshKeyProviderStore) {
+        sshKeyProviderManagement.start()
+        sshKeyProviderNotifications = SshKeyProviderNotificationPresenter(app, sshKeyProviderStore) {
             settings.autoOpenSshRequest.value
         }
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
@@ -624,16 +624,16 @@ class AppGraph(private val app: Application) {
         )
         openPgpSignEngine = openPgpSigning
         scope.launch { openPgpSigning.reconcile() }
-        val sshProvider = SshAgentProviderEngine(
+        val sshProvider = SshKeyProviderEngine(
             context = app,
             providerClientId = identity.clientId,
             channel = channel,
             store = sshKeyProviderStore,
-            notifications = sshAgentNotifications,
+            notifications = sshKeyProviderNotifications,
             scope = scope,
             deviceNameOf = { id -> trust.displayName(id) },
         )
-        sshAgentProviderEngine = sshProvider
+        sshKeyProviderEngine = sshProvider
         scope.launch { sshProvider.reconcile() }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
@@ -1496,8 +1496,8 @@ class AppGraph(private val app: Application) {
      * wake → relay-fetch path: the exact flow the large-notification fix added. Returns the number of
      * peer devices it was sealed to (0 if none are paired, in which case nothing is sent).
      */
-    suspend fun sendOversizedDiagnostic(): Int {
-        val mirror = mirrorEngine ?: return 0
+    suspend fun sendOversizedDiagnostic(): Int = withContext(Dispatchers.IO) {
+        val mirror = mirrorEngine ?: return@withContext 0
         // ~8 KB of body text: comfortably past the 3 KB base64 inline budget once sealed + encoded.
         val filler =
             "NotiSync oversized diagnostic — this payload is deliberately too large to inline in " +
@@ -1518,7 +1518,7 @@ class AppGraph(private val app: Application) {
             channelName = "NotiSync Test"
         )
         val withAppIcon = graphicsPipeline?.attachAppIcon(notif) ?: notif
-        return mirror.captureLocal(withAppIcon)
+        mirror.captureLocal(withAppIcon)
     }
 
     companion object {

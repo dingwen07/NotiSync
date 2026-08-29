@@ -24,7 +24,7 @@ import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabaseFactory
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
-import net.extrawdw.apps.notisync.sshagent.SshInventoryGeneration
+import net.extrawdw.apps.notisync.sshkeyprovider.SshInventoryGeneration
 import net.extrawdw.apps.notisync.ios.IosApp
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.ProtocolCodec

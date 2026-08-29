@@ -12,11 +12,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.Sort
-import androidx.compose.material.icons.outlined.Check
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Search
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.sort as SortIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.check as CheckIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.search as SearchIcon
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -85,12 +84,12 @@ internal fun AppListSearchBar(
             value = query,
             onValueChange = onQueryChange,
             placeholder = { Text(placeholder) },
-            leadingIcon = { Icon(Icons.Outlined.Search, contentDescription = null) },
+            leadingIcon = { Icon(SearchIcon, contentDescription = null) },
             trailingIcon = {
                 if (query.isNotEmpty()) {
                     IconButton(onClick = { onQueryChange("") }) {
                         Icon(
-                            Icons.Outlined.Close,
+                            CloseIcon,
                             contentDescription = stringResource(R.string.apps_clear_search),
                         )
                     }
@@ -149,7 +148,7 @@ internal fun AppSortMenu(
     Box {
         IconButton(onClick = { expanded = true }) {
             Icon(
-                Icons.AutoMirrored.Outlined.Sort,
+                SortIcon,
                 contentDescription = stringResource(R.string.apps_sort_menu),
             )
         }
@@ -163,7 +162,7 @@ internal fun AppSortMenu(
                     },
                     leadingIcon = {
                         // A check marks the active mode; a same-size spacer keeps the rest aligned.
-                        if (entry == mode) Icon(Icons.Outlined.Check, contentDescription = null)
+                        if (entry == mode) Icon(CheckIcon, contentDescription = null)
                         else Spacer(Modifier.size(24.dp))
                     },
                 )

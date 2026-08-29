@@ -678,7 +678,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
 
     private fun scheduleLocalVolumeRecaptures() {
         mediaSessionTrackers.forEach { (key, tracker) ->
-            val playbackType = runCatching { tracker.controller.playbackInfo?.playbackType }.getOrNull()
+            val playbackType = runCatching { tracker.controller.playbackInfo.playbackType }.getOrNull()
             if (shouldRecaptureForLocalVolume(playbackType)) {
                 scheduleMediaRecapture(key, LOCAL_VOLUME_RECAPTURE_DELAY_MS)
             }

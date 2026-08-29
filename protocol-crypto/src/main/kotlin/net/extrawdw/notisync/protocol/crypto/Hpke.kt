@@ -37,7 +37,11 @@ object Hpke {
         CryptoInit.ensure()
         val handle = KeysetHandle.generateNew(params)
         val publicKeyset = TinkProtoKeysetFormat.serializeKeysetWithoutSecret(handle.publicKeysetHandle)
-        val privateKeyset = TinkProtoKeysetFormat.serializeKeyset(handle, InsecureSecretKeyAccess.get())
+        val privateKeyset = TinkProtoKeysetFormat.serializeKeyset(
+            handle,
+            InsecureSecretKeyAccess.get(),
+            RegistryConfiguration.get(),
+        )
         return HpkeKeyPair(publicKeyset, privateKeyset)
     }
 
@@ -90,7 +94,11 @@ object Hpke {
     /** Open a sealed DEK using this device's [privateKeyset]. */
     fun open(sealedDek: ByteArray, privateKeyset: ByteArray, contextInfo: ByteArray): ByteArray {
         CryptoInit.ensure()
-        val handle = TinkProtoKeysetFormat.parseKeyset(privateKeyset, InsecureSecretKeyAccess.get())
+        val handle = TinkProtoKeysetFormat.parseKeyset(
+            privateKeyset,
+            InsecureSecretKeyAccess.get(),
+            RegistryConfiguration.get(),
+        )
         val dec = handle.getPrimitive(RegistryConfiguration.get(), HybridDecrypt::class.java)
         return dec.decrypt(sealedDek, contextInfo)
     }

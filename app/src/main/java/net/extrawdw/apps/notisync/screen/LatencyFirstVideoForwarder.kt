@@ -10,6 +10,8 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 import java.util.ArrayDeque
 import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import kotlin.math.min
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 
@@ -278,11 +280,12 @@ internal data class QueuedVideoRecord(
     fun freshlyQueued(nowNanos: Long): QueuedVideoRecord = copy(enqueuedAtNanos = nowNanos)
 }
 
-/** Small synchronized queue that only resumes predictive delivery from a fresh key frame. */
+/** Small lock/condition queue that only resumes predictive delivery from a fresh key frame. */
 internal class LatestDecodableVideoQueue(
     private val nanoTime: () -> Long,
 ) {
-    private val lock = Object()
+    private val lock = ReentrantLock()
+    private val changed = lock.newCondition()
     private val records = ArrayDeque<QueuedVideoRecord>()
     private val codecConfigs = ArrayDeque<QueuedVideoRecord>()
     private var latestSession: QueuedVideoRecord? = null
@@ -293,7 +296,7 @@ internal class LatestDecodableVideoQueue(
     private var failure: Throwable? = null
 
     /** Returns the encoded record only when accepting it would exceed the latency bound. */
-    fun tryEnqueue(value: ScrcpyVideoRecord): QueuedVideoRecord? = synchronized(lock) {
+    fun tryEnqueue(value: ScrcpyVideoRecord): QueuedVideoRecord? = lock.withLock {
         failure?.let { throw IOException("screen video queue failed", it) }
         if (closed) throw IOException("screen video queue is closed")
         val record = encodeRecord(value, nanoTime())
@@ -336,24 +339,24 @@ internal class LatestDecodableVideoQueue(
         }
     }
 
-    fun enqueueBlocking(record: QueuedVideoRecord) = synchronized(lock) {
+    fun enqueueBlocking(record: QueuedVideoRecord) = lock.withLock {
         producerBlocked = true
         try {
             while (true) {
                 failure?.let { throw IOException("screen video queue failed", it) }
                 if (closed) throw IOException("screen video queue is closed")
                 when {
-                    record.codecConfig && droppingUntilKeyFrame -> return@synchronized
-                    droppingUntilKeyFrame && !record.keyFrame -> return@synchronized
+                    record.codecConfig && droppingUntilKeyFrame -> return@withLock
+                    droppingUntilKeyFrame && !record.keyFrame -> return@withLock
                     droppingUntilKeyFrame || record.keyFrame && !fitsLocked(record) -> {
                         rebuildFromKeyFrameLocked(record)
-                        return@synchronized
+                        return@withLock
                     }
                     fitsLocked(record) -> {
                         addLocked(record)
-                        return@synchronized
+                        return@withLock
                     }
-                    else -> lock.wait()
+                    else -> changed.await()
                 }
             }
         } finally {
@@ -361,40 +364,40 @@ internal class LatestDecodableVideoQueue(
         }
     }
 
-    fun isProducerBlocked(): Boolean = synchronized(lock) { producerBlocked }
+    fun isProducerBlocked(): Boolean = lock.withLock { producerBlocked }
 
-    fun isDroppingUntilKeyFrame(): Boolean = synchronized(lock) { droppingUntilKeyFrame }
+    fun isDroppingUntilKeyFrame(): Boolean = lock.withLock { droppingUntilKeyFrame }
 
-    fun dropUntilNextKeyFrame() = synchronized(lock) {
-        if (closed) return@synchronized
+    fun dropUntilNextKeyFrame() = lock.withLock {
+        if (closed) return@withLock
         clearLocked()
         droppingUntilKeyFrame = true
         // enqueueBlocking() may be holding up the encoder pipe while the network writer is stuck.
         // Clearing the queue alone is insufficient: wake that reader so it can discard its stale
         // predictive record and resume draining the pipe until the requested key frame arrives.
-        lock.notifyAll()
+        changed.signalAll()
     }
 
-    fun take(): QueuedVideoRecord? = synchronized(lock) {
-        while (records.isEmpty() && !closed && failure == null) lock.wait()
+    fun take(): QueuedVideoRecord? = lock.withLock {
+        while (records.isEmpty() && !closed && failure == null) changed.await()
         failure?.let { throw IOException("screen video queue failed", it) }
-        if (records.isEmpty()) return@synchronized null
+        if (records.isEmpty()) return@withLock null
         records.removeFirst().also {
             queuedBytes -= it.byteCount
-            lock.notifyAll()
+            changed.signalAll()
         }
     }
 
-    fun finish() = synchronized(lock) {
+    fun finish() = lock.withLock {
         closed = true
-        lock.notifyAll()
+        changed.signalAll()
     }
 
-    fun fail(error: Throwable) = synchronized(lock) {
+    fun fail(error: Throwable) = lock.withLock {
         if (failure == null) failure = error
         closed = true
         clearLocked()
-        lock.notifyAll()
+        changed.signalAll()
     }
 
     private fun rebuildFromKeyFrameLocked(keyFrame: QueuedVideoRecord) {
@@ -418,7 +421,7 @@ internal class LatestDecodableVideoQueue(
     private fun addLocked(record: QueuedVideoRecord) {
         records.addLast(record)
         queuedBytes += record.byteCount
-        lock.notifyAll()
+        changed.signalAll()
     }
 
     private fun clearLocked() {

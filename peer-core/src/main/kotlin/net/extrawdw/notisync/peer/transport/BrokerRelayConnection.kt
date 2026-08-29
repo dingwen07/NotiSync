@@ -9,6 +9,8 @@ import java.util.LinkedHashMap
 import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.locks.ReentrantLock
+import kotlin.concurrent.withLock
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenRelayChannel
 import net.extrawdw.notisync.protocol.ScreenRelayRole
@@ -34,7 +36,8 @@ class BrokerRelayConnection internal constructor(
     private val inbound = PipedInputStream(CONTROL_PIPE_BUFFER_BYTES)
     private val inboundSink = PipedOutputStream(inbound)
     private val videoFrames = ArrayBlockingQueue<ByteArray>(VIDEO_INBOUND_FRAME_CAPACITY)
-    private val flowLock = Object()
+    private val flowLock = ReentrantLock()
+    private val flowChanged = flowLock.newCondition()
     private val inFlightRecords = LinkedHashMap<Long, Int>()
     private var inFlightBytes = 0L
     private var lastSentSequence = -1L
@@ -127,7 +130,7 @@ class BrokerRelayConnection internal constructor(
         if (channel != ScreenRelayChannel.VIDEO || role != ScreenRelayRole.SOURCE) return
         val sequence = signal.sequence ?: return
         if (sequence < 0) return
-        synchronized(flowLock) {
+        flowLock.withLock {
             if (sequence > lastSentSequence) return
             when (signal.kind) {
                 ScreenRelaySignalKind.VIDEO_ACK -> releaseThroughLocked(sequence)
@@ -137,7 +140,7 @@ class BrokerRelayConnection internal constructor(
                 }
                 else -> return
             }
-            flowLock.notifyAll()
+            flowChanged.signalAll()
         }
     }
 
@@ -146,7 +149,7 @@ class BrokerRelayConnection internal constructor(
     fun beginVideoRecord(sequence: Long, recordBytes: Int) {
         check(channel == ScreenRelayChannel.VIDEO && role == ScreenRelayRole.SOURCE)
         require(sequence >= 0 && recordBytes in 1..ScreenRelayVideoWire.MAX_RECORD_BYTES)
-        synchronized(flowLock) {
+        flowLock.withLock {
             require(sequence > lastSentSequence) { "Relay video sequence must increase" }
             val deadline = System.nanoTime() + stallTimeoutNanos
             while (!closed.get() && inFlightBytes > 0 &&
@@ -157,11 +160,12 @@ class BrokerRelayConnection internal constructor(
                     throw IOException("broker relay video delivery stalled")
                 }
                 try {
-                    flowLock.wait(
+                    flowChanged.await(
                         minOf(
-                            TimeUnit.NANOSECONDS.toMillis(remainingNanos).coerceAtLeast(1L),
-                            DELIVERY_WAIT_POLL_MILLIS,
+                            remainingNanos,
+                            TimeUnit.MILLISECONDS.toNanos(DELIVERY_WAIT_POLL_MILLIS),
                         ),
+                        TimeUnit.NANOSECONDS,
                     )
                 } catch (interrupted: InterruptedException) {
                     Thread.currentThread().interrupt()
@@ -175,9 +179,9 @@ class BrokerRelayConnection internal constructor(
         }
     }
 
-    fun abortVideoRecord(sequence: Long) = synchronized(flowLock) {
+    fun abortVideoRecord(sequence: Long) = flowLock.withLock {
         inFlightRecords.remove(sequence)?.let { inFlightBytes -= it }
-        flowLock.notifyAll()
+        flowChanged.signalAll()
     }
 
     @Throws(IOException::class)
@@ -221,7 +225,7 @@ class BrokerRelayConnection internal constructor(
         }
     }
 
-    fun consumeVideoCongestion(): Boolean = synchronized(flowLock) {
+    fun consumeVideoCongestion(): Boolean = flowLock.withLock {
         congestionPending.also { congestionPending = false }
     }
 
@@ -289,10 +293,10 @@ class BrokerRelayConnection internal constructor(
 
     private fun closeInternal(socketClose: SocketClose) {
         if (!closed.compareAndSet(false, true)) return
-        synchronized(flowLock) {
+        flowLock.withLock {
             inFlightRecords.clear()
             inFlightBytes = 0
-            flowLock.notifyAll()
+            flowChanged.signalAll()
         }
         videoFrames.clear()
         videoFrames.offer(ByteArray(0))

@@ -6,6 +6,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
+import android.util.Log
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
@@ -55,6 +56,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.screen.ScreenMirrorProbeBits
 import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -278,9 +280,18 @@ fun SettingsScreen() {
                             if (oversizedTest !is OversizedTestState.Sending) {
                                 oversizedTest = OversizedTestState.Sending
                                 scope.launch {
-                                    oversizedTest =
-                                        runCatching { OversizedTestState.Sent(graph.sendOversizedDiagnostic()) }
-                                            .getOrElse { OversizedTestState.Failed }
+                                    oversizedTest = try {
+                                        OversizedTestState.Sent(graph.sendOversizedDiagnostic())
+                                    } catch (cancelled: CancellationException) {
+                                        throw cancelled
+                                    } catch (failure: Exception) {
+                                        Log.e(
+                                            "NotiSyncDiagnostics",
+                                            "Oversized diagnostic send failed",
+                                            failure,
+                                        )
+                                        OversizedTestState.Failed
+                                    }
                                 }
                             }
                         },
@@ -332,8 +343,8 @@ fun SettingsScreen() {
                                 }
                             }
                             val removedRequestIds = outcome.getOrNull()?.removedRequestIds ?: requestIds
-                            removedRequestIds.forEach(graph.sshAgentNotifications::dismiss)
-                            graph.sshAgentProviderEngine?.publishInventory()
+                            removedRequestIds.forEach(graph.sshKeyProviderNotifications::dismiss)
+                            graph.sshKeyProviderEngine?.publishInventory()
                             sshKeyStoreReset = outcome.fold(
                                 onSuccess = { SshKeyStoreResetState.Done(it.removedKeyCount) },
                                 onFailure = { SshKeyStoreResetState.Failed(it.message ?: it.javaClass.simpleName) },

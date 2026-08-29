@@ -20,8 +20,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Close
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
@@ -396,7 +395,7 @@ private fun ReviewContent(
                 navigationIcon = {
                     IconButton(onClick = onClose) {
                         Icon(
-                            Icons.Outlined.Close,
+                            CloseIcon,
                             contentDescription = stringResource(R.string.seal_close),
                         )
                     }

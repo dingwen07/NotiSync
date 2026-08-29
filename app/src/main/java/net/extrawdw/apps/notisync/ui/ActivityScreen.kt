@@ -8,8 +8,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.History
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
@@ -44,7 +43,7 @@ fun ActivityScreen() {
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 Icon(
-                    Icons.Outlined.History,
+                    HistoryIcon,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant
@@ -73,9 +72,8 @@ fun ActivityScreen() {
                                 )
                             )
                         },
-                        headlineContent = { Text(e.title) },
                         supportingContent = { Text(activityDetail(e)) },
-                    )
+                    ) { Text(e.title) }
                     HorizontalDivider()
                 }
             }

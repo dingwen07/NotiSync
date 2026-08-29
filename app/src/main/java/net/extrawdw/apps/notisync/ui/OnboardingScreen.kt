@@ -34,14 +34,13 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Devices
-import androidx.compose.material.icons.outlined.Notifications
-import androidx.compose.material.icons.outlined.NotificationsActive
-import androidx.compose.material.icons.outlined.PhoneIphone
-import androidx.compose.material.icons.outlined.QrCode2
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications as NotificationsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications_active as NotificationsActiveIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
 import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -282,7 +281,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                 if (step != OnboardingStep.WELCOME) {
                     IconButton(onClick = { step = previousStep(step, listenerEnabled) }) {
                         Icon(
-                            Icons.AutoMirrored.Outlined.ArrowBack,
+                            ArrowBackIcon,
                             contentDescription = stringResource(R.string.action_back)
                         )
                     }
@@ -300,7 +299,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
             ) { current ->
                 when (current) {
                     OnboardingStep.WELCOME -> StepPage(
-                        icon = Icons.Outlined.Devices,
+                        icon = DevicesIcon,
                         title = stringResource(R.string.onboarding_welcome_title),
                         body = stringResource(R.string.onboarding_welcome_body),
                         primaryLabel = stringResource(R.string.onboarding_welcome_start),
@@ -308,7 +307,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.NOTIFICATIONS -> StepPage(
-                        icon = Icons.Outlined.Notifications,
+                        icon = NotificationsIcon,
                         title = stringResource(R.string.onboarding_notifications_title),
                         body = stringResource(R.string.onboarding_notifications_body),
                         status = if (postGranted) stringResource(R.string.onboarding_notifications_granted) else null,
@@ -335,7 +334,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.LISTENER -> StepPage(
-                        icon = Icons.Outlined.NotificationsActive,
+                        icon = NotificationsActiveIcon,
                         title = stringResource(R.string.onboarding_listener_title),
                         body = stringResource(R.string.onboarding_listener_body),
                         status = if (listenerEnabled) stringResource(R.string.onboarding_listener_granted) else null,
@@ -355,7 +354,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.APPS -> StepPage(
-                        icon = Icons.Outlined.Apps,
+                        icon = AppsIcon,
                         title = stringResource(R.string.onboarding_apps_title),
                         body = stringResource(R.string.onboarding_apps_body),
                         primaryLabel = stringResource(R.string.onboarding_continue),
@@ -363,7 +362,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.IPHONE -> StepPage(
-                        icon = Icons.Outlined.PhoneIphone,
+                        icon = PhoneIphoneIcon,
                         title = stringResource(R.string.onboarding_iphone_title),
                         body = stringResource(R.string.onboarding_iphone_body),
                         status = when {
@@ -396,7 +395,7 @@ fun OnboardingScreen(onFinish: () -> Unit) {
                     )
 
                     OnboardingStep.PAIR -> StepPage(
-                        icon = Icons.Outlined.QrCode2,
+                        icon = QrCode2Icon,
                         title = stringResource(R.string.onboarding_pair_title),
                         body = stringResource(R.string.onboarding_pair_body),
                         primaryLabel = stringResource(R.string.onboarding_finish),

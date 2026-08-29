@@ -361,7 +361,7 @@ class BrokerClient(
                         require(frame.itemCount == seen)
                         return@runCatching RelayBatchFetchResult.Complete(
                             RelayBatchDownload(
-                                snapshotAt = snapshotAt!!,
+                                snapshotAt = snapshotAt,
                                 cutoff = requireNotNull(cutoff),
                                 itemCount = seen,
                             )

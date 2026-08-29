@@ -22,7 +22,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import java.security.interfaces.RSAPublicKey
 import net.extrawdw.apps.notisync.R
-import net.extrawdw.apps.notisync.sshagent.SshKeyPreview
+import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyPreview
 import net.extrawdw.notisync.protocol.SshKeyAlgorithm
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 
@@ -51,28 +51,28 @@ internal fun SshKeyPreviewCard(
             ) {
                 titleIcon?.let { Icon(it, contentDescription = null) }
                 Text(
-                    stringResource(R.string.ssh_agent_ssh_key),
+                    stringResource(R.string.ssh_key_provider_ssh_key),
                     style = MaterialTheme.typography.titleSmall,
                 )
             }
             PreviewValue(
-                label = stringResource(R.string.ssh_agent_key_name),
+                label = stringResource(R.string.ssh_key_provider_key_name),
                 value = name,
                 monospace = false,
             )
             if (preview != null) {
                 PreviewValue(
-                    label = stringResource(R.string.ssh_agent_algorithm),
+                    label = stringResource(R.string.ssh_key_provider_algorithm),
                     value = preview.algorithm.displayName(preview),
                     monospace = false,
                 )
                 PreviewValue(
-                    label = stringResource(R.string.ssh_agent_public_key),
+                    label = stringResource(R.string.ssh_key_provider_public_key),
                     value = preview.authorizedKey,
                     showFullValue = showFullPublicKey,
                 )
                 PreviewValue(
-                    label = stringResource(R.string.ssh_agent_fingerprint),
+                    label = stringResource(R.string.ssh_key_provider_fingerprint),
                     value = preview.fingerprint,
                 )
             } else {

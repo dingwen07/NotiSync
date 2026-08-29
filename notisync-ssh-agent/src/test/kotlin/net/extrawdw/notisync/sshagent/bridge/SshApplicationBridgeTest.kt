@@ -29,7 +29,9 @@ import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
 import net.extrawdw.notisync.protocol.SshImportRequest
 import net.extrawdw.notisync.protocol.SshImportSourceType
+import net.extrawdw.notisync.protocol.SshSignCancellationReason
 import net.extrawdw.notisync.protocol.SshSignRequest
+import net.extrawdw.notisync.protocol.SshSignRequestCancelled
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertEquals
@@ -143,6 +145,39 @@ class SshApplicationBridgeTest {
         val decoded = decode(send).sshAgent
         assertEquals(SshAgentSyncKind.IMPORT_REQUEST, decoded?.kind)
         assertEquals(request.requestId, decoded?.importRequest?.requestId)
+    }
+
+    @Test
+    fun signCancellationIsHighOnlyForProvidersWithPushFiltering() {
+        val api = FakeApi(requester, listOf(provider(high, push = true), provider(normal, push = false)))
+        val bridge = SshApplicationBridge(api, ProviderRoster(api), now = { 1_000 })
+        val cancellation = SshSignRequestCancelled(
+            requestId = "5".repeat(32),
+            requesterClientId = requester,
+            cancelledAt = 2_000,
+            reason = SshSignCancellationReason.SIGNED_ELSEWHERE,
+            targetProviderClientIds = listOf(high, normal),
+        )
+
+        bridge.sendSignRequestCancelled(cancellation)
+
+        assertEquals(2, api.sends.size)
+        val highSend = api.sends.single { it.urgency == Urgency.HIGH }
+        val normalSend = api.sends.single { it.urgency == Urgency.NORMAL }
+        val highScope = highSend.scope as Recipients.OnlyCapableSet
+        val normalScope = normalSend.scope as Recipients.OnlyCapableSet
+        assertEquals(setOf(high), highScope.ids)
+        assertEquals(setOf(normal), normalScope.ids)
+        assertEquals(SshAgentLimits.HIGH_FILTERING_PROVIDER_CAPABILITIES, highScope.requiredCapabilities)
+        assertEquals(SshAgentLimits.NORMAL_PROVIDER_CAPABILITIES, normalScope.requiredCapabilities)
+        assertEquals(
+            listOf(high),
+            decode(highSend).sshAgent?.signRequestCancelled?.targetProviderClientIds,
+        )
+        assertEquals(
+            listOf(normal),
+            decode(normalSend).sshAgent?.signRequestCancelled?.targetProviderClientIds,
+        )
     }
 
     private fun decode(request: SendRequest): DataSync = ProtocolCodec.decodeFromCbor(
