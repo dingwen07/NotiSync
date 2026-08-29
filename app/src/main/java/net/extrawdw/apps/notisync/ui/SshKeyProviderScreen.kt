@@ -2002,7 +2002,8 @@ private fun GenerateKeyDialog(
 ) {
     var algorithm by remember { mutableStateOf(SshKeyAlgorithm.ECDSA_NISTP256) }
     var rsaKeySizeBits by remember { mutableIntStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
-    var name by remember { mutableStateOf("NotiSync SSH Key") }
+    val defaultName = stringResource(R.string.ssh_agent_generate_default_name)
+    var name by remember { mutableStateOf(defaultName) }
     var storage by remember { mutableStateOf(SshKeyStorageSelection()) }
     AlertDialog(
         onDismissRequest = onDismiss,

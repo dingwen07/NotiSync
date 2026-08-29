@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
@@ -104,7 +105,6 @@ import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.tag
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 
@@ -287,7 +287,7 @@ private enum class FeatureDestination(
 ) : AppDestination {
     RUN(Route.Run, R.string.tab_run, TerminalIcon),
     SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
-    SSH_AGENT(Route.SshAgent, R.string.ssh_agent_provider_title, tag),
+    SSH_AGENT(Route.SshAgent, R.string.ssh_agent_tools_label, KeyIcon),
 }
 
 private enum class PairingReviewSource {

@@ -31,13 +31,15 @@
     <string name="error_unknown">未知错误</string>
 
     <!-- SSH Agent 密钥提供程序 -->
-    <string name="ssh_agent_provider_title">SSH 密钥提供程序</string>
+    <string name="ssh_agent_tools_label">SSH 密钥</string>
+    <string name="ssh_agent_provider_title">NotiSync SSH 密钥提供程序</string>
     <plurals name="ssh_agent_provider_ready">
         <item quantity="other">已就绪 · 可向受信任的设备提供 %1$d 个密钥</item>
     </plurals>
     <string name="ssh_agent_provider_unavailable">SSH 密钥提供程序尚未就绪。</string>
     <string name="ssh_agent_generate">生成</string>
     <string name="ssh_agent_generate_title">生成 SSH 密钥</string>
+    <string name="ssh_agent_generate_default_name">NotiSync SSH 密钥</string>
     <string name="ssh_agent_import_file">导入文件</string>
     <string name="ssh_agent_import_title">导入 SSH 私钥</string>
     <string name="ssh_agent_review_key">检查密钥</string>
@@ -102,13 +104,13 @@
     <string name="ssh_agent_storage_credential_manager_webauthn">凭据管理器 · WebAuthn</string>
     <string name="ssh_agent_webauthn_action">通行密钥</string>
     <string name="ssh_agent_webauthn_options_title">通行密钥</string>
-    <string name="ssh_agent_webauthn_generate_action">生成密钥</string>
-    <string name="ssh_agent_webauthn_generate_help">创建由通行密钥支持的新 SSH 密钥。</string>
-    <string name="ssh_agent_webauthn_use_existing_action">使用现有密钥</string>
-    <string name="ssh_agent_webauthn_use_existing_help">使用现有通行密钥完成验证并恢复其 SSH 密钥。</string>
+    <string name="ssh_agent_webauthn_generate_action">创建新的通行密钥</string>
+    <string name="ssh_agent_webauthn_generate_help">创建由基于通行密钥的新 SSH 密钥。</string>
+    <string name="ssh_agent_webauthn_use_existing_action">使用现有通行密钥</string>
+    <string name="ssh_agent_webauthn_use_existing_help">使用 WebAuthn 验证器中的现有密钥。您需要相应的恢复记录。</string>
     <string name="ssh_agent_webauthn_use_existing_progress">请完成通行密钥验证。随后，NotiSync 会从密码管理器查找其恢复记录。</string>
     <string name="ssh_agent_webauthn_create_title">生成由通行密钥支持的 SSH 密钥</string>
-    <string name="ssh_agent_webauthn_default_name">NotiSync 通行密钥 SSH 密钥</string>
+    <string name="ssh_agent_webauthn_default_name">NotiSync WebAuthn SSH 密钥</string>
     <string name="ssh_agent_webauthn_create_help">凭据提供方将创建一个可发现的通行密钥，签名由凭据提供方进行并可能需要用户验证。NotiSync 会请求将密钥的恢复记录保存到您的密码管理器，这不包含私钥。</string>
     <string name="ssh_agent_webauthn_create_confirm">继续</string>
     <string name="ssh_agent_webauthn_activity_required">无法从此界面使用通行密钥。</string>
@@ -126,14 +128,14 @@
     <string name="ssh_agent_webauthn_recovery_copy">复制恢复记录</string>
     <string name="ssh_agent_webauthn_recovery_save">保存到密码管理器</string>
     <string name="ssh_agent_webauthn_recovery_prepare_failed">无法准备 WebAuthn 密钥恢复记录。</string>
-    <string name="ssh_agent_webauthn_recovery_not_saved">未保存恢复记录。你可以从 WebAuthn 密钥详情中重试，或手动复制恢复记录。</string>
+    <string name="ssh_agent_webauthn_recovery_not_saved">未保存恢复记录。你可以从 SSH 密钥详情中重试，或手动复制恢复记录。</string>
     <string name="ssh_agent_webauthn_recovery_saved">已保存恢复记录</string>
     <string name="ssh_agent_webauthn_recovery_copied">已复制恢复记录</string>
     <string name="ssh_agent_webauthn_recovery_too_large">恢复记录载荷过大。</string>
-    <string name="ssh_agent_webauthn_recovery_mismatch">此恢复记录与所选 WebAuthn 密钥不匹配。请确保恢复记录与所选的通行密钥相符。</string>
+    <string name="ssh_agent_webauthn_recovery_mismatch">此恢复记录与所选 WebAuthn 凭据不匹配。请确保恢复记录与所选的通行密钥相符。</string>
     <string name="ssh_agent_webauthn_export_action">导出 OpenSSH 安全密钥身份文件</string>
     <string name="ssh_agent_webauthn_export_preparing">正在准备 OpenSSH 安全密钥身份文件</string>
-    <string name="ssh_agent_webauthn_export_not_available">只有绑定到验证器的 WebAuthn 密钥才能导出为 OpenSSH 身份文件。</string>
+    <string name="ssh_agent_webauthn_export_not_available">只有绑定到验证器的 WebAuthn 凭据才能生成 OpenSSH 身份文件。</string>
     <string name="ssh_agent_webauthn_export_writing">正在写入 OpenSSH 安全密钥身份文件</string>
     <string name="ssh_agent_webauthn_export_complete">已导出 OpenSSH 安全密钥身份文件</string>
     <string name="ssh_agent_webauthn_export_failed">无法导出 OpenSSH 安全密钥身份文件</string>

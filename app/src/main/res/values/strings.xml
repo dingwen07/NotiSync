@@ -33,7 +33,8 @@
 
     <!-- SSH Agent key provider -->
     <string name="ssh_agent_name" translatable="false">NotiSync SSH Agent</string>
-    <string name="ssh_agent_provider_title">SSH Key Provider</string>
+    <string name="ssh_agent_tools_label">SSH Keys</string>
+    <string name="ssh_agent_provider_title">NotiSync SSH Key Provider</string>
     <plurals name="ssh_agent_provider_ready">
         <item quantity="one">Ready · %1$d key available to your trusted devices</item>
         <item quantity="other">Ready · %1$d keys available to your trusted devices</item>
@@ -41,6 +42,7 @@
     <string name="ssh_agent_provider_unavailable">The SSH key provider is not ready.</string>
     <string name="ssh_agent_generate">Generate</string>
     <string name="ssh_agent_generate_title">Generate SSH Key</string>
+    <string name="ssh_agent_generate_default_name">NotiSync SSH Key</string>
     <string name="ssh_agent_import_file">Import file</string>
     <string name="ssh_agent_import_title">Import SSH private key</string>
     <string name="ssh_agent_review_key">Review key</string>
@@ -106,17 +108,17 @@
     <string name="ssh_agent_storage_credential_manager_webauthn">Credential Manager · WebAuthn</string>
     <string name="ssh_agent_webauthn_action">Passkey</string>
     <string name="ssh_agent_webauthn_options_title">Passkey</string>
-    <string name="ssh_agent_webauthn_generate_action">Generate key</string>
-    <string name="ssh_agent_webauthn_generate_help">Create a new Passkey-backed SSH key.</string>
-    <string name="ssh_agent_webauthn_use_existing_action">Use existing key</string>
-    <string name="ssh_agent_webauthn_use_existing_help">Authenticate with an existing Passkey and restore its SSH key.</string>
+    <string name="ssh_agent_webauthn_generate_action">Create a new passkey</string>
+    <string name="ssh_agent_webauthn_generate_help">Create a new passkey-backed SSH key.</string>
+    <string name="ssh_agent_webauthn_use_existing_action">Use existing passkey</string>
+    <string name="ssh_agent_webauthn_use_existing_help">Use an existing passkey from the WebAuthn authenticator. You need the corresponding recovery record.</string>
     <string name="ssh_agent_webauthn_use_existing_progress">Complete Passkey authentication. NotiSync will then look for its recovery record in your password manager.</string>
-    <string name="ssh_agent_webauthn_create_title">Generate Passkey-backed SSH key</string>
-    <string name="ssh_agent_webauthn_default_name">NotiSync Passkey SSH Key</string>
-    <string name="ssh_agent_webauthn_create_help">Your credential provider creates a discoverable Passkey. Signatures are created by the credential provider and may require user verification. NotiSync will request to save the recovery record of the key to your password manager; this does not include the private key.</string>
+    <string name="ssh_agent_webauthn_create_title">Generate passkey-backed SSH key</string>
+    <string name="ssh_agent_webauthn_default_name">NotiSync WebAuthn SSH Key</string>
+    <string name="ssh_agent_webauthn_create_help">Your credential provider creates a discoverable passkey. Signatures are created by the credential provider and may require user verification. NotiSync will request to save the recovery record of the key to your password manager; this does not include the private key.</string>
     <string name="ssh_agent_webauthn_create_confirm">Continue</string>
     <string name="ssh_agent_webauthn_activity_required">Passkeys are unavailable from this screen.</string>
-    <string name="ssh_agent_webauthn_create_failed">Unable to generate the Passkey-backed SSH key.</string>
+    <string name="ssh_agent_webauthn_create_failed">Unable to generate the passkey-backed SSH key.</string>
     <string name="ssh_agent_webauthn_authentication_failed">Passkey authentication was not completed. Enter the recovery record manually.</string>
     <string name="ssh_agent_webauthn_password_manager_failed">The password manager recovery record could not be retrieved. Enter the recovery payload manually.</string>
     <string name="ssh_agent_webauthn_import_title">Recovery Record</string>
@@ -130,14 +132,14 @@
     <string name="ssh_agent_webauthn_recovery_copy">Copy recovery record</string>
     <string name="ssh_agent_webauthn_recovery_save">Save to password manager</string>
     <string name="ssh_agent_webauthn_recovery_prepare_failed">Unable to prepare the WebAuthn recovery record.</string>
-    <string name="ssh_agent_webauthn_recovery_not_saved">The recovery record was not saved. You can retry from the WebAuthn key details or copy the payload manually.</string>
+    <string name="ssh_agent_webauthn_recovery_not_saved">The recovery record was not saved. You can retry from the SSH key details or copy the payload manually.</string>
     <string name="ssh_agent_webauthn_recovery_saved">Recovery record saved</string>
     <string name="ssh_agent_webauthn_recovery_copied">Recovery record copied</string>
     <string name="ssh_agent_webauthn_recovery_too_large">The recovery record payload is too large.</string>
-    <string name="ssh_agent_webauthn_recovery_mismatch">This recovery record does not match the selected WebAuthn key. Ensure the recovery record matches the selected Passkey.</string>
+    <string name="ssh_agent_webauthn_recovery_mismatch">This recovery record does not match the selected WebAuthn credential. Ensure the recovery record matches the selected passkey.</string>
     <string name="ssh_agent_webauthn_export_action">Export OpenSSH security-key identity</string>
     <string name="ssh_agent_webauthn_export_preparing">Preparing OpenSSH security-key identity</string>
-    <string name="ssh_agent_webauthn_export_not_available">Only an authenticator-bound WebAuthn key can be exported as an OpenSSH identity.</string>
+    <string name="ssh_agent_webauthn_export_not_available">Only an authenticator-bound WebAuthn credential can generate OpenSSH identity files.</string>
     <string name="ssh_agent_webauthn_export_writing">Writing OpenSSH security-key identity</string>
     <string name="ssh_agent_webauthn_export_complete">OpenSSH security-key identity exported</string>
     <string name="ssh_agent_webauthn_export_failed">Unable to export the OpenSSH security-key identity</string>
@@ -689,19 +691,19 @@
     <string name="device_details_platform_unknown">Unknown platform</string>
     <string name="device_capability_capture">Capture</string>
     <string name="device_capability_display">Display</string>
-    <string name="device_capability_dismiss_sync">Dismiss sync</string>
-    <string name="device_capability_provide_assets">Provide assets</string>
-    <string name="device_capability_background_wake">Background wake</string>
-    <string name="device_capability_foreground_connection">Foreground connection</string>
-    <string name="device_capability_routing">Capability routing</string>
-    <string name="device_capability_screen_source">Screen sharing</string>
-    <string name="device_capability_screen_control">Screen control</string>
-    <string name="device_capability_screen_clipboard">Screen clipboard</string>
+    <string name="device_capability_dismiss_sync">Dismiss Sync</string>
+    <string name="device_capability_provide_assets">Provide Assets</string>
+    <string name="device_capability_background_wake">Background Wake</string>
+    <string name="device_capability_foreground_connection">Foreground Connection</string>
+    <string name="device_capability_routing">Capability Routing</string>
+    <string name="device_capability_screen_source">Screen Sharing</string>
+    <string name="device_capability_screen_control">Screen Control</string>
+    <string name="device_capability_screen_clipboard">Screen Clipboard</string>
     <string name="device_capability_screen_h264">Hardware H.264</string>
     <string name="device_capability_screen_h265">Hardware H.265</string>
     <string name="device_capability_screen_av1" tools:ignore="Typos">Hardware AV1</string>
-    <string name="device_capability_screen_visibility">Background video pause</string>
-    <string name="device_capability_screen_broker_relay">Broker-relayed screen sharing</string>
+    <string name="device_capability_screen_visibility">Background Video Pause</string>
+    <string name="device_capability_screen_broker_relay">Broker-Relayed Screen Sharing</string>
     <string name="screen_mirror_settings_title">Screen sharing and control (Experimental)</string>
     <string name="screen_mirror_settings_body">Allow authorized devices of yours to view and control this screen using Shizuku, over a direct local connection or a manually selected broker relay.</string>
     <string name="screen_mirror_settings_not_running">Start Shizuku Manager to finish setup.</string>
@@ -779,13 +781,13 @@
     <string name="screen_viewer_hide_status_bar">Hide status bar</string>
     <string name="screen_viewer_show_status_bar">Show status bar</string>
     <string name="screen_viewer_done">Done</string>
-    <string name="device_capability_push_filtering">Push filtering</string>
-    <string name="device_capability_notification_updates">Notification updates</string>
-    <string name="device_capability_android_group_summaries">Android group summaries</string>
+    <string name="device_capability_push_filtering">Push Filtering</string>
+    <string name="device_capability_notification_updates">Notification Updates</string>
+    <string name="device_capability_android_group_summaries">Android Group Summaries</string>
     <string name="device_capability_publish_runs">Publish NotiSync Run</string>
     <string name="device_capability_receive_runs">Receive NotiSync Run</string>
-    <string name="device_capability_openpgp_sign">Approve OpenPGP signatures</string>
-    <string name="device_capability_openpgp_tag_sign">Approve OpenPGP Git tag signatures</string>
+    <string name="device_capability_openpgp_sign">Approve OpenPGP Signatures</string>
+    <string name="device_capability_openpgp_tag_sign">Approve OpenPGP Git Tag Signatures</string>
 
     <!-- Pairing screen -->
     <string name="pair_could_not_pair">Could not pair: %1$s</string>
@@ -941,6 +943,6 @@
     <string name="onboarding_iphone_pair">Pair iPhone</string>
     <string name="onboarding_pair_title">Connect your other devices</string>
     <string name="onboarding_pair_body">Install NotiSync on your other devices, then pair them from the Devices tab.</string>
-    <string name="device_capability_ssh_key_provider">SSH key provider</string>
-    <string name="device_capability_ssh_agent">SSH agent client</string>
+    <string name="device_capability_ssh_key_provider">SSH Key Provider</string>
+    <string name="device_capability_ssh_agent">SSH Agent Client</string>
 </resources>
