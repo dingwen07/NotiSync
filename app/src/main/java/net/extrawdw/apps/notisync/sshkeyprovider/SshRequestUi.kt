@@ -23,21 +23,20 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.outlined.ArrowBack
-import androidx.compose.material.icons.outlined.Cancel
-import androidx.compose.material.icons.outlined.CheckCircle
-import androidx.compose.material.icons.outlined.ChevronRight
-import androidx.compose.material.icons.outlined.Close
-import androidx.compose.material.icons.outlined.Computer
-import androidx.compose.material.icons.outlined.ErrorOutline
-import androidx.compose.material.icons.outlined.Fingerprint
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Key
-import androidx.compose.material.icons.outlined.Person
-import androidx.compose.material.icons.outlined.Schedule
-import androidx.compose.material.icons.outlined.Sync
-import androidx.compose.material.icons.outlined.Terminal
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.cancel as CancelIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.computer as ComputerIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.fingerprint as FingerprintIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.person as PersonIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as ScheduleIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.BottomAppBar
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -149,7 +148,7 @@ internal fun SshRequestListItem(
                     )
                 }
             },
-            trailingContent = { Icon(Icons.Outlined.ChevronRight, contentDescription = null) },
+            trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
         ) {
             Text(request.headline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -211,7 +210,7 @@ internal fun SshReviewContent(
                 title = { Text(stringResource(R.string.ssh_agent_name)) },
                 navigationIcon = {
                     IconButton(onClick = onClose) {
-                        Icon(Icons.Outlined.Close, contentDescription = stringResource(R.string.ssh_agent_close))
+                        Icon(CloseIcon, contentDescription = stringResource(R.string.ssh_agent_close))
                     }
                 },
             )
@@ -286,7 +285,7 @@ internal fun SshReviewContent(
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(16.dp),
                 ) {
-                    Icon(Icons.Outlined.ErrorOutline, contentDescription = null, tint = MaterialTheme.colorScheme.error)
+                    Icon(ErrorOutlineIcon, contentDescription = null, tint = MaterialTheme.colorScheme.error)
                     Text(state.message, color = MaterialTheme.colorScheme.error)
                     Button(onClick = onClose) { Text(stringResource(R.string.ssh_agent_close)) }
                 }
@@ -380,7 +379,7 @@ internal fun SshRequestDetail(
                     ) {
                         IconButton(onClick = onBack) {
                             Icon(
-                                Icons.AutoMirrored.Outlined.ArrowBack,
+                                ArrowBackIcon,
                                 contentDescription = stringResource(R.string.ssh_agent_back_to_history),
                             )
                         }
@@ -416,7 +415,7 @@ internal fun SshRequestDetail(
                             horizontalArrangement = Arrangement.spacedBy(12.dp),
                             verticalAlignment = Alignment.Top,
                         ) {
-                            Icon(Icons.Outlined.Info, contentDescription = null)
+                            Icon(InfoIcon, contentDescription = null)
                             Text(
                                 stringResource(
                                     if (request.kind == SshProviderRequestKind.IMPORT) {
@@ -445,7 +444,7 @@ internal fun SshRequestDetail(
                     name = details.keyName,
                     preview = details.keyPreview,
                     showFullPublicKey = request.kind == SshProviderRequestKind.IMPORT,
-                    titleIcon = Icons.Outlined.Key,
+                    titleIcon = KeyIcon,
                     emptyContent = {
                         Text(
                             stringResource(R.string.ssh_agent_key_preview_unavailable),
@@ -459,7 +458,7 @@ internal fun SshRequestDetail(
             CenteredRequestItem {
                 RequestCard(
                     title = stringResource(R.string.ssh_agent_request_section),
-                    icon = Icons.Outlined.Fingerprint,
+                    icon = FingerprintIcon,
                 ) {
                     RequestDeviceSubCard(
                         deviceName = details.requesterName,
@@ -504,7 +503,7 @@ private fun RememberAuthorizationSheet(
             Text(stringResource(R.string.ssh_agent_approve_remember), style = MaterialTheme.typography.headlineSmall)
         }
         item {
-            RequestCard(stringResource(R.string.ssh_agent_request_section), Icons.Outlined.Fingerprint) {
+            RequestCard(stringResource(R.string.ssh_agent_request_section), FingerprintIcon) {
                 RequestDeviceSubCard(
                     deviceName = details.requesterName,
                     verificationNumber = details.request.requesterClientId.value,
@@ -513,7 +512,7 @@ private fun RememberAuthorizationSheet(
             }
         }
         item {
-            RequestCard(stringResource(R.string.ssh_agent_request_sign), Icons.Outlined.Terminal) {
+            RequestCard(stringResource(R.string.ssh_agent_request_sign), TerminalIcon) {
                 DestinationDetailLine(details)
                 HorizontalDivider()
                 HostKeyDetailLine(details)
@@ -607,11 +606,11 @@ private fun SignRequestCard(
     val request = details.request
     val history = request.history
     val processLineage = request.processLineageForDisplay()
-    RequestCard(stringResource(R.string.ssh_agent_request_sign), Icons.Outlined.Terminal) {
+    RequestCard(stringResource(R.string.ssh_agent_request_sign), TerminalIcon) {
         DestinationDetailLine(details)
         HorizontalDivider()
         DetailLine(
-            Icons.Outlined.Person,
+            PersonIcon,
             stringResource(R.string.ssh_agent_destination_username),
             history.destinationUsername ?: stringResource(R.string.ssh_agent_unavailable),
             true,
@@ -647,7 +646,7 @@ private fun ProcessLineageLine(
         verticalAlignment = Alignment.Top,
     ) {
         Icon(
-            Icons.Outlined.Terminal,
+            TerminalIcon,
             contentDescription = null,
             tint = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -685,7 +684,7 @@ private fun DestinationDetailLine(
     details: SshReviewScreenState.Details,
 ) {
     DetailLine(
-        Icons.Outlined.Computer,
+        ComputerIcon,
         stringResource(R.string.ssh_agent_destination),
         details.request.approvalDestinationLabel(details.destinationHostname)
             ?: stringResource(R.string.ssh_agent_unknown),
@@ -696,7 +695,7 @@ private fun DestinationDetailLine(
 @Composable
 private fun HostKeyDetailLine(details: SshReviewScreenState.Details) {
     DetailLine(
-        Icons.Outlined.Fingerprint,
+        FingerprintIcon,
         stringResource(R.string.ssh_agent_destination_host_key_fingerprint),
         details.request.history.destinationHostKeyFingerprint ?: stringResource(R.string.ssh_agent_unavailable),
         true,
@@ -708,9 +707,9 @@ private fun ImportRequestCard(
     details: SshReviewScreenState.Details,
 ) {
     val history = details.request.history
-    RequestCard(stringResource(R.string.ssh_agent_request_import), Icons.Outlined.Key) {
+    RequestCard(stringResource(R.string.ssh_agent_request_import), KeyIcon) {
         DetailLine(
-            Icons.Outlined.Terminal,
+            TerminalIcon,
             stringResource(R.string.ssh_agent_import_source),
             stringResource(
                 if (history.importSourceType == SshImportSourceType.AGENT_IDENTITY) {
@@ -795,19 +794,19 @@ private fun SshStatusIcon(status: SshRequestDisplayStatus, modifier: Modifier = 
 }
 
 private fun statusIcon(status: SshRequestDisplayStatus): ImageVector = when (status) {
-    SshRequestDisplayStatus.WAITING -> Icons.Outlined.Schedule
-    SshRequestDisplayStatus.PROCESSING -> Icons.Outlined.Sync
+    SshRequestDisplayStatus.WAITING -> ScheduleIcon
+    SshRequestDisplayStatus.PROCESSING -> SyncIcon
     SshRequestDisplayStatus.SIGNED,
     SshRequestDisplayStatus.IMPORTED,
     SshRequestDisplayStatus.ALREADY_PRESENT,
-    -> Icons.Outlined.CheckCircle
+    -> CheckCircleIcon
     SshRequestDisplayStatus.REJECTED,
     SshRequestDisplayStatus.CANCELED,
-    -> Icons.Outlined.Cancel
-    SshRequestDisplayStatus.EXPIRED -> Icons.Outlined.Schedule
+    -> CancelIcon
+    SshRequestDisplayStatus.EXPIRED -> ScheduleIcon
     SshRequestDisplayStatus.FAILED,
     SshRequestDisplayStatus.UNKNOWN,
-    -> Icons.Outlined.ErrorOutline
+    -> ErrorOutlineIcon
 }
 
 @Composable

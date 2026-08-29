@@ -12,8 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.Refresh
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.refresh as RefreshIcon
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -151,7 +150,7 @@ fun DiagnosticsCard(
                 Spacer(Modifier.weight(1f))
                 IconButton(onClick = onRefresh, enabled = probe !is ServerProbe.Loading) {
                     Icon(
-                        Icons.Outlined.Refresh,
+                        RefreshIcon,
                         contentDescription = stringResource(R.string.diag_refresh)
                     )
                 }
