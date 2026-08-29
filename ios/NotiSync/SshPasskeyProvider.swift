@@ -79,15 +79,17 @@ nonisolated enum SshPasskeyProviderError: Error, LocalizedError, Sendable {
     }
 }
 
-/// App-owned boundary around Authentication Services for SSH security-key credentials.
+/// App-owned boundary around Authentication Services for SSH passkey credentials.
 ///
-/// Only the platform-passkey API is used. It presents the user's enabled passkey providers and therefore supports
-/// provider-backed roaming without opting into the physical security-key API. Platform passkeys are discoverable by
-/// definition; Apple does not expose the security-key API's resident-key/algorithm selectors here, so every returned
-/// credential is independently gated to resident ES256/P-256 data before NotiSync accepts it.
+/// Platform requests reach Apple Passwords and enabled third-party credential providers. Security-key requests reach
+/// external authenticators such as YubiKey over NFC or USB. Both paths are offered, and every returned credential is
+/// independently gated to discoverable ES256/P-256 data before NotiSync accepts it.
 @MainActor
 final class SshPasskeyProvider {
-    private let credentialProvider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+    private let platformCredentialProvider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+        relyingPartyIdentifier: NotiSyncConfig.sshPasskeyRelyingPartyIdentifier
+    )
+    private let securityKeyCredentialProvider = ASAuthorizationSecurityKeyPublicKeyCredentialProvider(
         relyingPartyIdentifier: NotiSyncConfig.sshPasskeyRelyingPartyIdentifier
     )
     private var activeAuthorization: SshPasskeyAuthorizationSession?
@@ -109,20 +111,42 @@ final class SshPasskeyProvider {
             throw SshPasskeyProviderError.invalidInput("Unable to create the passkey account identifier.")
         }
 
-        let request = credentialProvider.createCredentialRegistrationRequest(
+        let platformRequest = platformCredentialProvider.createCredentialRegistrationRequest(
             challenge: challenge,
             name: accountName,
             userID: userHandle
         )
-        request.displayName = boundedName
-        request.userVerificationPreference = .required
-        request.attestationPreference = .none
-        request.excludedCredentials = excludedCredentialIDs.map {
+        platformRequest.displayName = boundedName
+        platformRequest.userVerificationPreference = .required
+        platformRequest.attestationPreference = .none
+        platformRequest.excludedCredentials = excludedCredentialIDs.map {
             ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: $0)
         }
 
-        let authorized = try await authorize(request, presentationAnchor: presentationAnchor)
-        guard let registration = authorized as? ASAuthorizationPlatformPublicKeyCredentialRegistration else {
+        let securityKeyRequest = securityKeyCredentialProvider.createCredentialRegistrationRequest(
+            challenge: challenge,
+            displayName: boundedName,
+            name: accountName,
+            userID: userHandle
+        )
+        securityKeyRequest.userVerificationPreference = .required
+        securityKeyRequest.attestationPreference = .none
+        securityKeyRequest.residentKeyPreference = .required
+        securityKeyRequest.credentialParameters = [
+            ASAuthorizationPublicKeyCredentialParameters(algorithm: .ES256),
+        ]
+        securityKeyRequest.excludedCredentials = excludedCredentialIDs.map {
+            ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor(
+                credentialID: $0,
+                transports: ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor.Transport.allSupported
+            )
+        }
+
+        let authorized = try await authorize(
+            [platformRequest, securityKeyRequest],
+            presentationAnchor: presentationAnchor
+        )
+        guard let registration = authorized as? any ASAuthorizationPublicKeyCredentialRegistration else {
             throw SshPasskeyProviderError.unexpectedCredential
         }
         let createdAt = Int64(Date().timeIntervalSince1970 * 1_000)
@@ -203,7 +227,7 @@ final class SshPasskeyProvider {
         presentationAnchor: ASPresentationAnchor
     ) async throws -> String {
         let request = ASAuthorizationPasswordProvider().createRequest()
-        let authorized = try await authorize(request, presentationAnchor: presentationAnchor)
+        let authorized = try await authorize([request], presentationAnchor: presentationAnchor)
         guard let password = authorized as? ASPasswordCredential else {
             throw SshPasskeyProviderError.unexpectedCredential
         }
@@ -312,21 +336,30 @@ final class SshPasskeyProvider {
         presentationAnchor: ASPresentationAnchor
     ) async throws -> SshPasskeyRawAssertion {
         try SshPasskeyCodec.validateChallenge(challenge)
-        let request = credentialProvider.createCredentialAssertionRequest(challenge: challenge)
-        request.userVerificationPreference = .required
+        let platformRequest = platformCredentialProvider.createCredentialAssertionRequest(challenge: challenge)
+        platformRequest.userVerificationPreference = .required
+        let securityKeyRequest = securityKeyCredentialProvider.createCredentialAssertionRequest(challenge: challenge)
+        securityKeyRequest.userVerificationPreference = .required
         if let allowedCredentialID {
-            request.allowedCredentials = [
+            platformRequest.allowedCredentials = [
                 ASAuthorizationPlatformPublicKeyCredentialDescriptor(credentialID: allowedCredentialID),
             ]
+            securityKeyRequest.allowedCredentials = [
+                ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor(
+                    credentialID: allowedCredentialID,
+                    transports: ASAuthorizationSecurityKeyPublicKeyCredentialDescriptor.Transport.allSupported
+                ),
+            ]
         } else {
-            request.allowedCredentials = []
+            platformRequest.allowedCredentials = []
+            securityKeyRequest.allowedCredentials = []
         }
-        let authorized = try await authorize(request, presentationAnchor: presentationAnchor)
-        guard let assertion = authorized as? ASAuthorizationPlatformPublicKeyCredentialAssertion else {
+        let authorized = try await authorize(
+            [platformRequest, securityKeyRequest],
+            presentationAnchor: presentationAnchor
+        )
+        guard let assertion = authorized as? any ASAuthorizationPublicKeyCredentialAssertion else {
             throw SshPasskeyProviderError.unexpectedCredential
-        }
-        guard assertion.attachment == .platform else {
-            throw SshPasskeyProviderError.invalidCredential("Only platform passkeys are supported for SSH keys.")
         }
         return SshPasskeyRawAssertion(
             credentialID: assertion.credentialID,
@@ -338,7 +371,7 @@ final class SshPasskeyProvider {
     }
 
     private func authorize(
-        _ request: ASAuthorizationRequest,
+        _ requests: [ASAuthorizationRequest],
         presentationAnchor: ASPresentationAnchor
     ) async throws -> any ASAuthorizationCredential {
         guard activeAuthorization == nil else {
@@ -346,7 +379,7 @@ final class SshPasskeyProvider {
         }
         return try await withCheckedThrowingContinuation { continuation in
             let session = SshPasskeyAuthorizationSession(
-                request: request,
+                requests: requests,
                 presentationAnchor: presentationAnchor
             ) { [self] result in
                 activeAuthorization = nil
@@ -391,13 +424,13 @@ private final class SshPasskeyAuthorizationSession: NSObject,
     private var completed = false
 
     init(
-        request: ASAuthorizationRequest,
+        requests: [ASAuthorizationRequest],
         presentationAnchor: ASPresentationAnchor,
         completion: @escaping (Result<any ASAuthorizationCredential, Error>) -> Void
     ) {
         self.presentationAnchor = presentationAnchor
         self.completion = completion
-        controller = ASAuthorizationController(authorizationRequests: [request])
+        controller = ASAuthorizationController(authorizationRequests: requests)
         super.init()
         controller.delegate = self
         controller.presentationContextProvider = self
@@ -477,15 +510,12 @@ private nonisolated enum SshPasskeyCodec {
     }
 
     static func parseRegistration(
-        _ registration: ASAuthorizationPlatformPublicKeyCredentialRegistration,
+        _ registration: any ASAuthorizationPublicKeyCredentialRegistration,
         challenge: Data,
         userHandle: Data,
         displayName: String,
         createdAt: Int64
     ) throws -> SshPasskeyCredentialRecord {
-        guard registration.attachment == .platform else {
-            throw SshPasskeyProviderError.invalidCredential("Only platform passkeys are supported for SSH keys.")
-        }
         try validateClientDataJSON(registration.rawClientDataJSON, type: "webauthn.create", challenge: challenge)
         guard let attestationObject = registration.rawAttestationObject,
               !attestationObject.isEmpty,

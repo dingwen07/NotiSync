@@ -3396,17 +3396,6 @@
         }
       }
     },
-    "Only platform passkeys are supported for SSH keys." : {
-      "comment" : "User-visible validation error while verifying an SSH passkey operation.",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "SSH 密钥仅支持平台通行密钥。"
-          }
-        }
-      }
-    },
     "Open Settings" : {
       "localizations" : {
         "zh-Hans" : {
@@ -5174,6 +5163,24 @@
         }
       }
     },
+    "ssh.notification.approve" : {
+      "comment" : "Authenticated notification action approving an SSH signing or import request.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Approve"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "批准"
+          }
+        }
+      }
+    },
     "ssh.notification.autoApproved.body" : {
       "comment" : "Alert body after remembered SSH approval. First placeholder is requesting device; second is key name.",
       "extractionState" : "extracted_with_value",
@@ -5404,24 +5411,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "SSH 密钥导入 · %1$@"
-          }
-        }
-      }
-    },
-    "ssh.notification.approve" : {
-      "comment" : "Authenticated notification action approving an SSH signing or import request.",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Approve"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "批准"
           }
         }
       }
