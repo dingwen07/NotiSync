@@ -635,6 +635,10 @@ class RemoteNotificationPoster(
             }
         }
 
+        // NotificationCompat intentionally has no public adapter for a native MediaSession.Token. Keep the
+        // native style beside the compat builder, then apply it through the public platform recoverBuilder API
+        // immediately before posting. This avoids both deprecated androidx.media and AndroidX-internal hooks.
+        var platformMediaStyle: Notification.MediaStyle? = null
         if (nativeLiveProgress != null) {
             builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
             val progressStyle = NotificationCompat.ProgressStyle()
@@ -723,25 +727,27 @@ class RemoteNotificationPoster(
                 builder.setContentTitle(notif.title ?: notif.appLabel).setContentText(notif.text)
                 notif.accentColor?.let { builder.setColor(it) }
                 if (notif.isColorized) builder.setColorized(true)
-                val media = androidx.media.app.NotificationCompat.MediaStyle()
-                // Give the mirror its OWN media session (built from the source's playback state) and attach its
-                // token: on Android 13+ this is what makes the system render the media-controls card — album art,
+                // Give the mirror its OWN native media session (built from the source's playback state) and attach
+                // its token: on Android 13+ this makes the system render the media-controls card — album art,
                 // seekbar, system-drawn transport buttons — instead of a plain notification. No FGS, no sound.
                 // Album art rides the large icon (attached by applyLargeIcon below); reuse it for the session.
                 // The source device's name feeds MirrorRouter, so the card's output chip names the ORIGIN
                 // ("Dingwen's iPhone") instead of claiming playback on this phone's audio route.
                 val albumArt = notif.largeIcon?.let { cachedBitmap(it.assetHash) }
                 val sourceDeviceName = notif.originDeviceName ?: deviceNameOf(notif.sourceClientId)
-                mediaSessions?.apply(tag, notif, albumArt, sourceDeviceName)?.let { media.setMediaSession(it) }
-                // The source's compact-view selection is in raw source-action index space; map each to its
-                // position in the exported action row (the order applyActions added them), dropping any not
-                // exported. The compact view shows at most three.
-                val compact = notif.mediaCompactActionIndices
-                    .mapNotNull { src -> notif.actions.indexOfFirst { it.index == src }.takeIf { it >= 0 } }
-                    .take(3)
-                    .toIntArray()
-                if (compact.isNotEmpty()) media.setShowActionsInCompactView(*compact)
-                builder.setStyle(media)
+                mediaSessions?.apply(tag, notif, albumArt, sourceDeviceName)?.let { token ->
+                    val media = Notification.MediaStyle().setMediaSession(token)
+                    // The source's compact-view selection is in raw source-action index space; map each to its
+                    // position in the exported action row (the order applyActions added them), dropping any not
+                    // exported. The compact view shows at most three.
+                    val compact = notif.mediaCompactActionIndices
+                        .mapNotNull { src -> notif.actions.indexOfFirst { it.index == src }.takeIf { it >= 0 } }
+                        .take(3)
+                        .toIntArray()
+                    if (compact.isNotEmpty()) media.setShowActionsInCompactView(*compact)
+                    platformMediaStyle = media
+                    builder.setCategory(NotificationCompat.CATEGORY_TRANSPORT)
+                }
             }
 
             NotificationStyle.CALL -> {
@@ -818,8 +824,15 @@ class RemoteNotificationPoster(
         // ANY failure, strip the style, restore the action row CALL skipped, and post a plain high-priority
         // notification so the call still shows with its Answer/Decline buttons. The old silent runCatching hid
         // exactly this failure mode; post failures are now logged.
+        fun buildForPost(): Notification {
+            val compatNotification = builder.build()
+            val mediaStyle = platformMediaStyle ?: return compatNotification
+            return Notification.Builder.recoverBuilder(context, compatNotification)
+                .setStyle(mediaStyle)
+                .build()
+        }
         fun post(): Boolean = NotificationManagerCompat.from(context)
-            .tryNotify(context, tag, id, builder.build())
+            .tryNotify(context, tag, id, buildForPost())
             .fold(
                 onSuccess = { true },
                 onFailure = {
@@ -828,6 +841,7 @@ class RemoteNotificationPoster(
                 },
             )
         if (!post()) {
+            platformMediaStyle = null
             builder.setStyle(null)
             if (notif.style == NotificationStyle.CALL) applyActions(builder, notif, tag, originLabel)
             post()

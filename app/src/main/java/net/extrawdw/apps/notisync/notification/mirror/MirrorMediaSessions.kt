@@ -1,16 +1,16 @@
 package net.extrawdw.apps.notisync.notification.mirror
 
-import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.MediaMetadata
+import android.media.VolumeProvider
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
-import android.support.v4.media.MediaMetadataCompat
-import android.support.v4.media.session.MediaSessionCompat
-import android.support.v4.media.session.PlaybackStateCompat
-import androidx.media.VolumeProviderCompat
+import android.util.Log
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.ClientId
@@ -20,29 +20,21 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 
 /**
- * Gives each mirrored MEDIA notification its own [MediaSessionCompat] so the platform renders it as a REAL
- * media notification — album art, a transport row, and the system media-controls slot (Quick Settings /
- * lock screen), which on Android 13+ only appears when the notification carries a media-session token.
+ * Gives each mirrored MEDIA notification its own native [MediaSession] so Android renders it as actual
+ * media playback: album art, transport controls, seek state, and the system media-controls surface.
  *
- * No foreground service is needed (we play no audio — the session exists only to drive the controls UI, and
- * the always-bound listener process keeps it alive) and it makes no sound. The session mirrors the source's
- * playback: title/artist/art metadata plus a [PlaybackStateCompat] carrying the source's play/pause state,
- * position (a seekbar), and the transport actions it declared — so the system draws standard
- * prev/play-pause/next buttons with its own icons. A press fires a callback here, which relays a
- * [MediaCommand] to the origin via [onCommand]; the origin replays it on the real source session.
+ * NotiSync does not play audio locally. Each session mirrors the origin's metadata and [PlaybackState],
+ * while its callbacks relay transport commands to the real source player. The native session is a better
+ * fit than a Media3 playback service here: these are synthetic, independently posted mirror notifications,
+ * not locally hosted playback, and they need an explicitly active platform session at post time.
  *
  * Sessions are keyed by mirror tag, updated on each render, and released when the mirror is cleared or
- * dismissed (otherwise the media-controls card lingers as a ghost). MediaSessionCompat callbacks need a
- * Looper, so every session object is created/mutated on the MAIN thread; [apply] briefly blocks the (off-main)
- * render caller to hand back the token the notification build needs.
+ * dismissed. Every session mutation runs on the main thread; [apply] briefly waits for that main-thread
+ * handoff so the notification can be built with a live [MediaSession.Token].
  *
- * Each session is marked REMOTE-playback with a per-source volumeControlId; together with [MirrorRouter]'s
- * routing session that makes the card's output chip / Output Switcher name the SOURCE device instead of
- * this phone's own audio route. When the source reports an adjustable volume, the session exposes it —
- * hardware volume keys, the system volume panel, and the Output Switcher slider all work — and every
- * change relays to the origin as [MediaCommand.SET_VOLUME] / [MediaCommand.ADJUST_VOLUME] (the origin's
- * echo re-capture then confirms the level that actually landed). AMS now-playing is relative-only when
- * iOS advertises volume commands, so keys work there but the Output Switcher stays sliderless.
+ * Each session reports remote playback through [VolumeProvider]. Its per-source `volumeControlId` matches
+ * [MirrorRouter]'s routing session so the media output chip names the origin device. Absolute sources expose
+ * a slider plus volume keys, relative sources expose keys only, and fixed sources expose neither.
  */
 class MirrorMediaSessions(
     context: Context,
@@ -52,47 +44,39 @@ class MirrorMediaSessions(
 ) {
     private val appContext = context.applicationContext
     private val main = Handler(Looper.getMainLooper())
+    private var nextSessionId = 0L
 
     /** A live mirror session plus the volume-relay state its surfaces need. */
-    private class Entry(val session: MediaSessionCompat, val clientId: ClientId, val sourceKey: String) {
-        var provider: VolumeProviderCompat? = null
-
-        /** Latest user-dragged target awaiting relay (trailing debounce, latest wins). */
+    private class Entry(val session: MediaSession, val clientId: ClientId, val sourceKey: String) {
+        var provider: VolumeProvider? = null
         var pendingVolume: Int? = null
         var relayScheduled = false
-
-        /** Elapsed-clock stamp of the last local volume action: captures arriving inside the grace window
-         *  don't overwrite the optimistic slider position (the in-flight echo carries the true level). */
         var lastUserVolumeAt = 0L
-
-        /** Source-clock postTime of the latest mirrored media payload applied to this local session. */
         var lastRemotePostTime = 0L
-
-        /** A local-only pause applied to a likely-stale payload so OEMs that gate clearing on playback state
-         *  allow the card to be dismissed. A newer payload clears it and resumes source-authoritative state. */
         var staleLocalPausePostTime: Long? = null
     }
 
-    /** tag -> entry, re-inserted on every [apply] so iteration order tracks recency ([setVolumeFromSwitcher]
-     *  targets a source's most recently updated card). Touched only on the main thread (via [onMain]/[main]). */
+    /** tag -> entry, re-inserted on every [apply] so iteration order tracks recency. Main thread only. */
     private val sessions = LinkedHashMap<String, Entry>()
 
-    /** Create/update the session for [tag]; returns its token for `MediaStyle.setMediaSession`.
-     *  [sourceDeviceName] labels the origin on the output chip via [MirrorRouter] (null = unknown yet). */
+    /** Create/update the session for [tag], returning the active native token for Notification.MediaStyle. */
     fun apply(
         tag: String,
         notif: CapturedNotification,
         albumArt: Bitmap?,
         sourceDeviceName: String? = null,
-    ): MediaSessionCompat.Token? =
+    ): MediaSession.Token? =
         onMain {
-            val entry = sessions.remove(tag) ?: run {
-                val session = MediaSessionCompat(appContext, MEDIA_SESSION_TAG).apply { isActive = true }
-                Entry(session, notif.sourceClientId, notif.sourceKey).also { e ->
-                    session.setCallback(callbackFor(e))
-                }
+            val prior = sessions.remove(tag)
+            val entry = if (prior == null ||
+                prior.clientId != notif.sourceClientId || prior.sourceKey != notif.sourceKey
+            ) {
+                prior?.let(::releaseEntry)
+                createEntry(notif)
+            } else {
+                prior
             }
-            sessions[tag] = entry // re-insert: iteration order tracks recency
+            sessions[tag] = entry
             entry.session.setMetadata(metadataFor(notif, albumArt))
             if ((entry.staleLocalPausePostTime ?: Long.MIN_VALUE) < notif.postTime) {
                 entry.staleLocalPausePostTime = null
@@ -100,59 +84,68 @@ class MirrorMediaSessions(
             entry.lastRemotePostTime = notif.postTime
             entry.session.setPlaybackState(playbackStateFor(entry, notif))
             val provider = applyVolume(entry, notif)
+            // SystemUI only promotes a notification whose token belongs to a live, active session with a
+            // non-null PlaybackState when NotificationManager receives it.
+            entry.session.isActive = true
             router?.activate(
-                tag, notif.sourceClientId, sourceDeviceName, notif.mediaIsPlaying == true,
-                // Only an absolute scale gets a switcher-side slider; relative/fixed sessions stay fixed there.
+                tag,
+                notif.sourceClientId,
+                sourceDeviceName,
+                notif.mediaIsPlaying == true,
                 volumeMax = provider.maxVolume
-                    .takeIf { provider.volumeControl == VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE } ?: 0,
+                    .takeIf { provider.volumeControl == VolumeProvider.VOLUME_CONTROL_ABSOLUTE } ?: 0,
                 volume = provider.currentVolume,
             )
             entry.session.sessionToken
         }
 
-    /** Deactivate + release the session for [tag] (playback stopped / mirror gone), clearing its media card. */
+    /** Deactivate and release the session for [tag], clearing its system media card. */
     fun release(tag: String) {
         main.post {
             router?.deactivate(tag)
-            sessions.remove(tag)?.let { runCatching { it.session.isActive = false; it.session.release() } }
+            sessions.remove(tag)?.let(::releaseEntry)
         }
     }
 
-    /** The Output Switcher moved the slider for [clientId]'s route ([MirrorRouteProviderService] relayed it):
-     *  same treatment as the volume panel, applied to that source's most recently updated card. */
+    /** Relay an Output Switcher slider move through the same debounced volume path as the system panel. */
     fun setVolumeFromSwitcher(clientId: ClientId, volume: Int) {
         main.post {
             sessions.values.lastOrNull { it.clientId == clientId }?.let { userSetVolume(it, volume) }
         }
     }
 
-    /**
-     * Reconcile the session's volume surface with the capture. An absolute control with a real scale gets an
-     * adjustable provider (panel slider + volume keys); relative keeps keys only; anything else is fixed —
-     * REMOTE playback type + the per-source controlId are what let SystemUI match the session to its
-     * [MirrorRouter] routing session either way. The provider is recreated only when control/max change
-     * (its constructor owns them); a bare level change flows through setCurrentVolume — skipped inside the
-     * post-user-action grace window so a stale in-flight capture can't yank the slider back before the
-     * origin's echo lands.
-     */
-    @SuppressLint("RestrictedApi") // The 4-arg overload is the only compat API that sets volumeControlId.
-    private fun applyVolume(entry: Entry, notif: CapturedNotification): VolumeProviderCompat {
+    private fun createEntry(notif: CapturedNotification): Entry {
+        val session = MediaSession(appContext, "$MEDIA_SESSION_TAG-${nextSessionId++}")
+        return Entry(session, notif.sourceClientId, notif.sourceKey).also { entry ->
+            session.setCallback(callbackFor(entry), main)
+        }
+    }
+
+    private fun releaseEntry(entry: Entry) {
+        runCatching { entry.session.isActive = false }
+        runCatching { entry.session.release() }
+    }
+
+    /** Reconcile the native remote-volume surface with the latest source capture. */
+    private fun applyVolume(entry: Entry, notif: CapturedNotification): VolumeProvider {
         val max = (notif.mediaVolumeMax ?: 0).coerceAtLeast(0)
         val control = when {
-            notif.mediaVolumeControl == VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE && max > 0 ->
-                VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE
-            notif.mediaVolumeControl == VolumeProviderCompat.VOLUME_CONTROL_RELATIVE ->
-                VolumeProviderCompat.VOLUME_CONTROL_RELATIVE
-            else -> VolumeProviderCompat.VOLUME_CONTROL_FIXED
+            notif.mediaVolumeControl == VolumeProvider.VOLUME_CONTROL_ABSOLUTE && max > 0 ->
+                VolumeProvider.VOLUME_CONTROL_ABSOLUTE
+            notif.mediaVolumeControl == VolumeProvider.VOLUME_CONTROL_RELATIVE ->
+                VolumeProvider.VOLUME_CONTROL_RELATIVE
+            else -> VolumeProvider.VOLUME_CONTROL_FIXED
         }
         val current = (notif.mediaVolumeCurrent ?: 0).coerceIn(0, max)
         val existing = entry.provider
         if (existing != null && existing.volumeControl == control && existing.maxVolume == max) {
-            if (existing.currentVolume != current && !inVolumeGrace(entry)) existing.setCurrentVolume(current)
+            if (existing.currentVolume != current && !inVolumeGrace(entry)) existing.currentVolume = current
             return existing
         }
-        val provider = object : VolumeProviderCompat(
-            control, max, current,
+        val provider = object : VolumeProvider(
+            control,
+            max,
+            current,
             MirrorRouter.volumeControlIdFor(entry.clientId),
         ) {
             override fun onSetVolumeTo(volume: Int) = userSetVolume(entry, volume)
@@ -163,119 +156,97 @@ class MirrorMediaSessions(
         return provider
     }
 
-    /** The system volume slider (panel / switcher) set an absolute target: show it immediately, relay the
-     *  landing spot. Runs on the main thread (the session was built there, so its callbacks arrive there). */
     private fun userSetVolume(entry: Entry, volume: Int) {
-        val p = entry.provider ?: return
-        if (p.volumeControl == VolumeProviderCompat.VOLUME_CONTROL_FIXED) return
-        val v = volume.coerceIn(0, p.maxVolume)
+        val provider = entry.provider ?: return
+        if (provider.volumeControl == VolumeProvider.VOLUME_CONTROL_FIXED) return
+        val target = volume.coerceIn(0, provider.maxVolume)
         entry.lastUserVolumeAt = SystemClock.elapsedRealtime()
-        p.setCurrentVolume(v) // optimistic: the slider tracks now; the origin's echo confirms/corrects
-        router?.updateVolume(entry.clientId, v) // keep the Output Switcher slider in step too
-        entry.pendingVolume = v
+        provider.currentVolume = target
+        router?.updateVolume(entry.clientId, target)
+        entry.pendingVolume = target
         if (entry.relayScheduled) return
         entry.relayScheduled = true
-        // Trailing debounce, latest wins: a drag emits a burst, the origin only needs where it lands.
         main.postDelayed({
             entry.relayScheduled = false
-            val target = entry.pendingVolume ?: return@postDelayed
+            val landing = entry.pendingVolume ?: return@postDelayed
             entry.pendingVolume = null
-            onCommand(entry.clientId, entry.sourceKey, MediaCommand.SET_VOLUME, null, null, target)
+            onCommand(entry.clientId, entry.sourceKey, MediaCommand.SET_VOLUME, null, null, landing)
         }, VOLUME_RELAY_DEBOUNCE_MS)
     }
 
-    /** Hardware volume keys. An absolute scale folds into the same debounced absolute relay (key autorepeat
-     *  coalesces); a relative-only source (casting with relative control) relays each ±1 step as-is. */
     private fun userAdjustVolume(entry: Entry, direction: Int) {
-        val p = entry.provider ?: return
-        val d = direction.coerceIn(-1, 1)
-        if (d == 0) return
-        when (p.volumeControl) {
-            VolumeProviderCompat.VOLUME_CONTROL_ABSOLUTE -> userSetVolume(entry, p.currentVolume + d)
-            VolumeProviderCompat.VOLUME_CONTROL_RELATIVE -> {
+        val provider = entry.provider ?: return
+        val step = direction.coerceIn(-1, 1)
+        if (step == 0) return
+        when (provider.volumeControl) {
+            VolumeProvider.VOLUME_CONTROL_ABSOLUTE -> userSetVolume(entry, provider.currentVolume + step)
+            VolumeProvider.VOLUME_CONTROL_RELATIVE -> {
                 entry.lastUserVolumeAt = SystemClock.elapsedRealtime()
-                onCommand(entry.clientId, entry.sourceKey, MediaCommand.ADJUST_VOLUME, null, null, d)
+                onCommand(entry.clientId, entry.sourceKey, MediaCommand.ADJUST_VOLUME, null, null, step)
             }
-            VolumeProviderCompat.VOLUME_CONTROL_FIXED -> Unit
         }
     }
 
     private fun inVolumeGrace(entry: Entry): Boolean =
         SystemClock.elapsedRealtime() - entry.lastUserVolumeAt < VOLUME_SYNC_GRACE_MS
 
-    private fun metadataFor(notif: CapturedNotification, albumArt: Bitmap?): MediaMetadataCompat =
-        MediaMetadataCompat.Builder().apply {
-            putString(MediaMetadataCompat.METADATA_KEY_TITLE, notif.title ?: notif.appLabel)
-            notif.text?.let { putString(MediaMetadataCompat.METADATA_KEY_ARTIST, it) }
-            notif.subText?.let { putString(MediaMetadataCompat.METADATA_KEY_ALBUM, it) }
-            albumArt?.let { putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, it) }
-            // Duration drives the seekbar's extent; 0 = unknown (no seekbar), which is fine.
-            putLong(MediaMetadataCompat.METADATA_KEY_DURATION, notif.mediaDurationMs ?: 0L)
+    private fun metadataFor(notif: CapturedNotification, albumArt: Bitmap?): MediaMetadata =
+        MediaMetadata.Builder().apply {
+            putString(MediaMetadata.METADATA_KEY_TITLE, notif.title ?: notif.appLabel)
+            notif.text?.let { putString(MediaMetadata.METADATA_KEY_ARTIST, it) }
+            notif.subText?.let { putString(MediaMetadata.METADATA_KEY_ALBUM, it) }
+            albumArt?.let { putBitmap(MediaMetadata.METADATA_KEY_ALBUM_ART, it) }
+            putLong(MediaMetadata.METADATA_KEY_DURATION, notif.mediaDurationMs ?: 0L)
         }.build()
 
-    private fun playbackStateFor(entry: Entry, notif: CapturedNotification): PlaybackStateCompat {
-        val playing = notif.mediaIsPlaying == true
-        val sourceState = if (playing) PlaybackStateCompat.STATE_PLAYING else PlaybackStateCompat.STATE_PAUSED
-        val state =
-            if (entry.staleLocalPausePostTime == notif.postTime) PlaybackStateCompat.STATE_PAUSED else sourceState
-        val position = notif.mediaPositionMs ?: PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN
-        // Only advertise transport controls we can actually service (they relay to the origin). Intersect the
-        // source's declared actions with that set; if the source reported none, fall back to the common set so
-        // buttons still appear. PlaybackState.ACTION_* values equal these PlaybackStateCompat.ACTION_* values.
+    private fun playbackStateFor(entry: Entry, notif: CapturedNotification): PlaybackState {
+        val sourceState = if (notif.mediaIsPlaying == true) PlaybackState.STATE_PLAYING else PlaybackState.STATE_PAUSED
+        val state = if (entry.staleLocalPausePostTime == notif.postTime) PlaybackState.STATE_PAUSED else sourceState
+        val position = notif.mediaPositionMs ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN
         val declared = notif.mediaActions ?: DEFAULT_ACTIONS
-        val actions = (declared and SUPPORTED_ACTIONS).takeIf { it != 0L } ?: (DEFAULT_ACTIONS and SUPPORTED_ACTIONS)
-        return PlaybackStateCompat.Builder()
-            .setState(state, position, if (state == PlaybackStateCompat.STATE_PLAYING) 1f else 0f)
+        val actions = (declared and SUPPORTED_ACTIONS).takeIf { it != 0L } ?: DEFAULT_ACTIONS
+        return PlaybackState.Builder()
+            .setState(state, position, if (state == PlaybackState.STATE_PLAYING) 1f else 0f)
             .setActions(actions)
             .apply {
-                // App-specific buttons (star/like/shuffle/…): the system draws these from the custom actions.
-                // A custom action's icon MUST be a drawable in OUR package (there's no bitmap API, and the
-                // source's resId is meaningless here), so we heuristic-map the common ones to bundled icons
-                // with a generic fallback. The press relays back by action id and runs faithfully on the origin.
-                notif.mediaCustomActions.forEach { ca ->
+                notif.mediaCustomActions.forEach { action ->
                     addCustomAction(
-                        PlaybackStateCompat.CustomAction
-                            .Builder(ca.action, ca.name.ifBlank { ca.action }, iconFor(ca))
-                            .build()
+                        PlaybackState.CustomAction.Builder(
+                            action.action,
+                            action.name.ifBlank { action.action },
+                            iconFor(action),
+                        ).build(),
                     )
                 }
             }
             .build()
     }
 
-    /** A pause press on a very old mirrored media payload is likely the user trying to make a stale card
-     *  clearable. Keep that state local-only until a newer source payload arrives. */
     private fun pauseLocallyIfRemoteLooksStale(entry: Entry) {
         if (!remoteLooksStale(entry.lastRemotePostTime)) return
         entry.staleLocalPausePostTime = entry.lastRemotePostTime
         val current = runCatching { entry.session.controller.playbackState }.getOrNull()
-        runCatching { entry.session.setPlaybackState(current.withPlaybackState(PlaybackStateCompat.STATE_PAUSED)) }
+        runCatching { entry.session.setPlaybackState(current.withPlaybackState(PlaybackState.STATE_PAUSED)) }
     }
 
     private fun remoteLooksStale(remotePostTime: Long): Boolean =
         remotePostTime > 0 && System.currentTimeMillis() - remotePostTime >= STALE_REMOTE_MEDIA_MS
 
-    private fun PlaybackStateCompat?.withPlaybackState(state: Int): PlaybackStateCompat {
-        val speed = if (state == PlaybackStateCompat.STATE_PLAYING) {
+    private fun PlaybackState?.withPlaybackState(state: Int): PlaybackState {
+        val speed = if (state == PlaybackState.STATE_PLAYING) {
             this?.playbackSpeed?.takeIf { it > 0f } ?: 1f
         } else {
             0f
         }
-        return PlaybackStateCompat.Builder()
-            .setState(
-                state,
-                this?.position ?: PlaybackStateCompat.PLAYBACK_POSITION_UNKNOWN,
-                speed,
-            )
-            .setActions(this?.actions ?: (DEFAULT_ACTIONS and SUPPORTED_ACTIONS))
-            .apply { this@withPlaybackState?.customActions?.forEach { addCustomAction(it) } }
+        return PlaybackState.Builder()
+            .setState(state, this?.position ?: PlaybackState.PLAYBACK_POSITION_UNKNOWN, speed)
+            .setActions(this?.actions ?: DEFAULT_ACTIONS)
+            .apply { this@withPlaybackState?.customActions?.forEach(::addCustomAction) }
             .build()
     }
 
-    /** Best-effort icon for a custom action, keyed on its id + name (the source app's own icon can't cross
-     *  devices). Order matters: "dislike" contains "like", so thumbs-down is matched before favorite. */
-    private fun iconFor(ca: MediaCustomAction): Int {
-        val key = "${ca.action} ${ca.name}".lowercase()
+    private fun iconFor(action: MediaCustomAction): Int {
+        val key = "${action.action} ${action.name}".lowercase()
         return when {
             "shuffle" in key -> R.drawable.ic_media_shuffle
             "repeat" in key || "loop" in key -> R.drawable.ic_media_repeat
@@ -288,57 +259,67 @@ class MirrorMediaSessions(
         }
     }
 
-    private fun callbackFor(entry: Entry) = object : MediaSessionCompat.Callback() {
-        override fun onPlay() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.PLAY, null, null, null)
+    private fun callbackFor(entry: Entry) = object : MediaSession.Callback() {
+        override fun onPlay() = relay(entry, MediaCommand.PLAY)
         override fun onPause() {
             pauseLocallyIfRemoteLooksStale(entry)
-            onCommand(entry.clientId, entry.sourceKey, MediaCommand.PAUSE, null, null, null)
+            relay(entry, MediaCommand.PAUSE)
         }
-        override fun onSkipToNext() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.NEXT, null, null, null)
-        override fun onSkipToPrevious() =
-            onCommand(entry.clientId, entry.sourceKey, MediaCommand.PREVIOUS, null, null, null)
-        override fun onStop() = onCommand(entry.clientId, entry.sourceKey, MediaCommand.STOP, null, null, null)
-        override fun onSeekTo(pos: Long) = onCommand(entry.clientId, entry.sourceKey, MediaCommand.SEEK, pos, null, null)
-        override fun onCustomAction(action: String?, extras: Bundle?) {
-            action?.let { onCommand(entry.clientId, entry.sourceKey, MediaCommand.CUSTOM, null, it, null) }
+        override fun onSkipToNext() = relay(entry, MediaCommand.NEXT)
+        override fun onSkipToPrevious() = relay(entry, MediaCommand.PREVIOUS)
+        override fun onStop() = relay(entry, MediaCommand.STOP)
+        override fun onSeekTo(pos: Long) = relay(entry, MediaCommand.SEEK, seekMs = pos)
+        override fun onCustomAction(action: String, extras: Bundle?) {
+            relay(entry, MediaCommand.CUSTOM, customAction = action)
         }
     }
 
-    /** Run [block] on the main thread and return its result. render() runs off-main, but session objects must
-     *  be touched on a Looper thread; the block is a few fast binder calls, bounded by [MAIN_WAIT_MS]. */
+    private fun relay(
+        entry: Entry,
+        command: MediaCommand,
+        seekMs: Long? = null,
+        customAction: String? = null,
+    ) {
+        onCommand(entry.clientId, entry.sourceKey, command, seekMs, customAction, null)
+    }
+
+    /** Run [block] on the main thread and return its result, bounded so notification rendering cannot hang. */
     private fun <T> onMain(block: () -> T): T? {
-        if (Looper.myLooper() == Looper.getMainLooper()) return runCatching(block).getOrNull()
+        if (Looper.myLooper() == main.looper) {
+            return runCatching(block).onFailure(::logSessionFailure).getOrNull()
+        }
         val latch = CountDownLatch(1)
         var result: T? = null
         main.post {
-            result = runCatching(block).getOrNull()
+            result = runCatching(block).onFailure(::logSessionFailure).getOrNull()
             latch.countDown()
         }
-        return if (latch.await(MAIN_WAIT_MS, TimeUnit.MILLISECONDS)) result else null
+        if (!latch.await(MAIN_WAIT_MS, TimeUnit.MILLISECONDS)) {
+            Log.w(TAG, "timed out waiting for the main thread; posting mirror without MediaStyle")
+            return null
+        }
+        return result
+    }
+
+    private fun logSessionFailure(error: Throwable) {
+        Log.w(TAG, "failed to create or update native mirror media session", error)
     }
 
     private companion object {
+        const val TAG = "MirrorMediaSessions"
         const val MEDIA_SESSION_TAG = "NotiSyncMirror"
-        const val MAIN_WAIT_MS = 500L
-
-        /** Trailing debounce for volume relays: a slider drag emits a burst; the origin needs the landing
-         *  spot, not the path (each relay is a HIGH-urgency unicast envelope). */
+        const val MAIN_WAIT_MS = 1_500L
         const val VOLUME_RELAY_DEBOUNCE_MS = 200L
-
-        /** After a local volume action, ignore capture-carried volume this long — the optimistic position
-         *  stands until the origin's echo (or a later capture) confirms it, instead of snapping back. */
         const val VOLUME_SYNC_GRACE_MS = 2_000L
-
-        /** Only stale media cards get local optimistic pause; fresh cards wait for source truth to avoid
-         *  play/pause bounce on normal in-flight command echoes. */
         const val STALE_REMOTE_MEDIA_MS = 15 * 60 * 1_000L
-        val SUPPORTED_ACTIONS =
-            PlaybackStateCompat.ACTION_PLAY or PlaybackStateCompat.ACTION_PAUSE or
-                PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS or PlaybackStateCompat.ACTION_STOP or
-                PlaybackStateCompat.ACTION_SEEK_TO
-        val DEFAULT_ACTIONS =
-            PlaybackStateCompat.ACTION_PLAY_PAUSE or PlaybackStateCompat.ACTION_SKIP_TO_NEXT or
-                PlaybackStateCompat.ACTION_SKIP_TO_PREVIOUS
+
+        const val PLAY_PAUSE_ACTIONS =
+            PlaybackState.ACTION_PLAY or PlaybackState.ACTION_PAUSE or PlaybackState.ACTION_PLAY_PAUSE
+        const val SUPPORTED_ACTIONS =
+            PLAY_PAUSE_ACTIONS or PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS or PlaybackState.ACTION_STOP or PlaybackState.ACTION_SEEK_TO
+        const val DEFAULT_ACTIONS =
+            PlaybackState.ACTION_PLAY_PAUSE or PlaybackState.ACTION_SKIP_TO_NEXT or
+                PlaybackState.ACTION_SKIP_TO_PREVIOUS
     }
 }

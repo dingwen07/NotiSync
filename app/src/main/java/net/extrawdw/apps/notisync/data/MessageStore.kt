@@ -334,7 +334,7 @@ class MessageStore(context: Context) :
                     put("source_client", sourceClientId.value)
                     put("source_key", sourceKey)
                     put("post_time", maxOf(priorPost ?: Long.MIN_VALUE, postTime))
-                    if (dismissedAt != null && postTime <= dismissedAt!!) put("dismissed_at", dismissedAt)
+                    if (dismissedAt != null && postTime <= dismissedAt) put("dismissed_at", dismissedAt)
                     else putNull("dismissed_at")
                     put("updated_at", now())
                 },
