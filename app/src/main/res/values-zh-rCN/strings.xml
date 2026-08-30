@@ -801,6 +801,9 @@
     <string name="pair_keys_invalid">密钥世代签名无效 — 可能被篡改。已隐藏密钥，将在配对后从服务器重新同步。</string>
     <string name="pair_trust_other">他人的设备</string>
     <string name="pair_trust_own">我的设备</string>
+    <string name="pair_update_device">更新 %1$s</string>
+    <string name="pair_update_as_other">更新为他人的设备</string>
+    <string name="pair_update_as_own">更新为我的设备</string>
 
     <!-- Trust notifications -->
     <string name="trust_channel_name">设备信任</string>

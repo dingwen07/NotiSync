@@ -828,6 +828,9 @@
     <string name="pair_keys_invalid">Key-epoch signature invalid — possible tampering. Keys hidden; they will re-sync from the server after pairing.</string>
     <string name="pair_trust_other">Other\'s device</string>
     <string name="pair_trust_own">My device</string>
+    <string name="pair_update_device">Update %1$s</string>
+    <string name="pair_update_as_other">Update as other\'s device</string>
+    <string name="pair_update_as_own">Update as my device</string>
 
     <!-- Trust notifications -->
     <string name="trust_channel_name">Device trust</string>

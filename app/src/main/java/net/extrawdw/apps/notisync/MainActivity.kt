@@ -107,6 +107,8 @@ import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
 import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
+import net.extrawdw.notisync.peer.trust.RosterDevice
+import net.extrawdw.notisync.protocol.TrustStatus
 
 class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
@@ -299,6 +301,7 @@ private enum class PairingReviewSource {
 private data class PairingReview(
     val candidate: PairingCandidate,
     val source: PairingReviewSource,
+    val existingTrustedDevice: RosterDevice?,
 )
 
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
@@ -346,7 +349,7 @@ fun NotiSyncRoot(
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
     var pairingReview by remember { mutableStateOf<PairingReview?>(null) }
-    var pairingApprovalInProgress by remember { mutableStateOf(false) }
+    var pairingApprovalOwnDevice by remember { mutableStateOf<Boolean?>(null) }
     var pairingApprovalError by remember { mutableStateOf<String?>(null) }
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     var foregroundResumeGeneration by remember { mutableIntStateOf(0) }
@@ -391,12 +394,15 @@ fun NotiSyncRoot(
         showPairing = false
         navController.navigateToTopLevel(TopLevelDestination.DEVICES)
         pairingApprovalError = null
-        pairingReview = PairingReview(candidate, source)
+        val existingTrustedDevice = graph.trust.roster.value.firstOrNull {
+            it.clientId == candidate.clientId && it.status == TrustStatus.TRUSTED
+        }
+        pairingReview = PairingReview(candidate, source, existingTrustedDevice)
     }
 
     fun approvePairing(review: PairingReview, ownDevice: Boolean) {
-        if (pairingApprovalInProgress) return
-        pairingApprovalInProgress = true
+        if (pairingApprovalOwnDevice != null) return
+        pairingApprovalOwnDevice = ownDevice
         pairingApprovalError = null
         pairingScope.launch {
             runCatching {
@@ -420,7 +426,7 @@ fun NotiSyncRoot(
                         context.getString(R.string.pair_could_not_pair, it.message)
                 },
             )
-            pairingApprovalInProgress = false
+            pairingApprovalOwnDevice = null
         }
     }
 
@@ -627,7 +633,8 @@ fun NotiSyncRoot(
         pairingReview?.let { review ->
             PairingApprovalSheet(
                 candidate = review.candidate,
-                approving = pairingApprovalInProgress,
+                existingTrustedDevice = review.existingTrustedDevice,
+                approvingOwnDevice = pairingApprovalOwnDevice,
                 error = pairingApprovalError,
                 onTrustOwn = { approvePairing(review, ownDevice = true) },
                 onTrustOther = { approvePairing(review, ownDevice = false) },

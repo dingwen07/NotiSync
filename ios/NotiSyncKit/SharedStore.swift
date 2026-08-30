@@ -578,13 +578,19 @@ nonisolated enum CardStore {
     static func all() -> [String: Data] { AppGroupStore.read([String: Data].self, name) ?? [:] }
 
     /// Persist a verified card iff no card is held or this card has a strictly greater `createdAt`.
-    /// Returns the effective newest card even when the incoming value is stale/equal. Callers use that
-    /// value to reconcile a separately persisted trust row after an interrupted earlier update.
+    /// [forceRefresh] is reserved for an explicit re-pair of a caller-verified existing trusted peer; it
+    /// still enforces identity binding/signature checks but makes the manually approved card authoritative
+    /// over wall-clock freshness. Returns the effective card retained by the store.
     @discardableResult
-    static func put(_ clientId: String, blob: SignedBlob, now: Int64) -> PutResult? {
+    static func put(
+        _ clientId: String,
+        blob: SignedBlob,
+        now: Int64,
+        forceRefresh: Bool = false
+    ) -> PutResult? {
         guard blob.typ == SignedType.clientCard, blob.signerId == clientId,
               let card = try? ProtocolCodec.decodeClientCard(blob.payload), card.clientId == clientId,
-              ClientCardFreshness.accepts(createdAt: card.createdAt, now: now),
+              (forceRefresh || ClientCardFreshness.accepts(createdAt: card.createdAt, now: now)),
               IdentityVerifier.verifyBound(expectedSignerId: clientId, spki: card.identityPublicKey,
                                            data: blob.payload, signature: blob.sig) else { return nil }
         return AppGroupStore.withLock(name) {
@@ -599,7 +605,7 @@ nonisolated enum CardStore {
                 // One client id binds one identity key. Never replace a held identity anchor even if an
                 // impossible hash collision presents a second self-consistent card for the same id.
                 guard heldCard.identityPublicKey == card.identityPublicKey else { return nil }
-                if card.createdAt <= heldCard.createdAt {
+                if !forceRefresh, card.createdAt <= heldCard.createdAt {
                     return PutResult(card: heldCard, changed: false)
                 }
             }
@@ -615,11 +621,11 @@ nonisolated enum CardStore {
 
     /// Re-verify held material at its point of use. Older app versions could leave a decodable but invalid
     /// CARD beside a still-valid trust/key record; profile-derived features must not treat that cache entry
-    /// as an authenticated capability declaration.
+    /// as an authenticated capability declaration. Freshness is deliberately an ingestion policy, not a
+    /// use-time validity rule: an explicitly re-paired trusted card may carry a skewed creation timestamp.
     static func verifiedCard(
         _ clientId: String,
-        pinnedIdentitySpki: Data,
-        now: Int64
+        pinnedIdentitySpki: Data
     ) -> ClientCard? {
         guard let blob = blob(clientId),
               blob.typ == SignedType.clientCard,
@@ -627,7 +633,6 @@ nonisolated enum CardStore {
               let card = try? ProtocolCodec.decodeClientCard(blob.payload),
               card.clientId == clientId,
               card.identityPublicKey == pinnedIdentitySpki,
-              ClientCardFreshness.accepts(createdAt: card.createdAt, now: now),
               IdentityVerifier.verifyBound(
                   expectedSignerId: clientId,
                   spki: card.identityPublicKey,

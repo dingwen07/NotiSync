@@ -366,7 +366,7 @@ class TrustStoreTest {
     }
 
     @Test
-    fun addLocal_usesTheSameNewerCardAndProfilePrecedenceRules() {
+    fun addLocal_withoutManualRefreshUsesNewerCardAndProfilePrecedenceRules() {
         val self = SoftwareIdentitySigner.generate()
         val other = SoftwareIdentitySigner.generate()
         val store = newStore(self)
@@ -388,6 +388,61 @@ class TrustStoreTest {
         assertTrue(store.addLocal(signedCard(other, displayName = "Older", createdAt = 35L), now = 40L))
         assertEquals(40L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
         assertEquals("Card 40", store.displayName(other.clientId))
+    }
+
+    @Test
+    fun addLocal_manualPairingForceRefreshesTrustedOwnAndOtherDevices() {
+        listOf(true, false).forEach { ownDevice ->
+            val self = SoftwareIdentitySigner.generate()
+            val other = SoftwareIdentitySigner.generate()
+            val store = newStore(self)
+            assertTrue(
+                store.addLocal(
+                    signedCard(other, displayName = "Card 40", createdAt = 40L),
+                    now = 40L,
+                    ownDevice = ownDevice,
+                )
+            )
+            assertTrue(
+                store.applyProfile(
+                    ProfileUpdate(
+                        other.clientId,
+                        "Overlay 60",
+                        "android",
+                        emptyList(),
+                        updatedAt = 60L,
+                    )
+                )
+            )
+
+            // The approval sheet is an explicit re-pair. Its verified card wins even though both the held
+            // card and overlay have later wall-clock timestamps (for example, after correcting clock skew).
+            assertTrue(
+                store.addLocal(
+                    signedCard(other, displayName = "Manual card 20", createdAt = 20L),
+                    now = 40L,
+                    ownDevice = ownDevice,
+                    forceRefreshTrustedCard = true,
+                )
+            )
+            assertEquals(20L, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+            assertEquals("Manual card 20", store.displayName(other.clientId))
+            assertEquals(ownDevice, store.roster.value.single().ownDevice)
+
+            // Clearing the old overlay resets the profile floor to the manually accepted card.
+            assertTrue(
+                store.applyProfile(
+                    ProfileUpdate(
+                        other.clientId,
+                        "Fresh overlay 30",
+                        "android",
+                        emptyList(),
+                        updatedAt = 30L,
+                    )
+                )
+            )
+            assertEquals("Fresh overlay 30", store.displayName(other.clientId))
+        }
     }
 
     @Test
@@ -416,11 +471,28 @@ class TrustStoreTest {
         assertFalse(store.applyCard(other.clientId, signedCard(other, createdAt = latestAccepted + 1)))
         assertEquals(latestAccepted, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
 
+        assertFalse(
+            store.addLocal(
+                signedCard(other, createdAt = latestAccepted + 1),
+                now = now,
+            )
+        )
+        assertTrue(
+            "an explicit re-pair of an existing trusted device bypasses the timestamp guard",
+            store.addLocal(
+                signedCard(other, createdAt = latestAccepted + 1),
+                now = now,
+                forceRefreshTrustedCard = true,
+            )
+        )
+        assertEquals(latestAccepted + 1, store.cardFor(other.clientId)?.decode<ClientCard>()?.createdAt)
+
         val newPeer = SoftwareIdentitySigner.generate()
         assertFalse(
             store.addLocal(
                 signedCard(newPeer, createdAt = latestAccepted + 1),
                 now = now,
+                forceRefreshTrustedCard = true,
             )
         )
     }

@@ -89,7 +89,10 @@ class PairingManager(private val graph: AppGraph) {
             graph.trust.addLocal(
                 verified.cardBlob,
                 System.currentTimeMillis(),
-                ownDevice
+                ownDevice,
+                // Every candidate reaches an explicit approval sheet. Re-pairing a trusted own/other device
+                // therefore makes this freshly verified optical card authoritative over timestamp-based LWW.
+                forceRefreshTrustedCard = true,
             )
         ) { "card verification failed" }
         // Apply the peer's key-epoch (verified standalone, pinned to the just-pinned identity) so the peer is

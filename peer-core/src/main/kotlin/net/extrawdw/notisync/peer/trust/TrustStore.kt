@@ -194,21 +194,40 @@ open class TrustStore(
 
     // ---- local user actions (return true when the change should be broadcast immediately) ----
 
-    /** Optical/manual add: pin [cardBlob]'s keys and trust it. Returns false if the card fails verification. */
+    /**
+     * Optical/manual add: pin [cardBlob]'s keys and trust it. Returns false if the card fails verification.
+     * When [forceRefreshTrustedCard] is true, an explicit re-pair of an already-trusted device replaces
+     * its card and clears its profile overlay regardless of card/profile timestamps. The user-confirmed
+     * optical channel is authoritative in that case, so clock skew cannot leave stale local profile data.
+     */
     @Synchronized
-    fun addLocal(cardBlob: SignedBlob, now: Long, ownDevice: Boolean = true): Boolean {
+    fun addLocal(
+        cardBlob: SignedBlob,
+        now: Long,
+        ownDevice: Boolean = true,
+        forceRefreshTrustedCard: Boolean = false,
+    ): Boolean {
         if (_quarantined.value) return false
         val card = verifyCard(cardBlob) ?: return false
-        if (!isAcceptableCardCreatedAt(card.createdAt, now)) return false
+        val forceCardRefresh = forceRefreshTrustedCard &&
+            _state.value.entries[card.clientId]?.status == TrustStatus.TRUSTED
+        if (!forceCardRefresh && !isAcceptableCardCreatedAt(card.createdAt, now)) return false
         mutate { st ->
-            val cards = putCard(st.cards, card.clientId, cardBlob)
+            val forceRefresh = forceRefreshTrustedCard &&
+                st.entries[card.clientId]?.status == TrustStatus.TRUSTED
+            val cards = if (forceRefresh) {
+                st.cards + (card.clientId to cardBlob)
+            } else {
+                putCard(st.cards, card.clientId, cardBlob)
+            }
             val overlay = st.overlays[card.clientId]
             st.copy(
                 cards = cards,
-                overlays = if (cards !== st.cards && overlay != null && overlay.updatedAt < card.createdAt) {
-                    st.overlays - card.clientId
-                } else {
-                    st.overlays
+                overlays = when {
+                    forceRefresh -> st.overlays - card.clientId
+                    cards !== st.cards && overlay != null && overlay.updatedAt < card.createdAt ->
+                        st.overlays - card.clientId
+                    else -> st.overlays
                 },
                 entries = st.entries + (card.clientId to TrustMachine.localAdd(
                     card.clientId,

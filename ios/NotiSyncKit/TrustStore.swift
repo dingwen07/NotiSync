@@ -115,7 +115,9 @@ nonisolated final class TrustStore {
     // MARK: Mutation
 
     /// Pin a peer's identity + profile (pairing / card delivery). Preserves any existing epoch ring.
-    func pin(card: ClientCard, ownDevice: Bool, at nowMillis: Int64) {
+    /// An explicit manual re-pair may force the signed card profile to replace the in-record ProfileUpdate
+    /// overlay even when its wall-clock revision is older, recovering from clock skew.
+    func pin(card: ClientCard, ownDevice: Bool, at nowMillis: Int64, forceProfileRefresh: Bool = false) {
         var record = peers[card.clientId] ?? TrustedPeerRecord(
             clientId: card.clientId, identitySpki: card.identityPublicKey, displayName: card.displayName,
             platform: card.platform, status: TrustStatus.TRUSTED.rawValue, ownDevice: ownDevice,
@@ -123,8 +125,9 @@ nonisolated final class TrustStore {
             capabilities: card.capabilities, profileUpdatedAt: card.createdAt
         )
         record.identitySpki = card.identityPublicKey
-        // Re-pairing with an older card must not roll back a profile learned from a newer card/update.
-        if card.createdAt > record.profileRevision {
+        // Automatic delivery cannot roll a profile back. A user-confirmed re-pair deliberately resets the
+        // profile revision to this card, which is iOS's equivalent of clearing the separate Android overlay.
+        if forceProfileRefresh || card.createdAt > record.profileRevision {
             record.displayName = card.displayName
             record.platform = card.platform
             record.capabilities = card.capabilities

@@ -177,7 +177,11 @@ extension NotiSyncRuntime {
     func acceptPairing(_ scanned: String, ownDevice: Bool = true) {
         Task {
             do {
-                _ = try await acceptPairingAndSync(scanned, ownDevice: ownDevice)
+                _ = try await acceptPairingAndSync(
+                    scanned,
+                    ownDevice: ownDevice,
+                    forceRefreshTrustedCard: true
+                )
             } catch {
                 record(error: error, domain: .pairing)
             }
@@ -223,10 +227,18 @@ extension NotiSyncRuntime {
     }
 
     @discardableResult
-    private func acceptPairingLocally(_ scanned: String, ownDevice: Bool) async throws -> String {
+    private func acceptPairingLocally(
+        _ scanned: String,
+        ownDevice: Bool,
+        forceRefreshTrustedCard: Bool = false
+    ) async throws -> String {
         guard let engine else { throw ExperienceModeError.runtimeNotReady }
         let name = try await Task.detached(priority: .userInitiated) {
-            try engine.acceptPairing(scanned, ownDevice: ownDevice)
+            try engine.acceptPairing(
+                scanned,
+                ownDevice: ownDevice,
+                forceRefreshTrustedCard: forceRefreshTrustedCard
+            )
         }.value
         addActivity(.paired, .paired, detail: .text, detailArg: name)
         await refreshPeerRowsAsync()
@@ -236,8 +248,16 @@ extension NotiSyncRuntime {
     }
 
     @discardableResult
-    private func acceptPairingAndSync(_ scanned: String, ownDevice: Bool) async throws -> String {
-        let name = try await acceptPairingLocally(scanned, ownDevice: ownDevice)
+    private func acceptPairingAndSync(
+        _ scanned: String,
+        ownDevice: Bool,
+        forceRefreshTrustedCard: Bool
+    ) async throws -> String {
+        let name = try await acceptPairingLocally(
+            scanned,
+            ownDevice: ownDevice,
+            forceRefreshTrustedCard: forceRefreshTrustedCard
+        )
         await publishCurrentRoute()
         // Enforcement that Experience Mode never broadcasts or receives the trust roster lives in
         // `sealTrustTable`, so it holds for every `broadcastTrust()` caller — pairing,

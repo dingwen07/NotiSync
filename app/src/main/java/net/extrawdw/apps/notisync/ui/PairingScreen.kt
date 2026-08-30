@@ -67,6 +67,7 @@ import net.extrawdw.apps.notisync.pairing.PairingNfcReaderSession
 import net.extrawdw.apps.notisync.pairing.QrCodes
 import net.extrawdw.apps.notisync.pairing.formatPairingSystemTime
 import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
+import net.extrawdw.notisync.peer.trust.RosterDevice
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -406,16 +407,19 @@ private fun Resources.nfcPairingFailureDetail(failure: Throwable): String {
 @Composable
 internal fun PairingApprovalSheet(
     candidate: PairingCandidate,
-    approving: Boolean,
+    existingTrustedDevice: RosterDevice?,
+    approvingOwnDevice: Boolean?,
     error: String?,
     onTrustOwn: () -> Unit,
     onTrustOther: () -> Unit,
     onDismiss: () -> Unit,
 ) {
+    val approving = approvingOwnDevice != null
     val sheetState = rememberBottomSheetState(
         initialValue = SheetValue.Hidden,
         enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
     )
+    val existingDeviceName = existingTrustedDevice?.displayName ?: candidate.displayName
 
     // This confirmation used to inherit protection from PairingOverlay. It now lives above Devices, so keep
     // the same obscured-touch/tapjacking protection for the full sheet lifetime.
@@ -486,21 +490,40 @@ internal fun PairingApprovalSheet(
                 enabled = !approving,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                if (approving) {
+                if (approvingOwnDevice == true) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(ButtonDefaults.IconSize),
                         strokeWidth = 2.dp,
                     )
                     Spacer(Modifier.size(ButtonDefaults.IconSpacing))
                 }
-                Text(stringResource(R.string.pair_trust_own))
+                Text(
+                    when (existingTrustedDevice?.ownDevice) {
+                        true -> stringResource(R.string.pair_update_device, existingDeviceName)
+                        false -> stringResource(R.string.pair_update_as_own)
+                        null -> stringResource(R.string.pair_trust_own)
+                    }
+                )
             }
             OutlinedButton(
                 onClick = onTrustOther,
                 enabled = !approving,
                 modifier = Modifier.fillMaxWidth(),
             ) {
-                Text(stringResource(R.string.pair_trust_other))
+                if (approvingOwnDevice == false) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(ButtonDefaults.IconSize),
+                        strokeWidth = 2.dp,
+                    )
+                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                }
+                Text(
+                    when (existingTrustedDevice?.ownDevice) {
+                        true -> stringResource(R.string.pair_update_as_other)
+                        false -> stringResource(R.string.pair_update_device, existingDeviceName)
+                        null -> stringResource(R.string.pair_trust_other)
+                    }
+                )
             }
         }
     }

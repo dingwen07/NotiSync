@@ -85,6 +85,11 @@ private nonisolated let iosSelfCapabilities: [Capability] = [
 
 nonisolated enum KeyEpochStatus: Sendable { case verified, absent, invalid }
 
+nonisolated struct PairingExistingTrust: Sendable {
+    var displayName: String
+    var ownDevice: Bool
+}
+
 nonisolated struct PairingCandidate: Identifiable, Sendable {
     var id: String { clientId }
     var payload: String
@@ -97,6 +102,7 @@ nonisolated struct PairingCandidate: Identifiable, Sendable {
     var operationalKeyFingerprint: String
     var hpkeKeyFingerprint: String
     var keyEpochStatus: KeyEpochStatus
+    var existingTrust: PairingExistingTrust?
 }
 
 nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
@@ -122,8 +128,7 @@ nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
               peer.sealable(now: now) != nil,
               let card = CardStore.verifiedCard(
                   peer.clientId,
-                  pinnedIdentitySpki: peer.identitySpki,
-                  now: now
+                  pinnedIdentitySpki: peer.identitySpki
               ) else { return nil }
 
         // A newer authenticated PROFILE supersedes the pairing CARD's mutable platform/capability snapshot.
@@ -767,6 +772,11 @@ nonisolated final class NotiSyncEngine: Sendable {
         let (cardBlob, card, epochBlob) = try decodeVerifiedDelivery(payload)
         let ke = epochBlob.flatMap { KeyEpochs.verify($0, pinnedIdentitySpki: card.identityPublicKey) }
         let status: KeyEpochStatus = epochBlob == nil ? .absent : (ke == nil ? .invalid : .verified)
+        let existingTrust = trust().peers[card.clientId].flatMap { peer in
+            peer.isTrusted
+                ? PairingExistingTrust(displayName: peer.displayName, ownDevice: peer.ownDevice)
+                : nil
+        }
         _ = cardBlob
         return PairingCandidate(
             payload: payload, displayName: card.displayName, platform: card.platform, clientId: card.clientId,
@@ -774,24 +784,46 @@ nonisolated final class NotiSyncEngine: Sendable {
             epoch: ke?.epoch ?? 0,
             operationalKeyFingerprint: ke.map { KeyFingerprint.short($0.operationalSigningKey) } ?? "",
             hpkeKeyFingerprint: ke.map { KeyFingerprint.short($0.hpkePublicKey) } ?? "",
-            keyEpochStatus: status
+            keyEpochStatus: status, existingTrust: existingTrust
         )
     }
 
     /// Accept a scanned peer: pin its identity + key-epoch and trust it. Returns the peer's display name.
     @discardableResult
-    func acceptPairing(_ scanned: String, ownDevice: Bool = true) throws -> String {
+    func acceptPairing(
+        _ scanned: String,
+        ownDevice: Bool = true,
+        forceRefreshTrustedCard: Bool = false
+    ) throws -> String {
         let payload = Self.extractPairingPayload(scanned)
         let (cardBlob, card, epochBlob) = try decodeVerifiedDelivery(payload)
         guard card.clientId != selfClientId else { throw EngineError.notForUs }
         let now = Self.nowMillis()
         let pairedName: String? = AppGroupStore.withLock(AppGroupStore.Files.trust) {
             let store = trust()
-            guard let put = CardStore.put(card.clientId, blob: cardBlob, now: now) else { return nil }
+            let existingPeer = store.peers[card.clientId]
+            let forceRefresh = forceRefreshTrustedCard && existingPeer?.isTrusted == true
+            guard forceRefresh || ClientCardFreshness.accepts(createdAt: card.createdAt, now: now) else {
+                return nil
+            }
+            if let existingPeer, !existingPeer.identitySpki.isEmpty,
+               existingPeer.identitySpki != card.identityPublicKey { return nil }
+            guard let put = CardStore.put(
+                card.clientId,
+                blob: cardBlob,
+                now: now,
+                forceRefresh: forceRefresh
+            ) else { return nil }
             // CardStore and the signed roster are separate files. If an earlier write stored a newer card but
             // did not finish the roster update, pair from that effective newest snapshot rather than pinning
-            // stale scanned profile data over it.
-            store.pin(card: put.card, ownDevice: ownDevice, at: now)
+            // stale scanned profile data over it. Explicit re-pair is the exception: the confirmed scanned
+            // card replaces both the held card and the in-record profile overlay regardless of timestamps.
+            store.pin(
+                card: put.card,
+                ownDevice: ownDevice,
+                at: now,
+                forceProfileRefresh: forceRefresh
+            )
             if let epochBlob,
                let ke = KeyEpochs.verify(epochBlob, pinnedIdentitySpki: put.card.identityPublicKey) {
                 store.applyKeyEpoch(ke, blob: epochBlob)
@@ -817,7 +849,6 @@ nonisolated final class NotiSyncEngine: Sendable {
         }
         let card = try ProtocolCodec.decodeClientCard(cardBlob.payload)
         guard card.clientId == cardBlob.signerId,
-              ClientCardFreshness.accepts(createdAt: card.createdAt, now: Self.nowMillis()),
               IdentityVerifier.verifyBound(expectedSignerId: cardBlob.signerId, spki: card.identityPublicKey,
                                            data: cardBlob.payload, signature: cardBlob.sig) else {
             throw EngineError.verificationFailed

@@ -266,6 +266,24 @@ struct PairingConfirmView: View {
     let onDecision: (Bool, Bool) -> Void
     @Environment(\.dismiss) private var dismiss
 
+    private var existingDeviceName: String {
+        guard let name = candidate.existingTrust?.displayName,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            return candidate.displayName
+        }
+        return name
+    }
+
+    private var myDeviceActionTitle: LocalizedStringKey {
+        guard let existingTrust = candidate.existingTrust else { return "Trust as my device" }
+        return existingTrust.ownDevice ? "Update \(existingDeviceName)" : "Update as my device"
+    }
+
+    private var otherDeviceActionTitle: LocalizedStringKey {
+        guard let existingTrust = candidate.existingTrust else { return "Trust as someone else's" }
+        return existingTrust.ownDevice ? "Update as other's device" : "Update \(existingDeviceName)"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -293,11 +311,11 @@ struct PairingConfirmView: View {
                 Section {
                     Button {
                         onDecision(true, true); dismiss()
-                    } label: { Label("Trust as my device", systemImage: "checkmark.seal").dimmedWhenDisabled() }
+                    } label: { Label(myDeviceActionTitle, systemImage: "checkmark.seal").dimmedWhenDisabled() }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button {
                         onDecision(true, false); dismiss()
-                    } label: { Label("Trust as someone else's", systemImage: "person.crop.circle.badge.checkmark").dimmedWhenDisabled() }
+                    } label: { Label(otherDeviceActionTitle, systemImage: "person.crop.circle.badge.checkmark").dimmedWhenDisabled() }
                         .disabled(candidate.keyEpochStatus == .invalid)
                     Button(role: .cancel) { onDecision(false, false); dismiss() } label: { Text("Cancel") }
                 } footer: {
