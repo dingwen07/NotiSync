@@ -5,6 +5,7 @@ import java.util.Base64
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
+import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
 
@@ -19,7 +20,23 @@ internal val SshRememberScope.authorizationStorage: SshRememberAuthorizationStor
         SshRememberScope.APPLICATION_PROCESS -> SshRememberAuthorizationStorage.PROCESS_MEMORY
     }
 
-/** Pure eligibility and matching rules shared by the approval UI and persistent rule store. */
+internal enum class SshRememberAuthorizationChoice(
+    val scope: SshRememberScope,
+    val applicationBound: Boolean,
+    val hostBound: Boolean,
+) {
+    PEER(SshRememberScope.PEER, applicationBound = false, hostBound = false),
+    PEER_HOST(SshRememberScope.PEER_HOST_KEY, applicationBound = false, hostBound = true),
+    APPLICATION(SshRememberScope.APPLICATION_PROCESS, applicationBound = true, hostBound = false),
+    APPLICATION_HOST(SshRememberScope.APPLICATION_PROCESS, applicationBound = true, hostBound = true),
+}
+
+internal data class SshRememberAuthorizationOptions(
+    val choices: Set<SshRememberAuthorizationChoice>,
+    val applicationAnchor: SshApplicationAnchor?,
+)
+
+/** Pure eligibility and matching rules shared by the approval UI and authorization stores. */
 internal object SshRememberAuthorizationPolicy {
     fun keyAllowsRememberedAuthorization(
         approvalPolicy: SshApprovalPolicy,
@@ -30,6 +47,25 @@ internal object SshRememberAuthorizationPolicy {
     fun availableDiskScopes(destination: SshDestinationContext): Set<SshRememberScope> = buildSet {
         add(SshRememberScope.PEER)
         if (verifiedHostKeySha256(destination) != null) add(SshRememberScope.PEER_HOST_KEY)
+    }
+
+    fun availableOptions(
+        destination: SshDestinationContext,
+        processContext: DesktopProcessContext,
+    ): SshRememberAuthorizationOptions {
+        val hostKeySha256 = verifiedHostKeySha256(destination)
+        val applicationAnchor = SshApplicationAnchorSelector.select(processContext).recommended
+        return SshRememberAuthorizationOptions(
+            choices = buildSet {
+                add(SshRememberAuthorizationChoice.PEER)
+                if (hostKeySha256 != null) add(SshRememberAuthorizationChoice.PEER_HOST)
+                if (applicationAnchor != null) {
+                    add(SshRememberAuthorizationChoice.APPLICATION)
+                    if (hostKeySha256 != null) add(SshRememberAuthorizationChoice.APPLICATION_HOST)
+                }
+            },
+            applicationAnchor = applicationAnchor,
+        )
     }
 
     fun hostKeySha256ForPersistentAuthorization(
@@ -52,7 +88,7 @@ internal object SshRememberAuthorizationPolicy {
             storedHostKeySha256 != null && current != null &&
                 MessageDigest.isEqual(storedHostKeySha256, current)
         }
-        // Future process-tree authorizations are handled by a volatile store, never this disk matcher.
+        // Application authorizations, optionally host-bound, are handled by the volatile store.
         SshRememberScope.APPLICATION_PROCESS -> false
     }
 

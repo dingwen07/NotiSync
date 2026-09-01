@@ -37,7 +37,6 @@ import net.extrawdw.apps.notisync.ui.SshKeyStorageSelection
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
-import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
 
@@ -200,8 +199,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
             finishAutoOpenedRequestPage()
             return
         }
-        val rememberScopes = withContext(Dispatchers.IO) {
-            graph.sshKeyProviderStore.availableRememberScopes(requestId)
+        val rememberOptions = withContext(Dispatchers.IO) {
+            graph.sshKeyProviderStore.availableRememberOptions(requestId)
         }
         val requiresWebAuthn = stored.kind == SshProviderRequestKind.SIGN && withContext(Dispatchers.IO) {
             graph.sshKeyProviderStore.requiresWebAuthnUserVerification(requestId)
@@ -273,7 +272,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         }
         screen = SshReviewScreenState.Details(
             request = stored,
-            rememberScopes = rememberScopes,
+            rememberChoices = rememberOptions.choices,
+            rememberApplication = rememberOptions.applicationAnchor,
             encryptedImport = importInspection?.encrypted ?: stored.history.encryptedImport,
             keyPreview = keyPreview,
             keyName = keyName,
@@ -634,22 +634,35 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
         }
     }
 
-    private fun authenticateRemember(scope: SshRememberScope) {
+    private fun authenticateRemember(choice: SshRememberAuthorizationChoice) {
         if (busy) return
         val details = screen as? SshReviewScreenState.Details ?: return
-        if (scope !in details.rememberScopes ||
-            scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
-        ) return
-        val subtitle = when (scope) {
-            SshRememberScope.PEER -> getString(
+        if (choice !in details.rememberChoices) return
+        val subtitle = when (choice) {
+            SshRememberAuthorizationChoice.PEER -> getString(
                 R.string.ssh_key_provider_remember_peer_subtitle,
                 details.requesterName,
             )
-            SshRememberScope.PEER_HOST_KEY -> getString(
+            SshRememberAuthorizationChoice.PEER_HOST -> getString(
                 R.string.ssh_key_provider_remember_peer_host_subtitle,
                 details.requesterName,
             )
-            SshRememberScope.APPLICATION_PROCESS -> return
+            SshRememberAuthorizationChoice.APPLICATION -> {
+                val application = details.rememberApplication ?: return
+                getString(
+                    R.string.ssh_key_provider_remember_application_subtitle,
+                    application.displayName,
+                    details.requesterName,
+                )
+            }
+            SshRememberAuthorizationChoice.APPLICATION_HOST -> {
+                val application = details.rememberApplication ?: return
+                getString(
+                    R.string.ssh_key_provider_remember_application_host_subtitle,
+                    application.displayName,
+                    details.requesterName,
+                )
+            }
         }
         busy = true
         val prompt = BiometricPrompt.Builder(this)
@@ -669,7 +682,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             val signResult = withContext(Dispatchers.IO) {
                                 (application as? NotiSyncApp)?.awaitGraphReady()?.sshKeyProviderEngine
-                                    ?.approveAndRemember(requestId, scope)
+                                    ?.approveAndRemember(requestId, choice)
                             }
                             showSignResult(signResult)
                         }
@@ -741,7 +754,8 @@ internal sealed interface SshReviewScreenState {
     data class Error(val message: String) : SshReviewScreenState
     data class Details(
         val request: StoredSshProviderRequest,
-        val rememberScopes: Set<SshRememberScope>,
+        val rememberChoices: Set<SshRememberAuthorizationChoice>,
+        val rememberApplication: SshApplicationAnchor? = null,
         val encryptedImport: Boolean,
         val keyPreview: SshKeyPreview?,
         val keyName: String,

@@ -166,6 +166,8 @@
     <string name="ssh_key_provider_remembered_authorizations">Remembered authorizations</string>
     <string name="ssh_key_provider_no_remembered_authorizations">No remembered authorizations for this key.</string>
     <string name="ssh_key_provider_remembered_peer_scope">All hosts</string>
+    <string name="ssh_key_provider_remembered_application_name">Application: %1$s</string>
+    <string name="ssh_key_provider_remembered_temporary_scope">Temporary Authorization</string>
     <string name="ssh_key_provider_remembered_delete_title">Forget remembered authorization?</string>
     <string name="ssh_key_provider_remembered_delete_body">Future requests from %1$s will require approval when they no longer match another remembered authorization.</string>
     <string name="ssh_key_provider_remembered_delete_confirm">Forget authorization</string>
@@ -254,10 +256,14 @@
     <string name="ssh_key_provider_sign_auth_subtitle">Use the selected protected SSH key once</string>
     <string name="ssh_key_provider_remember_peer">%1$s</string>
     <string name="ssh_key_provider_remember_peer_host">%1$s + this host</string>
+    <string name="ssh_key_provider_remember_application">%1$s</string>
+    <string name="ssh_key_provider_remember_application_host">%1$s + this host</string>
     <string name="ssh_key_provider_remember_pending_help">Choose a scope to approve this request and remember future use of this key.</string>
     <string name="ssh_key_provider_remember_auth_title">Authorize remembered SSH access</string>
     <string name="ssh_key_provider_remember_peer_subtitle">Allow %1$s to use the key without another approval</string>
     <string name="ssh_key_provider_remember_peer_host_subtitle">Allow %1$s to use the key without another approval only for this host</string>
+    <string name="ssh_key_provider_remember_application_subtitle">Allow %1$s reported by %2$s to use the key without another approval on any host</string>
+    <string name="ssh_key_provider_remember_application_host_subtitle">Allow %1$s reported by %2$s to use the key without another approval only for this host</string>
     <string name="ssh_key_provider_remember_auth_failed">Unable to authenticate remembered SSH access.</string>
     <string name="ssh_key_provider_notification_sign_title">SSH Signing Request</string>
     <string name="ssh_key_provider_notification_sign_title_with_destination">SSH Signing · %1$s</string>

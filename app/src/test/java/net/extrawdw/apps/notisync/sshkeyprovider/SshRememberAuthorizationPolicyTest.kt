@@ -2,6 +2,9 @@ package net.extrawdw.apps.notisync.sshkeyprovider
 
 import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.SshApprovalPolicy
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.SshConnectionDirection
 import net.extrawdw.notisync.protocol.SshDestinationContext
 import net.extrawdw.notisync.protocol.SshDestinationProvenance
@@ -110,6 +113,47 @@ class SshRememberAuthorizationPolicyTest {
                 null,
                 destination(SshDestinationProvenance.UNKNOWN),
             ),
+        )
+    }
+
+    @Test
+    fun applicationChoicesRequireAFullPathAnchorAndOfferAnOptionalVerifiedHostConstraint() {
+        val withApplication = DesktopProcessContext(
+            DesktopProcessContextSource.CURRENT_PROCESS,
+            listOf(
+                DesktopProcessIdentity(2, "/usr/bin/ssh", "ssh"),
+                DesktopProcessIdentity(1, "/opt/codex/bin/codex", "codex"),
+            ),
+        )
+        val withoutApplicationPath = DesktopProcessContext(
+            DesktopProcessContextSource.CURRENT_PROCESS,
+            listOf(DesktopProcessIdentity(2, displayName = "ssh")),
+        )
+
+        val available = SshRememberAuthorizationPolicy.availableOptions(
+            destination(SshDestinationProvenance.VERIFIED_SESSION_BIND, HOST_KEY),
+            withApplication,
+        )
+        assertTrue(SshRememberAuthorizationChoice.APPLICATION in available.choices)
+        assertTrue(SshRememberAuthorizationChoice.APPLICATION_HOST in available.choices)
+        assertEquals("Codex", requireNotNull(available.applicationAnchor).displayName)
+        val withoutVerifiedHost = SshRememberAuthorizationPolicy.availableOptions(
+            destination(SshDestinationProvenance.UNKNOWN, HOST_KEY),
+            withApplication,
+        )
+        assertTrue(SshRememberAuthorizationChoice.APPLICATION in withoutVerifiedHost.choices)
+        assertFalse(SshRememberAuthorizationChoice.APPLICATION_HOST in withoutVerifiedHost.choices)
+        assertFalse(
+            SshRememberAuthorizationChoice.APPLICATION in SshRememberAuthorizationPolicy.availableOptions(
+                destination(SshDestinationProvenance.VERIFIED_SESSION_BIND, HOST_KEY),
+                withoutApplicationPath,
+            ).choices,
+        )
+        assertFalse(
+            SshRememberAuthorizationChoice.APPLICATION_HOST in SshRememberAuthorizationPolicy.availableOptions(
+                destination(SshDestinationProvenance.VERIFIED_SESSION_BIND, HOST_KEY),
+                withoutApplicationPath,
+            ).choices,
         )
     }
 

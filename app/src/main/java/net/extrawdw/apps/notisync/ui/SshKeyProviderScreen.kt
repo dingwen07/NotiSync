@@ -1122,10 +1122,13 @@ fun SshKeyProviderScreen(
                                 withContext(Dispatchers.IO) {
                                     graph.sshKeyProviderStore.deleteRememberedAuthorization(
                                         authorization.authorizationId,
+                                        authorization.processMemoryOnly,
                                     )
                                 }
                             }.onSuccess { changed ->
-                                if (changed) graph.sshKeyProviderEngine?.publishInventory()
+                                if (changed && !authorization.processMemoryOnly) {
+                                    graph.sshKeyProviderEngine?.publishInventory()
+                                }
                             }.onFailure { error = it.message ?: it.javaClass.simpleName }
                             refresh()
                         }
@@ -1678,25 +1681,34 @@ private fun SshRememberedAuthorizationRow(
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                 )
-                when (authorization.scope) {
-                    net.extrawdw.notisync.protocol.SshRememberScope.PEER -> Text(
-                        stringResource(R.string.ssh_key_provider_remembered_peer_scope),
+                if (authorization.scope == net.extrawdw.notisync.protocol.SshRememberScope.APPLICATION_PROCESS) {
+                    Text(
+                        stringResource(
+                            R.string.ssh_key_provider_remembered_application_name,
+                            authorization.applicationDisplayName
+                                ?: authorization.applicationId
+                                ?: stringResource(R.string.ssh_key_provider_unknown),
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
-                    net.extrawdw.notisync.protocol.SshRememberScope.PEER_HOST_KEY -> {
-                        Text(
-                            authorization.hostname
-                                ?: authorization.hostKeySha256?.toSshHostKeyFingerprint()
-                                ?: stringResource(R.string.ssh_key_provider_unavailable),
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = if (authorization.hostname == null) FontFamily.Monospace else FontFamily.Default,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    net.extrawdw.notisync.protocol.SshRememberScope.APPLICATION_PROCESS -> Unit
+                    Text(
+                        authorization.applicationExecutablePath
+                            ?: stringResource(R.string.ssh_key_provider_unavailable),
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                SshRememberedAuthorizationHostConstraint(authorization)
+                if (authorization.processMemoryOnly) {
+                    Text(
+                        stringResource(R.string.ssh_key_provider_remembered_temporary_scope),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
                 }
             }
             IconButton(onClick = onDelete) {
@@ -1707,6 +1719,24 @@ private fun SshRememberedAuthorizationRow(
             }
         }
     }
+}
+
+@Composable
+private fun SshRememberedAuthorizationHostConstraint(authorization: SshRememberedAuthorization) {
+    val hostname = authorization.hostname
+    val hostKeySha256 = authorization.hostKeySha256
+    Text(
+        when {
+            hostKeySha256 == null -> stringResource(R.string.ssh_key_provider_remembered_peer_scope)
+            hostname != null -> hostname
+            else -> hostKeySha256.toSshHostKeyFingerprint()
+        },
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = if (hostKeySha256 != null && hostname == null) FontFamily.Monospace else FontFamily.Default,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+    )
 }
 
 @Composable

@@ -25,7 +25,6 @@ import net.extrawdw.notisync.protocol.SshImportSourceType
 import net.extrawdw.notisync.protocol.SshProviderFailure
 import net.extrawdw.notisync.protocol.SshProviderFailureCode
 import net.extrawdw.notisync.protocol.SshExportCopyBackendPolicy
-import net.extrawdw.notisync.protocol.SshRememberScope
 import net.extrawdw.notisync.protocol.SshSignResult
 import net.extrawdw.notisync.protocol.SshSignResultKind
 import net.extrawdw.notisync.protocol.SshUserVerificationPolicy
@@ -223,12 +222,12 @@ class SshKeyProviderEngine(
         }
     }
 
-    fun approveAndRemember(requestId: String, rememberScope: SshRememberScope): SshSignResult? {
-        val result = store.approveAndRemember(requestId, providerClientId, rememberScope, now())
+    internal fun approveAndRemember(requestId: String, choice: SshRememberAuthorizationChoice): SshSignResult? {
+        val result = store.approveAndRemember(requestId, providerClientId, choice, now())
         if (result != null) {
             notifications.dismiss(requestId)
             SshKeyProviderResponseWorker.enqueue(context, requestId)
-            publishInventory()
+            if (choice.scope.authorizationStorage == SshRememberAuthorizationStorage.DISK) publishInventory()
         }
         return result
     }

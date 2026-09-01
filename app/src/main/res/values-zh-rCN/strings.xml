@@ -160,6 +160,8 @@
     <string name="ssh_key_provider_remembered_authorizations">已记住的授权</string>
     <string name="ssh_key_provider_no_remembered_authorizations">此密钥没有已记住的授权。</string>
     <string name="ssh_key_provider_remembered_peer_scope">所有主机</string>
+    <string name="ssh_key_provider_remembered_application_name">应用：%1$s</string>
+    <string name="ssh_key_provider_remembered_temporary_scope">临时授权</string>
     <string name="ssh_key_provider_remembered_delete_title">忘记已记住的授权？</string>
     <string name="ssh_key_provider_remembered_delete_body">当未来来自 %1$s 的请求不再匹配其他已记住的授权时，将需要手动批准。</string>
     <string name="ssh_key_provider_remembered_delete_confirm">忘记授权</string>
@@ -247,10 +249,14 @@
     <string name="ssh_key_provider_sign_auth_subtitle">使用所选的受保护 SSH 密钥一次</string>
     <string name="ssh_key_provider_remember_peer">%1$s</string>
     <string name="ssh_key_provider_remember_peer_host">%1$s + 此主机</string>
+    <string name="ssh_key_provider_remember_application">%1$s</string>
+    <string name="ssh_key_provider_remember_application_host">%1$s + 此主机</string>
     <string name="ssh_key_provider_remember_pending_help">选择范围以批准此请求，并记住以后对此密钥的使用授权。</string>
     <string name="ssh_key_provider_remember_auth_title">授权记忆 SSH 访问</string>
     <string name="ssh_key_provider_remember_peer_subtitle">允许 %1$s 使用该密钥，而无需再次批准</string>
     <string name="ssh_key_provider_remember_peer_host_subtitle">仅对此主机允许 %1$s 使用该密钥，而无需再次批准</string>
+    <string name="ssh_key_provider_remember_application_subtitle">允许由 %2$s 报告的 %1$s 在任意主机上使用该密钥，而无需再次批准</string>
+    <string name="ssh_key_provider_remember_application_host_subtitle">仅对此主机允许由 %2$s 报告的 %1$s 使用该密钥，而无需再次批准</string>
     <string name="ssh_key_provider_remember_auth_failed">无法验证记忆 SSH 访问所需的身份。</string>
     <string name="ssh_key_provider_notification_sign_title">SSH 签名请求</string>
     <string name="ssh_key_provider_notification_sign_title_with_destination">SSH 签名 · %1$s</string>

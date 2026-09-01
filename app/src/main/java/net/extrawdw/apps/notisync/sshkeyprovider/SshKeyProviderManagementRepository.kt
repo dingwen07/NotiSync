@@ -16,7 +16,7 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 
-/** The complete database-backed model rendered by the SSH management screen. */
+/** The complete persisted and process-memory model rendered by the SSH management screen. */
 data class SshKeyProviderManagementSnapshot(
     val keys: List<SshKeyDescriptor>,
     val requests: List<StoredSshProviderRequest>,

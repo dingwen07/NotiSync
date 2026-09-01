@@ -23,7 +23,7 @@ class SshProcessLineageUiTest {
         val git = process(30, "/usr/bin/git", "git")
         val shell = process(20, "/usr/bin/zsh", "zsh")
 
-        assertEquals("git", listOf(git, shell).mainCallerLabel())
+        assertEquals("Git", listOf(git, shell).mainCallerLabel())
     }
 
     @Test

@@ -78,7 +78,6 @@ import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
 import net.extrawdw.notisync.protocol.DesktopProcessIdentity
 import net.extrawdw.notisync.protocol.SshImportSourceType
-import net.extrawdw.notisync.protocol.SshRememberScope
 
 internal enum class SshRequestDisplayStatus {
     WAITING,
@@ -173,7 +172,8 @@ internal fun SshHistoryRequestDetail(
     SshRequestDetail(
         details = SshReviewScreenState.Details(
             request = request,
-            rememberScopes = emptySet(),
+            rememberChoices = emptySet(),
+            rememberApplication = null,
             encryptedImport = request.history.encryptedImport,
             keyPreview = keyPreview,
             keyName = request.history.keyName
@@ -195,13 +195,13 @@ internal fun SshReviewContent(
     busy: Boolean,
     onApprove: () -> Unit,
     onReject: () -> Unit,
-    onRemember: (SshRememberScope) -> Unit,
+    onRemember: (SshRememberAuthorizationChoice) -> Unit,
     onClose: () -> Unit,
 ) {
     val details = state as? SshReviewScreenState.Details
     val pending = details?.request?.state == SshProviderRequestState.PENDING_REVIEW
     val canRemember = details?.let {
-        pending && it.request.kind == SshProviderRequestKind.SIGN && it.rememberScopes.isNotEmpty()
+        pending && it.request.kind == SshProviderRequestKind.SIGN && it.rememberChoices.isNotEmpty()
     } == true
     var showRememberOptions by remember(details?.request?.requestId) { mutableStateOf(false) }
     Scaffold(
@@ -491,9 +491,9 @@ internal fun SshRequestDetail(
 private fun RememberAuthorizationSheet(
     details: SshReviewScreenState.Details,
     busy: Boolean,
-    onRemember: (SshRememberScope) -> Unit,
+    onRemember: (SshRememberAuthorizationChoice) -> Unit,
 ) {
-    val scopes = details.rememberScopes
+    val choices = details.rememberChoices
     LazyColumn(
         modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
         contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp),
@@ -524,10 +524,31 @@ private fun RememberAuthorizationSheet(
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
-        if (SshRememberScope.PEER_HOST_KEY in scopes) {
+        val application = details.rememberApplication
+        if (SshRememberAuthorizationChoice.APPLICATION_HOST in choices && application != null) {
+            item {
+                RememberApplicationButton(
+                    application,
+                    SshRememberAuthorizationChoice.APPLICATION_HOST,
+                    busy,
+                    onRemember,
+                )
+            }
+        }
+        if (SshRememberAuthorizationChoice.APPLICATION in choices && application != null) {
+            item {
+                RememberApplicationButton(
+                    application,
+                    SshRememberAuthorizationChoice.APPLICATION,
+                    busy,
+                    onRemember,
+                )
+            }
+        }
+        if (SshRememberAuthorizationChoice.PEER_HOST in choices) {
             item {
                 OutlinedButton(
-                    onClick = { onRemember(SshRememberScope.PEER_HOST_KEY) },
+                    onClick = { onRemember(SshRememberAuthorizationChoice.PEER_HOST) },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -538,10 +559,10 @@ private fun RememberAuthorizationSheet(
                 }
             }
         }
-        if (SshRememberScope.PEER in scopes) {
+        if (SshRememberAuthorizationChoice.PEER in choices) {
             item {
                 OutlinedButton(
-                    onClick = { onRemember(SshRememberScope.PEER) },
+                    onClick = { onRemember(SshRememberAuthorizationChoice.PEER) },
                     enabled = !busy,
                     modifier = Modifier.fillMaxWidth(),
                 ) {
@@ -551,6 +572,40 @@ private fun RememberAuthorizationSheet(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun RememberApplicationButton(
+    application: SshApplicationAnchor,
+    choice: SshRememberAuthorizationChoice,
+    busy: Boolean,
+    onRemember: (SshRememberAuthorizationChoice) -> Unit,
+) {
+    val label = when (choice) {
+        SshRememberAuthorizationChoice.APPLICATION -> R.string.ssh_key_provider_remember_application
+        SshRememberAuthorizationChoice.APPLICATION_HOST -> R.string.ssh_key_provider_remember_application_host
+        else -> error("application remember button requires an application choice")
+    }
+    OutlinedButton(
+        onClick = { onRemember(choice) },
+        enabled = !busy,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Text(stringResource(label, application.displayName))
+            Text(
+                application.identity.executablePath,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontFamily = FontFamily.Monospace,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis,
+            )
         }
     }
 }

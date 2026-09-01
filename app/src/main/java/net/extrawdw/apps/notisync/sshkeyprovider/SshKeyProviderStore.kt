@@ -161,6 +161,10 @@ data class SshRememberedAuthorization(
     val hostKeySha256: ByteArray?,
     val hostname: String?,
     val createdAt: Long,
+    val applicationExecutablePath: String? = null,
+    val applicationId: String? = null,
+    val applicationDisplayName: String? = null,
+    val processMemoryOnly: Boolean = false,
 )
 
 class PreparedSshSignature internal constructor(
@@ -357,6 +361,7 @@ class SshKeyProviderStore(context: Context) :
     }
     private val _changeVersion = MutableStateFlow(0L)
     val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
+    private val volatileApplicationAuthorizations = SshVolatileApplicationAuthorizationStore(::randomId)
     private var resetEpoch = 0L
 
     init {
@@ -374,6 +379,12 @@ class SshKeyProviderStore(context: Context) :
 
     override fun onDowngrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
         error("Unsupported SSH key database schema $oldVersion; expected $newVersion. No data was modified.")
+
+    @Synchronized
+    override fun close() {
+        volatileApplicationAuthorizations.clear()
+        super.close()
+    }
 
     private fun roomMustOwnSshSchema(): Nothing =
         error("The operational Room database must be initialized before opening the SSH key store")
@@ -578,36 +589,65 @@ class SshKeyProviderStore(context: Context) :
     }
 
     @Synchronized
-    fun rememberedAuthorizations(): List<SshRememberedAuthorization> = readableDatabase.rawQuery(
-        "SELECT a.authorization_id, a.provider_key_id, a.requester_client_id, " +
-            "a.authorization_generation, a.authorization_epoch, a.scope, a.host_key_sha256, " +
-            "h.hostname, a.created_at FROM ssh_remembered_authorizations a " +
-            "LEFT JOIN ssh_known_hosts h ON h.host_key_sha256=a.host_key_sha256 " +
-            "ORDER BY a.provider_key_id, a.created_at DESC, a.authorization_id",
-        emptyArray(),
-    ).use { cursor ->
-        buildList {
-            while (cursor.moveToNext()) {
-                add(
-                    SshRememberedAuthorization(
-                        authorizationId = cursor.getString(0),
-                        providerKeyId = cursor.getString(1),
-                        requesterClientId = ClientId(cursor.getString(2)),
-                        authorizationGeneration = cursor.getString(3),
-                        authorizationEpoch = cursor.getLong(4),
-                        scope = SshRememberScope.valueOf(cursor.getString(5)),
-                        hostKeySha256 = if (cursor.isNull(6)) null else cursor.getBlob(6),
-                        hostname = if (cursor.isNull(7)) null else cursor.getString(7),
-                        createdAt = cursor.getLong(8),
-                    ),
-                )
+    fun rememberedAuthorizations(): List<SshRememberedAuthorization> {
+        val persisted = readableDatabase.rawQuery(
+            "SELECT a.authorization_id, a.provider_key_id, a.requester_client_id, " +
+                "a.authorization_generation, a.authorization_epoch, a.scope, a.host_key_sha256, " +
+                "h.hostname, a.created_at FROM ssh_remembered_authorizations a " +
+                "LEFT JOIN ssh_known_hosts h ON h.host_key_sha256=a.host_key_sha256",
+            emptyArray(),
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(
+                        SshRememberedAuthorization(
+                            authorizationId = cursor.getString(0),
+                            providerKeyId = cursor.getString(1),
+                            requesterClientId = ClientId(cursor.getString(2)),
+                            authorizationGeneration = cursor.getString(3),
+                            authorizationEpoch = cursor.getLong(4),
+                            scope = SshRememberScope.valueOf(cursor.getString(5)),
+                            hostKeySha256 = if (cursor.isNull(6)) null else cursor.getBlob(6),
+                            hostname = if (cursor.isNull(7)) null else cursor.getString(7),
+                            createdAt = cursor.getLong(8),
+                        ),
+                    )
+                }
             }
         }
+        val volatileSnapshot = volatileApplicationAuthorizations.snapshot()
+        val knownHostnames = if (volatileSnapshot.any { it.hostKeySha256 != null }) {
+            readableDatabase.rawQuery(
+                "SELECT hex(host_key_sha256), hostname FROM ssh_known_hosts",
+                emptyArray(),
+            ).use { cursor ->
+                buildMap {
+                    while (cursor.moveToNext()) put(cursor.getString(0), cursor.getString(1))
+                }
+            }
+        } else {
+            emptyMap()
+        }
+        val volatile = volatileSnapshot.map { authorization ->
+            authorization.toRememberedAuthorizationSnapshot(
+                authorization.hostKeySha256?.toHex()?.uppercase()?.let(knownHostnames::get),
+            )
+        }
+        return (persisted + volatile).sortedWith(
+            compareBy<SshRememberedAuthorization>(SshRememberedAuthorization::providerKeyId)
+                .thenByDescending(SshRememberedAuthorization::createdAt)
+                .thenBy(SshRememberedAuthorization::authorizationId),
+        )
     }
 
     @Synchronized
-    fun deleteRememberedAuthorization(authorizationId: String): Boolean {
+    fun deleteRememberedAuthorization(authorizationId: String, processMemoryOnly: Boolean = false): Boolean {
         require(authorizationId.isNotBlank()) { "authorization id must not be blank" }
+        if (processMemoryOnly) {
+            val changed = volatileApplicationAuthorizations.delete(authorizationId)
+            if (changed) notifyChanged()
+            return changed
+        }
         val database = writableDatabase
         database.beginTransaction()
         val changed = try {
@@ -1848,7 +1888,10 @@ class SshKeyProviderStore(context: Context) :
         } finally {
             database.endTransaction()
         }
-        if (deleted) notifyChanged()
+        if (deleted) {
+            volatileApplicationAuthorizations.forgetKey(providerKeyId)
+            notifyChanged()
+        }
         return deleted
     }
 
@@ -1899,6 +1942,7 @@ class SshKeyProviderStore(context: Context) :
         }
 
         resetEpoch = if (resetEpoch == Long.MAX_VALUE) 0L else resetEpoch + 1L
+        volatileApplicationAuthorizations.clear()
         val firstFailure = deleteAllSshKeyStoreAliases()
         notifyChanged()
         if (firstFailure != null) {
@@ -2043,19 +2087,20 @@ class SshKeyProviderStore(context: Context) :
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
     @Synchronized
-    fun availableRememberScopes(requestId: String): Set<SshRememberScope> {
-        val stored = find(requestId) ?: return emptySet()
-        val request = stored.signRequest ?: return emptySet()
+    internal fun availableRememberOptions(requestId: String): SshRememberAuthorizationOptions {
+        val unavailable = SshRememberAuthorizationOptions(emptySet(), null)
+        val stored = find(requestId) ?: return unavailable
+        val request = stored.signRequest ?: return unavailable
         if (stored.state != SshProviderRequestState.PENDING_REVIEW || request.confirmationRequired ||
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
-        ) return emptySet()
-        val policy = findKeyPolicy(request.publicKeyBlob) ?: return emptySet()
+        ) return unavailable
+        val policy = findKeyPolicy(request.publicKeyBlob) ?: return unavailable
         if (!SshRememberAuthorizationPolicy.keyAllowsRememberedAuthorization(
                 policy.approvalPolicy,
                 policy.userVerificationPolicy,
             )
-        ) return emptySet()
-        return SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext)
+        ) return unavailable
+        return SshRememberAuthorizationPolicy.availableOptions(request.destinationContext, request.processContext)
     }
 
     @Synchronized
@@ -2480,10 +2525,10 @@ class SshKeyProviderStore(context: Context) :
         cancelPreparedKeyStorage(prepared.keyStorage)
 
     @Synchronized
-    fun approveAndRemember(
+    internal fun approveAndRemember(
         requestId: String,
         provider: ClientId,
-        scope: SshRememberScope,
+        choice: SshRememberAuthorizationChoice,
         now: Long,
     ): SshSignResult? {
         val stored = find(requestId) ?: return null
@@ -2501,17 +2546,66 @@ class SshKeyProviderStore(context: Context) :
                 policy.userVerificationPolicy,
             )
         ) return null
-        if (scope !in SshRememberAuthorizationPolicy.availableDiskScopes(request.destinationContext) ||
-            scope.authorizationStorage != SshRememberAuthorizationStorage.DISK
-        ) return null
+        val options = SshRememberAuthorizationPolicy.availableOptions(
+            request.destinationContext,
+            request.processContext,
+        )
+        if (choice !in options.choices) return null
+        val scope = choice.scope
         val disposition = when (scope) {
             SshRememberScope.PEER -> SshRememberDisposition.CREATED_PEER
             SshRememberScope.PEER_HOST_KEY -> SshRememberDisposition.CREATED_PEER_HOST_KEY
-            SshRememberScope.APPLICATION_PROCESS -> return null
+            SshRememberScope.APPLICATION_PROCESS -> SshRememberDisposition.CREATED_APPLICATION_PROCESS
+        }
+        val volatileWrite = if (choice.applicationBound) {
+            val application = options.applicationAnchor ?: return null
+            val hostKeySha256 = if (choice.hostBound) {
+                SshRememberAuthorizationPolicy.verifiedHostKeySha256(request.destinationContext) ?: return null
+            } else {
+                null
+            }
+            volatileApplicationAuthorizations.prepare(
+                providerKeyId = policy.providerKeyId,
+                requesterClientId = request.requesterClientId,
+                authorizationGeneration = request.authorizationGeneration,
+                authorizationEpoch = request.authorizationEpoch,
+                application = application,
+                hostKeySha256 = hostKeySha256,
+                createdAt = now,
+            ) ?: return null
+        } else {
+            null
         }
         val response = sign(request, provider, now, disposition)
         if (response.kind != SshSignResultKind.SIGNED) {
             return response.takeIf { storeResponse(stored, it, now) }
+        }
+        if (choice.applicationBound) {
+            val write = requireNotNull(volatileWrite)
+            val database = writableDatabase
+            database.beginTransaction()
+            val storedResponse = try {
+                observeKnownHost(database, request.destinationContext, now)
+                storeResponse(
+                    stored = stored,
+                    response = response,
+                    now = now,
+                    database = database,
+                    notify = false,
+                    approvalAudit = ApprovalAudit(
+                        kind = SshRequestApprovalKind.MANUAL,
+                        rememberedAuthorizationId = write.authorization.authorizationId,
+                        rememberedScope = scope,
+                    ),
+                ).also { consumed -> if (consumed) database.setTransactionSuccessful() }
+            } finally {
+                database.endTransaction()
+            }
+            if (storedResponse) {
+                volatileApplicationAuthorizations.commit(write)
+                notifyChanged()
+            }
+            return response.takeIf { storedResponse }
         }
         val database = writableDatabase
         database.beginTransaction()
@@ -2555,7 +2649,7 @@ class SshKeyProviderStore(context: Context) :
         val disposition = when (authorization.scope) {
             SshRememberScope.PEER -> SshRememberDisposition.MATCHED_PEER
             SshRememberScope.PEER_HOST_KEY -> SshRememberDisposition.MATCHED_PEER_HOST_KEY
-            SshRememberScope.APPLICATION_PROCESS -> return null
+            SshRememberScope.APPLICATION_PROCESS -> SshRememberDisposition.MATCHED_APPLICATION_PROCESS
         }
         val consumed = storeResponse(
             stored,
@@ -2636,6 +2730,7 @@ class SshKeyProviderStore(context: Context) :
         } finally {
             database.endTransaction()
         }
+        volatileApplicationAuthorizations.forget(requester, generation, invalidatedThroughEpoch)
         if (changed || cancelled.isNotEmpty()) notifyChanged()
         return SshAuthorizationForgetOutcome(changed, cancelled)
     }
@@ -3376,6 +3471,21 @@ class SshKeyProviderStore(context: Context) :
             ) ||
             request.authorizationEpoch <= authorizationFloor(request.requesterClientId, request.authorizationGeneration)
         ) return null
+        val hostKeySha256 = SshRememberAuthorizationPolicy.verifiedHostKeySha256(request.destinationContext)
+        volatileApplicationAuthorizations.matching(
+            providerKeyId = policy.providerKeyId,
+            requesterClientId = request.requesterClientId,
+            authorizationGeneration = request.authorizationGeneration,
+            authorizationEpoch = request.authorizationEpoch,
+            applicationSelection = SshApplicationAnchorSelector.select(request.processContext),
+            hostKeySha256 = hostKeySha256,
+        )?.let { authorization ->
+            return RememberedAuthorizationMatch(
+                authorizationId = authorization.authorizationId,
+                scope = SshRememberScope.APPLICATION_PROCESS,
+                hostKeySha256 = authorization.hostKeySha256,
+            )
+        }
         val scopes = readableDatabase.rawQuery(
             "SELECT authorization_id, scope, host_key_sha256 FROM ssh_remembered_authorizations " +
                 "WHERE provider_key_id=? AND requester_client_id=? " +
