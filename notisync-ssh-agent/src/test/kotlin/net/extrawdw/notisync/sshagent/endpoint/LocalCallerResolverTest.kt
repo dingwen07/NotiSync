@@ -1,15 +1,22 @@
 package net.extrawdw.notisync.sshagent.endpoint
 
+import java.nio.file.Files
 import net.extrawdw.notisync.desktop.DesktopProcessExecutableResolver
+import net.extrawdw.notisync.desktop.DesktopProcessNameResolver
 import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assume.assumeNotNull
 import org.junit.Assume.assumeTrue
+import org.junit.Rule
 import org.junit.Test
+import org.junit.rules.TemporaryFolder
 
 class LocalCallerResolverTest {
+    @get:Rule
+    val temporaryFolder = TemporaryFolder()
+
     private val resolver = LocalCallerResolver()
 
     @Test
@@ -65,6 +72,30 @@ class LocalCallerResolverTest {
             resolved.processLineage.take(3).map { it.pid },
         )
         assertNull(resolved.processLineage[1].executablePath)
+    }
+
+    @Test
+    fun `Linux process name remains available when executable path is missing`() {
+        val pid = ProcessHandle.current().pid()
+        val procRoot = temporaryFolder.newFolder("proc").toPath()
+        val processDirectory = Files.createDirectory(procRoot.resolve(pid.toString()))
+        Files.writeString(processDirectory.resolve("comm"), "restricted-service\n")
+        val resolver = LocalCallerResolver(
+            processExecutables = DesktopProcessExecutableResolver(
+                osName = "Linux",
+                portableCommand = { null },
+            ),
+            processNames = DesktopProcessNameResolver(osName = "Linux", procRoot = procRoot),
+        )
+
+        val leaf = resolver.resolve(
+            pid,
+            DesktopProcessContextSource.CURRENT_PROCESS,
+        ).processContext.leaf
+
+        assertNotNull(leaf)
+        assertNull(requireNotNull(leaf).executablePath)
+        assertEquals("restricted-service", leaf.displayName)
     }
 
     @Test

@@ -2,6 +2,7 @@ package net.extrawdw.notisync.sshagent.endpoint
 
 import java.nio.file.Path
 import net.extrawdw.notisync.desktop.DesktopProcessExecutableResolver
+import net.extrawdw.notisync.desktop.DesktopProcessNameResolver
 import net.extrawdw.notisync.desktop.ProcessInstanceIdentity
 import net.extrawdw.notisync.desktop.ProcessInstanceIdentityResolver
 import net.extrawdw.notisync.protocol.DesktopProcessContext
@@ -18,6 +19,7 @@ data class LocalCallerSnapshot(
 class LocalCallerResolver(
     private val processInstances: ProcessInstanceIdentityResolver = ProcessInstanceIdentityResolver(),
     private val processExecutables: DesktopProcessExecutableResolver = DesktopProcessExecutableResolver(),
+    private val processNames: DesktopProcessNameResolver = DesktopProcessNameResolver(),
 ) {
     fun resolve(socket: AFUNIXSocket): LocalCallerSnapshot {
         // Windows AF_UNIX is supported as an explicit compatibility listener, but its provider
@@ -77,12 +79,13 @@ class LocalCallerResolver(
             ?.let { command ->
                 runCatching { Path.of(command).toAbsolutePath().normalize().toString() }.getOrNull()
             }
+        val executableName = normalized?.let { path ->
+            runCatching { Path.of(path).fileName?.toString() }.getOrNull()
+        }
         return DesktopProcessIdentity(
             pid = handle.pid(),
             executablePath = normalized,
-            displayName = normalized?.let { path ->
-                runCatching { Path.of(path).fileName?.toString() }.getOrNull()
-            },
+            displayName = executableName ?: processNames.resolve(handle.pid()),
         )
     }
 
