@@ -2,8 +2,10 @@ package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -63,6 +65,9 @@ fun ActivityScreen() {
             LazyColumn(modifier.fillMaxSize()) {
                 items(events) { e ->
                     ListItem(
+                        // Override the default three-line minimum without constraining wrapped text.
+                        modifier = Modifier.heightIn(min = 64.dp),
+                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
                         overlineContent = {
                             Text(
                                 stringResource(

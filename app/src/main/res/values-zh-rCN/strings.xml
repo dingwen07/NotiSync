@@ -453,8 +453,28 @@
     <string name="app_config_remove_channel">移除渠道</string>
 
     <!-- Activity screen -->
+    <string name="activity_message_ssh">SSH</string>
+    <string name="activity_message_openpgp">OpenPGP 签名</string>
+    <string name="activity_message_screen">屏幕共享</string>
+    <string name="activity_message_keys_request">密钥列表请求</string>
+    <string name="activity_message_keys_snapshot">密钥列表响应</string>
+    <string name="activity_message_sign_request">签名请求</string>
+    <string name="activity_message_sign_result">签名结果</string>
+    <string name="activity_message_cancel">取消请求</string>
+    <string name="activity_message_import_request">密钥导入请求</string>
+    <string name="activity_message_import_result">密钥导入结果</string>
+    <string name="activity_message_forget_request">忘记授权请求</string>
+    <string name="activity_message_forget_result">忘记授权结果</string>
+    <string name="activity_message_reject">签名拒绝</string>
+    <string name="activity_message_screen_request">会话请求</string>
+    <string name="activity_message_status">会话状态</string>
+    <string name="activity_message_end">会话结束</string>
+    <string name="activity_message_received">%1$s · 来自 %2$s</string>
+    <plurals name="activity_message_sent">
+        <item quantity="other">%1$s · 发送至 %2$d 台设备</item>
+    </plurals>
     <string name="activity_empty_title">暂无动态</string>
-    <string name="activity_empty_body">设备、通知和 NotiSync Run 诊断信息将显示在此处。</string>
+    <string name="activity_empty_body">设备、通知、Run、SSH、签名和屏幕共享消息将显示在此处。</string>
     <string name="activity_event_overline">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s，通过 %2$s</string>
     <string name="activity_delivery_unknown">未知路线</string>

@@ -39,6 +39,7 @@ class SecureChannelOutboundDispatcherTest {
             )
             val transport = RecordingTransport()
             val recipient = RecipientKey(ClientId("recipient"), Hpke.generateKeyPair().publicKeyset)
+            val observedSends = mutableListOf<Pair<MessageType, Int>>()
             val channel = SecureChannel(
                 signer = identity,
                 operationalSigner = { operational },
@@ -48,6 +49,12 @@ class SecureChannelOutboundDispatcherTest {
                 log = ChannelLogger { },
                 now = { 1_750_000_000_000L },
                 outboundDispatcher = dispatcher,
+                onSent = { type, _, count ->
+                    assertEquals(observedSends.size + 1, transport.sendThreads.size)
+                    observedSends += type to count
+                    // Presentation failures must not turn an accepted message into a send failure.
+                    error("activity observer failed")
+                },
             )
 
             channel.send(
@@ -63,6 +70,10 @@ class SecureChannelOutboundDispatcherTest {
                 Urgency.HIGH,
             ) { }
 
+            assertEquals(
+                listOf(MessageType.DATA_SYNC to 1, MessageType.NOTIFICATION to 1),
+                observedSends,
+            )
             assertEquals(2, signingThreads.size)
             assertTrue(signingThreads.all { it.startsWith(WORKER_THREAD_NAME) })
             assertEquals(2, transport.sendThreads.size)

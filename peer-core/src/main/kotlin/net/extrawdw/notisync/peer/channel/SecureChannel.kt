@@ -97,6 +97,8 @@ class SecureChannel(
      * for hosts whose signers are non-blocking and for existing deterministic tests.
      */
     private val outboundDispatcher: CoroutineDispatcher? = null,
+    /** Optional presentation observer, called only after transport acceptance; never affects delivery. */
+    private val onSent: (MessageType, ByteArray, Int) -> Unit = { _, _, _ -> },
 ) {
     private val seq = AtomicLong(now())
 
@@ -207,6 +209,7 @@ class SecureChannel(
             if (!result.accepted) {
                 throw IllegalStateException("transport rejected $typ envelope $messageId")
             }
+            runCatching { onSent(typ, body, envelope.recipients.size) }
             sentAny = true
         }
         return if (sentAny) recipients.size else 0
@@ -285,6 +288,7 @@ class SecureChannel(
 
             val result = transport.send(envelope, urgency)
             check(result.accepted) { "transport rejected strict $typ envelope ${item.messageId}" }
+            runCatching { onSent(typ, item.body, envelope.recipients.size) }
             onAccepted(item)
         }
         return recipients.size

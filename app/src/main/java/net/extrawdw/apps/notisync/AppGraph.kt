@@ -50,6 +50,7 @@ import net.extrawdw.apps.notisync.crypto.KeyFingerprint
 import net.extrawdw.apps.notisync.crypto.KeyVault
 import net.extrawdw.apps.notisync.crypto.KeyVaultAuthTokenStore
 import net.extrawdw.apps.notisync.data.ActivityEvent
+import net.extrawdw.apps.notisync.data.MessageActivity
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.AndroidActivityText
@@ -482,6 +483,9 @@ class AppGraph(private val app: Application) {
             GraphicsPipeline(NotificationRuleEngine(), graphicsExtractor, assetManager)
         // The generic secure-messaging substrate: seal/sign/dedup/verify/open + per-MessageType routing.
         // It depends only on the read-only TrustPeerDirectory port (keys flow foundation → channel).
+        val messageActivity = MessageActivity(app, activityLog) { id ->
+            trust.displayName(id) ?: id.shortForm()
+        }
         val channel = SecureChannel(
             signer = identity,
             operationalSigner = { operational },
@@ -503,6 +507,7 @@ class AppGraph(private val app: Application) {
             // Envelope signing and authenticated-request signing synchronously cross Android Keystore.
             // Compose and lifecycle callers may enter on main; suspend them while the whole send runs on I/O.
             outboundDispatcher = Dispatchers.IO,
+            onSent = messageActivity::sent,
             // Can't resolve a (trusted) sender's key for the epoch it signed with → fetch its key-epoch (and
             // fall back to a roster broadcast) so the gap self-heals. foundationEngine is read at call time.
             onUnresolvedSender = { id ->
@@ -702,11 +707,18 @@ class AppGraph(private val app: Application) {
             onFilter = mirror::onFilterSync, // FILTER DataSync (a peer's suppression request) forwarded too
             onNotificationSync = mirror::onQuietNotification, // NOTIFICATION DataSync (quiet ongoing update)
             onRunSync = runs::onRunSync, // RUN DataSync persists/renders through the dedicated Run application
-            onOpenPgpSignSync = openPgpSigning::onOpenPgpSignSync,
-            onSshAgentSync = sshProvider::onSshAgentSync,
+            onOpenPgpSignSync = { message, sync ->
+                openPgpSigning.onOpenPgpSignSync(message, sync)
+                messageActivity.received(message, sync)
+            },
+            onSshAgentSync = { message, sync ->
+                sshProvider.onSshAgentSync(message, sync)
+                messageActivity.received(message, sync)
+            },
             onScreenMirrorSync = { message, sync ->
                 screenController.onScreenMirrorSync(message, sync)
                 screenRequester.onScreenMirrorSync(message, sync)
+                messageActivity.received(message, sync)
             },
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned

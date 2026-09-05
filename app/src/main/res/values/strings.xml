@@ -469,8 +469,29 @@
     <string name="app_config_remove_channel">Remove channel</string>
 
     <!-- Activity screen -->
+    <string name="activity_message_ssh">SSH</string>
+    <string name="activity_message_openpgp">OpenPGP signing</string>
+    <string name="activity_message_screen">Screen sharing</string>
+    <string name="activity_message_keys_request">Key list request</string>
+    <string name="activity_message_keys_snapshot">Key list response</string>
+    <string name="activity_message_sign_request">Signing request</string>
+    <string name="activity_message_sign_result">Signing result</string>
+    <string name="activity_message_cancel">Cancellation</string>
+    <string name="activity_message_import_request">Key import request</string>
+    <string name="activity_message_import_result">Key import result</string>
+    <string name="activity_message_forget_request">Forget authorization request</string>
+    <string name="activity_message_forget_result">Forget authorization result</string>
+    <string name="activity_message_reject">Signing rejection</string>
+    <string name="activity_message_screen_request">Session request</string>
+    <string name="activity_message_status">Session status</string>
+    <string name="activity_message_end">Session ended</string>
+    <string name="activity_message_received">%1$s · from %2$s</string>
+    <plurals name="activity_message_sent">
+        <item quantity="one">%1$s · to %2$d device</item>
+        <item quantity="other">%1$s · to %2$d devices</item>
+    </plurals>
     <string name="activity_empty_title">No activity yet</string>
-    <string name="activity_empty_body">Device, notification, and NotiSync Run diagnostics will appear here.</string>
+    <string name="activity_empty_body">Device, notification, Run, SSH, signing, and screen-sharing messages will appear here.</string>
     <string name="activity_event_overline">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s via %2$s</string>
     <string name="activity_delivery_unknown">unknown route</string>
