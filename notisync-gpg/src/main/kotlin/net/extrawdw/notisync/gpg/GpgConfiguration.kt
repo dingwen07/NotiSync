@@ -17,15 +17,15 @@ data class NotisyncGpgConfig(
 ) {
     fun validate(): NotisyncGpgConfig = apply {
         require(realGpgPath.isAbsolute) { "real-gpg-path must be absolute" }
-        require(Files.isRegularFile(realGpgPath, LinkOption.NOFOLLOW_LINKS)) {
+        require(Files.isRegularFile(realGpgPath)) {
             "real-gpg-path is not a regular file"
         }
         if (!System.getProperty("os.name").contains("windows", ignoreCase = true)) {
             require(Files.isExecutable(realGpgPath)) { "real-gpg-path is not executable" }
         }
-        require(!realGpgPath.fileName.toString().lowercase().let {
-            it == "notisync-gpg" || it == "notisync-gpg.bat" || it == "notisync-gpg.exe"
-        }) { "real-gpg-path must not resolve to notisync-gpg" }
+        require(!realGpgPath.toRealPath().isNotisyncGpgExecutable()) {
+            "real-gpg-path must not resolve to notisync-gpg"
+        }
         require(timeoutSeconds in 30..300) { "timeout-seconds must be between 30 and 300" }
         require(maximumPayloadBytes in 1..OpenPgpSignLimits.MAX_PAYLOAD_BYTES) {
             "maximum-payload-bytes must be between 1 and ${OpenPgpSignLimits.MAX_PAYLOAD_BYTES}"
@@ -40,16 +40,32 @@ class NotisyncGpgConfigStore(
     val path: Path = DesktopPaths.default().notisyncGpgConfig,
 ) {
     fun load(): NotisyncGpgConfig {
-        PrivateFiles.ensureDirectory(requireNotNull(path.parent))
-        require(Files.exists(path, LinkOption.NOFOLLOW_LINKS)) {
+        require(configExists()) {
             "configuration is missing; run 'notisync-gpg config set-real-gpg ABSOLUTE_PATH'"
         }
-        PrivateFiles.validatePrivateFile(path)
-        return decode(Files.readString(path), path).validate()
+        return read().validate()
+    }
+
+    fun loadUsing(realGpgPath: Path): NotisyncGpgConfig {
+        val config = if (configExists()) {
+            read().copy(realGpgPath = realGpgPath)
+        } else {
+            NotisyncGpgConfig(realGpgPath)
+        }
+        return config.validate()
     }
 
     fun save(config: NotisyncGpgConfig) {
         PrivateFiles.atomicWrite(path, encode(config.validate()).encodeToByteArray())
+    }
+
+    private fun configExists(): Boolean {
+        return Files.exists(path, LinkOption.NOFOLLOW_LINKS)
+    }
+
+    private fun read(): NotisyncGpgConfig {
+        PrivateFiles.validatePrivateFile(path)
+        return decode(Files.readString(path), path)
     }
 
     internal fun decode(text: String, source: Path = path): NotisyncGpgConfig {

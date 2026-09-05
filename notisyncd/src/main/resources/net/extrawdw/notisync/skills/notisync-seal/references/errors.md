@@ -32,7 +32,7 @@ The stable rejection enum is not the whole failure surface. `notisync-gpg` also 
 
 Configuration and command diagnostics include:
 
-- `configuration is missing; run 'notisync-gpg config set-real-gpg ABSOLUTE_PATH'`
+- `configuration is missing; run 'notisync-gpg config set-real-gpg ABSOLUTE_PATH'`: GPG was not found on `PATH` and no fallback is configured.
 - `real GPG path must be absolute`
 - `real-gpg-path must be absolute`, `is not a regular file`, `is not executable`, or `must not resolve to notisync-gpg`
 - invalid/missing/duplicate configuration options, bad quoting/escaping, timeout outside 30..300 seconds, payload bound outside its supported range, or any fallback other than `fail-closed`

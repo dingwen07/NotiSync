@@ -1,8 +1,6 @@
 package net.extrawdw.notisync.gpg
 
 import java.io.ByteArrayOutputStream
-import java.nio.file.Files
-import java.nio.file.LinkOption
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import net.extrawdw.notisync.desktop.DesktopPaths
@@ -17,6 +15,7 @@ class NotisyncGpgCommand(
     private val paths: DesktopPaths = DesktopPaths.default(),
     private val stdout: java.io.PrintStream = System.out,
     private val stderr: java.io.PrintStream = System.err,
+    private val findGpgOnPath: () -> Path? = GpgExecutableResolver()::findOnPath,
 ) {
     fun run(arguments: List<String>): Int = try {
         when (arguments.firstOrNull()) {
@@ -50,12 +49,7 @@ class NotisyncGpgCommand(
                 val supplied = Path.of(arguments[1])
                 require(supplied.isAbsolute) { "real GPG path must be absolute" }
                 val path = supplied.toRealPath().normalize()
-                val current = if (Files.exists(store.path, LinkOption.NOFOLLOW_LINKS)) {
-                    store.load()
-                } else null
-                store.save(
-                    (current ?: NotisyncGpgConfig(path)).copy(realGpgPath = path)
-                )
+                store.save(store.loadUsing(path))
                 stdout.println("Stored real GPG path in ${store.path}")
                 SUCCESS
             }
@@ -67,7 +61,7 @@ class NotisyncGpgCommand(
 
     private fun doctor(arguments: List<String>): Int {
         require(arguments.isEmpty()) { "usage: notisync-gpg doctor" }
-        val config = NotisyncGpgConfigStore(paths.notisyncGpgConfig).load()
+        val config = resolveConfig()
         val version = ProcessExecution.capture(
             listOf(config.realGpgPath.toString(), "--version"),
             maximumOutputBytes = 64 * 1024,
@@ -90,7 +84,8 @@ class NotisyncGpgCommand(
               notisync-gpg config set-real-gpg ABSOLUTE_PATH
               notisync-gpg doctor
 
-            Configure this executable as Git's gpg.program after storing the absolute real-GPG path.
+            Configure this executable as Git's gpg.program. It uses gpg from PATH by default;
+            set real-gpg-path only as a fallback when gpg is not available on PATH.
             Other invocations are either handled as Git commit/tag signing or delegated unchanged to real GPG.
             """.trimIndent()
         )
@@ -98,7 +93,7 @@ class NotisyncGpgCommand(
     }
 
     private fun invokeGpg(arguments: List<String>): Int {
-        val config = NotisyncGpgConfigStore(paths.notisyncGpgConfig).load()
+        val config = resolveConfig()
         return when (val invocation = GitSigningInvocationParser.parse(arguments)) {
             GitSigningInvocation.Delegate -> ProcessExecution.delegate(config.realGpgPath, arguments)
             is GitSigningInvocation.Remote -> {
@@ -132,6 +127,12 @@ class NotisyncGpgCommand(
                 }
             }
         }
+    }
+
+    private fun resolveConfig(): NotisyncGpgConfig {
+        val store = NotisyncGpgConfigStore(paths.notisyncGpgConfig)
+        val pathGpg = findGpgOnPath()
+        return if (pathGpg != null) store.loadUsing(pathGpg) else store.load()
     }
 
     private fun readBounded(input: java.io.InputStream, maximumBytes: Int): ByteArray {

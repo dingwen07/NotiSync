@@ -181,21 +181,23 @@ The `notisync-gpg` adapter uses that GPG to resolve the requested certificate, d
 unsupported operation unchanged, and verifies the returned detached signature before Git receives it.
 No private OpenPGP key is required on the desktop for the remotely selected certificate.
 
-1. Before changing Git configuration, record the absolute path of the real GPG executable and store it:
+1. Confirm that the real GPG executable is available on `PATH`, then check the adapter:
 
    ```bash
-   real_gpg="$(command -v gpg)"
-   notisync-gpg config set-real-gpg "$real_gpg"
+   command -v gpg
    notisync-gpg doctor
    ```
 
    On Windows PowerShell:
 
    ```powershell
-   $realGpg = (Get-Command gpg.exe).Source
-   notisync-gpg config set-real-gpg $realGpg
+   Get-Command gpg.exe
    notisync-gpg doctor
    ```
+
+   The adapter uses `gpg` (`gpg.exe` on Windows) from `PATH` by default. Only when GPG is not
+   available on `PATH`, configure an absolute fallback with
+   `notisync-gpg config set-real-gpg ABSOLUTE_PATH`. Symbolic links are accepted and resolved.
 
 2. Install OpenKeychain on the Android device, import the private certificate there, then open
    **Tools > Seal** in NotiSync and select that certificate. OpenKeychain remains responsible for
