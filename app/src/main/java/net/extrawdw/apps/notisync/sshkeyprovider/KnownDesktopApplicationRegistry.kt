@@ -145,7 +145,7 @@ internal val BUILT_IN_DESKTOP_APPLICATIONS = KnownDesktopApplicationRegistry(
         knownDesktopApplication("opencode", "OpenCode", DesktopApplicationProcessRole.AI_AGENT, "opencode"),
         knownDesktopApplication("claude-code", "Claude Code", DesktopApplicationProcessRole.AI_AGENT, "claude"),
 
-        knownDesktopApplication("com.microsoft.VSCode", "Visual Studio Code", DesktopApplicationProcessRole.USER_APPLICATION, "code", "/Applications/Visual Studio Code.app"),
+        knownDesktopApplication("com.microsoft.VSCode", "Visual Studio Code", DesktopApplicationProcessRole.USER_APPLICATION, "code", "Visual Studio Code.app"),
         knownDesktopApplication("cursor", "Cursor", DesktopApplicationProcessRole.USER_APPLICATION, "cursor"),
         knownDesktopApplication("visual-studio", "Visual Studio", DesktopApplicationProcessRole.USER_APPLICATION, "devenv.exe"),
         knownDesktopApplication("com.jetbrains.intellij", "IntelliJ IDEA", DesktopApplicationProcessRole.USER_APPLICATION, "idea", "idea64.exe"),
