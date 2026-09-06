@@ -5,6 +5,7 @@ import android.database.sqlite.SQLiteConstraintException
 import androidx.test.platform.app.InstrumentationRegistry
 import java.io.File
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
 import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
 import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import net.extrawdw.notisync.protocol.ClientId
@@ -37,6 +38,7 @@ class SshKeyProviderDatabaseTest {
     fun closeDatabase() {
         store?.close()
         store = null
+        OperationalDatabaseFactory.close(context)
         context.deleteDatabase(DATABASE_NAME)
     }
 
@@ -247,6 +249,44 @@ class SshKeyProviderDatabaseTest {
             database.rawQuery("SELECT value FROM release_marker", null).use { cursor ->
                 assertTrue(cursor.moveToFirst())
                 assertEquals("preserve-me", cursor.getString(0))
+            }
+        }
+    }
+
+    @Test
+    fun foreignKeyViolationFailsBeforeInventoryRepair() {
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE).use { database ->
+            database.execSQL("PRAGMA foreign_keys=OFF")
+            database.execSQL(
+                "INSERT INTO ssh_remembered_authorizations(authorization_id, provider_key_id, requester_client_id, " +
+                    "authorization_generation, authorization_epoch, scope, host_key_sha256, created_at) " +
+                    "VALUES ('orphan', 'missing-key', 'requester', 'generation', 1, 'PEER', NULL, 1)",
+            )
+        }
+
+        store = SshKeyProviderStore(context)
+        val failure = assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
+        assertTrue(failure.message.orEmpty().contains("foreign-key violations"))
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
+            database.rawQuery("SELECT COUNT(*) FROM provider_state", null).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(0, cursor.getInt(0))
+            }
+        }
+    }
+
+    @Test
+    fun roomRejectsWrongSchemaIdentityBeforeInventoryRepair() {
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READWRITE).use { database ->
+            database.execSQL("UPDATE room_master_table SET identity_hash='wrong-schema' WHERE id=42")
+        }
+
+        store = SshKeyProviderStore(context)
+        assertThrows(IllegalStateException::class.java) { requireNotNull(store).readableDatabase }
+        SQLiteDatabase.openDatabase(databaseFile.path, null, SQLiteDatabase.OPEN_READONLY).use { database ->
+            database.rawQuery("SELECT COUNT(*) FROM provider_state", null).use { cursor ->
+                assertTrue(cursor.moveToFirst())
+                assertEquals(0, cursor.getInt(0))
             }
         }
     }

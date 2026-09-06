@@ -4,11 +4,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -29,17 +31,16 @@ data class SshKeyProviderManagementState(
     val errorMessage: String? = null,
 )
 
-/**
- * Process-wide cache for the SSH management screen.
- *
- * The SSH database performs integrity and lifecycle checks on its first open. Preloading the complete screen model
- * while the application graph is already being built off-main keeps that one-time work out of navigation. Subsequent
- * store mutations are observed through [SshKeyProviderStore.changeVersion] and refresh the cache once per version.
- */
+internal data class VersionedSshKeyProviderManagementSnapshot(
+    val version: Long,
+    val snapshot: SshKeyProviderManagementSnapshot,
+)
+
+/** Loads and observes the SSH management model only while the screen collects [state]. */
 class SshKeyProviderManagementRepository internal constructor(
     private val changeVersion: StateFlow<Long>,
-    private val loadSnapshot: () -> SshKeyProviderManagementSnapshot,
-    private val scope: CoroutineScope,
+    private val loadSnapshot: () -> VersionedSshKeyProviderManagementSnapshot,
+    scope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher,
 ) {
     constructor(
@@ -48,14 +49,7 @@ class SshKeyProviderManagementRepository internal constructor(
         scope: CoroutineScope,
     ) : this(
         changeVersion = store.changeVersion,
-        loadSnapshot = {
-            SshKeyProviderManagementSnapshot(
-                keys = store.snapshot(providerClientId, null, System.currentTimeMillis()).keys,
-                requests = store.requests(),
-                knownHosts = store.knownHosts(),
-                rememberedAuthorizations = store.rememberedAuthorizations(),
-            )
-        },
+        loadSnapshot = { store.managementSnapshot(providerClientId, System.currentTimeMillis()) },
         scope = scope,
         ioDispatcher = Dispatchers.IO,
     )
@@ -67,20 +61,11 @@ class SshKeyProviderManagementRepository internal constructor(
 
     @Volatile
     private var loadedVersion: Long? = null
-    private var observerJob: Job? = null
 
-    /** Called from the application's I/O initialization thread before the graph is exposed to UI. */
-    fun preload() {
-        publish(loadStableSnapshot())
-    }
-
-    /** Starts the single process-wide store observer after [preload]. */
-    @Synchronized
-    fun start() {
-        if (observerJob != null) return
-        observerJob = scope.launch {
-            changeVersion.collect { observedVersion ->
-                if (observedVersion != loadedVersion || state.value.snapshot == null) refresh()
+    init {
+        scope.launch {
+            _state.subscriptionCount.map { it > 0 }.distinctUntilChanged().collectLatest { observed ->
+                if (observed) changeVersion.collect { refresh() }
             }
         }
     }
@@ -90,45 +75,17 @@ class SshKeyProviderManagementRepository internal constructor(
         refreshMutex.withLock {
             if (loadedVersion == changeVersion.value && state.value.snapshot != null) return
             val result = try {
-                withContext(ioDispatcher) { loadStableSnapshot() }
+                withContext(ioDispatcher) { loadSnapshot() }
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (failure: Exception) {
+                _state.value = _state.value.copy(errorMessage = failure.summary())
+                return
             }
-            publish(result)
+            loadedVersion = result.version
+            _state.value = SshKeyProviderManagementState(snapshot = result.snapshot)
         }
     }
-
-    private fun loadStableSnapshot(): Result<VersionedSnapshot> = try {
-        // A load is four individually synchronized reads. Repeat when a mutation lands between them so the
-        // published aggregate always represents one stable change-version boundary.
-        var versionBefore: Long
-        var versionAfter: Long
-        lateinit var snapshot: SshKeyProviderManagementSnapshot
-        do {
-            versionBefore = changeVersion.value
-            snapshot = loadSnapshot()
-            versionAfter = changeVersion.value
-        } while (versionBefore != versionAfter)
-        Result.success(VersionedSnapshot(versionAfter, snapshot))
-    } catch (cancelled: CancellationException) {
-        throw cancelled
-    } catch (failure: Exception) {
-        Result.failure(failure)
-    }
-
-    private fun publish(result: Result<VersionedSnapshot>) {
-        result.onSuccess { loaded ->
-            loadedVersion = loaded.version
-            _state.value = SshKeyProviderManagementState(snapshot = loaded.snapshot)
-        }.onFailure { failure ->
-            _state.value = _state.value.copy(errorMessage = failure.summary())
-        }
-    }
-
-    private data class VersionedSnapshot(
-        val version: Long,
-        val snapshot: SshKeyProviderManagementSnapshot,
-    )
 }
 
 private fun Throwable.summary(): String =

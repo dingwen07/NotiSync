@@ -14,14 +14,16 @@ internal interface OperationalApplicationState {
     suspend fun lastSeenPostTime(): Long
     suspend fun advanceLastSeenPostTime(timeMillis: Long)
     suspend fun androidApps(): List<AndroidAppEntity>
-    suspend fun replaceAndroidEnabledPackages(packageNames: Set<String>)
+    suspend fun setAndroidAppEnabled(packageName: String, enabled: Boolean)
+    suspend fun setAndroidAppsEnabled(enabledByPackage: Map<String, Boolean>)
     suspend fun setAndroidAppConfig(packageName: String, json: String)
     suspend fun setAndroidSeenChannels(packageName: String, json: String)
     suspend fun incomingNotificationFilters(): List<IncomingNotificationFilterEntity>
     suspend fun upsertIncomingNotificationFilter(entity: IncomingNotificationFilterEntity)
     suspend fun deleteIncomingNotificationFilter(requesterClientId: String)
     suspend fun iosApps(): List<IosAppEntity>
-    suspend fun replaceEnabledIosApps(bundleIds: Set<String>)
+    suspend fun setIosAppEnabled(bundleId: String, enabled: Boolean)
+    suspend fun setIosAppsEnabled(enabledByBundle: Map<String, Boolean>)
     suspend fun recordIosApp(bundleId: String, displayName: String, lastSeenAt: Long)
     suspend fun forgetIosApp(bundleId: String)
     suspend fun screenMirrorState(): ScreenMirrorStateEntity
@@ -31,22 +33,21 @@ internal interface OperationalApplicationState {
     ): ScreenMirrorStateEntity
     suspend fun setScreenMirroringEnabled(enabled: Boolean)
     suspend fun screenCodecPreferences(): List<ScreenCodecPreferenceEntity>
-    suspend fun replaceScreenCodecPreferences(entities: List<ScreenCodecPreferenceEntity>)
+    suspend fun setScreenCodecPreference(entity: ScreenCodecPreferenceEntity)
+    suspend fun deleteScreenCodecPreference(peerId: String)
+    suspend fun retainScreenCodecPreferences(peerIds: Set<String>)
     suspend fun openPgpEnrollment(): OpenPgpEnrollmentEntity?
     suspend fun replaceOpenPgpEnrollment(entity: OpenPgpEnrollmentEntity)
 }
 
 /**
  * Runtime facade over the application-owned Operational tables. Room is the only backing store;
- * repositories retain their proven codecs and in-memory projections while this facade serializes the
- * few full-snapshot writes that previously relied on DataStore's edit mutex.
+ * repositories retain their codecs and in-memory projections. Row mutations preserve unrelated fields;
+ * the screen authorization/replay aggregate still needs a mutex for read-modify-write updates.
  */
 internal class RoomOperationalApplicationState(context: Context) : OperationalApplicationState {
     private val dao = OperationalDatabaseFactory.get(context).applicationState()
-    private val androidSelectionMutex = Mutex()
-    private val iosSelectionMutex = Mutex()
     private val screenMutex = Mutex()
-    private val codecMutex = Mutex()
 
     private val initialScreenState = runBlocking { dao.screenMirrorState() ?: defaultScreenState() }
     private val _screenMirroringEnabled = MutableStateFlow(initialScreenState.enabled)
@@ -60,8 +61,11 @@ internal class RoomOperationalApplicationState(context: Context) : OperationalAp
 
     override suspend fun androidApps(): List<AndroidAppEntity> = dao.androidApps()
 
-    override suspend fun replaceAndroidEnabledPackages(packageNames: Set<String>) =
-        androidSelectionMutex.withLock { dao.replaceAndroidEnabledPackages(packageNames) }
+    override suspend fun setAndroidAppEnabled(packageName: String, enabled: Boolean) =
+        dao.setAndroidAppEnabled(packageName, enabled)
+
+    override suspend fun setAndroidAppsEnabled(enabledByPackage: Map<String, Boolean>) =
+        dao.setAndroidAppsEnabled(enabledByPackage)
 
     override suspend fun setAndroidAppConfig(packageName: String, json: String) =
         dao.setAndroidAppConfig(packageName, json)
@@ -84,8 +88,11 @@ internal class RoomOperationalApplicationState(context: Context) : OperationalAp
 
     override suspend fun iosApps(): List<IosAppEntity> = dao.iosApps()
 
-    override suspend fun replaceEnabledIosApps(bundleIds: Set<String>) =
-        iosSelectionMutex.withLock { dao.replaceEnabledIosApps(bundleIds) }
+    override suspend fun setIosAppEnabled(bundleId: String, enabled: Boolean) =
+        dao.setIosAppEnabled(bundleId, enabled)
+
+    override suspend fun setIosAppsEnabled(enabledByBundle: Map<String, Boolean>) =
+        dao.setIosAppsEnabled(enabledByBundle)
 
     override suspend fun recordIosApp(bundleId: String, displayName: String, lastSeenAt: Long) =
         dao.recordIosApp(bundleId, displayName, lastSeenAt)
@@ -117,8 +124,14 @@ internal class RoomOperationalApplicationState(context: Context) : OperationalAp
     override suspend fun screenCodecPreferences(): List<ScreenCodecPreferenceEntity> =
         dao.screenCodecPreferences()
 
-    override suspend fun replaceScreenCodecPreferences(entities: List<ScreenCodecPreferenceEntity>) =
-        codecMutex.withLock { dao.replaceScreenCodecPreferences(entities) }
+    override suspend fun setScreenCodecPreference(entity: ScreenCodecPreferenceEntity) =
+        dao.setScreenCodecPreference(entity.peerId, entity.codec)
+
+    override suspend fun deleteScreenCodecPreference(peerId: String) =
+        dao.deleteScreenCodecPreference(peerId)
+
+    override suspend fun retainScreenCodecPreferences(peerIds: Set<String>) =
+        dao.retainScreenCodecPreferences(peerIds)
 
     override suspend fun openPgpEnrollment(): OpenPgpEnrollmentEntity? = dao.openPgpEnrollment()
 

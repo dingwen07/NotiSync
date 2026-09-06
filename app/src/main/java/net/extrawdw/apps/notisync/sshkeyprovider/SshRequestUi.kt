@@ -659,7 +659,9 @@ private fun SshRequestHero(
                 )
             }
             if (request.kind == SshProviderRequestKind.SIGN) {
-                DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
+                if (applicationIcon != null) {
+                    DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
+                }
             } else {
                 Surface(shape = CircleShape, color = content.copy(alpha = 0.12f), contentColor = content) {
                     Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {

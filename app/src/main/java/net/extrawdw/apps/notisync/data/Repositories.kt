@@ -16,6 +16,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.flow.first
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.notisync.peer.transport.DeliveryMode
@@ -283,6 +285,7 @@ class AppSelectionRepository internal constructor(
     private val scope: CoroutineScope,
     private val operationalState: OperationalApplicationState,
 ) {
+    private val enabledWriteMutex = Mutex()
     private val _enabled = MutableStateFlow(load())
     val enabled: StateFlow<Set<String>> = _enabled
 
@@ -296,16 +299,15 @@ class AppSelectionRepository internal constructor(
     fun isEnabled(packageName: String): Boolean = packageName in _enabled.value
 
     fun setEnabled(packageName: String, enabled: Boolean) {
-        _enabled.value = if (enabled) _enabled.value + packageName else _enabled.value - packageName
-        persistEnabled()
+        _enabled.update { if (enabled) it + packageName else it - packageName }
+        persistEnabled(setOf(packageName))
     }
 
-    /** Bulk-set mirroring for [packageNames] in a single persisted write (backs "turn on/off all"). */
+    /** Bulk-set mirroring for [packageNames] in one transaction (backs "turn on/off all"). */
     fun setEnabled(packageNames: Collection<String>, enabled: Boolean) {
         if (packageNames.isEmpty()) return
-        _enabled.value =
-            if (enabled) _enabled.value + packageNames else _enabled.value - packageNames
-        persistEnabled()
+        _enabled.update { if (enabled) it + packageNames else it - packageNames }
+        persistEnabled(packageNames.toSet())
     }
 
     /** Record that [packageName] just posted a notification (drives recency sorting in the picker). */
@@ -315,10 +317,18 @@ class AppSelectionRepository internal constructor(
         }
     }
 
-    private fun persistEnabled() {
+    private fun persistEnabled(packageNames: Set<String>) {
         scope.launch {
-            val snapshot = _enabled.value
-            operationalState.replaceAndroidEnabledPackages(snapshot)
+            enabledWriteMutex.withLock {
+                // Read the latest selection inside the write lock so queued toggles cannot persist stale values.
+                val selection = _enabled.value
+                if (packageNames.size == 1) {
+                    val packageName = packageNames.single()
+                    operationalState.setAndroidAppEnabled(packageName, packageName in selection)
+                } else {
+                    operationalState.setAndroidAppsEnabled(packageNames.associateWith { it in selection })
+                }
+            }
         }
     }
 }

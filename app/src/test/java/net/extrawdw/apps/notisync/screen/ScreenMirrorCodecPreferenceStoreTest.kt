@@ -70,6 +70,38 @@ class ScreenMirrorCodecPreferenceStoreTest {
         assertEquals(false, other.value in persisted)
     }
 
+    @Test
+    fun `unchanged roster pruning and codec selection do not write`() = runBlocking {
+        val peer = ClientId("source")
+        val state = InMemoryOperationalApplicationState(
+            initialCodecs = listOf(ScreenCodecPreferenceEntity(peer.value, "av1")),
+        )
+        val preferences = ScreenMirrorCodecPreferenceStore(state)
+        state.failWrites = true
+
+        preferences.retainTrustedOwnPeers(listOf(roster(peer)))
+        preferences.setPreferredCodec(peer, ScreenMirrorCodec.AV1)
+
+        assertEquals(0, state.codecWrites)
+        assertEquals(ScreenMirrorCodec.AV1, preferences.preferredCodec(peer))
+    }
+
+    @Test
+    fun `changing one peer preserves other durable rows and auto removes unknown codecs`() = runBlocking {
+        val future = ScreenCodecPreferenceEntity("future", "vvc")
+        val state = InMemoryOperationalApplicationState(initialCodecs = listOf(future))
+        val preferences = ScreenMirrorCodecPreferenceStore(state)
+
+        preferences.setPreferredCodec(ClientId("known"), ScreenMirrorCodec.H264)
+        assertEquals(true, future in state.screenCodecPreferences())
+        assertEquals(1, state.codecWrites)
+
+        preferences.setPreferredCodec(ClientId("future"), null)
+        assertEquals(false, future in state.screenCodecPreferences())
+        preferences.retainTrustedOwnPeers(emptyList())
+        assertEquals(emptyList<ScreenCodecPreferenceEntity>(), state.screenCodecPreferences())
+    }
+
     private fun roster(
         clientId: ClientId,
         status: TrustStatus = TrustStatus.TRUSTED,

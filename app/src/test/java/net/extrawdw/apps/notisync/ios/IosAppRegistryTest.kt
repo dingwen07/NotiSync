@@ -3,6 +3,7 @@ package net.extrawdw.apps.notisync.ios
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
+import net.extrawdw.apps.notisync.data.storage.operational.IosAppEntity
 import net.extrawdw.apps.notisync.testsupport.InMemoryOperationalApplicationState
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -10,6 +11,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class IosAppRegistryTest {
+    @Test
+    fun individualAndBulkTogglesPreserveOtherAppsAndDiscovery() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val rows = (0 until 100).map { IosAppEntity("app-$it", true, "App $it", it.toLong()) }
+        val state = InMemoryOperationalApplicationState(initialIosApps = rows)
+        val registry = IosAppRegistry(scope, state)
+
+        registry.setEnabled("app-42", false)
+        assertEquals(1, state.iosRowWrites)
+        assertEquals(0, state.iosBulkWrites)
+        assertEquals(rows.map { if (it.bundleId == "app-42") it.copy(enabled = false) else it }, state.iosApps())
+
+        registry.setEnabled(listOf("app-1", "app-2"), false)
+        assertEquals(1, state.iosBulkWrites)
+        assertEquals(3, state.iosRowWrites)
+        assertEquals(97, IosAppRegistry(scope, state).enabled.value.size)
+    }
+
     private fun newRegistry(): IosAppRegistry {
         val scope = CoroutineScope(Dispatchers.Unconfined)
         return IosAppRegistry(scope, InMemoryOperationalApplicationState())

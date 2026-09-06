@@ -76,6 +76,8 @@ class RunStore(
     private val _runs = MutableStateFlow<List<StoredRun>>(emptyList())
     override val runs: StateFlow<List<StoredRun>> = _runs.asStateFlow()
 
+    private var compactionPending = false
+
     init {
         // Operational Room owns the file and keeps it in WAL; opt in before opening the shared database.
         setWriteAheadLoggingEnabled(true)
@@ -132,9 +134,6 @@ class RunStore(
         _runs.value = (retained + StoredRun(state, receivedAt, existing?.presentedRevision
             ?: StoredRun.NO_PRESENTED_REVISION))
             .sortedWith(RUN_ORDER)
-        // Retention is best effort after the authoritative snapshot has committed. A later maintenance pass will
-        // retry any checkpoint/compaction failure. Protect this just-applied row until its renderer checkpoints it.
-        runCatching { prune(protectedKey = key) }
         return result
     }
 
@@ -196,39 +195,42 @@ class RunStore(
             _runs.value = readAll()
         }
         // Logical deletion is authoritative even if physical compaction must be retried by later maintenance.
-        runCatching { checkpointAndCompact(db, vacuum = true) }
+        compactionPending = true
+        runCatching {
+            checkpointAndCompact(db)
+            compactionPending = false
+        }
     }
 
     /** Apply the high age and completed-row bounds; active Runs remain exempt. */
     @Synchronized
-    override fun prune() = prune(protectedKey = null)
-
-    private fun prune(protectedKey: RunKey?) {
+    override fun prune() {
         val db = writableDatabase
-        val removed = linkedSetOf<RunKey>()
-        try {
-            markStaleRunsInactive(db, now() - ACTIVE_STALE_AFTER_MS)
-
-            val expired = completedBefore(db, now() - completedRetentionMs)
-                .filterNot { it == protectedKey }
-            if (expired.isNotEmpty()) {
-                deleteKeys(db, expired)
-                removed += expired
-                checkpointAndCompact(db, vacuum = true)
-            }
-
-            // Active Runs are exempt; among completed Runs retain the configured newest entries.
-            val overCount = completedBeyondLogLimit(db, protectedKey)
-            if (overCount.isNotEmpty()) {
-                deleteKeys(db, overCount)
-                removed += overCount
-                checkpointAndCompact(db, vacuum = true)
-            }
-
-        } finally {
-            // Deletions may already have committed even if checkpoint/VACUUM failed; keep the observable cache in
-            // lock-step with SQLite and allow future periodic maintenance to retry the physical compaction.
-            if (removed.isNotEmpty()) _runs.value = _runs.value.filterNot { it.key in removed }
+        markStaleRunsInactive(db, now() - ACTIVE_STALE_AFTER_MS)
+        val removed = db.transaction {
+            val expired = db.delete(
+                "runs",
+                "active = 0 AND received_at < ?",
+                arrayOf((now() - completedRetentionMs).toString()),
+            )
+            // SQLite selects only excess rows; do not materialize the entire completed history in Kotlin.
+            val overCount = db.delete(
+                "runs",
+                "(host_client, run_id) IN (" +
+                    "SELECT host_client, run_id FROM runs WHERE active = 0 " +
+                    "ORDER BY received_at DESC, updated_at DESC, host_client, run_id LIMIT -1 OFFSET ?)",
+                arrayOf(maxCompletedRuns.toString()),
+            )
+            expired + overCount
+        }
+        if (removed > 0) {
+            _runs.value = readAll()
+            compactionPending = true
+        }
+        // Both retention bounds share one compaction. Retry a failed compaction on the next maintenance pass.
+        if (compactionPending) {
+            checkpointAndCompact(db)
+            compactionPending = false
         }
     }
 
@@ -256,59 +258,11 @@ class RunStore(
         }.sortedWith(RUN_ORDER)
     }
 
-    private fun completedBefore(db: SQLiteDatabase, cutoff: Long): List<RunKey> = db.rawQuery(
-        "SELECT host_client, run_id FROM runs " +
-            "WHERE active = 0 AND received_at < ? ORDER BY received_at, updated_at",
-        arrayOf(cutoff.toString()),
-    ).use { cursor ->
-        buildList {
-            while (cursor.moveToNext()) {
-                add(RunKey(cursor.getString(0), cursor.getString(1)))
-            }
-        }
-    }
-
-    private fun completedBeyondLogLimit(db: SQLiteDatabase, protectedKey: RunKey?): List<RunKey> {
-        val newestFirst = db.rawQuery(
-            "SELECT host_client, run_id FROM runs " +
-                "WHERE active = 0 ORDER BY received_at DESC, updated_at DESC, host_client, run_id",
-            emptyArray(),
-        ).use { cursor ->
-            buildList {
-                while (cursor.moveToNext()) add(RunKey(cursor.getString(0), cursor.getString(1)))
-            }
-        }
-        if (newestFirst.size <= maxCompletedRuns) return emptyList()
-
-        // A just-committed snapshot must survive until its renderer checkpoints it, even under a clock tie.
-        val protectedCompleted = protectedKey?.takeIf { it in newestFirst }
-        val retained = buildList {
-            protectedCompleted?.let(::add)
-            newestFirst.asSequence()
-                .filterNot { it == protectedCompleted }
-                .take(maxCompletedRuns - if (protectedCompleted == null) 0 else 1)
-                .forEach(::add)
-        }.toSet()
-        return newestFirst.filterNot { it in retained }
-    }
-
-    private fun deleteKeys(db: SQLiteDatabase, keys: List<RunKey>) {
-        db.transaction {
-            keys.forEach { key ->
-                db.delete(
-                    "runs",
-                    "host_client = ? AND run_id = ?",
-                    arrayOf(key.hostClientId, key.runId),
-                )
-            }
-        }
-    }
-
-    private fun checkpointAndCompact(db: SQLiteDatabase, vacuum: Boolean) {
+    private fun checkpointAndCompact(db: SQLiteDatabase) {
         db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray()).use { cursor ->
             while (cursor.moveToNext()) Unit
         }
-        if (vacuum) db.execSQL("VACUUM")
+        db.execSQL("VACUUM")
         db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray()).use { cursor ->
             while (cursor.moveToNext()) Unit
         }

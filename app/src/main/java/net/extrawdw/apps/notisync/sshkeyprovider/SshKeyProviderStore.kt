@@ -30,6 +30,7 @@ import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -66,6 +67,7 @@ import net.extrawdw.notisync.protocol.SshSignResultKind
 import net.extrawdw.notisync.protocol.SshSignatureAlgorithm
 import net.extrawdw.notisync.protocol.SshSignatureResult
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
 import net.extrawdw.notisync.protocol.SshStorageSecurityLevel
 import net.extrawdw.notisync.protocol.SshUserRejection
 import net.extrawdw.notisync.protocol.SshUserRejectionReason
@@ -398,7 +400,7 @@ class SshKeyProviderStore internal constructor(
 
     override fun onOpen(db: SQLiteDatabase) {
         super.onOpen(db)
-        validateDatabaseSchema(db)
+        validateDatabaseIntegrity(db)
         repairInventoryGeneration(db)
         reconcileLifecycle(db)
         pruneHistory(db)
@@ -430,29 +432,10 @@ class SshKeyProviderStore internal constructor(
         }
     }
 
-    private fun validateDatabaseSchema(db: SQLiteDatabase) {
+    private fun validateDatabaseIntegrity(db: SQLiteDatabase) {
         val expectedVersion = OperationalDatabase.VERSION
         check(db.version == expectedVersion) {
             "Unsupported SSH key database schema ${db.version}; expected $expectedVersion. No data was modified."
-        }
-        val actualTables = db.rawQuery(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' " +
-                "AND name!='android_metadata' ORDER BY name",
-            emptyArray(),
-        ).use { cursor -> buildSet { while (cursor.moveToNext()) add(cursor.getString(0)) } }
-        val tableSetMatches = actualTables.containsAll(EXPECTED_DATABASE_SCHEMA.keys)
-        check(tableSetMatches) {
-            "SSH key database schema ${OperationalDatabase.VERSION} has an unexpected table set. " +
-                "No data was modified."
-        }
-        EXPECTED_DATABASE_SCHEMA.forEach { (table, expectedColumns) ->
-            val actualColumns = db.rawQuery("PRAGMA table_info($table)", emptyArray()).use { cursor ->
-                buildSet { while (cursor.moveToNext()) add(cursor.getString(cursor.getColumnIndexOrThrow("name"))) }
-            }
-            check(actualColumns == expectedColumns) {
-                "SSH key database schema ${OperationalDatabase.VERSION} has incompatible columns in $table. " +
-                    "No data was modified."
-            }
         }
         val integrity = db.rawQuery("PRAGMA quick_check(1)", emptyArray()).use { cursor ->
             check(cursor.moveToFirst())
@@ -462,6 +445,22 @@ class SshKeyProviderStore internal constructor(
         db.rawQuery("PRAGMA foreign_key_check", emptyArray()).use { cursor ->
             check(!cursor.moveToFirst()) { "SSH key database contains foreign-key violations" }
         }
+        // Room validates the schema and identity when opening the shared file. Do not keep a second
+        // table/column catalog here. Check corruption first, before Room can adopt an unmarked file
+        // and before this store repairs inventory or reconciles key lifecycles.
+        runBlocking { OperationalDatabaseFactory.get(appContext).metadata().schemaObjectCount() }
+    }
+
+    /** One store lock covers all four reads and their resulting change version, including expiry cleanup. */
+    @Synchronized
+    internal fun managementSnapshot(provider: ClientId, now: Long): VersionedSshKeyProviderManagementSnapshot {
+        val snapshot = SshKeyProviderManagementSnapshot(
+            keys = snapshot(provider, null, now).keys,
+            requests = requests(),
+            knownHosts = knownHosts(),
+            rememberedAuthorizations = rememberedAuthorizations(),
+        )
+        return VersionedSshKeyProviderManagementSnapshot(changeVersion.value, snapshot)
     }
 
     @Synchronized
@@ -4225,46 +4224,6 @@ class SshKeyProviderStore internal constructor(
         const val MAX_REMEMBERED_AUTHORIZATIONS_PER_KEY = 128L
         val EMPTY_BYTES = ByteArray(0)
         val RANDOM = SecureRandom()
-        val EXPECTED_DATABASE_SCHEMA = mapOf(
-            "provider_state" to setOf("singleton", "inventory_generation", "revision"),
-            "ssh_keys" to setOf(
-                "provider_key_id", "public_blob", "public_hash", "algorithm", "display_name", "origin",
-                "approval_policy", "created_at", "expires_at",
-            ),
-            "ssh_operational_keys" to setOf(
-                "provider_key_id", "provider_kind", "key_alias", "ciphertext", "nonce", "security_level",
-                "user_verification_policy", "strongbox_attempted", "strongbox_fallback",
-            ),
-            "ssh_webauthn_credentials" to setOf(
-                "provider_key_id", "credential_id", "user_handle", "rp_id", "cose_public_key",
-                "backup_eligible", "backup_state",
-            ),
-            "ssh_export_copies" to setOf(
-                "provider_key_id", "key_alias", "ciphertext", "nonce", "security_level", "backend_policy",
-                "authentication", "strongbox_attempted", "strongbox_fallback", "last_verified_at",
-            ),
-            "ssh_key_lifecycle" to setOf(
-                "provider_key_id", "operational_alias", "state", "created_at",
-                "operational_candidate_ciphertext", "operational_candidate_nonce",
-                "operational_candidate_security_level", "export_candidate_ciphertext", "export_candidate_nonce",
-                "export_candidate_security_level",
-            ),
-            "authorization_floors" to setOf(
-                "requester_client_id", "authorization_generation", "invalidated_through_epoch", "updated_at",
-            ),
-            "ssh_remembered_authorizations" to setOf(
-                "authorization_id", "provider_key_id", "requester_client_id", "authorization_generation",
-                "authorization_epoch", "scope", "host_key_sha256", "created_at",
-            ),
-            "ssh_known_hosts" to setOf(
-                "host_key_sha256", "hostname", "first_approved_at", "last_approved_at",
-            ),
-            "provider_requests" to setOf(
-                "request_id", "kind", "requester_client_id", "request_fingerprint", "request_cbor",
-                "request_nonce", "history_cbor", "history_nonce", "state", "outcome", "result_at",
-                "response_cbor", "response_nonce", "updated_at",
-            ),
-        )
     }
 }
 

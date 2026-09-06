@@ -110,19 +110,9 @@ internal interface OperationalApplicationDao {
     )
     suspend fun setAndroidAppEnabled(packageName: String, enabled: Boolean)
 
-    @Query("UPDATE android_apps SET enabled = 0 WHERE enabled = 1")
-    suspend fun disableAllAndroidApps()
-
-    @Query(
-        "DELETE FROM android_apps WHERE enabled = 0 AND config_json IS NULL AND seen_channels_json IS NULL",
-    )
-    suspend fun deleteEmptyAndroidApps()
-
     @Transaction
-    suspend fun replaceAndroidEnabledPackages(packageNames: Set<String>) {
-        disableAllAndroidApps()
-        packageNames.forEach { setAndroidAppEnabled(it, true) }
-        deleteEmptyAndroidApps()
+    suspend fun setAndroidAppsEnabled(enabledByPackage: Map<String, Boolean>) {
+        enabledByPackage.forEach { (packageName, enabled) -> setAndroidAppEnabled(packageName, enabled) }
     }
 
     @Query(
@@ -177,17 +167,9 @@ internal interface OperationalApplicationDao {
     )
     suspend fun setIosAppEnabled(bundleId: String, enabled: Boolean)
 
-    @Query("UPDATE ios_apps SET enabled = 0 WHERE enabled = 1")
-    suspend fun disableAllIosApps()
-
-    @Query("DELETE FROM ios_apps WHERE enabled = 0 AND display_name IS NULL AND last_seen_at IS NULL")
-    suspend fun deleteEmptyIosApps()
-
     @Transaction
-    suspend fun replaceEnabledIosApps(bundleIds: Set<String>) {
-        disableAllIosApps()
-        bundleIds.forEach { setIosAppEnabled(it, true) }
-        deleteEmptyIosApps()
+    suspend fun setIosAppsEnabled(enabledByBundle: Map<String, Boolean>) {
+        enabledByBundle.forEach { (bundleId, enabled) -> setIosAppEnabled(bundleId, enabled) }
     }
 
     @Query(
@@ -225,17 +207,20 @@ internal interface OperationalApplicationDao {
     @Query("SELECT * FROM screen_codec_preferences")
     suspend fun screenCodecPreferences(): List<ScreenCodecPreferenceEntity>
 
-    @Query("DELETE FROM screen_codec_preferences")
-    suspend fun deleteScreenCodecPreferences()
+    @Query(
+        """
+        INSERT INTO screen_codec_preferences(peer_id, codec) VALUES (:peerId, :codec)
+        ON CONFLICT(peer_id) DO UPDATE SET codec = excluded.codec
+        WHERE screen_codec_preferences.codec != excluded.codec
+        """,
+    )
+    suspend fun setScreenCodecPreference(peerId: String, codec: String)
 
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
-    suspend fun insertScreenCodecPreferences(entities: List<ScreenCodecPreferenceEntity>)
+    @Query("DELETE FROM screen_codec_preferences WHERE peer_id = :peerId")
+    suspend fun deleteScreenCodecPreference(peerId: String)
 
-    @Transaction
-    suspend fun replaceScreenCodecPreferences(entities: List<ScreenCodecPreferenceEntity>) {
-        deleteScreenCodecPreferences()
-        if (entities.isNotEmpty()) insertScreenCodecPreferences(entities)
-    }
+    @Query("DELETE FROM screen_codec_preferences WHERE peer_id NOT IN (:peerIds)")
+    suspend fun retainScreenCodecPreferences(peerIds: Set<String>)
 
     @Query("SELECT * FROM openpgp_enrollment WHERE singleton_id = 1")
     suspend fun openPgpEnrollment(): OpenPgpEnrollmentEntity?

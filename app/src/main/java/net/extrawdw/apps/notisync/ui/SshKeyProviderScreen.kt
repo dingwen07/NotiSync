@@ -532,8 +532,6 @@ fun SshKeyProviderScreen(
     LaunchedEffect(managementState.errorMessage) {
         managementState.errorMessage?.let { error = it }
     }
-    // Normally a version-only no-op; this also retries a failed background refresh when the user returns here.
-    LaunchedEffect(Unit) { graph.sshKeyProviderManagement.refresh() }
 
     val showLoading = loading || (managementSnapshot == null && managementState.errorMessage == null)
 

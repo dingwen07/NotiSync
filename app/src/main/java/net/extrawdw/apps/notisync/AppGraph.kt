@@ -368,11 +368,6 @@ class AppGraph(private val app: Application) {
         desktopApplications = DesktopApplicationRepository(app)
         sshKeyProviderStore = SshKeyProviderStore(app) { desktopApplications.snapshot.value.registry }
         sshKeyProviderManagement = SshKeyProviderManagementRepository(sshKeyProviderStore, identity.clientId, scope)
-        val sshManagementStartNanos = System.nanoTime()
-        sshKeyProviderManagement.preload()
-        // First-open schema/integrity checks and the screen's four reads now happen on the graph's I/O init thread.
-        initSpan.metric("ssh_management_preload_ms", (System.nanoTime() - sshManagementStartNanos) / 1_000_000)
-        sshKeyProviderManagement.start()
         sshKeyProviderNotifications = SshKeyProviderNotificationPresenter(app, sshKeyProviderStore) {
             settings.autoOpenSshRequest.value
         }

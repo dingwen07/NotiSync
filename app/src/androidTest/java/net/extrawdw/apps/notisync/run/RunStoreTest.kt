@@ -234,11 +234,39 @@ class RunStoreTest {
             )
         }
 
+        assertEquals("message processing must not prune history", 5, store.runs.value.size)
+        store.prune()
+
         assertEquals(
             setOf("completed-2", "completed-3", "completed-4"),
             store.runs.value.map { it.state.runId }.toSet(),
         )
         store.close()
+    }
+
+    @Test
+    fun maintenanceAppliesAgeAndCountLimitsTogetherWithoutDeletingActiveRuns() {
+        var clock = 0L
+        val store = RunStore(context, now = { clock }, completedRetentionMs = 100L, maxCompletedRuns = 2)
+        repeat(5) { index ->
+            clock = index * 50L
+            store.apply(
+                running(runId = "completed-$index", revision = 2).copy(
+                    phase = RunPhase.COMPLETED,
+                    updateReason = RunUpdateReason.COMPLETED,
+                    endedAt = 2_000L,
+                ),
+            )
+        }
+        store.apply(running(runId = "active", revision = 1))
+        assertEquals(6, store.runs.value.size)
+
+        store.prune()
+        assertEquals(setOf("completed-3", "completed-4", "active"), store.runs.value.map { it.state.runId }.toSet())
+        store.close()
+        RunStore(context, now = { clock }, completedRetentionMs = 100L, maxCompletedRuns = 2).use { reopened ->
+            assertEquals(setOf("completed-3", "completed-4", "active"), reopened.runs.value.map { it.state.runId }.toSet())
+        }
     }
 
     private fun running(runId: String = "run-1", revision: Long) = RunState(

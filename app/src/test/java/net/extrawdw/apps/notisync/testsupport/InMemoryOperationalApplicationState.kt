@@ -43,15 +43,22 @@ internal class InMemoryOperationalApplicationState(
 
     override suspend fun androidApps(): List<AndroidAppEntity> = androidApps.values.toList()
 
-    override suspend fun replaceAndroidEnabledPackages(packageNames: Set<String>) {
+    var androidRowWrites = 0
+        private set
+    var androidBulkWrites = 0
+        private set
+
+    override suspend fun setAndroidAppEnabled(packageName: String, enabled: Boolean) {
         checkWrite()
-        androidApps.replaceAll { packageName, row -> row.copy(enabled = packageName in packageNames) }
-        packageNames.forEach { packageName ->
-            androidApps.putIfAbsent(packageName, AndroidAppEntity(packageName, true, null, null))
-        }
-        androidApps.entries.removeIf { (_, row) ->
-            !row.enabled && row.configJson == null && row.seenChannelsJson == null
-        }
+        androidRowWrites++
+        androidApps[packageName] = androidApps[packageName]?.copy(enabled = enabled)
+            ?: AndroidAppEntity(packageName, enabled, null, null)
+    }
+
+    override suspend fun setAndroidAppsEnabled(enabledByPackage: Map<String, Boolean>) {
+        checkWrite()
+        androidBulkWrites++
+        enabledByPackage.forEach { (packageName, enabled) -> setAndroidAppEnabled(packageName, enabled) }
     }
 
     override suspend fun setAndroidAppConfig(packageName: String, json: String) {
@@ -84,15 +91,22 @@ internal class InMemoryOperationalApplicationState(
 
     override suspend fun iosApps(): List<IosAppEntity> = iosApps.values.toList()
 
-    override suspend fun replaceEnabledIosApps(bundleIds: Set<String>) {
+    var iosRowWrites = 0
+        private set
+    var iosBulkWrites = 0
+        private set
+
+    override suspend fun setIosAppEnabled(bundleId: String, enabled: Boolean) {
         checkWrite()
-        iosApps.replaceAll { bundleId, row -> row.copy(enabled = bundleId in bundleIds) }
-        bundleIds.forEach { bundleId ->
-            iosApps.putIfAbsent(bundleId, IosAppEntity(bundleId, true, null, null))
-        }
-        iosApps.entries.removeIf { (_, row) ->
-            !row.enabled && row.displayName == null && row.lastSeenAt == null
-        }
+        iosRowWrites++
+        iosApps[bundleId] = iosApps[bundleId]?.copy(enabled = enabled)
+            ?: IosAppEntity(bundleId, enabled, null, null)
+    }
+
+    override suspend fun setIosAppsEnabled(enabledByBundle: Map<String, Boolean>) {
+        checkWrite()
+        iosBulkWrites++
+        enabledByBundle.forEach { (bundleId, enabled) -> setIosAppEnabled(bundleId, enabled) }
     }
 
     override suspend fun recordIosApp(bundleId: String, displayName: String, lastSeenAt: Long) {
@@ -130,9 +144,25 @@ internal class InMemoryOperationalApplicationState(
 
     override suspend fun screenCodecPreferences(): List<ScreenCodecPreferenceEntity> = codecs
 
-    override suspend fun replaceScreenCodecPreferences(entities: List<ScreenCodecPreferenceEntity>) {
+    var codecWrites = 0
+        private set
+
+    override suspend fun setScreenCodecPreference(entity: ScreenCodecPreferenceEntity) {
         checkWrite()
-        codecs = entities
+        codecWrites++
+        codecs = codecs.filterNot { it.peerId == entity.peerId } + entity
+    }
+
+    override suspend fun deleteScreenCodecPreference(peerId: String) {
+        checkWrite()
+        codecWrites++
+        codecs = codecs.filterNot { it.peerId == peerId }
+    }
+
+    override suspend fun retainScreenCodecPreferences(peerIds: Set<String>) {
+        checkWrite()
+        codecWrites++
+        codecs = codecs.filter { it.peerId in peerIds }
     }
 
     override suspend fun openPgpEnrollment(): OpenPgpEnrollmentEntity? = openPgpEnrollment

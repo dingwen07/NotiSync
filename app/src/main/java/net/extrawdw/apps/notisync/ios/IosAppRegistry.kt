@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
@@ -55,6 +57,7 @@ class IosAppRegistry internal constructor(
     // Completed once the persisted allowlist has loaded; [isEnabled] awaits it so a notification arriving in
     // the startup window is never dropped as "not enabled" before the user's opt-ins are available.
     private val hydrated = CompletableDeferred<Unit>()
+    private val enabledWriteMutex = Mutex()
 
     init {
         scope.launch {
@@ -95,17 +98,17 @@ class IosAppRegistry internal constructor(
                 it - bundleId
             }
         }
-        persistEnabled()
+        persistEnabled(setOf(bundleId))
     }
 
-    /** Bulk-set mirroring for [bundleIds] in a single persisted write; excluded ids are never enabled. */
+    /** Bulk-set mirroring for [bundleIds] in one transaction; excluded ids are never enabled. */
     fun setEnabled(bundleIds: Collection<String>, enabled: Boolean) {
         if (bundleIds.isEmpty()) return
         _enabled.update { current ->
             if (enabled) current + bundleIds.filterNot { IosBundleIdExclusions.isExcluded(it) }
             else current - bundleIds
         }
-        persistEnabled()
+        persistEnabled(bundleIds.toSet())
     }
 
     /** Record that [bundleId] (named [displayName]) just posted, so the tab can surface it for opt-in. */
@@ -144,10 +147,17 @@ class IosAppRegistry internal constructor(
         }
     }
 
-    private fun persistEnabled() {
+    private fun persistEnabled(bundleIds: Set<String>) {
         scope.launch {
-            val snapshot = IosBundleIdExclusions.filterEnabled(_enabled.value)
-            operationalState.replaceEnabledIosApps(snapshot)
+            enabledWriteMutex.withLock {
+                val selection = IosBundleIdExclusions.filterEnabled(_enabled.value)
+                if (bundleIds.size == 1) {
+                    val bundleId = bundleIds.single()
+                    operationalState.setIosAppEnabled(bundleId, bundleId in selection)
+                } else {
+                    operationalState.setIosAppsEnabled(bundleIds.associateWith { it in selection })
+                }
+            }
         }
     }
 }

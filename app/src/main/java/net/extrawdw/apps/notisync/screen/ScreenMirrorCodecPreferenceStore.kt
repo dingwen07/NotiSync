@@ -10,7 +10,6 @@ import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.apps.notisync.data.storage.operational.ScreenCodecPreferenceEntity
 import net.extrawdw.notisync.protocol.ClientId
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import net.extrawdw.notisync.protocol.TrustStatus
 
@@ -26,8 +25,16 @@ internal class ScreenMirrorCodecPreferenceStore(
 
     /** A null value selects Auto and removes the durable override. */
     suspend fun setPreferredCodec(peerId: ClientId, codec: ScreenMirrorCodec?) = mutex.withLock {
-        update { current ->
-            if (codec == null) current - peerId.value else current + (peerId.value to codec)
+        if (codec != null && _preferredCodecs.value[peerId.value] == codec) return@withLock
+        if (codec == null) {
+            operationalState.deleteScreenCodecPreference(peerId.value)
+        } else {
+            operationalState.setScreenCodecPreference(ScreenCodecPreferenceEntity(peerId.value, codec.name.lowercase()))
+        }
+        _preferredCodecs.value = if (codec == null) {
+            _preferredCodecs.value - peerId.value
+        } else {
+            _preferredCodecs.value + (peerId.value to codec)
         }
     }
 
@@ -37,24 +44,11 @@ internal class ScreenMirrorCodecPreferenceStore(
             .filter { it.ownDevice && it.status == TrustStatus.TRUSTED && it.verified }
             .map { it.clientId.value }
             .toSet()
-        update { current -> current.filterKeys(allowed::contains) }
-    }
-
-    private suspend fun update(
-        transform: (Map<String, ScreenMirrorCodec>) -> Map<String, ScreenMirrorCodec>,
-    ) {
-        var next = emptyMap<String, ScreenMirrorCodec>()
-        val current = loadRoom()
-        next = transform(current)
-            .entries
-            .sortedBy { it.key }
-            .associate { it.toPair() }
-        operationalState.replaceScreenCodecPreferences(
-            next.map { (peerId, codec) ->
-                ScreenCodecPreferenceEntity(peerId, codec.name.lowercase())
-            },
-        )
-        _preferredCodecs.value = next
+        // Check durable rows too, so unknown codecs and invalid peer ids are pruned when their peer leaves.
+        val rows = operationalState.screenCodecPreferences()
+        if (rows.any { it.peerId !in allowed }) operationalState.retainScreenCodecPreferences(allowed)
+        _preferredCodecs.value = rows.filter { it.peerId in allowed }
+            .mapNotNull { decodeEntry(it.peerId, it.codec) }.toMap()
     }
 
     private fun load(): Map<String, ScreenMirrorCodec> = runCatching {

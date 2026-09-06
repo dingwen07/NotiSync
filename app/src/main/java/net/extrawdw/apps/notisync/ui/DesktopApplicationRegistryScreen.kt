@@ -8,11 +8,16 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.KeyboardOptions
@@ -242,9 +247,15 @@ private fun DesktopApplicationEditor(
         onDismissRequest = ::close,
         sheetState = sheetState,
         sheetGesturesEnabled = !busy,
+        contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
         properties = ModalBottomSheetProperties(shouldDismissOnBackPress = !busy, shouldDismissOnClickOutside = !busy),
     ) {
-        Column(Modifier.fillMaxWidth().fillMaxHeight(0.92f)) {
+        Column(
+            Modifier.fillMaxWidth()
+                .fillMaxHeight(0.92f)
+                // Size the sheet before keyboard padding so focus changes cannot move its top edge.
+                .windowInsetsPadding(WindowInsets.safeDrawing.only(WindowInsetsSides.Bottom)),
+        ) {
             Row(Modifier.fillMaxWidth().padding(horizontal = 24.dp), verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     stringResource(if (original == null) R.string.desktop_application_add else R.string.desktop_application_edit),
