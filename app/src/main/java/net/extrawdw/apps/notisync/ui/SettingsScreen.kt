@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -64,6 +65,10 @@ import kotlinx.coroutines.withContext
 @Composable
 fun SettingsScreen() {
     val graph = rememberGraph()
+    var showDesktopApplications by rememberSaveable { mutableStateOf(false) }
+    if (showDesktopApplications) {
+        DesktopApplicationRegistryScreen(onDismiss = { showDesktopApplications = false })
+    }
     val scope = rememberCoroutineScope()
     val brokerUrl by graph.settings.brokerUrl.collectAsStateWithLifecycle()
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
@@ -229,6 +234,12 @@ fun SettingsScreen() {
                 )
             }
             item { SettingsSectionHeader(R.string.settings_section_seal_ssh) }
+            item {
+                ListItem(
+                    modifier = Modifier.clickable { showDesktopApplications = true },
+                    supportingContent = { Text(stringResource(R.string.desktop_applications_summary)) },
+                ) { Text(stringResource(R.string.desktop_applications_title)) }
+            }
             item {
                 ToggleRow(
                     stringResource(R.string.settings_auto_open_openpgp_request),

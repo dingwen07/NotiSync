@@ -343,13 +343,20 @@ internal class SshOperationalOperationException(cause: Exception) :
     Exception("Android Keystore SSH signing operation failed: ${cause.failureSummary()}", cause)
 
 /** Durable Android key inventory, pending approvals, and response outbox. */
-class SshKeyProviderStore(context: Context) :
+class SshKeyProviderStore internal constructor(
+    context: Context,
+    private val applicationRegistry: () -> KnownDesktopApplicationRegistry,
+) :
     SQLiteOpenHelper(
         context.applicationContext,
         OperationalDatabase.DATABASE_NAME,
         null,
         OperationalDatabase.VERSION,
     ) {
+    constructor(context: Context) : this(context, { BUILT_IN_DESKTOP_APPLICATIONS })
+
+    internal val desktopApplicationRegistry: KnownDesktopApplicationRegistry get() = applicationRegistry()
+
     private val appContext = context.applicationContext
     private val strongBoxAvailable = context.applicationContext.packageManager
         .hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
@@ -2100,7 +2107,9 @@ class SshKeyProviderStore(context: Context) :
                 policy.userVerificationPolicy,
             )
         ) return unavailable
-        return SshRememberAuthorizationPolicy.availableOptions(request.destinationContext, request.processContext)
+        return SshRememberAuthorizationPolicy.availableOptions(
+            request.destinationContext, request.processContext, desktopApplicationRegistry,
+        )
     }
 
     @Synchronized
@@ -2530,6 +2539,7 @@ class SshKeyProviderStore(context: Context) :
         provider: ClientId,
         choice: SshRememberAuthorizationChoice,
         now: Long,
+        expectedApplicationIdentity: DesktopApplicationIdentity? = null,
     ): SshSignResult? {
         val stored = find(requestId) ?: return null
         val request = stored.signRequest ?: return null
@@ -2549,8 +2559,14 @@ class SshKeyProviderStore(context: Context) :
         val options = SshRememberAuthorizationPolicy.availableOptions(
             request.destinationContext,
             request.processContext,
+            desktopApplicationRegistry,
         )
         if (choice !in options.choices) return null
+        if (choice.applicationBound) {
+            // Registry edits during authentication must not switch the process the user approved.
+            val current = options.applicationAnchor?.identity ?: return null
+            if (expectedApplicationIdentity?.matches(current) != true) return null
+        }
         val scope = choice.scope
         val disposition = when (scope) {
             SshRememberScope.PEER -> SshRememberDisposition.CREATED_PEER
@@ -3477,7 +3493,7 @@ class SshKeyProviderStore(context: Context) :
             requesterClientId = request.requesterClientId,
             authorizationGeneration = request.authorizationGeneration,
             authorizationEpoch = request.authorizationEpoch,
-            applicationSelection = DesktopApplicationAnchorSelector.select(request.processContext),
+            applicationSelection = DesktopApplicationAnchorSelector.select(request.processContext, desktopApplicationRegistry),
             hostKeySha256 = hostKeySha256,
         )?.let { authorization ->
             return RememberedAuthorizationMatch(

@@ -3,10 +3,6 @@ package net.extrawdw.apps.notisync.appicon
 import io.ktor.client.HttpClient
 import io.ktor.client.engine.okhttp.OkHttp
 import io.ktor.client.plugins.HttpTimeout
-import io.ktor.client.request.get
-import io.ktor.client.statement.bodyAsText
-import io.ktor.client.statement.readRawBytes
-import io.ktor.http.isSuccess
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -35,21 +31,42 @@ sealed interface IconFetchResult {
  * Health, …); a few pure-OS surfaces (Settings, App Store) have no store entry and resolve to null here —
  * those are covered by the [ShippedIcons] pack instead. Network errors / no entry both return null.
  *
- * Only [fetch] touches the network; the URL templating and JSON shape are pure [companion] helpers, so they
- * are unit-tested against canned responses without a live API.
+ * [fetch] resolves bundle IDs for notification icons; [fetchAppId] resolves numeric IDs for explicit imports.
+ * Both use the same storefront fallback, response parser and bounded image download.
  */
-class AppStoreIconClient(
-    private val client: HttpClient = defaultClient(),
+class AppStoreIconClient internal constructor(
+    private val download: suspend (url: String, maxBytes: Int) -> ByteArray,
     /** App Store storefronts to try in order — the first with an entry wins. Default US then CN, since some
      *  apps are CN-store-only (e.g. Douyin, QQ) and never resolve against the US store. */
     private val countries: List<String> = DEFAULT_COUNTRIES,
 ) {
+    constructor(
+        client: HttpClient = defaultClient(),
+        countries: List<String> = DEFAULT_COUNTRIES,
+    ) : this({ url, maxBytes -> client.downloadIconBytes(url, maxBytes) }, countries)
+
     /** A compact WebP for [bundleId] at [sizePx] from the first storefront that has it; otherwise a real
      *  miss vs. a transient failure (see [IconFetchResult]). */
-    suspend fun fetch(bundleId: String, sizePx: Int): IconFetchResult {
+    suspend fun fetch(bundleId: String, sizePx: Int): IconFetchResult =
+        fetchFromStorefronts(sizePx, countries) { country -> lookupUrl(bundleId, country) }
+
+    /** Numeric IDs work for both iOS and macOS apps. Prefer the storefront in the pasted URL. */
+    suspend fun fetchAppId(appId: String, sizePx: Int, country: String? = null): IconFetchResult {
+        require(appId.toLongOrNull()?.let { it > 0 } == true)
+        return fetchFromStorefronts(sizePx, (listOfNotNull(country) + countries).distinct(), appId) {
+            lookupAppIdUrl(appId, it)
+        }
+    }
+
+    private suspend fun fetchFromStorefronts(
+        sizePx: Int,
+        storefronts: List<String>,
+        appId: String? = null,
+        lookup: (String) -> String,
+    ): IconFetchResult {
         var sawTransient = false
-        for (country in countries) {
-            when (val r = fetchFrom(bundleId, sizePx, country)) {
+        for (country in storefronts) {
+            when (val r = fetchFrom(lookup(country), sizePx, appId)) {
                 is IconFetchResult.Found -> return r
                 IconFetchResult.NotFound -> {} // definitively absent here — try the next storefront
                 IconFetchResult.TransientError -> sawTransient = true
@@ -60,16 +77,12 @@ class AppStoreIconClient(
         return if (sawTransient) IconFetchResult.TransientError else IconFetchResult.NotFound
     }
 
-    private suspend fun fetchFrom(bundleId: String, sizePx: Int, country: String): IconFetchResult {
+    private suspend fun fetchFrom(lookupUrl: String, sizePx: Int, appId: String?): IconFetchResult {
         return try {
-            val lookup = client.get(lookupUrl(bundleId, country))
-            if (!lookup.status.isSuccess()) return IconFetchResult.TransientError // server/transport problem
-            val artwork = parseArtworkUrl(lookup.bodyAsText())
-                ?: return IconFetchResult.NotFound // 2xx with no matching app — a genuine miss in this storefront
-            val image = client.get(toWebpUrl(artwork, sizePx))
-            if (!image.status.isSuccess()) return IconFetchResult.TransientError
-            val bytes = image.readRawBytes()
-            if (bytes.isNotEmpty()) IconFetchResult.Found(bytes) else IconFetchResult.TransientError
+            val lookup = download(lookupUrl, 1024 * 1024)
+            val artwork = parseArtworkUrl(lookup.decodeToString(), appId)
+                ?: return IconFetchResult.NotFound
+            IconFetchResult.Found(download(toWebpUrl(artwork, sizePx), MAX_ICON_SOURCE_BYTES))
         } catch (e: CancellationException) {
             throw e // never swallow coroutine cancellation
         } catch (e: Exception) {
@@ -82,6 +95,8 @@ class AppStoreIconClient(
 
     @Serializable
     private data class App(
+        val trackId: Long? = null,
+        val wrapperType: String? = null,
         val artworkUrl512: String? = null,
         val artworkUrl100: String? = null,
         val artworkUrl60: String? = null,
@@ -99,10 +114,18 @@ class AppStoreIconClient(
         fun lookupUrl(bundleId: String, country: String): String =
             "https://itunes.apple.com/lookup?bundleId=$bundleId&country=$country&entity=software"
 
+        fun lookupAppIdUrl(appId: String, country: String): String {
+            require(appId.toLongOrNull()?.let { it > 0 } == true)
+            require(country.matches(Regex("[a-zA-Z]{2}")))
+            // No entity=software filter: a numeric ID can identify a macOS application too.
+            return "https://itunes.apple.com/lookup?id=$appId&country=$country"
+        }
+
         /** Highest-res artwork URL in a lookup body, or null for an empty/!malformed result (no store entry). */
-        fun parseArtworkUrl(body: String): String? {
-            val app =
-                runCatching { json.decodeFromString<Lookup>(body) }.getOrNull()?.results?.firstOrNull()
+        fun parseArtworkUrl(body: String, appId: String? = null): String? {
+            val app = runCatching { json.decodeFromString<Lookup>(body) }.getOrNull()?.results?.firstOrNull {
+                appId == null || (it.trackId?.toString() == appId && it.wrapperType == "software")
+            }
             return app?.artworkUrl512 ?: app?.artworkUrl100 ?: app?.artworkUrl60
         }
 
@@ -114,7 +137,7 @@ class AppStoreIconClient(
             )
             else artworkUrl
 
-        private fun defaultClient(): HttpClient = HttpClient(OkHttp) {
+        internal fun defaultClient(): HttpClient = HttpClient(OkHttp) {
             install(HttpTimeout) {
                 requestTimeoutMillis = 8_000
                 connectTimeoutMillis = 6_000

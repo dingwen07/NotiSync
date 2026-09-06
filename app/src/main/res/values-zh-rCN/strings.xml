@@ -943,4 +943,46 @@
     <string name="onboarding_pair_body">在您的其他设备上安装 NotiSync，然后在「设备」标签页中配对。</string>
     <string name="device_capability_ssh_key_provider">SSH 密钥提供方</string>
     <string name="device_capability_ssh_agent">SSH 代理客户端</string>
+
+    <!-- Desktop application registry -->
+    <string name="desktop_applications_title">桌面应用</string>
+    <string name="desktop_applications_summary">管理应用匹配规则和图标</string>
+    <string name="desktop_application_add">添加应用</string>
+    <string name="desktop_application_edit">编辑应用</string>
+    <string name="desktop_application_search">搜索应用</string>
+    <string name="desktop_application_no_results">没有匹配的应用</string>
+    <string name="desktop_application_id">ID</string>
+    <string name="desktop_application_display_name">显示名称</string>
+    <string name="desktop_application_priority">优先级</string>
+    <string name="desktop_application_priority_hint">多个应用匹配时，数值更大的应用优先。</string>
+    <string name="desktop_application_traversal">进程链遍历</string>
+    <string name="desktop_application_candidate">候选项</string>
+    <string name="desktop_application_skip">跳过</string>
+    <string name="desktop_application_stop">停止</string>
+    <string name="desktop_application_candidate_hint">将此进程作为应用候选项，然后继续遍历父进程。</string>
+    <string name="desktop_application_skip_hint">跳过此进程，继续遍历父进程。</string>
+    <string name="desktop_application_stop_hint">在此进程停止，不考虑此进程及其后续所有父进程。</string>
+    <string name="desktop_application_names">接受的名称</string>
+    <string name="desktop_application_names_hint">可执行文件名或应用包名，每行一个。</string>
+    <string name="desktop_application_paths">接受的路径</string>
+    <string name="desktop_application_paths_hint">可执行文件的绝对路径，每行一个（可选）。</string>
+    <string name="desktop_application_choose_icon">选择图标</string>
+    <string name="desktop_application_remove_icon">移除图标</string>
+    <string name="desktop_application_reset">恢复内置设置</string>
+    <string name="desktop_application_delete">删除应用</string>
+    <string name="desktop_application_reset_confirm">将 %1$s 恢复为内置定义并移除自定义图标？</string>
+    <string name="desktop_application_delete_confirm">删除 %1$s 及其图标？</string>
+    <string name="desktop_application_id_error">请输入应用 ID。</string>
+    <string name="desktop_application_duplicate_id">此 ID 已被其他条目使用。请编辑该条目。</string>
+    <string name="desktop_application_priority_error">请输入 −2147483648 到 2147483647 之间的整数。</string>
+    <string name="desktop_application_names_error">请至少输入一个接受的名称。</string>
+    <string name="desktop_application_paths_error">每个接受的路径都必须是 POSIX 或 Windows 绝对路径。</string>
+    <string name="desktop_application_icon_error">无法读取此图片。请选择另一张不超过 20 MB 的图片。</string>
+    <string name="desktop_application_save_error">无法保存应用，请重试。</string>
+    <string name="desktop_application_icon_source">图标网址或 App ID</string>
+    <string name="desktop_application_icon_source_hint">App Store 链接、数字 App ID、应用包 ID 或 HTTPS 图片网址。</string>
+    <string name="desktop_application_load_icon">加载图标</string>
+    <string name="desktop_application_icon_source_error">请输入 App Store 链接、App ID、应用包 ID 或 HTTPS 图片网址。</string>
+    <string name="desktop_application_icon_not_found">未找到此应用的 App Store 图标。</string>
+    <string name="desktop_application_icon_load_error">无法加载此图片，请检查网址或 App ID 后重试。</string>
 </resources>

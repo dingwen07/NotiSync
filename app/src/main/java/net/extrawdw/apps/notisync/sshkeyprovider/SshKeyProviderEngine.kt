@@ -222,8 +222,12 @@ class SshKeyProviderEngine(
         }
     }
 
-    internal fun approveAndRemember(requestId: String, choice: SshRememberAuthorizationChoice): SshSignResult? {
-        val result = store.approveAndRemember(requestId, providerClientId, choice, now())
+    internal fun approveAndRemember(
+        requestId: String,
+        choice: SshRememberAuthorizationChoice,
+        expectedApplicationIdentity: DesktopApplicationIdentity?,
+    ): SshSignResult? {
+        val result = store.approveAndRemember(requestId, providerClientId, choice, now(), expectedApplicationIdentity)
         if (result != null) {
             notifications.dismiss(requestId)
             SshKeyProviderResponseWorker.enqueue(context, requestId)
@@ -239,6 +243,7 @@ class SshKeyProviderEngine(
                 notifications.post(
                     request,
                     deviceNameOf(request.requesterClientId) ?: request.requesterClientId.shortForm(),
+                    allowAutomaticOpen = false,
                 )
             }
         }

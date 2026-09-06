@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.sshkeyprovider
 
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -56,6 +55,8 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import net.extrawdw.apps.notisync.ui.rememberGraph
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -65,8 +66,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -128,6 +127,8 @@ internal fun SshRequestListItem(
     knownHostname: String? = null,
     onClick: () -> Unit,
 ) {
+    val applications by rememberGraph().desktopApplications.snapshot.collectAsStateWithLifecycle()
+    val application = remember(request, applications) { request.applicationAnchor(applications.registry) }
     val status = request.displayStatus()
     val time = rememberShortTimeFormatter().format(Date(request.resultAt ?: request.updatedAt))
     Surface {
@@ -142,7 +143,7 @@ internal fun SshRequestListItem(
                         maxLines = 1,
                     )
                     Text(
-                        listOfNotNull(request.contextLabel(), requesterName, time).joinToString(" · "),
+                        listOfNotNull(request.contextLabel(application), requesterName, time).joinToString(" · "),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -622,8 +623,9 @@ private fun SshRequestHero(
     approvalPresentation: Boolean,
 ) {
     val content = statusColor(status)
-    val application = remember(request) { request.applicationAnchor() }
-    val applicationIcon = desktopApplicationIcon(application?.applicationId)
+    val applications by rememberGraph().desktopApplications.snapshot.collectAsStateWithLifecycle()
+    val application = remember(request, applications) { request.applicationAnchor(applications.registry) }
+    val applicationIcon = applications.icon(application?.applicationId)
     Surface(
         color = statusContainer(status),
         contentColor = content,
@@ -656,21 +658,12 @@ private fun SshRequestHero(
                     fontFamily = FontFamily.Monospace,
                 )
             }
-            if (applicationIcon != null) {
-                Image(
-                    painter = painterResource(applicationIcon),
-                    contentDescription = null, // The application name is already in the card text.
-                    modifier = Modifier.size(64.dp),
-                    contentScale = ContentScale.Fit,
-                )
+            if (request.kind == SshProviderRequestKind.SIGN) {
+                DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
             } else {
                 Surface(shape = CircleShape, color = content.copy(alpha = 0.12f), contentColor = content) {
                     Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
-                        if (request.kind == SshProviderRequestKind.SIGN) {
-                            Icon(TerminalIcon, contentDescription = null, modifier = Modifier.size(30.dp))
-                        } else {
-                            SshStatusIcon(status, Modifier.size(30.dp))
-                        }
+                        SshStatusIcon(status, Modifier.size(30.dp))
                     }
                 }
             }

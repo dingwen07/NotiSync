@@ -19,6 +19,7 @@ import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.mapLatest
 import kotlinx.coroutines.launch
@@ -159,7 +160,10 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             var approveOnFirstLoad = approveAfterLoad
             repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
-                graph.sshKeyProviderStore.changeVersion
+                combine(
+                    graph.sshKeyProviderStore.changeVersion,
+                    graph.desktopApplications.snapshot,
+                ) { version, applications -> version to applications }
                     .mapLatest {
                         val generation = nextRenderGeneration()
                         generation to withContext(Dispatchers.IO) {
@@ -682,7 +686,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                         lifecycleScope.launch {
                             val signResult = withContext(Dispatchers.IO) {
                                 (application as? NotiSyncApp)?.awaitGraphReady()?.sshKeyProviderEngine
-                                    ?.approveAndRemember(requestId, choice)
+                                    ?.approveAndRemember(requestId, choice, details.rememberApplication?.identity)
                             }
                             showSignResult(signResult)
                         }
@@ -714,7 +718,10 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
             SshSignResultKind.SIGNED -> finish()
             SshSignResultKind.PROVIDER_FAILURE -> showError(getString(R.string.ssh_key_provider_sign_failed))
             SshSignResultKind.REJECTED_BY_USER -> finish()
-            null -> load()
+            null -> {
+                busy = false
+                load()
+            }
         }
     }
 

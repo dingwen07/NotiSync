@@ -30,6 +30,7 @@ class SshKeyProviderNotificationPresenter(
         stored: StoredSshProviderRequest,
         requesterName: String,
         openImmediately: Boolean = false,
+        allowAutomaticOpen: Boolean = true,
     ): Boolean {
         ensureChannel()
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
@@ -38,7 +39,7 @@ class SshKeyProviderNotificationPresenter(
         val safeRequesterName = requesterName.take(MAX_CONTEXT_CHARS)
         val knownHostname = stored.signRequest?.destinationContext?.let(store::knownHostHostname)
         val destination = stored.destinationLabel(knownHostname)?.take(MAX_CONTEXT_CHARS)
-        val process = stored.signRequest?.processContext?.processLineage?.mainCallerLabel()
+        val process = stored.signRequest?.processContext?.processLineage?.mainCallerLabel(store.desktopApplicationRegistry)
         val keyName = when (stored.kind) {
             SshProviderRequestKind.SIGN -> stored.history.keyName
                 ?: context.getString(R.string.ssh_key_provider_notification_unknown_key)
@@ -94,7 +95,7 @@ class SshKeyProviderNotificationPresenter(
             addAll(expandedDetails)
             add(context.getString(R.string.ssh_key_provider_notification_request, stored.requestId.take(8)))
         }.joinToString("\n")
-        val autoOpenEnabled = openRequestPageAutomatically()
+        val autoOpenEnabled = allowAutomaticOpen && openRequestPageAutomatically()
         val review = PendingIntent.getActivity(
             context,
             notificationId(stored.requestId),
@@ -178,7 +179,7 @@ class SshKeyProviderNotificationPresenter(
                 store.knownHosts().firstOrNull { it.fingerprint() == fingerprint }?.hostname
             }
         val destination = stored.destinationLabel(knownHostname)?.take(MAX_CONTEXT_CHARS)
-        val process = stored.history.processLineage.mainCallerLabel()?.take(MAX_CONTEXT_CHARS)
+        val process = stored.history.processLineage.mainCallerLabel(store.desktopApplicationRegistry)?.take(MAX_CONTEXT_CHARS)
         val keyName = (stored.history.keyName
             ?: context.getString(R.string.ssh_key_provider_notification_unknown_key)).take(MAX_CONTEXT_CHARS)
         val content = context.getString(

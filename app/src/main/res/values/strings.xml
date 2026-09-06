@@ -975,4 +975,46 @@
     <string name="onboarding_pair_body">Install NotiSync on your other devices, then pair them from the Devices tab.</string>
     <string name="device_capability_ssh_key_provider">SSH Key Provider</string>
     <string name="device_capability_ssh_agent">SSH Agent Client</string>
+
+    <!-- Desktop application registry -->
+    <string name="desktop_applications_title">Desktop applications</string>
+    <string name="desktop_applications_summary">Manage application matching and icons</string>
+    <string name="desktop_application_add">Add application</string>
+    <string name="desktop_application_edit">Edit application</string>
+    <string name="desktop_application_search">Search applications</string>
+    <string name="desktop_application_no_results">No matching applications</string>
+    <string name="desktop_application_id">ID</string>
+    <string name="desktop_application_display_name">Display name</string>
+    <string name="desktop_application_priority">Priority</string>
+    <string name="desktop_application_priority_hint">Higher numbers take precedence when multiple applications match.</string>
+    <string name="desktop_application_traversal">Lineage traversal</string>
+    <string name="desktop_application_candidate">Candidate</string>
+    <string name="desktop_application_skip">Skip</string>
+    <string name="desktop_application_stop">Stop</string>
+    <string name="desktop_application_candidate_hint">Consider this process as the application, then continue through its parents.</string>
+    <string name="desktop_application_skip_hint">Skip this process and continue through its parents.</string>
+    <string name="desktop_application_stop_hint">Stop at this process. Exclude it and all remaining parents.</string>
+    <string name="desktop_application_names">Accepted names</string>
+    <string name="desktop_application_names_hint">Executable or app bundle names, one per line.</string>
+    <string name="desktop_application_paths">Accepted paths</string>
+    <string name="desktop_application_paths_hint">Absolute executable paths, one per line (optional).</string>
+    <string name="desktop_application_choose_icon">Choose icon</string>
+    <string name="desktop_application_remove_icon">Remove icon</string>
+    <string name="desktop_application_reset">Reset to built-in</string>
+    <string name="desktop_application_delete">Delete application</string>
+    <string name="desktop_application_reset_confirm">Reset %1$s to its built-in definition and remove its custom icon?</string>
+    <string name="desktop_application_delete_confirm">Delete %1$s and its icon?</string>
+    <string name="desktop_application_id_error">Enter an application ID.</string>
+    <string name="desktop_application_duplicate_id">This ID already belongs to another entry. Edit that entry instead.</string>
+    <string name="desktop_application_priority_error">Enter a whole number from −2147483648 to 2147483647.</string>
+    <string name="desktop_application_names_error">Enter at least one accepted name.</string>
+    <string name="desktop_application_paths_error">Every accepted path must be an absolute POSIX or Windows path.</string>
+    <string name="desktop_application_icon_error">Could not read this image. Choose another image up to 20 MB.</string>
+    <string name="desktop_application_save_error">Could not save the application. Please try again.</string>
+    <string name="desktop_application_icon_source">Icon URL or App ID</string>
+    <string name="desktop_application_icon_source_hint">App Store link, numeric app ID, bundle ID, or HTTPS image URL.</string>
+    <string name="desktop_application_load_icon">Load icon</string>
+    <string name="desktop_application_icon_source_error">Enter an App Store link, app ID, bundle ID, or HTTPS image URL.</string>
+    <string name="desktop_application_icon_not_found">No App Store icon found for this app.</string>
+    <string name="desktop_application_icon_load_error">Could not load this image. Check the URL or app ID and try again.</string>
 </resources>

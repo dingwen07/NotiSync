@@ -39,6 +39,7 @@ import androidx.sqlite.execSQL
         ScreenMirrorStateEntity::class,
         ScreenCodecPreferenceEntity::class,
         OpenPgpEnrollmentEntity::class,
+        DesktopApplicationEntity::class,
     ],
     version = OperationalDatabase.VERSION,
     exportSchema = true,
@@ -46,10 +47,11 @@ import androidx.sqlite.execSQL
 internal abstract class OperationalDatabase : RoomDatabase() {
     abstract fun metadata(): OperationalMetadataDao
     abstract fun applicationState(): OperationalApplicationDao
+    abstract fun desktopApplications(): DesktopApplicationDao
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 3
+        const val VERSION = 4
 
         val MIGRATION_1_2 = Migration(1, 2) { connection ->
             connection.execSQL(
@@ -81,11 +83,28 @@ internal abstract class OperationalDatabase : RoomDatabase() {
             connection.execSQL("ALTER TABLE `ssh_webauthn_credentials` DROP COLUMN `created_origin`")
         }
 
+        val MIGRATION_3_4 = Migration(3, 4) { connection ->
+            connection.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `desktop_applications` (
+                    `id` TEXT NOT NULL,
+                    `display_name` TEXT NOT NULL,
+                    `priority` INTEGER NOT NULL,
+                    `traversal` TEXT NOT NULL,
+                    `accepted_names_json` TEXT NOT NULL,
+                    `accepted_paths_json` TEXT NOT NULL,
+                    `icon_data` BLOB,
+                    PRIMARY KEY(`id`)
+                )
+                """.trimIndent(),
+            )
+        }
+
         fun create(context: Context): OperationalDatabase =
             Room.databaseBuilder<OperationalDatabase>(context.applicationContext, DATABASE_NAME)
                 .setDriver(AndroidSQLiteDriver())
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
                 .build()
     }
 }

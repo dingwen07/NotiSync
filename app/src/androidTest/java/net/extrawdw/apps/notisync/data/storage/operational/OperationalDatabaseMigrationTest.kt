@@ -139,6 +139,53 @@ class OperationalDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migrationThreeToFourPreservesExistingStateAndAddsEmptyApplicationRegistry() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(3).use { connection ->
+            connection.execSQL("INSERT INTO notification_capture_state VALUES (1, 123456)")
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 4,
+            migrations = listOf(OperationalDatabase.MIGRATION_3_4),
+        ).use { connection ->
+            connection.prepare("SELECT last_seen_post_time FROM notification_capture_state").use { statement ->
+                assertTrue(statement.step())
+                assertEquals(123456L, statement.getLong(0))
+            }
+            connection.prepare("SELECT COUNT(*) FROM desktop_applications").use { statement ->
+                assertTrue(statement.step())
+                assertEquals(0L, statement.getLong(0))
+            }
+            connection.execSQL(
+                """
+                INSERT INTO desktop_applications VALUES (
+                    'custom', 'My app', -2147483648, 'STOP', '["Tool.app"]', '["/opt/tools/"]', X'52494646'
+                )
+                """.trimIndent(),
+            )
+            connection.prepare("SELECT priority, icon_data FROM desktop_applications").use { statement ->
+                assertTrue(statement.step())
+                assertEquals(Int.MIN_VALUE.toLong(), statement.getLong(0))
+                assertTrue(statement.getBlob(1).contentEquals(byteArrayOf(82, 73, 70, 70)))
+            }
+        }
+    }
+
+    @Test
+    fun migrationFromOriginalRoomReleaseReachesCurrentSchema() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(1).close()
+        migrationHelper.runMigrationsAndValidate(
+            version = OperationalDatabase.VERSION,
+            migrations = listOf(
+                OperationalDatabase.MIGRATION_1_2,
+                OperationalDatabase.MIGRATION_2_3,
+                OperationalDatabase.MIGRATION_3_4,
+            ),
+        ).close()
+    }
+
     private companion object {
         const val DATABASE_NAME = "operational-migration-test.db"
     }

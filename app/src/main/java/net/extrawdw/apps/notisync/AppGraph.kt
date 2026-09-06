@@ -114,6 +114,7 @@ import net.extrawdw.apps.notisync.seal.OpenPgpSignEngine
 import net.extrawdw.apps.notisync.seal.OpenPgpSignNotificationPresenter
 import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpSigningProvider
+import net.extrawdw.apps.notisync.sshkeyprovider.DesktopApplicationRepository
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderManagementRepository
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderNotificationPresenter
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderEngine
@@ -295,6 +296,8 @@ class AppGraph(private val app: Application) {
         private set
     var openPgpSignEngine: OpenPgpSignEngine? = null
         private set
+    internal lateinit var desktopApplications: DesktopApplicationRepository
+        private set
     lateinit var sshKeyProviderStore: SshKeyProviderStore
         private set
     lateinit var sshKeyProviderManagement: SshKeyProviderManagementRepository
@@ -362,7 +365,8 @@ class AppGraph(private val app: Application) {
         openPgpSignNotifications = OpenPgpSignNotificationPresenter(app) {
             settings.autoOpenOpenPgpRequest.value
         }
-        sshKeyProviderStore = SshKeyProviderStore(app)
+        desktopApplications = DesktopApplicationRepository(app)
+        sshKeyProviderStore = SshKeyProviderStore(app) { desktopApplications.snapshot.value.registry }
         sshKeyProviderManagement = SshKeyProviderManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         val sshManagementStartNanos = System.nanoTime()
         sshKeyProviderManagement.preload()
@@ -640,6 +644,9 @@ class AppGraph(private val app: Application) {
         )
         sshKeyProviderEngine = sshProvider
         scope.launch { sshProvider.reconcile() }
+        scope.launch {
+            desktopApplications.snapshot.drop(1).collect { sshProvider.refreshPendingNotifications() }
+        }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
             channel = channel,
