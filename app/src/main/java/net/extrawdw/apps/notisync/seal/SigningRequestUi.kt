@@ -395,47 +395,41 @@ private fun SealHero(
         contentColor = content,
         shape = RoundedCornerShape(28.dp),
     ) {
-        Row(
+        Column(
             Modifier.fillMaxWidth().padding(20.dp),
-            horizontalArrangement = Arrangement.spacedBy(16.dp),
-            verticalAlignment = Alignment.CenterVertically,
+            verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            Surface(
-                shape = CircleShape,
-                color = content.copy(alpha = 0.12f),
-                contentColor = content,
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-                    SealStatusIcon(status, modifier = Modifier.size(30.dp))
-                }
-            }
-            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                SealStatusIcon(status, Modifier.size(18.dp))
                 Text(
                     sealStatusLabel(status),
                     style = MaterialTheme.typography.labelLarge,
                 )
-                SelectionContainer {
-                    Text(
-                        subject,
-                        style = MaterialTheme.typography.titleLarge,
-                        maxLines = 3,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                }
+            }
+            SelectionContainer {
                 Text(
-                    listOfNotNull(
-                        requesterName,
-                        workingDirectory?.workingDirectoryName(),
-                        reference,
-                    ).joinToString(" · "),
-                    style = MaterialTheme.typography.bodyMedium,
-                )
-                Text(
-                    stringResource(R.string.seal_hash, shortHash),
-                    style = MaterialTheme.typography.labelLarge,
-                    fontFamily = FontFamily.Monospace,
+                    subject,
+                    style = MaterialTheme.typography.titleLarge,
+                    maxLines = 3,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
+            Text(
+                listOfNotNull(
+                    requesterName,
+                    workingDirectory?.workingDirectoryName(),
+                    reference,
+                ).joinToString(" · "),
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            Text(
+                stringResource(R.string.seal_hash, shortHash),
+                style = MaterialTheme.typography.labelLarge,
+                fontFamily = FontFamily.Monospace,
+            )
         }
     }
 }

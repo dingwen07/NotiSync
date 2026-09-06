@@ -20,7 +20,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
@@ -658,16 +657,8 @@ private fun SshRequestHero(
                     fontFamily = FontFamily.Monospace,
                 )
             }
-            if (request.kind == SshProviderRequestKind.SIGN) {
-                if (applicationIcon != null) {
-                    DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
-                }
-            } else {
-                Surface(shape = CircleShape, color = content.copy(alpha = 0.12f), contentColor = content) {
-                    Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
-                        SshStatusIcon(status, Modifier.size(30.dp))
-                    }
-                }
+            if (request.kind == SshProviderRequestKind.SIGN && applicationIcon != null) {
+                DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
             }
         }
     }
@@ -930,7 +921,7 @@ private fun StoredSshProviderRequest.headline(
     approvalPresentation: Boolean = false,
 ): String = when (kind) {
     SshProviderRequestKind.SIGN -> (if (approvalPresentation) {
-        approvalDestinationLabel(knownHostname)
+        approvalDestinationLabel(knownHostname)?.let { destinationLabel(it) }
     } else {
         destinationLabel(knownHostname)
     }) ?: stringResource(R.string.ssh_key_provider_request_sign)
