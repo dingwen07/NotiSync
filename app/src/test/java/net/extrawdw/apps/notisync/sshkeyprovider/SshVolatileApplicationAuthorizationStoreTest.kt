@@ -161,7 +161,7 @@ class SshVolatileApplicationAuthorizationStoreTest {
         host,
     )
 
-    private fun selection(vararg paths: String) = SshApplicationAnchorSelector.select(
+    private fun selection(vararg paths: String) = DesktopApplicationAnchorSelector.select(
         paths.mapIndexed { index, path ->
             DesktopProcessIdentity(
                 pid = index + 1L,

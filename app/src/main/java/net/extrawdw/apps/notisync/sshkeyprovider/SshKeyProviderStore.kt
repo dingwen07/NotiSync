@@ -3477,7 +3477,7 @@ class SshKeyProviderStore(context: Context) :
             requesterClientId = request.requesterClientId,
             authorizationGeneration = request.authorizationGeneration,
             authorizationEpoch = request.authorizationEpoch,
-            applicationSelection = SshApplicationAnchorSelector.select(request.processContext),
+            applicationSelection = DesktopApplicationAnchorSelector.select(request.processContext),
             hostKeySha256 = hostKeySha256,
         )?.let { authorization ->
             return RememberedAuthorizationMatch(

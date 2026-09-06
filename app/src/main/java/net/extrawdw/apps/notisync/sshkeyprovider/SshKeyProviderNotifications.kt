@@ -211,6 +211,8 @@ class SshKeyProviderNotificationPresenter(
                 context,
                 stored.requestId,
                 authorizationId,
+                processMemoryOnly = stored.history.rememberedScope?.authorizationStorage ==
+                    SshRememberAuthorizationStorage.PROCESS_MEMORY,
             ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
@@ -284,7 +286,12 @@ class SshKeyProviderActionReceiver : BroadcastReceiver() {
                     ACTION_REJECT -> graph.sshKeyProviderEngine?.reject(requestId)
                     ACTION_FORGET_AUTHORIZATION -> {
                         val authorizationId = intent.getStringExtra(EXTRA_AUTHORIZATION_ID) ?: return@launch
-                        if (graph.sshKeyProviderStore.deleteRememberedAuthorization(authorizationId)) {
+                        val processMemoryOnly = intent.getBooleanExtra(EXTRA_PROCESS_MEMORY_ONLY, false)
+                        val changed = graph.sshKeyProviderStore.deleteRememberedAuthorization(
+                            authorizationId,
+                            processMemoryOnly,
+                        )
+                        if (changed && !processMemoryOnly) {
                             graph.sshKeyProviderEngine?.publishInventory()
                         }
                         graph.sshKeyProviderNotifications.dismiss(requestId)
@@ -302,6 +309,7 @@ class SshKeyProviderActionReceiver : BroadcastReceiver() {
             "net.extrawdw.apps.notisync.action.SSH_AGENT_FORGET_AUTHORIZATION"
         private const val EXTRA_REQUEST_ID = "ssh_key_provider_request_id"
         private const val EXTRA_AUTHORIZATION_ID = "ssh_key_provider_authorization_id"
+        private const val EXTRA_PROCESS_MEMORY_ONLY = "ssh_key_provider_process_memory_only"
         fun rejectIntent(context: Context, requestId: String) = Intent(context, SshKeyProviderActionReceiver::class.java)
             .setAction(ACTION_REJECT)
             .putExtra(EXTRA_REQUEST_ID, requestId)
@@ -310,10 +318,12 @@ class SshKeyProviderActionReceiver : BroadcastReceiver() {
             context: Context,
             requestId: String,
             authorizationId: String,
+            processMemoryOnly: Boolean,
         ) = Intent(context, SshKeyProviderActionReceiver::class.java)
             .setAction(ACTION_FORGET_AUTHORIZATION)
             .setData(Uri.parse("notisync://ssh-authorization/$authorizationId"))
             .putExtra(EXTRA_REQUEST_ID, requestId)
             .putExtra(EXTRA_AUTHORIZATION_ID, authorizationId)
+            .putExtra(EXTRA_PROCESS_MEMORY_ONLY, processMemoryOnly)
     }
 }

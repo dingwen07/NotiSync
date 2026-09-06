@@ -755,7 +755,7 @@ internal sealed interface SshReviewScreenState {
     data class Details(
         val request: StoredSshProviderRequest,
         val rememberChoices: Set<SshRememberAuthorizationChoice>,
-        val rememberApplication: SshApplicationAnchor? = null,
+        val rememberApplication: DesktopApplicationAnchor? = null,
         val encryptedImport: Boolean,
         val keyPreview: SshKeyPreview?,
         val keyName: String,

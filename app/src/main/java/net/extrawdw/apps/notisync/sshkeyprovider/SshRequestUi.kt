@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.sshkeyprovider
 
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -64,6 +65,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
@@ -578,7 +581,7 @@ private fun RememberAuthorizationSheet(
 
 @Composable
 private fun RememberApplicationButton(
-    application: SshApplicationAnchor,
+    application: DesktopApplicationAnchor,
     choice: SshRememberAuthorizationChoice,
     busy: Boolean,
     onRemember: (SshRememberAuthorizationChoice) -> Unit,
@@ -619,6 +622,8 @@ private fun SshRequestHero(
     approvalPresentation: Boolean,
 ) {
     val content = statusColor(status)
+    val application = remember(request) { request.applicationAnchor() }
+    val applicationIcon = desktopApplicationIcon(application?.applicationId)
     Surface(
         color = statusContainer(status),
         contentColor = content,
@@ -629,19 +634,20 @@ private fun SshRequestHero(
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Surface(shape = CircleShape, color = content.copy(alpha = 0.12f), contentColor = content) {
-                Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
-                    SshStatusIcon(status, Modifier.size(30.dp))
-                }
-            }
             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(statusLabel(status), style = MaterialTheme.typography.labelLarge)
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SshStatusIcon(status, Modifier.size(18.dp))
+                    Text(statusLabel(status), style = MaterialTheme.typography.labelLarge)
+                }
                 Text(
                     request.headline(knownHostname, approvalPresentation),
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
-                    listOfNotNull(requesterName, request.contextLabel()).joinToString(" · "),
+                    listOfNotNull(requesterName, request.contextLabel(application)).joinToString(" · "),
                     style = MaterialTheme.typography.bodyMedium,
                 )
                 Text(
@@ -649,6 +655,24 @@ private fun SshRequestHero(
                     style = MaterialTheme.typography.labelLarge,
                     fontFamily = FontFamily.Monospace,
                 )
+            }
+            if (applicationIcon != null) {
+                Image(
+                    painter = painterResource(applicationIcon),
+                    contentDescription = null, // The application name is already in the card text.
+                    modifier = Modifier.size(64.dp),
+                    contentScale = ContentScale.Fit,
+                )
+            } else {
+                Surface(shape = CircleShape, color = content.copy(alpha = 0.12f), contentColor = content) {
+                    Box(Modifier.size(64.dp), contentAlignment = Alignment.Center) {
+                        if (request.kind == SshProviderRequestKind.SIGN) {
+                            Icon(TerminalIcon, contentDescription = null, modifier = Modifier.size(30.dp))
+                        } else {
+                            SshStatusIcon(status, Modifier.size(30.dp))
+                        }
+                    }
+                }
             }
         }
     }
@@ -926,11 +950,20 @@ private fun StoredSshProviderRequest.approvalLabel(): String? = when (history.ap
     null -> null
 }
 
-private fun StoredSshProviderRequest.contextLabel(): String? = when (kind) {
-    SshProviderRequestKind.SIGN -> processLineageLeafFirst().mainCallerLabel()
+private fun StoredSshProviderRequest.contextLabel(
+    application: DesktopApplicationAnchor? = applicationAnchor(),
+): String? = when (kind) {
+    SshProviderRequestKind.SIGN -> application?.displayName ?: processLineageLeafFirst().firstOrNull()?.shortProcessName()
     SshProviderRequestKind.IMPORT -> if (history.importSourceType == SshImportSourceType.AGENT_IDENTITY) {
         "ssh-add"
     } else null
+}
+
+internal fun StoredSshProviderRequest.applicationAnchor(
+    registry: KnownDesktopApplicationRegistry = BUILT_IN_DESKTOP_APPLICATIONS,
+): DesktopApplicationAnchor? = when (kind) {
+    SshProviderRequestKind.SIGN -> DesktopApplicationAnchorSelector.select(processLineageLeafFirst(), registry).recommended
+    SshProviderRequestKind.IMPORT -> null
 }
 
 internal fun StoredSshProviderRequest.destinationLabel(knownHostname: String? = null): String? {

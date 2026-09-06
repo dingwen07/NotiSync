@@ -10,7 +10,7 @@ internal data class SshVolatileApplicationAuthorization(
     val requesterClientId: ClientId,
     val authorizationGeneration: String,
     val authorizationEpoch: Long,
-    val application: SshApplicationIdentity,
+    val application: DesktopApplicationIdentity,
     val applicationId: String,
     val applicationDisplayName: String,
     val hostKeySha256: ByteArray?,
@@ -58,7 +58,7 @@ internal class SshVolatileApplicationAuthorizationStore(
         requesterClientId: ClientId,
         authorizationGeneration: String,
         authorizationEpoch: Long,
-        application: SshApplicationAnchor,
+        application: DesktopApplicationAnchor,
         hostKeySha256: ByteArray?,
         createdAt: Long,
     ): PreparedVolatileApplicationAuthorization? {
@@ -105,7 +105,7 @@ internal class SshVolatileApplicationAuthorizationStore(
         requesterClientId: ClientId,
         authorizationGeneration: String,
         authorizationEpoch: Long,
-        applicationSelection: SshApplicationAnchorSelection,
+        applicationSelection: DesktopApplicationAnchorSelection,
         hostKeySha256: ByteArray?,
     ): SshVolatileApplicationAuthorization? = authorizations.values.asSequence()
         .filter { authorization ->
@@ -157,7 +157,7 @@ internal class SshVolatileApplicationAuthorizationStore(
         requesterClientId: ClientId,
         authorizationGeneration: String,
         authorizationEpoch: Long,
-        application: SshApplicationIdentity,
+        application: DesktopApplicationIdentity,
         hostKeySha256: ByteArray?,
     ): SshVolatileApplicationAuthorization? = authorizations.values.firstOrNull { authorization ->
         authorization.providerKeyId == providerKeyId &&

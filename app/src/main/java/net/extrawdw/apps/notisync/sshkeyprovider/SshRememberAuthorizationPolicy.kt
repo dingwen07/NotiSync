@@ -33,7 +33,7 @@ internal enum class SshRememberAuthorizationChoice(
 
 internal data class SshRememberAuthorizationOptions(
     val choices: Set<SshRememberAuthorizationChoice>,
-    val applicationAnchor: SshApplicationAnchor?,
+    val applicationAnchor: DesktopApplicationAnchor?,
 )
 
 /** Pure eligibility and matching rules shared by the approval UI and authorization stores. */
@@ -52,9 +52,10 @@ internal object SshRememberAuthorizationPolicy {
     fun availableOptions(
         destination: SshDestinationContext,
         processContext: DesktopProcessContext,
+        registry: KnownDesktopApplicationRegistry = BUILT_IN_DESKTOP_APPLICATIONS,
     ): SshRememberAuthorizationOptions {
         val hostKeySha256 = verifiedHostKeySha256(destination)
-        val applicationAnchor = SshApplicationAnchorSelector.select(processContext).recommended
+        val applicationAnchor = DesktopApplicationAnchorSelector.select(processContext, registry).recommended
         return SshRememberAuthorizationOptions(
             choices = buildSet {
                 add(SshRememberAuthorizationChoice.PEER)
