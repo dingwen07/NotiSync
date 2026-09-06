@@ -20,9 +20,11 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExposedDropdownMenu
@@ -82,6 +84,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.DuplicateDesktopApplicationIdEx
 import net.extrawdw.apps.notisync.sshkeyprovider.KnownDesktopApplication
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.add as AddIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.search as SearchIcon
 
 @Composable
 internal fun DesktopApplicationRegistryScreen(onDismiss: () -> Unit) {
@@ -119,9 +122,18 @@ internal fun DesktopApplicationRegistryScreen(onDismiss: () -> Unit) {
             Column(Modifier.fillMaxSize().padding(padding)) {
                 OutlinedTextField(
                     search, { search = it },
-                    Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                    label = { Text(stringResource(R.string.desktop_application_search)) },
+                    Modifier.fillMaxWidth().padding(start = 16.dp, top = 0.dp, end = 16.dp, bottom = 8.dp),
+                    placeholder = { Text(stringResource(R.string.desktop_application_search)) },
+                    leadingIcon = { Icon(SearchIcon, contentDescription = null) },
+                    trailingIcon = {
+                        if (search.isNotEmpty()) {
+                            IconButton(onClick = { search = "" }) {
+                                Icon(CloseIcon, stringResource(R.string.apps_clear_search))
+                            }
+                        }
+                    },
                     singleLine = true,
+                    shape = CircleShape,
                 )
                 LazyColumn(Modifier.weight(1f), contentPadding = PaddingValues(bottom = 16.dp)) {
                     if (entries.isEmpty()) item {
@@ -271,7 +283,7 @@ private fun DesktopApplicationEditor(
             ) {
                 item {
                     Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        DesktopApplicationIcon(iconData, Modifier.size(72.dp))
+                        DesktopApplicationIcon(iconData, Modifier.size(88.dp))
                         Column {
                             TextButton(onClick = { picker.launch(arrayOf("image/*")) }, enabled = !busy) {
                                 Text(stringResource(R.string.desktop_application_choose_icon))
@@ -283,6 +295,7 @@ private fun DesktopApplicationEditor(
                                     iconRemoved = true
                                     iconData = null
                                 }, enabled = !busy,
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error),
                             ) { Text(stringResource(R.string.desktop_application_remove_icon)) }
                         }
                     }

@@ -979,6 +979,7 @@
     <!-- Desktop application registry -->
     <string name="desktop_applications_title">Desktop applications</string>
     <string name="desktop_applications_summary">Manage application matching and icons</string>
+    <string name="desktop_applications_manage">Manage</string>
     <string name="desktop_application_add">Add application</string>
     <string name="desktop_application_edit">Edit application</string>
     <string name="desktop_application_search">Search applications</string>
@@ -1011,10 +1012,10 @@
     <string name="desktop_application_paths_error">Every accepted path must be an absolute POSIX or Windows path.</string>
     <string name="desktop_application_icon_error">Could not read this image. Choose another image up to 20 MB.</string>
     <string name="desktop_application_save_error">Could not save the application. Please try again.</string>
-    <string name="desktop_application_icon_source">Icon URL or App ID</string>
-    <string name="desktop_application_icon_source_hint">App Store link, numeric app ID, bundle ID, or HTTPS image URL.</string>
+    <string name="desktop_application_icon_source">Icon source</string>
+    <string name="desktop_application_icon_source_hint">App Store link, App ID, Bundle ID, or image URL.</string>
     <string name="desktop_application_load_icon">Load icon</string>
-    <string name="desktop_application_icon_source_error">Enter an App Store link, app ID, bundle ID, or HTTPS image URL.</string>
+    <string name="desktop_application_icon_source_error">Enter an App Store link, App ID, Bundle ID, or image URL.</string>
     <string name="desktop_application_icon_not_found">No App Store icon found for this app.</string>
-    <string name="desktop_application_icon_load_error">Could not load this image. Check the URL or app ID and try again.</string>
+    <string name="desktop_application_icon_load_error">Could not load this image. Check the provided source and try again.</string>
 </resources>

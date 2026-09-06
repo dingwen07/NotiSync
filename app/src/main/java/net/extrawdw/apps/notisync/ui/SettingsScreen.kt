@@ -21,6 +21,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.OutlinedTextField
@@ -235,12 +236,6 @@ fun SettingsScreen() {
             }
             item { SettingsSectionHeader(R.string.settings_section_seal_ssh) }
             item {
-                ListItem(
-                    modifier = Modifier.clickable { showDesktopApplications = true },
-                    supportingContent = { Text(stringResource(R.string.desktop_applications_summary)) },
-                ) { Text(stringResource(R.string.desktop_applications_title)) }
-            }
-            item {
                 ToggleRow(
                     stringResource(R.string.settings_auto_open_openpgp_request),
                     autoOpenOpenPgpRequest,
@@ -251,6 +246,18 @@ fun SettingsScreen() {
                     stringResource(R.string.settings_auto_open_ssh_request),
                     autoOpenSshRequest,
                 ) { scope.launch { graph.settings.setAutoOpenSshRequest(it) } }
+            }
+            item {
+                ListItem(
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    supportingContent = { Text(stringResource(R.string.desktop_applications_summary)) },
+                    trailingContent = {
+                        OutlinedButton(onClick = { showDesktopApplications = true }) {
+                            Text(stringResource(R.string.desktop_applications_manage))
+                        }
+                    },
+                ) { Text(stringResource(R.string.desktop_applications_title)) }
             }
             item { SettingsSectionHeader(R.string.settings_section_diagnostics) }
             item {
