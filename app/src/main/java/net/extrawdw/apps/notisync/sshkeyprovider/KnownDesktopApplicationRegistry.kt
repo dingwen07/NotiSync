@@ -141,16 +141,9 @@ private fun lineageProcess(
 
 internal val BUILT_IN_DESKTOP_APPLICATIONS = KnownDesktopApplicationRegistry(
     listOf(
-        knownDesktopApplication("codex", "Codex", DesktopApplicationProcessRole.AI_AGENT, "codex", "ChatGPT.app"),
         knownDesktopApplication("opencode", "OpenCode", DesktopApplicationProcessRole.AI_AGENT, "opencode"),
-        knownDesktopApplication("claude-code", "Claude Code", DesktopApplicationProcessRole.AI_AGENT, "claude"),
 
         knownDesktopApplication("com.microsoft.VSCode", "Visual Studio Code", DesktopApplicationProcessRole.USER_APPLICATION, "code", "Visual Studio Code.app"),
-        knownDesktopApplication("cursor", "Cursor", DesktopApplicationProcessRole.USER_APPLICATION, "cursor"),
-        knownDesktopApplication("visual-studio", "Visual Studio", DesktopApplicationProcessRole.USER_APPLICATION, "devenv.exe"),
-        knownDesktopApplication("com.jetbrains.intellij", "IntelliJ IDEA", DesktopApplicationProcessRole.USER_APPLICATION, "idea", "idea64.exe"),
-        knownDesktopApplication("com.google.android.studio", "Android Studio", DesktopApplicationProcessRole.USER_APPLICATION, "studio", "studio64.exe"),
-        knownDesktopApplication("com.apple.dt.Xcode", "Xcode", DesktopApplicationProcessRole.USER_APPLICATION, "Xcode", "Xcode.app"),
 
         knownDesktopApplication("git", "Git", DesktopApplicationProcessRole.OPERATION_CLIENT, "git"),
 

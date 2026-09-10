@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.contactless as ContactlessIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.computer as ComputerIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications_off as NotificationsOffIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
@@ -494,7 +495,7 @@ private fun DeviceRow(
             horizontalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Icon(
-                SmartphoneIcon,
+                if (device.platform?.trim()?.lowercase() == "desktop") ComputerIcon else SmartphoneIcon,
                 contentDescription = null,
                 tint = MaterialTheme.colorScheme.primary
             )
