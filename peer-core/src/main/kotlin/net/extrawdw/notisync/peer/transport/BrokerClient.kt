@@ -39,6 +39,7 @@ import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import net.extrawdw.notisync.peer.ports.IntegrityEvidenceProvider
+import net.extrawdw.notisync.peer.ports.NoIntegrityEvidenceProvider
 import net.extrawdw.notisync.peer.ports.PeerTelemetry
 import net.extrawdw.notisync.peer.ports.trace
 import net.extrawdw.notisync.protocol.ClientId
@@ -486,7 +487,13 @@ class BrokerClient(
      *  token nearing expiry is served as-is while a background refresh renews it (stale-while-revalidate). */
     private suspend fun bearerTokenOrNull(): String? =
         cachedBearerOrNull()?.also { maybeProactiveRefresh() }
-            ?: runCatching { bearerToken() }.getOrNull()
+            ?: try {
+                bearerToken()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                null
+            }
 
     private suspend fun bearerToken(): String {
         cachedBearerOrNull()?.let { return it }
@@ -531,6 +538,7 @@ class BrokerClient(
         runCatching { verifyIntegrity() }
             .onSuccess { lastAuthFailure = null }
             .onFailure {
+                if (it is CancellationException) throw it
                 // Transient failures (network, server 429/5xx, stale token) start with a short cooldown so
                 // a blip doesn't block all transport; a definitive reject starts long. Either way the
                 // cooldown grows per consecutive failure (see [backoffCooldownMs]) so a sustained outage
@@ -598,7 +606,16 @@ class BrokerClient(
             // hood, handled by Firebase). The token is bound to this clientId/nonce/timestamp by the identity
             // request signature below, and the broker verifies it locally against the App Check JWKS.
             val tokenStartNanos = System.nanoTime()
-            val evidence = integrity.evidence()
+            val evidence = try {
+                integrity.evidence().also { span.attr("evidence_result", "ok") }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                // Discovery is advisory: only the verify response decides whether evidence is required.
+                // Still send the identity-signed request and PoW when the platform cannot attest.
+                span.attr("evidence_result", "failed")
+                NoIntegrityEvidenceProvider.evidence()
+            }
             span.metric("evidence_ms", (System.nanoTime() - tokenStartNanos) / 1_000_000)
             result = "post_failed"
             val request = IntegrityVerificationRequest(
