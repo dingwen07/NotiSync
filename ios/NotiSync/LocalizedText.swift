@@ -178,9 +178,9 @@ enum LocalizedText {
                           defaultValue: "iOS",
                           comment: "Apple iOS platform label.")
         case "android":
-            return String(localized: "platform.remoteDevice",
-                          defaultValue: "Device",
-                          comment: "Platform label for a non-iOS peer device.")
+            return String(localized: "platform.android",
+                          defaultValue: "Android",
+                          comment: "Android platform label.")
         default:
             return value
         }

@@ -4017,6 +4017,24 @@
         }
       }
     },
+    "platform.android" : {
+      "comment" : "Android platform label.",
+      "extractionState" : "extracted_with_value",
+      "localizations" : {
+        "en" : {
+          "stringUnit" : {
+            "state" : "new",
+            "value" : "Android"
+          }
+        },
+        "zh-Hans" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Android"
+          }
+        }
+      }
+    },
     "platform.ios" : {
       "comment" : "Apple iOS platform label.",
       "extractionState" : "extracted_with_value",
@@ -4031,24 +4049,6 @@
           "stringUnit" : {
             "state" : "translated",
             "value" : "iOS"
-          }
-        }
-      }
-    },
-    "platform.remoteDevice" : {
-      "comment" : "Platform label for a non-iOS peer device.",
-      "extractionState" : "extracted_with_value",
-      "localizations" : {
-        "en" : {
-          "stringUnit" : {
-            "state" : "new",
-            "value" : "Device"
-          }
-        },
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "设备"
           }
         }
       }
