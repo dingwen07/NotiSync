@@ -73,9 +73,9 @@ data class ProfileOverlay(
 data class RosterDevice(
     val clientId: ClientId,
     val status: TrustStatus,
-    /** Best-known name, or null when we hold no card for it (then it is also keyless). */
+    /** Best-known name from its profile or card, independently of operational key availability. */
     val displayName: String?,
-    /** Whether we hold this device's card (keys); false means it can't yet be mirrored to. */
+    /** Whether we hold this device's CARD; advertised separately from operational epochs for repair. */
     val keyAvailable: Boolean,
     /** Name of the peer who introduced/revoked it (for pending rows); null for a local action. */
     val introducedByName: String?,
@@ -179,7 +179,7 @@ open class TrustStore(
         MutableStateFlow(if (loaded.quarantined) emptyList<Peer>() else computeActivePeers(loaded.state))
     private val _roster = MutableStateFlow(computeRoster(loaded.state))
 
-    /** TRUSTED devices whose card we hold — recipients() / handleEnvelope's roster. Forced empty while [quarantined]. */
+    /** TRUSTED devices with usable epochs and an identity anchor. Forced empty while [quarantined]. */
     override val activePeers: StateFlow<List<Peer>> = _activePeers
 
     /** Everything the user reviews — trusted, pending, and revoked tombstones (until purged) — for the Devices UI. */
@@ -515,7 +515,7 @@ open class TrustStore(
         return applied
     }
 
-    /** Apply a live profile update (LWW vs the card's createdAt floor). Returns true if anything changed. */
+    /** Apply an authenticated sender's profile, newer than both its saved profile and optional card. */
     @Synchronized
     override fun applyProfile(update: ProfileUpdate): Boolean {
         if (_quarantined.value) return false
@@ -523,8 +523,9 @@ open class TrustStore(
         if (st.entries[update.clientId]?.status != TrustStatus.TRUSTED) return false // only trusted devices' profiles converge
         val card =
             st.cards[update.clientId]?.let { runCatching { it.decode<ClientCard>() }.getOrNull() }
-                ?: return false
-        val floor = st.overlays[update.clientId]?.updatedAt ?: card.createdAt
+        // NS2 can authenticate a trusted sender through its key epoch alone. A missing card must not
+        // prevent its first authenticated profile from establishing the name and revision baseline.
+        val floor = maxOf(st.overlays[update.clientId]?.updatedAt ?: 0L, card?.createdAt ?: 0L)
         if (update.updatedAt <= floor) return false
         mutate {
             it.copy(

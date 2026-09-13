@@ -731,6 +731,7 @@ class AppGraph(private val app: Application) {
                 if (trust.pendingRotation() == null) runCatching { buildClientKeyEpochBlob() }.getOrNull()
                 else null
             },
+            selfCard = { PairingCardStore.currentCard(identity.clientId) },
             fetchKeyEpoch = { id, epoch -> transport.fetchKeyEpoch(id, epoch) },
         )
         foundationEngine = foundation

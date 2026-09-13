@@ -242,6 +242,7 @@ class DesktopPeerRuntime(
                     change.senderIsTrustedOwnDevice
             },
             selfKeyEpoch = keyMaterial::currentKeyEpoch,
+            selfCard = ::buildClientCard,
             fetchKeyEpoch = broker::fetchKeyEpoch,
             now = clock::millis,
         )

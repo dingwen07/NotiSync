@@ -14,10 +14,10 @@ import net.extrawdw.notisync.protocol.TrustTable
  * logic and persistence stay there.
  */
 interface TrustState {
-    /** TRUSTED devices whose card we hold — the recipient roster and the inbound sender set. */
+    /** TRUSTED devices with usable epochs and an identity anchor — recipients and authenticated senders. */
     val activePeers: StateFlow<List<Peer>>
 
-    /** Best-known display name for a device, or null when we hold no card for it. */
+    /** Best-known display name for a device, or null when neither profile nor card supplies it. */
     fun displayName(clientId: ClientId): String?
 
     /** Best-known platform for a device, or null when we have no profile/card metadata for it. */
@@ -35,7 +35,7 @@ interface TrustState {
     /** This device's broadcast roster (its TRUSTED + REVOKED decisions), for anti-entropy. */
     fun buildTrustTable(): TrustTable
 
-    /** Apply a peer's announced profile (last-writer-wins). Returns true if anything changed. */
+    /** Apply a profile authenticated as its subject (last-writer-wins); a saved CARD is not required. */
     fun applyProfile(update: ProfileUpdate): Boolean
 
     /**

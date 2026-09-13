@@ -21,6 +21,7 @@ import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProfileUpdate
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.SignedBlob
+import net.extrawdw.notisync.protocol.TrustStatus
 import net.extrawdw.notisync.protocol.Urgency
 
 /**
@@ -68,6 +69,8 @@ open class FoundationEngine(
     /** Our own current key-epoch [SignedBlob], announced with each trust broadcast so peers can converge
      *  this device without a request. Material for every other trusted peer is sent only on targeted repair. */
     private val selfKeyEpoch: () -> SignedBlob? = { null },
+    /** Supply our own card (cached where signing is expensive) only for a peer advertising it missing. */
+    private val selfCard: () -> SignedBlob? = { null },
     /** Pull a peer's [SignedBlob] key-epoch from the broker (`GET /v2/keyepoch`) when a roster advertises a
      *  higher epoch than we hold — the §5 convergence trigger. */
     private val fetchKeyEpoch: suspend (ClientId, Int?) -> SignedBlob? = { _, _ -> null },
@@ -297,7 +300,14 @@ open class FoundationEngine(
                 // All repairs are unicast to B; combine C's card + epoch when B lacks both.
                 val cardsBySubject = result.cardsToOffer.associateBy { it.signerId }
                 val epochsBySubject = result.keyEpochsToOffer.associateBy { it.signerId }
-                val repairSubjects = cardsBySubject.keys + epochsBySubject.keys
+                // TrustStore ignores assertions about self, including their material-repair flag. Handle
+                // that flag here so a missing CARD can recover directly from its owner, without a third peer.
+                val needsSelfCard = table.entries.any {
+                    it.clientId == channel.clientId && !it.keyAvailable &&
+                        (it.status == TrustStatus.TRUSTED || it.status == TrustStatus.PENDING_TRUST)
+                }
+                val repairSubjects = cardsBySubject.keys + epochsBySubject.keys +
+                    if (needsSelfCard) setOf(channel.clientId) else emptySet()
                 if (repairSubjects.isNotEmpty()) {
                     scope.launch {
                         runCatching {
@@ -305,7 +315,11 @@ open class FoundationEngine(
                                 offerCardMaterial(
                                     recipientId = msg.senderId,
                                     subjectId = subjectId,
-                                    card = cardsBySubject[subjectId],
+                                    card = if (subjectId == channel.clientId && needsSelfCard) {
+                                        selfCard()
+                                    } else {
+                                        cardsBySubject[subjectId]
+                                    },
                                     keyEpoch = epochsBySubject[subjectId],
                                 )
                             }

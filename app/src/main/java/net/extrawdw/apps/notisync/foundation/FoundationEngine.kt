@@ -30,6 +30,7 @@ class FoundationEngine(
     onSshAgentSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     activityText: ActivityText,
     selfKeyEpoch: () -> SignedBlob? = { null },
+    selfCard: () -> SignedBlob? = { null },
     fetchKeyEpoch: suspend (ClientId, Int?) -> SignedBlob? = { _, _ -> null },
     now: () -> Long = { System.currentTimeMillis() },
 ) : net.extrawdw.notisync.peer.foundation.FoundationEngine(
@@ -46,6 +47,7 @@ class FoundationEngine(
     onSshAgentSync = onSshAgentSync,
     eventSink = AndroidFoundationEventSink(activityLog, activityText, now),
     selfKeyEpoch = selfKeyEpoch,
+    selfCard = selfCard,
     fetchKeyEpoch = fetchKeyEpoch,
     now = now,
 )

@@ -32,49 +32,6 @@ import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.nfc.NotiSyncNfcProtocol
 
-/**
- * Device-protected, no-backup cache of the last locally generated public pairing card.
- *
- * HCE can start the process without an Activity and must answer its first APDU immediately. [preload] is
- * therefore called from Application.onCreate; HostApduService reads only the volatile memory snapshot.
- */
-internal object PairingCardStore {
-    @Volatile
-    private var cachedPayload: CachedPayload? = null
-
-    @Volatile
-    private var loaded = false
-
-    @Synchronized
-    fun preload(context: Context) {
-        if (loaded) return
-        cachedPayload = preferences(context).getString(KEY_OUTGOING_PAYLOAD, null)?.let { encoded ->
-            runCatching {
-                CachedPayload(encoded, PairingNfcPayloadCodec.decode(encoded))
-            }.getOrNull()
-        }
-        loaded = true
-    }
-
-    /** Canonical Base64URL form used by QR, links, NDEF, and the existing pairing verifier. */
-    fun current(): String? = cachedPayload?.encoded
-
-    /** Read-only decoded snapshot used directly by the memory-only HCE hot path. */
-    fun currentWirePayload(): ByteArray? = cachedPayload?.wire
-
-    /** Called off-main when a new signed card is generated. */
-    fun persist(context: Context, payload: String) {
-        val decoded = PairingNfcPayloadCodec.decode(payload)
-        check(preferences(context).edit().putString(KEY_OUTGOING_PAYLOAD, payload).commit()) {
-            "could not persist the NFC pairing card"
-        }
-        cachedPayload = CachedPayload(payload, decoded)
-        loaded = true
-    }
-
-    private data class CachedPayload(val encoded: String, val wire: ByteArray)
-}
-
 /** One durable, untrusted pairing card received by the HCE side of a tap. */
 internal object PairingNfcInbox {
     private val _pendingPayload = MutableStateFlow<String?>(null)
@@ -86,7 +43,7 @@ internal object PairingNfcInbox {
     @Synchronized
     fun preload(context: Context) {
         if (loaded) return
-        _pendingPayload.value = preferences(context).getString(KEY_INCOMING_PAYLOAD, null)
+        _pendingPayload.value = pairingPreferences(context).getString(KEY_INCOMING_PAYLOAD, null)
             ?.takeIf { runCatching { PairingNfcPayloadCodec.decode(it) }.isSuccess }
         loaded = true
     }
@@ -94,7 +51,7 @@ internal object PairingNfcInbox {
     /** Non-blocking commit path used by HostApduService.processCommandApdu on the main thread. */
     fun offer(context: Context, wirePayload: ByteArray) {
         val payload = PairingNfcPayloadCodec.encode(wirePayload)
-        preferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
+        pairingPreferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
         _pendingPayload.value = payload
         // Android's NFC service binds HostApduService with BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS. Queue the
         // launch behind processCommandApdu's response, then fall back to a heads-up notification if the
@@ -106,7 +63,7 @@ internal object PairingNfcInbox {
 
     fun consume(context: Context, payload: String) {
         if (_pendingPayload.value != payload) return
-        preferences(context).edit().remove(KEY_INCOMING_PAYLOAD).apply()
+        pairingPreferences(context).edit().remove(KEY_INCOMING_PAYLOAD).apply()
         _pendingPayload.value = null
         dismissNotification(context)
     }
@@ -323,18 +280,12 @@ private fun NfcAdapter.pairingReaderModeExtras(): Bundle? {
     }
 }
 
-private fun preferences(context: Context) =
-    context.createDeviceProtectedStorageContext()
-        .getSharedPreferences(PAIRING_PREFERENCES, Context.MODE_PRIVATE)
-
 private tailrec fun Context.findActivity(): Activity? = when (this) {
     is Activity -> this
     is ContextWrapper -> baseContext.findActivity()
     else -> null
 }
 
-private const val PAIRING_PREFERENCES = "notisync_pairing_nfc"
-private const val KEY_OUTGOING_PAYLOAD = "outgoing_payload"
 private const val KEY_INCOMING_PAYLOAD = "incoming_payload"
 private const val PAIRING_NOTIFICATION_CHANNEL = "notisync.pairing"
 private const val PAIRING_NOTIFICATION_ID = 0x4E534643
