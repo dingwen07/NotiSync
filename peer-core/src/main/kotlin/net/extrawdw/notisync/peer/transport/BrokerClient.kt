@@ -33,6 +33,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeout
@@ -794,20 +795,23 @@ class BrokerClient(
                         }
                     }
                 }
-            } catch (e: CancellationException) {
-                // Cooperative cancellation (app backgrounded / scope cancelled): not a reconnectable failure.
-                if (!connected) { span.attr("result", "cancelled"); span.stop() }
-                throw e
             } catch (_: Exception) {
+                if (!connected) {
+                    span.attr("result", if (currentCoroutineContext().isActive) "failed" else "cancelled")
+                    span.stop()
+                }
+                // A closed socket's ACK channel can throw CancellationException while this receive job
+                // is still active. Only caller cancellation ends the loop; session failures reconnect.
+                currentCoroutineContext().ensureActive()
                 // A run of failed handshakes while we still hold a cached token may mean the broker
                 // rotated its JWT key; drop it so the next attempt re-attests. (HTTP calls self-heal on 401.)
-                if (!connected) { span.attr("result", "failed"); span.stop() }
                 if (++consecutiveFailures >= WS_REAUTH_AFTER_FAILURES) {
                     storeAuth(null)
                     consecutiveFailures = 0
                 }
+            } finally {
+                runCatching { onWebSocketConnectionChanged(false) }
             }
-            runCatching { onWebSocketConnectionChanged(false) }
             // Additive jitter [x, 1.5x] (mirrors [backoffCooldownMs]): a fleet of devices dropped by the
             // same broker blip would otherwise reconnect in lockstep and re-synchronize load spikes. Jitter
             // only ever delays a retry, never advances it; the base keeps its clean exponential growth + cap.

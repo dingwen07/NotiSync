@@ -15,6 +15,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.extrawdw.notisync.daemon.ActionOriginPolicy
@@ -144,14 +145,22 @@ class DesktopPeerRuntime(
         scope = scope,
         telemetry = telemetry,
         webSocketPingSeconds = configProvider().websocketPingSeconds.toLong(),
-        onWebSocketConnectionChanged = { connected ->
+        onWebSocketConnectionChanged = connectionChanged@ { connected ->
             val changed = webSocketConnected.getAndSet(connected) != connected
+            val previousState = state.getAndUpdate { current ->
+                when {
+                    current == DaemonConnectionState.STOPPED -> current
+                    connected -> DaemonConnectionState.CONNECTED
+                    current == DaemonConnectionState.UNSUPPORTED_INTEGRITY -> current
+                    else -> DaemonConnectionState.BACKING_OFF
+                }
+            }
+            // Session cleanup also reports disconnection during close(); STOPPED is terminal.
+            if (previousState == DaemonConnectionState.STOPPED) return@connectionChanged
             if (connected) {
-                state.set(DaemonConnectionState.CONNECTED)
                 connectionMessage.set(null)
                 if (changed) logger.info("Broker WebSocket connected")
-            } else if (state.get() != DaemonConnectionState.UNSUPPORTED_INTEGRITY) {
-                state.set(DaemonConnectionState.BACKING_OFF)
+            } else if (previousState != DaemonConnectionState.UNSUPPORTED_INTEGRITY) {
                 connectionMessage.set("WebSocket disconnected; reconnecting")
                 if (changed) logger.warn("Broker WebSocket disconnected; reconnecting")
             }
@@ -397,9 +406,8 @@ class DesktopPeerRuntime(
                     val outcome = secureChannel.deliver(envelope, DeliveryMode.WEBSOCKET)
                     outcome.toLiveDisposition()
                 }
-            } catch (cancelled: CancellationException) {
-                throw cancelled
             } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
                 val message = "WebSocket delivery failed: ${error.conciseMessage()}"
                 setConnectionWarning(message, "$message; retrying")
                 delay(1_000)

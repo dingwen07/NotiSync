@@ -2,7 +2,11 @@ package net.extrawdw.notisync.server.delivery
 
 import io.ktor.server.websocket.DefaultWebSocketServerSession
 import io.ktor.websocket.Frame
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import net.extrawdw.notisync.protocol.ClientId
+import org.slf4j.LoggerFactory
 import java.util.concurrent.ConcurrentHashMap
 
 /** One authenticated live WebSocket connection (the foreground delivery link). */
@@ -16,6 +20,7 @@ interface LiveDeliveryHub {
 
 /** Tracks live connections per client so the broker can deliver in realtime when a peer is online. */
 class WebSocketHub : LiveDeliveryHub {
+    private val log = LoggerFactory.getLogger(WebSocketHub::class.java)
     private val connections = ConcurrentHashMap<String, MutableSet<WsConnection>>()
 
     fun register(conn: WsConnection) {
@@ -40,8 +45,19 @@ class WebSocketHub : LiveDeliveryHub {
             try {
                 c.session.send(Frame.Text(text))
                 delivered = true
-            } catch (_: Exception) {
+            } catch (error: Exception) {
+                // This write belongs to the sender's request. Its cancellation says nothing about
+                // the recipient's connection, so leave that registration and session intact.
+                currentCoroutineContext().ensureActive()
                 unregister(c)
+                // Eviction must also terminate the socket, otherwise ping/pong can keep an unroutable
+                // recipient connected forever. Cancellation does not wait on a blocked close write.
+                c.session.cancel("Live delivery failed", error)
+                log.warn(
+                    "ws delivery failed; closing connection client={} cause={}",
+                    c.clientId.shortForm(),
+                    error.javaClass.simpleName,
+                )
             }
         }
         return delivered

@@ -497,14 +497,16 @@ nonisolated final class TrustStore {
         }
     }
 
-    /// This device's broadcast trust roster (every peer but self), each tagged with its status, ownDevice
-    /// class, key-availability, and current epoch — folded into peers' rosters on receipt. (#5)
+    /// This device's broadcast trust roster, excluding self, Experience Mode peers, and expired revocations.
+    /// Each row carries its status, ownDevice class, key-availability, and current epoch. (#5)
     func buildTrustTable(excluding selfId: String) -> TrustTable {
         // PENDING_* rows travel as informational repair beacons: receivers do not apply a peer's pending
         // state as a trust decision, but they can use `keyAvailable=false` / `epoch` to offer missing material.
         // Experience Mode peers are never advertised — a demo device must stay invisible to the real mesh.
+        let revokeCutoff = Self.nowMillis() - Self.revokeAnnounceDelayMillis
         let entries = peers.values
             .filter { $0.clientId != selfId && !$0.isExperienceMode }
+            .filter { $0.status != TrustStatus.REVOKED.rawValue || $0.updatedAt > revokeCutoff }
             .map { peer in
                 TrustTableEntry(clientId: peer.clientId, status: TrustStatus(rawValue: peer.status) ?? .TRUSTED,
                                 updatedAt: peer.updatedAt, keyAvailable: CardStore.blob(peer.clientId) != nil,
@@ -512,6 +514,10 @@ nonisolated final class TrustStore {
             }
         return TrustTable(entries: entries)
     }
+
+    // Match Android's 15-day announcement window, leaving a convergence margin before its 30-day purge.
+    // Keep expired revocations locally, but stop sending them so they cannot recreate purged Android rows.
+    private static let revokeAnnounceDelayMillis: Int64 = 15 * 24 * 60 * 60 * 1000
 
     static let ringSize = 3   // NS2 §6 generation ring (current + grace predecessors)
     static func nowMillis() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
