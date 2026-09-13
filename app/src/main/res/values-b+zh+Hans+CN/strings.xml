@@ -1,5 +1,5 @@
 <resources>
-    <!-- app_name is translatable="false" in the default strings; intentionally not overridden here. -->
+    <!-- Non-translatable strings are inherited from the default resources. -->
 
     <!-- 启动 -->
     <string name="startup_checking_storage">正在检查应用数据…</string>
@@ -10,8 +10,6 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
-    <string name="tab_ios">iPhone</string>
-    <string name="tab_run">Run</string>
     <string name="features_title">工具</string>
     <string name="open_features">打开功能菜单</string>
     <string name="tab_activity">动态</string>
@@ -30,7 +28,7 @@
     <string name="action_paste">粘贴</string>
     <string name="error_unknown">未知错误</string>
 
-    <!-- SSH Agent 密钥提供程序 -->
+    <!-- SSH 密钥提供程序 -->
     <string name="ssh_key_provider_tools_label">SSH 密钥</string>
     <string name="ssh_key_provider_screen_title">NotiSync SSH 密钥提供程序</string>
     <string name="ssh_key_provider_card_title">密钥提供程序</string>
@@ -100,7 +98,6 @@
     <string name="ssh_key_provider_export_details">导出</string>
     <string name="ssh_key_provider_export_available">可用</string>
     <string name="ssh_key_provider_export_copy_protection">由 Android Keystore 保护 · %1$s</string>
-    <string name="ssh_key_provider_storage_android_keystore">Android Keystore</string>
     <string name="ssh_key_provider_storage_android_keystore_wrapped">软件封装</string>
     <string name="ssh_key_provider_storage_credential_manager_webauthn">凭据管理器 · WebAuthn</string>
     <string name="ssh_key_provider_webauthn_action">通行密钥</string>
@@ -141,7 +138,6 @@
     <string name="ssh_key_provider_webauthn_export_complete">已导出 OpenSSH 安全密钥身份文件</string>
     <string name="ssh_key_provider_webauthn_export_failed">无法导出 OpenSSH 安全密钥身份文件</string>
     <string name="ssh_key_provider_webauthn_export_open_failed">无法打开所选身份文件</string>
-    <string name="ssh_key_provider_webauthn_rp_id">WebAuthn RP ID</string>
     <string name="ssh_key_provider_webauthn_portability">凭据可移植性</string>
     <string name="ssh_key_provider_webauthn_authenticator_bound">仅绑定到其验证器 · 未备份</string>
     <string name="ssh_key_provider_webauthn_backed_up">已由凭据提供方备份</string>
@@ -247,9 +243,7 @@
     <string name="ssh_key_provider_store_private_key_failed">无法存储 SSH 私钥。</string>
     <string name="ssh_key_provider_sign_auth_title">授权 SSH 签名</string>
     <string name="ssh_key_provider_sign_auth_subtitle">使用所选的受保护 SSH 密钥一次</string>
-    <string name="ssh_key_provider_remember_peer">%1$s</string>
     <string name="ssh_key_provider_remember_peer_host">%1$s + 此主机</string>
-    <string name="ssh_key_provider_remember_application">%1$s</string>
     <string name="ssh_key_provider_remember_application_host">%1$s + 此主机</string>
     <string name="ssh_key_provider_remember_pending_help">选择范围以批准此请求，并记住以后对此密钥的使用授权。</string>
     <string name="ssh_key_provider_remember_auth_title">授权记忆 SSH 访问</string>
@@ -279,7 +273,6 @@
     <!-- NotiSync Seal：远程 Git 提交和标签审批与 OpenPGP 签名 -->
     <string name="seal_intro">使用此设备上的 OpenPGP 密钥，批准来自受信任设备的 Git 提交和附注标签。</string>
     <string name="seal_identity_title">签名身份</string>
-    <string name="seal_openpgp_identity">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP 密钥 %1$s</string>
     <string name="seal_identity_change">更换密钥</string>
     <string name="seal_identity_remove">移除</string>
@@ -313,7 +306,6 @@
     <string name="seal_tag_section">附注标签</string>
     <string name="seal_tag_target_type">目标类型</string>
     <string name="seal_tag_target">目标对象</string>
-    <string name="seal_extra_header">%1$s</string>
     <string name="seal_approval_section">审批</string>
     <string name="seal_working_directory">工作目录</string>
     <string name="seal_signing_key">签名密钥</string>
@@ -373,7 +365,6 @@
     <string name="run_detail_finished">完成时间</string>
     <string name="run_detail_duration">执行时长</string>
     <string name="run_detail_exit">退出代码</string>
-    <string name="run_detail_pty">PTY</string>
     <string name="run_yes">是</string>
     <string name="run_no">否</string>
     <string name="run_action_yes">是</string>
@@ -453,7 +444,6 @@
     <string name="app_config_remove_channel">移除渠道</string>
 
     <!-- Activity screen -->
-    <string name="activity_message_ssh">SSH</string>
     <string name="activity_message_openpgp">OpenPGP 签名</string>
     <string name="activity_message_screen">屏幕共享</string>
     <string name="activity_message_keys_request">密钥列表请求</string>
@@ -475,10 +465,8 @@
     </plurals>
     <string name="activity_empty_title">暂无动态</string>
     <string name="activity_empty_body">设备、通知、Run、SSH、签名和屏幕共享消息将显示在此处。</string>
-    <string name="activity_event_overline">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s，通过 %2$s</string>
     <string name="activity_delivery_unknown">未知路线</string>
-    <string name="activity_delivery_websocket">WebSocket</string>
     <string name="activity_delivery_fcm_inline">FCM 内联</string>
     <string name="activity_delivery_fcm_relay_fetch">FCM 唤醒 + 服务器拉取（过大）</string>
     <string name="activity_kind_captured">已捕获</string>
@@ -533,7 +521,7 @@
     <string name="settings_section_connection">连接</string>
     <string name="settings_section_notifications">通知</string>
     <string name="settings_section_screen_sharing">屏幕共享</string>
-    <string name="settings_section_seal_ssh">Seal &amp; SSH</string>
+    <string name="settings_section_seal_ssh">Seal 与 SSH</string>
     <string name="settings_section_diagnostics">诊断</string>
     <string name="settings_device_name">设备名称</string>
     <string name="settings_broker_url">Broker 地址 (https://…)</string>
@@ -550,81 +538,92 @@
     <string name="settings_client_id">客户端 ID：%1$s</string>
     <string name="settings_key_backing">密钥存储：%1$s</string>
     <string name="settings_transport">传输方式：%1$s</string>
-    <string name="diag_server">服务器</string>
-    <string name="diag_server_healthy">正常 · v%1$s</string>
-    <string name="diag_server_reachable">可连接 · v%1$s</string>
-    <string name="diag_server_unreachable">无法连接</string>
-    <string name="diag_checking">检查中…</string>
-    <string name="diag_refresh">刷新</string>
-    <string name="diag_attestation">客户端完整性</string>
-    <string name="diag_attestation_verified">已验证</string>
-    <string name="diag_attestation_unverified">需要验证 · 未验证</string>
-    <string name="diag_attestation_not_required">服务器无需验证</string>
-    <string name="diag_attestation_unknown">未知</string>
-    <string name="diag_token_expires">验证令牌有效期 %1$s</string>
-    <string name="diag_token_expired">已过期</string>
-    <string name="diag_token_less_than_minute">少于 1 分钟</string>
-    <string name="diag_clear_token">清除本地令牌</string>
-    <plurals name="diag_duration_days">
+    <string name="diagnostics_server">服务器</string>
+    <string name="diagnostics_server_healthy">正常 · v%1$s</string>
+    <string name="diagnostics_server_reachable">可连接 · v%1$s</string>
+    <string name="diagnostics_server_unreachable">无法连接</string>
+    <string name="diagnostics_checking">检查中…</string>
+    <string name="diagnostics_refresh">刷新</string>
+    <string name="diagnostics_attestation">客户端完整性</string>
+    <string name="diagnostics_attestation_verified">已验证</string>
+    <string name="diagnostics_attestation_unverified">需要验证 · 未验证</string>
+    <string name="diagnostics_attestation_not_required">服务器无需验证</string>
+    <string name="diagnostics_attestation_unknown">未知</string>
+    <string name="diagnostics_token_expires">验证令牌有效期 %1$s</string>
+    <string name="diagnostics_token_expired">已过期</string>
+    <string name="diagnostics_token_less_than_minute">少于 1 分钟</string>
+    <string name="diagnostics_clear_token">清除本地令牌</string>
+    <plurals name="diagnostics_duration_days">
         <item quantity="other">%1$d 天</item>
     </plurals>
-    <plurals name="diag_duration_hours">
+    <plurals name="diagnostics_duration_hours">
         <item quantity="other">%1$d 小时</item>
     </plurals>
-    <plurals name="diag_duration_minutes">
+    <plurals name="diagnostics_duration_minutes">
         <item quantity="other">%1$d 分钟</item>
     </plurals>
-    <string name="diag_pow">工作量证明</string>
-    <string name="diag_pow_hint">一些服务器需要工作量证明来减少滥用行为。</string>
-    <string name="diag_pow_benchmark">基准测试（难度 1–5）</string>
-    <string name="diag_pow_running">测试中…</string>
-    <string name="diag_pow_result">难度 %1$d · %2$s 次哈希 · %3$s · %4$s</string>
-    <string name="diag_delivery_test">大通知投递</string>
-    <string name="diag_oversized_hint">向您的其他设备发送一条过大的通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
-    <string name="diag_oversized_send">发送超大测试通知</string>
-    <string name="diag_oversized_sending">发送中…</string>
-    <plurals name="diag_oversized_sent">
+    <string name="diagnostics_pow">工作量证明</string>
+    <string name="diagnostics_pow_hint">一些服务器需要工作量证明来减少滥用行为。</string>
+    <string name="diagnostics_pow_benchmark">基准测试（难度 1–5）</string>
+    <string name="diagnostics_pow_running">测试中…</string>
+    <string name="diagnostics_pow_result">难度 %1$d · %2$s 次哈希 · %3$s · %4$s</string>
+    <string name="diagnostics_delivery_test">大通知投递</string>
+    <string name="diagnostics_oversized_hint">向您的其他设备发送一条过大的通知（模拟来自 net.extrawdw.notifly）。它超过 FCM 内联上限，因此通过唤醒 + 中继拉取路径投递。</string>
+    <string name="diagnostics_oversized_send">发送超大测试通知</string>
+    <string name="diagnostics_oversized_sending">发送中…</string>
+    <plurals name="diagnostics_oversized_sent">
         <item quantity="other">已发送到 %1$d 台设备 — 请查看另一台设备。</item>
     </plurals>
-    <string name="diag_oversized_no_peers">没有可以发送的设备。</string>
-    <string name="diag_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
-    <string name="diag_rotation">密钥轮换</string>
-    <string name="diag_rotation_current_epoch">当前密钥世代：%1$d</string>
-    <string name="diag_rotation_signing_key">签名密钥：%1$s</string>
-    <string name="diag_rotation_encryption_key">加密密钥：%1$s</string>
-    <string name="diag_rotation_next_due">距下次轮换还有 %1$s</string>
-    <string name="diag_rotation_activating">正在轮换到世代 %1$d — 将在 %2$s 后启用</string>
-    <string name="diag_rotation_retiring">正在轮换到世代 %1$d — 旧世代将在 %2$s 后退役</string>
-    <string name="diag_rotation_disabled">此版本未启用轮换（ENABLE_ROTATION）。</string>
-    <string name="diag_rotation_hint">立即生成下一个密钥世代，而不必等待 30 天的计划。上一个世代的密钥会在重叠期内保留，因此在途通知仍可解开。</string>
-    <string name="diag_rotate_now">立即轮换密钥</string>
-    <string name="diag_rotating">轮换中…</string>
-    <string name="diag_rotate_done">已轮换 — 当前世代 %1$d</string>
-    <string name="diag_rotate_pending">已有一个轮换正在进行</string>
-    <string name="diag_rotate_failed">轮换失败 — 请检查与中继服务器的连接</string>
-    <string name="diag_channels">通知渠道</string>
-    <string name="diag_channels_hint">通知渠道（类别）会在新通知到达时创建。来自 Android 的通知将与原始通知通道保持一致，而 iOS 应用则将使用单一通知通道。\n\n使用此选项来删除所有镜像通知渠道，这还会还原您对所有通知频道的自定义设置（包括声音、振动、弹出横幅、通知圆点等）。</string>
-    <string name="diag_channels_reset">重置通知渠道</string>
-    <string name="diag_ssh_key_store">SSH Agent 密钥存储</string>
-    <string name="diag_ssh_key_store_hint">SSH 密钥提供程序功能的恢复操作。此操作会从本设备移除所有 SSH 密钥、待处理请求、请求历史记录、已记住的 SSH 授权以及已保存的 SSH 主机指纹和主机名，不会影响 NotiSync 的其他密钥或数据。</string>
-    <string name="diag_ssh_key_store_reset">重置 SSH 密钥存储</string>
-    <string name="diag_ssh_key_store_resetting">正在重置 SSH 密钥存储…</string>
-    <string name="diag_ssh_key_store_reset_title">重置 SSH 密钥存储？</string>
-    <string name="diag_ssh_key_store_reset_body">NotiSync 管理的所有 SSH 密钥、待处理请求、请求历史记录、已记住的授权以及已保存的主机指纹和主机名都将被永久删除。此操作无法撤销。</string>
-    <string name="diag_ssh_key_store_reset_confirm">重置 SSH 密钥存储</string>
-    <string name="diag_ssh_key_store_reset_done">SSH 密钥存储已重置，已移除 %1$d 个密钥。</string>
-    <string name="diag_ssh_key_store_reset_failed">SSH 密钥存储重置失败：%1$s</string>
-    <plurals name="diag_channels_reset_done">
+    <string name="diagnostics_oversized_no_peers">没有可以发送的设备。</string>
+    <string name="diagnostics_oversized_failed">发送失败 — 请检查与中继服务器的连接。</string>
+    <string name="diagnostics_rotation">密钥轮换</string>
+    <string name="diagnostics_rotation_current_epoch">当前密钥世代：%1$d</string>
+    <string name="diagnostics_rotation_signing_key">签名密钥：%1$s</string>
+    <string name="diagnostics_rotation_encryption_key">加密密钥：%1$s</string>
+    <string name="diagnostics_rotation_next_due">距下次轮换还有 %1$s</string>
+    <string name="diagnostics_rotation_activating">正在轮换到世代 %1$d — 将在 %2$s 后启用</string>
+    <string name="diagnostics_rotation_retiring">正在轮换到世代 %1$d — 旧世代将在 %2$s 后退役</string>
+    <string name="diagnostics_rotation_disabled">此版本未启用轮换（ENABLE_ROTATION）。</string>
+    <string name="diagnostics_rotation_hint">立即生成下一个密钥世代，而不必等待 30 天的计划。上一个世代的密钥会在重叠期内保留，因此在途通知仍可解开。</string>
+    <string name="diagnostics_rotate_now">立即轮换密钥</string>
+    <string name="diagnostics_rotating">轮换中…</string>
+    <string name="diagnostics_rotate_done">已轮换 — 当前世代 %1$d</string>
+    <string name="diagnostics_rotate_pending">已有一个轮换正在进行</string>
+    <string name="diagnostics_rotate_failed">轮换失败 — 请检查与中继服务器的连接</string>
+    <string name="diagnostics_channels">通知渠道</string>
+    <string name="diagnostics_channels_hint">通知渠道（类别）会在新通知到达时创建。来自 Android 的通知将与原始通知通道保持一致，而 iOS 应用则将使用单一通知通道。\n\n使用此选项来删除所有镜像通知渠道，这还会还原您对所有通知频道的自定义设置（包括声音、振动、弹出横幅、通知圆点等）。</string>
+    <string name="diagnostics_channels_reset">重置通知渠道</string>
+    <string name="diagnostics_ssh_key_storage">SSH 密钥存储</string>
+    <string name="diagnostics_ssh_key_storage_hint">重置此设备的 SSH 密钥存储。这会移除所有 SSH 密钥、待处理请求、请求历史记录、已记住的授权，以及已保存的 SSH 主机指纹和主机名。不会影响 NotiSync 的其他密钥或数据。</string>
+    <string name="diagnostics_ssh_key_storage_reset">重置 SSH 密钥存储</string>
+    <string name="diagnostics_ssh_key_storage_resetting">正在重置 SSH 密钥存储…</string>
+    <string name="diagnostics_ssh_key_storage_reset_title">重置 SSH 密钥存储？</string>
+    <string name="diagnostics_ssh_key_storage_reset_body">NotiSync 管理的所有 SSH 密钥、待处理请求、请求历史记录、已记住的授权以及已保存的主机指纹和主机名都将被永久删除。此操作无法撤销。</string>
+    <string name="diagnostics_ssh_key_storage_reset_confirm">重置 SSH 密钥存储</string>
+    <string name="diagnostics_ssh_key_storage_reset_done">SSH 密钥存储已重置，已移除 %1$d 个密钥。</string>
+    <string name="diagnostics_ssh_key_storage_reset_failed">SSH 密钥存储重置失败：%1$s</string>
+    <plurals name="diagnostics_channels_reset_done">
         <item quantity="other">已删除 %1$d 个渠道。</item>
     </plurals>
-    <string name="diag_security_test">信任数据库完整性</string>
-    <string name="diag_tamper_hint">移除信任存储的签名以模拟篡改。应用会暂停同步，并在「设备」页面显示一条查看横幅。</string>
-    <string name="diag_tamper_signature">篡改信任签名</string>
+    <!-- SSH key storage test -->
+    <string name="diagnostics_ssh_key_storage_test">SSH 密钥存储测试</string>
+    <string name="diagnostics_ssh_key_storage_test_hint">测试密钥存储和签名选项。需要身份验证；测试密钥会被删除，历史记录会保留。</string>
+    <string name="diagnostics_ssh_key_storage_test_run">开始测试</string>
+    <string name="diagnostics_ssh_key_storage_test_running">正在测试…</string>
+    <string name="diagnostics_ssh_key_storage_test_failed">测试失败：%1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_case_passed">通过 — %1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_case_failed">失败 — %1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_done">测试完成：%1$d/%2$d 通过。</string>
+    <string name="diagnostics_ssh_key_storage_test_generate_auth">验证身份以生成测试密钥</string>
+    <string name="diagnostics_ssh_key_storage_test_sign_auth">授权测试签名</string>
+
+    <string name="diagnostics_security_test">信任数据库完整性</string>
+    <string name="diagnostics_tamper_hint">移除信任存储的签名以模拟篡改。应用会暂停同步，并在「设备」页面显示一条查看横幅。</string>
+    <string name="diagnostics_tamper_signature">篡改信任签名</string>
     <string name="key_backing_unknown">未知</string>
     <string name="key_backing_unknown_secure">TEE 或更强</string>
     <string name="key_backing_software">软件</string>
     <string name="key_backing_tee">可信执行环境</string>
-    <string name="key_backing_strongbox">StrongBox</string>
 
     <!-- Devices screen -->
     <string name="pair_a_device">配对设备</string>
@@ -663,7 +662,6 @@
     <string name="device_filters_title">对 %1$s 隐藏</string>
     <string name="device_filters_desc">本设备不会向其转发以下通知：</string>
     <string name="device_filters_empty">本设备没有对其隐藏任何通知。</string>
-    <string name="device_filters_origin_android">Android</string>
     <string name="device_filters_origin_ios">iPhone（ANCS）</string>
     <string name="device_filters_scope_all">全部通知</string>
     <string name="device_filters_scope_app">应用：%1$s</string>
@@ -684,9 +682,7 @@
     <string name="device_details_immediate">立即</string>
     <string name="device_details_no_expiry">永不过期</string>
     <string name="device_details_capabilities">功能</string>
-    <string name="device_details_platform_android">Android</string>
-    <string name="device_details_platform_ios">iOS</string>
-    <string name="device_details_platform_web">Web</string>
+    <string name="device_details_platform_web">网页</string>
     <string name="device_details_platform_desktop">桌面端</string>
     <string name="device_details_platform_unknown">未知平台</string>
     <string name="device_capability_capture">捕获</string>
@@ -725,9 +721,6 @@
     <string name="screen_mirror_codec_title">视频编解码器</string>
     <string name="screen_mirror_codec_body">自动模式依次优先选择 AV1、H.265，并以 H.264 作为后备。AV1 和 H.265 需要此设备支持硬件解码，来源设备也必须支持对应的硬件编码。</string>
     <string name="screen_mirror_codec_auto">自动</string>
-    <string name="screen_mirror_codec_av1">AV1</string>
-    <string name="screen_mirror_codec_h265">H.265</string>
-    <string name="screen_mirror_codec_h264">H.264</string>
     <string name="screen_mirror_request_channel">屏幕控制请求</string>
     <string name="screen_mirror_request_title">屏幕控制请求</string>
     <string name="screen_mirror_request_body">点按以开始与 %1$s 共享。</string>
@@ -751,9 +744,7 @@
     <string name="screen_viewer_service_background">已连接到 %1$s · 点按以继续</string>
     <string name="screen_viewer_service_failed">无法在后台保持屏幕会话。</string>
     <string name="screen_viewer_connecting">正在等待 %1$s…</string>
-    <string name="screen_viewer_connection_codec">%1$s · %2$s</string>
     <string name="screen_viewer_connection_local_network">本地网络</string>
-    <string name="screen_viewer_connection_wifi_aware">Wi-Fi Aware</string>
     <string name="screen_viewer_connection_broker_relay">中继</string>
     <string name="screen_viewer_ended">屏幕共享已结束。</string>
     <string name="screen_viewer_failed">无法启动屏幕共享。</string>
@@ -801,8 +792,7 @@
     <string name="pair_signed_card_time">创建时间：%1$s</string>
     <string name="pair_could_not_prepare">无法生成配对码：%1$s</string>
     <string name="pair_verification_number">验证码：%1$s</string>
-    <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="notisync_nfc_service_description">NotiSync NFC</string>
+    <string name="pair_share_title">NotiSync 配对链接</string>
     <string name="pair_nfc_notification_channel">配对请求</string>
     <string name="pair_nfc_notification_title">审核设备配对</string>
     <string name="pair_nfc_notification_text">点按以验证并批准另一台设备。</string>
@@ -862,7 +852,6 @@
     <string name="mirror_via">通过 %1$s</string>
     <string name="mirror_check_on_device">在 %1$s 上查看</string>
     <string name="mirror_reply_hint">回复</string>
-    <string name="mirror_ios_device_fallback">iPhone</string>
     <string name="incoming_call_title">来电</string>
     <string name="incoming_call_on_device">在 %1$s 上的来电</string>
     <string name="incoming_call_unknown_caller">未知来电者</string>
@@ -952,7 +941,6 @@
     <string name="desktop_application_edit">编辑应用</string>
     <string name="desktop_application_search">搜索应用</string>
     <string name="desktop_application_no_results">没有匹配的应用</string>
-    <string name="desktop_application_id">ID</string>
     <string name="desktop_application_display_name">显示名称</string>
     <string name="desktop_application_priority">优先级</string>
     <string name="desktop_application_priority_hint">多个应用匹配时，数值更大的应用优先。</string>

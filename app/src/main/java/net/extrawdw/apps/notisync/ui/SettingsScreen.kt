@@ -333,8 +333,8 @@ fun SettingsScreen() {
                         },
                     )
                 }
-                // SSH Agent key-storage flow test — one self-contained item; see SshKeyStorageFlowTestCard.
-                item { SshKeyStorageFlowTestCard() }
+                // SSH key storage test — one self-contained item; see SshKeyStorageTestCard.
+                item { SshKeyStorageTestCard() }
             }
         }
     }
@@ -342,8 +342,8 @@ fun SettingsScreen() {
     if (confirmSshKeyStoreReset) {
         AlertDialog(
             onDismissRequest = { confirmSshKeyStoreReset = false },
-            title = { Text(stringResource(R.string.diag_ssh_key_store_reset_title)) },
-            text = { Text(stringResource(R.string.diag_ssh_key_store_reset_body)) },
+            title = { Text(stringResource(R.string.diagnostics_ssh_key_storage_reset_title)) },
+            text = { Text(stringResource(R.string.diagnostics_ssh_key_storage_reset_body)) },
             confirmButton = {
                 TextButton(
                     onClick = {
@@ -369,7 +369,7 @@ fun SettingsScreen() {
                             )
                         }
                     },
-                ) { Text(stringResource(R.string.diag_ssh_key_store_reset_confirm)) }
+                ) { Text(stringResource(R.string.diagnostics_ssh_key_storage_reset_confirm)) }
             },
             dismissButton = {
                 TextButton(onClick = { confirmSshKeyStoreReset = false }) {

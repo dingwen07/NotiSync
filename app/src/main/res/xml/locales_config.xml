@@ -1,16 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Locales offered in the system per-app language picker. We ship resources for en (default) and
-  zh-CN; the remaining locales are filled in automatically by Google Play's on-device translation
-  (Gemini) at the bundle level. They are listed here so the picker shows every supported language
+  Locales offered in the system per-app language picker. We ship resources for en (default),
+  zh-Hans-CN, and zh-Hant-TW; Google Play supplies app string translations for the remaining locales.
+  They are listed here so the picker shows every supported language
   even though their res/values-* folders are not present in source.
 -->
 <locale-config xmlns:android="http://schemas.android.com/apk/res/android">
     <locale android:name="en" />
-    <locale android:name="zh-CN" />
+    <locale android:name="zh-Hans-CN" />
+    <locale android:name="zh-Hant-TW" />
+    <locale android:name="ar" />
+    <locale android:name="bn" />
     <locale android:name="fr" />
     <locale android:name="de" />
+    <locale android:name="hi" />
     <locale android:name="ja" />
     <locale android:name="ko" />
+    <locale android:name="pt" />
     <locale android:name="ru" />
+    <locale android:name="es" />
+    <locale android:name="uk" />
+    <locale android:name="ur" />
+    <locale android:name="vi" />
 </locale-config>

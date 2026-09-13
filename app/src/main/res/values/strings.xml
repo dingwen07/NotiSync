@@ -10,8 +10,8 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">Devices</string>
     <string name="tab_apps">Apps</string>
-    <string name="tab_ios">iPhone</string>
-    <string name="tab_run">Run</string>
+    <string name="tab_ios" translatable="false">iPhone</string>
+    <string name="tab_run" translatable="false">Run</string>
     <string name="tab_seal" translatable="false">Seal</string>
     <string name="features_title">Tools</string>
     <string name="open_features">Open features</string>
@@ -31,7 +31,7 @@
     <string name="action_paste">Paste</string>
     <string name="error_unknown">Unknown error</string>
 
-    <!-- SSH Agent key provider -->
+    <!-- SSH Key Provider -->
     <string name="ssh_agent_name" translatable="false">NotiSync SSH Agent</string>
     <string name="ssh_key_provider_tools_label">SSH Keys</string>
     <string name="ssh_key_provider_screen_title">NotiSync SSH Key Provider</string>
@@ -104,7 +104,7 @@
     <string name="ssh_key_provider_export_details">Export</string>
     <string name="ssh_key_provider_export_available">Available</string>
     <string name="ssh_key_provider_export_copy_protection">Protected by Android Keystore · %1$s</string>
-    <string name="ssh_key_provider_storage_android_keystore">Android Keystore</string>
+    <string name="ssh_key_provider_storage_android_keystore" translatable="false">Android Keystore</string>
     <string name="ssh_key_provider_storage_android_keystore_wrapped">Software Wrapped</string>
     <string name="ssh_key_provider_storage_credential_manager_webauthn">Credential Manager · WebAuthn</string>
     <string name="ssh_key_provider_webauthn_action">Passkey</string>
@@ -145,7 +145,7 @@
     <string name="ssh_key_provider_webauthn_export_complete">OpenSSH security-key identity exported</string>
     <string name="ssh_key_provider_webauthn_export_failed">Unable to export the OpenSSH security-key identity</string>
     <string name="ssh_key_provider_webauthn_export_open_failed">The selected identity file could not be opened</string>
-    <string name="ssh_key_provider_webauthn_rp_id">WebAuthn RP ID</string>
+    <string name="ssh_key_provider_webauthn_rp_id" translatable="false">WebAuthn RP ID</string>
     <string name="ssh_key_provider_webauthn_portability">Credential portability</string>
     <string name="ssh_key_provider_webauthn_authenticator_bound">Bound to its authenticator · not backed up</string>
     <string name="ssh_key_provider_webauthn_backed_up">Backed up by the credential provider</string>
@@ -254,9 +254,9 @@
     <string name="ssh_key_provider_store_private_key_failed">Unable to store the SSH private key.</string>
     <string name="ssh_key_provider_sign_auth_title">Authorize SSH signature</string>
     <string name="ssh_key_provider_sign_auth_subtitle">Use the selected protected SSH key once</string>
-    <string name="ssh_key_provider_remember_peer">%1$s</string>
+    <string name="ssh_key_provider_remember_peer" translatable="false">%1$s</string>
     <string name="ssh_key_provider_remember_peer_host">%1$s + this host</string>
-    <string name="ssh_key_provider_remember_application">%1$s</string>
+    <string name="ssh_key_provider_remember_application" translatable="false">%1$s</string>
     <string name="ssh_key_provider_remember_application_host">%1$s + this host</string>
     <string name="ssh_key_provider_remember_pending_help">Choose a scope to approve this request and remember future use of this key.</string>
     <string name="ssh_key_provider_remember_auth_title">Authorize remembered SSH access</string>
@@ -287,7 +287,7 @@
     <string name="seal_name" translatable="false">NotiSync Seal</string>
     <string name="seal_intro">Approve Git commits and annotated tags from your trusted devices with the OpenPGP key on this device.</string>
     <string name="seal_identity_title">Signing identity</string>
-    <string name="seal_openpgp_identity">OpenPGP</string>
+    <string name="seal_openpgp_identity" translatable="false">OpenPGP</string>
     <string name="seal_identity_key">OpenPGP key %1$s</string>
     <string name="seal_identity_change">Change key</string>
     <string name="seal_identity_remove">Remove</string>
@@ -321,7 +321,7 @@
     <string name="seal_tag_section">Annotated Tag</string>
     <string name="seal_tag_target_type">Target Type</string>
     <string name="seal_tag_target">Target Object</string>
-    <string name="seal_extra_header">%1$s</string>
+    <string name="seal_extra_header" translatable="false">%1$s</string>
     <string name="seal_approval_section">Approval</string>
     <string name="seal_working_directory">Working Directory</string>
     <string name="seal_signing_key">Signing Key</string>
@@ -389,7 +389,7 @@
     <string name="run_detail_finished">Finished</string>
     <string name="run_detail_duration">Duration</string>
     <string name="run_detail_exit">Exit code</string>
-    <string name="run_detail_pty">PTY</string>
+    <string name="run_detail_pty" translatable="false">PTY</string>
     <string name="run_yes">Yes</string>
     <string name="run_no">No</string>
     <string name="run_action_yes">Yes</string>
@@ -429,6 +429,7 @@
     <string name="run_short_done">Done</string>
     <string name="run_short_failed">Failed</string>
     <string name="run_short_running">Run</string>
+    <!-- Percent placement and spacing can vary by locale. -->
     <string name="run_progress_description">%1$d%%</string>
     <string name="run_pty_yes">Yes</string>
     <string name="run_pty_no">No</string>
@@ -441,6 +442,7 @@
     <string name="apps_section_mirroring">Mirroring</string>
     <string name="apps_section_all">All apps</string>
     <string name="apps_section_other_results">Other results</string>
+    <!-- Title/count order and punctuation can vary by locale. -->
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">Last notification %1$s</string>
     <string name="apps_section_recent">Recents</string>
@@ -457,7 +459,7 @@
     <string name="app_config_update_every">Every update</string>
     <string name="app_config_update_seconds">%1$ds</string>
     <string name="app_config_ongoing_ios_title">Send to iPhone &amp; iPad</string>
-    <string name="app_config_ongoing_ios_desc">Also mirror this app\'s non-media ongoing notifications to your Apple devices. Note: since the iOS app doesn\'t have notification filtering entitlement, iOS will show a new notification on each update instead of refreshing.</string>
+    <string name="app_config_ongoing_ios_desc">Also mirror this app\'s non-media ongoing notifications to your Apple devices. Note: Since the iOS app doesn\'t have notification filtering entitlement, iOS will show a new notification on each update instead of refreshing.</string>
     <string name="app_config_media_ios_title">Send media playback to iPhone &amp; iPad</string>
     <string name="app_config_media_ios_desc">Also mirror this app\'s media playback notifications to your Apple devices. Off by default because playback updates may re-alert on iOS.</string>
     <string name="app_config_ring_calls_title">Ring for calls</string>
@@ -469,7 +471,7 @@
     <string name="app_config_remove_channel">Remove channel</string>
 
     <!-- Activity screen -->
-    <string name="activity_message_ssh">SSH</string>
+    <string name="activity_message_ssh" translatable="false">SSH</string>
     <string name="activity_message_openpgp">OpenPGP signing</string>
     <string name="activity_message_screen">Screen sharing</string>
     <string name="activity_message_keys_request">Key list request</string>
@@ -492,10 +494,10 @@
     </plurals>
     <string name="activity_empty_title">No activity yet</string>
     <string name="activity_empty_body">Device, notification, Run, SSH, signing, and screen-sharing messages will appear here.</string>
-    <string name="activity_event_overline">%1$s · %2$s</string>
+    <string name="activity_event_overline" translatable="false">%1$s · %2$s</string>
     <string name="activity_detail_with_delivery">%1$s via %2$s</string>
     <string name="activity_delivery_unknown">unknown route</string>
-    <string name="activity_delivery_websocket">WebSocket</string>
+    <string name="activity_delivery_websocket" translatable="false">WebSocket</string>
     <string name="activity_delivery_fcm_inline">FCM inline</string>
     <string name="activity_delivery_fcm_relay_fetch">FCM wake + server fetch (oversized)</string>
     <string name="activity_kind_captured">Captured</string>
@@ -572,86 +574,98 @@
     <string name="settings_client_id">Client ID: %1$s</string>
     <string name="settings_key_backing">Key backing: %1$s</string>
     <string name="settings_transport">Transport: %1$s</string>
-    <string name="diag_server">Server</string>
-    <string name="diag_server_healthy">Healthy · v%1$s</string>
-    <string name="diag_server_reachable">Reachable · v%1$s</string>
-    <string name="diag_server_unreachable">Unreachable</string>
-    <string name="diag_checking">Checking…</string>
-    <string name="diag_refresh">Refresh</string>
-    <string name="diag_attestation">Client Integrity</string>
-    <string name="diag_attestation_verified">Verified</string>
-    <string name="diag_attestation_unverified">Required · not verified</string>
-    <string name="diag_attestation_not_required">Not required</string>
-    <string name="diag_attestation_unknown">Unknown</string>
-    <string name="diag_token_expires">Token valid for %1$s</string>
-    <string name="diag_token_expired">expired</string>
-    <string name="diag_token_less_than_minute">less than 1 minute</string>
-    <string name="diag_clear_token">Clear local token</string>
-    <plurals name="diag_duration_days">
+    <string name="diagnostics_server">Server</string>
+    <string name="diagnostics_server_healthy">Healthy · v%1$s</string>
+    <string name="diagnostics_server_reachable">Reachable · v%1$s</string>
+    <string name="diagnostics_server_unreachable">Unreachable</string>
+    <string name="diagnostics_checking">Checking…</string>
+    <string name="diagnostics_refresh">Refresh</string>
+    <string name="diagnostics_attestation">Client Integrity</string>
+    <string name="diagnostics_attestation_verified">Verified</string>
+    <string name="diagnostics_attestation_unverified">Required · not verified</string>
+    <string name="diagnostics_attestation_not_required">Not required</string>
+    <string name="diagnostics_attestation_unknown">Unknown</string>
+    <string name="diagnostics_token_expires">Token valid for %1$s</string>
+    <string name="diagnostics_token_expired">expired</string>
+    <string name="diagnostics_token_less_than_minute">less than 1 minute</string>
+    <string name="diagnostics_clear_token">Clear local token</string>
+    <plurals name="diagnostics_duration_days">
         <item quantity="one">%1$d day</item>
         <item quantity="other">%1$d days</item>
     </plurals>
-    <plurals name="diag_duration_hours">
+    <plurals name="diagnostics_duration_hours">
         <item quantity="one">%1$d hour</item>
         <item quantity="other">%1$d hours</item>
     </plurals>
-    <plurals name="diag_duration_minutes">
+    <plurals name="diagnostics_duration_minutes">
         <item quantity="one">%1$d minute</item>
         <item quantity="other">%1$d minutes</item>
     </plurals>
-    <string name="diag_pow">Proof of Work</string>
-    <string name="diag_pow_hint">Some servers require Proof of Work to prevent abuse.</string>
-    <string name="diag_pow_benchmark">Benchmark (difficulty 1–5)</string>
-    <string name="diag_pow_running">Benchmarking…</string>
-    <string name="diag_pow_result">Difficulty %1$d · %2$s hashes · %3$s · %4$s</string>
-    <string name="diag_delivery_test">Large-notification delivery</string>
-    <string name="diag_oversized_hint">Sends an oversized notification (simulating net.extrawdw.notifly) to your other devices. It exceeds the FCM inline limit, so it is delivered via the wake + relay-fetch path.</string>
-    <string name="diag_oversized_send">Send oversized test</string>
-    <string name="diag_oversized_sending">Sending…</string>
-    <plurals name="diag_oversized_sent">
+    <string name="diagnostics_pow">Proof of Work</string>
+    <string name="diagnostics_pow_hint">Some servers require Proof of Work to prevent abuse.</string>
+    <string name="diagnostics_pow_benchmark">Benchmark (difficulty 1–5)</string>
+    <string name="diagnostics_pow_running">Benchmarking…</string>
+    <string name="diagnostics_pow_result">Difficulty %1$d · %2$s hashes · %3$s · %4$s</string>
+    <string name="diagnostics_delivery_test">Large-notification delivery</string>
+    <string name="diagnostics_oversized_hint">Sends an oversized notification (simulating net.extrawdw.notifly) to your other devices. It exceeds the FCM inline limit, so it is delivered via the wake + relay-fetch path.</string>
+    <string name="diagnostics_oversized_send">Send oversized test</string>
+    <string name="diagnostics_oversized_sending">Sending…</string>
+    <plurals name="diagnostics_oversized_sent">
         <item quantity="one">Sent to %1$d device — check the other device.</item>
         <item quantity="other">Sent to %1$d devices — check the other device.</item>
     </plurals>
-    <string name="diag_oversized_no_peers">No devices to send to.</string>
-    <string name="diag_oversized_failed">Send failed — check the broker connection.</string>
-    <string name="diag_rotation">Key rotation</string>
-    <string name="diag_rotation_current_epoch">Current epoch: %1$d</string>
-    <string name="diag_rotation_signing_key">Signing key: %1$s</string>
-    <string name="diag_rotation_encryption_key">Encryption key: %1$s</string>
-    <string name="diag_rotation_next_due">Next rotation in %1$s</string>
-    <string name="diag_rotation_activating">Rotating to epoch %1$d — activates in %2$s</string>
-    <string name="diag_rotation_retiring">Rotating to epoch %1$d — old epoch retires in %2$s</string>
-    <string name="diag_rotation_disabled">Rotation is off in this build (ENABLE_ROTATION).</string>
-    <string name="diag_rotation_hint">Mint the next key epoch now instead of waiting for the 30-day schedule. The previous epoch\'s keys are retained through the overlap so in-flight notifications still open.</string>
-    <string name="diag_rotate_now">Rotate key now</string>
-    <string name="diag_rotating">Rotating…</string>
-    <string name="diag_rotate_done">Rotated — now at epoch %1$d</string>
-    <string name="diag_rotate_pending">A rotation is already in progress</string>
-    <string name="diag_rotate_failed">Rotation failed — check the broker connection</string>
-    <string name="diag_channels">Notification channels</string>
-    <string name="diag_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
-    <string name="diag_channels_reset">Reset notification channels</string>
-    <string name="diag_ssh_key_store">SSH Agent key store</string>
-    <string name="diag_ssh_key_store_hint">Recovery action for the SSH Key Provider feature. This removes all SSH keys, pending requests, request history, remembered SSH approvals, and saved SSH host fingerprints and hostnames from this device. Other NotiSync keys and data are not affected.</string>
-    <string name="diag_ssh_key_store_reset">Reset SSH Key Store</string>
-    <string name="diag_ssh_key_store_resetting">Resetting SSH Key Store…</string>
-    <string name="diag_ssh_key_store_reset_title">Reset SSH Key Store?</string>
-    <string name="diag_ssh_key_store_reset_body">All SSH keys managed by NotiSync, pending requests, request history, remembered approvals, and saved host fingerprints and hostnames on this device will be permanently deleted. This cannot be undone.</string>
-    <string name="diag_ssh_key_store_reset_confirm">Reset SSH Key Store</string>
-    <string name="diag_ssh_key_store_reset_done">SSH Key Store reset. Removed %1$d keys.</string>
-    <string name="diag_ssh_key_store_reset_failed">SSH Key Store reset failed: %1$s</string>
-    <plurals name="diag_channels_reset_done">
+    <string name="diagnostics_oversized_no_peers">No devices to send to.</string>
+    <string name="diagnostics_oversized_failed">Send failed — check the broker connection.</string>
+    <string name="diagnostics_rotation">Key rotation</string>
+    <string name="diagnostics_rotation_current_epoch">Current epoch: %1$d</string>
+    <string name="diagnostics_rotation_signing_key">Signing key: %1$s</string>
+    <string name="diagnostics_rotation_encryption_key">Encryption key: %1$s</string>
+    <string name="diagnostics_rotation_next_due">Next rotation in %1$s</string>
+    <string name="diagnostics_rotation_activating">Rotating to epoch %1$d — activates in %2$s</string>
+    <string name="diagnostics_rotation_retiring">Rotating to epoch %1$d — old epoch retires in %2$s</string>
+    <string name="diagnostics_rotation_disabled">Rotation is off in this build (ENABLE_ROTATION).</string>
+    <string name="diagnostics_rotation_hint">Mint the next key epoch now instead of waiting for the 30-day schedule. The previous epoch\'s keys are retained through the overlap so in-flight notifications still open.</string>
+    <string name="diagnostics_rotate_now">Rotate key now</string>
+    <string name="diagnostics_rotating">Rotating…</string>
+    <string name="diagnostics_rotate_done">Rotated — now at epoch %1$d</string>
+    <string name="diagnostics_rotate_pending">A rotation is already in progress</string>
+    <string name="diagnostics_rotate_failed">Rotation failed — check the broker connection</string>
+    <string name="diagnostics_channels">Notification channels</string>
+    <string name="diagnostics_channels_hint">Notification channels (categories) are created be created when new notifications arrive. Notifications originated from Android will mirror the original notification channels, while a single notification channel will be used for iOS apps.\n\nUse this option to deletee all mirrored notification channels. This will also discard your customizations for any notification channels (including sound, vibration, pop-ups, app icon badges, etc.).</string>
+    <string name="diagnostics_channels_reset">Reset notification channels</string>
+    <string name="diagnostics_ssh_key_storage">SSH key storage</string>
+    <string name="diagnostics_ssh_key_storage_hint">Reset SSH key storage on this device. This removes all SSH keys, pending requests, request history, remembered authorizations, and saved SSH host fingerprints and hostnames. Other NotiSync keys and data are not affected.</string>
+    <string name="diagnostics_ssh_key_storage_reset">Reset SSH key storage</string>
+    <string name="diagnostics_ssh_key_storage_resetting">Resetting SSH key storage…</string>
+    <string name="diagnostics_ssh_key_storage_reset_title">Reset SSH key storage?</string>
+    <string name="diagnostics_ssh_key_storage_reset_body">All SSH keys managed by NotiSync, pending requests, request history, remembered approvals, and saved host fingerprints and hostnames on this device will be permanently deleted. This cannot be undone.</string>
+    <string name="diagnostics_ssh_key_storage_reset_confirm">Reset SSH key storage</string>
+    <string name="diagnostics_ssh_key_storage_reset_done">SSH key storage reset. Removed %1$d keys.</string>
+    <string name="diagnostics_ssh_key_storage_reset_failed">SSH key storage reset failed: %1$s</string>
+    <plurals name="diagnostics_channels_reset_done">
         <item quantity="one">Deleted %1$d channel.</item>
         <item quantity="other">Deleted %1$d channels.</item>
     </plurals>
-    <string name="diag_security_test">Trust database integrity</string>
-    <string name="diag_tamper_hint">Strips the trust store signature to simulate tampering. The app pauses syncing and shows a review banner on the Devices screen.</string>
-    <string name="diag_tamper_signature">Tamper trust signature</string>
+    <!-- SSH key storage test -->
+    <string name="diagnostics_ssh_key_storage_test">SSH key storage test</string>
+    <string name="diagnostics_ssh_key_storage_test_hint">Tests key storage and signing options. Requires authentication; test keys are deleted and history records remain.</string>
+    <string name="diagnostics_ssh_key_storage_test_run">Run test</string>
+    <string name="diagnostics_ssh_key_storage_test_running">Testing…</string>
+    <string name="diagnostics_ssh_key_storage_test_failed">Test failed: %1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_case_passed">Passed — %1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_case_failed">Failed — %1$s</string>
+    <string name="diagnostics_ssh_key_storage_test_done">Finished: %1$d/%2$d passed.</string>
+    <string name="diagnostics_ssh_key_storage_test_generate_auth">Authenticate to generate the test key</string>
+    <string name="diagnostics_ssh_key_storage_test_sign_auth">Authorize a test signature</string>
+
+    <string name="diagnostics_security_test">Trust database integrity</string>
+    <string name="diagnostics_tamper_hint">Strips the trust store signature to simulate tampering. The app pauses syncing and shows a review banner on the Devices screen.</string>
+    <string name="diagnostics_tamper_signature">Tamper trust signature</string>
     <string name="key_backing_unknown">Unknown</string>
     <string name="key_backing_unknown_secure">TEE or stronger</string>
     <string name="key_backing_software">Software</string>
     <string name="key_backing_tee">Trusted Execution Environment</string>
-    <string name="key_backing_strongbox">StrongBox</string>
+    <string name="key_backing_strongbox" translatable="false">StrongBox</string>
 
     <!-- Devices screen -->
     <string name="pair_a_device">Pair a device</string>
@@ -690,7 +704,7 @@
     <string name="device_filters_title">Hidden from %1$s</string>
     <string name="device_filters_desc">This device won\'t forward these notifications to it:</string>
     <string name="device_filters_empty">This device isn\'t hiding any notifications from it.</string>
-    <string name="device_filters_origin_android">Android</string>
+    <string name="device_filters_origin_android" translatable="false">Android</string>
     <string name="device_filters_origin_ios">iPhone (ANCS)</string>
     <string name="device_filters_scope_all">All notifications</string>
     <string name="device_filters_scope_app">App: %1$s</string>
@@ -711,8 +725,8 @@
     <string name="device_details_immediate">Immediate</string>
     <string name="device_details_no_expiry">No expiry</string>
     <string name="device_details_capabilities">Capabilities</string>
-    <string name="device_details_platform_android">Android</string>
-    <string name="device_details_platform_ios">iOS</string>
+    <string name="device_details_platform_android" translatable="false">Android</string>
+    <string name="device_details_platform_ios" translatable="false">iOS</string>
     <string name="device_details_platform_web">Web</string>
     <string name="device_details_platform_desktop">Desktop</string>
     <string name="device_details_platform_unknown">Unknown platform</string>
@@ -752,9 +766,9 @@
     <string name="screen_mirror_codec_title">Video codec</string>
     <string name="screen_mirror_codec_body">Auto prefers AV1, then H.265, with H.264 as fallback. AV1 and H.265 require hardware decoding on this device; the source must support matching hardware encoding.</string>
     <string name="screen_mirror_codec_auto">Auto</string>
-    <string name="screen_mirror_codec_av1" tools:ignore="Typos">AV1</string>
-    <string name="screen_mirror_codec_h265">H.265</string>
-    <string name="screen_mirror_codec_h264">H.264</string>
+    <string name="screen_mirror_codec_av1" translatable="false" tools:ignore="Typos">AV1</string>
+    <string name="screen_mirror_codec_h265" translatable="false">H.265</string>
+    <string name="screen_mirror_codec_h264" translatable="false">H.264</string>
     <string name="screen_mirror_request_channel">Screen control requests</string>
     <string name="screen_mirror_request_title">Screen control request</string>
     <string name="screen_mirror_request_body">Tap to start sharing with %1$s.</string>
@@ -778,9 +792,9 @@
     <string name="screen_viewer_service_background">Connected to %1$s · tap to resume</string>
     <string name="screen_viewer_service_failed">Could not keep the screen session active in the background.</string>
     <string name="screen_viewer_connecting">Waiting for %1$s…</string>
-    <string name="screen_viewer_connection_codec">%1$s · %2$s</string>
+    <string name="screen_viewer_connection_codec" translatable="false">%1$s · %2$s</string>
     <string name="screen_viewer_connection_local_network">Local Network</string>
-    <string name="screen_viewer_connection_wifi_aware">Wi-Fi Aware</string>
+    <string name="screen_viewer_connection_wifi_aware" translatable="false">Wi-Fi Aware</string>
     <string name="screen_viewer_connection_broker_relay">Relay</string>
     <string name="screen_viewer_ended">Screen sharing ended.</string>
     <string name="screen_viewer_failed">Could not start screen sharing.</string>
@@ -817,6 +831,7 @@
     <string name="device_capability_openpgp_tag_sign">Approve OpenPGP Git Tag Signatures</string>
 
     <!-- Pairing screen -->
+    <string name="notisync_nfc_service_description" translatable="false">NotiSync NFC</string>
     <string name="pair_could_not_pair">Could not pair: %1$s</string>
     <string name="pair_nfc_connection_lost">The NFC connection was lost. Keep the devices together until pairing finishes, then try again.</string>
     <string name="pair_nfc_communication_failed">NFC communication failed. Keep the devices together and try again.</string>
@@ -830,7 +845,6 @@
     <string name="pair_could_not_prepare">Could not prepare pairing code: %1$s</string>
     <string name="pair_verification_number">Verification Number: %1$s</string>
     <string name="pair_share_title">NotiSync Pairing Link</string>
-    <string name="notisync_nfc_service_description">NotiSync NFC</string>
     <string name="pair_nfc_notification_channel">Pairing requests</string>
     <string name="pair_nfc_notification_title">Review device pairing</string>
     <string name="pair_nfc_notification_text">Tap to verify and approve the other device.</string>
@@ -893,7 +907,7 @@
     <!-- Fallback reply-field hint for a mirrored remote-input action whose producer sent no label. -->
     <string name="mirror_reply_hint">Reply</string>
     <!-- Channel-group label for a bridged iPhone whose name is not yet known ("iPhone" is not localized). -->
-    <string name="mirror_ios_device_fallback">iPhone</string>
+    <string name="mirror_ios_device_fallback" translatable="false">iPhone</string>
     <string name="incoming_call_title">Incoming call</string>
     <string name="incoming_call_on_device">Incoming on %1$s</string>
     <string name="incoming_call_unknown_caller">Unknown caller</string>
@@ -984,7 +998,7 @@
     <string name="desktop_application_edit">Edit application</string>
     <string name="desktop_application_search">Search applications</string>
     <string name="desktop_application_no_results">No matching applications</string>
-    <string name="desktop_application_id">ID</string>
+    <string name="desktop_application_id" translatable="false">ID</string>
     <string name="desktop_application_display_name">Display name</string>
     <string name="desktop_application_priority">Priority</string>
     <string name="desktop_application_priority_hint">Higher numbers take precedence when multiple applications match.</string>

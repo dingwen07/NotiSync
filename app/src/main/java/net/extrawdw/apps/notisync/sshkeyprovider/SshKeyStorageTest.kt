@@ -15,6 +15,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import net.extrawdw.apps.notisync.R
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.DesktopProcessContextSource
@@ -33,20 +34,21 @@ import net.extrawdw.notisync.ssh.core.SshSignatureMethod
 import net.extrawdw.notisync.ssh.core.SshSignatureVerifier
 
 /**
- * Self-contained Settings → Advanced flow test for the SSH Agent Android key storage.
+ * Self-contained Settings → Advanced test for SSH key storage on Android.
  *
  * Enumerates every combination of the three key-generation options (export copy, TEE-only export backend,
  * per-use biometric verification), generates one Ed25519 key per combination (named after the options it
  * used), signs a test payload through the real provider sign path — including the system authentication
  * prompts the production flow triggers — and independently re-verifies the SSH signature. Each key is
- * deleted after its test so the store is left as found; each sign leaves a terminal "flowtest" record in
+ * deleted after its test so the store is left as found; each sign leaves a terminal test record in
  * the SSH Agent history, which is the same residue the production sign path always keeps.
  *
  * Deliberately isolated: this file talks only to the public [SshKeyProviderStore] API and owns its own
  * prompt plumbing, so the whole feature can be removed without touching the production flows. Delete this
- * file together with `SshKeyStorageFlowTestCard` in the ui package and its one Settings list item.
+ * file together with `SshKeyStorageTestCard` in the ui package, its one Settings list item, and the
+ * `diagnostics_ssh_key_storage_test*` string resources.
  */
-class SshKeyStorageFlowTest(
+class SshKeyStorageTest(
     private val activity: Activity,
     private val store: SshKeyProviderStore,
     private val providerClientId: ClientId,
@@ -57,8 +59,8 @@ class SshKeyStorageFlowTest(
         val teeOnly: Boolean,
         val perUseBio: Boolean,
     ) {
-        /** Key display name encoding exactly the options used, e.g. "flowtest export+tee+bio". */
-        val name: String = "flowtest " + listOfNotNull(
+        /** Key display name encoding exactly the options used, e.g. "SSH key storage test export+tee+bio". */
+        val name: String = "SSH key storage test " + listOfNotNull(
             "export".takeIf { export },
             "tee".takeIf { teeOnly },
             "bio".takeIf { perUseBio },
@@ -101,7 +103,7 @@ class SshKeyStorageFlowTest(
         for (case in Case.ALL) {
             val outcome = try {
                 runCase(case)
-            } catch (cancelled: FlowTestCancelled) {
+            } catch (cancelled: TestCancelled) {
                 onCase(CaseOutcome.Failed(case, cancelled.message ?: "Authentication cancelled"))
                 return
             } catch (failure: CancellationException) {
@@ -172,11 +174,11 @@ class SshKeyStorageFlowTest(
         val now = System.currentTimeMillis()
         val request = SshSignRequest(
             requestId = randomHexId(),
-            requesterClientId = FLOW_TEST_REQUESTER,
+            requesterClientId = TEST_REQUESTER,
             requestedAt = now,
             expiresAt = now + SshAgentLimits.MAX_SIGN_LIFETIME_MILLIS,
             publicKeyBlob = descriptor.publicKeyBlob,
-            data = "NotiSync SSH key-storage flow test: ${case.name}".encodeToByteArray(),
+            data = "NotiSync ${case.name}".encodeToByteArray(),
             flags = 0,
             requestedSignatureAlgorithm = SshSignatureAlgorithm.SSH_ED25519,
             eligibleProviderClientIds = listOf(providerClientId),
@@ -243,7 +245,7 @@ class SshKeyStorageFlowTest(
                     runCatching {
                         when (store.find(request.requestId)?.state) {
                             SshProviderRequestState.PENDING_REVIEW ->
-                                store.cancelSign(request.requestId, FLOW_TEST_REQUESTER, now)
+                                store.cancelSign(request.requestId, TEST_REQUESTER, now)
 
                             SshProviderRequestState.RESPONSE_PENDING_SEND -> store.markSent(request.requestId, now)
                             else -> Unit
@@ -279,13 +281,13 @@ class SshKeyStorageFlowTest(
                     if (handled.compareAndSet(false, true)) signal.cancel()
                 }
                 val builder = BiometricPrompt.Builder(activity)
-                    .setTitle("SSH key-storage flow test")
-                    .setSubtitle("Authenticate to continue generating the test key")
+                    .setTitle(activity.getString(R.string.diagnostics_ssh_key_storage_test))
+                    .setSubtitle(activity.getString(R.string.diagnostics_ssh_key_storage_test_generate_auth))
                     .setAllowedAuthenticators(prepared.promptAuthenticators)
                 if (prepared.promptAuthenticators and BiometricManager.Authenticators.DEVICE_CREDENTIAL == 0) {
-                    builder.setNegativeButton("Cancel", activity.mainExecutor) { _, _ ->
+                    builder.setNegativeButton(activity.getString(R.string.action_cancel), activity.mainExecutor) { _, _ ->
                         if (handled.compareAndSet(false, true)) {
-                            continuation.resumeWithException(FlowTestCancelled("Key-generation authentication cancelled"))
+                            continuation.resumeWithException(TestCancelled("Key-generation authentication cancelled"))
                         }
                     }
                 }
@@ -316,7 +318,7 @@ class SshKeyStorageFlowTest(
 
                             override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                                 if (handled.compareAndSet(false, true)) {
-                                    continuation.resumeWithException(FlowTestCancelled(errString.toString()))
+                                    continuation.resumeWithException(TestCancelled(errString.toString()))
                                 }
                             }
                         },
@@ -340,12 +342,12 @@ class SshKeyStorageFlowTest(
                     ?: BiometricPrompt.CryptoObject(requireNotNull(prepared.cipher))
                 try {
                     BiometricPrompt.Builder(activity)
-                        .setTitle("SSH key-storage flow test")
-                        .setSubtitle("Authorize one test signature with the per-use key")
+                        .setTitle(activity.getString(R.string.diagnostics_ssh_key_storage_test))
+                        .setSubtitle(activity.getString(R.string.diagnostics_ssh_key_storage_test_sign_auth))
                         .setAllowedAuthenticators(SshAuthenticationPolicy.SIGNING_PROMPT_AUTHENTICATORS)
-                        .setNegativeButton("Cancel", activity.mainExecutor) { _, _ ->
+                        .setNegativeButton(activity.getString(R.string.action_cancel), activity.mainExecutor) { _, _ ->
                             if (handled.compareAndSet(false, true)) {
-                                continuation.resumeWithException(FlowTestCancelled("Signature authentication cancelled"))
+                                continuation.resumeWithException(TestCancelled("Signature authentication cancelled"))
                             }
                         }
                         .build()
@@ -373,7 +375,7 @@ class SshKeyStorageFlowTest(
 
                                 override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
                                     if (handled.compareAndSet(false, true)) {
-                                        continuation.resumeWithException(FlowTestCancelled(errString.toString()))
+                                        continuation.resumeWithException(TestCancelled(errString.toString()))
                                     }
                                 }
                             },
@@ -396,10 +398,10 @@ class SshKeyStorageFlowTest(
     )
 
     /** A system prompt was dismissed by the user (or the device cannot run it): fail the case, stop the run. */
-    private class FlowTestCancelled(message: String) : Exception(message)
+    private class TestCancelled(message: String) : Exception(message)
 
     private companion object {
-        val FLOW_TEST_REQUESTER = ClientId("flowtest")
+        val TEST_REQUESTER = ClientId("ssh-key-storage-test")
         const val MAX_PROVISIONING_STAGES = 8
     }
 
