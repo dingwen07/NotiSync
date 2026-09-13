@@ -26,6 +26,12 @@ dependencies {
     implementation(project(":peer-core"))
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.kotlinx.coroutines.core)
+    implementation(libs.sqlite.jdbc)
+    implementation(libs.exposed.core)
+    implementation(libs.exposed.jdbc)
+    implementation(libs.exposed.json)
+    implementation(libs.hikari)
+    implementation(libs.flyway.core)
     implementation(libs.junixsocket.core)
     implementation(libs.tink)
     implementation(libs.zxing.core)
@@ -41,6 +47,16 @@ dependencies {
 
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(libs.exposed.migration.jdbc)
+}
+
+tasks.register<JavaExec>("generateDaemonMigration") {
+    group = "development"
+    description = "Generates an Exposed schema diff against an isolated database migrated by the checked-in SQL."
+    dependsOn(tasks.testClasses)
+    classpath = sourceSets.test.get().runtimeClasspath
+    mainClass.set("net.extrawdw.notisync.daemon.peer.storage.GenerateDaemonMigrationKt")
+    args(layout.buildDirectory.dir("generated/daemon-migrations").get().asFile.absolutePath)
 }
 
 private val launcherDirectory = if (isMacOs) "libexec" else "bin"

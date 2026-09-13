@@ -21,6 +21,7 @@ jmdns = "3.6.3"
 # Server
 ktor = "3.5.2"
 exposed = "1.0.0"
+flyway = "13.6.0"
 sqliteJdbc = "3.50.1.0"
 postgresql = "42.7.7"
 hikari = "6.3.0"
@@ -109,6 +110,8 @@ ktor-serialization-kotlinx-cbor = { group = "io.ktor", name = "ktor-serializatio
 # --- Server: persistence ---
 exposed-core = { group = "org.jetbrains.exposed", name = "exposed-core", version.ref = "exposed" }
 exposed-jdbc = { group = "org.jetbrains.exposed", name = "exposed-jdbc", version.ref = "exposed" }
+exposed-migration-jdbc = { group = "org.jetbrains.exposed", name = "exposed-migration-jdbc", version.ref = "exposed" }
+flyway-core = { group = "org.flywaydb", name = "flyway-core", version.ref = "flyway" }
 exposed-json = { group = "org.jetbrains.exposed", name = "exposed-json", version.ref = "exposed" }
 exposed-kotlin-datetime = { group = "org.jetbrains.exposed", name = "exposed-kotlin-datetime", version.ref = "exposed" }
 sqlite-jdbc = { group = "org.xerial", name = "sqlite-jdbc", version.ref = "sqliteJdbc" }

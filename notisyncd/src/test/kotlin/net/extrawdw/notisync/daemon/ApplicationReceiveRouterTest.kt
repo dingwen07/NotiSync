@@ -45,6 +45,38 @@ class ApplicationReceiveRouterTest {
     private val registered = linkedSetOf("app")
 
     @Test
+    fun `local streams prioritize live while keeping replay FIFO and avoiding starvation`() {
+        val router = router()
+        val handle = router.open(peer(), ReceiveRequest("app"))
+        repeat(2) { i ->
+            router.accept(inbound("replay-$i", MessageType.NOTIFICATION, byteArrayOf(), DeliveryMode.RELAY_DRAIN))
+        }
+        repeat(10) { i -> router.accept(inbound("live-$i", MessageType.NOTIFICATION, byteArrayOf())) }
+        assertEquals(
+            (0..7).map { "live-$it" } + "replay-0" + listOf("live-8", "live-9", "replay-1"),
+            List(12) { handle.pollRecord()!!.envelopeId },
+        )
+        // Reopening the socket also prioritizes unacknowledged live records.
+        handle.close()
+        router.open(peer(), ReceiveRequest("app")).use { assertEquals("live-0", it.pollRecord()!!.envelopeId) }
+    }
+
+    @Test
+    fun `replay admission leaves capacity for live and resumes after local ACK`() {
+        val router = router(maximumPending = 4)
+        router.open(peer(), ReceiveRequest("app")).use { handle ->
+            fun replay(id: String) = inbound(id, MessageType.NOTIFICATION, byteArrayOf(), DeliveryMode.RELAY_DRAIN)
+            router.accept(replay("old-1"))
+            assertThrows(LocalEventQueueFullException::class.java) { router.accept(replay("old-2")) }
+            router.accept(inbound("live", MessageType.NOTIFICATION, byteArrayOf()))
+            assertEquals("live", handle.pollRecord()!!.envelopeId)
+            assertTrue(router.ack("app", "old-1"))
+            router.accept(replay("old-2"))
+            assertEquals("old-2", handle.pollRecord()!!.envelopeId)
+        }
+    }
+
+    @Test
     fun `receive validates registration and filter contract`() {
         val router = router()
         assertThrows(ApplicationNotRegisteredException::class.java) {
@@ -540,14 +572,14 @@ class ApplicationReceiveRouterTest {
         return LocalPeer(uid = 123, pid = pid, startTime = requireNotNull(resolver.startTime(pid)))
     }
 
-    private fun inbound(id: String, type: MessageType, body: ByteArray) = InboundMessage(
+    private fun inbound(id: String, type: MessageType, body: ByteArray, mode: DeliveryMode = DeliveryMode.WEBSOCKET) = InboundMessage(
         senderId = ClientId("source"),
         senderOwnDevice = true,
         typ = type,
         body = body,
         signerEpoch = 7,
         messageId = id,
-        deliveryMode = DeliveryMode.WEBSOCKET,
+        deliveryMode = mode,
         createdAt = 777,
     )
 

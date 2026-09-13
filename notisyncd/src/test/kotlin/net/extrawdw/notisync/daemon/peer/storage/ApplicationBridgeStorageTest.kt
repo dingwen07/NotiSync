@@ -312,16 +312,15 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     }
 
     @Test
-    fun `schema two fails with manual database-only removal guidance and retains trust`() {
+    fun `legacy JSON database is replaced while trust is retained`() {
         val layout = layout()
         val trust = FileTrustPersistence(layout)
         trust.write(mapOf("entries" to "trusted"))
         SecureFileSystem().atomicWrite(layout.databaseFile, "{\"schemaVersion\":2}".encodeToByteArray())
 
-        val failure = assertThrows(IllegalStateException::class.java) {
-            DaemonDatabaseRepository(layout)
-        }
-        assertTrue(failure.message!!.contains("Remove only ${layout.databaseFile} manually"))
+        val repository = DaemonDatabaseRepository(layout).closeAfterTest()
+        assertTrue(repository.load().applications.isEmpty())
+        assertFalse(repository.seen("old-message"))
         assertEquals("trusted", FileTrustPersistence(layout).read("entries"))
         assertTrue(Files.exists(layout.trustStateFile))
     }
@@ -350,7 +349,7 @@ class ApplicationBridgeStorageTest : StorageTestSupport() {
     ): TestBridgeStore {
         val pendingIds = ArrayDeque(ids.toList())
         val registry = PersistentApplicationBridgeStore(
-            database = DaemonDatabaseRepository(layout, clock),
+            database = DaemonDatabaseRepository(layout, clock).closeAfterTest(),
             clock = clock,
         )
         val outbox = InMemoryGenericSendOutbox(

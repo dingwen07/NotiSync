@@ -1,6 +1,7 @@
 package net.extrawdw.notisync.daemon.peer.storage
 
 import java.nio.file.Files
+import java.sql.DriverManager
 import java.time.Clock
 import java.time.Instant
 import java.time.ZoneOffset
@@ -48,25 +49,24 @@ class FilePeerPersistenceTest : StorageTestSupport() {
     fun `database persists only application profile and relay deduplication`() {
         val layout = layout()
         val clock = Clock.fixed(Instant.ofEpochMilli(5_000), ZoneOffset.UTC)
-        val repository = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2)
+        val repository = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2).closeAfterTest()
         repository.record("message-1")
 
-        val recreated = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2)
+        val recreated = DaemonDatabaseRepository(layout, clock, maximumDedupEntries = 2).closeAfterTest()
         assertTrue(recreated.seen("message-1"))
-        assertEquals(1, recreated.load().schemaVersion)
         assertTrue(recreated.load().applications.isEmpty())
-        val encoded = Files.readString(layout.databaseFile)
-        listOf(
-            "sessions",
-            "genericOutbox",
-            "submissions",
-            "streamSequences",
-            "runOutbox",
-            "runResultOutbox",
-            "runIosOutbox",
-        ).forEach {
-            assertFalse(encoded.contains("\"$it\""))
+        assertEquals("SQLite format 3\u0000", Files.newInputStream(layout.databaseFile).use { it.readNBytes(16).decodeToString() })
+        DriverManager.getConnection("jdbc:sqlite:${layout.databaseFile}").use { connection ->
+            connection.createStatement().use { sql ->
+                val tables = sql.executeQuery("SELECT name FROM sqlite_master WHERE type='table'").use { rows ->
+                    buildSet { while (rows.next()) add(rows.getString(1)) }
+                }
+                assertEquals(setOf("applications", "profile", "dedup", "flyway_schema_history"), tables)
+            }
         }
+        assertPrivateFile(layout.databaseFile)
+        assertPrivateFile(layout.databaseFile.resolveSibling("notisyncd.db-wal"))
+        assertPrivateFile(layout.databaseFile.resolveSibling("notisyncd.db-shm"))
     }
 
     @Test
@@ -77,7 +77,7 @@ class FilePeerPersistenceTest : StorageTestSupport() {
             override fun withZone(zone: java.time.ZoneId) = this
             override fun instant(): Instant = Instant.ofEpochMilli(now++)
         }
-        val repository = DaemonDatabaseRepository(layout(), clock, maximumDedupEntries = 2)
+        val repository = DaemonDatabaseRepository(layout(), clock, maximumDedupEntries = 2).closeAfterTest()
         repository.record("one")
         repository.record("two")
         repository.record("three")

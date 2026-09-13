@@ -423,6 +423,7 @@ class UnixHttpServerIntegrationTest {
         private val identityResolver = ProcessIdentityResolver()
         val logs = StringBuilder()
         val applications: PersistentApplicationBridgeStore
+        private val database: DaemonDatabaseRepository
         val outbox: InMemoryGenericSendOutbox
         val receiver: ApplicationReceiveRouter
         private val dispatcher: GenericSendDispatcher
@@ -433,8 +434,9 @@ class UnixHttpServerIntegrationTest {
 
         init {
             PrivateFiles.ensureDirectory(root)
+            database = DaemonDatabaseRepository(DaemonStorageLayout(root))
             applications = PersistentApplicationBridgeStore(
-                DaemonDatabaseRepository(DaemonStorageLayout(root)),
+                database,
             )
             outbox = InMemoryGenericSendOutbox(applications)
             receiver = ApplicationReceiveRouter(
@@ -535,6 +537,7 @@ class UnixHttpServerIntegrationTest {
             dispatcher.close()
             running?.get(5, TimeUnit.SECONDS)
             executor.shutdownNow()
+            database.close()
         }
     }
 

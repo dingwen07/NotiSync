@@ -384,16 +384,25 @@ class Broker(
     suspend fun fetchAsset(sourceClientId: ClientId, assetId: String): ByteArray? = assets.get(sourceClientId, assetId)
 
     suspend fun flushPending(clientId: ClientId, sendFrame: suspend (String) -> Unit) {
-        for (item in relay.pending(clientId)) {
-            sendFrame(
-                ProtocolCodec.encodeToJson(
-                    WsMessage(
-                        kind = WsKind.DELIVER,
-                        envelopeB64 = b64.encodeToString(item.envelope),
-                        acceptedAt = item.createdAt,
+        // The captured row ID bounds replay; a backward clock correction must not hide queued rows.
+        val snapshot = relay.snapshot(clientId, before = null)
+            .copy(cutoff = Long.MAX_VALUE)
+        var afterId = 0L
+        while (true) {
+            val page = relay.snapshotPage(clientId, snapshot, afterId, limit = 64)
+            if (page.isEmpty()) break
+            for (item in page) {
+                sendFrame(
+                    ProtocolCodec.encodeToJson(
+                        WsMessage(
+                            kind = WsKind.DELIVER,
+                            envelopeB64 = b64.encodeToString(item.envelope),
+                            acceptedAt = item.createdAt,
+                        )
                     )
                 )
-            )
+            }
+            afterId = page.last().id
         }
     }
 

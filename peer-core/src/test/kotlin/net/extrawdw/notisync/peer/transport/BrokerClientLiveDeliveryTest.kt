@@ -4,6 +4,11 @@ import io.ktor.server.application.install
 import io.ktor.server.cio.CIO
 import io.ktor.server.engine.embeddedServer
 import io.ktor.server.routing.routing
+import io.ktor.server.routing.get
+import io.ktor.server.response.respondBytesWriter
+import io.ktor.http.ContentType
+import io.ktor.utils.io.writeInt
+import io.ktor.utils.io.writeFully
 import io.ktor.server.websocket.WebSockets
 import io.ktor.server.websocket.webSocket
 import io.ktor.websocket.Frame
@@ -19,6 +24,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import net.extrawdw.notisync.peer.ports.NoIntegrityEvidenceProvider
@@ -28,14 +34,97 @@ import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.WsChallenge
+import net.extrawdw.notisync.protocol.WsAuth
+import net.extrawdw.notisync.protocol.RelayBatchFrame
+import net.extrawdw.notisync.protocol.RelayBatchKind
 import net.extrawdw.notisync.protocol.WsKind
 import net.extrawdw.notisync.protocol.WsMessage
 import net.extrawdw.notisync.protocol.crypto.SoftwareIdentitySigner
+import net.extrawdw.notisync.protocol.crypto.SoftwareOperationalSigner
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertFalse
 import org.junit.Test
 
 class BrokerClientLiveDeliveryTest {
+    @Test
+    fun desktopLiveDeliveryContinuesWhileStreamingRecoveryIsBlocked() = runBlocking {
+        withBroker(manualReplay = true) { fixture ->
+            val ready = CompletableDeferred<Boolean>()
+            val liveHandled = CompletableDeferred<Unit>()
+            val receiver = fixture.scope.launch {
+                fixture.broker.runDesktopDelivery(onReady = { ready.complete(it) }) { _, _ ->
+                    liveHandled.complete(Unit)
+                    LiveDeliveryDisposition.ACK
+                }
+            }
+            val firstItem = CompletableDeferred<Unit>()
+            val finishHandling = CompletableDeferred<Unit>()
+            try {
+                assertTrue(withTimeout(5_000) { ready.await() })
+                assertFalse(fixture.auth.await().replayPending)
+                val recovery = fixture.scope.async {
+                    fixture.broker.fetchRelayBatch {
+                        firstItem.complete(Unit)
+                        finishHandling.await()
+                    }
+                }
+                // This can complete only if the HTTP body is streamed before the server sends END.
+                withTimeout(5_000) { firstItem.await() }
+                fixture.sendLive.complete(Unit)
+                withTimeout(5_000) { liveHandled.await(); fixture.acknowledged.await() }
+                assertTrue(recovery.isActive)
+                finishHandling.complete(Unit)
+                fixture.endBatch.complete(Unit)
+                val result = withTimeout(5_000) { recovery.await() }
+                assertTrue(result is RelayBatchFetchResult.Complete)
+                assertEquals(1L, (result as RelayBatchFetchResult.Complete).download.itemCount)
+            } finally {
+                fixture.endBatch.complete(Unit)
+                receiver.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
+    fun desktopFallsBackToAutomaticReplayOnLegacyBroker() = runBlocking {
+        withBroker { fixture ->
+            val ready = CompletableDeferred<Boolean>()
+            val receiver = fixture.scope.launch {
+                fixture.broker.runDesktopDelivery(onReady = { ready.complete(it) }) { _, _ -> LiveDeliveryDisposition.ACK }
+            }
+            try {
+                assertFalse(withTimeout(5_000) { ready.await() })
+                assertTrue(fixture.auth.await().replayPending)
+                withTimeout(5_000) { fixture.acknowledged.await() }
+            } finally {
+                receiver.cancelAndJoin()
+            }
+        }
+    }
+
+    @Test
+    fun cancellingStreamingRecoveryDoesNotCancelLiveSession() = runBlocking {
+        withBroker(manualReplay = true) { fixture ->
+            val firstItem = CompletableDeferred<Unit>()
+            val receiver = fixture.scope.launch {
+                fixture.broker.runDesktopDelivery(onReady = {}) { _, _ -> LiveDeliveryDisposition.ACK }
+            }
+            val recovery = fixture.scope.launch {
+                fixture.broker.fetchRelayBatch { firstItem.complete(Unit); CompletableDeferred<Unit>().await() }
+            }
+            try {
+                withTimeout(5_000) { firstItem.await() }
+                withTimeout(5_000) { recovery.cancelAndJoin() }
+                fixture.sendLive.complete(Unit)
+                withTimeout(5_000) { fixture.acknowledged.await() }
+                assertTrue(receiver.isActive)
+            } finally {
+                fixture.endBatch.complete(Unit)
+                receiver.cancelAndJoin()
+            }
+        }
+    }
     @Test
     fun sessionChannelCancellationReconnectsAndAcknowledgesRedelivery() = runBlocking {
         withBroker { fixture ->
@@ -87,9 +176,11 @@ class BrokerClientLiveDeliveryTest {
         }
     }
 
-    private suspend fun withBroker(block: suspend (Fixture) -> Unit) {
+    private suspend fun withBroker(manualReplay: Boolean = false, block: suspend (Fixture) -> Unit) {
         val identity = SoftwareIdentitySigner.generate()
+        val operational = SoftwareOperationalSigner.generate(identity.clientId, 1)
         val fixture = Fixture()
+        if (!manualReplay) fixture.sendLive.complete(Unit)
         val envelope = Envelope(
             typ = MessageType.NOTIFICATION,
             signerId = identity.clientId,
@@ -102,10 +193,29 @@ class BrokerClientLiveDeliveryTest {
         val server = embeddedServer(CIO, host = "127.0.0.1", port = 0) {
             install(WebSockets)
             routing {
+                get("/v2/relay/batch") {
+                    call.respondBytesWriter(ContentType.Application.OctetStream) {
+                        suspend fun frame(value: RelayBatchFrame) {
+                            val bytes = ProtocolCodec.encodeToCbor(value)
+                            writeInt(bytes.size)
+                            writeFully(bytes)
+                            flush()
+                        }
+                        frame(RelayBatchFrame(kind = RelayBatchKind.START, snapshotAt = 10, cutoff = 10))
+                        frame(RelayBatchFrame(
+                            kind = RelayBatchKind.ITEM, messageId = envelope.messageId, acceptedAt = 1,
+                            messageType = envelope.typ, envelope = ProtocolCodec.encodeToCbor(envelope),
+                        ))
+                        fixture.endBatch.await()
+                        frame(RelayBatchFrame(kind = RelayBatchKind.END, itemCount = 1))
+                    }
+                }
                 webSocket("/v2/connect") {
                     fixture.attempts.incrementAndGet()
-                    send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge("test-nonce"))))
-                    incoming.receive() // This fixture tests transport lifecycle, not authentication.
+                    send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge("test-nonce", supportsManualReplay = manualReplay))))
+                    fixture.auth.complete(ProtocolCodec.decodeFromJson<WsAuth>((incoming.receive() as Frame.Text).readText()))
+                    if (manualReplay) send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.READY))))
+                    fixture.sendLive.await()
                     send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(
                         kind = WsKind.DELIVER,
                         envelopeB64 = Base64.getEncoder().encodeToString(ProtocolCodec.encodeToCbor(envelope)),
@@ -125,7 +235,7 @@ class BrokerClientLiveDeliveryTest {
             val port = server.engine.resolvedConnectors().single().port
             fixture.broker = BrokerClient(
                 signer = identity,
-                operationalSigner = { error("unused by live delivery") },
+                operationalSigner = { operational },
                 baseUrlProvider = { "http://127.0.0.1:$port" },
                 integrity = NoIntegrityEvidenceProvider,
                 clientKeyEpochProvider = { error("unused with cached auth") },
@@ -156,6 +266,9 @@ class BrokerClientLiveDeliveryTest {
         val states = CopyOnWriteArrayList<Boolean>()
         val attempts = AtomicInteger()
         val acknowledged = CompletableDeferred<Unit>()
+        val auth = CompletableDeferred<WsAuth>()
+        val sendLive = CompletableDeferred<Unit>()
+        val endBatch = CompletableDeferred<Unit>()
         lateinit var broker: BrokerClient
     }
 }

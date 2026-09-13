@@ -29,7 +29,7 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
-import kotlinx.coroutines.channels.consumeEach
+import net.extrawdw.notisync.server.delivery.runEnvelopeSession
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
@@ -553,7 +553,7 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             }
             // 1. Challenge the client to prove control of its signing key.
             val nonce = Base64.getUrlEncoder().withoutPadding().encodeToString(ByteArray(18).also { random.nextBytes(it) })
-            send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge(nonce))))
+            send(Frame.Text(ProtocolCodec.encodeToJson(WsChallenge(nonce, supportsManualReplay = true))))
 
             val authFrame = incoming.receiveCatching().getOrNull() as? Frame.Text
             val auth = authFrame?.let { runCatching { ProtocolCodec.decodeFromJson<WsAuth>(it.readText()) }.getOrNull() }
@@ -572,17 +572,11 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
             hub.register(conn)
             log.info("ws connected client={}", auth.clientId.shortForm())
             try {
-                // Flush anything queued while this client was offline.
-                broker.flushPending(auth.clientId) { frameJson -> send(Frame.Text(frameJson)) }
-                incoming.consumeEach { frame ->
-                    if (frame is Frame.Text) {
-                        val msg = runCatching { ProtocolCodec.decodeFromJson<WsMessage>(frame.readText()) }.getOrNull()
-                        when (msg?.kind) {
-                            WsKind.ACK -> msg.messageId?.let { broker.ack(auth.clientId, it) }
-                            WsKind.PING -> send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(kind = WsKind.PONG))))
-                        }
-                    }
-                }
+                runEnvelopeSession(
+                    replayPending = auth.replayPending,
+                    flushPending = { broker.flushPending(auth.clientId) { send(Frame.Text(it)) } },
+                    acknowledge = { broker.ack(auth.clientId, it) },
+                )
             } finally {
                 hub.unregister(conn)
                 log.info("ws disconnected client={}", auth.clientId.shortForm())

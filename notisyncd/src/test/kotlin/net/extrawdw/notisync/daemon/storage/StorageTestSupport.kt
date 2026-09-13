@@ -14,6 +14,9 @@ import org.junit.Assert.assertTrue
 
 abstract class StorageTestSupport {
     protected lateinit var temporaryDirectory: Path
+    private val resources = mutableListOf<AutoCloseable>()
+
+    protected fun <T : AutoCloseable> T.closeAfterTest(): T = also { resources += it }
 
     @Before
     fun createTemporaryDirectory() {
@@ -25,6 +28,8 @@ abstract class StorageTestSupport {
 
     @After
     fun deleteTemporaryDirectory() {
+        resources.asReversed().forEach(AutoCloseable::close)
+        resources.clear()
         if (!::temporaryDirectory.isInitialized || !Files.exists(temporaryDirectory)) return
         Files.walk(temporaryDirectory).use { paths ->
             paths.sorted(Comparator.reverseOrder()).forEach(Files::deleteIfExists)

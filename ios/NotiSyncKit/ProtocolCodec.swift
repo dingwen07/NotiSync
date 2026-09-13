@@ -109,7 +109,8 @@ nonisolated enum ProtocolCodec {
             clientId: KMPProtocolBridge.clientId(clientId),
             nonce: nonce,
             signatureB64: signatureB64,
-            epoch: Int32(epoch)
+            epoch: Int32(epoch),
+            replayPending: true
         )
         return kmp.encodeWsAuth(value: auth)
     }

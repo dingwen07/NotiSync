@@ -193,7 +193,7 @@ data class VerificationStatusResponse(
 
 /** WebSocket handshake: server -> client challenge, then client -> server signed response. */
 @Serializable
-data class WsChallenge(val nonce: String)
+data class WsChallenge(val nonce: String, val supportsManualReplay: Boolean = false)
 
 @Serializable
 data class WsAuth(
@@ -203,6 +203,8 @@ data class WsAuth(
     val signatureB64: String,
     /** NS2: signing-key selector — 0 = identity key (NS1-compatible), ≥1 = operational [ClientKeyEpoch]. */
     val epoch: Int = 0,
+    /** Desktop can recover over HTTP after READY; omitted by legacy clients to retain WS replay. */
+    val replayPending: Boolean = true,
 )
 
 /** Authenticated participant role for one screen Relay channel. */
@@ -259,6 +261,8 @@ data class WsMessage(
 )
 
 object WsKind {
+    /** Sent after registration when replayPending is false. */
+    const val READY = "ready"
     const val DELIVER = "deliver"
     const val ACK = "ack"
     const val PING = "ping"

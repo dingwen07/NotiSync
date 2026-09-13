@@ -16,6 +16,8 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import net.extrawdw.notisync.daemon.ActionOriginPolicy
@@ -64,12 +66,14 @@ import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.peer.transport.AuthTokenStore
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
+import net.extrawdw.notisync.peer.transport.RelayBatchFetchResult
 import net.extrawdw.notisync.peer.trust.RosterDevice
 import net.extrawdw.notisync.peer.trust.TrustState
 import net.extrawdw.notisync.peer.trust.TrustStore
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.Envelope
 import net.extrawdw.notisync.protocol.LiveDeliveryDisposition
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProfileUpdate
@@ -117,6 +121,7 @@ class DesktopPeerRuntime(
     private val connectionMessage = AtomicReference<String?>(null)
     private val trustMessage = AtomicReference<String?>(null)
     private val profileWake = Channel<Unit>(Channel.CONFLATED)
+    private val manualReplayReady = MutableStateFlow(false)
 
     private val trustMutationLock = ReentrantLock()
     private val trustStore = TrustStore(ClassifiedTrustPersistence(trustPersistence), keyMaterial.identity)
@@ -146,6 +151,7 @@ class DesktopPeerRuntime(
         telemetry = telemetry,
         webSocketPingSeconds = configProvider().websocketPingSeconds.toLong(),
         onWebSocketConnectionChanged = connectionChanged@ { connected ->
+            if (!connected) manualReplayReady.value = false
             val changed = webSocketConnected.getAndSet(connected) != connected
             val previousState = state.getAndUpdate { current ->
                 when {
@@ -185,6 +191,18 @@ class DesktopPeerRuntime(
         now = clock::millis,
         telemetry = telemetry,
     )
+
+    private data class Delivery(val envelope: Envelope, val mode: DeliveryMode, val acceptedAt: Long?)
+    private data class DeliveryResult(val outcome: DeliveryOutcome, val inboxFull: Boolean)
+    // Only the serialized inbound worker reads/resets this flag; handlers report retryable local pressure.
+    private var inboundInboxFull = false
+    private val inbound by lazy {
+        LivePriorityDispatcher<Delivery, DeliveryResult>(scope) { delivery ->
+            inboundInboxFull = false
+            val outcome = secureChannel.deliver(delivery.envelope, delivery.mode, delivery.acceptedAt)
+            DeliveryResult(outcome, inboundInboxFull)
+        }
+    }
 
     init {
         require(healthPollMillis > 0) { "healthPollMillis must be positive" }
@@ -246,6 +264,9 @@ class DesktopPeerRuntime(
         state.set(DaemonConnectionState.CONNECTING)
         logger.info("Starting desktop peer $clientId")
         scope.launch(CoroutineName("notisyncd-websocket")) { runLiveDeliveryForever() }
+        scope.launch(CoroutineName("notisyncd-recovery")) {
+            manualReplayReady.collectLatest { ready -> if (ready) runBacklogRecovery() }
+        }
         scope.launch(CoroutineName("notisyncd-maintenance")) { runMaintenance() }
     }
 
@@ -399,12 +420,16 @@ class DesktopPeerRuntime(
         broker.close()
     }
 
+    internal fun onStopped(handler: () -> Unit) {
+        lifecycle.invokeOnCompletion { handler() }
+    }
+
     private suspend fun runLiveDeliveryForever() {
         while (currentCoroutineContext().isActive) {
             try {
-                broker.runLiveDelivery { envelope ->
-                    val outcome = secureChannel.deliver(envelope, DeliveryMode.WEBSOCKET)
-                    outcome.toLiveDisposition()
+                broker.runDesktopDelivery(onReady = { manualReplayReady.value = it }) { envelope, acceptedAt ->
+                    inbound.submit(Delivery(envelope, DeliveryMode.WEBSOCKET, acceptedAt), isLive = true)
+                        .outcome.toLiveDisposition()
                 }
             } catch (error: Exception) {
                 currentCoroutineContext().ensureActive()
@@ -412,6 +437,50 @@ class DesktopPeerRuntime(
                 setConnectionWarning(message, "$message; retrying")
                 delay(1_000)
             }
+        }
+    }
+
+    private suspend fun runBacklogRecovery() {
+        while (currentCoroutineContext().isActive) {
+            val acknowledgments = ArrayList<String>(32)
+            suspend fun flushAcks() {
+                if (acknowledgments.isNotEmpty()) {
+                    check(broker.ackRelayMessages(acknowledgments.toList())) { "relay ACK failed" }
+                    acknowledgments.clear()
+                }
+            }
+            try {
+                val result = broker.fetchRelayBatch { frame ->
+                    val envelope = ProtocolCodec.decodeFromCbor<Envelope>(requireNotNull(frame.envelope))
+                    require(envelope.messageId == frame.messageId) { "relay envelope id mismatch" }
+                    while (true) {
+                        val revision = receiveRouter.inboxRevision
+                        val delivered = inbound.submit(
+                            Delivery(envelope, DeliveryMode.RELAY_DRAIN, frame.acceptedAt), isLive = false,
+                        )
+                        if (delivered.inboxFull) {
+                            flushAcks()
+                            receiveRouter.awaitInboxChange(revision)
+                            continue
+                        }
+                        if (delivered.outcome.safeToAck) acknowledgments += envelope.messageId
+                        if (acknowledgments.size >= 32) flushAcks()
+                        break
+                    }
+                }
+                flushAcks() // Partial, successfully handled snapshots may also be acknowledged safely.
+                when (result) {
+                    is RelayBatchFetchResult.Complete -> if (result.download.itemCount > 0) {
+                        logger.debug("Recovered relay snapshot: ${result.download.itemCount} envelope(s)")
+                    }
+                    else -> logger.warn("Relay recovery incomplete; retrying")
+                }
+            } catch (error: Exception) {
+                currentCoroutineContext().ensureActive()
+                logger.warn("Relay recovery failed; retrying: ${error.conciseMessage()}")
+            }
+            // Reconcile missed live deliveries as well as retryable drops without reconnecting the socket.
+            delay(30_000)
         }
     }
 
@@ -478,6 +547,7 @@ class DesktopPeerRuntime(
                     if (matched) "fanned out to local applications" else "no live local interest",
             )
         } catch (full: LocalEventQueueFullException) {
+            inboundInboxFull = true
             throw RetryableDeliveryException("local application inbox is full", full)
         }
     }
@@ -494,6 +564,7 @@ class DesktopPeerRuntime(
                     if (matched) "fanned out to local applications" else "no live local interest",
             )
         } catch (full: LocalEventQueueFullException) {
+            inboundInboxFull = true
             throw RetryableDeliveryException("local application inbox is full", full)
         }
     }

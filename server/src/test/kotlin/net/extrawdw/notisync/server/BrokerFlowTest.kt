@@ -77,6 +77,7 @@ import net.extrawdw.notisync.server.http.module
 import net.extrawdw.notisync.server.integrity.AppCheckJwks
 import net.extrawdw.notisync.server.integrity.MetricsSnapshot
 import net.extrawdw.notisync.server.data.RelayStore
+import net.extrawdw.notisync.server.data.Relay
 import net.extrawdw.notisync.server.data.RouteStore
 import net.extrawdw.notisync.server.data.EpochStore
 import net.extrawdw.notisync.server.data.NotiSyncDb
@@ -91,6 +92,7 @@ import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.withTimeout
 import org.junit.After
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -99,6 +101,7 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.jetbrains.exposed.v1.jdbc.update
 import java.io.File
 import java.io.ByteArrayInputStream
 import java.io.DataInputStream
@@ -189,6 +192,47 @@ class BrokerFlowTest {
             listOf("snapshot-first"),
             store.snapshotPage(recipient, inclusive, afterId = 0L, limit = 10).map { it.messageId },
         )
+    }
+
+    @Test
+    fun automaticReplayIncludesFutureTimestampsAndKeepsSnapshotStableWhileAcking() = runBlocking {
+        val tmp = File.createTempFile("notisync-replay-clock-rollback", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        val config = ServerConfig.fromEnv()
+        val db = NotiSyncDb.connect(config)
+        val relay = RelayStore(db)
+        val broker = Broker(
+            RouteStore(db), relay, PrivateAssetStore(db), EpochStore(db),
+            WebSocketHub(), DisabledPushTransport, config,
+        )
+        val recipient = ClientId("replay-recipient")
+        suspend fun queue(messageId: String) = relay.add(
+            recipientId = recipient,
+            messageId = messageId,
+            envelope = messageId.toByteArray(),
+            urgency = Urgency.NORMAL.name,
+            typ = MessageType.DATA_SYNC.name,
+            expiresAt = Long.MAX_VALUE,
+        )
+        val originalIds = List(130) { "replay-$it" } // Three pages, with ACK deletions between them.
+        originalIds.forEach { queue(it) }
+        // Model rows accepted before a backward clock correction without changing the host clock.
+        val acceptedAt = System.currentTimeMillis() + 86_400_000L
+        db.tx { Relay.update { it[Relay.createdAt] = acceptedAt } }
+
+        val delivered = mutableListOf<String>()
+        broker.flushPending(recipient) { json ->
+            val frame = ProtocolCodec.decodeFromJson<WsMessage>(json)
+            assertEquals(WsKind.DELIVER, frame.kind)
+            assertEquals(acceptedAt, frame.acceptedAt)
+            val messageId = Base64.getDecoder().decode(requireNotNull(frame.envelopeB64)).toString(Charsets.UTF_8)
+            delivered += messageId
+            if (delivered.size == 1) queue("inserted-after-snapshot")
+            broker.ack(recipient, messageId)
+        }
+
+        assertEquals(originalIds, delivered)
+        assertEquals(listOf("inserted-after-snapshot"), relay.pending(recipient).map { it.messageId })
     }
 
     private fun keyEpochBlob(
@@ -768,6 +812,52 @@ class BrokerFlowTest {
             assertTrue("recent log includes the attest", snap.recent.any { it.method == AttestationType.FIREBASE_APP_CHECK })
         } finally {
             listOf("NOTISYNC_METRICS_USER", "NOTISYNC_METRICS_PASSWORD").forEach(System::clearProperty)
+        }
+    }
+
+    @Test
+    fun manualReplayConnectionDeliversLiveWhileHistoryRemainsAvailableOverHttp() = testApplication {
+        val tmp = File.createTempFile("notisync-manual-replay", ".db").also { it.deleteOnExit() }
+        System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
+        System.setProperty("NOTISYNC_FCM_ENABLED", "false")
+        System.setProperty("NOTISYNC_SECURITY_ENABLED", "false")
+        application { module() }
+        val http = createClient { install(WebSockets) }
+        val sender = SoftwareIdentitySigner.generate()
+        val recipient = SoftwareIdentitySigner.generate()
+        val recipientHpke = Hpke.generateKeyPair()
+        http.register(sender, Hpke.generateKeyPair())
+        http.register(recipient, recipientHpke)
+        fun envelope(id: String) = EnvelopeCrypto.seal(
+            signer = sender,
+            typ = MessageType.DISMISSAL,
+            bodyPlaintext = ProtocolCodec.encodeToCbor(DismissEvent(sender.clientId, id, 1_750_000_000_000L)),
+            recipients = listOf(RecipientKey(recipient.clientId, recipientHpke.publicKeyset)),
+            messageId = id, seq = 1, createdAt = 1_750_000_000_000L,
+        )
+        val old = envelope("old-message")
+        assertEquals(HttpStatusCode.OK, http.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(old)) }.status)
+        http.webSocket("/v2/connect") {
+            val challenge = ProtocolCodec.decodeFromJson<WsChallenge>((incoming.receive() as Frame.Text).readText())
+            assertTrue(challenge.supportsManualReplay)
+            send(Frame.Text(ProtocolCodec.encodeToJson(WsAuth(
+                recipient.clientId, challenge.nonce,
+                Base64.getEncoder().encodeToString(recipient.sign(challenge.nonce.toByteArray())),
+                replayPending = false,
+            ))))
+            withTimeout(5_000) {
+                val ready = ProtocolCodec.decodeFromJson<WsMessage>((incoming.receive() as Frame.Text).readText())
+                assertEquals(WsKind.READY, ready.kind)
+                val live = envelope("live-message")
+                http.post("/v2/send") { setBody(ProtocolCodec.encodeToCbor(live)) }
+                val delivered = ProtocolCodec.decodeFromJson<WsMessage>((incoming.receive() as Frame.Text).readText())
+                val received = ProtocolCodec.decodeFromCbor<Envelope>(Base64.getDecoder().decode(delivered.envelopeB64!!))
+                assertEquals(live.messageId, received.messageId)
+                send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(WsKind.ACK, messageId = live.messageId))))
+                val path = "/v2/relay/batch"
+                val history = http.get(path) { signedHeaders(recipient, "GET", path, ByteArray(0)) }
+                assertTrue(decodeRelayBatch(history.readRawBytes()).any { it.messageId == old.messageId })
+            }
         }
     }
 

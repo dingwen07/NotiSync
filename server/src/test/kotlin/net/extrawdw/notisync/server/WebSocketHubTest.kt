@@ -15,7 +15,12 @@ import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.WsKind
+import net.extrawdw.notisync.protocol.WsMessage
+import net.extrawdw.notisync.server.delivery.runEnvelopeSession
 import net.extrawdw.notisync.server.delivery.WebSocketHub
 import net.extrawdw.notisync.server.delivery.WsConnection
 import org.junit.Assert.assertEquals
@@ -25,6 +30,60 @@ import org.junit.Test
 
 class WebSocketHubTest {
     private val clientId = ClientId("test-recipient")
+
+    @Test
+    fun acknowledgmentsAreConsumedWhileReplayIsBlockedAndDisconnectCancelsReplay() = runBlocking {
+        val session = TestSession()
+        val replayStarted = CompletableDeferred<Unit>()
+        val replayStopped = CompletableDeferred<Unit>()
+        val acknowledged = CompletableDeferred<String>()
+        val connection = launch {
+            session.runEnvelopeSession(
+                replayPending = true,
+                flushPending = {
+                    try {
+                        session.outgoing.send(Frame.Text("first"))
+                        replayStarted.complete(Unit)
+                        session.outgoing.send(Frame.Text("blocked"))
+                    } finally {
+                        replayStopped.complete(Unit)
+                    }
+                },
+                acknowledge = { acknowledged.complete(it) },
+            )
+        }
+        try {
+            withTimeout(5_000) {
+                replayStarted.await()
+                session.incoming.send(Frame.Text(ProtocolCodec.encodeToJson(WsMessage(WsKind.ACK, messageId = "first"))))
+                assertEquals("first", acknowledged.await())
+                assertFalse(replayStopped.isCompleted)
+                session.incoming.close()
+                connection.join()
+                replayStopped.await()
+            }
+        } finally {
+            connection.cancelAndJoin()
+            session.job.cancel()
+        }
+    }
+
+    @Test
+    fun manualReplaySessionSendsReadyAndSkipsAutomaticFlush() = runBlocking {
+        val session = TestSession()
+        var flushed = false
+        val connection = launch {
+            session.runEnvelopeSession(false, flushPending = { flushed = true }, acknowledge = {})
+        }
+        try {
+            val ready = withTimeout(5_000) { session.outgoing.receive() as Frame.Text }
+            assertEquals(WsKind.READY, ProtocolCodec.decodeFromJson<WsMessage>(ready.readText()).kind)
+            assertFalse(flushed)
+        } finally {
+            connection.cancelAndJoin()
+            session.job.cancel()
+        }
+    }
 
     @Test
     fun cancelledSenderLeavesBlockedRecipientRegisteredAndUsable() = runBlocking {

@@ -10,6 +10,7 @@ import io.ktor.client.request.HttpRequestBuilder
 import io.ktor.client.request.get
 import io.ktor.client.request.header
 import io.ktor.client.request.post
+import io.ktor.client.request.prepareGet
 import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.client.statement.bodyAsText
@@ -308,13 +309,13 @@ class BrokerClient(
      */
     suspend fun fetchRelayBatch(
         before: Long? = null,
-        onItem: (RelayBatchFrame) -> Unit,
+        onItem: suspend (RelayBatchFrame) -> Unit,
     ): RelayBatchFetchResult {
         val suffix = before?.let { "?before=$it" }.orEmpty()
         val url = "${httpBase()}/v2/relay/batch$suffix"
 
-        suspend fun request(operational: Boolean): HttpResponse? = runCatching {
-            client.get(url) {
+        suspend fun request(operational: Boolean): RelayBatchFetchResult? =
+            client.prepareGet(url) {
                 signedHeaders(
                     "GET",
                     url,
@@ -324,57 +325,57 @@ class BrokerClient(
                 )
                 // A large backlog is bounded by socket-idle timeout, not by the ordinary whole-request cap.
                 timeout { requestTimeoutMillis = Long.MAX_VALUE }
-            }
-        }.getOrNull()
-
-        var response = request(operational = true) ?: return RelayBatchFetchResult.Failed
-        if (response.status == HttpStatusCode.Unauthorized) {
-            response = request(operational = false) ?: return RelayBatchFetchResult.Failed
-        }
-        if (response.status == HttpStatusCode.NotFound) return RelayBatchFetchResult.Unsupported
-        if (!response.status.isSuccess()) return RelayBatchFetchResult.Failed
-
-        return runCatching<RelayBatchFetchResult> {
-            val channel = response.bodyAsChannel()
-            var snapshotAt: Long? = null
-            var cutoff: Long? = null
-            var seen = 0L
-            while (true) {
-                val size = channel.readInt()
-                require(size in 1..RelayWire.MAX_BATCH_FRAME_BYTES) { "invalid relay batch frame size" }
-                val bytes = ByteArray(size)
-                channel.readFully(bytes)
-                val frame = ProtocolCodec.decodeFromCbor<RelayBatchFrame>(bytes)
-                when (frame.kind) {
-                    RelayBatchKind.START -> {
-                        require(snapshotAt == null && seen == 0L)
-                        snapshotAt = requireNotNull(frame.snapshotAt)
-                        cutoff = requireNotNull(frame.cutoff)
-                    }
-                    RelayBatchKind.ITEM -> {
-                        require(snapshotAt != null)
-                        require(!frame.messageId.isNullOrBlank())
-                        require(frame.acceptedAt != null && frame.messageType != null && frame.envelope != null)
-                        onItem(frame)
-                        seen++
-                    }
-                    RelayBatchKind.END -> {
-                        require(snapshotAt != null)
-                        require(frame.itemCount == seen)
-                        return@runCatching RelayBatchFetchResult.Complete(
-                            RelayBatchDownload(
-                                snapshotAt = snapshotAt,
-                                cutoff = requireNotNull(cutoff),
-                                itemCount = seen,
+            }.execute { response ->
+                if (response.status == HttpStatusCode.Unauthorized) return@execute null
+                if (response.status == HttpStatusCode.NotFound) return@execute RelayBatchFetchResult.Unsupported
+                if (!response.status.isSuccess()) return@execute RelayBatchFetchResult.Failed
+                // execute keeps the body streaming; get() would save the entire response before returning.
+                val channel = response.bodyAsChannel()
+                var snapshotAt: Long? = null
+                var cutoff: Long? = null
+                var seen = 0L
+                while (true) {
+                    val size = channel.readInt()
+                    require(size in 1..RelayWire.MAX_BATCH_FRAME_BYTES) { "invalid relay batch frame size" }
+                    val bytes = ByteArray(size)
+                    channel.readFully(bytes)
+                    val frame = ProtocolCodec.decodeFromCbor<RelayBatchFrame>(bytes)
+                    when (frame.kind) {
+                        RelayBatchKind.START -> {
+                            require(snapshotAt == null && seen == 0L)
+                            snapshotAt = requireNotNull(frame.snapshotAt)
+                            cutoff = requireNotNull(frame.cutoff)
+                        }
+                        RelayBatchKind.ITEM -> {
+                            require(snapshotAt != null)
+                            require(!frame.messageId.isNullOrBlank())
+                            require(frame.acceptedAt != null && frame.messageType != null && frame.envelope != null)
+                            onItem(frame)
+                            seen++
+                        }
+                        RelayBatchKind.END -> {
+                            require(snapshotAt != null)
+                            require(frame.itemCount == seen)
+                            return@execute RelayBatchFetchResult.Complete(
+                                RelayBatchDownload(
+                                    snapshotAt = snapshotAt,
+                                    cutoff = requireNotNull(cutoff),
+                                    itemCount = seen,
+                                )
                             )
-                        )
+                        }
+                        else -> error("unknown relay batch frame kind")
                     }
-                    else -> error("unknown relay batch frame kind")
                 }
+                @Suppress("UNREACHABLE_CODE")
+                error("relay batch ended without END frame")
             }
-            @Suppress("UNREACHABLE_CODE")
-            error("relay batch ended without END frame")
-        }.getOrDefault(RelayBatchFetchResult.Failed)
+        return try {
+            request(operational = true) ?: request(operational = false) ?: RelayBatchFetchResult.Failed
+        } catch (_: Exception) {
+            currentCoroutineContext().ensureActive()
+            RelayBatchFetchResult.Failed
+        }
     }
 
     /**
@@ -395,7 +396,10 @@ class BrokerClient(
                 signedHeaders("POST", url, body, cachedBearerOrNull())
                 setBody(body)
             }
-        }.getOrNull() ?: return false
+        }.getOrElse {
+            currentCoroutineContext().ensureActive()
+            return false
+        }
         return resp.status.isSuccess()
     }
 
@@ -728,6 +732,18 @@ class BrokerClient(
     /** Android receive path with broker acceptance metadata; the transport-neutral API remains compatible. */
     suspend fun runLiveDeliveryWithMetadata(
         onEnvelope: (Envelope, acceptedAt: Long?) -> LiveDeliveryDisposition,
+    ) = runDelivery(manualReplay = false, onReady = {}) { envelope, acceptedAt -> onEnvelope(envelope, acceptedAt) }
+
+    /** Live-only when supported by the broker. Recovery may start only after onReady(true). */
+    suspend fun runDesktopDelivery(
+        onReady: (manualReplay: Boolean) -> Unit,
+        onEnvelope: suspend (Envelope, acceptedAt: Long?) -> LiveDeliveryDisposition,
+    ) = runDelivery(manualReplay = true, onReady = onReady, onEnvelope = onEnvelope)
+
+    private suspend fun runDelivery(
+        manualReplay: Boolean,
+        onReady: (Boolean) -> Unit,
+        onEnvelope: suspend (Envelope, Long?) -> LiveDeliveryDisposition,
     ) {
         var backoffMs = 1_000L
         var consecutiveFailures = 0
@@ -743,6 +759,7 @@ class BrokerClient(
                 }) {
                     val challenge =
                         ProtocolCodec.decodeFromJson<WsChallenge>((incoming.receive() as Frame.Text).readText())
+                    val liveOnly = manualReplay && challenge.supportsManualReplay
                     // Sign the handshake nonce with the identity root (epoch 0): always valid, never floored —
                     // the live socket connects regardless of operational-epoch convergence (§3.4).
                     val sig = Base64.getEncoder()
@@ -754,30 +771,25 @@ class BrokerClient(
                                     signer.clientId,
                                     challenge.nonce,
                                     sig,
-                                    epoch = 0
+                                    epoch = 0,
+                                    replayPending = !liveOnly,
                                 )
                             )
                         )
                     )
-                    // Handshake + auth complete. Stop the connect trace here — before the long-lived receive
-                    // loop — so `ws_connect` measures connect+auth latency, not the whole session length.
-                    connected = true
-                    runCatching { onWebSocketConnectionChanged(true) }
-                    span.attr("result", "ok")
-                    span.stop()
-                    backoffMs = 1_000L
-                    consecutiveFailures = 0
-                    for (frame in incoming) {
-                        if (frame !is Frame.Text) continue
+                    var ready = !liveOnly
+                    suspend fun consume(frame: Frame) {
+                        if (frame !is Frame.Text) return
                         val msg =
                             runCatching { ProtocolCodec.decodeFromJson<WsMessage>(frame.readText()) }.getOrNull()
-                                ?: continue
+                                ?: return
+                        if (msg.kind == WsKind.READY) ready = true
                         if (msg.kind == WsKind.DELIVER && msg.envelopeB64 != null) {
                             val env = runCatching {
                                 ProtocolCodec.decodeFromCbor<Envelope>(
                                     Base64.getDecoder().decode(msg.envelopeB64)
                                 )
-                            }.getOrNull() ?: continue
+                            }.getOrNull() ?: return
                             // A dropped/in-flight message stays queued: trust/key convergence or the winning
                             // concurrent handler may make a later redelivery succeed.
                             if (onEnvelope(env, msg.acceptedAt) == LiveDeliveryDisposition.ACK) {
@@ -794,6 +806,19 @@ class BrokerClient(
                             }
                         }
                     }
+                    // Registration precedes READY. Live frames may race it; handle them safely while
+                    // waiting, but never start an HTTP snapshot before the subscription is registered.
+                    if (liveOnly) withTimeout(30_000) {
+                        while (!ready) consume(incoming.receive())
+                    }
+                    connected = true
+                    runCatching { onWebSocketConnectionChanged(true) }
+                    onReady(liveOnly)
+                    span.attr("result", "ok")
+                    span.stop()
+                    backoffMs = 1_000L
+                    consecutiveFailures = 0
+                    for (frame in incoming) consume(frame)
                 }
             } catch (_: Exception) {
                 if (!connected) {

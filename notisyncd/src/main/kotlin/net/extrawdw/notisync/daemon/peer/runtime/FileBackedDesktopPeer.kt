@@ -47,29 +47,36 @@ fun createFileBackedDesktopPeer(
     val trust = FileTrustPersistence(layout, fileSystem)
     val auth = FileAuthTokenRepository(layout, fileSystem)
     val database = DaemonDatabaseRepository(layout, clock = clock, fileSystem = fileSystem)
-    val applications = PersistentApplicationBridgeStore(database, clock)
-    val outbox = InMemoryGenericSendOutbox(
-        applications = applications,
-        clock = clock,
-    )
-    val receiver = ApplicationReceiveRouter(
-        applications = RegisteredApplicationLookup { applications.find(it) != null },
-        identityResolver = identityResolver,
-        clock = clock,
-    )
-    val runtime = DesktopPeerRuntime(
-        configProvider = configStore::load,
-        keyMaterial = keys,
-        trustPersistence = trust,
-        authTokens = auth,
-        deduplication = database,
-        receiveRouter = receiver,
-        capabilitiesProvider = applications::effectiveCapabilities,
-        profileState = applications,
-        parentScope = parentScope,
-        clock = clock,
-        logger = logger,
-        onUnverifiedDeviceCleanupV1Completed = configStore::markUnverifiedDeviceCleanupV1Completed,
-    )
-    return FileBackedDesktopPeer(runtime, database, applications, outbox, receiver)
+    try {
+        val applications = PersistentApplicationBridgeStore(database, clock)
+        val outbox = InMemoryGenericSendOutbox(
+            applications = applications,
+            clock = clock,
+        )
+        val receiver = ApplicationReceiveRouter(
+            applications = RegisteredApplicationLookup { applications.find(it) != null },
+            identityResolver = identityResolver,
+            clock = clock,
+        )
+        val runtime = DesktopPeerRuntime(
+            configProvider = configStore::load,
+            keyMaterial = keys,
+            trustPersistence = trust,
+            authTokens = auth,
+            deduplication = database,
+            receiveRouter = receiver,
+            capabilitiesProvider = applications::effectiveCapabilities,
+            profileState = applications,
+            parentScope = parentScope,
+            clock = clock,
+            logger = logger,
+            onUnverifiedDeviceCleanupV1Completed = configStore::markUnverifiedDeviceCleanupV1Completed,
+        )
+        // Keep SQLite available until cancelled receive/maintenance jobs have finished unwinding.
+        runtime.onStopped(database::close)
+        return FileBackedDesktopPeer(runtime, database, applications, outbox, receiver)
+    } catch (error: Throwable) {
+        database.close()
+        throw error
+    }
 }

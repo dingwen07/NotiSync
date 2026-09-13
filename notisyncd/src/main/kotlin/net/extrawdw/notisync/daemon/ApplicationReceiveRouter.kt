@@ -6,6 +6,9 @@ import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.locks.ReentrantLock
 import kotlin.concurrent.withLock
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -18,6 +21,7 @@ import net.extrawdw.notisync.localapi.ReceiveRecord
 import net.extrawdw.notisync.localapi.ReceiveRecordType
 import net.extrawdw.notisync.localapi.ReceiveRequest
 import net.extrawdw.notisync.peer.channel.InboundMessage
+import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ActionEvent
 import net.extrawdw.notisync.protocol.CapturedNotification
 import net.extrawdw.notisync.protocol.DataSync
@@ -74,11 +78,14 @@ class ApplicationReceiveRouter(
     private val maximumPendingPerApplication: Int = DEFAULT_MAXIMUM_PENDING_PER_APPLICATION,
     private val projector: InboundBodyProjector = ProtocolInboundBodyProjector,
     private val processStillMatches: (LocalPeer) -> Boolean = identityResolver::stillMatches,
+    // Limit history already handed to a slow local client and preserve space for live work.
+    private val maximumReplayPendingPerApplication: Int = minOf(32, (maximumPendingPerApplication / 4).coerceAtLeast(1)),
 ) {
     init {
         require(maximumPendingPerApplication > 0) {
             "maximumPendingPerApplication must be positive"
         }
+        require(maximumReplayPendingPerApplication in 1..maximumPendingPerApplication)
     }
 
     internal sealed interface ReceiveLease {
@@ -180,6 +187,14 @@ class ApplicationReceiveRouter(
     private val sharedMessages = linkedMapOf<String, SharedInbound>()
     private val pendingByApplication = linkedMapOf<String, LinkedHashMap<String, SharedInbound>>()
     private val handles = linkedSetOf<ReceiverHandle>()
+    private val inboxChanges = MutableStateFlow(0L)
+
+    internal val inboxRevision: Long get() = inboxChanges.value
+
+    /** Recovery waits outside the secure-channel worker; live delivery and local ACKs remain runnable. */
+    internal suspend fun awaitInboxChange(revision: Long) {
+        withTimeoutOrNull(5_000) { inboxChanges.first { it != revision } }
+    }
 
     /**
      * Register (or reuse) this local principal's canonical interest, attach a new independent stream, and
@@ -241,7 +256,13 @@ class ApplicationReceiveRouter(
             }
             newApplications.forEach { applicationId ->
                 val pendingCount = pendingByApplication[applicationId]?.size ?: 0
-                if (pendingCount >= maximumPendingPerApplication) {
+                val replayFull = message.deliveryMode == DeliveryMode.RELAY_DRAIN && (
+                    (maximumPendingPerApplication > 1 && pendingCount >= maximumPendingPerApplication - 1) ||
+                        pendingByApplication[applicationId].orEmpty().values.count {
+                            it.deliveryMode == DeliveryMode.RELAY_DRAIN.name
+                        } >= maximumReplayPendingPerApplication
+                    )
+                if (pendingCount >= maximumPendingPerApplication || replayFull) {
                     throw LocalEventQueueFullException(
                         "local application '$applicationId' event queue is full",
                     )
@@ -266,6 +287,7 @@ class ApplicationReceiveRouter(
         if (pending.isEmpty()) pendingByApplication.remove(applicationId)
         handles.filter { it.applicationId == applicationId }.forEach { it.removeLocked(envelopeId) }
         releaseIfUnreferencedLocked(envelopeId)
+        inboxChanges.value++
         true
     }
 
@@ -281,6 +303,7 @@ class ApplicationReceiveRouter(
         return lock.withLock {
             val removed = interests.remove(RegisteredInterest(request.applicationId, lease, canonical))
             if (removed) {
+                inboxChanges.value++
                 handles.filter {
                     it.applicationId == request.applicationId && it.lease == lease && it.interest == canonical
                 }.toList().forEach { it.detachLocked() }
@@ -298,6 +321,7 @@ class ApplicationReceiveRouter(
         handles.filter { it.applicationId == applicationId }.toList().forEach { it.detachLocked() }
         val removedIds = pendingByApplication.remove(applicationId)?.keys.orEmpty()
         removedIds.forEach(::releaseIfUnreferencedLocked)
+        inboxChanges.value++
     }
 
     internal fun pendingCount(applicationId: String): Int = lock.withLock {
@@ -325,6 +349,7 @@ class ApplicationReceiveRouter(
         val removed = interests.count { it.lease in deadLeases }
         interests.removeIf { it.lease in deadLeases }
         handles.filter { it.lease in deadLeases }.toList().forEach { it.detachLocked() }
+        inboxChanges.value++
         return removed
     }
 
@@ -342,6 +367,7 @@ class ApplicationReceiveRouter(
     ) : AutoCloseable {
         private val available = lock.newCondition()
         private val offered = linkedMapOf<String, ReceiveRecord>()
+        private var liveStreak = 0
         private var detached = false
 
         /** Wait for the next uniquely offered message, returning null on timeout or detach. */
@@ -353,7 +379,11 @@ class ApplicationReceiveRouter(
                     remaining = available.awaitNanos(remaining)
                 }
                 if (detached) return@withLock null
-                val first = offered.entries.firstOrNull() ?: return@withLock null
+                val live = offered.entries.firstOrNull { it.value.deliveryMode != DeliveryMode.RELAY_DRAIN.name }
+                val replay = offered.entries.firstOrNull { it.value.deliveryMode == DeliveryMode.RELAY_DRAIN.name }
+                val first = (if (liveStreak >= 8) replay ?: live else live ?: replay) ?: return@withLock null
+                liveStreak = if (first.value.deliveryMode == DeliveryMode.RELAY_DRAIN.name) 0
+                    else (liveStreak + 1).coerceAtMost(8)
                 offered.remove(first.key)
                 first.value
             }
