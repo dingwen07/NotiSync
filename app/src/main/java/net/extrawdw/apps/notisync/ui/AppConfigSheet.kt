@@ -16,6 +16,7 @@ import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.rememberSliderState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -138,6 +139,12 @@ internal fun AppConfigSheet(
 @Composable
 private fun UpdateFrequencySlider(current: Int, onChange: (Int) -> Unit) {
     val index = UPDATE_STOPS.indexOf(current).let { if (it < 0) 0 else it }
+    val sliderState = rememberSliderState(
+        value = index.toFloat(),
+        steps = UPDATE_STOPS.size - 2,
+        trackRange = 0f..UPDATE_STOPS.lastIndex.toFloat(),
+    )
+    sliderState.value = index.toFloat()
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Text(
@@ -157,12 +164,10 @@ private fun UpdateFrequencySlider(current: Int, onChange: (Int) -> Unit) {
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Slider(
-            value = index.toFloat(),
+            state = sliderState,
             onValueChange = {
                 onChange(UPDATE_STOPS[it.roundToInt().coerceIn(0, UPDATE_STOPS.lastIndex)])
             },
-            valueRange = 0f..UPDATE_STOPS.lastIndex.toFloat(),
-            steps = UPDATE_STOPS.size - 2,
         )
     }
 }
