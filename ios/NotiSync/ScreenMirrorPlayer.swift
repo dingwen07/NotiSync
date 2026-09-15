@@ -99,21 +99,22 @@ actor IOSScreenControlWriter {
 /// Incremental reader/renderer for the pinned scrcpy v4.1 H.264 framing used by screen protocol v1.
 nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
     private let connection: IOSScreenWireConnection
-    private let displayLayer: AVSampleBufferDisplayLayer
+    // Obtain the renderer on the main actor; AVFoundation supports background rendering through it.
+    private let renderer: AVSampleBufferVideoRenderer
     private let onDimensions: @MainActor @Sendable (CGSize) -> Void
     private let onFailure: @MainActor @Sendable (Error) -> Void
     private var task: Task<Void, Never>?
     private var formatDescription: CMVideoFormatDescription?
     private var waitingForKeyFrame = false
 
-    init(
+    @MainActor init(
         connection: IOSScreenWireConnection,
         displayLayer: AVSampleBufferDisplayLayer,
         onDimensions: @escaping @MainActor @Sendable (CGSize) -> Void,
         onFailure: @escaping @MainActor @Sendable (Error) -> Void
     ) {
         self.connection = connection
-        self.displayLayer = displayLayer
+        self.renderer = displayLayer.sampleBufferRenderer
         self.onDimensions = onDimensions
         self.onFailure = onFailure
     }
@@ -132,7 +133,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         task?.cancel()
         task = nil
         connection.cancel()
-        displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true, completionHandler: nil)
+        renderer.flush(removingDisplayedImage: true, completionHandler: nil)
     }
 
     private func decode() async throws {
@@ -157,7 +158,7 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
                 }
                 try await updateDimensions(width: Int(reader.uint32()), height: Int(reader.uint32()))
                 formatDescription = nil
-                await displayLayer.sampleBufferRenderer.flush(removingDisplayedImage: true)
+                await renderer.flush(removingDisplayedImage: true)
                 continue
             }
             let secondWord = try reader.uint32()
@@ -230,7 +231,6 @@ nonisolated final class IOSScreenVideoDecoder: @unchecked Sendable {
         keyFrame: Bool,
         format: CMVideoFormatDescription
     ) async throws {
-        let renderer = displayLayer.sampleBufferRenderer
         if !waitingForKeyFrame,
            renderer.status == .failed || renderer.requiresFlushToResumeDecoding {
             renderer.flush()
@@ -317,26 +317,40 @@ private final class IOSScreenPictureInPictureCoordinator: NSObject,
     var onActiveChange: ((Bool) -> Void)?
     var onFailure: ((Error) -> Void)?
 
-    private var controller: AVPictureInPictureController!
+    private let displayLayer: AVSampleBufferDisplayLayer
+    private var controller: AVPictureInPictureController?
     private var possibleObservation: NSKeyValueObservation?
     private var audioSessionIsActive = false
     private var shuttingDown = false
+    private var startGeneration = 0
 
-    var isPossible: Bool { controller.isPictureInPicturePossible }
-    var isActive: Bool { controller.isPictureInPictureActive }
+    // AVAudioSession is process-wide. Finish each transition before starting the next one,
+    // including when one player is closing while another is preparing.
+    private static var audioSessionOperation: Task<Void, Never>?
+    private static let audioSessionQueue = DispatchQueue(
+        label: "net.extrawdw.apps.NotiSync.screen-audio-session",
+        qos: .userInitiated
+    )
+
+    var isPossible: Bool { controller?.isPictureInPicturePossible == true }
+    var isActive: Bool { controller?.isPictureInPictureActive == true }
 
     init(displayLayer: AVSampleBufferDisplayLayer) {
+        self.displayLayer = displayLayer
         super.init()
+    }
 
+    private func configureControllerIfNeeded() {
+        guard controller == nil else { return }
         // The content source holds its playback delegate weakly, while the model retains this coordinator.
         let contentSource = AVPictureInPictureController.ContentSource(
             sampleBufferDisplayLayer: displayLayer,
             playbackDelegate: self
         )
-        controller = AVPictureInPictureController(contentSource: contentSource)
+        let controller = AVPictureInPictureController(contentSource: contentSource)
+        self.controller = controller
         controller.delegate = self
         controller.requiresLinearPlayback = true
-        controller.canStartPictureInPictureAutomaticallyFromInline = true
         possibleObservation = controller.observe(\.isPictureInPicturePossible, options: [.initial, .new]) {
             [weak self] controller, _ in
             let possible = controller.isPictureInPicturePossible
@@ -346,44 +360,125 @@ private final class IOSScreenPictureInPictureCoordinator: NSObject,
         }
     }
 
-    func prepareForAutomaticStart() {
+    func prepareForAutomaticStart() async {
         shuttingDown = false
-        try? activateAudioSession()
+        let generation = startGeneration
+        let preparation = Self.enqueueAudioSessionOperation { [self] in
+            guard !shuttingDown, startGeneration == generation else { return }
+            do {
+                try await activateAudioSession()
+                guard !shuttingDown, startGeneration == generation else { return }
+                // AVKit must see the playback audio session when it first creates its content source.
+                // On a cold launch, constructing the controller earlier can leave automatic PiP unavailable.
+                configureControllerIfNeeded()
+                controller?.canStartPictureInPictureAutomaticallyFromInline = true
+                controller?.invalidatePlaybackState()
+            } catch {
+                guard !shuttingDown, startGeneration == generation else { return }
+                onFailure?(error)
+            }
+        }
+        await preparation.value
     }
 
     func start() {
-        guard controller.isPictureInPicturePossible else { return }
+        guard let controller, controller.isPictureInPicturePossible else { return }
         shuttingDown = false
-        do {
-            try activateAudioSession()
-            controller.startPictureInPicture()
-        } catch {
-            onFailure?(error)
+        startGeneration += 1
+        let generation = startGeneration
+        Self.enqueueAudioSessionOperation { [self] in
+            guard !shuttingDown, startGeneration == generation else { return }
+            do {
+                try await activateAudioSession()
+                guard !shuttingDown, startGeneration == generation,
+                      controller.isPictureInPicturePossible,
+                      !controller.isPictureInPictureActive else { return }
+                controller.startPictureInPicture()
+            } catch {
+                guard !shuttingDown, startGeneration == generation else { return }
+                onFailure?(error)
+            }
         }
     }
 
     func stop() {
-        if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
+        startGeneration += 1
+        if let controller, controller.isPictureInPictureActive { controller.stopPictureInPicture() }
     }
 
     func shutdown() {
         shuttingDown = true
-        if controller.isPictureInPictureActive { controller.stopPictureInPicture() }
-        else { deactivateAudioSession() }
+        controller?.canStartPictureInPictureAutomaticallyFromInline = false
+        let wasActive = isActive
+        stop()
+        if !wasActive { deactivateAudioSession() }
     }
 
     private func deactivateAudioSession() {
-        guard audioSessionIsActive else { return }
-        audioSessionIsActive = false
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        Self.enqueueAudioSessionOperation { [self] in
+            guard audioSessionIsActive else { return }
+            do {
+                try await Self.setAudioSessionActive(false)
+                audioSessionIsActive = false
+            } catch { }
+        }
     }
 
-    private func activateAudioSession() throws {
+    private func activateAudioSession() async throws {
         guard !audioSessionIsActive else { return }
-        let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
-        try audioSession.setActive(true)
+        try await Self.setAudioSessionActive(true)
         audioSessionIsActive = true
+    }
+
+    @discardableResult
+    private static func enqueueAudioSessionOperation(
+        _ operation: @escaping @MainActor () async -> Void
+    ) -> Task<Void, Never> {
+        let previous = audioSessionOperation
+        let task = Task {
+            await previous?.value
+            await operation()
+        }
+        audioSessionOperation = task
+        return task
+    }
+
+    private static func setAudioSessionActive(_ active: Bool) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            audioSessionQueue.async {
+                let audioSession = AVAudioSession.sharedInstance()
+                do {
+                    // Category configuration can also block, so keep it on the audio queue.
+                    if active {
+                        try audioSession.setCategory(.playback, mode: .moviePlayback, options: [.mixWithOthers])
+                    }
+                    if #available(iOS 27.0, *) {
+                        let completion: @Sendable (Bool, Error?) -> Void = { succeeded, error in
+                            if let error {
+                                continuation.resume(throwing: error)
+                            } else if succeeded {
+                                continuation.resume()
+                            } else {
+                                continuation.resume(throwing: NSError(
+                                    domain: AVFoundationErrorDomain,
+                                    code: AVError.unknown.rawValue
+                                ))
+                            }
+                        }
+                        if active {
+                            audioSession.activate(options: [], completionHandler: completion)
+                        } else {
+                            audioSession.deactivate(options: [.notifyOthersOnDeactivation], completionHandler: completion)
+                        }
+                    } else {
+                        try audioSession.setActive(active, options: active ? [] : [.notifyOthersOnDeactivation])
+                        continuation.resume()
+                    }
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     func pictureInPictureControllerWillStartPictureInPicture(
@@ -555,8 +650,9 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             relayFallbackTask = nil
             self.session = session
             control = IOSScreenControlWriter(connection: session.channels.control)
+            await pictureInPicture?.prepareForAutomaticStart()
+            guard !stopped, attemptGeneration == attempt else { return }
             connected = true
-            pictureInPicture?.prepareForAutomaticStart()
             if playbackSuspended { queueVideoVisibility(false) }
             status = session.connectionMode == .brokerRelay
                 ? "Connected through broker Relay"
@@ -1111,7 +1207,7 @@ struct ScreenMirrorPlayerView: View {
     }
 
     private var viewerControlButtons: some View {
-        HStack(spacing: 2) {
+        HStack(spacing: 10) {
             ForEach(visibleControls) { control in
                 viewerControl(control.title, systemImage: control.systemImage) {
                     performViewerControl(control)
