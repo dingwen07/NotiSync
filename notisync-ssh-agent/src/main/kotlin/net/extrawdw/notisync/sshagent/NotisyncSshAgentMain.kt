@@ -43,6 +43,38 @@ internal fun parseAgentInvocation(arguments: List<String>): AgentInvocation {
     return AgentInvocation(command, arguments.drop(index + 1), bindAddresses)
 }
 
+/** Reuse the native launcher so the background process retains its macOS executable identity. */
+internal fun agentBackgroundProcess(
+    paths: DesktopPaths,
+    bindAddresses: List<String>,
+    currentExecutable: Path? = ProcessHandle.current().info().command().orElse(null)?.let(Path::of),
+): ProcessBuilder {
+    val nativeLauncher = currentExecutable?.takeIf { it.fileName.toString() == "notisync-ssh-agent" }
+    val command = buildList {
+        if (nativeLauncher != null) {
+            add(nativeLauncher.toString())
+        } else {
+            add(Path.of(System.getProperty("java.home"), "bin", if (isWindows()) "java.exe" else "java").toString())
+            add("-Dnotisync.dataDir=${paths.dataDirectory.toAbsolutePath().normalize()}")
+            add("-Dnotisync.logDir=${paths.logDirectory.toAbsolutePath().normalize()}")
+            add("-cp")
+            add(System.getProperty("java.class.path"))
+            add("net.extrawdw.notisync.sshagent.NotisyncSshAgentMainKt")
+        }
+        bindAddresses.forEach {
+            add("-a")
+            add(it)
+        }
+        add("foreground")
+    }
+    return ProcessBuilder(command).apply {
+        if (nativeLauncher != null) {
+            environment()["NOTISYNC_DATA_DIR"] = paths.dataDirectory.toAbsolutePath().normalize().toString()
+            environment()["NOTISYNC_LOG_DIR"] = paths.logDirectory.toAbsolutePath().normalize().toString()
+        }
+    }
+}
+
 class NotisyncSshAgentCommand(
     private val paths: DesktopPaths = DesktopPaths.default(),
     private val output: Appendable = System.out,
@@ -99,23 +131,9 @@ class NotisyncSshAgentCommand(
         files.ensurePrivateDirectory(paths.logDirectory)
         files.ensurePrivateFile(paths.sshAgentLog)
         val startupLogOffset = Files.size(paths.sshAgentLog)
-        val java = Path.of(System.getProperty("java.home"), "bin", if (isWindows()) "java.exe" else "java")
-        val command = buildList {
-            add(java.toString())
-            add("-Dnotisync.dataDir=${paths.dataDirectory.toAbsolutePath().normalize()}")
-            add("-Dnotisync.logDir=${paths.logDirectory.toAbsolutePath().normalize()}")
-            add("-cp")
-            add(System.getProperty("java.class.path"))
-            add("net.extrawdw.notisync.sshagent.NotisyncSshAgentMainKt")
-            // Preserve an empty list so the child can perform AUTO bind-time fallback.
-            (if (bindAddresses.isEmpty()) emptyList() else resolved).forEach {
-                add("-a")
-                add(it)
-            }
-            add("foreground")
-        }
         val nullDevice = Path.of(if (isWindows()) "NUL" else "/dev/null").toFile()
-        val process = ProcessBuilder(command)
+        // Preserve an empty list so the child can perform AUTO bind-time fallback.
+        val process = agentBackgroundProcess(paths, if (bindAddresses.isEmpty()) emptyList() else resolved)
             .redirectInput(ProcessBuilder.Redirect.from(nullDevice))
             .redirectOutput(ProcessBuilder.Redirect.appendTo(paths.sshAgentLog.toFile()))
             .redirectError(ProcessBuilder.Redirect.appendTo(paths.sshAgentLog.toFile()))
