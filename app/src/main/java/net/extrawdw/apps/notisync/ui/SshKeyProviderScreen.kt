@@ -154,7 +154,10 @@ fun SshKeyProviderScreen(
     val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
     val managementState by graph.sshKeyProviderManagement.state.collectAsStateWithLifecycle()
     val managementSnapshot = managementState.snapshot
-    val keys = managementSnapshot?.keys.orEmpty()
+    val keys = remember(managementSnapshot?.keys) {
+        managementSnapshot?.keys.orEmpty()
+            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
+    }
     val requests = managementSnapshot?.requests.orEmpty()
     val knownHosts = managementSnapshot?.knownHosts.orEmpty()
     val rememberedAuthorizations = managementSnapshot?.rememberedAuthorizations.orEmpty()
@@ -386,7 +389,7 @@ fun SshKeyProviderScreen(
                         Log.w("SshKeyProviderScreen", "WebAuthn recovery assertion verification failed")
                         throw IllegalArgumentException(
                             resources.getString(R.string.ssh_key_provider_webauthn_recovery_verification_failed) +
-                                "\n" + (failure.message ?: failure.javaClass.simpleName),
+                                "\n" + failure.sshKeyStorageUserMessage(context),
                             failure,
                         )
                     }
@@ -410,8 +413,7 @@ fun SshKeyProviderScreen(
                 refresh()
             }.onFailure { failure ->
                 webAuthnSheetStep = WebAuthnSheetStep.RECOVERY_PAYLOAD
-                webAuthnFlowError = failure.message
-                    ?: resources.getString(R.string.ssh_key_provider_webauthn_import_failed)
+                webAuthnFlowError = failure.sshKeyStorageUserMessage(context, R.string.ssh_key_provider_webauthn_import_failed)
                 webAuthnFlowBusy = false
             }
         }
@@ -443,7 +445,8 @@ fun SshKeyProviderScreen(
                 // Keep the explanation visible until the user chooses to try again.
             } catch (failure: Exception) {
                 Log.w("SshKeyProviderScreen", "Passkey recovery selection failed", failure)
-                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed)
+                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed) +
+                    "\n" + failure.sshKeyStorageUserMessage(context)
             } finally {
                 webAuthnFlowBusy = false
             }
@@ -490,7 +493,8 @@ fun SshKeyProviderScreen(
                 // Stay on step 2 so the user can retry or return to passkey selection.
             } catch (failure: Exception) {
                 Log.w("SshKeyProviderScreen", "Passkey key recovery failed", failure)
-                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed)
+                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed) +
+                    "\n" + failure.sshKeyStorageUserMessage(context)
             } finally {
                 webAuthnFlowBusy = false
             }
@@ -536,8 +540,7 @@ fun SshKeyProviderScreen(
             }
             val created = creation.getOrElse { failure ->
                 if (failure !is CreateCredentialCancellationException) {
-                    webAuthnFlowError = failure.message
-                        ?: resources.getString(R.string.ssh_key_provider_webauthn_create_failed)
+                    webAuthnFlowError = failure.sshKeyStorageUserMessage(context, R.string.ssh_key_provider_webauthn_create_failed)
                 }
                 webAuthnFlowBusy = false
                 return@launch

@@ -130,13 +130,13 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
             assertTrue(second.cardCreatedAtFloorEpochMillis!! > (first.cardCreatedAtFloorEpochMillis ?: 0))
             assertTrue(second.profileUpdatedAtEpochMillis!! > (first.profileUpdatedAtEpochMillis ?: 0))
             assertEquals(second.publicationRevision, second.pendingPublicationRevision)
-            assertTrue(second.profileUpdatedAtEpochMillis!! >= second.cardCreatedAtFloorEpochMillis!!)
+            assertTrue(second.profileUpdatedAtEpochMillis >= second.cardCreatedAtFloorEpochMillis)
 
             val third = profileState.profilePublicationState()
             changing.runtime.pairingPayload()
             val fourth = profileState.profilePublicationState()
-            assertTrue(fourth.cardCreatedAtFloorEpochMillis!! > second.cardCreatedAtFloorEpochMillis!!)
-            assertTrue(fourth.profileUpdatedAtEpochMillis!! > second.profileUpdatedAtEpochMillis!!)
+            assertTrue(fourth.cardCreatedAtFloorEpochMillis!! > second.cardCreatedAtFloorEpochMillis)
+            assertTrue(fourth.profileUpdatedAtEpochMillis!! > second.profileUpdatedAtEpochMillis)
         } finally {
             changing.close()
         }

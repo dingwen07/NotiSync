@@ -152,6 +152,25 @@ notisync status
 notisync applications list
 ```
 
+### SSH key names in Windows PowerShell
+
+If `ssh-add -l` or `ssh-add -L` displays garbled non-ASCII key comments, configure
+PowerShell to interpret Windows OpenSSH's output as UTF-8:
+
+```powershell
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+ssh-add -l
+```
+
+This works in Windows PowerShell 5.1 and PowerShell 7. Add the encoding assignment to
+your PowerShell `$PROFILE` to apply it to future sessions; it affects other native
+commands in that session too.
+
+NotiSync sends key comments as UTF-8. An older Windows console code page such as 437
+can render those bytes incorrectly even when WSL's `xxd` shows valid UTF-8. The fix
+belongs in the consuming shell; key comments and the SSH agent protocol do not need
+conversion. See Microsoft's [console encoding documentation](https://learn.microsoft.com/en-us/dotnet/api/system.console.outputencoding).
+
 ### Agent skills for NotiSync Desktop
 
 The desktop distribution contains portable agent skills for `notisync`, `notisyncd`, NotiSync Run,

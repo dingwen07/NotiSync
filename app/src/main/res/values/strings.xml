@@ -121,7 +121,7 @@
     <string name="ssh_key_provider_webauthn_recover_confirm_title">Step 2 of 2: Confirm WebAuthn credential</string>
     <string name="ssh_key_provider_webauthn_recover_selecting">Choose the passkey you want to recover and authenticate when prompted. After this, you will review the next step before authenticating again.</string>
     <string name="ssh_key_provider_webauthn_recover_confirming">Your first authentication is complete. Authenticate once more with the same credential to finish recovery.</string>
-    <string name="ssh_key_provider_webauthn_recover_failed">Unable to recover the SSH key. Authenticate twice with the same credential and try again. If the key is already in NotiSync, open its details to save a recovery record.</string>
+    <string name="ssh_key_provider_webauthn_recover_failed">Unable to recover the SSH key:</string>
     <string name="ssh_key_provider_webauthn_create_title">Generate passkey-backed SSH key</string>
     <string name="ssh_key_provider_webauthn_default_name">NotiSync WebAuthn SSH Key</string>
     <string name="ssh_key_provider_webauthn_create_help">Your credential provider creates a discoverable WebAuthn credential. Signatures are created by the credential provider and may require user verification. NotiSync will request to save the recovery record of the key to your password manager; this does not include the private key.</string>
@@ -148,6 +148,9 @@
     <string name="ssh_key_provider_webauthn_recovery_credential_mismatch">The selected WebAuthn credential has a different credential ID from this recovery record. Select the credential that matches the record.</string>
     <string name="ssh_key_provider_webauthn_recovery_user_mismatch">The selected WebAuthn credential has a different user handle from this recovery record. Select the credential that matches the record.</string>
     <string name="ssh_key_provider_webauthn_recovery_verification_failed">The credential ID and user handle match, but verification of the WebAuthn authentication response failed:</string>
+    <string name="ssh_key_provider_webauthn_error_origin_not_trusted">WebAuthn credential origin is not trusted. Received: %1$s; expected: %2$s</string>
+    <string name="ssh_key_provider_webauthn_error_client_data_format">The credential provider returned clientDataJSON in a format that OpenSSH does not support. Received: %1$s</string>
+    <string name="ssh_key_provider_webauthn_error_assertion_signature_invalid">WebAuthn credential assertion signature is invalid</string>
     <string name="ssh_key_provider_webauthn_export_action">Export OpenSSH security-key identity</string>
     <string name="ssh_key_provider_webauthn_export_preparing">Preparing OpenSSH security-key identity</string>
     <string name="ssh_key_provider_webauthn_export_not_available">Only an authenticator-bound WebAuthn credential can generate OpenSSH identity files.</string>

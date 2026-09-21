@@ -102,10 +102,13 @@ object WebAuthnSshSignatureCodec {
         return value
     }
 
-    internal fun expectedClientDataPrefix(data: ByteArray, origin: String): ByteArray {
+    /** OpenSSH checks this byte prefix before verifying the signature; it does not parse JSON. */
+    fun hasExpectedClientDataPrefix(data: ByteArray, origin: String, clientDataJson: ByteArray): Boolean {
         val challenge = Base64.getUrlEncoder().withoutPadding().encodeToString(data)
-        return "{\"type\":\"webauthn.get\",\"challenge\":\"$challenge\",\"origin\":\"$origin\""
+        val expectedPrefix = "{\"type\":\"webauthn.get\",\"challenge\":\"$challenge\",\"origin\":\"$origin\""
             .toByteArray(StandardCharsets.UTF_8)
+        return clientDataJson.size >= expectedPrefix.size &&
+            expectedPrefix.indices.all { clientDataJson[it] == expectedPrefix[it] }
     }
 
     private fun validate(value: WebAuthnSshSignature) {
@@ -288,10 +291,7 @@ object SshSignatureVerifier {
         if (assertion.flags and WebAuthnSshSignatureCodec.FLAG_USER_PRESENT == 0 ||
             assertion.flags and WebAuthnSshSignatureCodec.FLAG_USER_VERIFIED == 0
         ) return false
-        val expectedPrefix = WebAuthnSshSignatureCodec.expectedClientDataPrefix(data, assertion.origin)
-        if (assertion.clientDataJson.size < expectedPrefix.size ||
-            !assertion.clientDataJson.copyOfRange(0, expectedPrefix.size).contentEquals(expectedPrefix)
-        ) return false
+        if (!WebAuthnSshSignatureCodec.hasExpectedClientDataPrefix(data, assertion.origin, assertion.clientDataJson)) return false
         val rpIdHash = MessageDigest.getInstance("SHA-256").digest(application.toByteArray(StandardCharsets.UTF_8))
         val authenticatorData = SshWireWriter(32 + 1 + 4 + assertion.extensions.size)
             .writeRaw(rpIdHash)

@@ -114,7 +114,7 @@
     <string name="ssh_key_provider_webauthn_recover_confirm_title">第 2 步（共 2 步）：確認 WebAuthn 憑證</string>
     <string name="ssh_key_provider_webauthn_recover_selecting">選取要復原的通行金鑰，並依提示完成驗證。之後，您會先看到下一步的說明，再進行第二次驗證。</string>
     <string name="ssh_key_provider_webauthn_recover_confirming">第一次驗證已完成。請使用同一個憑證再次驗證以完成復原。</string>
-    <string name="ssh_key_provider_webauthn_recover_failed">無法復原 SSH 金鑰。請使用同一個憑證驗證兩次後重試。如果金鑰已在 NotiSync 中，請開啟其詳細資料儲存復原記錄。</string>
+    <string name="ssh_key_provider_webauthn_recover_failed">無法復原 SSH 金鑰：</string>
     <string name="ssh_key_provider_webauthn_create_title">產生由通行金鑰支援的 SSH 金鑰</string>
     <string name="ssh_key_provider_webauthn_default_name">NotiSync WebAuthn SSH 金鑰</string>
     <string name="ssh_key_provider_webauthn_create_help">憑證提供者會建立可探索的 WebAuthn 憑證。簽章由憑證提供者產生，且可能需要使用者驗證。NotiSync 會要求將金鑰的復原記錄儲存到您的密碼管理員；記錄不含私密金鑰。</string>
@@ -141,6 +141,9 @@
     <string name="ssh_key_provider_webauthn_recovery_credential_mismatch">所選 WebAuthn 憑證的憑證 ID 與此復原記錄不同。請選取與記錄相符的憑證。</string>
     <string name="ssh_key_provider_webauthn_recovery_user_mismatch">所選 WebAuthn 憑證的使用者控制代碼與此復原記錄不同。請選取與記錄相符的憑證。</string>
     <string name="ssh_key_provider_webauthn_recovery_verification_failed">憑證 ID 和使用者控制代碼相符，但 WebAuthn 驗證回應未通過檢查：</string>
+    <string name="ssh_key_provider_webauthn_error_origin_not_trusted">WebAuthn 憑證的來源不受信任。收到：%1$s；預期：%2$s</string>
+    <string name="ssh_key_provider_webauthn_error_client_data_format">憑證提供者傳回的 clientDataJSON 格式不受 OpenSSH 支援。收到：%1$s</string>
+    <string name="ssh_key_provider_webauthn_error_assertion_signature_invalid">WebAuthn 憑證的斷言簽章無效</string>
     <string name="ssh_key_provider_webauthn_export_action">匯出 OpenSSH 安全金鑰身分檔案</string>
     <string name="ssh_key_provider_webauthn_export_preparing">正在準備 OpenSSH 安全金鑰身分檔案</string>
     <string name="ssh_key_provider_webauthn_export_not_available">只有綁定到驗證器的 WebAuthn 憑證才能產生 OpenSSH 身分檔案。</string>

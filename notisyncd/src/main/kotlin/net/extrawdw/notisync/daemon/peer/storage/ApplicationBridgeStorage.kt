@@ -56,7 +56,7 @@ class PersistentApplicationBridgeStore(
                     it.capabilities == capabilities
             } == true
             val stored = if (unchanged) {
-                old!!
+                old
             } else {
                 StoredApplicationRegistration(
                     applicationId = applicationId,

@@ -6,6 +6,7 @@ import java.util.Base64
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -238,12 +239,15 @@ object SshWebAuthnCredential {
         pending: PendingSshWebAuthnKeyRecovery,
         responseJson: String,
     ): RegisteredSshWebAuthnCredential {
+        var firstFailure: Exception? = null
         val verified = pending.candidates.mapNotNull { candidate ->
             val assertion = try {
                 parseAssertion(candidate, pending.challenge, responseJson, pending.allowedOrigins)
-            } catch (_: IllegalArgumentException) {
+            } catch (failure: IllegalArgumentException) {
+                if (firstFailure == null) firstFailure = failure
                 return@mapNotNull null
-            } catch (_: IllegalStateException) {
+            } catch (failure: IllegalStateException) {
+                if (firstFailure == null) firstFailure = failure
                 return@mapNotNull null
             }
             require(assertion.backupEligible == candidate.backupEligible) {
@@ -259,6 +263,8 @@ object SshWebAuthnCredential {
                 backupState = assertion.backupState,
             )
         }
+        // Keep shared validation failures (such as an untrusted origin) visible to the user.
+        if (verified.isEmpty()) firstFailure?.let { throw it }
         require(verified.size == 1) { "the two assertions did not identify one WebAuthn public key" }
         return verified.single()
     }
@@ -370,8 +376,11 @@ object SshWebAuthnCredential {
         validateClientData(clientData, "webauthn.create", prepared.challenge, allowedOrigins)
         val attestationObject = response.requiredBase64Url("attestationObject", MAX_ATTESTATION_BYTES)
         val attestation = CborReader.decodeExact(attestationObject).asTextMap("attestation object")
-        require(attestation.requiredText("fmt") == "none") { "only none WebAuthn credential attestation is supported" }
-        require(attestation.requiredMap("attStmt").isEmpty()) { "none WebAuthn credential attestation statement must be empty" }
+        require(attestation.requiredText("fmt").isNotEmpty()) { "WebAuthn attestation format is missing" }
+        require(attestation["attStmt"] is CborValue.Map) { "WebAuthn attestation statement must be a CBOR map" }
+        // We request attestation="none" and make no authenticator/manufacturer trust claim.
+        // Some providers still return packed/certificate attestation. Ignore that optional
+        // evidence rather than rejecting the credential; validate its registration data below.
         val authData = attestation.requiredBytes("authData")
         val parsed = parseRegistrationAuthenticatorData(authData, prepared.rpId)
         require(MessageDigest.isEqual(credentialId, parsed.credentialId)) {
@@ -422,14 +431,20 @@ object SshWebAuthnCredential {
                 extensions = auth.extensions,
             ),
         )
-        require(
-            SshSignatureVerifier.verify(
+        // A valid WebAuthn signature can still be unusable by OpenSSH. Never rewrite signed JSON.
+        if (!WebAuthnSshSignatureCodec.hasExpectedClientDataPrefix(challenge, client.origin, clientData)) {
+            throw SshWebAuthnException.IncompatibleClientData(clientData.decodeToString())
+        }
+        if (
+            !SshSignatureVerifier.verify(
                 publicKeyBlob = stored.publicKeyBlob,
                 data = challenge,
                 signatureBlob = signatureBlob,
                 expectedMethod = SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
-            ),
-        ) { "WebAuthn credential assertion signature is invalid" }
+            )
+        ) {
+            throw SshWebAuthnException.InvalidAssertionSignature()
+        }
         return ParsedSshWebAuthnAssertion(signatureBlob, auth.backupEligible, auth.backupState)
     }
 
@@ -567,9 +582,38 @@ object SshWebAuthnCredential {
         val challenge = decodeBase64Url(json.requiredString("challenge"))
         require(MessageDigest.isEqual(challenge, expectedChallenge)) { "WebAuthn credential challenge does not match" }
         val origin = json.requiredString("origin")
-        require(origin in allowedOrigins) { "WebAuthn credential origin is not trusted" }
+        if (!isTrustedOrigin(origin, allowedOrigins)) {
+            throw SshWebAuthnException.UntrustedOrigin(
+                received = diagnosticValue(origin),
+                expected = allowedOrigins.joinToString { diagnosticValue(it) },
+            )
+        }
         require(json["crossOrigin"]?.jsonPrimitive?.booleanOrNull != true) { "cross-origin WebAuthn credential response is not allowed" }
         return ClientData(origin)
+    }
+
+    private fun isTrustedOrigin(origin: String, allowedOrigins: Set<String>): Boolean {
+        if (origin in allowedOrigins) return true
+        if (!origin.startsWith(ANDROID_ORIGIN_PREFIX)) return false
+        val encodedHash = origin.removePrefix(ANDROID_ORIGIN_PREFIX)
+        val hash = try {
+            Base64.getDecoder().decode(encodedHash.replace('-', '+').replace('_', '/'))
+        } catch (_: IllegalArgumentException) {
+            return false
+        }
+        if (hash.size != 32) return false
+
+        // Some Android providers encode the same certificate hash with standard Base64.
+        // Accept only canonical encodings of that exact hash, with optional padding.
+        val urlSafeHash = base64Url(hash)
+        val canonicalEncodings = setOf(
+            urlSafeHash,
+            Base64.getEncoder().withoutPadding().encodeToString(hash),
+        )
+        if (encodedHash.removeSuffix("=") !in canonicalEncodings) return false
+
+        // Normalize only for this comparison. Signatures use the original origin/clientDataJSON.
+        return ANDROID_ORIGIN_PREFIX + urlSafeHash in allowedOrigins
     }
 
     private fun JsonObject.credentialId(): ByteArray {
@@ -607,6 +651,9 @@ object SshWebAuthnCredential {
 
     private fun base64Url(bytes: ByteArray): String = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
 
+    // Escape provider-controlled text and bound its length in user-visible diagnostics.
+    private fun diagnosticValue(value: String): String = JsonPrimitive(value.take(256)).toString()
+
     private data class ClientData(val origin: String)
     private data class RegistrationAuthData(
         val publicKeyBlob: ByteArray,
@@ -624,6 +671,7 @@ object SshWebAuthnCredential {
     )
 
     private const val PUBLIC_KEY_TYPE = "public-key"
+    private const val ANDROID_ORIGIN_PREFIX = "android:apk-key-hash:"
     private const val ES256_COSE_ALGORITHM = -7
     private const val CREDENTIAL_TIMEOUT_MILLIS = 5 * 60_000
     private const val AUTHENTICATOR_DATA_FIXED_BYTES = 37
@@ -764,9 +812,6 @@ private fun Map<String, CborValue>.requiredText(key: String): String =
 
 private fun Map<String, CborValue>.requiredBytes(key: String): ByteArray =
     (get(key) as? CborValue.Bytes)?.value ?: error("CBOR map is missing bytes $key")
-
-private fun Map<String, CborValue>.requiredMap(key: String): List<Pair<CborValue, CborValue>> =
-    (get(key) as? CborValue.Map)?.entries ?: error("CBOR map is missing map $key")
 
 private fun Map<Long, CborValue>.requiredInteger(key: Long): Long =
     (get(key) as? CborValue.Integer)?.value ?: error("COSE key is missing integer $key")

@@ -20,6 +20,7 @@ import net.extrawdw.notisync.ssh.core.SshKeyType
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
 import net.extrawdw.notisync.ssh.core.SshSignatureMethod
 import net.extrawdw.notisync.ssh.core.SshSignatureVerifier
+import net.extrawdw.notisync.ssh.core.WebAuthnSshSignatureCodec
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -94,6 +95,199 @@ class SshWebAuthnCredentialTest {
                 SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
             ),
         )
+    }
+
+    @Test
+    fun registrationIgnoresUnrequestedAttestationAndPreservesSshIdentity() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRegistration("Provider key")
+        assertEquals("none", Json.parseToJsonElement(prepared.requestJson).jsonObject["attestation"]?.let {
+            (it as JsonPrimitive).content
+        })
+        // These opaque statements deliberately contain no valid manufacturer evidence.
+        // With attestation="none", that evidence must neither be trusted nor required.
+        val selfStatement = cborMap(cborText("alg") to cborInteger(-7), cborText("sig") to cborBytes(byteArrayOf(0)))
+        val certificateStatement = cborMap(
+            cborText("alg") to cborInteger(-257), cborText("sig") to cborBytes(byteArrayOf(0)),
+            cborText("x5c") to (cborHead(4, 1) + cborBytes(byteArrayOf(0))),
+        )
+        val attestations = listOf(
+            "none" to cborMap(), "packed" to selfStatement, "packed" to certificateStatement,
+            "android-key" to certificateStatement, "vendor-format" to certificateStatement,
+        )
+        for ((format, statement) in attestations) {
+            val response = registrationResponse(
+                prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN,
+                attestationFormat = format, aaguid = ByteArray(16) { 1 }, attestationStatement = statement,
+            )
+            val registered = SshWebAuthnCredential.parseRegistration(prepared, response, setOf(RECOVERY_ORIGIN))
+            assertArrayEquals(stored.publicKeyBlob, registered.publicKeyBlob)
+            val restored = SshWebAuthnCredential.decodeRecoveryRecord(
+                SshWebAuthnCredential.encodeRecoveryRecord(registered, "Provider key", 123L),
+            ).storedCredential()
+            val challenge = ByteArray(32) { it.toByte() }
+            val assertion = SshWebAuthnCredential.parseAssertion(
+                restored, challenge, assertionResponse(restored, challenge, keyPair, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+            )
+            assertTrue(SshSignatureVerifier.verify(
+                restored.publicKeyBlob, challenge, assertion.signatureBlob, SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            ))
+            val (otherKey, _) = recoveryFixture()
+            assertTrue(runCatching {
+                SshWebAuthnCredential.parseAssertion(
+                    restored, challenge, assertionResponse(restored, challenge, otherKey, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+                )
+            }.isFailure)
+        }
+    }
+
+    @Test
+    fun registrationStillRejectsInvalidCredentialDataWhenAttestationIsIgnored() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRegistration("Attestation policy test")
+        val invalidResponses = listOf(
+            registrationResponse(prepared, keyPair, stored.credentialId, "https://untrusted.example", "packed"),
+            registrationResponse(prepared.copy(challenge = ByteArray(32)), keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed"),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", authenticatorRpId = "wrong.example"),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", flags = FLAG_UV or FLAG_AT),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", flags = FLAG_UP or FLAG_AT),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", flags = FLAG_UP or FLAG_UV),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", flags = FLAG_UP or FLAG_UV or FLAG_AT or FLAG_BS),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", coseAlgorithm = -257),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, "packed", responseCredentialId = ByteArray(32)),
+        )
+        invalidResponses.forEachIndexed { index, response ->
+            assertTrue("accepted invalid registration $index", runCatching {
+                SshWebAuthnCredential.parseRegistration(prepared, response, setOf(RECOVERY_ORIGIN))
+            }.isFailure)
+        }
+    }
+
+    @Test
+    fun registrationStillRequiresWellFormedAttestationEnvelope() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRegistration("Attestation test")
+        val responses = listOf(
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, attestationFormat = ""),
+            registrationResponse(prepared, keyPair, stored.credentialId, RECOVERY_ORIGIN, attestationStatement = cborBytes(byteArrayOf(0))),
+        )
+        responses.forEach { response ->
+            assertTrue(runCatching {
+                SshWebAuthnCredential.parseRegistration(prepared, response, setOf(RECOVERY_ORIGIN))
+            }.isFailure)
+        }
+    }
+
+    @Test
+    fun recoveryConfirmationPreservesReceivedAndExpectedOriginInError() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        val pending = SshWebAuthnCredential.prepareKeyRecovery(
+            prepared, assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+        )
+        val returnedOrigin = "https://unexpected.example"
+        val failure = runCatching {
+            SshWebAuthnCredential.completeKeyRecovery(
+                pending, assertionResponse(stored, pending.challenge, keyPair, returnedOrigin),
+            )
+        }.exceptionOrNull()
+        assertTrue(failure is SshWebAuthnException.UntrustedOrigin)
+        val diagnostic = failure as SshWebAuthnException.UntrustedOrigin
+        assertEquals(JsonPrimitive(returnedOrigin).toString(), diagnostic.received)
+        assertEquals(JsonPrimitive(RECOVERY_ORIGIN).toString(), diagnostic.expected)
+    }
+
+    @Test
+    fun registrationAndAssertionAcceptEquivalentAndroidCertificateHashEncodings() {
+        val (keyPair, stored) = recoveryFixture()
+        val certificateHash = ByteArray(32) { if (it % 2 == 0) 0xfb.toByte() else 0xff.toByte() }
+        val expectedOrigin = "android:apk-key-hash:${base64Url(certificateHash)}"
+        val encodedHashes = listOf(
+            Base64.getEncoder().encodeToString(certificateHash),
+            Base64.getEncoder().withoutPadding().encodeToString(certificateHash),
+            Base64.getUrlEncoder().encodeToString(certificateHash),
+            base64Url(certificateHash),
+        )
+        val prepared = SshWebAuthnCredential.prepareRegistration("Provider origin test")
+        val challenge = ByteArray(32) { it.toByte() }
+        for (encodedHash in encodedHashes) {
+            val origin = "android:apk-key-hash:$encodedHash"
+            val registered = SshWebAuthnCredential.parseRegistration(
+                prepared, registrationResponse(prepared, keyPair, stored.credentialId, origin), setOf(expectedOrigin),
+            )
+            assertArrayEquals(stored.publicKeyBlob, registered.publicKeyBlob)
+            val response = assertionResponse(stored, challenge, keyPair, origin)
+            val parsed = SshWebAuthnCredential.parseAssertion(stored, challenge, response, setOf(expectedOrigin))
+            val sshSignature = WebAuthnSshSignatureCodec.decode(parsed.signatureBlob)
+            assertEquals(origin, sshSignature.origin)
+            val originalClientData = Json.parseToJsonElement(response).jsonObject.getValue("response").jsonObject
+                .getValue("clientDataJSON").let { Base64.getUrlDecoder().decode((it as JsonPrimitive).content) }
+            assertArrayEquals(originalClientData, sshSignature.clientDataJson)
+            assertTrue(SshSignatureVerifier.verify(
+                stored.publicKeyBlob, challenge, parsed.signatureBlob, SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+            ))
+        }
+    }
+
+    @Test
+    fun recoveryAcceptsEquivalentOriginEncodingsAcrossBothAuthentications() {
+        val (keyPair, stored) = recoveryFixture()
+        val certificateHash = ByteArray(32) { 0xff.toByte() }
+        val expectedOrigin = "android:apk-key-hash:${base64Url(certificateHash)}"
+        val providerOrigin = "android:apk-key-hash:${Base64.getEncoder().withoutPadding().encodeToString(certificateHash)}"
+        for ((firstOrigin, secondOrigin) in listOf(providerOrigin to expectedOrigin, expectedOrigin to providerOrigin)) {
+            val prepared = SshWebAuthnCredential.prepareRecovery()
+            val pending = SshWebAuthnCredential.prepareKeyRecovery(
+                prepared, assertionResponse(stored, prepared.challenge, keyPair, firstOrigin), setOf(expectedOrigin),
+            )
+            val recovered = SshWebAuthnCredential.completeKeyRecovery(
+                pending, assertionResponse(stored, pending.challenge, keyPair, secondOrigin),
+            )
+            assertArrayEquals(stored.publicKeyBlob, recovered.publicKeyBlob)
+        }
+    }
+
+    @Test
+    fun originCompatibilityRejectsDifferentHashesAndMalformedEncodings() {
+        val (keyPair, stored) = recoveryFixture()
+        val certificateHash = ByteArray(32) { if (it % 2 == 0) 0xfb.toByte() else 0xff.toByte() }
+        val encodedHash = Base64.getEncoder().withoutPadding().encodeToString(certificateHash)
+        assertTrue(encodedHash.contains('+') && encodedHash.contains('/'))
+        val expectedOrigin = "android:apk-key-hash:${base64Url(certificateHash)}"
+        val providerOrigin = "android:apk-key-hash:$encodedHash"
+        val changedHash = certificateHash.copyOf().also { it[0] = 0 }
+        // The last character has two unused bits. A permissive decoder would ignore changing these.
+        val nonCanonicalTail = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/".let {
+            encodedHash.dropLast(1) + it[it.indexOf(encodedHash.last()) + 1]
+        }
+        val invalidOrigins = listOf(
+            "android:apk-key-hash:${Base64.getEncoder().withoutPadding().encodeToString(changedHash)}",
+            "android:apk-key-hash:${Base64.getEncoder().withoutPadding().encodeToString(ByteArray(31))}",
+            "android:apk-key-hash:$nonCanonicalTail",
+            "android:apk-key-hash:${encodedHash.replace('+', '-')}", // mixed alphabets
+            "$providerOrigin==",
+            "$providerOrigin\n",
+            " $providerOrigin",
+            "$providerOrigin/",
+            providerOrigin.replace("android:", "Android:"),
+            "https://$encodedHash",
+        )
+        val prepared = SshWebAuthnCredential.prepareRegistration("Rejected origin test")
+        val challenge = ByteArray(32) { it.toByte() }
+        for (origin in invalidOrigins) {
+            val registrationFailure = runCatching {
+                SshWebAuthnCredential.parseRegistration(
+                    prepared, registrationResponse(prepared, keyPair, stored.credentialId, origin), setOf(expectedOrigin),
+                )
+            }.exceptionOrNull()
+            assertTrue("accepted registration origin $origin", registrationFailure is SshWebAuthnException.UntrustedOrigin)
+            val assertionFailure = runCatching {
+                SshWebAuthnCredential.parseAssertion(
+                    stored, challenge, assertionResponse(stored, challenge, keyPair, origin), setOf(expectedOrigin),
+                )
+            }.exceptionOrNull()
+            assertTrue("accepted assertion origin $origin", assertionFailure is SshWebAuthnException.UntrustedOrigin)
+        }
     }
 
     @Test
@@ -418,6 +612,94 @@ class SshWebAuthnCredentialTest {
         assertTrue(runCatching { SshWebAuthnCredential.completeKeyRecovery(pending, withSForm(first, high = false)) }.isFailure)
     }
 
+    @Test
+    fun recoveryReportsOpenSshIncompatibilityForSignedProviderFieldOrder() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        fun providerResponse(challenge: ByteArray) = assertionResponse(
+            stored, challenge, keyPair, RECOVERY_ORIGIN,
+        ) { original ->
+            val fields = Json.parseToJsonElement(original).jsonObject
+            // Observed Xiaomi ordering, using synthetic credentials and package name.
+            buildJsonObject {
+                put("androidPackageName", "example.credential.client")
+                put("challenge", fields.getValue("challenge"))
+                put("origin", fields.getValue("origin"))
+                put("type", fields.getValue("type"))
+            }.toString()
+        }
+        val response = providerResponse(prepared.challenge)
+        val fields = Json.parseToJsonElement(response).jsonObject.getValue("response").jsonObject
+        fun bytes(name: String) = Base64.getUrlDecoder().decode((fields.getValue(name) as JsonPrimitive).content)
+        assertTrue(Signature.getInstance("SHA256withECDSA").run {
+            initVerify(keyPair.public)
+            update(bytes("authenticatorData") + sha256(bytes("clientDataJSON")))
+            verify(bytes("signature"))
+        })
+        val pending = SshWebAuthnCredential.prepareKeyRecovery(
+            prepared, assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+        )
+        val failures = listOf(
+            runCatching { // Recovery record import and ordinary signing.
+                SshWebAuthnCredential.parseAssertion(stored, prepared.challenge, response, setOf(RECOVERY_ORIGIN))
+            },
+            runCatching {
+                SshWebAuthnCredential.prepareKeyRecovery(prepared, response, setOf(RECOVERY_ORIGIN))
+            },
+            runCatching {
+                SshWebAuthnCredential.completeKeyRecovery(pending, providerResponse(pending.challenge))
+            },
+        )
+        for (failure in failures) {
+            assertTrue(failure.exceptionOrNull() is SshWebAuthnException.IncompatibleClientData)
+        }
+    }
+
+    @Test
+    fun assertionDistinguishesIncompatibleFormattingFromInvalidSignatures() {
+        val (keyPair, stored) = recoveryFixture()
+        val challenge = ByteArray(32) { it.toByte() }
+        val origin = "android:apk-key-hash:${Base64.getEncoder().withoutPadding().encodeToString(ByteArray(32) { -1 })}"
+        val incompatibleFormats: List<(String) -> String> = listOf(
+            { it.replace(",\"challenge\"", ", \"challenge\"") },
+            { it.replace("/", "\\/") },
+        )
+        for (format in incompatibleFormats) {
+            val response = assertionResponse(stored, challenge, keyPair, origin, clientDataTransform = format)
+            val failure = runCatching {
+                SshWebAuthnCredential.parseAssertion(stored, challenge, response, setOf(origin))
+            }.exceptionOrNull()
+            assertTrue(failure is SshWebAuthnException.IncompatibleClientData)
+            val originalClientData = Json.parseToJsonElement(response).jsonObject.getValue("response").jsonObject
+                .getValue("clientDataJSON").let { Base64.getUrlDecoder().decode((it as JsonPrimitive).content) }
+            assertEquals(originalClientData.decodeToString(), (failure as SshWebAuthnException.IncompatibleClientData).clientDataJson)
+        }
+        val (otherKey, _) = recoveryFixture()
+        val failure = runCatching {
+            SshWebAuthnCredential.parseAssertion(
+                stored, challenge, assertionResponse(stored, challenge, otherKey, origin), setOf(origin),
+            )
+        }.exceptionOrNull()
+        assertTrue(failure is SshWebAuthnException.InvalidAssertionSignature)
+    }
+
+    @Test
+    fun assertionPreservesProviderFieldsAfterTheRequiredOpenSshPrefix() {
+        val (keyPair, stored) = recoveryFixture()
+        val challenge = ByteArray(32) { it.toByte() }
+        val response = assertionResponse(stored, challenge, keyPair, RECOVERY_ORIGIN) { original ->
+            val fields = Json.parseToJsonElement(original).jsonObject
+            JsonObject(fields + ("androidPackageName" to JsonPrimitive("example.credential.client"))).toString()
+        }
+        val parsed = SshWebAuthnCredential.parseAssertion(stored, challenge, response, setOf(RECOVERY_ORIGIN))
+        val clientData = Json.parseToJsonElement(response).jsonObject.getValue("response").jsonObject
+            .getValue("clientDataJSON").let { Base64.getUrlDecoder().decode((it as JsonPrimitive).content) }
+        assertArrayEquals(clientData, WebAuthnSshSignatureCodec.decode(parsed.signatureBlob).clientDataJson)
+        assertTrue(SshSignatureVerifier.verify(
+            stored.publicKeyBlob, challenge, parsed.signatureBlob, SshSignatureMethod.WEBAUTHN_SK_ECDSA_NISTP256,
+        ))
+    }
+
     private fun recoveryFixture(): Pair<KeyPair, StoredSshWebAuthnCredential> {
         val keyPair = KeyPairGenerator.getInstance("EC").run {
             initialize(ECGenParameterSpec("secp256r1"))
@@ -444,34 +726,41 @@ class SshWebAuthnCredentialTest {
         keyPair: KeyPair,
         credentialId: ByteArray,
         origin: String,
+        attestationFormat: String = "none",
+        aaguid: ByteArray = ByteArray(16),
+        attestationStatement: ByteArray = cborMap(),
+        authenticatorRpId: String = SshWebAuthnCredential.RP_ID,
+        flags: Int = FLAG_UP or FLAG_UV or FLAG_BE or FLAG_BS or FLAG_AT,
+        coseAlgorithm: Int = -7,
+        responseCredentialId: ByteArray = credentialId,
     ): String {
         val publicKey = keyPair.public as ECPublicKey
         val coseKey = cborMap(
             cborInteger(1) to cborInteger(2),
-            cborInteger(3) to cborInteger(-7),
+            cborInteger(3) to cborInteger(coseAlgorithm),
             cborInteger(-1) to cborInteger(1),
             cborInteger(-2) to cborBytes(publicKey.w.affineX.fixedUnsigned(32)),
             cborInteger(-3) to cborBytes(publicKey.w.affineY.fixedUnsigned(32)),
         )
-        val authData = sha256(SshWebAuthnCredential.RP_ID.encodeToByteArray()) +
-            byteArrayOf((FLAG_UP or FLAG_UV or FLAG_BE or FLAG_BS or FLAG_AT).toByte()) +
-            counter(0) + ByteArray(16) +
+        val authData = sha256(authenticatorRpId.encodeToByteArray()) +
+            byteArrayOf(flags.toByte()) +
+            counter(0) + aaguid +
             byteArrayOf((credentialId.size ushr 8).toByte(), credentialId.size.toByte()) +
             credentialId + coseKey
-        val attestationObject = cborMap(
-            cborText("fmt") to cborText("none"),
-            cborText("attStmt") to cborMap(),
-            cborText("authData") to cborBytes(authData),
-        )
         val clientData = buildJsonObject {
             put("type", "webauthn.create")
             put("challenge", base64Url(prepared.challenge))
             put("origin", origin)
             put("crossOrigin", false)
         }.toString().encodeToByteArray()
+        val attestationObject = cborMap(
+            cborText("fmt") to cborText(attestationFormat),
+            cborText("attStmt") to attestationStatement,
+            cborText("authData") to cborBytes(authData),
+        )
         return buildJsonObject {
-            put("id", base64Url(credentialId))
-            put("rawId", base64Url(credentialId))
+            put("id", base64Url(responseCredentialId))
+            put("rawId", base64Url(responseCredentialId))
             put("type", "public-key")
             put("response", buildJsonObject {
                 put("clientDataJSON", base64Url(clientData))
@@ -486,13 +775,14 @@ class SshWebAuthnCredentialTest {
         keyPair: KeyPair,
         origin: String,
         flags: Int = FLAG_UP or FLAG_UV or FLAG_BE or FLAG_BS,
+        clientDataTransform: (String) -> String = { it },
     ): String {
         val clientData = buildJsonObject {
             put("type", "webauthn.get")
             put("challenge", base64Url(challenge))
             put("origin", origin)
             put("crossOrigin", false)
-        }.toString().encodeToByteArray()
+        }.toString().let(clientDataTransform).encodeToByteArray()
         val authenticatorData = sha256(stored.rpId.encodeToByteArray()) +
             byteArrayOf(flags.toByte()) + counter(7)
         val signature = Signature.getInstance("SHA256withECDSA").run {

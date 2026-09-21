@@ -173,7 +173,7 @@ class DesktopPeerRuntime(
         },
     )
 
-    private lateinit var foundation: FoundationEngine
+    private val foundation: FoundationEngine
 
     val secureChannel = SecureChannel(
         signer = keyMaterial.identity,
@@ -182,11 +182,7 @@ class DesktopPeerRuntime(
         transport = broker,
         directory = directory,
         log = channelLogger,
-        onUnresolvedSender = { sender ->
-            if (::foundation.isInitialized) {
-                scope.launch { runCatching { foundation.onUnresolvedSender(sender) } }
-            }
-        },
+        onUnresolvedSender = ::onUnresolvedSender,
         dedup = RepositoryMessageDedup(deduplication),
         now = clock::millis,
         telemetry = telemetry,
@@ -258,6 +254,11 @@ class DesktopPeerRuntime(
     override val trustStoreQuarantined: Boolean get() = trustStore.quarantined.value
     override val statusMessage: String?
         get() = trustMessage.get() ?: connectionMessage.get()
+
+    // SecureChannel invokes this only when sending or delivering, after graph construction.
+    private fun onUnresolvedSender(sender: ClientId) {
+        scope.launch { runCatching { foundation.onUnresolvedSender(sender) } }
+    }
 
     /** Start the permanent reconnecting WebSocket and broker/foundation anti-entropy loop. */
     fun start() {

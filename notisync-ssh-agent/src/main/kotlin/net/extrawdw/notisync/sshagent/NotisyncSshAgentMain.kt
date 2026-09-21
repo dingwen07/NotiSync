@@ -192,7 +192,6 @@ class NotisyncSshAgentCommand(
         val endpoint = endpoints.first()
         if (isWindows()) {
             output.appendLine("\$env:SSH_AUTH_SOCK='$endpoint'")
-            output.appendLine("OpenSSH config: IdentityAgent $endpoint")
         } else {
             output.appendLine("export SSH_AUTH_SOCK='${endpoint.replace("'", "'\\''")}'")
         }
