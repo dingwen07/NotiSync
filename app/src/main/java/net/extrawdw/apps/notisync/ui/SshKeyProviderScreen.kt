@@ -15,6 +15,8 @@ import androidx.annotation.StringRes
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -42,6 +44,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.file_download as FileDownloadIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.fingerprint as FingerprintIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.healing as HealingIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.send as SendIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.upload_file as UploadFileIcon
@@ -78,6 +81,7 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.credentials.exceptions.CreateCredentialCancellationException
+import androidx.credentials.exceptions.GetCredentialCancellationException
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -91,6 +95,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
@@ -99,6 +104,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyExportActivity
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeySendActivity
 import net.extrawdw.apps.notisync.sshkeyprovider.SshWebAuthnOpenSshIdentityExportActivity
 import net.extrawdw.apps.notisync.sshkeyprovider.PreparedSshKeyStorage
+import net.extrawdw.apps.notisync.sshkeyprovider.PendingSshWebAuthnKeyRecovery
 import net.extrawdw.apps.notisync.sshkeyprovider.SshRequestListItem
 import net.extrawdw.apps.notisync.sshkeyprovider.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyStorageResult
@@ -159,6 +165,8 @@ fun SshKeyProviderScreen(
     var generating by remember { mutableStateOf(false) }
     var webAuthnSheetStep by remember { mutableStateOf<WebAuthnSheetStep?>(null) }
     var webAuthnFlowBusy by remember { mutableStateOf(false) }
+    var webAuthnRecoveryName by remember { mutableStateOf("") }
+    var pendingWebAuthnKeyRecovery by remember { mutableStateOf<PendingSshWebAuthnKeyRecovery?>(null) }
     var webAuthnRecoveryPayload by remember { mutableStateOf("") }
     var webAuthnFlowError by remember { mutableStateOf<String?>(null) }
     var pendingWebAuthnRecoverySelection by remember {
@@ -355,10 +363,15 @@ fun SshKeyProviderScreen(
                 val recoveredCredential = if (selection == null) {
                     record.registeredCredential()
                 } else {
-                    val mismatchMessage = resources.getString(R.string.ssh_key_provider_webauthn_recovery_mismatch)
-                    require(record.credentialId.contentEquals(selection.credentialId)) { mismatchMessage }
-                    require(record.userHandle.contentEquals(selection.userHandle)) { mismatchMessage }
-                    val assertion = runCatching {
+                    require(record.credentialId.contentEquals(selection.credentialId)) {
+                        Log.w("SshKeyProviderScreen", "WebAuthn recovery record credential ID mismatch")
+                        resources.getString(R.string.ssh_key_provider_webauthn_recovery_credential_mismatch)
+                    }
+                    require(record.userHandle.contentEquals(selection.userHandle)) {
+                        Log.w("SshKeyProviderScreen", "WebAuthn recovery record user handle mismatch")
+                        resources.getString(R.string.ssh_key_provider_webauthn_recovery_user_mismatch)
+                    }
+                    val assertion = try {
                         withContext(Dispatchers.Default) {
                             SshWebAuthnCredential.parseAssertion(
                                 record.storedCredential(),
@@ -367,7 +380,16 @@ fun SshKeyProviderScreen(
                                 SshWebAuthnCredentialManager.trustedOrigins(activity),
                             )
                         }
-                    }.getOrElse { throw IllegalArgumentException(mismatchMessage, it) }
+                    } catch (cancelled: CancellationException) {
+                        throw cancelled
+                    } catch (failure: Exception) {
+                        Log.w("SshKeyProviderScreen", "WebAuthn recovery assertion verification failed")
+                        throw IllegalArgumentException(
+                            resources.getString(R.string.ssh_key_provider_webauthn_recovery_verification_failed) +
+                                "\n" + (failure.message ?: failure.javaClass.simpleName),
+                            failure,
+                        )
+                    }
                     record.registeredCredential(assertion)
                 }
                 withContext(Dispatchers.IO) {
@@ -390,6 +412,86 @@ fun SshKeyProviderScreen(
                 webAuthnSheetStep = WebAuthnSheetStep.RECOVERY_PAYLOAD
                 webAuthnFlowError = failure.message
                     ?: resources.getString(R.string.ssh_key_provider_webauthn_import_failed)
+                webAuthnFlowBusy = false
+            }
+        }
+    }
+
+    fun selectWebAuthnRecoveryKey() {
+        if (webAuthnFlowBusy) return
+        val activity = context as? Activity
+        if (activity == null) {
+            webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_activity_required)
+            return
+        }
+        webAuthnFlowError = null
+        webAuthnFlowBusy = true
+        pendingWebAuthnKeyRecovery = null
+        scope.launch {
+            try {
+                val prepared = withContext(Dispatchers.Default) { SshWebAuthnCredential.prepareRecovery() }
+                val selection = SshWebAuthnCredentialManager.get(activity, prepared.requestJson)
+                pendingWebAuthnKeyRecovery = withContext(Dispatchers.Default) {
+                    SshWebAuthnCredential.prepareKeyRecovery(
+                        prepared, selection, SshWebAuthnCredentialManager.trustedOrigins(activity),
+                    )
+                }
+                webAuthnSheetStep = WebAuthnSheetStep.RECOVER_CONFIRM
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: GetCredentialCancellationException) {
+                // Keep the explanation visible until the user chooses to try again.
+            } catch (failure: Exception) {
+                Log.w("SshKeyProviderScreen", "Passkey recovery selection failed", failure)
+                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed)
+            } finally {
+                webAuthnFlowBusy = false
+            }
+        }
+    }
+
+    fun confirmWebAuthnRecoveryKey() {
+        if (webAuthnFlowBusy) return
+        val activity = context as? Activity
+        if (activity == null) {
+            webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_activity_required)
+            return
+        }
+        val pending = pendingWebAuthnKeyRecovery ?: return
+        val name = webAuthnRecoveryName
+        webAuthnFlowError = null
+        webAuthnFlowBusy = true
+        scope.launch {
+            try {
+                val confirmation = SshWebAuthnCredentialManager.get(activity, pending.requestJson)
+                val credential = withContext(Dispatchers.Default) {
+                    SshWebAuthnCredential.completeKeyRecovery(pending, confirmation)
+                }
+                val recoveredAt = System.currentTimeMillis()
+                val payload = withContext(Dispatchers.Default) {
+                    SshWebAuthnCredential.encodeRecoveryRecord(credential, name, recoveredAt)
+                }
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.storeWebAuthnCredential(
+                        credential, name, recoveredAt, origin = SshKeyOrigin.WEBAUTHN_RECOVERED,
+                    )
+                }
+                // Recovery is complete even if the user declines to save another public record.
+                webAuthnSheetStep = null
+                pendingWebAuthnKeyRecovery = null
+                webAuthnRecoveryActions = WebAuthnRecoveryActions(
+                    SshWebAuthnRecoverySource(credential, name, recoveredAt), payload,
+                )
+                graph.sshKeyProviderEngine?.publishInventory()
+                refresh()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: GetCredentialCancellationException) {
+                // Stay on step 2 so the user can retry or return to passkey selection.
+            } catch (failure: Exception) {
+                Log.w("SshKeyProviderScreen", "Passkey key recovery failed", failure)
+                webAuthnFlowError = resources.getString(R.string.ssh_key_provider_webauthn_recover_failed)
+            } finally {
                 webAuthnFlowBusy = false
             }
         }
@@ -824,6 +926,22 @@ fun SshKeyProviderScreen(
                 webAuthnSheetStep = WebAuthnSheetStep.GENERATE
             },
             onGenerate = ::generateWebAuthnKey,
+            onRecoverStep = {
+                webAuthnFlowError = null
+                pendingWebAuthnRecoverySelection = null
+                pendingWebAuthnKeyRecovery = null
+                webAuthnSheetStep = WebAuthnSheetStep.RECOVER
+            },
+            onRecover = { name ->
+                webAuthnRecoveryName = name
+                pendingWebAuthnKeyRecovery = null
+                webAuthnFlowError = null
+                webAuthnSheetStep = WebAuthnSheetStep.RECOVER_AUTHENTICATE
+            },
+            onRecoveryAuthenticate = {
+                if (step == WebAuthnSheetStep.RECOVER_AUTHENTICATE) selectWebAuthnRecoveryKey()
+                else confirmWebAuthnRecoveryKey()
+            },
             onUseExisting = {
                 webAuthnSheetStep = WebAuthnSheetStep.USE_EXISTING
                 webAuthnRecoveryPayload = ""
@@ -851,14 +969,20 @@ fun SshKeyProviderScreen(
             },
             onManualImport = { importWebAuthnRecovery(webAuthnRecoveryPayload) },
             onBack = {
-                webAuthnSheetStep = WebAuthnSheetStep.OPTIONS
+                webAuthnSheetStep = when (step) {
+                    WebAuthnSheetStep.RECOVER_CONFIRM -> WebAuthnSheetStep.RECOVER_AUTHENTICATE
+                    WebAuthnSheetStep.RECOVER_AUTHENTICATE -> WebAuthnSheetStep.RECOVER
+                    else -> WebAuthnSheetStep.OPTIONS
+                }
                 webAuthnFlowError = null
                 pendingWebAuthnRecoverySelection = null
+                pendingWebAuthnKeyRecovery = null
             },
             onDismiss = {
                 webAuthnSheetStep = null
                 webAuthnFlowError = null
                 pendingWebAuthnRecoverySelection = null
+                pendingWebAuthnKeyRecovery = null
             },
         )
     }
@@ -1808,6 +1932,9 @@ private fun WebAuthnFlowSheet(
     error: String?,
     onGenerateStep: () -> Unit,
     onGenerate: (String) -> Unit,
+    onRecoverStep: () -> Unit,
+    onRecover: (String) -> Unit,
+    onRecoveryAuthenticate: () -> Unit,
     onUseExisting: () -> Unit,
     onPayloadChange: (String) -> Unit,
     onPaste: () -> Unit,
@@ -1821,6 +1948,7 @@ private fun WebAuthnFlowSheet(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .navigationBarsPadding()
                 .padding(bottom = 16.dp),
         ) {
@@ -1849,14 +1977,25 @@ private fun WebAuthnFlowSheet(
                             .fillMaxWidth()
                             .clickable(role = Role.Button, onClick = onUseExisting),
                     ) { Text(stringResource(R.string.ssh_key_provider_webauthn_use_existing_action)) }
+                    ListItem(
+                        supportingContent = { Text(stringResource(R.string.ssh_key_provider_webauthn_recover_help)) },
+                        leadingContent = { Icon(HealingIcon, contentDescription = null) },
+                        trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(role = Role.Button, onClick = onRecoverStep),
+                    ) { Text(stringResource(R.string.ssh_key_provider_webauthn_recover_action)) }
                 }
 
-                WebAuthnSheetStep.GENERATE -> Column(
+                WebAuthnSheetStep.GENERATE, WebAuthnSheetStep.RECOVER -> Column(
                     modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
                     verticalArrangement = Arrangement.spacedBy(10.dp),
                 ) {
                     Text(
-                        stringResource(R.string.ssh_key_provider_webauthn_create_title),
+                        stringResource(
+                            if (step == WebAuthnSheetStep.RECOVER) R.string.ssh_key_provider_webauthn_recover_action
+                            else R.string.ssh_key_provider_webauthn_create_title,
+                        ),
                         style = MaterialTheme.typography.headlineSmall,
                     )
                     OutlinedTextField(
@@ -1868,7 +2007,10 @@ private fun WebAuthnFlowSheet(
                         enabled = !busy,
                     )
                     Text(
-                        stringResource(R.string.ssh_key_provider_webauthn_create_help),
+                        stringResource(
+                            if (step == WebAuthnSheetStep.RECOVER) R.string.ssh_key_provider_webauthn_recover_details
+                            else R.string.ssh_key_provider_webauthn_create_help,
+                        ),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -1890,9 +2032,47 @@ private fun WebAuthnFlowSheet(
                             Text(stringResource(R.string.action_back))
                         }
                         Button(
-                            onClick = { onGenerate(name.trim()) },
-                            enabled = !busy && name.isNotBlank(),
+                            onClick = {
+                                if (step == WebAuthnSheetStep.RECOVER) onRecover(name.trim())
+                                else onGenerate(name.trim())
+                            },
+                            enabled = !busy && name.isNotBlank() && name.trim().encodeToByteArray().size <= 256,
                         ) {
+                            Text(stringResource(R.string.ssh_key_provider_webauthn_create_confirm))
+                        }
+                    }
+                }
+
+                WebAuthnSheetStep.RECOVER_AUTHENTICATE, WebAuthnSheetStep.RECOVER_CONFIRM -> Column(
+                    modifier = Modifier.padding(horizontal = 24.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(16.dp),
+                ) {
+                    Text(
+                        stringResource(
+                            if (step == WebAuthnSheetStep.RECOVER_AUTHENTICATE) R.string.ssh_key_provider_webauthn_recover_select_title
+                            else R.string.ssh_key_provider_webauthn_recover_confirm_title,
+                        ),
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
+                    Text(
+                        stringResource(
+                            if (step == WebAuthnSheetStep.RECOVER_AUTHENTICATE) R.string.ssh_key_provider_webauthn_recover_selecting
+                            else R.string.ssh_key_provider_webauthn_recover_confirming,
+                        ),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    error?.let {
+                        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
+                    }
+                    if (busy) {
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                    }
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = onBack, enabled = !busy) {
+                            Text(stringResource(R.string.action_back))
+                        }
+                        Button(onClick = onRecoveryAuthenticate, enabled = !busy) {
                             Text(stringResource(R.string.ssh_key_provider_webauthn_create_confirm))
                         }
                     }
@@ -2353,6 +2533,9 @@ private enum class WebAuthnSheetStep {
     OPTIONS,
     GENERATE,
     USE_EXISTING,
+    RECOVER,
+    RECOVER_AUTHENTICATE,
+    RECOVER_CONFIRM,
     RECOVERY_PAYLOAD,
 }
 

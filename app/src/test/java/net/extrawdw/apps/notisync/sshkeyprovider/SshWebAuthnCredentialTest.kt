@@ -5,10 +5,16 @@ import java.security.KeyPair
 import java.security.KeyPairGenerator
 import java.security.MessageDigest
 import java.security.Signature
+import java.security.SecureRandom
 import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
 import java.util.Base64
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import net.extrawdw.notisync.ssh.core.SshKeyType
 import net.extrawdw.notisync.ssh.core.SshPublicKeyCodec
@@ -19,6 +25,8 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.bouncycastle.asn1.sec.SECNamedCurves
+import org.bouncycastle.crypto.signers.StandardDSAEncoding
 
 class SshWebAuthnCredentialTest {
     @Test
@@ -278,6 +286,159 @@ class SshWebAuthnCredentialTest {
         assertTrue(runCatching { SshWebAuthnCredential.decodeRecoveryRecord(tampered) }.isFailure)
     }
 
+    @Test
+    fun twoAssertionsRecoverTheOriginalSshIdentityAndAnImportableRecord() {
+        for (flags in listOf(FLAG_UP or FLAG_UV, FLAG_UP or FLAG_UV or FLAG_BE, FLAG_UP or FLAG_UV or FLAG_BE or FLAG_BS)) {
+            val (keyPair, stored) = recoveryFixture()
+            val prepared = SshWebAuthnCredential.prepareRecovery()
+            val first = assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, flags)
+            val pending = SshWebAuthnCredential.prepareKeyRecovery(prepared, first, setOf(RECOVERY_ORIGIN))
+            assertFalse(prepared.challenge.contentEquals(pending.challenge))
+            assertTrue(pending.requestJson.contains("\"id\":\"${base64Url(stored.credentialId)}\""))
+            assertTrue(pending.requestJson.contains("\"userVerification\":\"required\""))
+            val recovered = SshWebAuthnCredential.completeKeyRecovery(
+                pending, assertionResponse(stored, pending.challenge, keyPair, RECOVERY_ORIGIN, flags),
+            )
+            assertArrayEquals(stored.publicKeyBlob, recovered.publicKeyBlob)
+            assertArrayEquals(stored.cosePublicKey, recovered.cosePublicKey)
+            assertArrayEquals(stored.credentialId, recovered.credentialId)
+            assertArrayEquals(stored.userHandle, recovered.userHandle)
+            assertEquals(flags and FLAG_BE != 0, recovered.backupEligible)
+            assertEquals(flags and FLAG_BS != 0, recovered.backupState)
+            val record = SshWebAuthnCredential.decodeRecoveryRecord(
+                SshWebAuthnCredential.encodeRecoveryRecord(recovered, "Recovered key", 456L),
+            )
+            assertArrayEquals(stored.publicKeyBlob, record.publicKeyBlob)
+            // Recovery must preserve the key used for subsequent real SSH assertions.
+            val challenge = "SSH request after recovery".encodeToByteArray()
+            SshWebAuthnCredential.parseAssertion(
+                record.storedCredential(), challenge,
+                assertionResponse(stored, challenge, keyPair, RECOVERY_ORIGIN, flags), setOf(RECOVERY_ORIGIN),
+            )
+        }
+    }
+
+    @Test
+    fun recoveryRejectsInvalidFirstAssertionContextAndScalars() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        val valid = assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN)
+        val badResponses = listOf(
+            assertionResponse(stored, prepared.challenge + 0, keyPair, RECOVERY_ORIGIN),
+            assertionResponse(stored, prepared.challenge, keyPair, "https://untrusted.example"),
+            assertionResponse(stored.copy(rpId = "untrusted.example"), prepared.challenge, keyPair, RECOVERY_ORIGIN),
+            assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP),
+            assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UV),
+            assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP or FLAG_UV or FLAG_BS),
+            assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP or FLAG_UV or FLAG_AT),
+            assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP or FLAG_UV or 0x80),
+            responseField(valid, "userHandle", JsonNull),
+            responseField(valid, "userHandle", JsonPrimitive(base64Url("foreign user".encodeToByteArray()))),
+            responseField(valid, "signature", JsonPrimitive(base64Url(byteArrayOf(0x30, 6, 2, 1, 0, 2, 1, 1)))),
+            responseField(valid, "signature", JsonPrimitive(base64Url(byteArrayOf(0x30, 1, 0)))),
+        )
+        badResponses.forEachIndexed { index, response ->
+            assertTrue("accepted invalid first assertion $index", runCatching {
+                SshWebAuthnCredential.prepareKeyRecovery(prepared, response, setOf(RECOVERY_ORIGIN))
+            }.isFailure)
+        }
+    }
+
+    @Test
+    fun recoveryRejectsReplayDifferentCredentialsAndChangedSigningKeys() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        val first = assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN)
+        val pending = SshWebAuthnCredential.prepareKeyRecovery(prepared, first, setOf(RECOVERY_ORIGIN))
+        val (otherKey, otherStored) = recoveryFixture()
+        val badResponses = listOf(
+            first,
+            assertionResponse(stored, pending.challenge, otherKey, RECOVERY_ORIGIN),
+            assertionResponse(stored.copy(credentialId = otherStored.credentialId), pending.challenge, keyPair, RECOVERY_ORIGIN),
+            assertionResponse(stored.copy(userHandle = otherStored.userHandle), pending.challenge, keyPair, RECOVERY_ORIGIN),
+            assertionResponse(stored, pending.challenge, keyPair, "https://untrusted.example"),
+            assertionResponse(stored.copy(rpId = "untrusted.example"), pending.challenge, keyPair, RECOVERY_ORIGIN),
+            assertionResponse(stored, pending.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP),
+            assertionResponse(stored, pending.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP or FLAG_UV),
+        )
+        badResponses.forEachIndexed { index, response ->
+            assertTrue("accepted invalid confirmation $index", runCatching {
+                SshWebAuthnCredential.completeKeyRecovery(pending, response)
+            }.isFailure)
+        }
+    }
+
+    @Test
+    fun recoveryAcceptsMissingUserHandleOnTargetedConfirmationAndUpdatesBackupState() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        val pending = SshWebAuthnCredential.prepareKeyRecovery(
+            prepared, assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+        )
+        val confirmation = assertionResponse(stored, pending.challenge, keyPair, RECOVERY_ORIGIN, FLAG_UP or FLAG_UV or FLAG_BE)
+        val recovered = SshWebAuthnCredential.completeKeyRecovery(pending, responseField(confirmation, "userHandle", JsonNull))
+        assertArrayEquals(stored.publicKeyBlob, recovered.publicKeyBlob)
+        assertTrue(recovered.backupEligible)
+        assertFalse(recovered.backupState)
+    }
+
+    @Test
+    fun recoveryNeverUsesTheSameChallengeTwice() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        val repeatingRandom = object : SecureRandom() {
+            override fun nextBytes(bytes: ByteArray) { prepared.challenge.copyInto(bytes) }
+        }
+        assertTrue(runCatching {
+            SshWebAuthnCredential.prepareKeyRecovery(
+                prepared, assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN),
+                setOf(RECOVERY_ORIGIN), repeatingRandom,
+            )
+        }.isFailure)
+    }
+
+    @Test
+    fun recoveryWorksWithHighAndLowSWithoutDependingOnSignatureMalleability() {
+        val (keyPair, stored) = recoveryFixture()
+        val prepared = SshWebAuthnCredential.prepareRecovery()
+        fun withSForm(response: String, high: Boolean): String {
+            val encoded = Json.parseToJsonElement(response).jsonObject.getValue("response").jsonObject
+                .getValue("signature").let { (it as JsonPrimitive).content }
+            val n = SECNamedCurves.getByName("secp256r1").n
+            val (r, s) = StandardDSAEncoding.INSTANCE.decode(n, Base64.getUrlDecoder().decode(encoded))
+            val alternate = n.subtract(s)
+            val chosen = if (high) s.max(alternate) else s.min(alternate)
+            return responseField(response, "signature", JsonPrimitive(base64Url(StandardDSAEncoding.INSTANCE.encode(n, r, chosen))))
+        }
+        val first = withSForm(assertionResponse(stored, prepared.challenge, keyPair, RECOVERY_ORIGIN), high = true)
+        val pending = SshWebAuthnCredential.prepareKeyRecovery(prepared, first, setOf(RECOVERY_ORIGIN))
+        val second = withSForm(assertionResponse(stored, pending.challenge, keyPair, RECOVERY_ORIGIN), high = false)
+        assertArrayEquals(stored.publicKeyBlob, SshWebAuthnCredential.completeKeyRecovery(pending, second).publicKeyBlob)
+        // Flipping s on a replayed first response must still fail the fresh challenge check.
+        assertTrue(runCatching { SshWebAuthnCredential.completeKeyRecovery(pending, withSForm(first, high = false)) }.isFailure)
+    }
+
+    private fun recoveryFixture(): Pair<KeyPair, StoredSshWebAuthnCredential> {
+        val keyPair = KeyPairGenerator.getInstance("EC").run {
+            initialize(ECGenParameterSpec("secp256r1"))
+            generateKeyPair()
+        }
+        val registration = SshWebAuthnCredential.prepareRegistration("Original name")
+        val credentialId = ByteArray(32).also(SecureRandom()::nextBytes)
+        val credential = SshWebAuthnCredential.parseRegistration(
+            registration, registrationResponse(registration, keyPair, credentialId, RECOVERY_ORIGIN), setOf(RECOVERY_ORIGIN),
+        )
+        val stored = SshWebAuthnCredential.decodeRecoveryRecord(
+            SshWebAuthnCredential.encodeRecoveryRecord(credential, "Original name", 123L),
+        ).storedCredential()
+        return keyPair to stored
+    }
+
+    private fun responseField(json: String, name: String, value: kotlinx.serialization.json.JsonElement): String {
+        val root = Json.parseToJsonElement(json).jsonObject
+        return JsonObject(root + ("response" to JsonObject(root.getValue("response").jsonObject + (name to value)))).toString()
+    }
+
     private fun registrationResponse(
         prepared: PreparedSshWebAuthnRegistration,
         keyPair: KeyPair,
@@ -391,6 +552,7 @@ class SshWebAuthnCredentialTest {
     private fun sha256(value: ByteArray): ByteArray = MessageDigest.getInstance("SHA-256").digest(value)
 
     private companion object {
+        const val RECOVERY_ORIGIN = "android:apk-key-hash:test-recovery-app"
         const val FLAG_UP = 0x01
         const val FLAG_UV = 0x04
         const val FLAG_BE = 0x08

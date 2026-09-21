@@ -59,6 +59,14 @@ data class PreparedSshWebAuthnRecovery(
     val challenge: ByteArray,
 )
 
+/** An unconfirmed selection. Never persist a candidate until the second assertion verifies it. */
+class PendingSshWebAuthnKeyRecovery internal constructor(
+    val requestJson: String,
+    internal val challenge: ByteArray,
+    internal val candidates: List<StoredSshWebAuthnCredential>,
+    internal val allowedOrigins: Set<String>,
+)
+
 data class SshWebAuthnRecoveryRecord(
     val credentialId: ByteArray,
     val userHandle: ByteArray,
@@ -179,6 +187,80 @@ object SshWebAuthnCredential {
         val root = parseJsonObject(responseJson, "WebAuthn credential recovery assertion")
         require(root.requiredString("type") == PUBLIC_KEY_TYPE) { "unexpected WebAuthn credential type" }
         return root.credentialId()
+    }
+
+    fun prepareKeyRecovery(
+        prepared: PreparedSshWebAuthnRecovery,
+        responseJson: String,
+        allowedOrigins: Set<String>,
+        random: SecureRandom = SecureRandom(),
+    ): PendingSshWebAuthnKeyRecovery {
+        val root = parseJsonObject(responseJson, "WebAuthn key recovery assertion")
+        require(root.requiredString("type") == PUBLIC_KEY_TYPE) { "unexpected WebAuthn credential type" }
+        val credentialId = root.credentialId()
+        val userHandle = assertionUserHandle(responseJson)
+        val response = root.requiredObject("response")
+        val clientData = response.requiredBase64Url("clientDataJSON", MAX_CLIENT_DATA_BYTES)
+        validateClientData(clientData, "webauthn.get", prepared.challenge, allowedOrigins)
+        val authenticatorData = response.requiredBase64Url("authenticatorData", MAX_AUTHENTICATOR_DATA_BYTES)
+        val auth = parseAssertionAuthenticatorData(authenticatorData, RP_ID)
+        val signature = response.requiredBase64Url("signature", 256)
+        val digest = MessageDigest.getInstance("SHA-256")
+        val messageHash = digest.digest(authenticatorData + digest.digest(clientData))
+        val candidates = SshWebAuthnPublicKeyRecovery.candidates(messageHash, signature).map { point ->
+            // Canonical COSE EC2 {1:2, 3:-7, -1:1, -2:x, -3:y}; coordinate strings are 32 bytes.
+            val cose = byteArrayOf(0xa5.toByte(), 1, 2, 3, 0x26, 0x20, 1, 0x21, 0x58, 0x20) +
+                point.copyOfRange(1, 33) + byteArrayOf(0x22, 0x58, 0x20) + point.copyOfRange(33, 65)
+            StoredSshWebAuthnCredential(
+                providerKeyId = "recovery",
+                publicKeyBlob = coseEcdsaP256PublicBlob(CborReader.decodeExact(cose), RP_ID),
+                credentialId = credentialId.copyOf(),
+                userHandle = userHandle.copyOf(),
+                rpId = RP_ID,
+                cosePublicKey = cose,
+                backupEligible = auth.backupEligible,
+                backupState = auth.backupState,
+            ).also { parseAssertion(it, prepared.challenge, responseJson, allowedOrigins) }
+        }
+        require(candidates.isNotEmpty()) { "no valid WebAuthn public key recovery candidates" }
+        // A fresh challenge is essential: repeating one assertion cannot disambiguate its keys.
+        val challenge = ByteArray(32).also(random::nextBytes)
+        require(!MessageDigest.isEqual(challenge, prepared.challenge)) { "recovery challenges must differ" }
+        return PendingSshWebAuthnKeyRecovery(
+            requestJson = assertionRequestJson(candidates.first(), challenge),
+            challenge = challenge,
+            candidates = candidates,
+            allowedOrigins = allowedOrigins.toSet(),
+        )
+    }
+
+    fun completeKeyRecovery(
+        pending: PendingSshWebAuthnKeyRecovery,
+        responseJson: String,
+    ): RegisteredSshWebAuthnCredential {
+        val verified = pending.candidates.mapNotNull { candidate ->
+            val assertion = try {
+                parseAssertion(candidate, pending.challenge, responseJson, pending.allowedOrigins)
+            } catch (_: IllegalArgumentException) {
+                return@mapNotNull null
+            } catch (_: IllegalStateException) {
+                return@mapNotNull null
+            }
+            require(assertion.backupEligible == candidate.backupEligible) {
+                "WebAuthn credential backup eligibility changed during recovery"
+            }
+            RegisteredSshWebAuthnCredential(
+                publicKeyBlob = candidate.publicKeyBlob.copyOf(),
+                credentialId = candidate.credentialId.copyOf(),
+                userHandle = candidate.userHandle.copyOf(),
+                rpId = candidate.rpId,
+                cosePublicKey = candidate.cosePublicKey.copyOf(),
+                backupEligible = assertion.backupEligible,
+                backupState = assertion.backupState,
+            )
+        }
+        require(verified.size == 1) { "the two assertions did not identify one WebAuthn public key" }
+        return verified.single()
     }
 
     fun assertionUserHandle(responseJson: String): ByteArray {
