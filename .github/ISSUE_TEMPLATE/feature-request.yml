@@ -29,8 +29,15 @@ body:
   - type: input
     id: version
     attributes:
-      label: Version Code/Build Number
+      label: Version
       description: Specify the version of the app you are using
+    validations:
+      required: true
+  - type: input
+    id: build_number
+    attributes:
+      label: Version Code/Build Number
+      description: Specify the version code or build number of the app you are using
   - type: textarea
     id: description
     attributes:
