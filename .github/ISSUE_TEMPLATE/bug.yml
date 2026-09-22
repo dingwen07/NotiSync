@@ -44,8 +44,6 @@ body:
     attributes:
       label: Version
       description: Specify the version of the app you are using
-    validations:
-      required: true
   - type: input
     id: build_number
     attributes:
