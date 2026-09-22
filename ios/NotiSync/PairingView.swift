@@ -45,6 +45,7 @@ struct PairingView: View {
                     }
                 }
                 Section("Add a device") {
+                    PairingShareLink(url: brokerLink.flatMap { URL(string: $0.encode()) }, brokerAssisted: true)
                     Button {
                         scanError = nil
                         activeSheet = .scanner
@@ -117,12 +118,7 @@ struct PairingView: View {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { activeSheet = .legacyQR } label: { Label("QR Code", systemImage: "qrcode") }
                         .disabled(runtime.pairingPayload == nil)
-                    if let link = runtime.pairingPayload, let url = URL(string: link) {
-                        ShareLink(item: url) { Label("Share pairing link", systemImage: "square.and.arrow.up") }
-                    } else {
-                        Image(systemName: "square.and.arrow.up").foregroundStyle(.secondary)
-                            .accessibilityLabel("Share pairing link")
-                    }
+                    PairingShareLink(url: runtime.pairingPayload.flatMap { URL(string: $0) })
                 }
             }
             .task {

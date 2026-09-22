@@ -53,8 +53,7 @@ internal fun BrokerPairingSheet(
             Modifier.fillMaxWidth().padding(24.dp).navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            Text(stringResource(R.string.pair_trust_title), style = MaterialTheme.typography.headlineSmall)
-            Text(stringResource(R.string.pair_broker_title), style = MaterialTheme.typography.titleMedium)
+            Text(stringResource(R.string.pair_broker_title), style = MaterialTheme.typography.headlineSmall)
             Text(stringResource(R.string.pair_broker_instruction))
             Text(stringResource(R.string.pair_broker_address, link.brokerUrl), style = MaterialTheme.typography.bodySmall)
             if (failed) {

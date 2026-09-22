@@ -20,14 +20,13 @@ struct BrokerPairingSheet: View {
             } else {
                 NavigationStack {
                     VStack(spacing: 20) {
-                        Text("Secure Exchange").font(.headline)
                         Text("Keep device pairing page open on the other device.")
                         if failed {
                             Text(BrokerPairingError.authentication.localizedDescription).foregroundStyle(.red)
                         } else { ProgressView() }
                     }
                     .padding()
-                    .navigationTitle("Device Pairing")
+                    .navigationTitle("Secure Exchange")
                     .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } } }
                 }
             }
@@ -62,9 +61,7 @@ struct LegacyPairingQRView: View {
                         Image(uiImage: image).interpolation(.none).resizable().aspectRatio(1, contentMode: .fit)
                             .frame(maxWidth: 400).accessibilityLabel("Pairing QR code")
                     } else { ProgressView() }
-                    if let link = runtime.pairingPayload, let url = URL(string: link) {
-                        ShareLink(item: url) { Label("Share QR Code Link", systemImage: "square.and.arrow.up") }
-                    }
+                    PairingShareLink(url: runtime.pairingPayload.flatMap { URL(string: $0) })
                 }.padding()
             }
             .navigationTitle("QR Code")

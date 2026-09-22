@@ -203,9 +203,11 @@ fun PairingScreen(
     val legacyPairingUrl = (codeState as? PairingCodeState.Ready)?.url
     val pairingPayload = (codeState as? PairingCodeState.Ready)?.payload
 
-    fun sharePairingUrl(url: String?, legacy: Boolean = false) {
+    fun sharePairingUrl(url: String?, brokerAssisted: Boolean = false) {
         url ?: return
-        val title = resources.getString(if (legacy) R.string.pair_legacy_share_title else R.string.pair_share_title)
+        val title = resources.getString(
+            if (brokerAssisted) R.string.pair_broker_share_link_title else R.string.pair_share_link_title,
+        )
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, url)
@@ -333,6 +335,16 @@ fun PairingScreen(
                 style = MaterialTheme.typography.bodySmall
             )
 
+            OutlinedButton(
+                onClick = { sharePairingUrl(hostLink?.encode(), brokerAssisted = true) },
+                modifier = Modifier.fillMaxWidth(),
+                enabled = hostLink != null && !scanning && !inspecting,
+            ) {
+                Icon(ShareIcon, contentDescription = null, modifier = Modifier.size(ButtonDefaults.IconSize))
+                Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                Text(stringResource(R.string.pair_broker_share_title))
+            }
+
             Button(
                 onClick = {
                     scanning = true
@@ -394,7 +406,7 @@ fun PairingScreen(
             LegacyPairingQrSheet(
                 ready,
                 onDismiss = { showLegacyQr = false },
-                onShare = { sharePairingUrl(ready.url, legacy = true) },
+                onShare = { sharePairingUrl(ready.url) },
             )
         }
     }
@@ -442,11 +454,10 @@ private fun LegacyPairingQrSheet(state: PairingCodeState.Ready, onDismiss: () ->
                 ),
                 style = MaterialTheme.typography.bodySmall,
             )
-            SelectionContainer { Text(state.url, style = MaterialTheme.typography.bodySmall) }
             OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
                 Icon(ShareIcon, contentDescription = null)
                 Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                Text(stringResource(R.string.pair_legacy_share_title))
+                Text(stringResource(R.string.pair_share_title))
             }
         }
     }
@@ -537,8 +548,13 @@ internal fun PairingApprovalSheet(
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        stringResource(if (brokerAuthenticated) R.string.pair_broker_verified else R.string.pair_trust_body),
+                        stringResource(if (brokerAuthenticated) R.string.pair_broker_trust_body else R.string.pair_trust_body),
                         style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Text(
+                        stringResource(R.string.pair_verification_instruction),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.secondary,
                     )
                     DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)
                     DeviceInfo(stringResource(R.string.pair_field_platform), candidate.platform)
