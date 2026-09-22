@@ -3,8 +3,11 @@ package net.extrawdw.apps.notisync.sshkeyprovider
 import android.content.ContentValues
 import android.content.Context
 import android.content.pm.PackageManager
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSQLiteOpenHelper
+import net.extrawdw.apps.notisync.data.storage.operational.SshRequestStorage
+import net.extrawdw.apps.notisync.data.HistoryPage
+import net.extrawdw.apps.notisync.data.HistoryDirection
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyInfo
 import android.security.keystore.KeyPermanentlyInvalidatedException
@@ -27,9 +30,6 @@ import java.security.spec.X509EncodedKeySpec
 import java.security.cert.Certificate
 import java.util.Date
 import javax.crypto.Cipher
-import javax.crypto.KeyGenerator
-import javax.crypto.SecretKey
-import javax.crypto.spec.GCMParameterSpec
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -91,6 +91,9 @@ enum class SshProviderRequestState { PENDING_REVIEW, RESPONSE_PENDING_SEND, SENT
 enum class SshProviderRequestKind { SIGN, IMPORT }
 enum class SshProviderRequestOutcome { SIGNED, IMPORTED, ALREADY_PRESENT, REJECTED, FAILED, CANCELLED, EXPIRED }
 enum class SshRequestApprovalKind { MANUAL, REMEMBERED_AUTHORIZATION }
+
+/** Stable terminal-history position, matching the descending SQLite order. */
+data class SshHistoryCursor(val updatedAt: Long, val requestId: String)
 enum class SshProviderAcceptResult {
     STORED,
     DUPLICATE,
@@ -352,12 +355,7 @@ class SshKeyProviderStore internal constructor(
     context: Context,
     private val applicationRegistry: () -> KnownDesktopApplicationRegistry,
 ) :
-    SQLiteOpenHelper(
-        context.applicationContext,
-        OperationalDatabase.DATABASE_NAME,
-        null,
-        OperationalDatabase.VERSION,
-    ) {
+    OperationalSQLiteOpenHelper(context) {
     constructor(context: Context) : this(context, { BUILT_IN_DESKTOP_APPLICATIONS })
 
     internal val desktopApplicationRegistry: KnownDesktopApplicationRegistry get() = applicationRegistry()
@@ -365,7 +363,6 @@ class SshKeyProviderStore internal constructor(
     private val appContext = context.applicationContext
     private val strongBoxAvailable = context.applicationContext.packageManager
         .hasSystemFeature(PackageManager.FEATURE_STRONGBOX_KEYSTORE)
-    private val auditWrapping = AndroidKeyWrapping(AUDIT_KEY_ALIAS)
     private val wrappedOperationalVault = SshWrappedOperationalKeyVault(strongBoxAvailable)
     private val exportVault = SshExportKeyVault(strongBoxAvailable)
     private val trustedWebAuthnOrigins by lazy(LazyThreadSafetyMode.PUBLICATION) {
@@ -406,12 +403,11 @@ class SshKeyProviderStore internal constructor(
         validateDatabaseIntegrity(db)
         repairInventoryGeneration(db)
         reconcileLifecycle(db)
-        pruneHistory(db)
     }
 
     private fun repairInventoryGeneration(db: SQLiteDatabase) {
         val stored = db.rawQuery(
-            "SELECT inventory_generation FROM provider_state WHERE singleton=1",
+            "SELECT inventory_generation FROM ssh_provider_state WHERE singleton=1",
             emptyArray(),
         ).use { cursor ->
             cursor.takeIf { it.moveToFirst() }?.getString(0)
@@ -422,7 +418,7 @@ class SshKeyProviderStore internal constructor(
                 put("inventory_generation", SshInventoryGeneration.create())
                 put("revision", 1)
             }
-            check(db.insertOrThrow("provider_state", null, values) != -1L) {
+            check(db.insertOrThrow("ssh_provider_state", null, values) != -1L) {
                 "Could not initialize SSH inventory generation"
             }
             return
@@ -430,7 +426,7 @@ class SshKeyProviderStore internal constructor(
         val canonical = SshInventoryGeneration.canonicalize(stored)
         if (canonical == stored) return
         val values = ContentValues().apply { put("inventory_generation", canonical) }
-        check(db.update("provider_state", values, "singleton=1", emptyArray()) == 1) {
+        check(db.update("ssh_provider_state", values, "singleton=1", emptyArray()) == 1) {
             "Could not repair SSH inventory generation"
         }
     }
@@ -459,7 +455,7 @@ class SshKeyProviderStore internal constructor(
     internal fun managementSnapshot(provider: ClientId, now: Long): VersionedSshKeyProviderManagementSnapshot {
         val snapshot = SshKeyProviderManagementSnapshot(
             keys = snapshot(provider, null, now).keys,
-            requests = requests(),
+            requests = activeRequests(),
             knownHosts = knownHosts(),
             rememberedAuthorizations = rememberedAuthorizations(),
         )
@@ -471,7 +467,7 @@ class SshKeyProviderStore internal constructor(
         pruneExpiredKeys(now)
         val remembered = rememberedNamespaces()
         val state = readableDatabase.rawQuery(
-            "SELECT inventory_generation, revision FROM provider_state WHERE singleton=1",
+            "SELECT inventory_generation, revision FROM ssh_provider_state WHERE singleton=1",
             emptyArray(),
         ).use { cursor ->
             check(cursor.moveToFirst())
@@ -558,8 +554,8 @@ class SshKeyProviderStore internal constructor(
     fun knownHostHostname(hostKeySha256: ByteArray): String? {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
         return readableDatabase.rawQuery(
-            "SELECT hostname FROM ssh_known_hosts WHERE hex(host_key_sha256)=?",
-            arrayOf(hostKeySha256.toHex().uppercase()),
+            "SELECT hostname FROM ssh_known_hosts WHERE host_key_sha256=?",
+            hostKeySha256,
         ).use { cursor ->
             if (!cursor.moveToFirst() || cursor.isNull(0)) null else cursor.getString(0)
         }
@@ -572,15 +568,13 @@ class SshKeyProviderStore internal constructor(
     @Synchronized
     fun updateKnownHostHostname(hostKeySha256: ByteArray, hostname: String): Boolean {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
-        val values = ContentValues().apply {
-            if (hostname.isBlank()) putNull("hostname") else put("hostname", hostname)
+        val changed = writableDatabase.compileStatement(
+            "UPDATE ssh_known_hosts SET hostname=? WHERE host_key_sha256=?",
+        ).use { statement ->
+            if (hostname.isBlank()) statement.bindNull(1) else statement.bindString(1, hostname)
+            statement.bindBlob(2, hostKeySha256)
+            statement.executeUpdateDelete() == 1
         }
-        val changed = writableDatabase.update(
-            "ssh_known_hosts",
-            values,
-            "hex(host_key_sha256)=?",
-            arrayOf(hostKeySha256.toHex().uppercase()),
-        ) == 1
         if (changed) notifyChanged()
         return changed
     }
@@ -588,11 +582,12 @@ class SshKeyProviderStore internal constructor(
     @Synchronized
     fun deleteKnownHost(hostKeySha256: ByteArray): Boolean {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
-        val changed = writableDatabase.delete(
-            "ssh_known_hosts",
-            "hex(host_key_sha256)=?",
-            arrayOf(hostKeySha256.toHex().uppercase()),
-        ) == 1
+        val changed = writableDatabase.compileStatement(
+            "DELETE FROM ssh_known_hosts WHERE host_key_sha256=?",
+        ).use { statement ->
+            statement.bindBlob(1, hostKeySha256)
+            statement.executeUpdateDelete() == 1
+        }
         if (changed) notifyChanged()
         return changed
     }
@@ -1910,7 +1905,7 @@ class SshKeyProviderStore internal constructor(
         // Both reads are best effort because this is the user-confirmed recovery path for an unreadable schema.
         val removedRequestIds = runCatching {
             readableDatabase.rawQuery(
-                "SELECT request_id FROM provider_requests",
+                "SELECT request_id FROM ssh_requests",
                 emptyArray(),
             ).use { cursor ->
                 buildList {
@@ -1931,18 +1926,18 @@ class SshKeyProviderStore internal constructor(
         val database = writableDatabase
         database.beginTransaction()
         try {
-            database.delete("provider_requests", null, null)
+            database.delete("ssh_requests", null, null)
             database.delete("ssh_remembered_authorizations", null, null)
-            database.delete("authorization_floors", null, null)
+            database.delete("ssh_authorization_floors", null, null)
             database.delete("ssh_known_hosts", null, null)
             database.delete("ssh_export_copies", null, null)
             database.delete("ssh_webauthn_credentials", null, null)
             database.delete("ssh_operational_keys", null, null)
             database.delete("ssh_key_lifecycle", null, null)
             database.delete("ssh_keys", null, null)
-            database.delete("provider_state", null, null)
+            database.delete("ssh_provider_state", null, null)
             database.execSQL(
-                "INSERT INTO provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
+                "INSERT INTO ssh_provider_state(singleton, inventory_generation, revision) VALUES(1, ?, 1)",
                 arrayOf(randomId()),
             )
             database.setTransactionSuccessful()
@@ -2017,6 +2012,7 @@ class SshKeyProviderStore internal constructor(
             ProtocolCodec.encodeToCbor(request),
             request.historySnapshot(keyName),
             now,
+            signRequest = request,
         )
     }
 
@@ -2028,13 +2024,12 @@ class SshKeyProviderStore internal constructor(
         ProtocolCodec.encodeToCbor(request),
         request.historySnapshot(),
         now,
+        importRequest = request,
     )
 
     @Synchronized
     fun find(requestId: String): StoredSshProviderRequest? = readableDatabase.rawQuery(
-        "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-            "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
-            "FROM provider_requests WHERE request_id=?",
+        "SELECT * FROM ssh_requests WHERE request_id=?",
         arrayOf(requestId),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.readRequest() else null }
 
@@ -2044,16 +2039,45 @@ class SshKeyProviderStore internal constructor(
     @Synchronized
     fun pendingResponses(): List<StoredSshProviderRequest> = requestsIn(SshProviderRequestState.RESPONSE_PENDING_SEND)
 
+    /** Active work is independent of the completed-history page window. */
     @Synchronized
-    fun requests(): List<StoredSshProviderRequest> = readableDatabase.rawQuery(
-        "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-            "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
-            "FROM provider_requests WHERE state IN ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') OR request_id IN (" +
-            "SELECT request_id FROM provider_requests WHERE state NOT IN " +
-            "('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') ORDER BY updated_at DESC LIMIT $MAX_HISTORY_ROWS) " +
-            "ORDER BY updated_at DESC",
+    fun activeRequests(): List<StoredSshProviderRequest> = readableDatabase.rawQuery(
+        "SELECT ${SshRequestStorage.summaryColumns} FROM ssh_requests " +
+            "WHERE state IN ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') " +
+            "ORDER BY updated_at DESC, request_id DESC",
         emptyArray(),
-    ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(decodeActiveRequest = false)) } }
+    ).use { cursor -> SshRequestStorage.readAll(cursor, includePayload = false) }
+
+    /** Read one terminal-summary page without hydrating any request, key, or response BLOB. */
+    @Synchronized
+    fun historyPage(
+        limit: Int = 50,
+        cursor: SshHistoryCursor? = null,
+        direction: HistoryDirection = HistoryDirection.OLDER,
+        includeCursor: Boolean = false,
+    ): HistoryPage<StoredSshProviderRequest, SshHistoryCursor> {
+        require(limit in 1..500) { "SSH history page size must be between 1 and 500" }
+        val newer = direction == HistoryDirection.NEWER
+        val comparison = (if (newer) ">" else "<") + if (includeCursor) "=" else ""
+        val position = if (cursor == null) "" else " AND (updated_at, request_id) $comparison (?, ?)"
+        val order = if (newer) "ASC" else "DESC"
+        val arguments = buildList {
+            cursor?.let { add(it.updatedAt.toString()); add(it.requestId) }
+            add((limit + 1).toString())
+        }.toTypedArray()
+        val records = readableDatabase.rawQuery(
+            "SELECT ${SshRequestStorage.summaryColumns} FROM ssh_requests " +
+                "WHERE state NOT IN ('PENDING_REVIEW', 'RESPONSE_PENDING_SEND')$position " +
+                "ORDER BY updated_at $order, request_id $order LIMIT ?",
+            arguments,
+        ).use { cursor -> SshRequestStorage.readAll(cursor, includePayload = false) }
+        val closest = records.take(limit)
+        val items = if (newer) closest.asReversed() else closest
+        val nextCursor = closest.lastOrNull()?.takeIf { records.size > limit }?.let {
+            SshHistoryCursor(it.updatedAt, it.requestId)
+        }
+        return HistoryPage(items, nextCursor)
+    }
 
     /** Persists only the parsed public identity; private import material remains in the active request only. */
     @Synchronized
@@ -2067,20 +2091,11 @@ class SshKeyProviderStore internal constructor(
             check(MessageDigest.isEqual(existing, publicKeyBlob)) { "SSH import public-key preview changed" }
             return true
         }
-        val historyBytes = ProtocolCodec.encodeToCbor(
-            stored.history.copy(publicKeyBlob = publicKeyBlob.copyOf()),
-        )
-        val encrypted = try {
-            auditWrapping.encrypt(historyBytes, auditAad(requestId, AUDIT_HISTORY))
-        } finally {
-            historyBytes.fill(0)
-        }
         val values = ContentValues().apply {
-            put("history_cbor", encrypted.first)
-            put("history_nonce", encrypted.second)
+            put("public_key_blob", publicKeyBlob)
         }
         val changed = writableDatabase.update(
-            "provider_requests",
+            "ssh_requests",
             values,
             "request_id=? AND state=?",
             arrayOf(requestId, SshProviderRequestState.PENDING_REVIEW.name),
@@ -2091,8 +2106,8 @@ class SshKeyProviderStore internal constructor(
 
     @Synchronized
     fun keyDisplayName(publicKeyBlob: ByteArray): String? = readableDatabase.rawQuery(
-        "SELECT display_name FROM ssh_keys WHERE hex(public_hash)=?",
-        arrayOf(sha256(publicKeyBlob).toHex().uppercase()),
+        "SELECT display_name FROM ssh_keys WHERE public_hash=?",
+        sha256(publicKeyBlob),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
     @Synchronized
@@ -2699,7 +2714,7 @@ class SshKeyProviderStore internal constructor(
         database.beginTransaction()
         val changed = try {
             val currentFloor = database.rawQuery(
-                "SELECT invalidated_through_epoch FROM authorization_floors " +
+                "SELECT invalidated_through_epoch FROM ssh_authorization_floors " +
                     "WHERE requester_client_id=? AND authorization_generation=?",
                 arrayOf(requester.value, generation),
             ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else -1L }
@@ -2712,7 +2727,7 @@ class SshKeyProviderStore internal constructor(
                     put("updated_at", now)
                 }
                 database.insertWithOnConflict(
-                    "authorization_floors",
+                    "ssh_authorization_floors",
                     null,
                     values,
                     SQLiteDatabase.CONFLICT_REPLACE,
@@ -2730,13 +2745,11 @@ class SshKeyProviderStore internal constructor(
                     put("state", SshProviderRequestState.CANCELLED.name)
                     put("outcome", SshProviderRequestOutcome.CANCELLED.name)
                     put("result_at", now)
-                    putNull("request_cbor")
-                    putNull("request_nonce")
                     put("updated_at", now)
                 }
                 cancelled.forEach { requestId ->
                     database.update(
-                        "provider_requests",
+                        "ssh_requests",
                         values,
                         "request_id=? AND state=?",
                         arrayOf(requestId, SshProviderRequestState.PENDING_REVIEW.name),
@@ -2794,13 +2807,10 @@ class SshKeyProviderStore internal constructor(
             put("state", SshProviderRequestState.CANCELLED.name)
             put("outcome", SshProviderRequestOutcome.CANCELLED.name)
             put("result_at", now)
-            putNull("request_cbor")
-            putNull("request_nonce")
             put("updated_at", now)
         }
-        val changed = writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(requestId)) == 1
+        val changed = writableDatabase.update("ssh_requests", values, "request_id=?", arrayOf(requestId)) == 1
         if (changed) {
-            pruneHistory(writableDatabase)
             notifyChanged()
         }
         return changed
@@ -2810,18 +2820,15 @@ class SshKeyProviderStore internal constructor(
     fun markSent(requestId: String, now: Long): Boolean {
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.SENT.name)
-            putNull("response_cbor")
-            putNull("response_nonce")
             put("updated_at", now)
         }
         val changed = writableDatabase.update(
-            "provider_requests",
+            "ssh_requests",
             values,
             "request_id=? AND state=?",
             arrayOf(requestId, SshProviderRequestState.RESPONSE_PENDING_SEND.name),
         ) == 1
         if (changed) {
-            pruneHistory(writableDatabase)
             notifyChanged()
         }
         return changed
@@ -2829,20 +2836,20 @@ class SshKeyProviderStore internal constructor(
 
     @Synchronized
     fun expireDue(now: Long): List<String> {
-        val expired = requestsIn(SshProviderRequestState.PENDING_REVIEW, decodeActiveRequest = false).filter { request ->
-            request.expiryDeadline?.let { now > it } == true
-        }.map(StoredSshProviderRequest::requestId)
-        val values = ContentValues().apply {
-            put("state", SshProviderRequestState.EXPIRED.name)
-            put("outcome", SshProviderRequestOutcome.EXPIRED.name)
-            put("result_at", now)
-            putNull("request_cbor")
-            putNull("request_nonce")
-            put("updated_at", now)
-        }
-        expired.forEach { writableDatabase.update("provider_requests", values, "request_id=?", arrayOf(it)) }
+        val database = writableDatabase
+        val expired = database.rawQuery(
+            "SELECT request_id FROM ssh_requests WHERE state='PENDING_REVIEW' AND expires_at<? ORDER BY updated_at",
+            arrayOf(now.toString()),
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+        if (expired.isEmpty()) return emptyList()
+        database.execSQL(
+            "UPDATE ssh_requests SET state='EXPIRED', outcome='EXPIRED', result_at=?, updated_at=?, " +
+                "import_file_bytes=NULL, import_agent_identity=NULL, " +
+                "request_complete=CASE WHEN kind='IMPORT' THEN 0 ELSE request_complete END " +
+                "WHERE state='PENDING_REVIEW' AND expires_at<?",
+            arrayOf(now, now, now),
+        )
         if (expired.isNotEmpty()) {
-            pruneHistory(writableDatabase)
             notifyChanged()
         }
         return expired
@@ -2862,19 +2869,16 @@ class SshKeyProviderStore internal constructor(
             put("state", SshProviderRequestState.CANCELLED.name)
             put("outcome", SshProviderRequestOutcome.CANCELLED.name)
             put("result_at", now)
-            putNull("request_cbor")
-            putNull("request_nonce")
             put("updated_at", now)
         }
         cancelled.forEach { requestId ->
             writableDatabase.update(
-                "provider_requests",
+                "ssh_requests",
                 values,
                 "request_id=? AND state=?",
                 arrayOf(requestId, SshProviderRequestState.PENDING_REVIEW.name),
             )
         }
-        pruneHistory(writableDatabase)
         notifyChanged()
         return cancelled
     }
@@ -2886,9 +2890,10 @@ class SshKeyProviderStore internal constructor(
         cbor: ByteArray,
         history: SshRequestHistorySnapshot,
         now: Long,
+        signRequest: SshSignRequest? = null,
+        importRequest: SshImportRequest? = null,
     ): SshProviderAcceptResult {
         return try {
-            pruneHistory(writableDatabase)
             val fingerprint = sha256(cbor)
             val existing = findRequestIdentity(requestId)
             if (existing != null) {
@@ -2897,32 +2902,16 @@ class SshKeyProviderStore internal constructor(
                 ) SshProviderAcceptResult.DUPLICATE else SshProviderAcceptResult.CONFLICT
             } else {
                 expireDue(now)
-                val pending = pendingReview()
+                val pending = requestsIn(SshProviderRequestState.PENDING_REVIEW, decodeActiveRequest = false)
                 if (pending.size >= MAX_PENDING_GLOBAL ||
                     pending.count { it.requesterClientId == requester } >= MAX_PENDING_PER_REQUESTER
                 ) {
                     SshProviderAcceptResult.RATE_LIMITED
                 } else {
-                    val values = ContentValues().apply {
-                        val encrypted = auditWrapping.encrypt(cbor, auditAad(requestId, AUDIT_REQUEST))
-                        val historyBytes = ProtocolCodec.encodeToCbor(history)
-                        val encryptedHistory = try {
-                            auditWrapping.encrypt(historyBytes, auditAad(requestId, AUDIT_HISTORY))
-                        } finally {
-                            historyBytes.fill(0)
-                        }
-                        put("request_id", requestId)
-                        put("kind", kind.name)
-                        put("requester_client_id", requester.value)
-                        put("request_fingerprint", fingerprint)
-                        put("request_cbor", encrypted.first)
-                        put("request_nonce", encrypted.second)
-                        put("history_cbor", encryptedHistory.first)
-                        put("history_nonce", encryptedHistory.second)
-                        put("state", SshProviderRequestState.PENDING_REVIEW.name)
-                        put("updated_at", now)
-                    }
-                    writableDatabase.insertOrThrow("provider_requests", null, values)
+                    SshRequestStorage.insert(writableDatabase, StoredSshProviderRequest(
+                        requestId, kind, requester, fingerprint, signRequest, importRequest, history,
+                        SshProviderRequestState.PENDING_REVIEW, updatedAt = now,
+                    ))
                     notifyChanged()
                     SshProviderAcceptResult.STORED
                 }
@@ -2933,7 +2922,7 @@ class SshKeyProviderStore internal constructor(
     }
 
     private fun findRequestIdentity(requestId: String): StoredRequestIdentity? = readableDatabase.rawQuery(
-        "SELECT kind, requester_client_id, request_fingerprint FROM provider_requests WHERE request_id=?",
+        "SELECT kind, requester_client_id, request_fingerprint FROM ssh_requests WHERE request_id=?",
         arrayOf(requestId),
     ).use { cursor ->
         if (!cursor.moveToFirst()) null else StoredRequestIdentity(
@@ -3029,8 +3018,8 @@ class SshKeyProviderStore internal constructor(
         "SELECT k.provider_key_id, k.public_hash, k.algorithm, o.provider_kind, o.key_alias, " +
             "o.ciphertext, o.nonce, o.security_level, o.user_verification_policy " +
             "FROM ssh_keys k JOIN ssh_operational_keys o ON o.provider_key_id=k.provider_key_id " +
-            "WHERE hex(k.public_hash)=?",
-        arrayOf(sha256(publicBlob).toHex().uppercase()),
+            "WHERE k.public_hash=?",
+        sha256(publicBlob),
     ).use { cursor ->
         if (!cursor.moveToFirst()) null else StoredKeyMaterial(
             providerKeyId = cursor.getString(0),
@@ -3050,8 +3039,8 @@ class SshKeyProviderStore internal constructor(
             "SELECT k.provider_key_id, k.public_blob, w.credential_id, w.user_handle, w.rp_id, " +
                 "w.cose_public_key, w.backup_eligible, w.backup_state " +
                 "FROM ssh_keys k JOIN ssh_webauthn_credentials w ON w.provider_key_id=k.provider_key_id " +
-                "WHERE hex(k.public_hash)=?",
-            arrayOf(sha256(publicBlob).toHex().uppercase()),
+                "WHERE k.public_hash=?",
+            sha256(publicBlob),
         ).use { cursor ->
             if (!cursor.moveToFirst()) null else StoredSshWebAuthnCredential(
                 providerKeyId = cursor.getString(0),
@@ -3194,11 +3183,6 @@ class SshKeyProviderStore internal constructor(
         notify: Boolean = true,
         approvalAudit: ApprovalAudit? = null,
     ): Boolean {
-        val encoded = when (response) {
-            is SshSignResult -> ProtocolCodec.encodeToCbor(response)
-            is SshImportResult -> ProtocolCodec.encodeToCbor(response)
-            else -> error("unsupported SSH provider response")
-        }
         val outcome = when (response) {
             is SshSignResult -> when (response.kind) {
                 SshSignResultKind.SIGNED -> SshProviderRequestOutcome.SIGNED
@@ -3221,7 +3205,6 @@ class SshKeyProviderStore internal constructor(
             is SshImportResult -> response.resultAt
             else -> error("unsupported SSH provider response")
         }
-        val encrypted = auditWrapping.encrypt(encoded, auditAad(stored.requestId, AUDIT_RESPONSE))
         val responsePublicKey = (response as? SshImportResult)?.publicKeyBlob
         var updatedHistory = if (responsePublicKey != null) {
             stored.history.publicKeyBlob?.let { previewed ->
@@ -3243,26 +3226,20 @@ class SshKeyProviderStore internal constructor(
                 rememberedScope = approvalAudit.rememberedScope,
             )
         }
-        val historyBytes = ProtocolCodec.encodeToCbor(updatedHistory)
-        val encryptedHistory = try {
-            auditWrapping.encrypt(historyBytes, auditAad(stored.requestId, AUDIT_HISTORY))
-        } finally {
-            historyBytes.fill(0)
-        }
-        val values = ContentValues().apply {
+        val values = SshRequestStorage.contentValues(SshRequestStorage.historyValues(updatedHistory)).apply {
+            putAll(SshRequestStorage.contentValues(SshRequestStorage.responseValues(response)))
             put("state", SshProviderRequestState.RESPONSE_PENDING_SEND.name)
             put("outcome", outcome.name)
             put("result_at", resultAt)
-            putNull("request_cbor")
-            putNull("request_nonce")
-            put("history_cbor", encryptedHistory.first)
-            put("history_nonce", encryptedHistory.second)
-            put("response_cbor", encrypted.first)
-            put("response_nonce", encrypted.second)
+            if (stored.kind == SshProviderRequestKind.IMPORT) {
+                putNull("import_file_bytes")
+                putNull("import_agent_identity")
+                put("request_complete", 0)
+            }
             put("updated_at", now)
         }
         val changed = database.update(
-            "provider_requests",
+            "ssh_requests",
             values,
             "request_id=? AND state=?",
             arrayOf(stored.requestId, SshProviderRequestState.PENDING_REVIEW.name),
@@ -3318,13 +3295,14 @@ class SshKeyProviderStore internal constructor(
                 SQLiteDatabase.CONFLICT_IGNORE,
             ) != -1L
         ) return true
-        val update = ContentValues().apply { put("last_approved_at", now) }
-        return database.update(
-            "ssh_known_hosts",
-            update,
-            "hex(host_key_sha256)=? AND last_approved_at<?",
-            arrayOf(hostKeySha256.toHex().uppercase(), now.toString()),
-        ) == 1
+        return database.compileStatement(
+            "UPDATE ssh_known_hosts SET last_approved_at=? WHERE host_key_sha256=? AND last_approved_at<?",
+        ).use { statement ->
+            statement.bindLong(1, now)
+            statement.bindBlob(2, hostKeySha256)
+            statement.bindLong(3, now)
+            statement.executeUpdateDelete() == 1
+        }
     }
 
     private fun signFailure(
@@ -3347,57 +3325,21 @@ class SshKeyProviderStore internal constructor(
         decodeActiveRequest: Boolean = true,
     ): List<StoredSshProviderRequest> =
         readableDatabase.rawQuery(
-            "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
-                "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
-                "FROM provider_requests WHERE state=? ORDER BY updated_at",
+            "SELECT ${if (decodeActiveRequest) "*" else SshRequestStorage.summaryColumns} " +
+                "FROM ssh_requests WHERE state=? ORDER BY updated_at",
             arrayOf(state.name),
-        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(decodeActiveRequest)) } }
+        ).use { cursor -> SshRequestStorage.readAll(cursor, decodeActiveRequest) }
 
-    private fun android.database.Cursor.readRequest(decodeActiveRequest: Boolean = true): StoredSshProviderRequest {
-        val kind = SshProviderRequestKind.valueOf(getString(1))
-        val requestId = getString(0)
-        val requestBytes = if (!decodeActiveRequest || isNull(4)) null else auditWrapping.decrypt(
-            getBlob(4), getBlob(5), auditAad(requestId, AUDIT_REQUEST),
-        )
-        val historyBytes = auditWrapping.decrypt(
-            getBlob(6), getBlob(7), auditAad(requestId, AUDIT_HISTORY),
-        )
-        return try {
-            StoredSshProviderRequest(
-                requestId = requestId,
-                kind = kind,
-                requesterClientId = ClientId(getString(2)),
-                requestFingerprint = getBlob(3),
-                signRequest = if (kind == SshProviderRequestKind.SIGN && requestBytes != null) {
-                    ProtocolCodec.decodeFromCbor(requestBytes)
-                } else null,
-                importRequest = if (kind == SshProviderRequestKind.IMPORT && requestBytes != null) {
-                    ProtocolCodec.decodeFromCbor(requestBytes)
-                } else null,
-                history = ProtocolCodec.decodeFromCbor(historyBytes),
-                state = SshProviderRequestState.valueOf(getString(8)),
-                outcome = if (isNull(9)) null else SshProviderRequestOutcome.valueOf(getString(9)),
-                resultAt = if (isNull(10)) null else getLong(10),
-                encodedResponse = if (isNull(11)) null else auditWrapping.decrypt(
-                    getBlob(11),
-                    getBlob(12),
-                    auditAad(requestId, AUDIT_RESPONSE),
-                ),
-                updatedAt = getLong(13),
-            )
-        } finally {
-            requestBytes?.fill(0)
-            historyBytes.fill(0)
-        }
-    }
+    private fun android.database.Cursor.readRequest(decodeActiveRequest: Boolean = true): StoredSshProviderRequest =
+        SshRequestStorage.read(this, decodeActiveRequest)
 
     private fun StoredSshProviderRequest.expiresAt(): Long =
         signRequest?.expiresAt ?: importRequest?.expiresAt ?: history.expiresAt
 
     private fun findKeyPolicy(publicKeyBlob: ByteArray): StoredKeyPolicy? = readableDatabase.rawQuery(
         "SELECT k.provider_key_id, k.approval_policy, o.user_verification_policy FROM ssh_keys k " +
-            "JOIN ssh_operational_keys o ON o.provider_key_id=k.provider_key_id WHERE hex(k.public_hash)=?",
-        arrayOf(sha256(publicKeyBlob).toHex().uppercase()),
+            "JOIN ssh_operational_keys o ON o.provider_key_id=k.provider_key_id WHERE k.public_hash=?",
+        sha256(publicKeyBlob),
     ).use { cursor ->
         if (!cursor.moveToFirst()) null else StoredKeyPolicy(
             providerKeyId = cursor.getString(0),
@@ -3542,7 +3484,7 @@ class SshKeyProviderStore internal constructor(
     }
 
     private fun authorizationFloor(requester: ClientId, generation: String): Long = readableDatabase.rawQuery(
-        "SELECT invalidated_through_epoch FROM authorization_floors " +
+        "SELECT invalidated_through_epoch FROM ssh_authorization_floors " +
             "WHERE requester_client_id=? AND authorization_generation=?",
         arrayOf(requester.value, generation),
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getLong(0) else -1L }
@@ -3576,8 +3518,8 @@ class SshKeyProviderStore internal constructor(
     }
 
     private fun findKeyId(hash: ByteArray): String? = readableDatabase.rawQuery(
-        "SELECT provider_key_id FROM ssh_keys WHERE hex(public_hash)=?",
-        arrayOf(hash.toHex().uppercase()),
+        "SELECT provider_key_id FROM ssh_keys WHERE public_hash=?",
+        hash,
     ).use { cursor -> if (cursor.moveToFirst()) cursor.getString(0) else null }
 
     private fun pruneExpiredKeys(now: Long) {
@@ -3593,18 +3535,8 @@ class SshKeyProviderStore internal constructor(
         expired.forEach(::deleteKey)
     }
 
-    /** Keeps terminal audit rendering bounded without ever deleting pending reviews or unsent responses. */
-    private fun pruneHistory(database: SQLiteDatabase) {
-        database.execSQL(
-            "DELETE FROM provider_requests WHERE request_id IN (" +
-                "SELECT request_id FROM provider_requests WHERE state NOT IN " +
-                "('PENDING_REVIEW', 'RESPONSE_PENDING_SEND') ORDER BY updated_at DESC " +
-                "LIMIT -1 OFFSET $MAX_HISTORY_ROWS)",
-        )
-    }
-
     private fun bumpRevision(database: SQLiteDatabase = writableDatabase) {
-        database.execSQL("UPDATE provider_state SET revision=revision+1 WHERE singleton=1")
+        database.execSQL("UPDATE ssh_provider_state SET revision=revision+1 WHERE singleton=1")
     }
 
     private fun notifyChanged() {
@@ -3976,44 +3908,6 @@ class SshKeyProviderStore internal constructor(
         -> error("Apple SSH key providers cannot sign through the Android provider store")
     }
 
-    private class AndroidKeyWrapping(private val alias: String) {
-        fun encrypt(plaintext: ByteArray, associatedData: ByteArray = EMPTY_BYTES): Pair<ByteArray, ByteArray> {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.ENCRYPT_MODE, key())
-            if (associatedData.isNotEmpty()) cipher.updateAAD(associatedData)
-            return cipher.doFinal(plaintext) to cipher.iv
-        }
-
-        fun decrypt(
-            ciphertext: ByteArray,
-            nonce: ByteArray,
-            associatedData: ByteArray = EMPTY_BYTES,
-        ): ByteArray {
-            val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-            cipher.init(Cipher.DECRYPT_MODE, key(), GCMParameterSpec(128, nonce))
-            if (associatedData.isNotEmpty()) cipher.updateAAD(associatedData)
-            return cipher.doFinal(ciphertext)
-        }
-
-        private fun key(): SecretKey {
-            val store = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
-            (store.getKey(alias, null) as? SecretKey)?.let { return it }
-            return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore").run {
-                init(
-                    KeyGenParameterSpec.Builder(
-                        alias,
-                        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT,
-                    ).setBlockModes(KeyProperties.BLOCK_MODE_GCM)
-                        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
-                        .setKeySize(256)
-                        .setRandomizedEncryptionRequired(true)
-                        .build(),
-                )
-                generateKey()
-            }
-        }
-    }
-
     private fun SshKeyType.toProtocol(): SshKeyAlgorithm = when (this) {
         SshKeyType.ED25519 -> SshKeyAlgorithm.SSH_ED25519
         SshKeyType.RSA -> SshKeyAlgorithm.SSH_RSA
@@ -4137,8 +4031,6 @@ class SshKeyProviderStore internal constructor(
             runCatching { SshPrivateKeyFileParser.isEncrypted(requireNotNull(fileBytes)) }.getOrDefault(false),
         payloadSize = fileBytes?.size ?: agentIdentity?.size ?: 0,
     )
-    private fun auditAad(requestId: String, purpose: String): ByteArray =
-        "notisync:ssh-provider-audit:v1:$purpose:$requestId".encodeToByteArray()
     private data class StoredKeyMaterial(
         val providerKeyId: String,
         val publicHash: ByteArray,
@@ -4207,19 +4099,14 @@ class SshKeyProviderStore internal constructor(
     private companion object {
         const val SSH_STORAGE_LOG_TAG = "NotiSyncSshStorage"
         const val SSH_KEYSTORE_ALIAS_PREFIX = "notisync_ssh_"
-        const val AUDIT_KEY_ALIAS = "notisync_ssh_audit_wrapping_v1"
         const val KEY_ALIAS_PREFIX = "notisync_ssh_identity_"
         const val WEBAUTHN_ALIAS_PREFIX = "notisync_ssh_webauthn_"
         const val EXPORT_COPY_ALIAS_PREFIX = "notisync_ssh_export_copy_"
         const val ANDROID_KEYSTORE = "AndroidKeyStore"
         const val ED25519_OID = "1.3.101.112"
         const val ED25519_PUBLIC_KEY_BYTES = 32
-        const val AUDIT_REQUEST = "request"
-        const val AUDIT_RESPONSE = "response"
-        const val AUDIT_HISTORY = "history"
         const val MAX_PENDING_GLOBAL = 128
         const val MAX_PENDING_PER_REQUESTER = 16
-        const val MAX_HISTORY_ROWS = 500
         const val MAX_REMEMBERED_AUTHORIZATIONS_GLOBAL = 1_024L
         const val CERTIFICATE_CLOCK_SKEW_MILLIS = 5 * 60_000L
         const val CERTIFICATE_VALIDITY_MILLIS = 20L * 365 * 24 * 60 * 60 * 1_000

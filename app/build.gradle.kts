@@ -122,7 +122,9 @@ dependencies {
 
     // Persistence. The first legacy cutover is application-managed; subsequent schema upgrades use Room.
     implementation(libs.androidx.room3.runtime)
+    implementation(libs.androidx.paging.compose)
     implementation(libs.androidx.sqlite.framework)
+    implementation(libs.sqlcipher.android)
     ksp(libs.androidx.room3.compiler)
     implementation(libs.androidx.datastore)
     implementation(libs.androidx.datastore.preferences)

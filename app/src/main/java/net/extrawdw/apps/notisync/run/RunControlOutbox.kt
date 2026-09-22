@@ -1,14 +1,12 @@
 package net.extrawdw.apps.notisync.run
 
-import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSQLiteOpenHelper
+import net.extrawdw.apps.notisync.data.storage.operational.RunControlStorage
 import net.extrawdw.notisync.protocol.RunControl
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 
 internal interface RunControlQueue {
     fun enqueue(control: RunControl)
@@ -24,12 +22,7 @@ internal enum class QueuedRunControlDisposition { SEND, RETAIN, DROP }
  * or signals if Android dies after send acceptance but before local removal.
  */
 internal class RunControlOutbox(context: Context) :
-    SQLiteOpenHelper(
-        context.applicationContext,
-        OperationalDatabase.DATABASE_NAME,
-        null,
-        OperationalDatabase.VERSION,
-    ),
+    OperationalSQLiteOpenHelper(context),
     RunControlQueue {
     init {
         setWriteAheadLoggingEnabled(true)
@@ -43,13 +36,9 @@ internal class RunControlOutbox(context: Context) :
     @Synchronized
     override fun enqueue(control: RunControl) {
         val inserted = writableDatabase.insertWithOnConflict(
-            "controls",
+            "run_controls",
             null,
-            ContentValues().apply {
-                put("request_id", control.requestId)
-                put("requested_at", control.requestedAt)
-                put("payload", ProtocolCodec.encodeToCbor(control))
-            },
+            RunControlStorage.contentValues(control),
             SQLiteDatabase.CONFLICT_IGNORE,
         )
         if (inserted == -1L && !contains(control.requestId)) {
@@ -59,13 +48,13 @@ internal class RunControlOutbox(context: Context) :
 
     @Synchronized
     override fun pending(): List<RunControl> = readableDatabase.rawQuery(
-        "SELECT payload FROM controls ORDER BY requested_at, request_id",
+        "SELECT ${RunControlStorage.columns.joinToString(", ")} FROM run_controls ORDER BY requested_at, request_id",
         emptyArray(),
     ).use { cursor ->
         buildList {
             while (cursor.moveToNext()) {
                 val control = runCatching {
-                    ProtocolCodec.decodeFromCbor<RunControl>(cursor.getBlob(0))
+                    RunControlStorage.read(cursor)
                 }.getOrElse { error("corrupt Run control outbox row") }
                 add(control)
             }
@@ -74,17 +63,14 @@ internal class RunControlOutbox(context: Context) :
 
     @Synchronized
     override fun remove(requestId: String) {
-        val removed = writableDatabase.delete("controls", "request_id = ?", arrayOf(requestId))
+        val removed = writableDatabase.delete("run_controls", "request_id = ?", arrayOf(requestId))
         if (removed == 0 && contains(requestId)) error("could not remove sent Run control")
     }
 
     private fun contains(requestId: String): Boolean = readableDatabase.rawQuery(
-        "SELECT 1 FROM controls WHERE request_id = ? LIMIT 1",
+        "SELECT 1 FROM run_controls WHERE request_id = ? LIMIT 1",
         arrayOf(requestId),
     ).use { it.moveToFirst() }
-
-    companion object {
-    }
 }
 
 private fun roomMustOwnRunControlSchema(): Nothing =

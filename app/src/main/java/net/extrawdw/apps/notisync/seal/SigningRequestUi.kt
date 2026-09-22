@@ -136,15 +136,15 @@ internal fun SigningRequestListItem(
     val commit = stored.commit
     val tag = stored.tag
     val headline = when (stored.request.objectKind) {
-        OpenPgpObjectKind.GIT_COMMIT -> commit?.message?.commitSubject().orEmpty().ifBlank {
+        OpenPgpObjectKind.GIT_COMMIT -> (stored.summary?.title ?: commit?.message?.commitSubject()).orEmpty().ifBlank {
             stringResource(R.string.seal_commit_untitled)
         }
-        OpenPgpObjectKind.GIT_TAG -> tag?.tagName.orEmpty().ifBlank {
+        OpenPgpObjectKind.GIT_TAG -> (stored.summary?.title ?: tag?.tagName).orEmpty().ifBlank {
             stringResource(R.string.seal_tag_untitled)
         }
     }
     val time = rememberShortTimeFormatter().format(Date(stored.updatedAt))
-    val base = commit?.parentIds?.firstOrNull()?.shortObjectId()
+    val base = stored.summary?.reference?.shortObjectId() ?: commit?.parentIds?.firstOrNull()?.shortObjectId()
         ?: commit?.treeId?.shortObjectId()
         ?: tag?.objectId?.shortObjectId()
     val workingDirectory = stored.request.workingDirectory?.workingDirectoryName()
@@ -437,7 +437,7 @@ private fun SealHero(
 }
 
 @Composable
-private fun CommitCard(commit: GitCommitDisplaySnapshot) {
+private fun CommitCard(commit: GitCommitDetails) {
     val subject = commit.message.commitSubject().ifBlank {
         stringResource(R.string.seal_commit_untitled)
     }
@@ -500,7 +500,7 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
                 )
             }
         }
-        if (commit.truncated) {
+        if (commit.legacyTruncated) {
             HorizontalDivider()
             Text(
                 stringResource(R.string.seal_history_details_truncated),
@@ -512,7 +512,7 @@ private fun CommitCard(commit: GitCommitDisplaySnapshot) {
 }
 
 @Composable
-private fun TagCard(tag: GitTagDisplaySnapshot) {
+private fun TagCard(tag: GitTagDetails) {
     SealCard(
         title = stringResource(R.string.seal_tag_section),
         icon = LabelIcon,
@@ -541,7 +541,7 @@ private fun TagCard(tag: GitTagDisplaySnapshot) {
         HorizontalDivider()
         SealRecordLine(stringResource(R.string.seal_tag_target_type), tag.objectType)
         SealRecordLine(stringResource(R.string.seal_tag_target), tag.objectId, monospace = true)
-        if (tag.truncated) {
+        if (tag.legacyTruncated) {
             HorizontalDivider()
             Text(
                 stringResource(R.string.seal_history_details_truncated),

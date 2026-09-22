@@ -2,7 +2,7 @@ package net.extrawdw.apps.notisync.data.storage.migration
 
 import android.content.Context
 import android.content.ContextWrapper
-import android.database.sqlite.SQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import androidx.datastore.core.DataStore
 import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
@@ -34,12 +34,16 @@ import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabaseFactory
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseEncryption
 import net.extrawdw.apps.notisync.data.storage.operational.RoomOperationalApplicationState
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabaseFactory
 import net.extrawdw.apps.notisync.ios.IosApp
 import net.extrawdw.apps.notisync.ios.IosAppRegistry
 import net.extrawdw.apps.notisync.run.RunControlOutbox
 import net.extrawdw.apps.notisync.run.RunStore
+import net.extrawdw.apps.notisync.run.RunKey
+import net.extrawdw.apps.notisync.run.StoredRun
+import net.extrawdw.apps.notisync.run.StoredRunRevision
 import net.extrawdw.apps.notisync.seal.OpenPgpSignStore
 import net.extrawdw.apps.notisync.seal.OpenPgpEnrollmentStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
@@ -50,6 +54,12 @@ import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.NotificationFilterRule
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.RunControl
+import net.extrawdw.notisync.protocol.RunControlKind
+import net.extrawdw.notisync.protocol.RunPhase
+import net.extrawdw.notisync.protocol.RunState
+import net.extrawdw.notisync.protocol.RunTerminalSnapshot
+import net.extrawdw.notisync.protocol.RunUpdateReason
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -68,6 +78,7 @@ class RoomStorageMigrationAndroidTest {
 
     @Before
     fun setUp() {
+        System.loadLibrary("sqlcipher")
         root = File(base.cacheDir, "room-storage-migration-${UUID.randomUUID()}")
         check(root.mkdirs())
         context = IsolatedDatabaseContext(base, root)
@@ -123,7 +134,6 @@ class RoomStorageMigrationAndroidTest {
             it[longPreferencesKey("openpgp_sign_enrolled_at")] = 1_234L
         }
         createKnownGoodSources()
-        val legacyMessageHashes = legacyMessageFamily().associate { it.name to it.sha256() }
 
         var migrationRequiredCount = 0
         val migrator = RoomStorageMigration(context, preferences)
@@ -133,14 +143,11 @@ class RoomStorageMigrationAndroidTest {
         assertEquals(1, migrationRequiredCount)
         assertEquals("Retained phone", migratedPreferences[stringPreferencesKey("device_name")])
         assertTrue(migratedPreferences[booleanPreferencesKey("known_good_to_room_v1_complete")] == true)
-        assertTrue(migratedPreferences[stringPreferencesKey("enabled_packages_json")] != null)
-        assertTrue(migratedPreferences[stringPreferencesKey("ancs_enabled_bundles_json")] != null)
-        assertTrue(migratedPreferences[stringPreferencesKey("ancs_discovered_apps_json")] != null)
-        assertEquals(
-            "0123456789ABCDEF",
-            migratedPreferences[stringPreferencesKey("openpgp_sign_primary_key_id")],
-        )
-        assertEquals(legacyMessageHashes, legacyMessageFamily().associate { it.name to it.sha256() })
+        assertEquals(null, migratedPreferences[stringPreferencesKey("enabled_packages_json")])
+        assertEquals(null, migratedPreferences[stringPreferencesKey("ancs_enabled_bundles_json")])
+        assertEquals(null, migratedPreferences[stringPreferencesKey("ancs_discovered_apps_json")])
+        assertEquals(null, migratedPreferences[stringPreferencesKey("openpgp_sign_primary_key_id")])
+        assertTrue(legacyMessageFamily().isEmpty())
         openCore().use { database ->
             assertEquals(2L, database.count("dedup"))
             assertTrue(database.tableExists("pending_ack"))
@@ -149,11 +156,12 @@ class RoomStorageMigrationAndroidTest {
         openOperational().use { database ->
             assertFalse(database.tableExists("dedup"))
             assertTrue(database.tableExists("mirror_lifecycle"))
-            assertEquals(1L, database.count("mirror_msg"))
+            assertEquals(1L, database.count("mirror_message"))
+            assertFalse(database.tableExists("mirror_msg"))
             assertEquals(0L, database.count("ssh_known_hosts"))
-            assertEquals(1L, database.count("provider_state"))
+            assertEquals(1L, database.count("ssh_provider_state"))
             database.rawQuery(
-                "SELECT inventory_generation FROM provider_state WHERE singleton=1",
+                "SELECT inventory_generation FROM ssh_provider_state WHERE singleton=1",
                 emptyArray(),
             ).use { cursor ->
                 assertTrue(cursor.moveToFirst())
@@ -164,7 +172,11 @@ class RoomStorageMigrationAndroidTest {
             assertEquals(3L, database.count("ios_apps"))
             assertEquals(1L, database.count("screen_mirror_state"))
             assertEquals(1L, database.count("screen_codec_preferences"))
-            assertEquals(1L, database.count("openpgp_enrollment"))
+            assertEquals(1L, database.count("seal_enrollment"))
+            assertEquals(1L, database.count("runs"))
+            assertEquals(1L, database.count("run_revisions"))
+            assertEquals(1L, database.count("run_controls"))
+            assertFalse(database.tableExists("controls"))
         }
         val applicationState = RoomOperationalApplicationState(context)
         val repositoryScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -200,11 +212,18 @@ class RoomStorageMigrationAndroidTest {
                 .enrollment.value.primaryKeyId,
         )
         val messageStore = MessageStore(context)
-        val runStore = RunStore(context)
+        val runStore = RunStore(context, now = { 3_000 })
         val controlOutbox = RunControlOutbox(context)
         val signStore = OpenPgpSignStore(context)
         val sshStore = SshKeyProviderStore(context)
         try {
+            val expectedRun = StoredRun(legacyRunState(), receivedAt = 3_000, presentedRevision = 2, active = false)
+            val runKey = RunKey(expectedRun.state.hostClientId.value, expectedRun.state.runId)
+            assertTrue("Presented completed Runs belong to paged history, not the live cache", runStore.runs.value.isEmpty())
+            assertEquals(expectedRun, runStore.find(runKey))
+            assertEquals(listOf(expectedRun), runStore.historyPage().items)
+            assertEquals(listOf(StoredRunRevision(expectedRun.state, expectedRun.receivedAt)), runStore.revisions(runKey))
+            assertEquals(listOf(legacyRunControl()), controlOutbox.pending())
             assertTrue(messageStore.seen("migrated-message"))
             assertTrue("migrated-pending-ack" in messageStore.pendingAcks())
             messageStore.onDismissed(ClientId("source-client"), "source-key")
@@ -248,7 +267,7 @@ class RoomStorageMigrationAndroidTest {
     }
 
     @Test
-    fun ancientIncompleteAndCorruptSourcesAreSkipped() = runBlocking {
+    fun corruptWholeSourceAbortsWithoutDiscardingRecoverableInputs() = runBlocking {
         val enabledPackagesJson = """["com.example.retained",7,""]"""
         preferences.edit {
             it[stringPreferencesKey("enabled_packages_json")] = enabledPackagesJson
@@ -270,10 +289,58 @@ class RoomStorageMigrationAndroidTest {
         }
         context.getDatabasePath(LegacyDatabaseNames.RUNS).writeBytes("not a sqlite database".toByteArray())
 
-        RoomStorageMigration(context, preferences).prepare()
+        val before = legacyMessageFamily().associate { it.name to it.sha256() }
+        assertTrue(runCatching { RoomStorageMigration(context, preferences).prepare() }.isFailure)
+        assertFalse(context.getDatabasePath(CoreDatabase.DATABASE_NAME).exists())
+        assertFalse(context.getDatabasePath(OperationalDatabase.DATABASE_NAME).exists())
+        assertEquals(before, legacyMessageFamily().associate { it.name to it.sha256() })
+        assertTrue(context.getDatabasePath(LegacyDatabaseNames.RUNS).exists())
+        assertEquals(
+            enabledPackagesJson,
+            preferences.data.first()[stringPreferencesKey("enabled_packages_json")],
+        )
+        assertTrue(
+            preferences.data.first()[booleanPreferencesKey("known_good_to_room_v1_complete")] != true,
+        )
+    }
 
-        assertTrue(context.getDatabasePath(CoreDatabase.DATABASE_NAME).exists())
-        assertTrue(context.getDatabasePath(OperationalDatabase.DATABASE_NAME).exists())
+    @Test
+    fun unknownLegacyTablesAreOmittedWhileValidImportsProceed() = runBlocking {
+        createKnownGoodSources()
+        createDatabase(LegacyDatabaseNames.RUNS) { database ->
+            database.execSQL("CREATE TABLE future_feature(data TEXT NOT NULL)")
+            database.execSQL("INSERT INTO future_feature VALUES('retain this unrecognized row')")
+        }
+        RoomStorageMigration(context, preferences).prepare()
+        assertTrue(preferences.data.first()[booleanPreferencesKey("known_good_to_room_v1_complete")] == true)
+        openOperational().use { database ->
+            assertFalse(database.tableExists("future_feature"))
+            assertEquals(1L, database.count("mirror_message"))
+            assertFalse(database.tableExists("mirror_msg"))
+        }
+        assertFalse(context.getDatabasePath(LegacyDatabaseNames.RUNS).exists())
+        assertFalse(context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER).exists())
+    }
+
+    @Test
+    fun inconsistentRowsAndMalformedPreferencesDoNotBlockValidLegacyImports() = runBlocking {
+        preferences.edit {
+            it[stringPreferencesKey("enabled_packages_json")] = """["com.example.retained",7,""]"""
+            it[stringPreferencesKey("screen_mirror_codec_preferences_v1")] =
+                """{"screen-peer":"h264","unsupported":"vp9","wrong-type":7}"""
+            it[stringPreferencesKey("per_app_config_json")] = "not valid JSON"
+            it[booleanPreferencesKey("openpgp_sign_enabled")] = true
+            it[stringPreferencesKey("openpgp_sign_provider")] = "openkeychain"
+        }
+        createDatabase(LegacyDatabaseNames.MESSAGE_LEDGER) { database ->
+            database.execSQL("CREATE TABLE dedup(message_id TEXT PRIMARY KEY)")
+            database.execSQL("INSERT INTO dedup VALUES('missing-handled-at')")
+            database.execSQL("CREATE TABLE pending_ack(message_id TEXT, queued_at INTEGER)")
+            database.execSQL("INSERT INTO pending_ack VALUES('valid-ack',1)")
+            database.execSQL("INSERT INTO pending_ack VALUES('invalid-ack',NULL)")
+        }
+        RoomStorageMigration(context, preferences).prepare()
+        assertTrue(preferences.data.first()[booleanPreferencesKey("known_good_to_room_v1_complete")] == true)
         openCore().use { database ->
             assertEquals(0L, database.count("dedup"))
             assertEquals(1L, database.count("pending_ack"))
@@ -281,17 +348,11 @@ class RoomStorageMigrationAndroidTest {
         openOperational().use { database ->
             assertTrue(database.androidAppEnabled("com.example.retained"))
             assertEquals(1L, database.count("android_apps"))
-            assertEquals(0L, database.count("runs"))
             assertEquals(1L, database.count("screen_codec_preferences"))
             assertEquals(0, database.openPgpEnrollmentEnabled())
+            assertFalse(database.tableExists("migration_quarantine"))
         }
-        assertEquals(
-            enabledPackagesJson,
-            preferences.data.first()[stringPreferencesKey("enabled_packages_json")],
-        )
-        assertTrue(
-            preferences.data.first()[booleanPreferencesKey("known_good_to_room_v1_complete")] == true,
-        )
+        assertFalse(context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER).exists())
     }
 
     private fun createKnownGoodSources() {
@@ -326,13 +387,21 @@ class RoomStorageMigrationAndroidTest {
                 "CREATE TABLE runs(host_client TEXT NOT NULL, run_id TEXT NOT NULL, revision INTEGER NOT NULL, " +
                     "presented_revision INTEGER NOT NULL, active INTEGER NOT NULL, updated_at INTEGER NOT NULL, " +
                     "ended_at INTEGER, received_at INTEGER NOT NULL, payload BLOB NOT NULL, " +
-                    "PRIMARY KEY(host_client, run_id))",
+                "PRIMARY KEY(host_client, run_id))",
+            )
+            database.execSQL(
+                "INSERT INTO runs VALUES('run-host', 'legacy-run', 2, 2, 0, 2000, 2000, 3000, ?)",
+                arrayOf(ProtocolCodec.encodeToCbor(legacyRunState())),
             )
         }
         createDatabase(LegacyDatabaseNames.RUN_CONTROL_OUTBOX) { database ->
             database.execSQL(
                 "CREATE TABLE controls(request_id TEXT PRIMARY KEY, requested_at INTEGER NOT NULL, " +
                     "payload BLOB NOT NULL)",
+            )
+            database.execSQL(
+                "INSERT INTO controls VALUES(?, 1000, ?)",
+                arrayOf(legacyRunControl().requestId, ProtocolCodec.encodeToCbor(legacyRunControl())),
             )
         }
         createDatabase(LegacyDatabaseNames.OPENPGP_SIGNING) { database ->
@@ -379,9 +448,24 @@ class RoomStorageMigrationAndroidTest {
         check(captureRoot.deleteRecursively())
     }
 
+    private fun legacyRunState() = RunState(
+        hostClientId = ClientId("run-host"), runId = "legacy-run", revision = 2,
+        phase = RunPhase.COMPLETED, updateReason = RunUpdateReason.COMPLETED,
+        startedAt = 1_000, updatedAt = 2_000, endedAt = 2_000, exitCode = 0,
+        argv = listOf("make", "test"), cwd = "/work", usesPty = false,
+        terminal = RunTerminalSnapshot("Tests passed\n", truncated = false, rawBytesSeen = 13),
+    )
+
+    private fun legacyRunControl() = RunControl(
+        requestId = "00000000-0000-4000-8000-000000000007",
+        hostClientId = ClientId("run-host"), runId = "legacy-run",
+        kind = RunControlKind.REFRESH, requestedAt = 1_000,
+    )
+
     private fun legacyMessageFamily(): List<File> {
         val source = context.getDatabasePath(LegacyDatabaseNames.MESSAGE_LEDGER)
-        return listOf("", "-wal", "-shm").map { suffix -> File(source.absolutePath + suffix) }
+        return listOf("", "-wal", "-shm", "-journal").map { suffix -> File(source.absolutePath + suffix) }
+            .filter(File::isFile)
     }
 
     private fun File.sha256(): String =
@@ -391,11 +475,7 @@ class RoomStorageMigrationAndroidTest {
         SQLiteDatabase.openOrCreateDatabase(context.getDatabasePath(name), null).use(block)
     }
 
-    private fun openOperational(): SQLiteDatabase = SQLiteDatabase.openDatabase(
-        context.getDatabasePath(OperationalDatabase.DATABASE_NAME).absolutePath,
-        null,
-        SQLiteDatabase.OPEN_READONLY,
-    )
+    private fun openOperational(): SQLiteDatabase = OperationalDatabaseEncryption.open(context)
 
     private fun openCore(): SQLiteDatabase = SQLiteDatabase.openDatabase(
         context.getDatabasePath(CoreDatabase.DATABASE_NAME).absolutePath,
@@ -431,7 +511,7 @@ class RoomStorageMigrationAndroidTest {
         ).use { cursor -> cursor.moveToFirst() && cursor.getInt(0) == 1 }
 
     private fun SQLiteDatabase.openPgpEnrollmentEnabled(): Int =
-        rawQuery("SELECT enabled FROM openpgp_enrollment WHERE singleton_id=1", emptyArray()).use { cursor ->
+        rawQuery("SELECT enabled FROM seal_enrollment WHERE singleton_id=1", emptyArray()).use { cursor ->
             check(cursor.moveToFirst())
             cursor.getInt(0)
         }

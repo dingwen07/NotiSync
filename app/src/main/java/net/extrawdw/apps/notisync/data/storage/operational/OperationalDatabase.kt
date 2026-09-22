@@ -7,19 +7,19 @@ import androidx.room3.Query
 import androidx.room3.Room
 import androidx.room3.RoomDatabase
 import androidx.room3.migration.Migration
-import androidx.sqlite.driver.AndroidSQLiteDriver
+import androidx.sqlite.SQLiteConnection
 import androidx.sqlite.execSQL
 
 /**
- * Operational Room contains application-domain state. Existing table and column names remain
- * unchanged so the proven stores can continue to provide runtime behavior while Room owns schema
- * migrations.
+ * SQLCipher-backed application-domain state. Room owns the shared schema and migrations;
+ * feature stores and DAOs use the same database key and schema version.
  */
 @Database(
     entities = [
         MirrorMessageEntity::class,
         MirrorLifecycleEntity::class,
         RunEntity::class,
+        RunRevisionEntity::class,
         RunControlEntity::class,
         OpenPgpSignRequestEntity::class,
         SshProviderStateEntity::class,
@@ -51,7 +51,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 4
+        const val VERSION = 5
 
         val MIGRATION_1_2 = Migration(1, 2) { connection ->
             connection.execSQL(
@@ -100,11 +100,29 @@ internal abstract class OperationalDatabase : RoomDatabase() {
             )
         }
 
+        val MIGRATION_4_5 = Migration(4, 5) { connection ->
+            migrateRuns4To5(connection)
+            migrateRunControls4To5(connection)
+            migrateOpenPgpRequests4To5(connection)
+            migrateSshRequests4To5(connection)
+            migrateSigningTablePrefixes4To5(connection)
+            migrateSshAuthorizationScopes4To5(connection)
+            connection.execSQL("ALTER TABLE mirror_msg RENAME TO mirror_message")
+            connection.execSQL("DROP INDEX IF EXISTS mirror_msg_recorded_at_idx")
+            connection.execSQL("CREATE INDEX IF NOT EXISTS mirror_message_recorded_at_idx ON mirror_message(recorded_at)")
+            connection.execSQL("CREATE INDEX IF NOT EXISTS mirror_lifecycle_updated_at_idx ON mirror_lifecycle(updated_at)")
+        }
+
         fun create(context: Context): OperationalDatabase =
             Room.databaseBuilder<OperationalDatabase>(context.applicationContext, DATABASE_NAME)
-                .setDriver(AndroidSQLiteDriver())
+                .setDriver(OperationalDatabaseEncryption.driver(context))
                 .setJournalMode(JournalMode.WRITE_AHEAD_LOGGING)
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+                .addCallback(object : Callback() {
+                    override suspend fun onCreate(connection: SQLiteConnection) {
+                        installSshAuthorizationGuards(connection)
+                    }
+                })
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
                 .build()
     }
 }

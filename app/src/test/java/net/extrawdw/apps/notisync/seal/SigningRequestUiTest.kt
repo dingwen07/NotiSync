@@ -45,7 +45,7 @@ class SigningRequestUiTest {
     }
 
     @Test
-    fun commitSnapshotIsAppLocalAndKeepsOnlyDisplayFacts() {
+    fun commitDetailsPreserveParsedFields() {
         val payload = (
             "tree 0123456789abcdef0123456789abcdef01234567\n" +
                 "parent 6648f0d82d47bafb997f07ea8720e22d89471068\n" +
@@ -54,7 +54,7 @@ class SigningRequestUiTest {
                 "Polish Seal review\n"
             ).encodeToByteArray()
 
-        val snapshot = payload.toDisplaySnapshot()
+        val snapshot = payload.toCommitDetails()
         assertNotNull(snapshot)
         requireNotNull(snapshot)
         assertEquals("6648f0d", snapshot.parentIds.single().shortObjectId())
@@ -66,7 +66,7 @@ class SigningRequestUiTest {
     }
 
     @Test
-    fun tagSnapshotKeepsTheFactsRequiredForReviewAndHistory() {
+    fun tagDetailsKeepTheFactsRequiredForReviewAndHistory() {
         val payload = (
             "object 0123456789abcdef0123456789abcdef01234567\n" +
                 "type commit\n" +
@@ -75,7 +75,7 @@ class SigningRequestUiTest {
                 "Release v1.0.0\n\nStable release.\n"
             ).encodeToByteArray()
 
-        val snapshot = requireNotNull(payload.toTagDisplaySnapshot())
+        val snapshot = payload.toTagDetails()
 
         assertEquals("v1.0.0", snapshot.tagName)
         assertEquals("commit", snapshot.objectType)
@@ -94,7 +94,7 @@ class SigningRequestUiTest {
     }
 
     @Test
-    fun oversizedCommitDisplayFactsAreBoundedForHistory() {
+    fun largeCommitMessageIsKeptInFull() {
         val oversizedMessage = "x".repeat(20_000)
         val payload = (
             "tree 0123456789abcdef0123456789abcdef01234567\n" +
@@ -103,10 +103,10 @@ class SigningRequestUiTest {
                 oversizedMessage
             ).encodeToByteArray()
 
-        val snapshot = requireNotNull(payload.toDisplaySnapshot())
+        val snapshot = payload.toCommitDetails()
 
-        assertEquals(16 * 1_024, snapshot.message.length)
-        assertEquals(true, snapshot.truncated)
+        assertEquals(oversizedMessage, snapshot.message)
+        assertFalse(snapshot.legacyTruncated)
     }
 
     @Test

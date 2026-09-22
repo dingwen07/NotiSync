@@ -154,9 +154,11 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
                 withContext(Dispatchers.IO) { graph.expireSigningRequests(SigningRequestKind.OPENPGP) }
                 graph.openPgpSignStore.requests
-                    .map { requests -> requests.firstOrNull { it.request.requestId == requestId } }
+                    .map { requests -> requests.firstOrNull { it.request.requestId == requestId }
+                        ?.let { Triple(it.state, it.updatedAt, it.result) } }
                     .distinctUntilChanged()
-                    .collectLatest { stored ->
+                    .collectLatest {
+                        val stored = withContext(Dispatchers.IO) { graph.openPgpSignStore.find(requestId) }
                         renderRequest(graph, stored, approveOnFirstLoad)
                         approveOnFirstLoad = false
                     }
@@ -189,12 +191,12 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         }
         val displayRequest = when (stored.request.objectKind) {
             OpenPgpObjectKind.GIT_COMMIT -> {
-                val commit = stored.commit ?: stored.request.payload?.toDisplaySnapshot()
+                val commit = stored.commit ?: stored.request.payload?.let { runCatching { it.toCommitDetails() }.getOrNull() }
                     ?: return showError(getString(R.string.seal_request_invalid))
                 if (stored.commit == null) stored.copy(commit = commit) else stored
             }
             OpenPgpObjectKind.GIT_TAG -> {
-                val tag = stored.tag ?: stored.request.payload?.toTagDisplaySnapshot()
+                val tag = stored.tag ?: stored.request.payload?.let { runCatching { it.toTagDetails() }.getOrNull() }
                     ?: return showError(getString(R.string.seal_request_invalid))
                 if (stored.tag == null) stored.copy(tag = tag) else stored
             }
@@ -223,7 +225,10 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     private fun approve() {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return@launch
-            if (!graph.openPgpSignStore.approve(requestId, System.currentTimeMillis())) {
+            val approved = withContext(Dispatchers.IO) {
+                graph.openPgpSignStore.approve(requestId, System.currentTimeMillis())
+            }
+            if (!approved) {
                 load()
                 return@launch
             }
@@ -239,7 +244,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
             try {
                 val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                     ?: return@launch showError(getString(R.string.seal_not_ready))
-                val stored = graph.openPgpSignStore.find(requestId)
+                val stored = withContext(Dispatchers.IO) { graph.openPgpSignStore.find(requestId) }
                     ?: return@launch showError(getString(R.string.seal_request_unavailable))
                 val enrollment = graph.openPgpEnrollment.enrollment.value
                 val payload = stored.request.payload
@@ -258,7 +263,9 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                     enrollment.providerId != graph.openPgpProvider.providerId ||
                     enrollment.primaryKeyId != stored.request.primaryKeyId
                 ) {
-                    graph.openPgpSignStore.markExpired(requestId, System.currentTimeMillis())
+                    withContext(Dispatchers.IO) {
+                        graph.openPgpSignStore.markExpired(requestId, System.currentTimeMillis())
+                    }
                     graph.openPgpSignNotifications.dismiss(requestId)
                     load()
                     return@launch
@@ -276,16 +283,12 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                     )
                 ) {
                     is ProviderOutcome.Success -> {
-                        val current = graph.openPgpSignStore.find(requestId)
-                        if (
-                            current == null ||
-                            !MessageDigest.isEqual(current.request.payloadSha256, digestBefore) ||
-                            !graph.openPgpSignStore.storeResult(
-                                requestId,
-                                outcome.value,
-                                System.currentTimeMillis(),
-                            )
-                        ) {
+                        val storedResult = withContext(Dispatchers.IO) {
+                            val current = graph.openPgpSignStore.find(requestId)
+                            current != null && MessageDigest.isEqual(current.request.payloadSha256, digestBefore) &&
+                                graph.openPgpSignStore.storeResult(requestId, outcome.value, System.currentTimeMillis())
+                        }
+                        if (!storedResult) {
                             load()
                             return@launch
                         }
@@ -295,7 +298,10 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                         load()
                     }
                     is ProviderOutcome.InteractionRequired -> {
-                        if (!graph.openPgpSignStore.markProviderInteraction(requestId, System.currentTimeMillis())) {
+                        val marked = withContext(Dispatchers.IO) {
+                            graph.openPgpSignStore.markProviderInteraction(requestId, System.currentTimeMillis())
+                        }
+                        if (!marked) {
                             load()
                             return@launch
                         }
@@ -320,7 +326,10 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
     private fun reject(reason: OpenPgpRejectReason, rejectedRequestId: String = requestId) {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady() ?: return@launch
-            if (graph.openPgpSignStore.storeReject(rejectedRequestId, reason, System.currentTimeMillis())) {
+            val rejected = withContext(Dispatchers.IO) {
+                graph.openPgpSignStore.storeReject(rejectedRequestId, reason, System.currentTimeMillis())
+            }
+            if (rejected) {
                 graph.openPgpSignNotifications.dismiss(rejectedRequestId)
                 OpenPgpSignResponseWorker.enqueue(applicationContext, rejectedRequestId)
             }

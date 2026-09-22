@@ -5,7 +5,11 @@ import androidx.room3.Entity
 import androidx.room3.ForeignKey
 import androidx.room3.Index
 
-@Entity(tableName = "mirror_msg", primaryKeys = ["source_client", "source_key"])
+@Entity(
+    tableName = "mirror_message",
+    primaryKeys = ["source_client", "source_key"],
+    indices = [Index(value = ["recorded_at"], name = "mirror_message_recorded_at_idx")],
+)
 internal data class MirrorMessageEntity(
     @ColumnInfo(name = "source_client") val sourceClient: String,
     @ColumnInfo(name = "source_key") val sourceKey: String,
@@ -13,7 +17,11 @@ internal data class MirrorMessageEntity(
     @ColumnInfo(name = "recorded_at") val recordedAt: Long,
 )
 
-@Entity(tableName = "mirror_lifecycle", primaryKeys = ["source_client", "source_key"])
+@Entity(
+    tableName = "mirror_lifecycle",
+    primaryKeys = ["source_client", "source_key"],
+    indices = [Index(value = ["updated_at"], name = "mirror_lifecycle_updated_at_idx")],
+)
 internal data class MirrorLifecycleEntity(
     @ColumnInfo(name = "source_client") val sourceClient: String,
     @ColumnInfo(name = "source_key") val sourceKey: String,
@@ -22,68 +30,7 @@ internal data class MirrorLifecycleEntity(
     @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )
 
-@Entity(
-    tableName = "runs",
-    primaryKeys = ["host_client", "run_id"],
-    indices = [
-        Index(
-            value = ["active", "updated_at"],
-            orders = [Index.Order.DESC, Index.Order.DESC],
-            name = "runs_order_idx",
-        ),
-        Index(value = ["active", "received_at"], name = "runs_retention_idx"),
-    ],
-)
-internal data class RunEntity(
-    @ColumnInfo(name = "host_client") val hostClient: String,
-    @ColumnInfo(name = "run_id") val runId: String,
-    @ColumnInfo(name = "revision") val revision: Long,
-    @ColumnInfo(name = "presented_revision") val presentedRevision: Long,
-    @ColumnInfo(name = "active") val active: Int,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long,
-    @ColumnInfo(name = "ended_at") val endedAt: Long?,
-    @ColumnInfo(name = "received_at") val receivedAt: Long,
-    @ColumnInfo(name = "payload", typeAffinity = ColumnInfo.BLOB) val payload: ByteArray,
-)
-
-@Entity(
-    tableName = "controls",
-    primaryKeys = ["request_id"],
-    indices = [Index(value = ["requested_at", "request_id"], name = "controls_order_idx")],
-)
-internal data class RunControlEntity(
-    @ColumnInfo(name = "request_id") val requestId: String,
-    @ColumnInfo(name = "requested_at") val requestedAt: Long,
-    @ColumnInfo(name = "payload", typeAffinity = ColumnInfo.BLOB) val payload: ByteArray,
-)
-
-@Entity(
-    tableName = "sign_requests",
-    primaryKeys = ["request_id"],
-    indices = [
-        Index(value = ["state", "updated_at"], name = "sign_requests_state_idx"),
-        Index(value = ["sender_client_id", "state"], name = "sign_requests_sender_idx"),
-    ],
-)
-internal data class OpenPgpSignRequestEntity(
-    @ColumnInfo(name = "request_id") val requestId: String,
-    @ColumnInfo(name = "requester_client_id") val requesterClientId: String,
-    @ColumnInfo(name = "sender_client_id") val senderClientId: String,
-    @ColumnInfo(name = "primary_key_id") val primaryKeyId: String,
-    @ColumnInfo(name = "issued_at") val issuedAt: Long,
-    @ColumnInfo(name = "expires_at") val expiresAt: Long,
-    @ColumnInfo(name = "payload_sha256", typeAffinity = ColumnInfo.BLOB) val payloadSha256: ByteArray,
-    @ColumnInfo(name = "object_kind") val objectKind: String,
-    @ColumnInfo(name = "payload", typeAffinity = ColumnInfo.BLOB) val payload: ByteArray?,
-    @ColumnInfo(name = "state") val state: String,
-    @ColumnInfo(name = "encoded_response", typeAffinity = ColumnInfo.BLOB) val encodedResponse: ByteArray?,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long,
-    @ColumnInfo(name = "commit_details", typeAffinity = ColumnInfo.BLOB) val commitDetails: ByteArray?,
-    @ColumnInfo(name = "result") val result: String?,
-    @ColumnInfo(name = "working_directory") val workingDirectory: String?,
-)
-
-@Entity(tableName = "provider_state", primaryKeys = ["singleton"])
+@Entity(tableName = "ssh_provider_state", primaryKeys = ["singleton"])
 internal data class SshProviderStateEntity(
     @ColumnInfo(name = "singleton") val singleton: Int,
     @ColumnInfo(name = "inventory_generation") val inventoryGeneration: String,
@@ -204,7 +151,7 @@ internal data class SshKeyLifecycleEntity(
 )
 
 @Entity(
-    tableName = "authorization_floors",
+    tableName = "ssh_authorization_floors",
     primaryKeys = ["requester_client_id", "authorization_generation"],
 )
 internal data class SshAuthorizationFloorEntity(
@@ -266,26 +213,4 @@ internal data class SshKnownHostEntity(
     @ColumnInfo(name = "hostname") val hostname: String?,
     @ColumnInfo(name = "first_approved_at") val firstApprovedAt: Long,
     @ColumnInfo(name = "last_approved_at") val lastApprovedAt: Long,
-)
-
-@Entity(
-    tableName = "provider_requests",
-    primaryKeys = ["request_id"],
-    indices = [Index(value = ["state", "updated_at"], name = "provider_requests_state_idx")],
-)
-internal data class SshProviderRequestEntity(
-    @ColumnInfo(name = "request_id") val requestId: String,
-    @ColumnInfo(name = "kind") val kind: String,
-    @ColumnInfo(name = "requester_client_id") val requesterClientId: String,
-    @ColumnInfo(name = "request_fingerprint", typeAffinity = ColumnInfo.BLOB) val requestFingerprint: ByteArray,
-    @ColumnInfo(name = "request_cbor", typeAffinity = ColumnInfo.BLOB) val requestCbor: ByteArray?,
-    @ColumnInfo(name = "request_nonce", typeAffinity = ColumnInfo.BLOB) val requestNonce: ByteArray?,
-    @ColumnInfo(name = "history_cbor", typeAffinity = ColumnInfo.BLOB) val historyCbor: ByteArray,
-    @ColumnInfo(name = "history_nonce", typeAffinity = ColumnInfo.BLOB) val historyNonce: ByteArray,
-    @ColumnInfo(name = "state") val state: String,
-    @ColumnInfo(name = "outcome") val outcome: String?,
-    @ColumnInfo(name = "result_at") val resultAt: Long?,
-    @ColumnInfo(name = "response_cbor", typeAffinity = ColumnInfo.BLOB) val responseCbor: ByteArray?,
-    @ColumnInfo(name = "response_nonce", typeAffinity = ColumnInfo.BLOB) val responseNonce: ByteArray?,
-    @ColumnInfo(name = "updated_at") val updatedAt: Long,
 )

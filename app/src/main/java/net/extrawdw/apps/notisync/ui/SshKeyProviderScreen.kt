@@ -95,11 +95,18 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import androidx.paging.LoadState
+import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.paging.compose.itemKey
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.data.historyPager
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderReviewActivity
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyExportActivity
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeySendActivity
@@ -117,6 +124,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.SshHistoryRequestDetail
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKnownHost
 import net.extrawdw.apps.notisync.sshkeyprovider.SshRememberedAuthorization
 import net.extrawdw.apps.notisync.sshkeyprovider.StoredSshProviderRequest
+import net.extrawdw.apps.notisync.sshkeyprovider.SshHistoryCursor
 import net.extrawdw.apps.notisync.sshkeyprovider.isActiveRequest
 import net.extrawdw.apps.notisync.sshkeyprovider.fingerprint
 import net.extrawdw.apps.notisync.sshkeyprovider.toSshHostKeyFingerprint
@@ -156,16 +164,42 @@ fun SshKeyProviderScreen(
     val managementState by graph.sshKeyProviderManagement.state.collectAsStateWithLifecycle(
         minActiveState = Lifecycle.State.RESUMED,
     )
+    val requestVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle(
+        minActiveState = Lifecycle.State.RESUMED,
+    )
+    val historyFlow = remember(graph.sshKeyProviderStore) {
+        historyPager<StoredSshProviderRequest, SshHistoryCursor>(
+            cursorOf = { SshHistoryCursor(it.updatedAt, it.requestId) },
+        ) { limit, cursor, direction, includeCursor ->
+            graph.sshKeyProviderStore.historyPage(limit, cursor, direction, includeCursor)
+        }.flow
+    }
+    val initialHistoryVersion = remember(historyFlow) { graph.sshKeyProviderStore.changeVersion.value }
+    val historyItems = historyFlow.collectAsLazyPagingItems()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(historyItems, lifecycleOwner) {
+        var observed = false
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            graph.sshKeyProviderStore.changeVersion.collect { version ->
+                // Pager performs the initial load; later changes and every return refresh the window.
+                if (observed || version != initialHistoryVersion) historyItems.refresh()
+                observed = true
+            }
+        }
+    }
     val managementSnapshot = managementState.snapshot
     val keys = remember(managementSnapshot?.keys) {
         managementSnapshot?.keys.orEmpty()
             .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.displayName })
     }
-    val requests = managementSnapshot?.requests.orEmpty()
+    val activeRequests = managementSnapshot?.requests.orEmpty()
+    // A state transition can refresh inventory and history independently; never render the same id twice.
+    val activeRequestIds = remember(activeRequests) { activeRequests.mapTo(mutableSetOf()) { it.requestId } }
     val knownHosts = managementSnapshot?.knownHosts.orEmpty()
     val rememberedAuthorizations = managementSnapshot?.rememberedAuthorizations.orEmpty()
     var selectedKeyId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
+    var selectedHistory by remember { mutableStateOf<StoredSshProviderRequest?>(null) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var generating by remember { mutableStateOf(false) }
@@ -651,28 +685,32 @@ fun SshKeyProviderScreen(
             selectedKeyId = null
         }
     }
-    val selectedHistory = selectedHistoryRequestId?.let { requestId ->
-        requests.firstOrNull { it.requestId == requestId && !it.isActiveRequest() }
-    }
     val knownHostnames = knownHosts.mapNotNull { host ->
         host.hostname?.takeIf(String::isNotBlank)?.let { host.fingerprint() to it }
     }.toMap()
     val transferPeers = eligibleSshKeyTransferPeers(activePeers)
-    LaunchedEffect(selectedHistoryRequestId, selectedHistory, showLoading) {
-        if (!showLoading && selectedHistoryRequestId != null && selectedHistory == null) {
-            selectedHistoryRequestId = null
+    LaunchedEffect(selectedHistoryRequestId, requestVersion) {
+        val requestId = selectedHistoryRequestId
+        if (selectedHistory?.requestId != requestId) selectedHistory = null
+        if (requestId != null) {
+            try {
+                selectedHistory = withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.find(requestId)?.takeUnless { it.isActiveRequest() }
+                }
+                if (selectedHistory == null) selectedHistoryRequestId = null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error = failure.message ?: failure.javaClass.simpleName
+                if (selectedHistory == null) selectedHistoryRequestId = null
+            }
         }
     }
-    LaunchedEffect(initialHistoryRequestId, requests, showLoading) {
-        if (initialHistoryRequestId != null && !showLoading) {
-            selectedHistoryRequestId = requests.firstOrNull {
-                it.requestId == initialHistoryRequestId && !it.isActiveRequest()
-            }?.requestId
+    LaunchedEffect(initialHistoryRequestId) {
+        if (initialHistoryRequestId != null) {
+            selectedHistoryRequestId = initialHistoryRequestId
             onInitialHistoryRequestConsumed()
         }
-    }
-    val (activeRequests, historyRequests) = remember(requests) {
-        requests.partition(StoredSshProviderRequest::isActiveRequest)
     }
 
     Scaffold(
@@ -769,7 +807,7 @@ fun SshKeyProviderScreen(
             }
             if (activeRequests.isNotEmpty()) {
                 item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_active)) } }
-                items(activeRequests, key = StoredSshProviderRequest::requestId) { request ->
+                items(activeRequests, key = { "active-${it.requestId}" }) { request ->
                     CenteredSshItem {
                         SshRequestListItem(
                             request = request,
@@ -784,19 +822,39 @@ fun SshKeyProviderScreen(
                 }
             }
             item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_history)) } }
-            if (!showLoading && historyRequests.isEmpty()) {
+            if (historyItems.loadState.refresh is LoadState.NotLoading && historyItems.itemCount == 0) {
                 item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_history)) } }
             }
-            items(historyRequests, key = StoredSshProviderRequest::requestId) { request ->
+            item(key = "history_prepend") {
                 CenteredSshItem {
-                    SshRequestListItem(
-                        request = request,
-                        requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
-                            ?: request.requesterClientId.shortForm(),
-                        knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
-                        onClick = {
-                            selectedHistoryRequestId = request.requestId
-                        },
+                    HistoryLoadStateFooter(historyItems.loadState, historyItems::retry, prepend = true)
+                }
+            }
+            items(
+                count = historyItems.itemCount,
+                key = historyItems.itemKey { "history-${it.requestId}" },
+                contentType = { "ssh-history-request" },
+            ) { index ->
+                // Indexed access informs Paging of viewport demand and automatically loads the next page.
+                historyItems[index]?.takeUnless { it.requestId in activeRequestIds }?.let { request ->
+                    CenteredSshItem {
+                        SshRequestListItem(
+                            request = request,
+                            requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
+                                ?: request.requesterClientId.shortForm(),
+                            knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                            onClick = {
+                                selectedHistoryRequestId = request.requestId
+                            },
+                        )
+                    }
+                }
+            }
+            item {
+                CenteredSshItem(padded = true) {
+                    HistoryLoadStateFooter(
+                        loadState = historyItems.loadState,
+                        onRetry = { historyItems.retry() },
                     )
                 }
             }
@@ -878,7 +936,7 @@ fun SshKeyProviderScreen(
         }
     }
 
-    selectedHistory?.let { request ->
+    selectedHistory?.takeIf { it.requestId == selectedHistoryRequestId }?.let { request ->
         val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
         EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
             SshHistoryRequestDetail(

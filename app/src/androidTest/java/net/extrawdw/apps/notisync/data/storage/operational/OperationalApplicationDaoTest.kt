@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.data.storage.operational
 
-import android.database.sqlite.SQLiteDatabase
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
@@ -61,11 +60,7 @@ class OperationalApplicationDaoTest {
 
     @Test
     fun bulkSelectionRollsBackIfAnyRowFails() = runBlocking {
-        SQLiteDatabase.openDatabase(
-            context.getDatabasePath(OperationalDatabase.DATABASE_NAME).path,
-            null,
-            SQLiteDatabase.OPEN_READWRITE,
-        ).use { raw ->
+        OperationalDatabaseEncryption.open(context).use { raw ->
             raw.execSQL(
                 "CREATE TRIGGER reject_test_app BEFORE INSERT ON android_apps " +
                     "WHEN NEW.package_name = 'rejected' BEGIN SELECT RAISE(ABORT, 'test failure'); END",

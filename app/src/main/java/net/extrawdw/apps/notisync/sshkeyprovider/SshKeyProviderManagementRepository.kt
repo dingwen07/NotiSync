@@ -18,9 +18,10 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.SshKeyDescriptor
 
-/** The complete persisted and process-memory model rendered by the SSH management screen. */
+/** Inventory and active requests; terminal request history is loaded through its own bounded pager. */
 data class SshKeyProviderManagementSnapshot(
     val keys: List<SshKeyDescriptor>,
+    /** All pending review/outbox requests, never the terminal history page. */
     val requests: List<StoredSshProviderRequest>,
     val knownHosts: List<SshKnownHost>,
     val rememberedAuthorizations: List<SshRememberedAuthorization>,

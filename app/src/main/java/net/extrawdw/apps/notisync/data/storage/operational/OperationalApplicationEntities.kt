@@ -70,8 +70,8 @@ internal data class ScreenCodecPreferenceEntity(
     @ColumnInfo(name = "codec") val codec: String,
 )
 
-/** Locally selected OpenPGP provider identity; request history remains in sign_requests. */
-@Entity(tableName = "openpgp_enrollment")
+/** Locally selected OpenPGP provider identity; request history remains in seal_requests. */
+@Entity(tableName = "seal_enrollment")
 internal data class OpenPgpEnrollmentEntity(
     @PrimaryKey
     @ColumnInfo(name = "singleton_id") val singletonId: Int = OPERATIONAL_SINGLETON_ID,
@@ -222,7 +222,7 @@ internal interface OperationalApplicationDao {
     @Query("DELETE FROM screen_codec_preferences WHERE peer_id NOT IN (:peerIds)")
     suspend fun retainScreenCodecPreferences(peerIds: Set<String>)
 
-    @Query("SELECT * FROM openpgp_enrollment WHERE singleton_id = 1")
+    @Query("SELECT * FROM seal_enrollment WHERE singleton_id = 1")
     suspend fun openPgpEnrollment(): OpenPgpEnrollmentEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)

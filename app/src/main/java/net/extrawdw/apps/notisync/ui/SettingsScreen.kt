@@ -352,7 +352,7 @@ fun SettingsScreen() {
                         scope.launch {
                             val requestIds = runCatching {
                                 withContext(Dispatchers.IO) {
-                                    graph.sshKeyProviderStore.requests().map { it.requestId }
+                                    graph.sshKeyProviderStore.activeRequests().map { it.requestId }
                                 }
                             }.getOrDefault(emptyList())
                             val outcome = runCatching {

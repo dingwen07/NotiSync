@@ -3,8 +3,7 @@ package net.extrawdw.apps.notisync.seal
 import android.content.ContentValues
 import android.content.Context
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import java.security.MessageDigest
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -19,7 +18,9 @@ import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.OpenPgpSignLimits
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSQLiteOpenHelper
+import net.extrawdw.apps.notisync.data.HistoryPage
+import net.extrawdw.apps.notisync.data.HistoryDirection
 
 enum class OpenPgpRequestState {
     PENDING_REVIEW,
@@ -36,46 +37,47 @@ enum class OpenPgpRequestState {
 /** User-visible outcome retained after the transport state advances to [OpenPgpRequestState.SENT]. */
 enum class OpenPgpRequestResult { APPROVED, REJECTED, CANCELED, EXPIRED, FAILED }
 
-/**
- * Bounded commit rendering snapshot kept for the 10-year decision ledger. The byte-exact payload is
- * still erased at terminal state; this stores only the facts shown in Seal history.
- */
+/** Complete parsed commit fields. Only migrated records may already have been truncated by v4. */
 @Serializable
-data class GitCommitDisplaySnapshot(
+data class GitCommitDetails(
     val treeId: String,
     val parentIds: List<String>,
     val author: String,
     val committer: String,
     val message: String,
-    val extraHeaders: List<GitCommitDisplayHeader>,
+    val extraHeaders: List<GitCommitHeader>,
     val payloadBytes: Int,
-    val truncated: Boolean = false,
+    val legacyTruncated: Boolean = false,
 )
 
 @Serializable
-data class GitCommitDisplayHeader(val name: String, val value: String)
+data class GitCommitHeader(val name: String, val value: String)
 
-/** Bounded annotated-tag facts retained after the byte-exact signing payload is erased. */
+/** Complete parsed annotated-tag fields; the byte-exact payload is retained as well. */
 @Serializable
-data class GitTagDisplaySnapshot(
+data class GitTagDetails(
     val objectId: String,
     val objectType: String,
     val tagName: String,
     val tagger: String,
     val message: String,
     val payloadBytes: Int,
-    val truncated: Boolean = false,
+    val legacyTruncated: Boolean = false,
 )
+
+/** Lightweight list/notification projection; full fields are loaded from the same record on demand. */
+data class OpenPgpRequestSummary(val title: String?, val reference: String?, val identity: String?)
 
 data class StoredOpenPgpRequest(
     val request: OpenPgpSignSync,
     val senderClientId: ClientId,
     val state: OpenPgpRequestState,
-    val encodedResponse: ByteArray? = null,
+    val response: OpenPgpSignSync? = null,
     val updatedAt: Long,
-    val commit: GitCommitDisplaySnapshot? = null,
-    val tag: GitTagDisplaySnapshot? = null,
+    val commit: GitCommitDetails? = null,
+    val tag: GitTagDetails? = null,
     val result: OpenPgpRequestResult? = null,
+    val summary: OpenPgpRequestSummary? = null,
 ) {
     internal val expiryDeadline: Long?
         get() = when (state) {
@@ -90,19 +92,17 @@ data class StoredOpenPgpRequest(
 
 enum class OpenPgpAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED }
 
-class OpenPgpSignStore(context: Context) :
-    SQLiteOpenHelper(
-        context.applicationContext,
-        OperationalDatabase.DATABASE_NAME,
-        null,
-        OperationalDatabase.VERSION,
-    ) {
+data class OpenPgpHistoryCursor(val updatedAt: Long, val requestId: String)
+
+class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) {
     private val _requests = MutableStateFlow<List<StoredOpenPgpRequest>>(emptyList())
+    /** All live requests and the first terminal page, for notifications and existing observers. */
     val requests: StateFlow<List<StoredOpenPgpRequest>> = _requests.asStateFlow()
+    private val _changeVersion = MutableStateFlow(0L)
+    val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
 
     init {
         setWriteAheadLoggingEnabled(true)
-        prune(System.currentTimeMillis())
         refresh()
     }
 
@@ -123,17 +123,12 @@ class OpenPgpSignStore(context: Context) :
             } else OpenPgpAcceptResult.CONFLICT
         }
         expireDue(now)
-        prune(now)
         if (countPending() >= MAX_PENDING_GLOBAL || countPending(senderClientId) >= MAX_PENDING_PER_SENDER) {
             return OpenPgpAcceptResult.RATE_LIMITED
         }
-        val inserted = writableDatabase.insertOrThrow(
-            TABLE,
-            null,
-            requestValues(request, senderClientId, OpenPgpRequestState.PENDING_REVIEW, now),
-        )
-        check(inserted >= 0) { "could not persist OpenPGP signing request" }
-        prune(now)
+        // Parse before the single atomic row insert. The exact signing bytes remain authoritative.
+        val values = requestValues(request, senderClientId, OpenPgpRequestState.PENDING_REVIEW, now)
+        writableDatabase.insertOrThrow(TABLE, null, values)
         refresh()
         return OpenPgpAcceptResult.STORED
     }
@@ -220,8 +215,6 @@ class OpenPgpSignStore(context: Context) :
         val values = ContentValues().apply {
             put("state", OpenPgpRequestState.CANCELLED.name)
             put("result", OpenPgpRequestResult.CANCELED.name)
-            putNull("payload")
-            putNull("encoded_response")
             put("updated_at", now)
         }
         val changed = writableDatabase.update(TABLE, values, "request_id = ?", arrayOf(requestId)) == 1
@@ -235,8 +228,6 @@ class OpenPgpSignStore(context: Context) :
         if (stored.state !in OUTBOX_STATES) return false
         val values = ContentValues().apply {
             put("state", OpenPgpRequestState.SENT.name)
-            putNull("payload")
-            putNull("encoded_response")
             put("updated_at", now)
         }
         val changed = writableDatabase.update(TABLE, values, "request_id = ?", arrayOf(requestId)) == 1
@@ -251,8 +242,6 @@ class OpenPgpSignStore(context: Context) :
         val values = ContentValues().apply {
             put("state", OpenPgpRequestState.EXPIRED.name)
             put("result", OpenPgpRequestResult.EXPIRED.name)
-            putNull("payload")
-            putNull("encoded_response")
             put("updated_at", now)
         }
         val changed = writableDatabase.update(TABLE, values, "request_id = ?", arrayOf(requestId)) == 1
@@ -265,10 +254,28 @@ class OpenPgpSignStore(context: Context) :
 
     @Synchronized
     fun expireDue(now: Long): List<String> {
-        val due = queryByStates(ACTIVE_STATES + OUTBOX_STATES)
-            .filter { stored -> stored.expiryDeadline?.let { now > it } == true }
-            .map { it.request.requestId }
-        due.forEach { markExpired(it, now) }
+        val active = ACTIVE_STATES.joinToString(",") { "'${it.name}'" }
+        val outbox = OUTBOX_STATES.joinToString(",") { "'${it.name}'" }
+        val where = "(state IN ($active) AND expires_at < ?) OR (state IN ($outbox) AND expires_at < ?)"
+        val args = arrayOf(now.toString(), (now - OpenPgpSignLimits.CLOCK_SKEW_MILLIS).toString())
+        val db = writableDatabase
+        val due: List<String>
+        db.beginTransaction()
+        try {
+            due = db.rawQuery("SELECT request_id FROM $TABLE WHERE $where ORDER BY request_id", args)
+                .use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.getString(0)) } }
+            if (due.isNotEmpty()) {
+                db.update(TABLE, ContentValues().apply {
+                    put("state", OpenPgpRequestState.EXPIRED.name)
+                    put("result", OpenPgpRequestResult.EXPIRED.name)
+                    put("updated_at", now)
+                }, where, args)
+            }
+            db.setTransactionSuccessful()
+        } finally {
+            db.endTransaction()
+        }
+        if (due.isNotEmpty()) refresh()
         return due
     }
 
@@ -279,11 +286,13 @@ class OpenPgpSignStore(context: Context) :
         response: OpenPgpSignSync,
         now: Long,
     ): Boolean {
-        val encoded = ProtocolCodec.encodeToCbor(response)
         val values = ContentValues().apply {
             put("state", state.name)
             put("result", result.name)
-            put("encoded_response", encoded)
+            put("response_action", response.action.name)
+            put("response_signature_armor", response.signatureArmor)
+            put("response_reject_reason", response.rejectReason?.name)
+            put("response_action_at", response.actionAt)
             put("updated_at", now)
         }
         val changed = writableDatabase.update(
@@ -325,7 +334,13 @@ class OpenPgpSignStore(context: Context) :
         state: OpenPgpRequestState,
         now: Long,
     ) = ContentValues().apply {
+        val payload = requireNotNull(request.payload)
+        val summary = when (request.objectKind) {
+            OpenPgpObjectKind.GIT_COMMIT -> payload.toCommitDetails().toSummary()
+            OpenPgpObjectKind.GIT_TAG -> payload.toTagDetails().toSummary()
+        }
         put("request_id", request.requestId)
+        put("protocol_version", request.protocolVersion)
         put("requester_client_id", request.requesterClientId.value)
         put("sender_client_id", senderClientId.value)
         put("primary_key_id", request.primaryKeyId)
@@ -337,14 +352,9 @@ class OpenPgpSignStore(context: Context) :
         put("state", state.name)
         put("updated_at", now)
         put("working_directory", request.workingDirectory)
-        request.payload?.let { payload ->
-            when (request.objectKind) {
-                OpenPgpObjectKind.GIT_COMMIT -> payload.toDisplaySnapshot()
-                    ?.let { put("commit_details", ProtocolCodec.encodeToCbor(it)) }
-                OpenPgpObjectKind.GIT_TAG -> payload.toTagDisplaySnapshot()
-                    ?.let { put("commit_details", ProtocolCodec.encodeToCbor(it)) }
-            }
-        }
+        put("summary_title", summary.title)
+        put("summary_reference", summary.reference)
+        put("summary_identity", summary.identity)
     }
 
     private fun queryByStates(states: Set<OpenPgpRequestState>): List<StoredOpenPgpRequest> {
@@ -357,32 +367,45 @@ class OpenPgpSignStore(context: Context) :
     }
 
     private fun refresh() {
-        _requests.value = readableDatabase.rawQuery(
-            "SELECT $COLUMNS FROM $TABLE ORDER BY updated_at DESC LIMIT $MAX_HISTORY_ROWS",
+        val live = readableDatabase.rawQuery(
+            "SELECT $SUMMARY_COLUMNS FROM $TABLE WHERE state IN ($LIVE_STATE_SQL)",
             emptyArray(),
-        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest()) } }
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(summaryOnly = true)) } }
+        _requests.value = (live + historyPage().items).sortedWith(
+            compareByDescending<StoredOpenPgpRequest> { it.updatedAt }.thenByDescending { it.request.requestId },
+        )
+        // An update to an older page must invalidate that page even when the first page is unchanged.
+        _changeVersion.value += 1
     }
 
-    private fun prune(now: Long) {
-        writableDatabase.delete(
-            TABLE,
-            "state NOT IN (${ACTIVE_STATES.joinToString(",") { "'${it.name}'" }}," +
-                "${OUTBOX_STATES.joinToString(",") { "'${it.name}'" }}) AND updated_at < ?",
-            arrayOf((now - DECISION_RETENTION_MILLIS).toString()),
-        )
-        val rowCount = readableDatabase.rawQuery("SELECT COUNT(*) FROM $TABLE", emptyArray()).use { cursor ->
-            cursor.moveToFirst()
-            cursor.getInt(0)
+    /** A bounded terminal summary page; exact payloads and responses are loaded only by [find]. */
+    @Synchronized
+    fun historyPage(
+        limit: Int = HISTORY_PAGE_SIZE,
+        cursor: OpenPgpHistoryCursor? = null,
+        direction: HistoryDirection = HistoryDirection.OLDER,
+        includeCursor: Boolean = false,
+    ): HistoryPage<StoredOpenPgpRequest, OpenPgpHistoryCursor> {
+        require(limit in 1..1_000)
+        val newer = direction == HistoryDirection.NEWER
+        val comparison = (if (newer) ">" else "<") + if (includeCursor) "=" else ""
+        val position = if (cursor == null) "" else " AND (updated_at,request_id) $comparison (?,?)"
+        val order = if (newer) "ASC" else "DESC"
+        val arguments = buildList {
+            cursor?.let { add(it.updatedAt.toString()); add(it.requestId) }
+            add((limit + 1).toString())
+        }.toTypedArray()
+        val rows = readableDatabase.rawQuery(
+            "SELECT $HISTORY_SUMMARY_COLUMNS FROM $TABLE WHERE state NOT IN ($LIVE_STATE_SQL)$position " +
+                "ORDER BY updated_at $order, request_id $order LIMIT ?",
+            arguments,
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(summaryOnly = true)) } }
+        val closest = rows.take(limit)
+        val items = if (newer) closest.asReversed() else closest
+        val nextCursor = closest.lastOrNull()?.takeIf { rows.size > limit }?.let {
+            OpenPgpHistoryCursor(it.updatedAt, it.request.requestId)
         }
-        val overflow = (rowCount - MAX_HISTORY_ROWS).coerceAtLeast(0)
-        if (overflow > 0) {
-            writableDatabase.execSQL(
-                "DELETE FROM $TABLE WHERE request_id IN (SELECT request_id FROM $TABLE " +
-                    "WHERE state NOT IN (${ACTIVE_STATES.joinToString(",") { "'${it.name}'" }}," +
-                    "${OUTBOX_STATES.joinToString(",") { "'${it.name}'" }}) " +
-                    "ORDER BY updated_at ASC LIMIT $overflow)"
-            )
-        }
+        return HistoryPage(items, nextCursor)
     }
 
     private fun countPending(sender: ClientId? = null): Int {
@@ -397,43 +420,57 @@ class OpenPgpSignStore(context: Context) :
         ).use { cursor -> cursor.moveToFirst(); cursor.getInt(0) }
     }
 
-    private fun Cursor.readRequest(): StoredOpenPgpRequest {
-        val payload = getBlobOrNull(8)
-        val response = getBlobOrNull(10)
-        val objectKind = OpenPgpObjectKind.valueOf(getString(7))
-        // The legacy column name is retained to avoid a schema migration; object_kind selects its codec.
-        val encodedDetails = getBlobOrNull(12)
+    private fun Cursor.readRequest(summaryOnly: Boolean = false): StoredOpenPgpRequest {
+        val requestId = getString(0)
+        val objectKind = OpenPgpObjectKind.valueOf(getString(8))
         val base = OpenPgpSignSync(
             action = OpenPgpSignAction.REQUEST,
-            requestId = getString(0),
-            requesterClientId = ClientId(getString(1)),
-            issuedAt = getLong(4),
-            expiresAt = getLong(5),
-            primaryKeyId = getString(3),
-            payloadSha256 = getBlob(6),
+            protocolVersion = getInt(1),
+            requestId = requestId,
+            requesterClientId = ClientId(getString(2)),
+            issuedAt = getLong(5),
+            expiresAt = getLong(6),
+            primaryKeyId = getString(4),
+            payloadSha256 = if (summaryOnly) getBlobOrNull(7) ?: ByteArray(0) else getBlob(7),
             objectKind = objectKind,
-            payload = payload,
-            workingDirectory = getStringOrNull(14),
+            payload = getBlobOrNull(9),
+            workingDirectory = getStringOrNull(17),
         )
+        val response = getStringOrNull(11)?.let { action ->
+            base.copy(
+                action = OpenPgpSignAction.valueOf(action),
+                payload = null,
+                signatureArmor = getStringOrNull(12),
+                rejectReason = getStringOrNull(13)?.let(OpenPgpRejectReason::valueOf),
+                actionAt = if (isNull(14)) null else getLong(14),
+                workingDirectory = null,
+            )
+        }
+        // No parsed-field tables: selected records are rendered directly from the retained payload.
+        // Legacy JSON is used only where an older release had already erased those bytes.
+        val legacyDetails = if (summaryOnly) null else getStringOrNull(21)
+        val commit = if (!summaryOnly && objectKind == OpenPgpObjectKind.GIT_COMMIT) {
+            base.payload?.toCommitDetails()
+                ?: legacyDetails?.let { ProtocolCodec.decodeFromJson<GitCommitDetails>(it) }
+        } else null
+        val tag = if (!summaryOnly && objectKind == OpenPgpObjectKind.GIT_TAG) {
+            base.payload?.toTagDetails()
+                ?: legacyDetails?.let { ProtocolCodec.decodeFromJson<GitTagDetails>(it) }
+        } else null
         return StoredOpenPgpRequest(
             request = base,
-            senderClientId = ClientId(getString(2)),
-            state = OpenPgpRequestState.valueOf(getString(9)),
-            encodedResponse = response,
-            updatedAt = getLong(11),
-            commit = encodedDetails?.takeIf { objectKind == OpenPgpObjectKind.GIT_COMMIT }?.let { encoded ->
-                runCatching { ProtocolCodec.decodeFromCbor<GitCommitDisplaySnapshot>(encoded) }
-                    .getOrNull()
-                    ?.boundedForHistory()
-            },
-            tag = encodedDetails?.takeIf { objectKind == OpenPgpObjectKind.GIT_TAG }?.let { encoded ->
-                runCatching { ProtocolCodec.decodeFromCbor<GitTagDisplaySnapshot>(encoded) }
-                    .getOrNull()
-                    ?.boundedForHistory()
-            },
-            result = getStringOrNull(13)?.let { value ->
-                runCatching { OpenPgpRequestResult.valueOf(value) }.getOrNull()
-            },
+            senderClientId = ClientId(getString(3)),
+            state = OpenPgpRequestState.valueOf(getString(10)),
+            response = response,
+            updatedAt = getLong(15),
+            commit = commit,
+            tag = tag,
+            result = getStringOrNull(16)?.let(OpenPgpRequestResult::valueOf),
+            summary = if (summaryOnly) OpenPgpRequestSummary(
+                title = getStringOrNull(18),
+                reference = getStringOrNull(19),
+                identity = getStringOrNull(20),
+            ) else null,
         )
     }
 
@@ -444,6 +481,7 @@ class OpenPgpSignStore(context: Context) :
 
     private fun StoredOpenPgpRequest.sameContext(request: OpenPgpSignSync, sender: ClientId): Boolean =
         senderClientId == sender &&
+            this.request.protocolVersion == request.protocolVersion &&
             this.request.requesterClientId == request.requesterClientId &&
             this.request.issuedAt == request.issuedAt &&
             this.request.expiresAt == request.expiresAt &&
@@ -451,20 +489,32 @@ class OpenPgpSignStore(context: Context) :
             this.request.objectKind == request.objectKind &&
             this.request.workingDirectory == request.workingDirectory &&
             MessageDigest.isEqual(this.request.payloadSha256, request.payloadSha256) &&
-            // Terminal rows deliberately erase the sensitive raw commit. The retained authenticated
-            // metadata and SHA-256 decision ledger are sufficient to recognize a later relay replay.
+            // Only pre-v5 terminal rows can lack the raw payload. Their authenticated digest still
+            // identifies replays without inventing the bytes erased by an older release.
             (this.request.payload == null ||
                 this.request.payload.contentEquals(request.payload ?: ByteArray(0)))
 
     private companion object {
-        const val TABLE = "sign_requests"
-        const val COLUMNS = "request_id,requester_client_id,sender_client_id,primary_key_id," +
-            "issued_at,expires_at,payload_sha256,object_kind,payload,state,encoded_response,updated_at," +
-            "commit_details,result,working_directory"
+        const val TABLE = "seal_requests"
+        const val COLUMNS = "request_id,protocol_version,requester_client_id,sender_client_id,primary_key_id," +
+            "issued_at,expires_at,payload_sha256,object_kind,payload,state,response_action," +
+            "response_signature_armor,response_reject_reason,response_action_at,updated_at,result,working_directory," +
+            "summary_title,summary_reference,summary_identity,legacy_details_json"
+        // Live notifications display the short digest; terminal list pages do not need it.
+        val SUMMARY_COLUMNS = summaryColumns(includeDigest = true)
+        val HISTORY_SUMMARY_COLUMNS = summaryColumns(includeDigest = false)
+        fun summaryColumns(includeDigest: Boolean) = COLUMNS.split(',').joinToString(",") { column ->
+            when {
+                column == "payload_sha256" && !includeDigest -> "NULL"
+                column == "payload" || column.startsWith("response_") ||
+                    column == "legacy_details_json" -> "NULL"
+                column.startsWith("summary_") -> "substr($column,1,1024)"
+                else -> column
+            }
+        }
         const val MAX_PENDING_PER_SENDER = 3
         const val MAX_PENDING_GLOBAL = 10
-        const val MAX_HISTORY_ROWS = 10_000
-        const val DECISION_RETENTION_MILLIS = 10L * 365 * 24 * 60 * 60 * 1_000
+        const val HISTORY_PAGE_SIZE = 50
         val ACTIVE_STATES = setOf(
             OpenPgpRequestState.PENDING_REVIEW,
             OpenPgpRequestState.USER_APPROVED,
@@ -474,12 +524,13 @@ class OpenPgpSignStore(context: Context) :
             OpenPgpRequestState.SIGNED_PENDING_SEND,
             OpenPgpRequestState.REJECTED_PENDING_SEND,
         )
+        val LIVE_STATE_SQL = (ACTIVE_STATES + OUTBOX_STATES).joinToString(",") { "'${it.name}'" }
     }
 }
 
-internal fun ByteArray.toDisplaySnapshot(): GitCommitDisplaySnapshot? = runCatching {
+internal fun ByteArray.toCommitDetails(): GitCommitDetails {
     val parsed = GitCommitPayloadParser.parse(this)
-    GitCommitDisplaySnapshot(
+    return GitCommitDetails(
         treeId = parsed.treeId,
         parentIds = parsed.parentIds,
         author = parsed.author,
@@ -487,64 +538,32 @@ internal fun ByteArray.toDisplaySnapshot(): GitCommitDisplaySnapshot? = runCatch
         message = parsed.message,
         extraHeaders = parsed.headers
             .filterNot { it.name in setOf("tree", "parent", "author", "committer") }
-            .map { GitCommitDisplayHeader(it.name, it.value) },
+            .map { GitCommitHeader(it.name, it.value) },
         payloadBytes = size,
-    ).boundedForHistory()
-}.getOrNull()
+    )
+}
 
-internal fun ByteArray.toTagDisplaySnapshot(): GitTagDisplaySnapshot? = runCatching {
+internal fun ByteArray.toTagDetails(): GitTagDetails {
     val parsed = GitTagPayloadParser.parse(this)
-    GitTagDisplaySnapshot(
+    return GitTagDetails(
         objectId = parsed.objectId,
         objectType = parsed.objectType,
         tagName = parsed.tagName,
         tagger = parsed.tagger,
         message = parsed.message,
         payloadBytes = size,
-    ).boundedForHistory()
-}.getOrNull()
-
-private fun GitCommitDisplaySnapshot.boundedForHistory(): GitCommitDisplaySnapshot {
-    val boundedParents = parentIds.take(MAX_HISTORY_PARENTS)
-    val boundedAuthor = author.take(MAX_HISTORY_IDENTITY_CHARS)
-    val boundedCommitter = committer.take(MAX_HISTORY_IDENTITY_CHARS)
-    val boundedMessage = message.take(MAX_HISTORY_MESSAGE_CHARS)
-    val boundedHeaders = extraHeaders.take(MAX_HISTORY_HEADERS).map {
-        GitCommitDisplayHeader(
-            name = it.name.take(MAX_HISTORY_HEADER_NAME_CHARS),
-            value = it.value.take(MAX_HISTORY_HEADER_VALUE_CHARS),
-        )
-    }
-    return copy(
-        parentIds = boundedParents,
-        author = boundedAuthor,
-        committer = boundedCommitter,
-        message = boundedMessage,
-        extraHeaders = boundedHeaders,
-        truncated = truncated || boundedParents != parentIds || boundedAuthor != author ||
-            boundedCommitter != committer || boundedMessage != message || boundedHeaders != extraHeaders,
     )
 }
 
-private fun GitTagDisplaySnapshot.boundedForHistory(): GitTagDisplaySnapshot {
-    val boundedTagName = tagName.take(MAX_HISTORY_TAG_NAME_CHARS)
-    val boundedTagger = tagger.take(MAX_HISTORY_IDENTITY_CHARS)
-    val boundedMessage = message.take(MAX_HISTORY_MESSAGE_CHARS)
-    return copy(
-        tagName = boundedTagName,
-        tagger = boundedTagger,
-        message = boundedMessage,
-        truncated = truncated || boundedTagName != tagName || boundedTagger != tagger || boundedMessage != message,
-    )
-}
+internal fun GitCommitDetails.toSummary() = OpenPgpRequestSummary(
+    title = message.commitSubject().take(1_024),
+    reference = parentIds.firstOrNull() ?: treeId,
+    identity = author.take(1_024),
+)
 
-private const val MAX_HISTORY_PARENTS = 64
-private const val MAX_HISTORY_IDENTITY_CHARS = 1_024
-private const val MAX_HISTORY_MESSAGE_CHARS = 16 * 1_024
-private const val MAX_HISTORY_HEADERS = 64
-private const val MAX_HISTORY_HEADER_NAME_CHARS = 128
-private const val MAX_HISTORY_HEADER_VALUE_CHARS = 2 * 1_024
-private const val MAX_HISTORY_TAG_NAME_CHARS = 1_024
+internal fun GitTagDetails.toSummary() = OpenPgpRequestSummary(
+    title = tagName.take(1_024), reference = objectId, identity = tagger.take(1_024),
+)
 
 private fun resultFor(reason: OpenPgpRejectReason): OpenPgpRequestResult = when (reason) {
     OpenPgpRejectReason.USER_REJECTED -> OpenPgpRequestResult.REJECTED

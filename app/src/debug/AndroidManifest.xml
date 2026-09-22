@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <!-- Debug source set only. DUMP plus the provider's UID check restrict this to adb shell. -->
+        <provider
+            android:name=".debug.OperationalDatabaseExportProvider"
+            android:authorities="${applicationId}.debug.database"
+            android:exported="true"
+            android:grantUriPermissions="false"
+            android:readPermission="android.permission.DUMP"
+            android:writePermission="android.permission.DUMP" />
+    </application>
+</manifest>

@@ -114,9 +114,7 @@ class OpenPgpSignEngine(
             notifications.dismiss(requestId)
             return true
         }
-        val encoded = stored.encodedResponse ?: return false
-        val response = runCatching { ProtocolCodec.decodeFromCbor<OpenPgpSignSync>(encoded) }.getOrNull()
-            ?: return false
+        val response = stored.response ?: return false
         if (
             response.requestId != stored.request.requestId ||
             response.requesterClientId != stored.request.requesterClientId ||

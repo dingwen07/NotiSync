@@ -67,16 +67,28 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import java.text.DateFormat
 import java.util.Date
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.data.historyPager
+import androidx.paging.LoadState
+import androidx.paging.compose.LazyPagingItems
+import androidx.paging.compose.collectAsLazyPagingItems
+import androidx.paging.compose.itemKey
 import net.extrawdw.apps.notisync.run.RunEngine
+import net.extrawdw.apps.notisync.run.RunHistoryCursor
 import net.extrawdw.apps.notisync.run.RunKey
+import net.extrawdw.apps.notisync.run.RunStore
 import net.extrawdw.apps.notisync.run.StoredRun
+import net.extrawdw.apps.notisync.run.StoredRunRevision
 import net.extrawdw.apps.notisync.run.asRunTerminalLine
 import net.extrawdw.notisync.protocol.RunBlockedReason
 import net.extrawdw.notisync.protocol.RunPhase
@@ -91,14 +103,26 @@ fun RunScreen(
     val graph = rememberGraph()
     val context = LocalContext.current
     val engine = graph.runEngine ?: return
+    val store = graph.runStore
     val runs by engine.runs.collectAsStateWithLifecycle()
+    val changeVersion by store.changeVersion.collectAsStateWithLifecycle(minActiveState = Lifecycle.State.RESUMED)
+    val historyFlow = remember(store) {
+        historyPager<StoredRun, RunHistoryCursor>(cursorOf = { RunHistoryCursor.after(it) }) { limit, cursor, direction, include ->
+            store.historyPage(limit, cursor, direction, include)
+        }.flow
+    }
+    val history = historyFlow.collectAsLazyPagingItems()
     val pendingRefreshes by engine.pendingRefreshes.collectAsStateWithLifecycle()
     var selectedEncoded by rememberSaveable { mutableStateOf<String?>(null) }
     var showClearHistory by rememberSaveable { mutableStateOf(false) }
     var clearingHistory by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
     val selectedKey = selectedEncoded?.let(RunKey::decode)
-    val selected = selectedKey?.let { key -> runs.firstOrNull { it.key == key } }
+    var selected by remember(selectedKey) { mutableStateOf<StoredRun?>(null) }
+    var selectedLoadError by remember(selectedKey) { mutableStateOf(false) }
+    var detailRetry by remember { mutableStateOf(0) }
+
+    RefreshRunHistoryOnResume(store, history)
 
     LaunchedEffect(initialSelection) {
         if (initialSelection != null) {
@@ -106,8 +130,17 @@ fun RunScreen(
             onInitialSelectionConsumed()
         }
     }
-    LaunchedEffect(selectedEncoded, selected) {
-        if (selectedEncoded != null && selected == null) selectedEncoded = null
+    LaunchedEffect(selectedKey, changeVersion, detailRetry) {
+        val key = selectedKey ?: return@LaunchedEffect
+        selectedLoadError = false
+        try {
+            selected = withContext(Dispatchers.IO) { store.find(key) }
+            if (selected == null) selectedEncoded = null
+        } catch (cancelled: kotlinx.coroutines.CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            selectedLoadError = true
+        }
     }
 
     Scaffold(
@@ -120,7 +153,8 @@ fun RunScreen(
         },
     ) { padding ->
         RunList(
-            runs = runs,
+            active = runs.filter { it.active },
+            history = history,
             selectedKey = selectedKey,
             deviceNameOf = { id -> graph.trust.displayName(id) },
             onSelect = { run -> selectedEncoded = run.key.encoded() },
@@ -133,10 +167,22 @@ fun RunScreen(
         RunDetailSheet(
             run = run,
             engine = engine,
+            store = store,
             deviceName = graph.trust.displayName(run.state.hostClientId),
             refreshing = run.key in pendingRefreshes,
             onDismiss = { selectedEncoded = null },
         )
+    }
+
+    if (selectedKey != null && selected == null) {
+        ModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
+            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                if (selectedLoadError) {
+                    Text(stringResource(R.string.history_load_failed))
+                    TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
+                } else CircularProgressIndicator()
+            }
+        }
     }
 
     if (showClearHistory) {
@@ -195,14 +241,15 @@ fun RunScreen(
 
 @Composable
 private fun RunList(
-    runs: List<StoredRun>,
+    active: List<StoredRun>,
+    history: LazyPagingItems<StoredRun>,
     selectedKey: RunKey?,
     deviceNameOf: (net.extrawdw.notisync.protocol.ClientId) -> String?,
     onSelect: (StoredRun) -> Unit,
     onClearHistory: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    if (runs.isEmpty()) {
+    if (active.isEmpty() && history.itemCount == 0 && history.loadState.refresh is LoadState.NotLoading) {
         Column(
             modifier.fillMaxSize().padding(24.dp),
             verticalArrangement = Arrangement.Center,
@@ -225,8 +272,6 @@ private fun RunList(
         return
     }
 
-    val active = runs.filter { it.active }
-    val history = runs.filterNot { it.active }
     LazyColumn(
         modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 96.dp),
@@ -237,16 +282,24 @@ private fun RunList(
                 RunListItem(run, selectedKey == run.key, deviceNameOf(run.state.hostClientId), onSelect)
             }
         }
-        if (history.isNotEmpty()) {
+        if (history.itemCount > 0 || history.loadState.refresh !is LoadState.NotLoading) {
             item {
                 RunSectionHeader(
                     title = stringResource(R.string.run_section_history),
                     onClear = onClearHistory,
                 )
             }
-            items(history, key = { it.key.encoded() }) { run ->
-                RunListItem(run, selectedKey == run.key, deviceNameOf(run.state.hostClientId), onSelect)
+            item { HistoryLoadStateFooter(history.loadState, history::retry, Modifier.fillMaxWidth(), prepend = true) }
+            items(count = history.itemCount, key = history.itemKey { "history:${it.key.encoded()}" }) { index ->
+                history[index]?.let { run ->
+                    if (active.none { it.key == run.key }) {
+                        RunListItem(run, selectedKey == run.key, deviceNameOf(run.state.hostClientId), onSelect)
+                    }
+                }
             }
+        }
+        item {
+            HistoryLoadStateFooter(history.loadState, history::retry, Modifier.fillMaxWidth())
         }
     }
 }
@@ -315,21 +368,106 @@ private fun RunListItem(
 private fun RunDetailSheet(
     run: StoredRun,
     engine: RunEngine,
+    store: RunStore,
     deviceName: String?,
     refreshing: Boolean,
     onDismiss: () -> Unit,
 ) {
+    var browsingRevisions by remember(run.key) { mutableStateOf(false) }
+    var selectedRevision by remember(run.key) { mutableStateOf<StoredRunRevision?>(null) }
     ModalBottomSheet(
         onDismissRequest = onDismiss,
     ) {
-        RunDetail(
-            run = run,
-            engine = engine,
-            deviceName = deviceName,
-            refreshing = refreshing,
-            onBack = onDismiss,
-            modifier = Modifier.fillMaxWidth(),
-        )
+        val revision = selectedRevision
+        when {
+            revision != null -> RunDetail(
+                run = StoredRun(revision.state, revision.receivedAt, revision.state.revision),
+                engine = engine,
+                deviceName = deviceName,
+                refreshing = false,
+                onBack = { selectedRevision = null },
+                readOnly = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            browsingRevisions -> RunRevisionList(
+                key = run.key, store = store,
+                onSelect = { selectedRevision = it }, onBack = { browsingRevisions = false },
+            )
+            else -> RunDetail(
+                run = run,
+                engine = engine,
+                deviceName = deviceName,
+                refreshing = refreshing,
+                onBack = onDismiss,
+                onShowRevisions = { browsingRevisions = true },
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+    }
+}
+
+@Composable
+private fun RunRevisionList(
+    key: RunKey,
+    store: RunStore,
+    onSelect: (StoredRunRevision) -> Unit,
+    onBack: () -> Unit,
+) {
+    val flow = remember(store, key) {
+        historyPager<StoredRunRevision, Long>(cursorOf = { it.state.revision }) { limit, cursor, direction, include ->
+            store.revisionPage(key, limit, cursor, direction, include)
+        }.flow
+    }
+    val revisions = flow.collectAsLazyPagingItems()
+    RefreshRunHistoryOnResume(store, revisions)
+    LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 96.dp)) {
+        item {
+            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onBack) {
+                    Icon(ArrowBackIcon, contentDescription = stringResource(R.string.run_revision_back_to_current))
+                }
+                Text(stringResource(R.string.run_revision_history_title), style = MaterialTheme.typography.titleLarge)
+            }
+        }
+        if (revisions.itemCount == 0 && revisions.loadState.refresh is LoadState.NotLoading) {
+            item { Text(stringResource(R.string.run_revision_history_empty), Modifier.padding(24.dp)) }
+        }
+        item { HistoryLoadStateFooter(revisions.loadState, revisions::retry, Modifier.fillMaxWidth(), prepend = true) }
+        items(count = revisions.itemCount, key = revisions.itemKey { it.state.revision }) { index ->
+            revisions[index]?.let { revision ->
+                ListItem(
+                    modifier = Modifier.clickable { onSelect(revision) },
+                    leadingContent = { RunPhaseIcon(revision.state.phase) },
+                    supportingContent = {
+                        Column {
+                            Text(commandLabel(revision.state), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Text(stringResource(
+                                R.string.run_revision_received,
+                                rememberDateTimeFormatter().format(Date(revision.receivedAt)),
+                            ))
+                        }
+                    },
+                ) { Text(stringResource(R.string.run_revision_item, revision.state.revision)) }
+                HorizontalDivider()
+            }
+        }
+        item { HistoryLoadStateFooter(revisions.loadState, revisions::retry, Modifier.fillMaxWidth()) }
+    }
+}
+
+@Composable
+private fun <T : Any> RefreshRunHistoryOnResume(store: RunStore, items: LazyPagingItems<T>) {
+    val initialVersion = remember(items) { store.changeVersion.value }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(store, items, lifecycleOwner) {
+        var observed = false
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            store.changeVersion.collect { version ->
+                // Paging performs the initial load. Changes and subsequent resumes refresh its window.
+                if (observed || version != initialVersion) items.refresh()
+                observed = true
+            }
+        }
     }
 }
 
@@ -340,6 +478,8 @@ private fun RunDetail(
     deviceName: String?,
     refreshing: Boolean,
     onBack: () -> Unit,
+    readOnly: Boolean = false,
+    onShowRevisions: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val state = run.state
@@ -380,7 +520,7 @@ private fun RunDetail(
                 // A deferred liveness snapshot (or an older host that has none) can leave a remote-active state
                 // in local History. Refresh remains available there so the host can answer with a higher
                 // authenticated revision and reactivate it; input/signals stay active-only.
-                if (state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED) {
+                if (runDetailCanRefresh(state, readOnly)) {
                     IconButton(
                         onClick = { scope.launch { engine.refresh(run.key) } },
                         enabled = !refreshing,
@@ -392,6 +532,19 @@ private fun RunDetail(
                         }
                     }
                 }
+            }
+        }
+
+        if (readOnly) {
+            item {
+                Column {
+                    Text(stringResource(R.string.run_revision_item, state.revision), style = MaterialTheme.typography.titleMedium)
+                    Text(stringResource(R.string.run_revision_received, rememberDateTimeFormatter().format(Date(run.receivedAt))))
+                }
+            }
+        } else if (onShowRevisions != null) {
+            item {
+                TextButton(onClick = onShowRevisions) { Text(stringResource(R.string.run_revision_history_action)) }
             }
         }
 
@@ -432,7 +585,7 @@ private fun RunDetail(
             }
         }
 
-        if (run.active) {
+        if (runDetailCanControl(run, readOnly)) {
             item {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     if (state.phase == RunPhase.BLOCKED && state.prompt == RunPromptKind.YES_NO) {
@@ -581,7 +734,7 @@ private fun RunDetail(
         }
     }
 
-    if (showSignal) {
+    if (!readOnly && showSignal) {
         SignalDialog(
             onDismiss = { showSignal = false },
             onSend = { signal ->
@@ -590,7 +743,7 @@ private fun RunDetail(
             },
         )
     }
-    if (showKill) {
+    if (!readOnly && showKill) {
         AlertDialog(
             onDismissRequest = { showKill = false },
             title = { Text(stringResource(R.string.run_kill_title)) },
@@ -739,6 +892,11 @@ private fun runStatus(run: StoredRun): String {
 
 private fun commandLabel(state: RunState): String =
     state.argv.firstOrNull()?.substringAfterLast('/')?.takeIf { it.isNotBlank() } ?: "Command"
+
+internal fun runDetailCanControl(run: StoredRun, readOnly: Boolean): Boolean = !readOnly && run.active
+
+internal fun runDetailCanRefresh(state: RunState, readOnly: Boolean): Boolean =
+    !readOnly && (state.phase == RunPhase.RUNNING || state.phase == RunPhase.BLOCKED)
 
 private fun displayArgv(argv: List<String>): String = argv.joinToString(" ") { arg ->
     if (arg.all { it.isLetterOrDigit() || it in "-._/:=@+,%" }) arg

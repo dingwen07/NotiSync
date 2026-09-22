@@ -173,6 +173,49 @@ class OperationalDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationFourToFiveRenamesMirrorMessageAndAddsIndexedCleanupWithoutChangingRows() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(4).use { connection ->
+            connection.execSQL("INSERT INTO mirror_msg VALUES('peer', 'notification', 'message', 123)")
+            connection.execSQL("INSERT INTO mirror_lifecycle VALUES('peer', 'notification', 123, NULL, 456)")
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 5,
+            migrations = listOf(OperationalDatabase.MIGRATION_4_5),
+        ).use { connection ->
+            connection.prepare("SELECT source_client, source_key, message_id, recorded_at FROM mirror_message").use {
+                assertTrue(it.step())
+                assertEquals("peer", it.getText(0))
+                assertEquals("notification", it.getText(1))
+                assertEquals("message", it.getText(2))
+                assertEquals(123L, it.getLong(3))
+            }
+            connection.prepare("SELECT name FROM sqlite_master WHERE name IN ('mirror_msg', 'mirror_msg_recorded_at_idx')").use {
+                assertFalse(it.step())
+            }
+            connection.prepare("SELECT updated_at FROM mirror_lifecycle").use {
+                assertTrue(it.step())
+                assertEquals(456L, it.getLong(0))
+            }
+            // The framework compatibility driver classifies EXPLAIN as a non-query statement.
+            // Use its underlying cursor API for query-plan assertions on this plaintext fixture.
+            android.database.sqlite.SQLiteDatabase.openDatabase(
+                databaseFile.path, null, android.database.sqlite.SQLiteDatabase.OPEN_READONLY,
+            ).use { raw ->
+                listOf(
+                    "EXPLAIN QUERY PLAN DELETE FROM mirror_message WHERE recorded_at < 100" to "mirror_message_recorded_at_idx",
+                    "EXPLAIN QUERY PLAN DELETE FROM mirror_lifecycle WHERE updated_at < 100" to "mirror_lifecycle_updated_at_idx",
+                ).forEach { (query, index) ->
+                    raw.rawQuery(query, emptyArray()).use {
+                        assertTrue(it.moveToFirst())
+                        assertTrue(it.getString(3).contains(index))
+                    }
+                }
+            }
+        }
+    }
+
+    @Test
     fun migrationFromOriginalRoomReleaseReachesCurrentSchema() = runBlocking {
         context.deleteDatabase(DATABASE_NAME)
         migrationHelper.createDatabase(1).close()
@@ -182,8 +225,60 @@ class OperationalDatabaseMigrationTest {
                 OperationalDatabase.MIGRATION_1_2,
                 OperationalDatabase.MIGRATION_2_3,
                 OperationalDatabase.MIGRATION_3_4,
+                OperationalDatabase.MIGRATION_4_5,
             ),
         ).close()
+    }
+
+    @Test
+    fun migrationFourToFivePreservesSigningSettingsUnderDomainTableNames() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(4).use { connection ->
+            connection.execSQL("INSERT INTO provider_state VALUES(1, 'inventory-generation', 28)")
+            connection.execSQL("INSERT INTO authorization_floors VALUES('peer', 'authorization-generation', 7, 123)")
+            connection.execSQL(
+                "INSERT INTO openpgp_enrollment VALUES(1, 1, 'provider', 'key-reference', 'primary-key', 'identity', 456)",
+            )
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 5,
+            migrations = listOf(OperationalDatabase.MIGRATION_4_5),
+        ).use { connection ->
+            connection.prepare("SELECT inventory_generation, revision FROM ssh_provider_state WHERE singleton=1").use {
+                assertTrue(it.step())
+                assertEquals("inventory-generation", it.getText(0))
+                assertEquals(28L, it.getLong(1))
+                assertFalse(it.step())
+            }
+            connection.prepare(
+                "SELECT requester_client_id, authorization_generation, invalidated_through_epoch, updated_at " +
+                    "FROM ssh_authorization_floors",
+            ).use {
+                assertTrue(it.step())
+                assertEquals("peer", it.getText(0))
+                assertEquals("authorization-generation", it.getText(1))
+                assertEquals(7L, it.getLong(2))
+                assertEquals(123L, it.getLong(3))
+                assertFalse(it.step())
+            }
+            connection.prepare(
+                "SELECT enabled, provider_id, provider_key_reference, primary_key_id, display_identity, enrolled_at " +
+                    "FROM seal_enrollment WHERE singleton_id=1",
+            ).use {
+                assertTrue(it.step())
+                assertEquals(1L, it.getLong(0))
+                assertEquals("provider", it.getText(1))
+                assertEquals("key-reference", it.getText(2))
+                assertEquals("primary-key", it.getText(3))
+                assertEquals("identity", it.getText(4))
+                assertEquals(456L, it.getLong(5))
+                assertFalse(it.step())
+            }
+            connection.prepare(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name IN " +
+                    "('provider_state', 'authorization_floors', 'openpgp_enrollment')",
+            ).use { assertFalse(it.step()) }
+        }
     }
 
     private companion object {

@@ -2,10 +2,11 @@ package net.extrawdw.apps.notisync.data
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
+import android.database.sqlite.SQLiteDatabase as FrameworkSQLiteDatabase
+import net.zetetic.database.sqlcipher.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
 import net.extrawdw.apps.notisync.data.storage.core.CoreDatabase
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSQLiteOpenHelper
 import net.extrawdw.notisync.peer.channel.MessageDedup
 import net.extrawdw.apps.notisync.domain.MirrorAckIndex
 import net.extrawdw.apps.notisync.domain.MirrorLifecycleStore
@@ -24,7 +25,7 @@ import net.extrawdw.notisync.protocol.RelayAck
  *    [MessageDedup] for [net.extrawdw.apps.notisync.channel.SecureChannel].
  *  * **pending_ack** — ids we handled but haven't yet told the broker to drop (chiefly FCM-inline
  *    deliveries, which never ack inline). Drained in one batch request by the relay worker.
- *  * **mirror_msg** — which relay message delivered the mirror for a (sourceClient, sourceKey), so a
+ *  * **mirror_message** — which relay message delivered the mirror for a (sourceClient, sourceKey), so a
  *    local dismissal can queue that exact id for ack. Implements [MirrorAckIndex] for the mirror engine.
  *
  * All methods are best-effort: any storage error degrades toward "not seen / not recorded", i.e.
@@ -44,20 +45,15 @@ data class RelayInboxItem(
 enum class InboxInsertResult { INSERTED, EXISTS, FAILED }
 
 class MessageStore(context: Context) :
-    SQLiteOpenHelper(
-        context.applicationContext,
-        OperationalDatabase.DATABASE_NAME,
-        null,
-        OperationalDatabase.VERSION,
-    ),
+    OperationalSQLiteOpenHelper(context),
     MessageDedup,
     MirrorAckIndex,
     MirrorLifecycleStore {
     private val appContext = context.applicationContext
     private val coreHelper = CoreMessageStoreHelper(appContext)
-    private val coreReadableDatabase: SQLiteDatabase
+    private val coreReadableDatabase: FrameworkSQLiteDatabase
         get() = coreHelper.readableDatabase
-    private val coreWritableDatabase: SQLiteDatabase
+    private val coreWritableDatabase: FrameworkSQLiteDatabase
         get() = coreHelper.writableDatabase
 
     init {
@@ -396,7 +392,7 @@ class MessageStore(context: Context) :
         if (messageId.isEmpty()) return
         runCatching {
             writableDatabase.insertWithOnConflict(
-                "mirror_msg",
+                "mirror_message",
                 null,
                 ContentValues().apply {
                     put("source_client", sourceClientId.value)
@@ -412,7 +408,7 @@ class MessageStore(context: Context) :
     override fun onDismissed(sourceClientId: ClientId, sourceKey: String) {
         val messageId = runCatching {
             readableDatabase.rawQuery(
-                "SELECT message_id FROM mirror_msg WHERE source_client = ? AND source_key = ? LIMIT 1",
+                "SELECT message_id FROM mirror_message WHERE source_client = ? AND source_key = ? LIMIT 1",
                 arrayOf(sourceClientId.value, sourceKey),
             ).use { if (it.moveToFirst()) it.getString(0) else null }
         }.getOrNull() ?: return
@@ -428,7 +424,7 @@ class MessageStore(context: Context) :
                 delete("pending_ack", "queued_at < ?", arrayOf(cutoff.toString()))
             }
             writableDatabase.run {
-                delete("mirror_msg", "recorded_at < ?", arrayOf(cutoff.toString()))
+                delete("mirror_message", "recorded_at < ?", arrayOf(cutoff.toString()))
                 delete("mirror_lifecycle", "updated_at < ?", arrayOf(cutoff.toString()))
             }
         }
@@ -454,9 +450,9 @@ private class CoreMessageStoreHelper(context: Context) :
         setWriteAheadLoggingEnabled(true)
     }
 
-    override fun onCreate(db: SQLiteDatabase): Nothing = roomMustOwnSchema()
+    override fun onCreate(db: FrameworkSQLiteDatabase): Nothing = roomMustOwnSchema()
 
-    override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
+    override fun onUpgrade(db: FrameworkSQLiteDatabase, oldVersion: Int, newVersion: Int): Nothing =
         roomMustOwnSchema()
 }
 

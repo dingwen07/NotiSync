@@ -40,11 +40,11 @@ class OpenPgpSignNotificationPresenter(
 
         val requestId = stored.request.requestId
         val objectTitle = when (stored.request.objectKind) {
-            OpenPgpObjectKind.GIT_COMMIT -> stored.commit?.message?.commitSubject()
+            OpenPgpObjectKind.GIT_COMMIT -> (stored.summary?.title ?: stored.commit?.message?.commitSubject())
                 ?.takeIf(String::isNotBlank)
                 ?.take(MAX_TITLE_CHARS)
                 ?: context.getString(R.string.seal_commit_untitled)
-            OpenPgpObjectKind.GIT_TAG -> stored.tag?.tagName
+            OpenPgpObjectKind.GIT_TAG -> (stored.summary?.title ?: stored.tag?.tagName)
                 ?.takeIf(String::isNotBlank)
                 ?.take(MAX_TITLE_CHARS)
                 ?: context.getString(R.string.seal_tag_untitled)
@@ -72,7 +72,7 @@ class OpenPgpSignNotificationPresenter(
             requestId.take(8),
             stored.request.payloadSha256.toHex().take(7),
         )
-        val identityText = (stored.commit?.author ?: stored.tag?.tagger)
+        val identityText = (stored.summary?.identity ?: stored.commit?.author ?: stored.tag?.tagger)
             ?.trim()
             ?.takeIf(String::isNotBlank)
             ?.take(MAX_CONTEXT_CHARS)

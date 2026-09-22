@@ -1045,4 +1045,13 @@
     <string name="desktop_application_icon_source_error">Enter an App Store link, App ID, Bundle ID, or image URL.</string>
     <string name="desktop_application_icon_not_found">No App Store icon found for this app.</string>
     <string name="desktop_application_icon_load_error">Could not load this image. Check the provided source and try again.</string>
+    <string name="history_loading">Loading history…</string>
+    <string name="history_load_failed">Could not load history.</string>
+    <string name="history_retry">Retry</string>
+    <string name="run_revision_history_action">Saved revisions</string>
+    <string name="run_revision_history_title">Saved revisions</string>
+    <string name="run_revision_history_empty">No saved revisions</string>
+    <string name="run_revision_item">Revision %1$d</string>
+    <string name="run_revision_received">Received %1$s</string>
+    <string name="run_revision_back_to_current">Back to current run</string>
 </resources>

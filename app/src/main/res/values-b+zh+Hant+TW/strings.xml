@@ -987,4 +987,13 @@
     <string name="desktop_application_icon_source_error">請輸入 App Store 連結、App ID、Bundle ID 或圖片網址。</string>
     <string name="desktop_application_icon_not_found">未找到此應用程式的 App Store 圖示。</string>
     <string name="desktop_application_icon_load_error">無法載入此圖片，請檢查來源後再試一次。</string>
+    <string name="history_loading">正在載入歷史記錄…</string>
+    <string name="history_load_failed">無法載入歷史記錄。</string>
+    <string name="history_retry">重試</string>
+    <string name="run_revision_history_action">已儲存的修訂版本</string>
+    <string name="run_revision_history_title">已儲存的修訂版本</string>
+    <string name="run_revision_history_empty">沒有已儲存的修訂版本</string>
+    <string name="run_revision_item">修訂版本 %1$d</string>
+    <string name="run_revision_received">接收時間：%1$s</string>
+    <string name="run_revision_back_to_current">返回目前執行</string>
 </resources>

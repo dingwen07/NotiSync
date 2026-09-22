@@ -2,16 +2,17 @@ package net.extrawdw.apps.notisync.run
 
 import android.content.ContentValues
 import android.content.Context
-import android.database.sqlite.SQLiteDatabase
-import android.database.sqlite.SQLiteOpenHelper
-import androidx.core.database.sqlite.transaction
+import net.zetetic.database.sqlcipher.SQLiteDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.transaction
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunState
-import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
+import net.extrawdw.apps.notisync.data.storage.operational.OperationalSQLiteOpenHelper
+import net.extrawdw.apps.notisync.data.storage.operational.RunStateStorage
+import net.extrawdw.apps.notisync.data.HistoryPage
+import net.extrawdw.apps.notisync.data.HistoryDirection
 
 /** Stable local identity for one run. Run ids are scoped by their authenticated host. */
 data class RunKey(val hostClientId: String, val runId: String) {
@@ -41,6 +42,15 @@ data class StoredRun(
     }
 }
 
+/** One complete snapshot received from the host; revisions are retained independently of presentation. */
+data class StoredRunRevision(val state: RunState, val receivedAt: Long)
+
+data class RunHistoryCursor(val updatedAt: Long, val hostClientId: String, val runId: String) {
+    companion object {
+        fun after(run: StoredRun) = RunHistoryCursor(run.state.updatedAt, run.key.hostClientId, run.key.runId)
+    }
+}
+
 enum class RunApplyResult { INSERTED, UPDATED, EQUAL, OLDER }
 
 interface RunRepository {
@@ -51,6 +61,10 @@ interface RunRepository {
     fun markInactive(key: RunKey): Boolean
     fun clearHistory()
     fun prune()
+    fun inactiveKeys(): List<RunKey> = runs.value.filterNot { it.active }.map { it.key }
+    fun inactiveRemoteActiveKeys(): List<RunKey> = runs.value.filter {
+        !it.active && (it.state.phase == RunPhase.RUNNING || it.state.phase == RunPhase.BLOCKED)
+    }.map { it.key }
 }
 
 /**
@@ -67,21 +81,19 @@ class RunStore(
     private val now: () -> Long = { System.currentTimeMillis() },
     private val completedRetentionMs: Long = COMPLETED_RETENTION_MS,
     private val maxCompletedRuns: Int = MAX_COMPLETED_RUNS,
-) : SQLiteOpenHelper(
-    context.applicationContext,
-    OperationalDatabase.DATABASE_NAME,
-    null,
-    OperationalDatabase.VERSION,
-), RunRepository {
+) : OperationalSQLiteOpenHelper(context), RunRepository {
     private val _runs = MutableStateFlow<List<StoredRun>>(emptyList())
+    /** Active sessions and uncheckpointed notifications, independent of the visible history page. */
     override val runs: StateFlow<List<StoredRun>> = _runs.asStateFlow()
+    private val _changeVersion = MutableStateFlow(0L)
+    val changeVersion: StateFlow<Long> = _changeVersion.asStateFlow()
 
     private var compactionPending = false
 
     init {
         // Operational Room owns the file and keeps it in WAL; opt in before opening the shared database.
         setWriteAheadLoggingEnabled(true)
-        _runs.value = readAll()
+        _runs.value = readRelevant()
         // Enforce the long-horizon history bounds on cold start too.
         runCatching { prune() }
     }
@@ -98,62 +110,190 @@ class RunStore(
     @Synchronized
     override fun apply(state: RunState): RunApplyResult {
         val db = writableDatabase
-        val existing = db.rawQuery(
-            "SELECT revision, presented_revision FROM runs WHERE host_client = ? AND run_id = ?",
-            arrayOf(state.hostClientId.value, state.runId),
-        ).use { cursor ->
-            if (cursor.moveToFirst()) ExistingRun(cursor.getLong(0), cursor.getLong(1)) else null
-        }
-        if (existing != null) {
-            if (existing.revision == state.revision) return RunApplyResult.EQUAL
-            if (existing.revision > state.revision) return RunApplyResult.OLDER
-        }
+        var applied: StoredRun? = null
+        var insertedRevision = false
+        val result = db.transaction {
+            val existing = rawQuery(
+                "SELECT current_revision, presented_revision FROM runs WHERE host_client = ? AND run_id = ?",
+                arrayOf(state.hostClientId.value, state.runId),
+            ).use { cursor ->
+                if (cursor.moveToFirst()) ExistingRun(cursor.getLong(0), cursor.getLong(1)) else null
+            }
+            if (existing?.revision == state.revision) return@transaction RunApplyResult.EQUAL
 
-        val result = if (existing == null) RunApplyResult.INSERTED else RunApplyResult.UPDATED
-        val receivedAt = now()
-        db.transaction {
-            db.insertWithOnConflict(
-                "runs",
-                null,
-                ContentValues().apply {
-                    put("host_client", state.hostClientId.value)
-                    put("run_id", state.runId)
-                    put("revision", state.revision)
-                    put("presented_revision", existing?.presentedRevision ?: StoredRun.NO_PRESENTED_REVISION)
-                    put("active", if (state.isActive()) 1 else 0)
-                    put("updated_at", state.updatedAt)
-                    state.endedAt?.let { put("ended_at", it) } ?: putNull("ended_at")
-                    put("received_at", receivedAt)
-                    put("payload", ProtocolCodec.encodeToCbor(state))
-                },
-                SQLiteDatabase.CONFLICT_REPLACE,
-            ).also { if (it == -1L) error("could not persist Run state") }
+            val alreadyReceived = rawQuery(
+                "SELECT 1 FROM run_revisions WHERE host_client = ? AND run_id = ? AND revision = ?",
+                arrayOf(state.hostClientId.value, state.runId, state.revision.toString()),
+            ).use { it.moveToFirst() }
+            if (alreadyReceived) {
+                check(existing != null && existing.revision > state.revision) { "Run current revision is inconsistent" }
+                return@transaction RunApplyResult.OLDER
+            }
+            val receivedAt = now()
+            val stored = StoredRun(
+                state, receivedAt, existing?.presentedRevision ?: StoredRun.NO_PRESENTED_REVISION,
+            )
+            // The parent is inserted first for the revision's foreign key. Never replace a parent:
+            // SQLite's REPLACE would cascade-delete every previously received revision.
+            if (existing == null) {
+                insertOrThrow("runs", null, RunStateStorage.contentValues(RunStateStorage.sessionValues(stored)))
+            }
+            insertOrThrow(
+                "run_revisions", null,
+                RunStateStorage.contentValues(RunStateStorage.revisionValues(state, receivedAt)),
+            )
+            insertedRevision = true
+            if (existing != null && existing.revision > state.revision) return@transaction RunApplyResult.OLDER
+            if (existing != null) {
+                check(update(
+                    "runs", RunStateStorage.contentValues(RunStateStorage.sessionValues(stored)),
+                    "host_client = ? AND run_id = ?", arrayOf(state.hostClientId.value, state.runId),
+                ) == 1) { "could not update Run session" }
+            }
+            applied = stored
+            if (existing == null) RunApplyResult.INSERTED else RunApplyResult.UPDATED
         }
-        val key = RunKey(state.hostClientId.value, state.runId)
-        val retained = _runs.value.filterNot { it.key == key }
-        _runs.value = (retained + StoredRun(state, receivedAt, existing?.presentedRevision
-            ?: StoredRun.NO_PRESENTED_REVISION))
-            .sortedWith(RUN_ORDER)
+        applied?.let { stored ->
+            _runs.value = (_runs.value.filterNot { it.key == stored.key } + stored).sortedWith(RUN_ORDER)
+        }
+        if (insertedRevision) notifyChanged()
         return result
     }
 
-    override fun find(key: RunKey): StoredRun? =
-        runs.value.firstOrNull { it.key == key }
+    @Synchronized
+    override fun find(key: RunKey): StoredRun? = runs.value.firstOrNull { it.key == key }
+        ?: readableDatabase.rawQuery(
+            "$CURRENT_QUERY WHERE session.host_client = ? AND session.run_id = ?",
+            arrayOf(key.hostClientId, key.runId),
+        ).use { if (it.moveToFirst()) RunStateStorage.readCurrent(it) else null }
+
+    /** Current snapshots of inactive sessions, fetched with a stable cursor rather than OFFSET. */
+    @Synchronized
+    fun history(limit: Int = 50, after: RunHistoryCursor? = null): List<StoredRun> {
+        require(limit in 1..1_001) { "Run history page size must be between 1 and 1001" }
+        return historyRows(limit, after, HistoryDirection.OLDER, includeCursor = false)
+    }
+
+    private fun historyRows(
+        limit: Int,
+        cursor: RunHistoryCursor?,
+        direction: HistoryDirection,
+        includeCursor: Boolean,
+    ): List<StoredRun> {
+        val arguments = buildList {
+            cursor?.let {
+                add(it.updatedAt.toString())
+                add(it.updatedAt.toString())
+                add(it.updatedAt.toString())
+                add(it.hostClientId)
+                add(it.hostClientId)
+                add(it.runId)
+            }
+            add(limit.toString())
+        }.toTypedArray()
+        return readableDatabase.rawQuery(
+            historyQuery(cursor, direction, includeCursor),
+            arguments,
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(RunStateStorage.readCurrent(cursor)) } }
+    }
+
+    @Synchronized
+    fun historyPage(
+        limit: Int = 50,
+        cursor: RunHistoryCursor? = null,
+        direction: HistoryDirection = HistoryDirection.OLDER,
+        includeCursor: Boolean = false,
+    ): HistoryPage<StoredRun, RunHistoryCursor> {
+        require(limit in 1..1_000) { "Run history page size must be between 1 and 1000" }
+        val rows = historyRows(limit + 1, cursor, direction, includeCursor)
+        val page = rows.take(limit).let { if (direction == HistoryDirection.NEWER) it.reversed() else it }
+        val next = if (rows.size <= limit) null else RunHistoryCursor.after(
+            if (direction == HistoryDirection.NEWER) page.first() else page.last(),
+        )
+        return HistoryPage(page, next)
+    }
+
+    @Synchronized
+    override fun inactiveKeys(): List<RunKey> = readKeys("SELECT host_client, run_id FROM runs WHERE active = 0")
+
+    @Synchronized
+    override fun inactiveRemoteActiveKeys(): List<RunKey> = readKeys(
+        "SELECT session.host_client, session.run_id FROM runs session JOIN run_revisions revision " +
+            "ON revision.host_client=session.host_client AND revision.run_id=session.run_id " +
+            "AND revision.revision=session.current_revision WHERE session.active=0 " +
+            "AND revision.phase IN ('RUNNING', 'BLOCKED')",
+    )
+
+    private fun readKeys(query: String): List<RunKey> = readableDatabase.rawQuery(query, emptyArray()).use { cursor ->
+        buildList { while (cursor.moveToNext()) add(RunKey(cursor.getString(0), cursor.getString(1))) }
+    }
+
+    /** A bounded newest-first page; the next page uses the last returned revision as its cursor. */
+    @Synchronized
+    fun revisions(key: RunKey, limit: Int = 100, beforeRevision: Long? = null): List<StoredRunRevision> {
+        require(limit in 1..1_000) { "Run revision page size must be between 1 and 1000" }
+        return revisionRows(key, limit, beforeRevision, HistoryDirection.OLDER, includeCursor = false)
+    }
+
+    @Synchronized
+    fun revisionPage(
+        key: RunKey,
+        limit: Int = 50,
+        cursor: Long? = null,
+        direction: HistoryDirection = HistoryDirection.OLDER,
+        includeCursor: Boolean = false,
+    ): HistoryPage<StoredRunRevision, Long> {
+        require(limit in 1..1_000) { "Run revision page size must be between 1 and 1000" }
+        val rows = revisionRows(key, limit + 1, cursor, direction, includeCursor)
+        val page = rows.take(limit).let { if (direction == HistoryDirection.NEWER) it.reversed() else it }
+        val next = if (rows.size <= limit) null else
+            (if (direction == HistoryDirection.NEWER) page.first() else page.last()).state.revision
+        return HistoryPage(page, next)
+    }
+
+    private fun revisionRows(
+        key: RunKey,
+        limit: Int,
+        cursor: Long?,
+        direction: HistoryDirection,
+        includeCursor: Boolean,
+    ): List<StoredRunRevision> {
+        val comparison = if (direction == HistoryDirection.OLDER) "<" else ">"
+        val bound = if (cursor == null) "" else " AND revision $comparison${if (includeCursor) "=" else ""} ?"
+        val order = if (direction == HistoryDirection.OLDER) "DESC" else "ASC"
+        val arguments = buildList {
+            add(key.hostClientId)
+            add(key.runId)
+            cursor?.let { add(it.toString()) }
+            add(limit.toString())
+        }.toTypedArray()
+        return readableDatabase.rawQuery(
+            "SELECT * FROM run_revisions WHERE host_client = ? AND run_id = ?$bound ORDER BY revision $order LIMIT ?",
+            arguments,
+        ).use { cursor ->
+            buildList {
+                while (cursor.moveToNext()) {
+                    add(RunStateStorage.readRevision(cursor))
+                }
+            }
+        }
+    }
 
     @Synchronized
     override fun markPresented(key: RunKey, revision: Long) {
         val db = writableDatabase
-        db.update(
+        val updated = db.update(
             "runs",
             ContentValues().apply { put("presented_revision", revision) },
-            "host_client = ? AND run_id = ? AND revision = ? AND presented_revision < ?",
+            "host_client = ? AND run_id = ? AND current_revision = ? AND presented_revision < ?",
             arrayOf(key.hostClientId, key.runId, revision.toString(), revision.toString()),
         )
         _runs.value = _runs.value.map { stored ->
             if (stored.key == key && stored.state.revision == revision && stored.presentedRevision < revision) {
                 stored.copy(presentedRevision = revision)
             } else stored
-        }
+        }.filter { it.active || it.presentationPending }
+        if (updated > 0) notifyChanged()
     }
 
     /**
@@ -178,7 +318,8 @@ class RunStore(
                 if (candidate.key == key) {
                     candidate.copy(active = false, presentedRevision = candidate.state.revision)
                 } else candidate
-            }.sortedWith(RUN_ORDER)
+            }.filter { it.active || it.presentationPending }.sortedWith(RUN_ORDER)
+            notifyChanged()
         }
         return changed
     }
@@ -186,14 +327,16 @@ class RunStore(
     /** Delete every locally historical row while leaving active work intact. */
     @Synchronized
     override fun clearHistory() {
-        if (_runs.value.none { !it.active }) return
         val db = writableDatabase
+        var removed = 0
         try {
-            db.delete("runs", "active = 0", null)
+            removed = db.delete("runs", "active = 0", null)
         } finally {
             // SQLite may have committed before reporting a later failure; reload to keep the observable cache exact.
-            _runs.value = readAll()
+            _runs.value = readRelevant()
         }
+        if (removed == 0) return
+        notifyChanged()
         // Logical deletion is authoritative even if physical compaction must be retried by later maintenance.
         compactionPending = true
         runCatching {
@@ -224,8 +367,9 @@ class RunStore(
             expired + overCount
         }
         if (removed > 0) {
-            _runs.value = readAll()
+            _runs.value = readRelevant()
             compactionPending = true
+            notifyChanged()
         }
         // Both retention bounds share one compaction. Retry a failed compaction on the next maintenance pass.
         if (compactionPending) {
@@ -246,7 +390,7 @@ class RunStore(
         }
         if (staleKeys.isEmpty()) return
         db.execSQL(
-            "UPDATE runs SET active = 0, presented_revision = revision " +
+            "UPDATE runs SET active = 0, presented_revision = current_revision " +
                 "WHERE active = 1 AND received_at < ?",
             arrayOf(cutoff),
         )
@@ -255,7 +399,8 @@ class RunStore(
             if (stored.key in stale) {
                 stored.copy(active = false, presentedRevision = stored.state.revision)
             } else stored
-        }.sortedWith(RUN_ORDER)
+        }.filter { it.active || it.presentationPending }.sortedWith(RUN_ORDER)
+        notifyChanged()
     }
 
     private fun checkpointAndCompact(db: SQLiteDatabase) {
@@ -268,35 +413,46 @@ class RunStore(
         }
     }
 
-    private fun readAll(): List<StoredRun> = runCatching {
-        readableDatabase.rawQuery(
-            "SELECT payload, received_at, presented_revision, active " +
-                "FROM runs ORDER BY active DESC, updated_at DESC",
-            emptyArray(),
-        ).use { cursor ->
-            buildList {
-                while (cursor.moveToNext()) {
-                    val state = runCatching {
-                        ProtocolCodec.decodeFromCbor<RunState>(cursor.getBlob(0))
-                    }.getOrNull() ?: continue
-                    add(
-                        StoredRun(
-                            state = state,
-                            receivedAt = cursor.getLong(1),
-                            presentedRevision = cursor.getLong(2),
-                            active = cursor.getInt(3) != 0,
-                        )
-                    )
-                }
+    private fun readRelevant(): List<StoredRun> = readableDatabase.rawQuery(
+        "$CURRENT_QUERY WHERE session.active = 1 OR session.presented_revision < session.current_revision " +
+            "ORDER BY session.active DESC, session.updated_at DESC",
+        emptyArray(),
+    ).use { cursor ->
+        buildList {
+            while (cursor.moveToNext()) {
+                runCatching { RunStateStorage.readCurrent(cursor) }.getOrNull()?.let(::add)
             }
         }
-    }.getOrDefault(emptyList())
-
-    private fun RunState.isActive(): Boolean = phase == RunPhase.RUNNING || phase == RunPhase.BLOCKED
+    }
 
     private data class ExistingRun(val revision: Long, val presentedRevision: Long)
 
+    private fun notifyChanged() { _changeVersion.value++ }
+
     companion object {
+        private const val CURRENT_QUERY = "SELECT revision.*, session.presented_revision, session.active " +
+            "FROM runs session JOIN run_revisions revision ON " +
+            "revision.host_client=session.host_client AND revision.run_id=session.run_id " +
+            "AND revision.revision=session.current_revision"
+        internal fun historyQuery(
+            cursor: RunHistoryCursor?,
+            direction: HistoryDirection = HistoryDirection.OLDER,
+            includeCursor: Boolean = false,
+        ): String {
+            // The timestamp range lets SQLite seek into the index before checking mixed-direction ties.
+            val newer = direction == HistoryDirection.NEWER
+            val timeComparison = if (newer) ">" else "<"
+            val identityComparison = if (newer) "<" else ">"
+            val inclusive = if (includeCursor) "=" else ""
+            val predicate = if (cursor == null) "" else
+                " AND session.updated_at $timeComparison= ? AND (session.updated_at $timeComparison ? OR " +
+                    "(session.updated_at = ? AND (session.host_client $identityComparison ? OR " +
+                    "(session.host_client = ? AND session.run_id $identityComparison$inclusive ?))))"
+            val order = if (newer) "session.updated_at ASC, session.host_client DESC, session.run_id DESC" else
+                "session.updated_at DESC, session.host_client, session.run_id"
+            return "$CURRENT_QUERY WHERE session.active = 0$predicate " +
+                "ORDER BY $order LIMIT ?"
+        }
         internal const val ACTIVE_STALE_AFTER_MS = 3L * 60 * 60 * 1000
         private const val COMPLETED_RETENTION_MS = 50L * 365 * 24 * 60 * 60 * 1000
         private const val MAX_COMPLETED_RUNS = 1_000_000

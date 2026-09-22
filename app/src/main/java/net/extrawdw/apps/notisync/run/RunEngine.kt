@@ -157,9 +157,8 @@ class RunEngine internal constructor(
         synchronized(presentationLock) {
             // A store can age an active-phase snapshot into History during cold start, before this presenter exists.
             // Dismiss any stable ongoing notification left behind by a previous process in that case.
-            repository.runs.value
-                .filter { !it.active && it.state.remotePhaseIsActive() }
-                .forEach { stored -> runCatching { presenter.dismiss(stored.key) } }
+            repository.inactiveRemoteActiveKeys()
+                .forEach { key -> runCatching { presenter.dismiss(key) } }
             repository.runs.value.filter { it.presentationPending }.forEach { stored ->
                 runCatching {
                     val posted = presenter.render(stored.state)
@@ -192,7 +191,7 @@ class RunEngine internal constructor(
     }
 
     fun clearHistory(): Boolean = synchronized(presentationLock) {
-        val historicalKeys = repository.runs.value.filterNot { it.active }.map { it.key }
+        val historicalKeys = runCatching { repository.inactiveKeys() }.getOrElse { return@synchronized false }
         if (runCatching { repository.clearHistory() }.isFailure) return@synchronized false
         historicalKeys.forEach { key -> runCatching { presenter.dismiss(key) } }
         true
