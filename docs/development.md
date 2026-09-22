@@ -61,6 +61,23 @@ associated-domain, and push entitlements consistently across the app and extensi
 `GoogleService-Info.plist` to the app target for Firebase; it is ignored by Git. APNs credentials and
 the broker topic must match your app. See [APNs setup](self-hosting.md#ios-push-with-apns).
 
+### Xcode Cloud
+
+The executable [`ios/ci_scripts/ci_post_clone.sh`](../ios/ci_scripts/ci_post_clone.sh) hook lives
+beside `NotiSync.xcodeproj`, following Apple's [custom build script conventions](https://developer.apple.com/documentation/xcode/writing-custom-build-scripts).
+Xcode Cloud runs it automatically after cloning, before building the Xcode project; no target
+membership or Xcode Run Script build phase is needed.
+
+The hook installs JDK 21 through the runner's Homebrew, uses `CI_PRIMARY_REPOSITORY_PATH` to find
+the checkout, and builds `:protocol:assembleNotiSyncProtocolReleaseXCFramework`. It maps the
+runner's `HTTP_PROXY` and `HTTPS_PROXY` URLs to Java proxy settings for dependency downloads.
+Gradle's `--configure-on-demand` flag limits configuration to the shared protocol module, so this
+invocation does not require the Android SDK. A failed command or missing framework fails the hook.
+
+Keep `protocol/build/` ignored: each cloud build generates the release XCFramework from the same
+source revision as the Swift app, including the device and Apple Silicon simulator slices.
+Firebase configuration and signing/provisioning still need to be supplied for your cloud workflow.
+
 ## Desktop
 
 Use the [desktop installation guide](desktop.md#prerequisites) for platform dependencies and
