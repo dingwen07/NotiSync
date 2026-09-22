@@ -60,6 +60,8 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published var clientId = ""
     @Published var lastError: String?
     @Published var pairingPayload: String?
+    @Published var showingPairing = false
+    @Published var incomingBrokerPairing: BrokerPairingLink?
     @Published var rotationInfo: RotationKeyInfo?
     /// A pairing candidate surfaced from a deep link (notisync://pair or the universal /pair link), awaiting
     /// the user's confirmation. Pairing is never automatic.

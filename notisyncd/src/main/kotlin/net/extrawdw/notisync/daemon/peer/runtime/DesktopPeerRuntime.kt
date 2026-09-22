@@ -652,6 +652,7 @@ class DesktopPeerRuntime(
             name = inspected.displayName,
             identityFingerprint = inspected.identityKeyFingerprint,
             capabilities = card.capabilities.mapTo(linkedSetOf()) { it.name },
+            platform = inspected.platform,
         )
     }
 

@@ -7,6 +7,9 @@ import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import java.nio.file.Path
 import kotlin.system.exitProcess
 import kotlinx.serialization.encodeToString
+import kotlinx.coroutines.runBlocking
+import net.extrawdw.notisync.peer.pairing.BrokerPairingClient
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import net.extrawdw.notisync.cli.skills.NotisyncSkillsCommand
 import net.extrawdw.notisync.daemon.NotisyncdCli
 import net.extrawdw.notisync.desktop.DesktopProcessTitle
@@ -37,6 +40,10 @@ class NotisyncCli(
     private val autostart: () -> Unit = { DaemonAutostarter(paths).connect() },
     private val daemonRunner: (Array<String>) -> Int = { NotisyncdCli(paths, output, error).run(it) },
     private val skillsRunner: (List<String>) -> Int = { NotisyncSkillsCommand(output).run(it) },
+    private val readPairingChoice: () -> String? = { System.console()?.readLine() },
+    private val brokerPairing: (String, String, (BrokerPairingLink) -> Unit) -> String = { broker, payload, ready ->
+        runBlocking { BrokerPairingClient().use { it.host(broker, payload, ready) } }
+    },
 ) {
     fun run(arguments: Array<String>): Int = try {
         if (arguments.isEmpty() || arguments[0] in setOf("-h", "--help", "help")) {
@@ -122,7 +129,11 @@ class NotisyncCli(
     }
 
     private fun pairing(client: DaemonAdministration, arguments: List<String>) {
-        when (arguments.firstOrNull() ?: "show") {
+        when (arguments.firstOrNull() ?: "start") {
+            "start" -> {
+                if (arguments.size > 1) throw CliError("devices pair takes no arguments")
+                brokerPairing(client)
+            }
             "show", "qr" -> {
                 val pairing = client.pairing()
                 output.appendLine(pairing.deepLink)
@@ -139,7 +150,39 @@ class NotisyncCli(
                 output.appendLine("trusted ${candidate.name} as ${classification.name.lowercase()} device")
                 printCandidate(candidate)
             }
-            else -> throw CliError("pair requires show, inspect, or accept")
+            else -> throw CliError("pair takes no arguments, or show, inspect, or accept")
+        }
+    }
+
+    private fun brokerPairing(client: DaemonAdministration) {
+        val status = client.status()
+        if (status.trustStoreQuarantined) throw CliError("Resolve trust-store quarantine before pairing")
+        val broker = client.config().brokerUrl
+        val own = client.pairing()
+        val received = brokerPairing(broker, own.payload) { link ->
+            output.appendLine("Secure Exchange")
+            output.appendLine("Scan this QR code with NotiSync on the other device.")
+            output.appendLine(link.encode())
+            output.append(TerminalQr.render(link.encode()))
+            output.appendLine("Device: ${terminalText(status.deviceName.orEmpty())}")
+            output.appendLine("Expires in 3 minutes.")
+            output.appendLine("Waiting for the joining device…")
+        }
+        val candidate = client.inspectPairing(received)
+        output.appendLine("Received and authenticated device CARD:")
+        printCandidate(candidate)
+        output.appendLine("Trust this device? [1] My device  [2] Someone else's device  [Enter] Cancel")
+        val classification = when (readPairingChoice()?.trim()) {
+            "1" -> DeviceClassification.OWN
+            "2" -> DeviceClassification.OTHER
+            else -> null
+        }
+        if (classification == null) {
+            output.appendLine("Device was not trusted. You can inspect and accept this CARD later:")
+            output.appendLine(received)
+        } else {
+            val accepted = client.acceptPairing(PairingAcceptRequest(received, classification))
+            output.appendLine("trusted ${terminalText(accepted.name)} as ${classification.name.lowercase()} device")
         }
     }
 
@@ -233,7 +276,8 @@ class NotisyncCli(
     }
 
     private fun printCandidate(candidate: PairingCandidate) {
-        output.appendLine("name: ${candidate.name}")
+        output.appendLine("name: ${terminalText(candidate.name)}")
+        candidate.platform?.let { output.appendLine("platform: ${terminalText(it)}") }
         output.appendLine("client: ${candidate.clientId}")
         output.appendLine("fingerprint: ${candidate.identityFingerprint}")
         output.appendLine("capabilities: ${candidate.capabilities.sorted().joinToString(", ")}")
@@ -274,6 +318,7 @@ class NotisyncCli(
           config get
           config set device-name NAME
           devices [list]
+          devices pair
           devices pair show [--payload]
           devices pair inspect LINK|PAYLOAD|-
           devices pair accept [--own|--other] LINK|PAYLOAD|-
@@ -330,3 +375,6 @@ private object TerminalQr {
 }
 
 private class CliError(message: String) : IllegalArgumentException(message)
+
+// Signed peer text must not write terminal control sequences into a trust prompt.
+private fun terminalText(value: String): String = value.filterNot { it.isISOControl() || it in '\u202a'..'\u202e' || it in '\u2066'..'\u2069' }

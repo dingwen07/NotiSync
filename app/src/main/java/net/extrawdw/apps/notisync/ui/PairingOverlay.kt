@@ -38,6 +38,7 @@ import kotlin.coroutines.cancellation.CancellationException
 import kotlin.math.abs
 import net.extrawdw.apps.notisync.security.TapjackingProtectionEffect
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 
 // Tuning for the expand/collapse + predictive-back container transform. Mirrors the values used by
 // the AskMyTimeline "Chat history" overlay this is modelled on.
@@ -58,7 +59,7 @@ private val pairCollapsedCornerRadius = 28.dp
 private val predictiveBackEasing: Easing = CubicBezierEasing(0.1f, 0.1f, 0f, 1f)
 
 /**
- * Full-screen pairing flow rendered as a state-driven overlay that expands out of the "Pair a device"
+ * Full-screen pairing flow rendered as a state-driven overlay that expands out of the "Device Pairing"
  * stripe and collapses back into it, with the system predictive-back gesture driving the collapse.
  *
  * Adapted from AskMyTimeline's square "History" button in two ways the brief called out:
@@ -75,6 +76,8 @@ internal fun PairingOverlay(
     pairButtonBounds: Rect?,
     onClose: () -> Unit,
     onPairingCandidate: (PairingCandidate) -> Unit,
+    onBrokerPairing: (BrokerPairingLink) -> Unit,
+    onBrokerPairingCandidate: (PairingCandidate) -> Unit,
 ) {
     TapjackingProtectionEffect()
     val scope = rememberCoroutineScope()
@@ -241,6 +244,8 @@ internal fun PairingOverlay(
             PairingScreen(
                 onBack = { scope.launch { collapseToPairButton() } },
                 onPairingCandidate = onPairingCandidate,
+                onBrokerPairing = onBrokerPairing,
+                onBrokerPairingCandidate = onBrokerPairingCandidate,
             )
         }
     }

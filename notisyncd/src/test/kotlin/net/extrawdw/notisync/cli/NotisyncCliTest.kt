@@ -2,6 +2,10 @@ package net.extrawdw.notisync.cli
 
 import java.io.IOException
 import java.nio.file.Path
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+import com.google.zxing.qrcode.decoder.ErrorCorrectionLevel
 import net.extrawdw.notisync.desktop.DesktopPaths
 import net.extrawdw.notisync.localapi.ApplicationListResponse
 import net.extrawdw.notisync.localapi.ApplicationView
@@ -20,11 +24,72 @@ import net.extrawdw.notisync.localapi.PairingCandidate
 import net.extrawdw.notisync.localapi.PairingPayloadResponse
 import net.extrawdw.notisync.localapi.QuarantineActionRequest
 import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class NotisyncCliTest {
+    @Test
+    fun `default rendezvous QR fits a small terminal`() {
+        val link = BrokerPairingLink("abcdefghijklmnopqrstuv", "A".repeat(43), "a".repeat(32)).encode()
+        val matrix = QRCodeWriter().encode(link, BarcodeFormat.QR_CODE, 1, 1, mapOf(
+            EncodeHintType.CHARACTER_SET to "UTF-8",
+            EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
+            EncodeHintType.MARGIN to 2,
+        ))
+        assertTrue("QR width ${matrix.width}", matrix.width <= 57)
+        assertTrue("Terminal rows ${(matrix.height + 1) / 2}", (matrix.height + 1) / 2 <= 29)
+    }
+
+    @Test
+    fun `default pair exchanges cards displays received identity and asks before trusting`() {
+        for ((choice, classification) in listOf("1" to DeviceClassification.OWN, "2" to DeviceClassification.OTHER)) {
+            val admin = FakeAdministration(mutableListOf())
+            val fixture = CliFixture(admin, readPairingChoice = { choice }, brokerPairing = { broker, payload, ready ->
+                assertEquals(admin.config().brokerUrl, broker)
+                assertEquals("payload", payload)
+                ready(BrokerPairingLink("abcdefghijklmnopqrstuv", "A".repeat(43), "a".repeat(32)))
+                "received-card"
+            })
+            assertEquals(0, fixture.cli.run(arrayOf("devices", "pair")))
+            assertEquals(listOf("received-card"), admin.inspectedPairings)
+            assertEquals(listOf(PairingAcceptRequest("received-card", classification)), admin.acceptedPairings)
+            val text = fixture.output.toString()
+            assertTrue(text.contains("Scan this QR code with NotiSync on the other device."))
+            assertTrue(!text.contains("Pairing code:"))
+            assertTrue(text.indexOf("name: Phone") < text.indexOf("Trust this device?"))
+        }
+    }
+
+    @Test
+    fun `cancel or absent terminal input never adds trust`() {
+        for (choice in listOf(null, "", "yes")) {
+            val admin = FakeAdministration(mutableListOf())
+            val fixture = CliFixture(admin, readPairingChoice = { choice }, brokerPairing = { _, _, _ -> "received" })
+            assertEquals(0, fixture.cli.run(arrayOf("devices", "pair")))
+            assertTrue(admin.acceptedPairings.isEmpty())
+            assertTrue(fixture.output.toString().contains("Device was not trusted"))
+        }
+    }
+
+    @Test
+    fun `legacy show keeps CARD QR and payload without contacting broker`() {
+        val fixture = CliFixture()
+        assertEquals(0, fixture.cli.run(arrayOf("devices", "pair", "show", "--payload")))
+        assertTrue(fixture.output.toString().contains("https://notisync.invalid/pair"))
+        assertTrue(fixture.output.toString().contains("payload: payload"))
+    }
+
+    @Test
+    fun `failed key exchange never inspects or trusts a CARD`() {
+        val admin = FakeAdministration(mutableListOf())
+        val fixture = CliFixture(admin, brokerPairing = { _, _, _ -> error("Pairing authentication failed") })
+        assertEquals(1, fixture.cli.run(arrayOf("devices", "pair")))
+        assertTrue(admin.inspectedPairings.isEmpty())
+        assertTrue(admin.acceptedPairings.isEmpty())
+    }
+
     @Test
     fun `help lists every device action inline`() {
         val fixture = CliFixture()
@@ -227,6 +292,10 @@ class NotisyncCliTest {
         autostart: () -> Unit = {},
         daemonRunner: (Array<String>) -> Int = { 0 },
         skillsRunner: (List<String>) -> Int = { 0 },
+        readPairingChoice: () -> String? = { null },
+        brokerPairing: (String, String, (BrokerPairingLink) -> Unit) -> String = { _, _, _ ->
+            error("Unexpected broker pairing connection")
+        },
     ) {
         val output = StringBuilder()
         val error = StringBuilder()
@@ -238,6 +307,8 @@ class NotisyncCliTest {
             autostart = autostart,
             daemonRunner = daemonRunner,
             skillsRunner = skillsRunner,
+            readPairingChoice = readPairingChoice,
+            brokerPairing = brokerPairing,
         )
     }
 
@@ -248,6 +319,7 @@ class NotisyncCliTest {
     ) : DaemonAdministration {
         val actions = mutableListOf<Pair<String, DeviceAction>>()
         val inspectedPairings = mutableListOf<String>()
+        val acceptedPairings = mutableListOf<PairingAcceptRequest>()
         val removedApplications = mutableListOf<String>()
 
         override fun status(): DaemonStatus {
@@ -282,7 +354,10 @@ class NotisyncCliTest {
             return candidate()
         }
 
-        override fun acceptPairing(request: PairingAcceptRequest): PairingCandidate = candidate()
+        override fun acceptPairing(request: PairingAcceptRequest): PairingCandidate {
+            acceptedPairings += request
+            return candidate()
+        }
 
         override fun devices() = DeviceListResponse(deviceState.toList())
 

@@ -23,6 +23,7 @@ import androidx.compose.foundation.verticalScroll
 import net.extrawdw.apps.notisync.ui.icons.material.filled.arrow_back as FilledArrowBackIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_scanner as QrCodeScannerIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.share as ShareIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCodeIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -39,6 +40,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -56,6 +60,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.codescanner.GmsBarcodeScannerOptions
 import com.google.mlkit.vision.codescanner.GmsBarcodeScanning
@@ -63,6 +68,7 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.pairing.KeyEpochStatus
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingManager
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import net.extrawdw.apps.notisync.pairing.PairingNfcReaderSession
 import net.extrawdw.apps.notisync.pairing.QrCodes
 import net.extrawdw.apps.notisync.pairing.formatPairingSystemTime
@@ -72,12 +78,15 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.cancellation.CancellationException
 
 @Composable
 fun PairingScreen(
     onBack: () -> Unit,
     onPairingCandidate: (PairingCandidate) -> Unit,
+    onBrokerPairing: (BrokerPairingLink) -> Unit,
+    onBrokerPairingCandidate: (PairingCandidate) -> Unit,
 ) {
     val context = LocalContext.current
     // Resolve strings via LocalResources so they re-read on configuration changes (locale, etc.);
@@ -90,6 +99,44 @@ fun PairingScreen(
     var inspecting by remember { mutableStateOf(false) }
     var codeGeneration by remember { mutableIntStateOf(0) }
     var hasResumed by remember { mutableStateOf(false) }
+
+    var showLegacyQr by remember { mutableStateOf(false) }
+    var hostScreenActive by remember { mutableStateOf(true) }
+    var hostLink by remember { mutableStateOf<BrokerPairingLink?>(null) }
+    var hostUnavailable by remember { mutableStateOf(false) }
+    val brokerUrl by graph.settings.brokerUrl.collectAsStateWithLifecycle()
+    val acceptResult = remember { AtomicBoolean(true) }
+    val deliverBrokerCandidate by rememberUpdatedState(onBrokerPairingCandidate)
+    DisposableEffect(Unit) { onDispose { acceptResult.set(false) } }
+
+    fun finishPairing(deliver: () -> Unit) {
+        if (acceptResult.compareAndSet(true, false)) {
+            hostScreenActive = false
+            deliver()
+        }
+    }
+
+    LaunchedEffect(pairing, brokerUrl, scanning, inspecting, hostScreenActive) {
+        hostLink = null
+        hostUnavailable = false
+        if (!hostScreenActive || scanning || inspecting) return@LaunchedEffect
+        val candidate = pairing.hostExchange(
+            brokerUrl = brokerUrl,
+            onLink = { link ->
+                hostLink = link
+                if (link != null) hostUnavailable = false
+            },
+            onUnavailable = { hostUnavailable = true },
+        )
+        finishPairing { deliverBrokerCandidate(candidate) }
+    }
+    val brokerBitmap by produceState<Bitmap?>(null, hostLink) {
+        value = null
+        val link = hostLink
+        value = if (link == null) null else withContext(Dispatchers.Default) {
+            QrCodes.encode(link.encode(), marginModules = 4)
+        }
+    }
 
     fun showScanFailure(message: String) {
         Toast.makeText(context, message, Toast.LENGTH_LONG).show()
@@ -111,11 +158,16 @@ fun PairingScreen(
     }
 
     fun inspect(content: String) {
+        if (!acceptResult.get()) return
+        BrokerPairingLink.parse(content)?.let {
+            finishPairing { onBrokerPairing(it) }
+            return
+        }
         inspecting = true
         scope.launch {
             withContext(Dispatchers.Default) { pairing.inspect(content) }
                 .fold(
-                    onSuccess = onPairingCandidate,
+                    onSuccess = { candidate -> finishPairing { onPairingCandidate(candidate) } },
                     onFailure = {
                         showScanFailure(resources.getString(R.string.pair_could_not_pair, it.message))
                     },
@@ -148,12 +200,12 @@ fun PairingScreen(
             }
         }
     }
-    val pairingUrl = (codeState as? PairingCodeState.Ready)?.url
+    val legacyPairingUrl = (codeState as? PairingCodeState.Ready)?.url
     val pairingPayload = (codeState as? PairingCodeState.Ready)?.payload
 
-    fun sharePairingUrl() {
-        val url = pairingUrl ?: return
-        val title = resources.getString(R.string.pair_share_title)
+    fun sharePairingUrl(url: String?, legacy: Boolean = false) {
+        url ?: return
+        val title = resources.getString(if (legacy) R.string.pair_legacy_share_title else R.string.pair_share_title)
         val shareIntent = Intent(Intent.ACTION_SEND).apply {
             type = "text/plain"
             putExtra(Intent.EXTRA_TEXT, url)
@@ -197,7 +249,11 @@ fun PairingScreen(
             TopAppBar(
                 title = { Text(stringResource(R.string.pair_a_device)) },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
+                    IconButton(onClick = {
+                        acceptResult.set(false)
+                        hostScreenActive = false
+                        onBack()
+                    }) {
                         Icon(
                             FilledArrowBackIcon,
                             contentDescription = stringResource(R.string.action_back)
@@ -205,7 +261,10 @@ fun PairingScreen(
                     }
                 },
                 actions = {
-                    IconButton(onClick = ::sharePairingUrl, enabled = pairingUrl != null) {
+                    IconButton(onClick = { showLegacyQr = true }, enabled = legacyPairingUrl != null) {
+                        Icon(QrCodeIcon, contentDescription = stringResource(R.string.pair_legacy_qr_title))
+                    }
+                    IconButton(onClick = { sharePairingUrl(legacyPairingUrl) }, enabled = legacyPairingUrl != null) {
                         Icon(
                             ShareIcon,
                             contentDescription = stringResource(R.string.pair_share_title)
@@ -225,68 +284,47 @@ fun PairingScreen(
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text(
-                stringResource(R.string.pair_intro),
+                stringResource(R.string.pair_broker_intro),
                 style = MaterialTheme.typography.bodyLarge,
             )
-            Text(
-                stringResource(R.string.pair_intro_nfc),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-
             val ready = codeState as? PairingCodeState.Ready
             if (ready?.automaticTimeEnabled == false) {
                 AutomaticTimeWarning(
                     onOpenSettings = ::openDateAndTimeSettings,
                 )
             }
+            (codeState as? PairingCodeState.Error)?.let { error ->
+                Text(
+                    stringResource(R.string.pair_could_not_prepare, error.message),
+                    color = MaterialTheme.colorScheme.error,
+                )
+            }
 
-            when (val state = codeState) {
-                PairingCodeState.Loading -> {
-                    Box(
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(
+                    stringResource(R.string.pair_broker_title),
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                val bitmap = brokerBitmap
+                if (hostLink != null && bitmap != null) {
+                    Image(
+                        bitmap = bitmap.asImageBitmap(),
+                        contentDescription = stringResource(R.string.pair_broker_qr),
+                        filterQuality = FilterQuality.None,
                         modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        CircularProgressIndicator()
-                    }
-                }
-
-                is PairingCodeState.Ready -> {
-                    Column(
-                        verticalArrangement = Arrangement.spacedBy(8.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    ) {
-                        Image(
-                            bitmap = state.bitmap.asImageBitmap(),
-                            contentDescription = stringResource(R.string.pair_qr_code_desc),
-                            filterQuality = FilterQuality.None,
-                            modifier = Modifier.fillMaxWidth().aspectRatio(1f),
-                        )
-                        Text(
-                            stringResource(
-                                R.string.pair_signed_card_time,
-                                formatPairingSystemTime(
-                                    state.createdAt,
-                                    state.timeZoneId,
-                                    resources.configuration.locales[0],
-                                ),
-                            ),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                }
-
-                is PairingCodeState.Error -> {
-                    Box(
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1f).padding(24.dp),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Text(
-                            stringResource(R.string.pair_could_not_prepare, state.message),
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.error,
-                        )
+                    )
+                } else {
+                    Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+                        Column(
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            CircularProgressIndicator()
+                            Text(stringResource(
+                                if (hostUnavailable) R.string.pair_broker_reconnecting else R.string.pair_broker_connecting,
+                            ))
+                        }
                     }
                 }
             }
@@ -300,6 +338,7 @@ fun PairingScreen(
                     scanning = true
                     GmsBarcodeScanning.getClient(context, scannerOptions).startScan()
                         .addOnSuccessListener { barcode ->
+                            if (!acceptResult.get()) return@addOnSuccessListener
                             val raw = barcode.rawValue
                             if (raw == null) {
                                 showScanFailure(resources.getString(R.string.pair_no_code))
@@ -310,9 +349,11 @@ fun PairingScreen(
                             }
                         }
                         .addOnCanceledListener {
+                            if (!acceptResult.get()) return@addOnCanceledListener
                             scanning = false
                         }
                         .addOnFailureListener {
+                            if (!acceptResult.get()) return@addOnFailureListener
                             showScanFailure(resources.getString(R.string.pair_scan_failed, it.message))
                             scanning = false
                         }
@@ -341,9 +382,23 @@ fun PairingScreen(
                     }
                 )
             }
-
+            Text(
+                stringResource(R.string.pair_intro_nfc),
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
+    if (showLegacyQr) {
+        (codeState as? PairingCodeState.Ready)?.let { ready ->
+            LegacyPairingQrSheet(
+                ready,
+                onDismiss = { showLegacyQr = false },
+                onShare = { sharePairingUrl(ready.url, legacy = true) },
+            )
+        }
+    }
+
 }
 
 private sealed interface PairingCodeState {
@@ -357,6 +412,44 @@ private sealed interface PairingCodeState {
         val timeZoneId: String,
     ) : PairingCodeState
     data class Error(val message: String) : PairingCodeState
+}
+
+@Composable
+private fun LegacyPairingQrSheet(state: PairingCodeState.Ready, onDismiss: () -> Unit, onShare: () -> Unit) {
+    val resources = LocalResources.current
+    val sheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
+    )
+    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+        Column(
+            Modifier.fillMaxWidth().navigationBarsPadding().verticalScroll(rememberScrollState()).padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(stringResource(R.string.pair_legacy_qr_title), style = MaterialTheme.typography.headlineSmall)
+            Text(stringResource(R.string.pair_legacy_qr_intro), style = MaterialTheme.typography.bodyMedium)
+            Image(
+                bitmap = state.bitmap.asImageBitmap(),
+                contentDescription = stringResource(R.string.pair_qr_code_desc),
+                filterQuality = FilterQuality.None,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            )
+            Text(
+                stringResource(
+                    R.string.pair_signed_card_time,
+                    formatPairingSystemTime(state.createdAt, state.timeZoneId, resources.configuration.locales[0]),
+                ),
+                style = MaterialTheme.typography.bodySmall,
+            )
+            SelectionContainer { Text(state.url, style = MaterialTheme.typography.bodySmall) }
+            OutlinedButton(onClick = onShare, modifier = Modifier.fillMaxWidth()) {
+                Icon(ShareIcon, contentDescription = null)
+                Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                Text(stringResource(R.string.pair_legacy_share_title))
+            }
+        }
+    }
 }
 
 @Composable
@@ -407,6 +500,7 @@ private fun Resources.nfcPairingFailureDetail(failure: Throwable): String {
 @Composable
 internal fun PairingApprovalSheet(
     candidate: PairingCandidate,
+    brokerAuthenticated: Boolean = false,
     existingTrustedDevice: RosterDevice?,
     approvingOwnDevice: Boolean?,
     error: String?,
@@ -443,7 +537,7 @@ internal fun PairingApprovalSheet(
             SelectionContainer {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
                     Text(
-                        stringResource(R.string.pair_trust_body),
+                        stringResource(if (brokerAuthenticated) R.string.pair_broker_verified else R.string.pair_trust_body),
                         style = MaterialTheme.typography.bodyMedium,
                     )
                     DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)

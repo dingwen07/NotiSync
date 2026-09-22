@@ -262,7 +262,7 @@ class SettingsRepository internal constructor(
     companion object {
         // Production broker (via Cloudflare). For a local server from the emulator, override in
         // Settings with http://10.0.2.2:8080. BrokerClient derives ws/wss for live delivery.
-        const val DEFAULT_BROKER = "https://notisync-api-v2.extrawdw.net"
+        const val DEFAULT_BROKER = net.extrawdw.notisync.protocol.BrokerPairing.DEFAULT_BROKER
     }
 }
 

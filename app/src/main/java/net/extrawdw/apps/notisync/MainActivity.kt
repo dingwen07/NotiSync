@@ -94,6 +94,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import net.extrawdw.apps.notisync.pairing.PairingDeepLinks
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
+import net.extrawdw.apps.notisync.ui.BrokerPairingSheet
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.apps.notisync.pairing.PairingCardStore
 import net.extrawdw.apps.notisync.pairing.PairingManager
@@ -239,11 +241,16 @@ class MainActivity : ComponentActivity() {
         // QR-launched task that's the original pairing deep link. Ignore it, otherwise every
         // return-from-Recents would surface the trust dialog again.
         if (intent.flags and Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY != 0) return
-        val payload = PairingDeepLinks.payloadFrom(intent.dataString) ?: return
-        pendingPairingPayload.value = payload
+        val link = intent.dataString ?: return
+        val payload = BrokerPairingLink.parse(link)?.encode() ?: PairingDeepLinks.payloadFrom(link)
         // Consume the link so the same intent can't re-trigger pairing on a later recreation
-        // (e.g. a configuration change, which restarts the activity with this same intent).
+        // (including malformed links). Never let external input throw during activity startup.
         intent.data = null
+        if (payload == null) {
+            Toast.makeText(this, R.string.pair_invalid_link, Toast.LENGTH_LONG).show()
+            return
+        }
+        pendingPairingPayload.value = payload
     }
 }
 
@@ -310,6 +317,7 @@ private enum class PairingReviewSource {
     INTERACTIVE,
     DEEP_LINK,
     HCE,
+    BROKER,
 }
 
 private data class PairingReview(
@@ -360,12 +368,13 @@ fun NotiSyncRoot(
     val quarantined by graph.trust.quarantined.collectAsStateWithLifecycle()
 
     // Pairing is a state-driven overlay rather than a nav destination, so it can expand out of — and
-    // collapse back into — the "Pair a device" stripe with a predictive-back-driven container transform
+    // collapse back into — the "Device Pairing" stripe with a predictive-back-driven container transform
     // (see PairingOverlay). The stripe reports its live position here; the overlay renders above the
     // whole navigation suite so the Devices tab (and bar) stay visible as the page folds away.
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
     var pairingReview by remember { mutableStateOf<PairingReview?>(null) }
+    var brokerPairingLink by remember { mutableStateOf<BrokerPairingLink?>(null) }
     var pairingApprovalOwnDevice by remember { mutableStateOf<Boolean?>(null) }
     var pairingApprovalError by remember { mutableStateOf<String?>(null) }
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
@@ -391,10 +400,10 @@ fun NotiSyncRoot(
     // Compatibility path for Android NDEF readers and iPhone: add the Type 4 AID only while this Activity is
     // resumed outside pairing UI. While approval is pending, withhold NDEF to prevent another system tag
     // dispatch but keep the proprietary AID preferred; the sheet must not switch this device to reader mode.
-    LifecycleResumeEffect(showPairing, pairingReview != null, foregroundPairingUrl) {
+    LifecycleResumeEffect(showPairing, pairingReview != null || brokerPairingLink != null, foregroundPairingUrl) {
         when {
             showPairing -> Unit
-            pairingReview != null -> PairingNfcController.enableForegroundCustomAidOnly(context)
+            pairingReview != null || brokerPairingLink != null -> PairingNfcController.enableForegroundCustomAidOnly(context)
             else -> foregroundPairingUrl?.let {
                 PairingNfcController.enableForegroundNdef(context, it)
             }
@@ -447,11 +456,25 @@ fun NotiSyncRoot(
         }
     }
 
-    LaunchedEffect(pendingPairingPayload, pendingHcePairingPayload, quarantined) {
-        if (quarantined) return@LaunchedEffect
+    LaunchedEffect(pendingPairingPayload, pendingHcePairingPayload, quarantined, pairingReview != null, brokerPairingLink) {
+        if (quarantined) {
+            showPairing = false
+            brokerPairingLink = null
+            return@LaunchedEffect
+        }
+        // Queue another scan while a secure exchange or CARD review is active, including a failed approval
+        // that the user may retry. Never replace the visible identity during a trust decision.
+        if (pairingReview != null || brokerPairingLink != null) return@LaunchedEffect
         val fromDeepLink = pendingPairingPayload != null
         val payload = pendingPairingPayload ?: pendingHcePairingPayload ?: return@LaunchedEffect
         navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+        BrokerPairingLink.parse(payload)?.let { link ->
+            showPairing = false
+            pairingReview = null
+            brokerPairingLink = link
+            if (fromDeepLink) onPendingPairingPayloadConsumed() else onPendingHcePairingPayloadConsumed(payload)
+            return@LaunchedEffect
+        }
         val inspection = withContext(Dispatchers.Default) { pairing.inspect(payload) }
         inspection.fold(
             onSuccess = { candidate ->
@@ -659,17 +682,35 @@ fun NotiSyncRoot(
         }
         }
 
-        if (showPairing) {
+        if (showPairing && !quarantined) {
             PairingOverlay(
                 pairButtonBounds = pairButtonBounds,
                 onClose = { showPairing = false },
                 onPairingCandidate = { openPairingCandidate(it) },
+                onBrokerPairingCandidate = { openPairingCandidate(it, PairingReviewSource.BROKER) },
+                onBrokerPairing = {
+                    showPairing = false
+                    brokerPairingLink = it
+                },
+            )
+        }
+
+        if (!quarantined) brokerPairingLink?.let { link ->
+            BrokerPairingSheet(
+                link = link,
+                pairing = pairing,
+                onCandidate = {
+                    brokerPairingLink = null
+                    openPairingCandidate(it, PairingReviewSource.BROKER)
+                },
+                onDismiss = { brokerPairingLink = null },
             )
         }
 
         pairingReview?.let { review ->
             PairingApprovalSheet(
                 candidate = review.candidate,
+                brokerAuthenticated = review.source == PairingReviewSource.BROKER,
                 existingTrustedDevice = review.existingTrustedDevice,
                 approvingOwnDevice = pairingApprovalOwnDevice,
                 error = pairingApprovalError,

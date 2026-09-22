@@ -27,6 +27,19 @@ object SwiftProtocolCodec {
     fun encodeSendRequest(value: SendRequest): ByteArray = ProtocolCodec.encodeToCbor(value)
     fun encodeSignedBlobList(value: List<SignedBlob>): ByteArray = ProtocolCodec.encodeToCbor(value)
 
+    fun encodePairingRelayRequest(value: PairingRelayRequest): ByteArray = ProtocolCodec.encodeToCbor(value)
+    fun encodePairingPakeFrame(value: PairingPakeFrame): ByteArray = ProtocolCodec.encodeToCbor(value)
+    fun encodePairingEncryptedCard(value: PairingEncryptedCard): ByteArray = ProtocolCodec.encodeToCbor(value)
+
+    @Throws(Exception::class)
+    fun decodePairingRelayReady(bytes: ByteArray): PairingRelayReady = ProtocolCodec.decodeFromCbor(bytes)
+
+    @Throws(Exception::class)
+    fun decodePairingPakeFrame(bytes: ByteArray): PairingPakeFrame = ProtocolCodec.decodeFromCbor(bytes)
+
+    @Throws(Exception::class)
+    fun decodePairingEncryptedCard(bytes: ByteArray): PairingEncryptedCard = ProtocolCodec.decodeFromCbor(bytes)
+
     @Throws(Exception::class)
     fun decodeSignedBlob(bytes: ByteArray): SignedBlob = ProtocolCodec.decodeFromCbor(bytes)
 

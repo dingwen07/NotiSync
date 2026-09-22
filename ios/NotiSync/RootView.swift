@@ -61,6 +61,11 @@ struct RootView: View {
                 runtime.incomingPairing = nil
             }
         }
+        .sheet(isPresented: $runtime.showingPairing, onDismiss: { runtime.incomingBrokerPairing = nil }) {
+            PairingView()
+                .environmentObject(runtime)
+                .presentationSizing(.page)
+        }
         .sheet(item: $runtime.sshKeyProviderSheetDestination, onDismiss: {
             runtime.sshKeyProviderSheetDidDismiss()
         }) { destination in
@@ -564,7 +569,6 @@ struct DevicesView: View {
     @Environment(\.modelContext) private var modelContext
     @Query private var devices: [TrustedDevice]
     @Query private var settingsRows: [AppSettings]
-    @State private var showingPairing = false
     @State private var nfcPreparationTask: Task<Void, Never>?
     @State private var nfcReaderSession: PairingNfcReaderSession?
     @State private var nfcCandidate: PairingCandidate?
@@ -638,7 +642,7 @@ struct DevicesView: View {
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
                     Button {
-                        showingPairing = true
+                        runtime.showingPairing = true
                     } label: {
                         Label("Pair", systemImage: "qrcode")
                     }
@@ -665,11 +669,6 @@ struct DevicesView: View {
                             || nfcReaderSession != nil
                     )
                 }
-            }
-            .sheet(isPresented: $showingPairing) {
-                PairingView()
-                    .environmentObject(runtime)
-                    .presentationSizing(.page)
             }
             .sheet(item: $nfcCandidate) { candidate in
                 PairingConfirmView(candidate: candidate) { confirmed, ownDevice in

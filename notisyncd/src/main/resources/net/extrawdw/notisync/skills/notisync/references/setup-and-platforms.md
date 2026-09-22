@@ -25,14 +25,18 @@ Do not assume a Windows installation is also installed inside WSL. WSL is a sepa
 
 ## Pairing sequence
 
-1. Run `notisync devices pair show` on the desktop.
-2. On Android, open **Devices -> Pair a device** and scan the desktop code.
-3. Obtain the Android pairing link or payload.
-4. Inspect it with `notisync devices pair inspect 'LINK_OR_PAYLOAD'`.
-5. Accept it with `notisync devices pair accept --own 'LINK_OR_PAYLOAD'` when it is the user's own device.
-6. Confirm the resulting state with `notisync devices list`.
+1. Run `notisync devices pair` on the desktop and leave it running.
+2. On the joining device, open **Devices -> Device Pairing** and scan the QR. The QR secret authenticates the exchange automatically; no code entry is needed.
+3. Review the host CARD in the joining app's existing approval sheet and choose its trust category.
+4. Review the joining device CARD printed in the terminal and explicitly choose its trust category, or cancel.
+5. Confirm the resulting state with `notisync devices list`.
 
-The QR is the trust anchor; do not bypass comparison or silently classify an unknown peer as `own` merely to make a feature work.
+The session expires after three minutes and permits one attempt. Start a new session after failure.
+For clients or brokers without Secure Exchange, or the original optical flow, use `notisync devices pair show [--payload]`,
+then obtain the phone's link, inspect it with `notisync devices pair inspect 'LINK_OR_PAYLOAD'`, and
+accept with `notisync devices pair accept --own 'LINK_OR_PAYLOAD'` only when appropriate.
+
+Do not bypass identity review or silently classify an unknown peer as `own` merely to make a feature work.
 
 ## Data and logs
 

@@ -105,6 +105,7 @@ data class PairingCandidate(
     val name: String,
     val identityFingerprint: String,
     val capabilities: Set<String> = emptySet(),
+    val platform: String? = null,
 )
 
 @Serializable

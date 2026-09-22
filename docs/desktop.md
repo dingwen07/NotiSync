@@ -59,19 +59,31 @@ shell has no valid `JAVA_HOME`.
 
 ## Pair with a phone
 
-Set a recognizable name, then display the desktop pairing code:
+Set a recognizable name, then start Secure Exchange:
 
 ```bash
 notisync config set device-name "Workstation"
-notisync devices pair show
+notisync devices pair
 ```
 
-On Android, open **Devices → Pair a device** and scan the terminal QR code. Complete mutual
-trust by copying the phone's pairing link or payload back to the computer:
+On the joining device, open **Devices → Device Pairing** in NotiSync and scan the terminal QR,
+or use a supported Camera app handoff. The devices authenticate each other and exchange signed
+CARDs automatically. Keep the command running, then choose **My device**, **Someone else's device**,
+or cancel on each device. No six-digit code entry is needed.
+
+The QR contains a short-lived session ID, protocol version, the host's full Verification Number,
+and a fresh secret that authenticates both sides. It includes the configured broker URL when it
+differs from the shared default. The joining app uses that broker without changing its saved setting.
+The secret stays in the URL fragment and never goes to the broker. Keep the complete QR/link private.
+Sessions expire after three minutes and allow one attempt; rerun the command after cancellation,
+authentication failure, or disconnect. Both clients must support Secure Exchange.
+See [the protocol](broker-pairing.md) for its authentication and trust model.
+
+The original CARD QR remains available with `notisync devices pair show [--payload]`, for clients and brokers without Secure Exchange. In the app, **Share** sends the full CARD link, and the **QR Code** icon to its left displays the CARD QR. Copy this legacy link or payload back to the computer:
 
 ```bash
-notisync devices pair inspect 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
-notisync devices pair accept --own 'ANDROID_PAIRING_LINK_OR_PAYLOAD'
+notisync devices pair inspect 'PEER_PAIRING_LINK_OR_PAYLOAD'
+notisync devices pair accept --own 'PEER_PAIRING_LINK_OR_PAYLOAD'
 notisync devices list
 ```
 

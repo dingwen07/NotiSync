@@ -22,32 +22,39 @@ object PairingDeepLinks {
     const val CUSTOM_HOST = "pair"
     const val PAIRING_PATH = "/pair"
     const val PARAM_PAYLOAD = "payload"
+    // Larger than a QR can hold, but bounded for externally supplied deep links and raw CARDs.
+    internal const val MAX_INPUT_CHARS = 64 * 1024
 
     fun create(payload: String): String =
         "$HTTPS_SCHEME://$HTTPS_HOST$PAIRING_PATH?$PARAM_PAYLOAD=" +
             URLEncoder.encode(payload, StandardCharsets.UTF_8)
 
     fun payloadFrom(link: String?): String? {
-        val uri = link?.let { runCatching { URI(it.trim()) }.getOrNull() } ?: return null
+        if (link == null || link.length > MAX_INPUT_CHARS) return null
+        val uri = runCatching { URI(link.trim()) }.getOrNull() ?: return null
         if (!isPairingUri(uri)) return null
-        return extractPayload(link)
+        return runCatching { extractPayload(link) }.getOrNull()
     }
 
     fun extractPayload(content: String): String {
+        require(content.length <= MAX_INPUT_CHARS) { "Pairing input is too large" }
         val trimmed = content.trim()
         val uri = runCatching { URI(trimmed) }.getOrNull()
         if (uri == null || !isPairingUri(uri)) return trimmed
-        val value = uri.rawQuery.orEmpty().split('&').firstNotNullOfOrNull { part ->
-            val pair = part.split('=', limit = 2)
-            if (pair.firstOrNull() == PARAM_PAYLOAD) pair.getOrNull(1) else null
-        } ?: error("pairing link missing payload")
+        // A malformed broker link must not fall back to the optical trust path.
+        require(uri.rawFragment.isNullOrEmpty()) { "Unexpected pairing link fragment" }
+        val pair = uri.rawQuery.orEmpty().split('=', limit = 2)
+        require(pair.size == 2 && pair[0] == PARAM_PAYLOAD && '&' !in pair[1]) {
+            "pairing link requires a single payload"
+        }
+        val value = pair[1]
         return URLDecoder.decode(value, StandardCharsets.UTF_8).trim()
             .takeIf { it.isNotEmpty() } ?: error("pairing link missing payload")
     }
 
-    private fun isPairingUri(uri: URI): Boolean = when {
+    private fun isPairingUri(uri: URI): Boolean = uri.rawUserInfo == null && uri.port == -1 && when {
         uri.scheme.equals(CUSTOM_SCHEME, ignoreCase = true) ->
-            uri.host.equals(CUSTOM_HOST, ignoreCase = true)
+            uri.host.equals(CUSTOM_HOST, ignoreCase = true) && uri.rawPath.orEmpty().isEmpty()
         uri.scheme.equals(HTTPS_SCHEME, ignoreCase = true) ->
             uri.host.equals(HTTPS_HOST, ignoreCase = true) &&
                 (uri.path == PAIRING_PATH || uri.path == "$PAIRING_PATH/")
@@ -79,7 +86,6 @@ data class VerifiedPairingDelivery(
 /** Platform-neutral encoding and cryptographic verification for optical pairing payloads. */
 class PairingPayloadCodec(private val selfId: ClientId) {
     private val encoder = Base64.getUrlEncoder().withoutPadding()
-    private val decoder = Base64.getUrlDecoder()
 
     fun encode(card: SignedBlob, epochBlob: SignedBlob? = null): String =
         encoder.encodeToString(
@@ -116,24 +122,29 @@ class PairingPayloadCodec(private val selfId: ClientId) {
         decodePayload(PairingDeepLinks.extractPayload(scanned))
     }
 
-    private fun decodePayload(payload: String): VerifiedPairingDelivery {
-        val raw = decoder.decode(payload.trim())
-        val delivery = runCatching { ProtocolCodec.decodeFromCbor<CardDelivery>(raw) }.getOrNull()
-            ?: CardDelivery(selfId, card = ProtocolCodec.decodeFromCbor<SignedBlob>(raw))
-        val cardBlob = requireNotNull(delivery.card) { "pairing payload carries no client card" }
-        require(cardBlob.typ == SignedType.CLIENT_CARD) { "not a client card" }
-        val card = cardBlob.decode<ClientCard>()
-        require(card.clientId == cardBlob.signerId) { "card id does not match signer" }
-        require(card.clientId != selfId) { "cannot pair with self" }
-        require(
-            IdentityVerifier.verifyBound(
-                cardBlob.signerId,
-                card.identityPublicKey,
-                cardBlob.payload,
-                cardBlob.sig,
-            )
-        ) { "card signature invalid" }
-        return VerifiedPairingDelivery(cardBlob, card, delivery.epochBlob)
+    private fun decodePayload(payload: String): VerifiedPairingDelivery = verifyPayload(payload).also {
+        require(it.card.clientId != selfId) { "cannot pair with self" }
+    }
+
+    companion object {
+        /** Verify the signed identity independently of whether it is our own or a peer's CARD. */
+        internal fun verifyPayload(payload: String): VerifiedPairingDelivery {
+            require(payload.length <= PairingDeepLinks.MAX_INPUT_CHARS) { "Pairing CARD is too large" }
+            val raw = Base64.getUrlDecoder().decode(payload.trim())
+            val delivery = runCatching { ProtocolCodec.decodeFromCbor<CardDelivery>(raw) }.getOrNull()
+            val cardBlob = if (delivery != null) {
+                requireNotNull(delivery.card) { "pairing payload carries no client card" }
+            } else {
+                ProtocolCodec.decodeFromCbor<SignedBlob>(raw)
+            }
+            require(cardBlob.typ == SignedType.CLIENT_CARD) { "not a client card" }
+            val card = cardBlob.decode<ClientCard>()
+            require(card.clientId == cardBlob.signerId) { "card id does not match signer" }
+            require(
+                IdentityVerifier.verifyBound(cardBlob.signerId, card.identityPublicKey, cardBlob.payload, cardBlob.sig)
+            ) { "card signature invalid" }
+            return VerifiedPairingDelivery(cardBlob, card, delivery?.epochBlob)
+        }
     }
 
     private fun fingerprint(key: ByteArray, bytes: Int = 8): String =

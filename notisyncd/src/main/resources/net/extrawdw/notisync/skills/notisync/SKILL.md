@@ -23,6 +23,7 @@ notisync daemon [status|start|stop|restart]
 notisync config get
 notisync config set device-name NAME
 notisync devices [list]
+notisync devices pair
 notisync devices pair show [--payload]
 notisync devices pair inspect LINK|PAYLOAD|-
 notisync devices pair accept [--own|--other] LINK|PAYLOAD|-
@@ -36,7 +37,7 @@ notisync skills [add|remove|list]
 
 Device actions take the action first and device ID second. `approve --all` is deliberately limited to pending approvals; never substitute it for a targeted action unless the user asked to approve every pending device.
 
-Pairing is mutual. The desktop code or QR contains public material, but scanning only one direction does not finish trust on both devices. Prefer `pair inspect` before `pair accept`, and use `--own` only for a device controlled by the same user. Read [references/setup-and-platforms.md](references/setup-and-platforms.md) for installation, platform paths, pairing, and skill-management details.
+Pairing is mutual. `devices pair` starts Secure Exchange to exchange CARDs through the broker using a QR with a secret and host identity pin. Scanning authenticates the exchange automatically, then each device asks for trust approval; there is no manual code entry. Keep the complete QR/link private. `devices pair show` preserves the legacy CARD QR; for that flow, inspect the phone's returned link with `pair inspect` before `pair accept`. Use `--own` only for a device controlled by the same user. Read [references/setup-and-platforms.md](references/setup-and-platforms.md) for installation, platform paths, pairing, and skill-management details.
 
 ## Failure handling
 

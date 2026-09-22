@@ -36,6 +36,17 @@ base32(first 20 bytes of SHA-256(identity public key in X.509 SubjectPublicKeyIn
 It is a stable fingerprint of the identity key. Clients own their trusted-device membership and
 verify signed trust updates. A broker does not decide which devices you trust.
 
+Secure Exchange uses a fresh 256-bit QR secret in J-PAKE, with mutual cryptographic key
+confirmation before signed CARDs are exchanged under transcript-bound directional AES-GCM keys.
+The QR also pins the host's full identity fingerprint. The broker cannot authenticate as either
+participant without the secret; both clients reject unauthenticated CARDs before trust approval,
+even if the user would click Trust without inspecting the details. Public nonces or fingerprints
+alone do not authenticate the joining device. No manual six-digit confirmation is needed.
+
+Keep the complete QR/link private. Its secret is in the fragment, absent from HTTP requests;
+a browser handoff still requires trusted Pages JavaScript. Both devices require explicit approval
+to grant trust. See [Secure Exchange](broker-pairing.md) for the wire format and assumptions.
+
 ## What the broker sees
 
 The broker handles ciphertext, public verification material, device IDs, push routes, and delivery

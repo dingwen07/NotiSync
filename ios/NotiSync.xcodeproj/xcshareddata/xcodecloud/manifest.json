@@ -1,0 +1,9 @@
+{
+  "id" : "208ef27b-d586-499c-b3cf-69feeac7e119",
+  "targets" : [
+    {
+      "id" : "83e63860-dbaf-48ec-89a9-e427b8e1c15b",
+      "name" : "NotiSync"
+    }
+  ]
+}

@@ -142,17 +142,20 @@ nonisolated enum PairingLinks {
     /// Accept the raw Base64URL representation or either supported pairing-link form. NFC uses the raw
     /// payload on the wire, while QR, clipboard, and sharing keep using the human-portable URL.
     static func payload(from pairingText: String) -> String {
+        guard pairingText.utf8.count <= 64 * 1024 else { return "" }
         let trimmed = pairingText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if let components = URLComponents(string: trimmed),
-           let payload = components.queryItems?.first(where: { $0.name == "payload" })?.value {
-            return payload
-        }
-        return trimmed
+        guard let components = URLComponents(string: trimmed), components.scheme != nil else { return trimmed }
+        guard let url = components.url, isPairing(url), components.fragment == nil,
+              let items = components.queryItems, items.count == 1, items[0].name == "payload",
+              let payload = items[0].value, !payload.isEmpty else { return "" }
+        return payload
     }
 
-    /// True if `url` is a NotiSync pairing link — the custom scheme, or the universal-link host's `/pair` path.
+    /// Recognize only the exact supported hosts and paths. Payload shape is checked separately.
     static func isPairing(_ url: URL) -> Bool {
-        if url.scheme?.lowercased() == scheme { return true }
-        return url.host?.lowercased() == httpsHost && url.path.hasPrefix("/pair")
+        guard url.user == nil, url.password == nil, url.port == nil else { return false }
+        if url.scheme?.lowercased() == scheme { return url.host?.lowercased() == "pair" && url.path.isEmpty }
+        return url.scheme?.lowercased() == "https" && url.host?.lowercased() == httpsHost &&
+            ["/pair", "/pair/"].contains(url.path)
     }
 }

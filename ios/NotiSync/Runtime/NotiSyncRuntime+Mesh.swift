@@ -164,13 +164,44 @@ extension NotiSyncRuntime {
         }.value
     }
 
+    func brokerPairingPayload() async throws -> (brokerURL: String, hostId: String, payload: String) {
+        await bringUpCore()
+        guard let engine, !clientId.isEmpty else { throw BrokerPairingError.authentication }
+        let name = settings().deviceName
+        let brokerURL = settings().brokerURL
+        let payload = try await Task.detached(priority: .userInitiated) {
+            try engine.pairingPayload(displayName: name)
+        }.value
+        try Task.checkCancellation()
+        return (brokerURL, clientId, payload)
+    }
+
+    func inspectBrokerPairing(_ payload: String, hostId: String? = nil) async throws -> PairingCandidate {
+        guard var candidate = await inspectPairingAsync(payload), candidate.clientId != clientId,
+              hostId == nil || candidate.clientId == hostId else { throw BrokerPairingError.authentication }
+        try Task.checkCancellation()
+        candidate.brokerAuthenticated = true
+        return candidate
+    }
+
     /// Handle a pairing deep link (the custom `notisync://pair` scheme or the universal `/pair` link). Verifies
     /// the payload and surfaces the candidate for the user to confirm — pairing is never automatic.
     func handlePairingURL(_ url: URL) {
         guard PairingLinks.isPairing(url) else { return }
+        // Never replace a device while its trust decision or authenticated exchange is active.
+        guard incomingPairing == nil, incomingBrokerPairing == nil else { return }
+        if let link = BrokerPairingLink.parse(url.absoluteString) {
+            incomingBrokerPairing = link
+            showingPairing = true
+            return
+        }
         Task {
             await bringUpCore()   // a cold-launch deep link can arrive before the deferred bring-up finishes
-            incomingPairing = await inspectPairingAsync(url.absoluteString)
+            if let candidate = await inspectPairingAsync(url.absoluteString) {
+                incomingPairing = candidate
+            } else {
+                record(error: BrokerPairingError.invalidLink, domain: .pairing)
+            }
         }
     }
 

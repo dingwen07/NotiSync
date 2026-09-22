@@ -16,6 +16,8 @@ dependencies {
 
     implementation(libs.kotlinx.coroutines.core)
     implementation(libs.kotlinx.serialization.json)
+    // Lightweight J-PAKE API; no JCA provider registration or reflective lookup on Android.
+    implementation(libs.bouncycastle.provider)
     implementation(platform(libs.ktor.bom))
     implementation(libs.ktor.client.core)
     implementation(libs.ktor.client.okhttp)

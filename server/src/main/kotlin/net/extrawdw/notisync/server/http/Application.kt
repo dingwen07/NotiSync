@@ -91,6 +91,7 @@ import net.extrawdw.notisync.server.data.RelayStore
 import net.extrawdw.notisync.server.data.RouteStore
 import net.extrawdw.notisync.server.demo.DemoExperience
 import net.extrawdw.notisync.server.demo.DemoStartRequest
+import net.extrawdw.notisync.server.pairing.pairingRelay
 import org.slf4j.LoggerFactory
 import java.security.SecureRandom
 import java.util.Base64
@@ -203,6 +204,7 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
     }
 
     routing {
+        pairingRelay()
         // Liveness/readiness stay UNVERSIONED at the root: load balancers, container probes, uptime
         // monitors, and BrokerClient hit /healthz and /readyz directly (see docker-compose.yml, README).
         // They report process health, not the wire contract, so they must not move when the API version does.

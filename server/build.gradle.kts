@@ -45,4 +45,5 @@ dependencies {
     testImplementation(libs.ktor.client.websockets)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    testImplementation(project(":peer-core"))
 }

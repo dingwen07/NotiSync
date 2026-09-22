@@ -424,9 +424,6 @@ foreach ($obsoletePath in @($backupDirectory, $shimBackupDirectory)) {
 
 Write-Host "Installed NotiSync in $installDirectory"
 Write-Host "Installed commands: $($launchers -join ' ')"
-Write-Host 'Start the SSH Agent with: notisync-ssh-agent start'
-Write-Host 'Override its endpoint with: notisync-ssh-agent -a \\.\pipe\my-ssh-agent start'
-Write-Host 'Then print shell/OpenSSH endpoint configuration with: notisync-ssh-agent env'
 
 $pathEntries = $env:Path -split ';' | ForEach-Object { $_.TrimEnd('\', '/') }
 if ($pathEntries -notcontains $binDirectory.TrimEnd('\', '/')) {

@@ -103,6 +103,7 @@ nonisolated struct PairingCandidate: Identifiable, Sendable {
     var hpkeKeyFingerprint: String
     var keyEpochStatus: KeyEpochStatus
     var existingTrust: PairingExistingTrust?
+    var brokerAuthenticated = false
 }
 
 nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
@@ -835,7 +836,8 @@ nonisolated final class NotiSyncEngine: Sendable {
     }
 
     private func decodeVerifiedDelivery(_ payload: String) throws -> (SignedBlob, ClientCard, SignedBlob?) {
-        guard let raw = NSBase64URL.decode(payload.trimmingCharacters(in: .whitespacesAndNewlines)) else {
+        guard payload.utf8.count <= 64 * 1024,
+              let raw = NSBase64URL.decode(payload.trimmingCharacters(in: .whitespacesAndNewlines)) else {
             throw CodecError.typeMismatch("pairing payload")
         }
         let delivery: CardDelivery

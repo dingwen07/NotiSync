@@ -12,12 +12,19 @@ import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.notisync.protocol.ClientCard
 import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import net.extrawdw.notisync.peer.pairing.BrokerPairingClient
+import net.extrawdw.notisync.peer.pairing.BrokerPairingHost
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 
 /** QR encode/decode helpers. */
 object QrCodes {
-    fun encode(content: String, size: Int = 720): Bitmap {
+    fun encode(content: String, size: Int = 720, marginModules: Int = 10): Bitmap {
         val hints = mapOf(
-            EncodeHintType.MARGIN to 10,
+            EncodeHintType.MARGIN to marginModules,
             EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
         )
         val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 0, 0, hints)
@@ -39,14 +46,13 @@ object QrCodes {
 }
 
 /**
- * Pairing via mutual QR exchange of self-signed client cards. The QR carries only public key
- * material; the optical channel is the trust anchor (no relay can substitute keys), and the
- * clientId fingerprint is the human-verifiable safety number. Each device scans the other's QR and
- * adds it as a trusted peer.
+ * Secure Exchange authenticates both devices using a QR secret before exchanging signed cards.
+ * Legacy QR/NFC pairing transfers public cards directly. Both paths require explicit trust approval.
  */
 class PairingManager(private val graph: AppGraph) {
 
     private val payloadCodec = PairingPayloadCodec(graph.identity.clientId)
+    private val hosting = Mutex()
 
     /**
      * This device's pairing payload (base64url of CBOR([CardDelivery])) for display as a QR. The optical
@@ -77,6 +83,27 @@ class PairingManager(private val graph: AppGraph) {
 
     /** Verify a scanned peer payload/link and return displayable details before the user trusts it. */
     fun inspect(scanned: String): Result<PairingCandidate> = payloadCodec.inspect(scanned)
+
+    /** Exchanges public cards only. Trust still requires the ordinary explicit approval sheet. */
+    suspend fun exchange(link: BrokerPairingLink): PairingCandidate = withContext(Dispatchers.IO) {
+        BrokerPairingClient().use { client ->
+            inspect(client.join(link, myLink().payload)).getOrThrow()
+        }
+    }
+
+    /** Keep at most two host sessions alive while the pairing screen is open. */
+    suspend fun hostExchange(
+        brokerUrl: String,
+        onLink: (BrokerPairingLink?) -> Unit,
+        onUnavailable: () -> Unit,
+    ): PairingCandidate = hosting.withLock {
+        val payload = BrokerPairingHost { ready ->
+            withContext(Dispatchers.IO) {
+                BrokerPairingClient().use { client -> client.host(brokerUrl, myLink().payload, ready) }
+            }
+        }.awaitCard(onLink, onUnavailable)
+        withContext(Dispatchers.Default) { inspect(payload).getOrThrow() }
+    }
 
     /**
      * Accept a scanned peer payload: verify the card, pin its keys + key-epoch, and trust it (local optical

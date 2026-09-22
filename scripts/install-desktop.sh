@@ -217,9 +217,6 @@ echo "Installed NotiSync in $install_dir"
 printf 'Installed commands:'
 printf ' %s' "${launchers[@]}"
 printf '\n'
-echo 'Start the SSH Agent with: notisync-ssh-agent start'
-echo 'Override its endpoint with: notisync-ssh-agent -a /absolute/path/to/S.ssh-agent start'
-echo 'Then print SSH_AUTH_SOCK setup with: notisync-ssh-agent env'
 
 case ":${PATH:-}:" in
     *":$bin_dir:"*) ;;

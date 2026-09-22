@@ -9,10 +9,15 @@ import UIKit
 struct PairingView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.scenePhase) private var scenePhase
     @State private var activeSheet: ActiveSheet?
     @State private var queuedCandidate: CandidateItem?
     @State private var nfcReaderSession: PairingNfcReaderSession?
     @State private var qrImage: UIImage?
+    @State private var brokerLink: BrokerPairingLink?
+    @State private var brokerUnavailable = false
+    @State private var hostTask: Task<Void, Never>?
+    @State private var queuedBrokerLink: BrokerPairingLink?
     @State private var scanError: String?
     @State private var experienceInProgress = false
     @State private var experienceMessage: String?
@@ -20,7 +25,7 @@ struct PairingView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("My pairing code") {
+                Section("Secure Exchange") {
                     if let image = qrImage {
                         Image(uiImage: image)
                             .interpolation(.none)
@@ -29,10 +34,14 @@ struct PairingView: View {
                             .frame(maxWidth: 400)
                             .frame(maxWidth: .infinity, alignment: .center)
                             .padding(.vertical, 8)
-                        Text("Scan this on your other device to pair.")
+                        Text("Scan this QR code with NotiSync on the other device. The code refreshes automatically.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else {
-                        ProgressView().frame(maxWidth: .infinity)
+                        VStack(spacing: 8) {
+                            ProgressView()
+                            Text(brokerUnavailable ? LocalizedStringKey("Reconnecting to Secure Exchange…") : LocalizedStringKey("Starting Secure Exchange…"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }.frame(maxWidth: .infinity)
                     }
                 }
                 Section("Add a device") {
@@ -102,13 +111,27 @@ struct PairingView: View {
                     }
                 }
             }
-            .navigationTitle("Pair Device")
-            .toolbar { ToolbarItem(placement: .topBarTrailing) { Button("Done") { dismiss() } } }
+            .navigationTitle("Device Pairing")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Done") { hostTask?.cancel(); dismiss() } }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    Button { activeSheet = .legacyQR } label: { Label("QR Code", systemImage: "qrcode") }
+                        .disabled(runtime.pairingPayload == nil)
+                    if let link = runtime.pairingPayload, let url = URL(string: link) {
+                        ShareLink(item: url) { Label("Share pairing link", systemImage: "square.and.arrow.up") }
+                    } else {
+                        Image(systemName: "square.and.arrow.up").foregroundStyle(.secondary)
+                            .accessibilityLabel("Share pairing link")
+                    }
+                }
+            }
             .task {
                 if runtime.pairingPayload == nil { await runtime.makePairingPayloadAsync() }
             }
-            .task(id: runtime.pairingPayload) {
-                guard let payload = runtime.pairingPayload else {
+            .task(id: hostingEnabled) { await hostPairingIfNeeded() }
+            .task(id: runtime.incomingBrokerPairing) { presentIncomingBrokerLink() }
+            .task(id: brokerLink) {
+                guard let payload = brokerLink?.encode() else {
                     qrImage = nil
                     return
                 }
@@ -142,6 +165,10 @@ struct PairingView: View {
                             }
                         }
                     }
+                case .legacyQR:
+                    LegacyPairingQRView()
+                case .broker(let link):
+                    BrokerPairingSheet(link: link, beforeStart: { await hostTask?.value })
                 case .candidate(let item):
                     PairingConfirmView(candidate: item.candidate) { confirmed, ownDevice in
                         if confirmed { runtime.acceptPairing(item.candidate.payload, ownDevice: ownDevice) }
@@ -150,6 +177,7 @@ struct PairingView: View {
                 }
             }
             .onDisappear {
+                hostTask?.cancel()
                 nfcReaderSession?.cancel()
                 nfcReaderSession = nil
             }
@@ -178,11 +206,15 @@ struct PairingView: View {
 
     private enum ActiveSheet: Identifiable {
         case scanner
+        case legacyQR
+        case broker(BrokerPairingLink)
         case candidate(CandidateItem)
 
         var id: String {
             switch self {
             case .scanner: return "scanner"
+            case .legacyQR: return "legacy-qr"
+            case .broker(let link): return "broker-\(link.sessionId)"
             case .candidate(let item): return "candidate-\(item.id)"
             }
         }
@@ -217,6 +249,14 @@ struct PairingView: View {
     }
 
     private func inspectPairingCode(_ code: String, source: PairingInputSource) {
+        if let link = BrokerPairingLink.parse(code) {
+            hostTask?.cancel()
+            if source == .scanner {
+                queuedBrokerLink = link
+                activeSheet = nil
+            } else { activeSheet = .broker(link) }
+            return
+        }
         Task { @MainActor in
             if let candidate = await runtime.inspectPairingAsync(code) {
                 let item = CandidateItem(candidate: candidate)
@@ -241,9 +281,52 @@ struct PairingView: View {
     }
 
     private func presentQueuedCandidate() {
-        guard activeSheet == nil, let item = queuedCandidate else { return }
-        queuedCandidate = nil
-        activeSheet = .candidate(item)
+        guard activeSheet == nil else { return }
+        if let link = queuedBrokerLink {
+            queuedBrokerLink = nil
+            activeSheet = .broker(link)
+        } else if let item = queuedCandidate {
+            queuedCandidate = nil
+            activeSheet = .candidate(item)
+        } else {
+            runtime.incomingBrokerPairing = nil
+        }
+    }
+
+    private var hostingEnabled: Bool {
+        activeSheet == nil && queuedCandidate == nil && queuedBrokerLink == nil &&
+            nfcReaderSession == nil && !experienceInProgress && runtime.incomingBrokerPairing == nil &&
+            scenePhase != .background
+    }
+
+    private func presentIncomingBrokerLink() {
+        guard let link = runtime.incomingBrokerPairing else { return }
+        if activeSheet == nil { activeSheet = .broker(link) }
+        else { queuedBrokerLink = link }
+    }
+
+    private func hostPairingIfNeeded() async {
+        let previous = hostTask
+        previous?.cancel()
+        await previous?.value // Closing sessions still occupy their slots.
+        guard hostingEnabled, !Task.isCancelled else { return }
+        brokerUnavailable = false
+        let task = Task { @MainActor in
+            do {
+                let candidate = try await BrokerPairingHost.awaitCard(exchange: { ready in
+                    let own = try await runtime.brokerPairingPayload()
+                    let payload = try await BrokerPairingClient().host(
+                        brokerURL: own.brokerURL, hostId: own.hostId, ownPayload: own.payload, onReady: ready)
+                    return try await runtime.inspectBrokerPairing(payload)
+                }, onLink: { brokerLink = $0; if $0 != nil { brokerUnavailable = false } },
+                   onUnavailable: { brokerUnavailable = true })
+                try Task.checkCancellation()
+                activeSheet = .candidate(CandidateItem(candidate: candidate))
+            } catch is CancellationError { }
+            catch { brokerUnavailable = true }
+        }
+        hostTask = task
+        await withTaskCancellationHandler { await task.value } onCancel: { task.cancel() }
     }
 
     static func qrCGImage(_ string: String) async -> CGImage? {
@@ -287,6 +370,9 @@ struct PairingConfirmView: View {
     var body: some View {
         NavigationStack {
             Form {
+                if candidate.brokerAuthenticated {
+                    Text("Secure Exchange authenticated this device. Choose how to trust it.")
+                }
                 Section("Device") {
                     LabeledContent("Name") {
                         Text(verbatim: candidate.displayName)
