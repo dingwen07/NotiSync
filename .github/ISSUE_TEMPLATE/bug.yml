@@ -1,0 +1,78 @@
+name: Bug Report
+description: Report a bug or issue with the project.
+title: "[BUG REPORT]"
+labels: bug
+body:
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      description: Select the topic of your bug report.
+      options:
+        - User Interface
+        - Performance
+        - Security
+        - Documentation
+    validations:
+      required: true
+  - type: dropdown
+    id: type
+    attributes:
+      label: Type
+      description: What type of bug are you reporting?
+      options:
+        - Incorrect/Unexpected Behavior
+        - Application Crash
+        - Application Slow/Unresponsive
+        - Security Vulnerability
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Select the platform on which you encountered the bug.
+      options:
+        - Android
+        - iOS/iPadOS
+        - CLI
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Specify the version of the app you are using
+  - type: input
+    id: build
+    attributes:
+      label: Build Number
+      description: Specify the build number of the app you are using
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Provide a detailed description of the bug you are reporting.
+    validations:
+      required: true
+  - type: textarea
+    id: steps_to_reproduce
+    attributes:
+      label: Steps to Reproduce
+      description: List the steps to reproduce the bug.
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: Describe what you expected to happen.
+  - type: textarea
+    id: actual_behavior
+    attributes:
+      label: Actual Behavior
+      description: Describe what actually happened.
+  - type: upload
+    id: screenshots
+    attributes:
+      label: Screenshots/Attachments
+      description: Attach any relevant screenshots or files that help illustrate the bug.
