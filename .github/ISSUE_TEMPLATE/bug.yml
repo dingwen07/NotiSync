@@ -24,7 +24,6 @@ body:
         - Incorrect/Unexpected Behavior
         - Application Crash
         - Application Slow/Unresponsive
-        - Security Vulnerability
         - Other
     validations:
       required: true
