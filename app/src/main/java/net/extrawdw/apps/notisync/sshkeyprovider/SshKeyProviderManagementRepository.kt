@@ -39,6 +39,7 @@ internal data class VersionedSshKeyProviderManagementSnapshot(
 /** Loads and observes the SSH management model only while the screen collects [state]. */
 class SshKeyProviderManagementRepository internal constructor(
     private val changeVersion: StateFlow<Long>,
+    private val expireRequests: () -> Unit,
     private val loadSnapshot: () -> VersionedSshKeyProviderManagementSnapshot,
     scope: CoroutineScope,
     private val ioDispatcher: CoroutineDispatcher,
@@ -47,8 +48,10 @@ class SshKeyProviderManagementRepository internal constructor(
         store: SshKeyProviderStore,
         providerClientId: ClientId,
         scope: CoroutineScope,
+        dismissExpiredRequest: (String) -> Unit,
     ) : this(
         changeVersion = store.changeVersion,
+        expireRequests = { store.expireDue(System.currentTimeMillis()).forEach(dismissExpiredRequest) },
         loadSnapshot = { store.managementSnapshot(providerClientId, System.currentTimeMillis()) },
         scope = scope,
         ioDispatcher = Dispatchers.IO,
@@ -70,16 +73,22 @@ class SshKeyProviderManagementRepository internal constructor(
         }
     }
 
-    /** Refreshes only when the durable store is newer than the currently published snapshot. */
+    /** Expire before checking the version: elapsed time alone does not invalidate the cached snapshot. */
     suspend fun refresh() {
         refreshMutex.withLock {
-            if (loadedVersion == changeVersion.value && state.value.snapshot != null) return
             val result = try {
-                withContext(ioDispatcher) { loadSnapshot() }
+                withContext(ioDispatcher) {
+                    expireRequests()
+                    if (loadedVersion == changeVersion.value && state.value.snapshot != null) null else loadSnapshot()
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (failure: Exception) {
                 _state.value = _state.value.copy(errorMessage = failure.summary())
+                return
+            }
+            if (result == null) {
+                if (state.value.errorMessage != null) _state.value = state.value.copy(errorMessage = null)
                 return
             }
             loadedVersion = result.version

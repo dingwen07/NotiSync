@@ -2,6 +2,8 @@ package net.extrawdw.apps.notisync.seal
 
 import android.content.Context
 import java.security.MessageDigest
+import net.extrawdw.apps.notisync.work.SigningRequestExpiryWorker
+import net.extrawdw.apps.notisync.work.SigningRequestKind
 import net.extrawdw.notisync.peer.channel.InboundMessage
 import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.peer.channel.RetryableDeliveryException
@@ -69,14 +71,14 @@ class OpenPgpSignEngine(
                 store.find(request.requestId)?.let { stored ->
                     postNotification(stored, openImmediately = true)
                 }
-                OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
+                SigningRequestExpiryWorker.enqueue(context, SigningRequestKind.OPENPGP, request.requestId, request.expiresAt)
             }
             OpenPgpAcceptResult.DUPLICATE -> {
                 val stored = store.find(request.requestId)
                 when (stored?.state) {
                     OpenPgpRequestState.PENDING_REVIEW -> {
                         postNotification(stored)
-                        OpenPgpSignExpiryWorker.enqueue(context, request.requestId, request.expiresAt)
+                        SigningRequestExpiryWorker.enqueue(context, SigningRequestKind.OPENPGP, request.requestId, request.expiresAt)
                     }
                     in OUTBOX_STATES -> OpenPgpSignResponseWorker.enqueue(context, request.requestId)
                     else -> Unit
@@ -145,16 +147,18 @@ class OpenPgpSignEngine(
             when (stored.state) {
                 OpenPgpRequestState.PENDING_REVIEW -> {
                     postNotification(stored)
-                    OpenPgpSignExpiryWorker.enqueue(
+                    SigningRequestExpiryWorker.enqueue(
                         context,
+                        SigningRequestKind.OPENPGP,
                         stored.request.requestId,
                         stored.request.expiresAt,
                     )
                 }
                 in OUTBOX_STATES -> {
                     OpenPgpSignResponseWorker.enqueue(context, stored.request.requestId)
-                    OpenPgpSignExpiryWorker.enqueue(
+                    SigningRequestExpiryWorker.enqueue(
                         context,
+                        SigningRequestKind.OPENPGP,
                         stored.request.requestId,
                         stored.request.expiresAt + OpenPgpSignLimits.CLOCK_SKEW_MILLIS,
                     )

@@ -11,6 +11,7 @@ import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
+import net.extrawdw.notisync.protocol.OpenPgpSignLimits
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -105,6 +106,34 @@ class OpenPgpSignStoreTest {
         assertNull(expiredStored?.request?.payload)
         assertNotNull(expiredStored?.commit)
         store.close()
+    }
+
+    @Test
+    fun cleanupWithoutNewTrafficExpiresReviewsAndPreservesResponsesUntilTheirGraceDeadline() {
+        val pending = request("1".repeat(32))
+        val rejected = request("2".repeat(32))
+        val cancelled = request("3".repeat(32))
+        OpenPgpSignStore(context).use { store ->
+            for (request in listOf(pending, rejected, cancelled)) {
+                store.accept(request, request.requesterClientId, 1_100)
+            }
+            assertTrue(store.storeReject(rejected.requestId, OpenPgpRejectReason.USER_REJECTED, 1_200))
+            assertTrue(store.cancel(cancelled.requestId, cancelled.requesterClientId, 1_200))
+
+            assertTrue(store.expireDue(pending.expiresAt).isEmpty())
+            assertEquals(listOf(pending.requestId), store.expireDue(pending.expiresAt + 1))
+            assertEquals(OpenPgpRequestState.EXPIRED, store.requests.value.first { it.request.requestId == pending.requestId }.state)
+            assertNull(store.find(pending.requestId)?.request?.payload)
+            assertEquals(OpenPgpRequestState.REJECTED_PENDING_SEND, store.find(rejected.requestId)?.state)
+            assertNotNull(store.find(rejected.requestId)?.encodedResponse)
+
+            val graceDeadline = rejected.expiresAt + OpenPgpSignLimits.CLOCK_SKEW_MILLIS
+            assertTrue(store.expireDue(graceDeadline).isEmpty())
+            assertEquals(listOf(rejected.requestId), store.expireDue(graceDeadline + 1))
+            assertNull(store.find(rejected.requestId)?.encodedResponse)
+            assertEquals(OpenPgpRequestState.CANCELLED, store.find(cancelled.requestId)?.state)
+            assertTrue(store.expireDue(graceDeadline + 2).isEmpty())
+        }
     }
 
     @Test

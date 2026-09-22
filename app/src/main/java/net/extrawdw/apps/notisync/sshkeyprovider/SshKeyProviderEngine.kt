@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.sshkeyprovider
 
 import android.content.Context
+import net.extrawdw.apps.notisync.work.SigningRequestExpiryWorker
+import net.extrawdw.apps.notisync.work.SigningRequestKind
 import java.security.MessageDigest
 import java.security.SecureRandom
 import kotlin.math.abs
@@ -288,6 +290,7 @@ class SshKeyProviderEngine(
                 notifications.dismiss(request.requestId)
                 SshKeyProviderResponseWorker.enqueue(context, request.requestId)
             } else {
+                scheduleExpiry(request)
                 notifications.post(
                     request,
                     deviceNameOf(request.requesterClientId) ?: request.requesterClientId.shortForm(),
@@ -373,6 +376,7 @@ class SshKeyProviderEngine(
                             notifications.dismiss(request.requestId)
                             SshKeyProviderResponseWorker.enqueue(context, request.requestId)
                         } else {
+                            scheduleExpiry(stored)
                             notifications.post(
                                 stored,
                                 deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
@@ -406,11 +410,14 @@ class SshKeyProviderEngine(
             SshProviderAcceptResult.STORED, SshProviderAcceptResult.DUPLICATE -> {
                 val stored = store.find(request.requestId) ?: return
                 when (stored.state) {
-                    SshProviderRequestState.PENDING_REVIEW -> notifications.post(
-                        stored,
-                        deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
-                        openImmediately = accepted == SshProviderAcceptResult.STORED,
-                    )
+                    SshProviderRequestState.PENDING_REVIEW -> {
+                        scheduleExpiry(stored)
+                        notifications.post(
+                            stored,
+                            deviceNameOf(message.senderId) ?: message.senderId.shortForm(),
+                            openImmediately = accepted == SshProviderAcceptResult.STORED,
+                        )
+                    }
                     SshProviderRequestState.RESPONSE_PENDING_SEND -> SshKeyProviderResponseWorker.enqueue(context, request.requestId)
                     else -> Unit
                 }
@@ -435,6 +442,15 @@ class SshKeyProviderEngine(
             ),
             sshAgentInventoryRecipients(),
             Urgency.NORMAL,
+        )
+    }
+
+    private fun scheduleExpiry(request: StoredSshProviderRequest) {
+        SigningRequestExpiryWorker.enqueue(
+            context,
+            SigningRequestKind.SSH,
+            request.requestId,
+            requireNotNull(request.expiryDeadline),
         )
     }
 

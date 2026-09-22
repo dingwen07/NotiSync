@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.sshkeyprovider
 
 import android.content.Context
+import net.extrawdw.apps.notisync.work.SigningRequestKind
+import net.extrawdw.apps.notisync.work.expireSigningRequests
 import android.content.Intent
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
@@ -160,6 +162,7 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
                 ?: return@launch showError(getString(R.string.ssh_key_provider_not_ready))
             var approveOnFirstLoad = approveAfterLoad
             repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
+                withContext(Dispatchers.IO) { graph.expireSigningRequests(SigningRequestKind.SSH) }
                 combine(
                     graph.sshKeyProviderStore.changeVersion,
                     graph.desktopApplications.snapshot,
@@ -183,7 +186,10 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
             val generation = nextRenderGeneration()
             val graph = (application as? NotiSyncApp)?.awaitGraphReady()
                 ?: return@launch showErrorIfCurrent(generation, getString(R.string.ssh_key_provider_not_ready))
-            val stored = withContext(Dispatchers.IO) { graph.sshKeyProviderStore.find(requestId) }
+            val stored = withContext(Dispatchers.IO) {
+                graph.expireSigningRequests(SigningRequestKind.SSH)
+                graph.sshKeyProviderStore.find(requestId)
+            }
             renderRequest(graph, stored, approveAfterLoad, generation)
         }
     }

@@ -2,6 +2,10 @@ package net.extrawdw.apps.notisync.seal
 
 import android.app.Activity
 import android.content.Context
+import net.extrawdw.apps.notisync.work.SigningRequestKind
+import net.extrawdw.apps.notisync.work.expireSigningRequests
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -148,6 +152,7 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
                 ?: return@launch showError(getString(R.string.seal_not_ready))
             var approveOnFirstLoad = approveAfterLoad
             repeatOnLifecycle(requestPageObservationState(autoLaunchOwned)) {
+                withContext(Dispatchers.IO) { graph.expireSigningRequests(SigningRequestKind.OPENPGP) }
                 graph.openPgpSignStore.requests
                     .map { requests -> requests.firstOrNull { it.request.requestId == requestId } }
                     .distinctUntilChanged()
@@ -163,7 +168,11 @@ class OpenPgpSignReviewActivity : ComponentActivity() {
         lifecycleScope.launch {
             val graph = (applicationContext as NotiSyncApp).awaitGraphReady()
                 ?: return@launch showError(getString(R.string.seal_not_ready))
-            renderRequest(graph, graph.openPgpSignStore.find(requestId), approveAfterLoad)
+            val stored = withContext(Dispatchers.IO) {
+                graph.expireSigningRequests(SigningRequestKind.OPENPGP)
+                graph.openPgpSignStore.find(requestId)
+            }
+            renderRequest(graph, stored, approveAfterLoad)
         }
     }
 

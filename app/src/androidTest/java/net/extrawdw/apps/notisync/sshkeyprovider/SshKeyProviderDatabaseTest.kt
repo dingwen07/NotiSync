@@ -17,6 +17,10 @@ import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import net.extrawdw.notisync.protocol.SshImportRequest
+import net.extrawdw.notisync.protocol.SshImportSourceType
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 
 class SshKeyProviderDatabaseTest {
     private val context by lazy {
@@ -40,6 +44,43 @@ class SshKeyProviderDatabaseTest {
         store = null
         OperationalDatabaseFactory.close(context)
         context.deleteDatabase(DATABASE_NAME)
+    }
+
+    @Test
+    fun expiryWithoutFurtherTrafficUpdatesHistoryAndSurvivesReopenWithoutDeletingResponses() {
+        store = SshKeyProviderStore(context)
+        val provider = ClientId("provider")
+        val pending = SshImportRequest(
+            requestId = "1".repeat(32),
+            requesterClientId = ClientId("requester"),
+            requestedAt = 1_000,
+            expiresAt = 2_000,
+            sourceType = SshImportSourceType.PRIVATE_KEY_FILE,
+            fileBytes = byteArrayOf(1, 2, 3),
+        )
+        val rejected = pending.copy(requestId = "2".repeat(32))
+        val activeStore = requireNotNull(store)
+        assertEquals(SshProviderAcceptResult.STORED, activeStore.acceptImport(pending, 1_100))
+        assertEquals(SshProviderAcceptResult.STORED, activeStore.acceptImport(rejected, 1_100))
+        assertTrue(activeStore.reject(rejected.requestId, provider, 1_200))
+        val versionBeforeExpiry = activeStore.changeVersion.value
+
+        assertTrue(activeStore.expireDue(pending.expiresAt).isEmpty())
+        assertEquals(listOf(pending.requestId), activeStore.expireDue(pending.expiresAt + 1))
+        assertTrue(activeStore.changeVersion.value > versionBeforeExpiry)
+        val snapshot = activeStore.managementSnapshot(provider, pending.expiresAt + 1).snapshot
+        assertEquals(SshProviderRequestState.EXPIRED, snapshot.requests.first { it.requestId == pending.requestId }.state)
+        val expired = activeStore.find(pending.requestId)
+        assertNull(expired?.importRequest)
+        assertEquals(SshProviderRequestOutcome.EXPIRED, expired?.outcome)
+        assertEquals(2_000L, expired?.history?.expiresAt)
+        assertTrue(activeStore.expireDue(pending.expiresAt + 2).isEmpty())
+
+        activeStore.close()
+        store = SshKeyProviderStore(context)
+        assertEquals(SshProviderRequestState.EXPIRED, requireNotNull(store).find(pending.requestId)?.state)
+        assertEquals(SshProviderRequestState.RESPONSE_PENDING_SEND, requireNotNull(store).find(rejected.requestId)?.state)
+        assertNotNull(requireNotNull(store).find(rejected.requestId)?.encodedResponse)
     }
 
     @Test

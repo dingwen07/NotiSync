@@ -124,7 +124,10 @@ data class StoredSshProviderRequest(
     val resultAt: Long? = null,
     val encodedResponse: ByteArray? = null,
     val updatedAt: Long,
-)
+) {
+    internal val expiryDeadline: Long?
+        get() = if (state == SshProviderRequestState.PENDING_REVIEW) history.expiresAt else null
+}
 
 @Serializable
 data class SshRequestHistorySnapshot(
@@ -2826,9 +2829,8 @@ class SshKeyProviderStore internal constructor(
 
     @Synchronized
     fun expireDue(now: Long): List<String> {
-        val expired = pendingReview().filter { request ->
-            val expiresAt = request.signRequest?.expiresAt ?: request.importRequest?.expiresAt ?: Long.MAX_VALUE
-            now > expiresAt
+        val expired = requestsIn(SshProviderRequestState.PENDING_REVIEW, decodeActiveRequest = false).filter { request ->
+            request.expiryDeadline?.let { now > it } == true
         }.map(StoredSshProviderRequest::requestId)
         val values = ContentValues().apply {
             put("state", SshProviderRequestState.EXPIRED.name)
@@ -3340,13 +3342,16 @@ class SshKeyProviderStore internal constructor(
         failure = SshProviderFailure(code),
     )
 
-    private fun requestsIn(state: SshProviderRequestState): List<StoredSshProviderRequest> =
+    private fun requestsIn(
+        state: SshProviderRequestState,
+        decodeActiveRequest: Boolean = true,
+    ): List<StoredSshProviderRequest> =
         readableDatabase.rawQuery(
             "SELECT request_id, kind, requester_client_id, request_fingerprint, request_cbor, request_nonce, " +
                 "history_cbor, history_nonce, state, outcome, result_at, response_cbor, response_nonce, updated_at " +
                 "FROM provider_requests WHERE state=? ORDER BY updated_at",
             arrayOf(state.name),
-        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest()) } }
+        ).use { cursor -> buildList { while (cursor.moveToNext()) add(cursor.readRequest(decodeActiveRequest)) } }
 
     private fun android.database.Cursor.readRequest(decodeActiveRequest: Boolean = true): StoredSshProviderRequest {
         val kind = SshProviderRequestKind.valueOf(getString(1))

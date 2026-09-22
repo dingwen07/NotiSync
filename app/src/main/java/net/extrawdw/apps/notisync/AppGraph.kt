@@ -367,10 +367,15 @@ class AppGraph(private val app: Application) {
         }
         desktopApplications = DesktopApplicationRepository(app)
         sshKeyProviderStore = SshKeyProviderStore(app) { desktopApplications.snapshot.value.registry }
-        sshKeyProviderManagement = SshKeyProviderManagementRepository(sshKeyProviderStore, identity.clientId, scope)
         sshKeyProviderNotifications = SshKeyProviderNotificationPresenter(app, sshKeyProviderStore) {
             settings.autoOpenSshRequest.value
         }
+        sshKeyProviderManagement = SshKeyProviderManagementRepository(
+            sshKeyProviderStore,
+            identity.clientId,
+            scope,
+            dismissExpiredRequest = sshKeyProviderNotifications::dismiss,
+        )
         // Opt-out analytics: mirror the user's Settings switch into Firebase Crashlytics + Performance.
         // Apply the PERSISTED value first (so an opted-out user isn't briefly re-enabled by the flow's
         // eager `true` default), then re-apply on every toggle — DataStore stays the single source of

@@ -76,6 +76,54 @@ class SshKeyProviderManagementRepositoryTest {
     }
 
     @Test
+    fun returningWithoutAnyStoreChangeStillCleansUpBeforeCheckingTheCachedVersion() = runTest {
+        val version = MutableStateFlow(0L)
+        var deadlinePassed = false
+        var current = snapshot("pending.example")
+        val expired = snapshot("expired.example")
+        var loads = 0
+        val repository = repository(version, expireRequests = {
+            if (deadlinePassed && current !== expired) {
+                current = expired
+                version.value++
+            }
+        }) { loads++; current }
+        val collector = backgroundScope.launch { repository.state.collect() }
+        runCurrent()
+        assertEquals(1, loads)
+        collector.cancel()
+        runCurrent()
+
+        deadlinePassed = true
+        backgroundScope.launch { repository.state.collect() }
+        runCurrent()
+        assertSame(expired, repository.state.value.snapshot)
+        assertEquals(2, loads)
+    }
+
+    @Test
+    fun firstEntryExpiresBeforeLoadingHistorySoItDoesNotLoadTheStaleSnapshotTwice() = runTest {
+        val version = MutableStateFlow(0L)
+        var expired = false
+        var loads = 0
+        val events = mutableListOf<String>()
+        val repository = repository(version, expireRequests = {
+            if (!expired) {
+                events += "expire"
+                expired = true
+                version.value++
+            }
+        }) { events += "load"; loads++; snapshot() }
+        runCurrent()
+        assertEquals(emptyList<String>(), events)
+
+        backgroundScope.launch { repository.state.collect() }
+        runCurrent()
+        assertEquals(listOf("expire", "load"), events)
+        assertEquals(1, loads)
+    }
+
+    @Test
     fun refreshFailurePreservesLastGoodSnapshotAndReturningRetries() = runTest {
         val version = MutableStateFlow(0L)
         val expected = snapshot()
@@ -120,9 +168,11 @@ class SshKeyProviderManagementRepositoryTest {
 
     private fun TestScope.repository(
         version: MutableStateFlow<Long>,
+        expireRequests: () -> Unit = {},
         loader: () -> SshKeyProviderManagementSnapshot,
     ) = SshKeyProviderManagementRepository(
         changeVersion = version,
+        expireRequests = expireRequests,
         loadSnapshot = {
             val snapshot = loader()
             VersionedSshKeyProviderManagementSnapshot(version.value, snapshot)

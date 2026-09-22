@@ -16,6 +16,7 @@ import net.extrawdw.notisync.protocol.GitTagPayloadParser
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
+import net.extrawdw.notisync.protocol.OpenPgpSignLimits
 import net.extrawdw.notisync.protocol.OpenPgpSignSync
 import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalDatabase
@@ -75,7 +76,17 @@ data class StoredOpenPgpRequest(
     val commit: GitCommitDisplaySnapshot? = null,
     val tag: GitTagDisplaySnapshot? = null,
     val result: OpenPgpRequestResult? = null,
-)
+) {
+    internal val expiryDeadline: Long?
+        get() = when (state) {
+            OpenPgpRequestState.PENDING_REVIEW,
+            OpenPgpRequestState.USER_APPROVED,
+            OpenPgpRequestState.PROVIDER_INTERACTION -> request.expiresAt
+            OpenPgpRequestState.SIGNED_PENDING_SEND,
+            OpenPgpRequestState.REJECTED_PENDING_SEND -> request.expiresAt + OpenPgpSignLimits.CLOCK_SKEW_MILLIS
+            else -> null
+        }
+}
 
 enum class OpenPgpAcceptResult { STORED, DUPLICATE, CONFLICT, RATE_LIMITED }
 
@@ -254,7 +265,9 @@ class OpenPgpSignStore(context: Context) :
 
     @Synchronized
     fun expireDue(now: Long): List<String> {
-        val due = queryByStates(ACTIVE_STATES).filter { now > it.request.expiresAt }.map { it.request.requestId }
+        val due = queryByStates(ACTIVE_STATES + OUTBOX_STATES)
+            .filter { stored -> stored.expiryDeadline?.let { now > it } == true }
+            .map { it.request.requestId }
         due.forEach { markExpired(it, now) }
         return due
     }

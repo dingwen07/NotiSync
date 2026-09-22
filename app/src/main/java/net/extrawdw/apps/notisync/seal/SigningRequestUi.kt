@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.seal
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -33,6 +34,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.person as PersonIco
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as ScheduleIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.verified_user as VerifiedUserIcon
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
@@ -204,10 +206,10 @@ internal fun SigningRequestDetail(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (showSheetHeader) {
-            item {
+            stickyHeader(key = "history-header") {
                 CenteredDetailItem {
                     Row(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(onClick = onBack) {

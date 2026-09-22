@@ -94,6 +94,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
@@ -152,7 +153,9 @@ fun SshKeyProviderScreen(
     val scope = rememberCoroutineScope()
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
-    val managementState by graph.sshKeyProviderManagement.state.collectAsStateWithLifecycle()
+    val managementState by graph.sshKeyProviderManagement.state.collectAsStateWithLifecycle(
+        minActiveState = Lifecycle.State.RESUMED,
+    )
     val managementSnapshot = managementState.snapshot
     val keys = remember(managementSnapshot?.keys) {
         managementSnapshot?.keys.orEmpty()

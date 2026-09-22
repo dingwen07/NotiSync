@@ -47,6 +47,7 @@ import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.work.SigningRequestKind
 import net.extrawdw.apps.notisync.seal.OpenPgpEnrollmentActivity
 import net.extrawdw.apps.notisync.seal.OpenPgpSignReviewActivity
 import net.extrawdw.apps.notisync.seal.SigningRequestDetail
@@ -59,6 +60,7 @@ import net.extrawdw.apps.notisync.seal.opensSealReview
 @Composable
 fun SealScreen() {
     val graph = rememberGraph()
+    SigningRequestExpiryEffect(SigningRequestKind.OPENPGP)
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val enrollment by graph.openPgpEnrollment.enrollment.collectAsStateWithLifecycle()

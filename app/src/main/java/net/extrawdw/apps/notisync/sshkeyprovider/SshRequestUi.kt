@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.sshkeyprovider
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
@@ -37,6 +38,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as Schedul
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
@@ -374,10 +376,10 @@ internal fun SshRequestDetail(
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         if (showSheetHeader) {
-            item {
+            stickyHeader(key = "history-header") {
                 CenteredRequestItem {
                     Row(
-                        Modifier.fillMaxWidth(),
+                        Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         IconButton(onClick = onBack) {
