@@ -23,19 +23,14 @@ body:
       options:
         - Android
         - iOS/iPadOS
-        - CLI
+        - Desktop
     validations:
       required: true
   - type: input
     id: version
     attributes:
-      label: Version
+      label: Version Code/Build Number
       description: Specify the version of the app you are using
-  - type: input
-    id: build
-    attributes:
-      label: Build Number
-      description: Specify the build number of the app you are using
   - type: textarea
     id: description
     attributes:
