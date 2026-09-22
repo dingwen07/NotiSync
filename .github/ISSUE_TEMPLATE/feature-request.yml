@@ -1,0 +1,45 @@
+name: Feature Request
+description: Suggest a new feature for the project.
+title: "[FEATURE REQUEST]"
+labels: enhancement
+body:
+  - type: dropdown
+    id: topic
+    attributes:
+      label: Topic
+      description: Select the topic of your feature request.
+      options:
+        - User Interface
+        - Performance
+        - Security
+        - Documentation
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Select the platform for which you are requesting the feature.
+      options:
+        - Android
+        - iOS/iPadOS
+        - Desktop
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Specify the version of the app you are using
+  - type: input
+    id: build_number
+    attributes:
+      label: Version Code/Build Number
+      description: Specify the version code or build number of the app you are using
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: Provide a detailed description of the feature you are requesting.
+    validations:
+      required: true
