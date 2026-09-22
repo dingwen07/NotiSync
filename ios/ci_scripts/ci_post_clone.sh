@@ -5,6 +5,9 @@ set -eu
 
 cd "${CI_PRIMARY_REPOSITORY_PATH:?Xcode Cloud must provide the repository path}"
 
+# Restore the ignored Firebase resource before installing tools or compiling.
+python3 ios/ci_scripts/prepare_firebase_config.py
+
 # Homebrew is available in Xcode Cloud; installing the keg needs no sudo or
 # system-wide Java symlink. Select the version required by the Gradle toolchain.
 export HOMEBREW_NO_AUTO_UPDATE=1

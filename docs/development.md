@@ -57,8 +57,9 @@ In Xcode, select the **NotiSync** scheme and configure your development team and
 the app, **NotificationService**, and **NotificationContent** targets.
 
 For your own identifiers, update the bundle IDs and the matching App Group, shared Keychain,
-associated-domain, and push entitlements consistently across the app and extensions. Add your own
-`GoogleService-Info.plist` to the app target for Firebase; it is ignored by Git. APNs credentials and
+associated-domain, and push entitlements consistently across the app and extensions. Put your own
+Firebase configuration at `ios/NotiSync/GoogleService-Info.plist`; Xcode's synchronized app folder
+includes it in the app's resources, and it is ignored by Git. APNs credentials and
 the broker topic must match your app. See [APNs setup](self-hosting.md#ios-push-with-apns).
 
 ### Xcode Cloud
@@ -68,15 +69,47 @@ beside `NotiSync.xcodeproj`, following Apple's [custom build script conventions]
 Xcode Cloud runs it automatically after cloning, before building the Xcode project; no target
 membership or Xcode Run Script build phase is needed.
 
-The hook installs JDK 21 through the runner's Homebrew, uses `CI_PRIMARY_REPOSITORY_PATH` to find
-the checkout, and builds `:protocol:assembleNotiSyncProtocolReleaseXCFramework`. It maps the
+The hook restores the Firebase configuration as described below, installs JDK 21 through the
+runner's Homebrew, uses `CI_PRIMARY_REPOSITORY_PATH` to find the checkout, and builds
+`:protocol:assembleNotiSyncProtocolReleaseXCFramework`. It maps the
 runner's `HTTP_PROXY` and `HTTPS_PROXY` URLs to Java proxy settings for dependency downloads.
 Gradle's `--configure-on-demand` flag limits configuration to the shared protocol module, so this
 invocation does not require the Android SDK. A failed command or missing framework fails the hook.
 
 Keep `protocol/build/` ignored: each cloud build generates the release XCFramework from the same
 source revision as the Swift app, including the device and Apple Silicon simulator slices.
-Firebase configuration and signing/provisioning still need to be supplied for your cloud workflow.
+Signing/provisioning still need to be supplied for your cloud workflow.
+
+#### Supply the Firebase configuration
+
+The app's Crashlytics build phase reads `GOOGLE_APP_ID` from the bundled `GoogleService-Info.plist`.
+A fresh checkout does not contain this ignored file. Supply it through a
+[custom workflow environment variable](https://developer.apple.com/documentation/xcode/xcode-cloud-workflow-reference#Custom-environment-variables):
+
+1. Download the plist for the app's exact bundle ID from Firebase Console **Project settings >
+   Your apps**, and save it at `ios/NotiSync/GoogleService-Info.plist` for local builds.
+2. On macOS, copy the encoded contents to your clipboard without printing them. Run this from
+   the repository root:
+
+   ```sh
+   base64 -i ios/NotiSync/GoogleService-Info.plist | tr -d '\n' | pbcopy
+   ```
+
+3. Edit the Xcode Cloud workflow in Xcode or App Store Connect. Under **Environment > Environment
+   Variables**, add `GOOGLE_SERVICE_INFO_PLIST_BASE64`, paste the clipboard contents as its value,
+   and enable **Keep value redacted** (Xcode) or **Secret** (App Store Connect). Save the workflow.
+4. Build a revision containing the updated hook. It decodes and validates the plist before
+   installing dependencies, then writes `ios/NotiSync/GoogleService-Info.plist` so Xcode bundles it.
+   Missing or invalid configuration stops the hook with a message that does not print its values.
+
+This variable is an input to NotiSync's hook. The hook uses an existing valid local plist when the
+variable is absent; an explicitly supplied variable takes precedence. Keep the plist and its
+encoded contents out of Git; Base64 is only an encoding.
+
+Crashlytics' uploader supports an explicit `--app-id` argument for symbol uploads, but setting
+`GOOGLE_APP_ID` or `FIREBASE_APP_ID` in the environment alone does not supply it. The app also uses
+`FirebaseApp.configure()`, which loads the bundled plist at runtime. Restoring the entire plist
+supplies configuration to both the app and the existing Crashlytics build phase.
 
 ## Desktop
 
