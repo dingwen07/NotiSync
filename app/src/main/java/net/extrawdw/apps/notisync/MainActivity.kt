@@ -7,7 +7,7 @@ import android.os.Bundle
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.BackHandler
+import androidx.activity.compose.PredictiveBackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -15,15 +15,20 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.StringRes
 import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
@@ -32,6 +37,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as Setting
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.Icon
 import androidx.compose.material3.DrawerState
+import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -58,12 +64,15 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
@@ -78,6 +87,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
@@ -91,6 +101,7 @@ import net.extrawdw.apps.notisync.pairing.PairingNfcController
 import net.extrawdw.apps.notisync.pairing.PairingNfcInbox
 import net.extrawdw.apps.notisync.run.RunKey
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
+import net.extrawdw.apps.notisync.ui.AboutScreen
 import net.extrawdw.apps.notisync.ui.ActivityScreen
 import net.extrawdw.apps.notisync.ui.AppsScreen
 import net.extrawdw.apps.notisync.ui.DevicesScreen
@@ -261,6 +272,9 @@ private sealed interface Route {
 
     @Serializable
     data object Settings : Route
+
+    @Serializable
+    data object About : Route
 }
 
 private interface AppDestination {
@@ -328,6 +342,9 @@ fun NotiSyncRoot(
     val pairing = remember { PairingManager(graph) }
     val pairingScope = rememberCoroutineScope()
     val navController = rememberNavController()
+    val openAbout = {
+        navController.navigate(Route.About) { launchSingleTop = true }
+    }
     val backStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = backStackEntry?.destination
     // NavHost remembers the graph it builds. Keep the mutable notification handoff behind stable State
@@ -501,38 +518,55 @@ fun NotiSyncRoot(
         NonBouncyModalNavigationDrawer(
             drawerState = featureDrawerState,
             gesturesEnabled = !suiteIsDrawer,
-            drawerContent = {
-                ModalDrawerSheet(modifier = Modifier.width(296.dp)) {
-                    Text(
-                        stringResource(R.string.features_title),
-                        style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
-                        modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
-                    )
-                    HorizontalDivider()
-                    FeatureDestination.entries.forEach { dest ->
-                        NavigationDrawerItem(
-                            selected = pendingFeatureDestination?.let { it == dest }
-                                ?: currentDestination.isOn(dest),
-                            onClick = {
-                                if (pendingFeatureDestination == null) {
-                                    // Update the drawer selection immediately, but avoid composing the
-                                    // destination on the UI thread while the sheet is still animating.
-                                    pendingFeatureDestination = dest
-                                    drawerScope.launch {
-                                        try {
-                                            featureDrawerState.close()
-                                            navController.navigateToTopLevel(dest)
-                                        } finally {
-                                            pendingFeatureDestination = null
+            drawerContent = { sheetModifier ->
+                ModalDrawerSheet(
+                    modifier = sheetModifier.width(296.dp),
+                ) {
+                    Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
+                        Text(
+                            stringResource(R.string.features_title),
+                            style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
+                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
+                        )
+                        HorizontalDivider()
+                        FeatureDestination.entries.forEach { dest ->
+                            NavigationDrawerItem(
+                                selected = pendingFeatureDestination?.let { it == dest }
+                                    ?: currentDestination.isOn(dest),
+                                onClick = {
+                                    if (pendingFeatureDestination == null) {
+                                        // Update the drawer selection immediately, but avoid composing the
+                                        // destination on the UI thread while the sheet is still animating.
+                                        pendingFeatureDestination = dest
+                                        drawerScope.launch {
+                                            try {
+                                                featureDrawerState.close()
+                                                navController.navigateToTopLevel(dest)
+                                            } finally {
+                                                pendingFeatureDestination = null
+                                            }
                                         }
                                     }
-                                }
-                            },
-                            icon = { TopLevelNavIcon(dest) },
-                            label = { TopLevelNavLabel(dest) },
-                            modifier = Modifier.padding(horizontal = 12.dp),
-                        )
+                                },
+                                icon = { TopLevelNavIcon(dest) },
+                                label = { TopLevelNavLabel(dest) },
+                                modifier = Modifier.padding(horizontal = 12.dp),
+                            )
+                        }
                     }
+                    HorizontalDivider()
+                    NavigationDrawerItem(
+                        selected = currentDestination?.hasRoute<Route.About>() == true,
+                        onClick = {
+                            drawerScope.launch {
+                                featureDrawerState.close()
+                                openAbout()
+                            }
+                        },
+                        icon = { Icon(InfoIcon, contentDescription = null) },
+                        label = { Text(stringResource(R.string.about_title)) },
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
                 }
             },
         ) {
@@ -568,6 +602,12 @@ fun NotiSyncRoot(
                             label = { TopLevelNavLabel(dest) },
                         )
                     }
+                    item(
+                        selected = currentDestination?.hasRoute<Route.About>() == true,
+                        onClick = openAbout,
+                        icon = { Icon(InfoIcon, contentDescription = null) },
+                        label = { Text(stringResource(R.string.about_title)) },
+                    )
                 }
             },
         ) {
@@ -610,16 +650,13 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Activity> { ActivityScreen() }
-                composable<Route.Settings> { SettingsScreen() }
+                composable<Route.Settings> { SettingsScreen(onOpenAbout = openAbout) }
+                composable<Route.About> {
+                    AboutScreen(onBack = { navController.popBackStack() })
+                }
             }
         }
         }
-        }
-
-        // Compose this after the drawer so it takes precedence over Material 3's internal predictive
-        // handler. On affected devices that handler lets a completed Back escape to app navigation.
-        BackHandler(enabled = !suiteIsDrawer && featureDrawerState.isOpen) {
-            drawerScope.launch { featureDrawerState.close() }
         }
 
         if (showPairing) {
@@ -654,20 +691,53 @@ fun NotiSyncRoot(
 private fun NonBouncyModalNavigationDrawer(
     drawerState: DrawerState,
     gesturesEnabled: Boolean,
-    drawerContent: @Composable () -> Unit,
+    drawerContent: @Composable (Modifier) -> Unit,
     content: @Composable () -> Unit,
 ) {
     val appMotionScheme = MaterialTheme.motionScheme
     val drawerMotionScheme = remember(appMotionScheme) {
         NonBouncyDrawerMotionScheme(appMotionScheme)
     }
+    val backProgress = remember { Animatable(0f) }
+    val scope = rememberCoroutineScope()
+    val closingDirection = if (LocalLayoutDirection.current == LayoutDirection.Rtl) 1f else -1f
+    LaunchedEffect(drawerState.isClosed) {
+        if (drawerState.isClosed) backProgress.snapTo(0f)
+    }
     MaterialTheme(motionScheme = drawerMotionScheme) {
+        val scrimColor = DrawerDefaults.scrimColor
         ModalNavigationDrawer(
             drawerState = drawerState,
             gesturesEnabled = gesturesEnabled,
-            drawerContent = drawerContent,
+            scrimColor = scrimColor.copy(alpha = scrimColor.alpha * (1f - backProgress.value)),
+            drawerContent = {
+                drawerContent(
+                    Modifier.graphicsLayer {
+                        val offset = drawerState.currentOffset.takeIf { it.isFinite() } ?: 0f
+                        // Keep the preview displacement while close() animates its own offset.
+                        // Reducing it with the remaining width avoids snapping or sliding twice.
+                        val remainingWidth = (size.width + offset).coerceIn(0f, size.width)
+                        translationX = closingDirection * remainingWidth * backProgress.value
+                    },
+                )
+            },
         ) {
             MaterialTheme(motionScheme = appMotionScheme, content = content)
+        }
+        // Register after the destination content so Back closes the drawer before navigating.
+        // Use the stateless sheet above to avoid Material's predictive scaling/stretching.
+        PredictiveBackHandler(enabled = gesturesEnabled && drawerState.isOpen) { events ->
+            try {
+                backProgress.stop()
+                events.collect { event -> backProgress.snapTo(event.progress.coerceIn(0f, 1f)) }
+                drawerState.close()
+                backProgress.snapTo(0f)
+            } catch (cancelled: CancellationException) {
+                scope.launch {
+                    backProgress.animateTo(0f, drawerMotionScheme.defaultSpatialSpec())
+                }
+                throw cancelled
+            }
         }
     }
 }

@@ -18,6 +18,14 @@
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 
+    <!-- About screen -->
+    <string name="about_title">About</string>
+    <string name="about_app_version">Version</string>
+    <string name="about_app_version_value" translatable="false">%1$d (%2$s)</string>
+    <string name="about_source_code">Source code</string>
+    <string name="about_feedback">Feedback</string>
+    <string name="about_privacy_policy">Privacy Policy</string>
+
     <!-- Shared actions -->
     <string name="action_approve">Approve</string>
     <string name="action_deny">Deny</string>

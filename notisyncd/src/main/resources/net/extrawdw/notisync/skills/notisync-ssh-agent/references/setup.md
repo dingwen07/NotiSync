@@ -15,7 +15,7 @@
 4. Configure only the intended shell/client to use the reported endpoint.
 5. Test identity listing before a real connection: `ssh-add -L` or `ssh-add -l`.
 
-If multiple Android providers hold a key used for `ssh-add` import, set the intended destination client ID with `notisync-ssh-agent config set-default-provider CLIENT_ID`. Clearing it restores provider selection behavior. This setting is reloaded for imports without restarting.
+Before any `ssh-add` import, select an active destination provider with `notisync-ssh-agent config set-default-provider CLIENT_ID`, even if there is only one provider. Clearing it with `config clear-default-provider` leaves imports without a destination, so they fail until an active provider is selected again. This setting is reloaded for imports without restarting and does not constrain signing-provider selection.
 
 ## Linux and macOS
 

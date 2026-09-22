@@ -15,6 +15,13 @@
     <string name="tab_activity">動態</string>
     <string name="tab_settings">設定</string>
 
+    <!-- About screen -->
+    <string name="about_title">關於</string>
+    <string name="about_app_version">版本</string>
+    <string name="about_source_code">原始碼</string>
+    <string name="about_feedback">意見回饋</string>
+    <string name="about_privacy_policy">隱私權政策</string>
+
     <!-- Shared actions -->
     <string name="action_approve">核准</string>
     <string name="action_deny">拒絕</string>

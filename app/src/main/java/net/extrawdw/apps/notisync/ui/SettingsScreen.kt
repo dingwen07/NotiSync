@@ -21,6 +21,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ListItem
+import androidx.compose.material3.ListItemDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.AlertDialog
@@ -42,6 +44,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
@@ -62,9 +65,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
 
 @Composable
-fun SettingsScreen() {
+fun SettingsScreen(onOpenAbout: () -> Unit) {
     val graph = rememberGraph()
     var showDesktopApplications by rememberSaveable { mutableStateOf(false) }
     if (showDesktopApplications) {
@@ -250,6 +255,7 @@ fun SettingsScreen() {
             item {
                 ListItem(
                     contentPadding = PaddingValues(vertical = 8.dp),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                     verticalAlignment = Alignment.CenterVertically,
                     supportingContent = { Text(stringResource(R.string.desktop_applications_summary)) },
                     trailingContent = {
@@ -258,6 +264,15 @@ fun SettingsScreen() {
                         }
                     },
                 ) { Text(stringResource(R.string.desktop_applications_title)) }
+            }
+            item {
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenAbout),
+                    contentPadding = PaddingValues(vertical = 8.dp),
+                    colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+                    leadingContent = { Icon(InfoIcon, contentDescription = null) },
+                    trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
+                ) { Text(stringResource(R.string.about_title)) }
             }
             item { SettingsSectionHeader(R.string.settings_section_diagnostics) }
             item {
