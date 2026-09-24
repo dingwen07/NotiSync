@@ -67,9 +67,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
 
 @Composable
-fun SettingsScreen(onOpenAbout: () -> Unit) {
+fun SettingsScreen(onOpenAbout: () -> Unit, onOpenMenu: () -> Unit = {}) {
     val graph = rememberGraph()
     var showDesktopApplications by rememberSaveable { mutableStateOf(false) }
     if (showDesktopApplications) {
@@ -152,6 +153,15 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
             contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
+            item {
+                ListItem(
+                    modifier = Modifier.clickable(onClick = onOpenMenu),
+                    leadingContent = { Icon(EditIcon, contentDescription = null) },
+                    trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
+                ) {
+                    Text(stringResource(R.string.menu_manage))
+                }
+            }
             item { SettingsSectionHeader(R.string.settings_section_connection) }
             item {
                 SettingsTextField(
@@ -348,8 +358,6 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
                         },
                     )
                 }
-                // SSH key storage test — one self-contained item; see SshKeyStorageTestCard.
-                item { SshKeyStorageTestCard() }
             }
         }
     }

@@ -11,6 +11,7 @@ import net.extrawdw.notisync.protocol.ScreenMirrorSync
 data class ScreenMirrorValidationFailure(
     val status: ScreenMirrorStatus,
     val detail: String,
+    val needsPeerAuthorization: Boolean = false,
 )
 
 object ScreenMirrorRequestValidator {
@@ -28,7 +29,6 @@ object ScreenMirrorRequestValidator {
         if (request.requesterPeerId != authenticatedSender || request.sourcePeerId != ownClientId) {
             return ScreenMirrorValidationFailure(ScreenMirrorStatus.UNAUTHORIZED, "peer identity mismatch")
         }
-        if (!authorized) return ScreenMirrorValidationFailure(ScreenMirrorStatus.UNAUTHORIZED, "peer not authorized")
         if (!validSessionId(request.sessionId)) return invalid("invalid session id")
 
         val expiresAt = request.expiresAt ?: return invalid("missing expiry")
@@ -43,9 +43,6 @@ object ScreenMirrorRequestValidator {
             return invalid("invalid rendezvous secret lengths")
         }
         if (request.codec == null) return invalid("missing codec")
-        if (!codecAvailable) {
-            return ScreenMirrorValidationFailure(ScreenMirrorStatus.CODEC_UNAVAILABLE, "hardware codec unavailable")
-        }
         if (!validQuality(request)) return invalid("invalid quality limits")
         if (request.candidates.isEmpty() || request.candidates.size > MAX_CANDIDATES ||
             request.candidates.none(::validCandidate)
@@ -57,6 +54,15 @@ object ScreenMirrorRequestValidator {
         }
         if (relayCount > 0 && (relayCount != 1 || request.candidates.size != 1)) {
             return invalid("relay candidate must be an exclusive manual request")
+        }
+        // Only a well-formed, fresh request may ask the user to grant permission.
+        if (!authorized) return ScreenMirrorValidationFailure(
+            ScreenMirrorStatus.UNAUTHORIZED,
+            "peer not authorized",
+            needsPeerAuthorization = true,
+        )
+        if (!codecAvailable) {
+            return ScreenMirrorValidationFailure(ScreenMirrorStatus.CODEC_UNAVAILABLE, "hardware codec unavailable")
         }
         return null
     }

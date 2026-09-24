@@ -5,14 +5,17 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.content.Context
+import android.content.Intent
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
 import androidx.core.content.pm.ShortcutManagerCompat
+import androidx.core.content.pm.ShortcutInfoCompat
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import kotlinx.coroutines.runBlocking
 import net.extrawdw.apps.notisync.NotiSyncApp
+import net.extrawdw.apps.notisync.MainActivity
 import net.extrawdw.apps.notisync.appicon.IconResolver
 import net.extrawdw.apps.notisync.assets.AssetCache
 import net.extrawdw.notisync.protocol.CapturedNotification
@@ -106,6 +109,45 @@ class MirrorConversationChannelTest {
         assertFalse(ShortcutManagerCompat.getDynamicShortcuts(context).any { it.id in shortcutIds })
         val cachedIds = ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_CACHED).map { it.id }.toSet()
         assertTrue(cachedIds.containsAll(shortcutIds))
+    }
+
+    @Test
+    fun startupSweepDeletesLegacyShortcutsButPreservesCurrentCachedConversations() {
+        val capture = message()
+        post(capture)
+        val currentId = requireNotNull(mirroredConversationShortcutId(capture))
+        val legacyId = "noticonv:${peer.value}:example.chat:alice"
+        val legacyCachedId = "noticonv:${peer.value}:example.chat:bob"
+        val unrelatedId = "action:${peer.value}"
+        val ids = listOf(legacyId, legacyCachedId, currentId, unrelatedId)
+        shortcutIds.addAll(ids)
+        ids.forEach { id ->
+            assertTrue(ShortcutManagerCompat.pushDynamicShortcut(context,
+                ShortcutInfoCompat.Builder(context, id)
+                    .setShortLabel("Shortcut cleanup test")
+                    .setLongLived(true)
+                    .setIntent(Intent(context, MainActivity::class.java).setAction(Intent.ACTION_VIEW))
+                    .build()))
+        }
+        assertTrue(ShortcutManagerCompat.getDynamicShortcuts(context).map { it.id }.containsAll(ids))
+        val currentNotification = manager.activeNotifications.first { it.notification.shortcutId == currentId }.notification
+        manager.notify("${peer.value}:legacy", 1,
+            Notification.Builder.recoverBuilder(context, currentNotification).setShortcutId(legacyCachedId).build())
+        await { ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_CACHED).any { it.id == legacyCachedId } }
+        ShortcutManagerCompat.removeDynamicShortcuts(context, listOf(legacyCachedId))
+        assertFalse(ShortcutManagerCompat.getDynamicShortcuts(context).any { it.id == legacyCachedId })
+        assertTrue(ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_CACHED).any { it.id == legacyCachedId })
+
+        cleanMirroredConversationShortcuts(context)
+        cleanMirroredConversationShortcuts(context)
+        val dynamicIds = ShortcutManagerCompat.getDynamicShortcuts(context).map { it.id }
+        assertTrue(unrelatedId in dynamicIds)
+        assertFalse(dynamicIds.any { it in listOf(legacyId, legacyCachedId, currentId) })
+        val cachedIds = ShortcutManagerCompat.getShortcuts(context, ShortcutManagerCompat.FLAG_MATCH_CACHED).map { it.id }
+        assertFalse(legacyId in cachedIds)
+        assertFalse(legacyCachedId in cachedIds)
+        assertTrue(currentId in cachedIds)
+        assertTrue(manager.activeNotifications.any { it.notification.shortcutId == currentId })
     }
 
     @Test

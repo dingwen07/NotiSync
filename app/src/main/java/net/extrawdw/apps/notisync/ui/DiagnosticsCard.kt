@@ -320,6 +320,8 @@ fun DiagnosticsCard(
                 else -> Unit
             }
 
+            SshKeyStorageTestSection()
+
             // Key epoch — always shown in advanced diagnostics: the operational (signing) + HPKE (encryption)
             // keys exist even with rotation disabled. The schedule, status line and rotate controls below
             // appear only when ENABLE_ROTATION built the rotation machine.

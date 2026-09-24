@@ -45,7 +45,7 @@ import net.extrawdw.notisync.ssh.core.SshSignatureVerifier
  *
  * Deliberately isolated: this file talks only to the public [SshKeyProviderStore] API and owns its own
  * prompt plumbing, so the whole feature can be removed without touching the production flows. Delete this
- * file together with `SshKeyStorageTestCard` in the ui package, its one Settings list item, and the
+ * file together with `SshKeyStorageTestSection` in the ui package, its call in `DiagnosticsCard`, and the
  * `diagnostics_ssh_key_storage_test*` string resources.
  */
 class SshKeyStorageTest(

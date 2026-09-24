@@ -30,6 +30,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.AnchoredDraggableDefaults
 import androidx.compose.foundation.gestures.AnchoredDraggableState
@@ -37,7 +38,6 @@ import androidx.compose.foundation.gestures.DraggableAnchors
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.gestures.anchoredDraggable
 import androidx.compose.foundation.gestures.animateTo
-import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
 import androidx.compose.foundation.gestures.snapTo
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -51,6 +51,7 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsIgnoringVisibility
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.only
@@ -63,6 +64,9 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.windowInsetsTopHeight
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.selection.toggleable
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
@@ -79,6 +83,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.vertical_align_top 
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility as VisibilityIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.visibility_off as VisibilityOffIcon
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AlertDialogDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
@@ -97,8 +102,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -109,17 +112,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
 import androidx.core.view.WindowCompat
@@ -136,6 +142,8 @@ import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.theme.NotiSyncTheme
 import net.extrawdw.notisync.protocol.ClientId
+import sh.calvin.reorderable.ReorderableItem
+import sh.calvin.reorderable.rememberReorderableLazyListState
 
 /** Replaceable full-screen/PiP client of the requester foreground service's authenticated session. */
 class AndroidScreenMirrorActivity : ComponentActivity() {
@@ -1075,117 +1083,128 @@ private fun ScreenViewerControlDialog(
     onControlOrderChanged: (List<ScreenViewerControl>) -> Unit,
     onDismissRequest: () -> Unit,
 ) {
-    var orderedControls by remember(controlOrder) { mutableStateOf(controlOrder) }
-    var draggedControl by remember { mutableStateOf<ScreenViewerControl?>(null) }
-    var draggedOffset by remember { mutableFloatStateOf(0f) }
-    val rowStepPx = with(LocalDensity.current) { 48.dp.toPx() }
+    var orderedControls by remember { mutableStateOf(controlOrder) }
+    val haptics = LocalHapticFeedback.current
+    val listState = rememberLazyListState()
+    val reorderState = rememberReorderableLazyListState(listState) { from, to ->
+        // Resolve stable control keys so the explanatory header is never part of the saved order.
+        val fromIndex = orderedControls.indexOfFirst { it.name == from.key }
+        val toIndex = orderedControls.indexOfFirst { it.name == to.key }
+        if (fromIndex >= 0 && toIndex >= 0 && fromIndex != toIndex) {
+            orderedControls = orderedControls.toMutableList().apply {
+                add(toIndex, removeAt(fromIndex))
+            }
+            haptics.performHapticFeedback(HapticFeedbackType.SegmentFrequentTick)
+        }
+    }
+    LaunchedEffect(controlOrder) {
+        if (!reorderState.isAnyItemDragging) orderedControls = controlOrder
+    }
+
+    fun moveControl(viewerControl: ScreenViewerControl, delta: Int) {
+        val index = orderedControls.indexOf(viewerControl)
+        val target = index + delta
+        if (index < 0 || target !in orderedControls.indices) return
+        orderedControls = orderedControls.toMutableList().apply { add(target, removeAt(index)) }
+        onControlOrderChanged(orderedControls)
+    }
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
         title = { Text(stringResource(R.string.screen_viewer_toolbar_controls)) },
         text = {
-            Column {
-                Text(
-                    pluralStringResource(
-                        R.plurals.screen_viewer_toolbar_control_limit,
-                        maximumControls,
-                        maximumControls,
-                    ),
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier.padding(bottom = 8.dp),
-                )
-                orderedControls.forEach { viewerControl ->
-                    // Preserve this row's pointer-input node while its list position changes; otherwise the
-                    // first swap restarts the drag detector and terminates the gesture.
-                    key(viewerControl) {
-                        val checked = viewerControl in selectedControls
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .offset {
-                                    IntOffset(
-                                        x = 0,
-                                        y = if (draggedControl == viewerControl) {
-                                            draggedOffset.roundToInt()
-                                        } else {
-                                            0
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp),
+            ) {
+                item(key = "control-limit") {
+                    Text(
+                        pluralStringResource(
+                            R.plurals.screen_viewer_toolbar_control_limit,
+                            maximumControls,
+                            maximumControls,
+                        ),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(bottom = 8.dp),
+                    )
+                }
+                items(orderedControls, key = { it.name }) { viewerControl ->
+                    val checked = viewerControl in selectedControls
+                    val index = orderedControls.indexOf(viewerControl)
+                    val moveUp = stringResource(R.string.menu_move_up)
+                    val moveDown = stringResource(R.string.menu_move_down)
+                    ReorderableItem(reorderState, key = viewerControl.name) { isDragging ->
+                        val elevation by animateDpAsState(
+                            targetValue = if (isDragging) 6.dp else 0.dp,
+                            label = "Toolbar control elevation",
+                        )
+                        Surface(
+                            color = AlertDialogDefaults.containerColor,
+                            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+                            shape = MaterialTheme.shapes.small,
+                            shadowElevation = elevation,
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .semantics {
+                                        customActions = buildList {
+                                            if (index > 0) {
+                                                add(CustomAccessibilityAction(moveUp) {
+                                                    moveControl(viewerControl, -1)
+                                                    true
+                                                })
+                                            }
+                                            if (index < orderedControls.lastIndex) {
+                                                add(CustomAccessibilityAction(moveDown) {
+                                                    moveControl(viewerControl, 1)
+                                                    true
+                                                })
+                                            }
+                                        }
+                                    }
+                                    .toggleable(
+                                        value = checked,
+                                        enabled = !reorderState.isAnyItemDragging,
+                                        role = Role.Checkbox,
+                                        onValueChange = { selected ->
+                                            onControlVisibilityChanged(viewerControl, selected)
                                         },
                                     )
-                                }
-                                .zIndex(if (draggedControl == viewerControl) 1f else 0f)
-                                .toggleable(
-                                    value = checked,
-                                    role = Role.Checkbox,
-                                    onValueChange = { selected ->
-                                        onControlVisibilityChanged(viewerControl, selected)
-                                    },
+                                    .padding(horizontal = 4.dp, vertical = 7.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Icon(viewerControl.icon(), contentDescription = null)
+                                Spacer(Modifier.width(16.dp))
+                                Text(
+                                    stringResource(viewerControl.labelResource()),
+                                    modifier = Modifier.weight(1f),
                                 )
-                                .padding(horizontal = 4.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Icon(viewerControl.icon(), contentDescription = null)
-                            Spacer(Modifier.width(16.dp))
-                            Text(
-                                stringResource(viewerControl.labelResource()),
-                                modifier = Modifier.weight(1f),
-                            )
-                            Checkbox(
-                                checked = checked,
-                                onCheckedChange = null,
-                            )
-                            Icon(
-                                DragHandleIcon,
-                                contentDescription = stringResource(
-                                    R.string.screen_viewer_reorder_control,
-                                ),
-                                modifier = Modifier
-                                    .size(40.dp)
-                                    .padding(8.dp)
-                                    .pointerInput(viewerControl) {
-                                        detectDragGesturesAfterLongPress(
-                                            onDragStart = {
-                                                draggedControl = viewerControl
-                                                draggedOffset = 0f
+                                Checkbox(checked = checked, onCheckedChange = null)
+                                Icon(
+                                    DragHandleIcon,
+                                    contentDescription = stringResource(R.string.screen_viewer_reorder_control),
+                                    modifier = Modifier.size(48.dp)
+                                        .draggableHandle(
+                                            onDragStarted = {
+                                                haptics.performHapticFeedback(HapticFeedbackType.GestureThresholdActivate)
                                             },
-                                            onDragCancel = {
-                                                orderedControls = controlOrder
-                                                draggedControl = null
-                                                draggedOffset = 0f
-                                            },
-                                            onDragEnd = {
-                                                draggedControl = null
-                                                draggedOffset = 0f
+                                            onDragStopped = {
                                                 onControlOrderChanged(orderedControls)
-                                            },
-                                            onDrag = { change, dragAmount ->
-                                                change.consume()
-                                                draggedOffset += dragAmount.y
-                                                val fromIndex = orderedControls.indexOf(viewerControl)
-                                                val direction = when {
-                                                    draggedOffset > rowStepPx / 2 -> 1
-                                                    draggedOffset < -rowStepPx / 2 -> -1
-                                                    else -> 0
-                                                }
-                                                val targetIndex = fromIndex + direction
-                                                if (direction != 0 && targetIndex in orderedControls.indices) {
-                                                    val reordered = orderedControls.toMutableList()
-                                                    reordered.removeAt(fromIndex)
-                                                    reordered.add(targetIndex, viewerControl)
-                                                    orderedControls = reordered
-                                                    draggedOffset -= direction * rowStepPx
-                                                }
+                                                haptics.performHapticFeedback(HapticFeedbackType.GestureEnd)
                                             },
                                         )
-                                    },
-                            )
+                                        .padding(12.dp),
+                                )
+                            }
                         }
                     }
                 }
             }
         },
         confirmButton = {
-            TextButton(onClick = onDismissRequest) {
+            TextButton(enabled = !reorderState.isAnyItemDragging, onClick = onDismissRequest) {
                 Text(stringResource(R.string.screen_viewer_done))
             }
         },

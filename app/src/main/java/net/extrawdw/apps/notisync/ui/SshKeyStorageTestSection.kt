@@ -4,10 +4,9 @@ import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -34,15 +33,15 @@ import net.extrawdw.apps.notisync.ui.theme.SecurityRedDark
 import net.extrawdw.apps.notisync.ui.theme.SecurityRedLight
 
 /**
- * Settings → Advanced card for the SSH key storage test.
+ * SSH key storage test content within the advanced diagnostics card.
  *
  * Self-contained on purpose: it resolves the graph, the activity, and its own state, and the runner
  * ([SshKeyStorageTest]) only uses the public [net.extrawdw.apps.notisync.sshkeyprovider.SshKeyProviderStore]
  * API. Removing this feature means deleting this file, `SshKeyStorageTest.kt`, and the single
- * `SshKeyStorageTestCard()` list item in `SettingsScreen.kt`, and the `diagnostics_ssh_key_storage_test*` resources.
+ * `SshKeyStorageTestSection()` call in `DiagnosticsCard.kt`, and the `diagnostics_ssh_key_storage_test*` resources.
  */
 @Composable
-fun SshKeyStorageTestCard() {
+fun ColumnScope.SshKeyStorageTestSection() {
     val graph = rememberGraph()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -80,80 +79,76 @@ fun SshKeyStorageTestCard() {
         }
     }
 
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(stringResource(R.string.diagnostics_ssh_key_storage_test), style = MaterialTheme.typography.titleSmall)
-            Text(
-                stringResource(R.string.diagnostics_ssh_key_storage_test_hint),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            OutlinedButton(
-                onClick = ::runTest,
-                enabled = state !is SshKeyStorageTestState.Running,
-            ) {
-                Text(
-                    stringResource(
-                        if (state is SshKeyStorageTestState.Running) {
-                            R.string.diagnostics_ssh_key_storage_test_running
-                        } else {
-                            R.string.diagnostics_ssh_key_storage_test_run
-                        },
-                    ),
-                )
+    Text(stringResource(R.string.diagnostics_ssh_key_storage_test), style = MaterialTheme.typography.titleSmall)
+    Text(
+        stringResource(R.string.diagnostics_ssh_key_storage_test_hint),
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    OutlinedButton(
+        onClick = ::runTest,
+        enabled = state !is SshKeyStorageTestState.Running,
+    ) {
+        Text(
+            stringResource(
+                if (state is SshKeyStorageTestState.Running) {
+                    R.string.diagnostics_ssh_key_storage_test_running
+                } else {
+                    R.string.diagnostics_ssh_key_storage_test_run
+                },
+            ),
+        )
+    }
+    when (val current = state) {
+        is SshKeyStorageTestState.Failed -> Text(
+            stringResource(R.string.diagnostics_ssh_key_storage_test_failed, current.message),
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.error,
+        )
+
+        is SshKeyStorageTestState.Running,
+        is SshKeyStorageTestState.Done,
+        -> {
+            val results = when (current) {
+                is SshKeyStorageTestState.Running -> current.results
+                is SshKeyStorageTestState.Done -> current.results
             }
-            when (val current = state) {
-                is SshKeyStorageTestState.Failed -> Text(
-                    stringResource(R.string.diagnostics_ssh_key_storage_test_failed, current.message),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.error,
-                )
-
-                is SshKeyStorageTestState.Running,
-                is SshKeyStorageTestState.Done,
-                -> {
-                    val results = when (current) {
-                        is SshKeyStorageTestState.Running -> current.results
-                        is SshKeyStorageTestState.Done -> current.results
-                    }
-                    if (current is SshKeyStorageTestState.Running && results.isEmpty()) {
-                        CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
-                    }
-                    results.forEach { outcome ->
-                        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(
-                                outcome.case.name,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace,
-                            )
-                            when (outcome) {
-                                is SshKeyStorageTest.CaseOutcome.Passed -> Text(
-                                    stringResource(R.string.diagnostics_ssh_key_storage_test_case_passed, outcome.detail),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = keyStorageTestTone(ok = true),
-                                )
-
-                                is SshKeyStorageTest.CaseOutcome.Failed -> Text(
-                                    stringResource(R.string.diagnostics_ssh_key_storage_test_case_failed, outcome.message),
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = keyStorageTestTone(ok = false),
-                                )
-                            }
-                        }
-                    }
-                    if (current is SshKeyStorageTestState.Done) {
-                        val passed = results.count { it is SshKeyStorageTest.CaseOutcome.Passed }
-                        Text(
-                            stringResource(R.string.diagnostics_ssh_key_storage_test_done, passed, results.size),
+            if (current is SshKeyStorageTestState.Running && results.isEmpty()) {
+                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+            }
+            results.forEach { outcome ->
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(
+                        outcome.case.name,
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                    )
+                    when (outcome) {
+                        is SshKeyStorageTest.CaseOutcome.Passed -> Text(
+                            stringResource(R.string.diagnostics_ssh_key_storage_test_case_passed, outcome.detail),
                             style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = keyStorageTestTone(ok = true),
+                        )
+
+                        is SshKeyStorageTest.CaseOutcome.Failed -> Text(
+                            stringResource(R.string.diagnostics_ssh_key_storage_test_case_failed, outcome.message),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = keyStorageTestTone(ok = false),
                         )
                     }
                 }
-
-                SshKeyStorageTestState.Idle -> Unit
+            }
+            if (current is SshKeyStorageTestState.Done) {
+                val passed = results.count { it is SshKeyStorageTest.CaseOutcome.Passed }
+                Text(
+                    stringResource(R.string.diagnostics_ssh_key_storage_test_done, passed, results.size),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
+
+        SshKeyStorageTestState.Idle -> Unit
     }
 }
 

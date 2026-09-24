@@ -99,6 +99,8 @@ import net.extrawdw.apps.notisync.notification.mirror.MirrorChannels
 import net.extrawdw.apps.notisync.notification.mirror.MirrorMediaSessions
 import net.extrawdw.apps.notisync.notification.mirror.MirrorRouter
 import net.extrawdw.apps.notisync.notification.mirror.RemoteNotificationPoster
+import net.extrawdw.apps.notisync.notification.mirror.cleanMirroredConversationShortcuts
+import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
 import net.extrawdw.apps.notisync.pairing.automaticTimeEnabled
 import net.extrawdw.apps.notisync.pairing.PairingCardStore
 import net.extrawdw.apps.notisync.pairing.PairingManager
@@ -130,6 +132,8 @@ import net.extrawdw.apps.notisync.screen.ScreenMirrorAuthorizationStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorCapabilityProvider
 import net.extrawdw.apps.notisync.screen.ScreenMirrorCodecPreferenceStore
 import net.extrawdw.apps.notisync.screen.ScreenMirrorForegroundService
+import net.extrawdw.apps.notisync.screen.ScreenMirrorPermissionNotifications
+import net.extrawdw.apps.notisync.screen.canAuthorizeScreenControl
 import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
 import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
 import net.extrawdw.apps.notisync.screen.ScreenViewerToolbarPreferenceStore
@@ -351,6 +355,10 @@ class AppGraph(private val app: Application) {
     val clientId: ClientId? get() = if (::identity.isInitialized) identity.clientId else null
 
     fun init(initSpan: PerfSpan) {
+        // Init runs off-main, before incoming messages can publish shortcuts. Per-post cleanup cannot
+        // reach old conversation IDs that are never rendered again, so sweep them on each cold start.
+        runCatching { cleanMirroredConversationShortcuts(app) }
+            .onFailure { Log.w(TAG, "Failed to clean up stale conversation shortcuts", it) }
         val identityStartNanos = System.nanoTime()
         identity = AndroidIdentitySigner.loadOrCreate()
         // StrongBox identity-key load/generate dominates first-run cold start; isolate it from the rest.
@@ -359,6 +367,12 @@ class AppGraph(private val app: Application) {
         val ds = app.dataStore
         val operationalApplicationState = RoomOperationalApplicationState(app)
         settings = SettingsRepository(ds, scope, operationalApplicationState)
+        settings.menuConfiguration
+            .onEach { menu ->
+                runCatching { AppMenuShortcuts.update(app, menu) }
+                    .onFailure { Log.w(TAG, "Failed to update launcher menu shortcuts", it) }
+            }
+            .launchIn(scope)
         openPgpProvider = OpenKeychainSigningProvider(app)
         openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
@@ -525,6 +539,23 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        val screenPermissionNotifications = ScreenMirrorPermissionNotifications(app)
+        fun needsScreenPermission(peerId: ClientId): Boolean = canAuthorizeScreenControl(
+            trust.roster.value.firstOrNull { it.clientId == peerId },
+            settings.screenMirroringEnabled.value,
+            trust.quarantined.value,
+        ) && !screenMirrorAuthorizations.isAuthorized(peerId)
+        combine(
+            trust.roster,
+            trust.quarantined,
+            settings.screenMirroringEnabled,
+            screenMirrorAuthorizations.authorizedPeerIds,
+        ) { _, _, _, _ -> Unit }
+            .onEach {
+                runCatching { screenPermissionNotifications.dismissIneligible(::needsScreenPermission) }
+                    .onFailure { Log.w(TAG, "Could not dismiss screen permission notification", it) }
+            }
+            .launchIn(scope)
         val screenController = ScreenMirrorSessionController(
             context = app,
             ownClientId = identity.clientId,
@@ -536,6 +567,17 @@ class AppGraph(private val app: Application) {
             scope = scope,
             transport = AndroidLanScreenSessionTransport(app, transport),
             peerName = { id -> trust.displayName(id) },
+            onPeerAuthorizationRequired = { peerId ->
+                scope.launch(Dispatchers.IO) {
+                    runCatching {
+                        if (needsScreenPermission(peerId)) {
+                            screenPermissionNotifications.post(peerId, trust.displayName(peerId))
+                            // Policy may change while NotificationManager is posting the reminder.
+                            if (!needsScreenPermission(peerId)) screenPermissionNotifications.dismiss(peerId)
+                        }
+                    }.onFailure { Log.w(TAG, "Could not post screen permission notification", it) }
+                }
+            },
         )
         screenMirrorController = screenController
         val screenSourceResolver = AndroidScreenSourceResolver { clientId ->

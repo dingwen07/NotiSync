@@ -15,6 +15,11 @@ On the Android device being shared:
 3. Pair the requesting device as your own trusted device and enable **Allow screen control**
    for that device.
 
+If a trusted own device connects before you grant that permission, the Android device shows a
+notification. Tap it to open the requesting device's details, or tap **Allow** to enable screen
+control directly. Then retry the connection from the requesting device. This saves the same
+permission as **Allow screen control** in Device Details.
+
 Shizuku Manager is installed separately. It is not bundled with NotiSync. The capture/input
 service runs for the screen session; codec and control availability depend on the device.
 

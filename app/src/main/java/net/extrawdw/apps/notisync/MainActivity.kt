@@ -20,22 +20,19 @@ import androidx.compose.animation.core.FiniteAnimationSpec
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.apps as AppsIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.devices as DevicesIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.history as HistoryIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.key as KeyIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.phone_iphone as PhoneIphoneIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.settings as SettingsIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.DrawerValue
@@ -48,6 +45,7 @@ import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
 import androidx.compose.runtime.Composable
@@ -69,6 +67,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
@@ -78,6 +77,7 @@ import androidx.core.content.ContextCompat
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
+import androidx.window.core.layout.WindowSizeClass
 import androidx.navigation.NavController
 import androidx.navigation.NavDestination
 import androidx.navigation.NavDestination.Companion.hasRoute
@@ -114,7 +114,13 @@ import net.extrawdw.apps.notisync.ui.PairingOverlay
 import net.extrawdw.apps.notisync.ui.PairingApprovalSheet
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
-import net.extrawdw.apps.notisync.ui.SignatureIcon
+import net.extrawdw.apps.notisync.ui.MenuManagementScreen
+import net.extrawdw.apps.notisync.navigation.AppMenuShortcuts
+import net.extrawdw.apps.notisync.navigation.MenuDestination
+import net.extrawdw.apps.notisync.navigation.icon
+import net.extrawdw.apps.notisync.navigation.label
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.menu as MenuIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
 import net.extrawdw.apps.notisync.ui.RunScreen
 import net.extrawdw.apps.notisync.ui.SealScreen
 import net.extrawdw.apps.notisync.ui.SshKeyProviderScreen
@@ -125,7 +131,9 @@ import net.extrawdw.notisync.protocol.TrustStatus
 
 class MainActivity : ComponentActivity() {
     private val pendingPairingPayload = MutableStateFlow<String?>(null)
+    private val pendingMenuDestination = MutableStateFlow<MenuDestination?>(null)
     private val pendingOpenDevices = MutableStateFlow(false)
+    private val pendingDeviceDetails = MutableStateFlow<String?>(null)
     private val pendingOpenRun = MutableStateFlow<RunKey?>(null)
     private val pendingOpenSshHistory = MutableStateFlow<String?>(null)
 
@@ -140,13 +148,16 @@ class MainActivity : ComponentActivity() {
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
         consumeOpenSshHistory(intent)
+        consumeMenuDestination(intent)
         enableEdgeToEdge()
         window.isNavigationBarContrastEnforced = false
         setContent {
             val startupState by app.startupState.collectAsStateWithLifecycle()
             val pairingPayload by pendingPairingPayload.collectAsStateWithLifecycle()
             val hcePairingPayload by PairingNfcInbox.pendingPayload.collectAsStateWithLifecycle()
+            val menuDestination by pendingMenuDestination.collectAsStateWithLifecycle()
             val openDevices by pendingOpenDevices.collectAsStateWithLifecycle()
+            val deviceDetails by pendingDeviceDetails.collectAsStateWithLifecycle()
             val openRun by pendingOpenRun.collectAsStateWithLifecycle()
             val openSshHistory by pendingOpenSshHistory.collectAsStateWithLifecycle()
             NotiSyncTheme {
@@ -172,8 +183,12 @@ class MainActivity : ComponentActivity() {
                                 onPendingHcePairingPayloadConsumed = { payload ->
                                     PairingNfcInbox.consume(applicationContext, payload)
                                 },
+                                openMenuDestination = menuDestination,
+                                onOpenMenuDestinationConsumed = { pendingMenuDestination.value = null },
                                 openDevices = openDevices,
                                 onOpenDevicesConsumed = { pendingOpenDevices.value = false },
+                                openDeviceDetails = deviceDetails,
+                                onOpenDeviceDetailsConsumed = { pendingDeviceDetails.value = null },
                                 openRun = openRun,
                                 onOpenRunConsumed = { pendingOpenRun.value = null },
                                 openSshHistoryRequestId = openSshHistory,
@@ -197,10 +212,19 @@ class MainActivity : ComponentActivity() {
         consumeOpenDevices(intent)
         consumeOpenRun(intent)
         consumeOpenSshHistory(intent)
+        consumeMenuDestination(intent)
+    }
+
+    private fun consumeMenuDestination(intent: Intent?) {
+        AppMenuShortcuts.consumeDestination(intent)?.let { pendingMenuDestination.value = it }
     }
 
     /** A trust notification asked us to open the Devices tab. */
     private fun consumeOpenDevices(intent: Intent?) {
+        intent?.getStringExtra(EXTRA_DEVICE_DETAILS_CLIENT_ID)?.takeIf(String::isNotBlank)?.let {
+            pendingDeviceDetails.value = it
+            intent.removeExtra(EXTRA_DEVICE_DETAILS_CLIENT_ID)
+        }
         if (intent?.getBooleanExtra(EXTRA_OPEN_DEVICES, false) != true) return
         pendingOpenDevices.value = true
         intent.removeExtra(EXTRA_OPEN_DEVICES) // consume so a config change / Recents can't re-trigger it
@@ -228,6 +252,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         const val EXTRA_OPEN_DEVICES = "net.extrawdw.apps.notisync.OPEN_DEVICES"
+        const val ACTION_OPEN_DEVICE_DETAILS = "net.extrawdw.apps.notisync.OPEN_DEVICE_DETAILS"
+        const val EXTRA_DEVICE_DETAILS_CLIENT_ID = "net.extrawdw.apps.notisync.DEVICE_DETAILS_CLIENT_ID"
         const val ACTION_OPEN_RUN = "net.extrawdw.apps.notisync.OPEN_RUN"
         const val EXTRA_RUN_HOST_CLIENT_ID = "net.extrawdw.apps.notisync.RUN_HOST_CLIENT_ID"
         const val EXTRA_RUN_ID = "net.extrawdw.apps.notisync.RUN_ID"
@@ -237,6 +263,7 @@ class MainActivity : ComponentActivity() {
 
     private fun updatePendingPairingPayload(intent: Intent?) {
         intent ?: return
+        if (intent.action == ACTION_OPEN_DEVICE_DETAILS) return
         // Reopening the app from the Recents list re-delivers the task's base intent — for a
         // QR-launched task that's the original pairing deep link. Ignore it, otherwise every
         // return-from-Recents would surface the trust dialog again.
@@ -282,35 +309,27 @@ private sealed interface Route {
 
     @Serializable
     data object About : Route
+
+    @Serializable
+    data object Menu : Route
 }
 
-private interface AppDestination {
-    val route: Route
-    @get:StringRes val label: Int
-    val icon: ImageVector
-}
+private enum class AppDestination(val menu: MenuDestination, val route: Route) {
+    DEVICES(MenuDestination.DEVICES, Route.Devices),
+    APPS(MenuDestination.APPS, Route.Apps),
+    IOS(MenuDestination.IPHONE, Route.Ios),
+    ACTIVITY(MenuDestination.ACTIVITY, Route.Activity),
+    SETTINGS(MenuDestination.SETTINGS, Route.Settings),
+    RUN(MenuDestination.RUN, Route.Run),
+    SEAL(MenuDestination.SEAL, Route.Seal),
+    SSH_AGENT(MenuDestination.SSH_KEYS, Route.SshAgent);
 
-/** Stable bottom-bar/rail destinations. Feature entries deliberately stay out of compact navigation. */
-private enum class TopLevelDestination(
-    override val route: Route,
-    @param:StringRes override val label: Int,
-    override val icon: ImageVector,
-) : AppDestination {
-    DEVICES(Route.Devices, R.string.tab_devices, DevicesIcon),
-    APPS(Route.Apps, R.string.tab_apps, AppsIcon),
-    IOS(Route.Ios, R.string.tab_ios, PhoneIphoneIcon),
-    ACTIVITY(Route.Activity, R.string.tab_activity, HistoryIcon),
-    SETTINGS(Route.Settings, R.string.tab_settings, SettingsIcon),
-}
+    @get:StringRes val label: Int get() = menu.label
+    val icon: ImageVector get() = menu.icon
 
-private enum class FeatureDestination(
-    override val route: Route,
-    @param:StringRes override val label: Int,
-    override val icon: ImageVector,
-) : AppDestination {
-    RUN(Route.Run, R.string.tab_run, TerminalIcon),
-    SEAL(Route.Seal, R.string.tab_seal, SignatureIcon),
-    SSH_AGENT(Route.SshAgent, R.string.ssh_key_provider_tools_label, KeyIcon),
+    companion object {
+        fun fromMenu(menu: MenuDestination): AppDestination = entries.first { it.menu == menu }
+    }
 }
 
 private enum class PairingReviewSource {
@@ -334,12 +353,16 @@ private val TopLevelNavIosIconSize = 20.dp
 
 @Composable
 fun NotiSyncRoot(
+    openMenuDestination: MenuDestination? = null,
+    onOpenMenuDestinationConsumed: () -> Unit = {},
     pendingPairingPayload: String? = null,
     onPendingPairingPayloadConsumed: () -> Unit = {},
     pendingHcePairingPayload: String? = null,
     onPendingHcePairingPayloadConsumed: (String) -> Unit = {},
     openDevices: Boolean = false,
     onOpenDevicesConsumed: () -> Unit = {},
+    openDeviceDetails: String? = null,
+    onOpenDeviceDetailsConsumed: () -> Unit = {},
     openRun: RunKey? = null,
     onOpenRunConsumed: () -> Unit = {},
     openSshHistoryRequestId: String? = null,
@@ -347,9 +370,12 @@ fun NotiSyncRoot(
 ) {
     val context = LocalContext.current
     val graph = rememberGraph()
+    val menuConfiguration by graph.settings.menuConfiguration.collectAsStateWithLifecycle()
+    val orderedDestinations = menuConfiguration.destinations().map(AppDestination::fromMenu)
     val pairing = remember { PairingManager(graph) }
     val pairingScope = rememberCoroutineScope()
     val navController = rememberNavController()
+    val openMenu = { navController.navigate(Route.Menu) { launchSingleTop = true } }
     val openAbout = {
         navController.navigate(Route.About) { launchSingleTop = true }
     }
@@ -362,6 +388,8 @@ fun NotiSyncRoot(
     val latestOnOpenRunConsumed = rememberUpdatedState(onOpenRunConsumed)
     val latestOpenSshHistoryRequestId = rememberUpdatedState(openSshHistoryRequestId)
     val latestOnOpenSshHistoryConsumed = rememberUpdatedState(onOpenSshHistoryConsumed)
+    val latestOpenDeviceDetails = rememberUpdatedState(openDeviceDetails)
+    val latestOnOpenDeviceDetailsConsumed = rememberUpdatedState(onOpenDeviceDetailsConsumed)
 
     // Pairing is frozen during a trust-tamper quarantine — the stripe is disabled in DevicesScreen, and
     // this also blocks the deep-link path so a pairing link can't bypass the freeze.
@@ -418,7 +446,7 @@ fun NotiSyncRoot(
         // Reader mode suppresses this device's HCE mode. Remove the pairing page first, then show approval
         // above Devices so the reciprocal peer can continue to address our always-on custom AID.
         showPairing = false
-        navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+        navController.navigateToTopLevel(AppDestination.DEVICES)
         pairingApprovalError = null
         val existingTrustedDevice = graph.trust.roster.value.firstOrNull {
             it.clientId == candidate.clientId && it.status == TrustStatus.TRUSTED
@@ -467,7 +495,7 @@ fun NotiSyncRoot(
         if (pairingReview != null || brokerPairingLink != null) return@LaunchedEffect
         val fromDeepLink = pendingPairingPayload != null
         val payload = pendingPairingPayload ?: pendingHcePairingPayload ?: return@LaunchedEffect
-        navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+        navController.navigateToTopLevel(AppDestination.DEVICES)
         BrokerPairingLink.parse(payload)?.let { link ->
             showPairing = false
             pairingReview = null
@@ -508,8 +536,15 @@ fun NotiSyncRoot(
 
     LaunchedEffect(openDevices) {
         if (openDevices) {
-            navController.navigateToTopLevel(TopLevelDestination.DEVICES)
+            navController.navigateToTopLevel(AppDestination.DEVICES)
             onOpenDevicesConsumed()
+        }
+    }
+
+    LaunchedEffect(openDeviceDetails) {
+        if (openDeviceDetails != null) {
+            showPairing = false
+            navController.navigateToTopLevel(AppDestination.DEVICES)
         }
     }
 
@@ -518,48 +553,110 @@ fun NotiSyncRoot(
             // Pairing is not a navigation destination, so changing tabs alone leaves it drawn above Run.
             // A notification open is explicit navigation: dismiss the overlay before selecting the Run tab.
             showPairing = pairingOverlayAfterRunOpenRequest(showPairing, openRun)
-            navController.navigateToTopLevel(FeatureDestination.RUN)
+            navController.navigateToTopLevel(AppDestination.RUN)
         }
     }
 
     LaunchedEffect(openSshHistoryRequestId) {
         if (openSshHistoryRequestId != null) {
             showPairing = false
-            navController.navigateToTopLevel(FeatureDestination.SSH_AGENT)
+            navController.navigateToTopLevel(AppDestination.SSH_AGENT)
         }
     }
 
-    val layoutType = NavigationSuiteScaffoldDefaults.calculateFromAdaptiveInfo(
-        currentWindowAdaptiveInfoV2()
-    )
+    val adaptiveInfo = currentWindowAdaptiveInfoV2()
+    val layoutType = NavigationSuiteScaffoldDefaults.navigationSuiteType(adaptiveInfo)
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
+    val suiteIsRail = layoutType == NavigationSuiteType.WideNavigationRailCollapsed ||
+        layoutType == NavigationSuiteType.WideNavigationRailExpanded
+    val railItemSpacing = if (adaptiveInfo.windowSizeClass.isHeightAtLeastBreakpoint(
+            WindowSizeClass.HEIGHT_DP_EXPANDED_LOWER_BOUND,
+        )) 12.dp else 8.dp
+    val navigationLimit = if (suiteIsDrawer) 8 else if (suiteIsRail) 7 else 5
+    val visibleDestinations = if (suiteIsDrawer) orderedDestinations else
+        menuConfiguration.navigationDestinations(navigationLimit).map(AppDestination::fromMenu)
+    val overflowDestinations = menuConfiguration.overflowDestinations(navigationLimit).map(AppDestination::fromMenu)
     val featureDrawerState = androidx.compose.material3.rememberDrawerState(DrawerValue.Closed)
     val drawerScope = rememberCoroutineScope()
-    var pendingFeatureDestination by remember { mutableStateOf<FeatureDestination?>(null) }
+    var pendingFeatureDestination by remember { mutableStateOf<AppDestination?>(null) }
+    val configuration = LocalConfiguration.current
+
+    // Refresh labels after locale changes and retry any background rate-limited update on foregrounding.
+    LaunchedEffect(configuration.locales.toLanguageTags(), foregroundResumeGeneration) {
+        withContext(Dispatchers.IO) {
+            runCatching { AppMenuShortcuts.update(context, graph.settings.menuConfiguration.value) }
+                .onFailure { android.util.Log.w("MainActivity", "Failed to refresh launcher shortcuts", it) }
+        }
+    }
+    LaunchedEffect(openMenuDestination) {
+        openMenuDestination?.let {
+            showPairing = false
+            featureDrawerState.close()
+            navController.navigateToTopLevel(AppDestination.fromMenu(it))
+            onOpenMenuDestinationConsumed()
+        }
+    }
+
+    val navigationItems: @Composable () -> Unit = {
+        visibleDestinations.forEach { dest ->
+            NavigationSuiteItem(
+                navigationSuiteType = layoutType,
+                selected = currentDestination.isOn(dest),
+                onClick = { navController.navigateToTopLevel(dest) },
+                icon = { TopLevelNavIcon(dest) },
+                label = { TopLevelNavLabel(dest) },
+            )
+        }
+        if (suiteIsDrawer) {
+            HorizontalDivider()
+            NavigationSuiteItem(
+                navigationSuiteType = layoutType,
+                selected = currentDestination?.hasRoute<Route.Menu>() == true,
+                onClick = openMenu,
+                icon = { Icon(EditIcon, null) },
+                label = { Text(stringResource(R.string.menu_manage)) },
+            )
+            NavigationSuiteItem(
+                navigationSuiteType = layoutType,
+                selected = currentDestination?.hasRoute<Route.About>() == true,
+                onClick = openAbout,
+                icon = { Icon(InfoIcon, null) },
+                label = { Text(stringResource(R.string.about_title)) },
+            )
+        }
+    }
 
     Box(modifier = Modifier.fillMaxSize()) {
         NonBouncyModalNavigationDrawer(
             drawerState = featureDrawerState,
             gesturesEnabled = !suiteIsDrawer,
             drawerContent = { sheetModifier ->
-                ModalDrawerSheet(
-                    modifier = sheetModifier.width(296.dp),
-                ) {
+                ModalDrawerSheet(modifier = sheetModifier.width(296.dp)) {
                     Column(Modifier.weight(1f).verticalScroll(rememberScrollState())) {
-                        Text(
-                            stringResource(R.string.features_title),
-                            style = androidx.compose.material3.MaterialTheme.typography.titleSmall,
-                            modifier = Modifier.padding(horizontal = 28.dp, vertical = 20.dp),
-                        )
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(start = 28.dp, end = 12.dp, top = 8.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Text(
+                                stringResource(R.string.menu_title),
+                                style = MaterialTheme.typography.titleSmall,
+                                modifier = Modifier.weight(1f),
+                            )
+                            IconButton(onClick = {
+                                drawerScope.launch { featureDrawerState.close(); openMenu() }
+                            }) {
+                                Icon(EditIcon, stringResource(R.string.menu_manage))
+                            }
+                        }
                         HorizontalDivider()
-                        FeatureDestination.entries.forEach { dest ->
+                        // Hide only pages actually visible in navigation. Selections beyond its adaptive
+                        // limit remain reachable here when the window becomes smaller.
+                        overflowDestinations.forEach { dest ->
                             NavigationDrawerItem(
                                 selected = pendingFeatureDestination?.let { it == dest }
                                     ?: currentDestination.isOn(dest),
                                 onClick = {
                                     if (pendingFeatureDestination == null) {
-                                        // Update the drawer selection immediately, but avoid composing the
-                                        // destination on the UI thread while the sheet is still animating.
                                         pendingFeatureDestination = dest
                                         drawerScope.launch {
                                             try {
@@ -580,13 +677,8 @@ fun NotiSyncRoot(
                     HorizontalDivider()
                     NavigationDrawerItem(
                         selected = currentDestination?.hasRoute<Route.About>() == true,
-                        onClick = {
-                            drawerScope.launch {
-                                featureDrawerState.close()
-                                openAbout()
-                            }
-                        },
-                        icon = { Icon(InfoIcon, contentDescription = null) },
+                        onClick = { drawerScope.launch { featureDrawerState.close(); openAbout() } },
+                        icon = { Icon(InfoIcon, null) },
                         label = { Text(stringResource(R.string.about_title)) },
                         modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
                     )
@@ -594,44 +686,31 @@ fun NotiSyncRoot(
             },
         ) {
         CompositionLocalProvider(
-            LocalFeatureDrawerOpener provides if (suiteIsDrawer) null else ({
+            // On tablets the hamburger belongs to the rail header, not the page's top app bar.
+            LocalFeatureDrawerOpener provides if (suiteIsDrawer || suiteIsRail) null else ({
                 drawerScope.launch { featureDrawerState.open() }
             })
         ) {
         NavigationSuiteScaffold(
-            layoutType = layoutType,
-            navigationSuiteItems = {
-                TopLevelDestination.entries.forEach { dest ->
-                    item(
-                        selected = currentDestination.isOn(dest),
-                        onClick = { navController.navigateToTopLevel(dest) },
-                        icon = { TopLevelNavIcon(dest) },
-                        label = { TopLevelNavLabel(dest) },
-                    )
-                }
-                if (suiteIsDrawer) {
-                    item(
-                        selected = false,
-                        onClick = {},
-                        icon = {},
-                        label = { Text(stringResource(R.string.features_title)) },
-                        enabled = false,
-                    )
-                    FeatureDestination.entries.forEach { dest ->
-                        item(
-                            selected = currentDestination.isOn(dest),
-                            onClick = { navController.navigateToTopLevel(dest) },
-                            icon = { TopLevelNavIcon(dest) },
-                            label = { TopLevelNavLabel(dest) },
-                        )
+            navigationSuiteType = layoutType,
+            primaryActionContent = {
+                if (suiteIsRail) {
+                    IconButton(onClick = { drawerScope.launch { featureDrawerState.open() } }) {
+                        Icon(MenuIcon, stringResource(R.string.open_features))
                     }
-                    item(
-                        selected = currentDestination?.hasRoute<Route.About>() == true,
-                        onClick = openAbout,
-                        icon = { Icon(InfoIcon, contentDescription = null) },
-                        label = { Text(stringResource(R.string.about_title)) },
-                    )
                 }
+            },
+            navigationItems = {
+                if (suiteIsRail) {
+                    // The scroll wrapper owns item spacing; WideNavigationRail only sees one child.
+                    Column(
+                        modifier = Modifier.verticalScroll(rememberScrollState()),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(railItemSpacing),
+                    ) { navigationItems() }
+                } else if (suiteIsDrawer) {
+                    Column(Modifier.verticalScroll(rememberScrollState())) { navigationItems() }
+                } else navigationItems()
             },
         ) {
             NavHost(
@@ -649,6 +728,8 @@ fun NotiSyncRoot(
                 composable<Route.Devices> {
                     DevicesDestination(
                         onPair = { if (!quarantined) showPairing = true },
+                        openDeviceDetails = latestOpenDeviceDetails.value,
+                        onOpenDeviceDetailsConsumed = latestOnOpenDeviceDetailsConsumed.value,
                         // Sample the stripe's bounds (root coordinates, shared with the overlay) so the
                         // container transform knows where to grow from / fold back into. It moves as the
                         // list scrolls; the last value before opening is what the collapse animates to.
@@ -673,7 +754,13 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Activity> { ActivityScreen() }
-                composable<Route.Settings> { SettingsScreen(onOpenAbout = openAbout) }
+                composable<Route.Settings> { SettingsScreen(onOpenAbout = openAbout, onOpenMenu = openMenu) }
+                composable<Route.Menu> {
+                    MenuManagementScreen(
+                        navigationLimit = navigationLimit,
+                        onBack = { navController.popBackStack() },
+                    )
+                }
                 composable<Route.About> {
                     AboutScreen(onBack = { navController.popBackStack() })
                 }
@@ -798,7 +885,7 @@ internal fun pairingOverlayAfterRunOpenRequest(currentlyVisible: Boolean, openRu
 @Composable
 private fun TopLevelNavIcon(dest: AppDestination) {
     val glyphSize =
-        if (dest == TopLevelDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
+        if (dest == AppDestination.IOS) TopLevelNavIosIconSize else TopLevelNavIconSize
     Box(Modifier.size(TopLevelNavIconSize), contentAlignment = Alignment.Center) {
         Icon(
             imageVector = dest.icon,
@@ -833,7 +920,12 @@ private fun NavDestination?.isOn(dest: AppDestination): Boolean =
 // pairButtonModifier is threaded to the pair button specifically, not applied as the composable's root modifier.
 @Suppress("ModifierParameter")
 @Composable
-private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier = Modifier) {
+private fun DevicesDestination(
+    onPair: () -> Unit,
+    pairButtonModifier: Modifier = Modifier,
+    openDeviceDetails: String? = null,
+    onOpenDeviceDetailsConsumed: () -> Unit = {},
+) {
     val context = LocalContext.current
 
     // Re-check permissions whenever Devices returns to the foreground (e.g. back from system settings).
@@ -850,6 +942,8 @@ private fun DevicesDestination(onPair: () -> Unit, pairButtonModifier: Modifier 
 
     DevicesScreen(
         permissions = permissions,
+        openDeviceDetails = openDeviceDetails,
+        onOpenDeviceDetailsConsumed = onOpenDeviceDetailsConsumed,
         onPair = onPair,
         pairButtonModifier = pairButtonModifier,
         onRequestPostNotifications = {

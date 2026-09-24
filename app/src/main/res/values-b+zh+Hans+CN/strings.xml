@@ -11,7 +11,17 @@
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
     <string name="features_title">工具</string>
-    <string name="open_features">打开功能菜单</string>
+    <string name="menu_title">菜单</string>
+    <string name="menu_manage">管理菜单</string>
+    <string name="menu_description">未显示在导航栏中的页面会显示在菜单中。</string>
+    <string name="menu_navigation">导航</string>
+    <string name="menu_shortcut">快捷方式</string>
+    <string name="menu_reorder">调整%1$s的顺序</string>
+    <string name="menu_move_up">上移</string>
+    <string name="menu_move_down">下移</string>
+    <string name="menu_reset">重置</string>
+    <string name="menu_save_failed">无法保存菜单更改。</string>
+    <string name="open_features">打开菜单</string>
     <string name="tab_activity">动态</string>
     <string name="tab_settings">设置</string>
 
@@ -744,6 +754,11 @@
     <string name="screen_mirror_request_channel">屏幕控制请求</string>
     <string name="screen_mirror_request_title">屏幕控制请求</string>
     <string name="screen_mirror_request_body">点按以开始与 %1$s 共享。</string>
+    <string name="screen_mirror_permission_channel">屏幕控制权限</string>
+    <string name="screen_mirror_permission_title">屏幕共享请求被拒绝</string>
+    <string name="screen_mirror_permission_body">%1$s 请求开始屏幕共享。如果您确认这是预期请求，可以允许此设备。</string>
+    <string name="screen_mirror_permission_public_body">有设备请求开始屏幕共享。</string>
+    <string name="screen_mirror_permission_allow">允许</string>
     <string name="screen_mirror_start">开始</string>
     <string name="screen_mirror_source_connecting_service_channel">正在准备屏幕共享</string>
     <string name="screen_mirror_source_connecting_service_channel_description">在验证已授权请求时保持屏幕共享服务运行。</string>

@@ -35,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -68,6 +69,8 @@ fun DevicesScreen(
     onOpenListenerSettings: () -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
     pairButtonModifier: Modifier = Modifier,
+    openDeviceDetails: String? = null,
+    onOpenDeviceDetailsConsumed: () -> Unit = {},
 ) {
     val graph = rememberGraph()
     val context = LocalContext.current
@@ -82,9 +85,16 @@ fun DevicesScreen(
     // The own device whose received notification-filters sheet is open (null = closed).
     var filterSheetFor by remember { mutableStateOf<RosterDevice?>(null) }
     // Device details are keyed by id so a live profile/key-epoch update refreshes the open sheet.
-    var detailsSheetFor by remember { mutableStateOf<ClientId?>(null) }
+    var detailsSheetFor by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(openDeviceDetails) {
+        if (openDeviceDetails != null) {
+            filterSheetFor = null
+            detailsSheetFor = openDeviceDetails
+            onOpenDeviceDetailsConsumed()
+        }
+    }
     val showingRevokedDetails = detailsSheetFor?.let { selectedId ->
-        roster.any { it.clientId == selectedId && it.status == TrustStatus.REVOKED }
+        roster.any { it.clientId.value == selectedId && it.status == TrustStatus.REVOKED }
     } == true
     // Tick only while a revoked details sheet is visible, so its permanent-delete countdown and button
     // update at the safety-window boundary without recomposing the Devices page indefinitely.
@@ -197,7 +207,7 @@ fun DevicesScreen(
                         },
                         onShowDetails = {
                             filterSheetFor = null
-                            detailsSheetFor = it.clientId
+                            detailsSheetFor = it.clientId.value
                         },
                         onStartScreenMirror = { onStartScreenMirror(it.clientId) },
                     )
@@ -225,7 +235,7 @@ fun DevicesScreen(
                         enabled = !quarantined,
                         onShowDetails = {
                             filterSheetFor = null
-                            detailsSheetFor = it.clientId
+                            detailsSheetFor = it.clientId.value
                         },
                     )
                 }
@@ -243,7 +253,7 @@ fun DevicesScreen(
         }
 
         detailsSheetFor?.let { clientId ->
-            roster.firstOrNull { it.clientId == clientId }?.let { device ->
+            roster.firstOrNull { it.clientId.value == clientId }?.let { device ->
                 DeviceDetailsSheet(
                     device = device,
                     nowMillis = now,

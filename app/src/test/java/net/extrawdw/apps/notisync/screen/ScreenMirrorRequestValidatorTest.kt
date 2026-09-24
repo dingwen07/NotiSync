@@ -8,6 +8,7 @@ import net.extrawdw.notisync.protocol.ScreenMirrorStatus
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenMirrorRequestValidatorTest {
@@ -52,6 +53,44 @@ class ScreenMirrorRequestValidatorTest {
                 request(), requester, source, now, now, authorized = true, codecAvailable = true,
             ),
         )
+    }
+
+    @Test
+    fun validUnauthorizedRequest_requestsPermissionWithoutAdmittingSession() {
+        val failure = ScreenMirrorRequestValidator.validate(
+            request(), requester, source, now, now, authorized = false, codecAvailable = true,
+        )
+        assertEquals(ScreenMirrorStatus.UNAUTHORIZED, failure?.status)
+        assertEquals("peer not authorized", failure?.detail)
+        assertTrue(failure?.needsPeerAuthorization == true)
+    }
+
+    @Test
+    fun invalidUnauthorizedRequests_doNotPromptForPermission() {
+        listOf(
+            request().copy(action = ScreenMirrorAction.STATUS),
+            request().copy(protocolVersion = 2),
+            request().copy(requesterPeerId = ClientId("another-peer")),
+            request().copy(sourcePeerId = ClientId("another-source")),
+            request().copy(sessionId = ""),
+            request().copy(expiresAt = null),
+            request(issuedAt = now - 1_000, expiresAt = now),
+            request(expiresAt = now + 300_001),
+            request(token = ByteArray(15)),
+            request().copy(codec = null),
+            request().copy(maxFps = -1),
+            request().copy(candidates = emptyList()),
+        ).forEach { malformed ->
+            val failure = ScreenMirrorRequestValidator.validate(
+                malformed, requester, source, now, now, authorized = false, codecAvailable = true,
+            )
+            assertEquals(failure.toString(), false, failure?.needsPeerAuthorization)
+        }
+        val staleEnvelope = ScreenMirrorRequestValidator.validate(
+            request(), requester, source, now - 120_001, now,
+            authorized = false, codecAvailable = true,
+        )
+        assertEquals(false, staleEnvelope?.needsPeerAuthorization)
     }
 
     @Test

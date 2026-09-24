@@ -131,6 +131,7 @@ class ScreenMirrorSessionController(
     private val scope: CoroutineScope,
     private val transport: AndroidScreenSessionTransport = UnavailableAndroidScreenSessionTransport,
     private val peerName: (ClientId) -> String? = { null },
+    private val onPeerAuthorizationRequired: (ClientId) -> Unit = {},
     private val now: () -> Long = System::currentTimeMillis,
     private val launchTeardown: ((() -> Unit) -> Unit) = { cleanup ->
         scope.launch(Dispatchers.IO) { cleanup() }
@@ -212,6 +213,12 @@ class ScreenMirrorSessionController(
             codecAvailable = request.codec?.let(capabilities::supports) == true,
         )
         if (failure != null) {
+            if (failure.needsPeerAuthorization && enabled && message.senderOwnDevice &&
+                !authorizations.isAuthorized(message.senderId)
+            ) {
+                // Notification failure must never disrupt rejection or retain rendezvous secrets.
+                runCatching { onPeerAuthorizationRequired(message.senderId) }
+            }
             // Never let a malformed signed body redirect a response to a third peer.
             val responseRequest = if (request.requesterPeerId == message.senderId) {
                 request

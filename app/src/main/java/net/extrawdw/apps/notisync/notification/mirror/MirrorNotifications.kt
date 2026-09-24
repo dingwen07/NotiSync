@@ -1242,6 +1242,8 @@ class RemoteNotificationPoster(
             notif.messages.firstNotNullOfOrNull { m -> m.avatar?.let { avatarIcon(it.assetHash) } }
         val shortcut = ShortcutInfoCompat.Builder(context, shortcutId)
             .setLongLived(true)
+            // Temporary conversation entries must be evicted before user-selected menu shortcuts.
+            .setRank(Int.MAX_VALUE)
             .setShortLabel(label)
             .setPersons(persons.toTypedArray())
             .setLocusId(LocusIdCompat(shortcutId))

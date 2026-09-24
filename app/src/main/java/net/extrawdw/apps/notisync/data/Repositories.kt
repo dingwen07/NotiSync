@@ -22,6 +22,7 @@ import kotlinx.coroutines.flow.first
 import net.extrawdw.apps.notisync.data.storage.operational.OperationalApplicationState
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.apps.notisync.navigation.MenuConfiguration
 import java.net.URI
 
 /** Global app + transport configuration in DataStore, with application runtime state in Operational Room. */
@@ -47,6 +48,7 @@ class SettingsRepository internal constructor(
     private val iosMeshKey = booleanPreferencesKey("ancs_mesh_mirror")
     private val iosMediaKey = booleanPreferencesKey("ancs_media_mirror")
     private val onboardingDoneKey = booleanPreferencesKey("onboarding_completed")
+    private val menuConfigurationKey = stringPreferencesKey("menu_configuration")
     private val callRingerKey = booleanPreferencesKey("call_ringer_enabled")
     private val autoOpenOpenPgpRequestKey = booleanPreferencesKey("auto_open_openpgp_request")
     private val autoOpenSshRequestKey = booleanPreferencesKey("auto_open_ssh_request")
@@ -63,6 +65,18 @@ class SettingsRepository internal constructor(
         upgraded
     }
     private val initialPreferences: Preferences = runBlocking { store.data.first() }
+
+    private fun readMenuConfiguration(preferences: Preferences): MenuConfiguration =
+        preferences[menuConfigurationKey]?.let { value ->
+            runCatching { ProtocolCodec.decodeFromJson<MenuConfiguration>(value) }.getOrNull()
+        }?.normalized() ?: MenuConfiguration()
+
+    val menuConfiguration: StateFlow<MenuConfiguration> = store.data.map(::readMenuConfiguration)
+        .stateInEager(scope, readMenuConfiguration(initialPreferences))
+
+    suspend fun setMenuConfiguration(configuration: MenuConfiguration) = store.edit {
+        it[menuConfigurationKey] = ProtocolCodec.encodeToJson(configuration.normalized())
+    }
 
     val brokerUrl: StateFlow<String> =
         store.data.map { upgradeLegacyDefaultBrokerUrl(it[brokerUrlKey] ?: DEFAULT_BROKER) }

@@ -30,7 +30,7 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 74
+        versionCode = 75
         versionName = "2.6.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
@@ -101,6 +101,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     implementation(libs.androidx.compose.material3.adaptive)
+    implementation(libs.reorderable)
     implementation(libs.androidx.navigation.compose)
 
     // Core / lifecycle

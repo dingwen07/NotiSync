@@ -14,7 +14,17 @@
     <string name="tab_run" translatable="false">Run</string>
     <string name="tab_seal" translatable="false">Seal</string>
     <string name="features_title">Tools</string>
-    <string name="open_features">Open features</string>
+    <string name="menu_title">Menu</string>
+    <string name="menu_manage">Manage menu</string>
+    <string name="menu_description">Pages not included in the navigation bar will appear in Menu.</string>
+    <string name="menu_navigation">Navigation</string>
+    <string name="menu_shortcut">Shortcut</string>
+    <string name="menu_reorder">Reorder %1$s</string>
+    <string name="menu_move_up">Move up</string>
+    <string name="menu_move_down">Move down</string>
+    <string name="menu_reset">Reset</string>
+    <string name="menu_save_failed">Could not save menu changes.</string>
+    <string name="open_features">Open menu</string>
     <string name="tab_activity">Activity</string>
     <string name="tab_settings">Settings</string>
 
@@ -793,6 +803,11 @@
     <string name="screen_mirror_request_channel">Screen control requests</string>
     <string name="screen_mirror_request_title">Screen control request</string>
     <string name="screen_mirror_request_body">Tap to start sharing with %1$s.</string>
+    <string name="screen_mirror_permission_channel">Screen control permissions</string>
+    <string name="screen_mirror_permission_title">Screen sharing request was rejected</string>
+    <string name="screen_mirror_permission_body">%1$s requested to start screen sharing. Allow this device if you recognize the request.</string>
+    <string name="screen_mirror_permission_public_body">A device requested to start screen sharing.</string>
+    <string name="screen_mirror_permission_allow">Allow</string>
     <string name="screen_mirror_start">Start</string>
     <string name="screen_mirror_source_connecting_service_channel">Preparing screen sharing</string>
     <string name="screen_mirror_source_connecting_service_channel_description">Keeps screen sharing available while an authorized request is authenticated.</string>
