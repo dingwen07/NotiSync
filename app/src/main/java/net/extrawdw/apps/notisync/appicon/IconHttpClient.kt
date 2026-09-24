@@ -6,7 +6,7 @@ import io.ktor.client.statement.bodyAsChannel
 import io.ktor.http.HttpHeaders
 import io.ktor.http.isSuccess
 import io.ktor.utils.io.ByteReadChannel
-import io.ktor.utils.io.readRemaining
+import io.ktor.utils.io.readBuffer
 import java.io.IOException
 import java.net.URI
 import kotlinx.io.readByteArray
@@ -28,7 +28,7 @@ internal suspend fun HttpClient.downloadIconBytes(url: String, maxBytes: Int = M
 }
 
 internal suspend fun ByteReadChannel.readBoundedIconBytes(maxBytes: Int): ByteArray {
-    val bytes = readRemaining(maxBytes.toLong() + 1).use { it.readByteArray() }
+    val bytes = readBuffer(maxBytes.toLong() + 1).use { it.readByteArray() }
     if (bytes.size > maxBytes) throw IconSourceTooLargeException()
     return bytes
 }
