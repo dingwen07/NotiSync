@@ -64,6 +64,11 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- Resolve the selected Home app for launcher-specific shortcut icon handling. -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
 
         <!-- Common notification sources with no launcher entry.
         Queries explicitly so the receiver can still resolve their label/icon. -->
