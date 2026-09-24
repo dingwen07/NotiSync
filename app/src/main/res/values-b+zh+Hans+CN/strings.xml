@@ -10,7 +10,6 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">设备</string>
     <string name="tab_apps">应用</string>
-    <string name="features_title">工具</string>
     <string name="menu_title">菜单</string>
     <string name="menu_manage">管理菜单</string>
     <string name="menu_description">未显示在导航栏中的页面会显示在菜单中。</string>
@@ -56,7 +55,6 @@
     <string name="ssh_key_provider_generate">生成</string>
     <string name="ssh_key_provider_generate_title">生成 SSH 密钥</string>
     <string name="ssh_key_provider_generate_default_name">NotiSync SSH 密钥</string>
-    <string name="ssh_key_provider_import_file">导入文件</string>
     <string name="ssh_key_provider_import_title">导入 SSH 私钥</string>
     <string name="ssh_key_provider_review_key">检查密钥</string>
     <string name="ssh_key_provider_ssh_key">SSH 密钥</string>
@@ -66,7 +64,6 @@
     <string name="ssh_key_provider_passphrase">密码</string>
     <string name="ssh_key_provider_import_passphrase_prompt">此私钥受密码保护。请输入密码以检查密钥。</string>
     <string name="ssh_key_provider_import_storage_help">支持 OpenSSH 和 PuTTY PPK v2/v3 私钥。</string>
-    <string name="ssh_key_provider_import_text">粘贴密钥</string>
     <string name="ssh_key_provider_export">导出私钥</string>
     <string name="ssh_key_provider_export_title">导出 SSH 私钥</string>
     <string name="ssh_key_provider_export_password">导出密语（可选）</string>
@@ -86,7 +83,6 @@
     <string name="ssh_key_provider_export_complete">SSH 私钥已导出</string>
     <string name="ssh_key_provider_export_failed">SSH 私钥导出失败</string>
     <string name="ssh_key_provider_export_open_failed">无法打开所选导出文件</string>
-    <string name="ssh_key_provider_import_text_title">粘贴 SSH 私钥</string>
     <string name="ssh_key_provider_private_key_text">私钥文本</string>
     <string name="ssh_key_provider_clipboard_key_too_large">剪贴板内容过大，无法作为 SSH 私钥导入。</string>
     <string name="ssh_key_provider_key_name">密钥名称</string>
@@ -630,7 +626,9 @@
     <string name="diagnostics_ssh_key_storage_reset_title">重置 SSH 密钥存储？</string>
     <string name="diagnostics_ssh_key_storage_reset_body">NotiSync 管理的所有 SSH 密钥、待处理请求、请求历史记录、已记住的授权以及已保存的主机指纹和主机名都将被永久删除。此操作无法撤销。</string>
     <string name="diagnostics_ssh_key_storage_reset_confirm">重置 SSH 密钥存储</string>
-    <string name="diagnostics_ssh_key_storage_reset_done">SSH 密钥存储已重置，已移除 %1$d 个密钥。</string>
+    <plurals name="diagnostics_ssh_key_storage_reset_done">
+        <item quantity="other">SSH 密钥存储已重置，已移除 %1$d 个密钥。</item>
+    </plurals>
     <string name="diagnostics_ssh_key_storage_reset_failed">SSH 密钥存储重置失败：%1$s</string>
     <plurals name="diagnostics_channels_reset_done">
         <item quantity="other">已删除 %1$d 个渠道。</item>
@@ -833,7 +831,6 @@
     <string name="pair_broker_trust_body">已通过 Secure Exchange 验证此设备的身份。</string>
     <string name="pair_broker_address">中继服务器：%1$s</string>
     <string name="pair_broker_failed">无法验证配对、会话已过期，或中继服务器不可用。请重新开始配对并扫描新的二维码。</string>
-    <string name="pair_intro">在另一台设备上，使用 NotiSync 或相机应用扫描下面的二维码。</string>
     <string name="pair_intro_nfc">您也可以通过将两台设备的背面贴在一起来配对。请确保另一台设备已解锁，且未打开 NotiSync 设备配对界面。</string>
     <string name="pair_qr_code_desc">配对二维码</string>
     <string name="pair_signed_card_time">创建时间：%1$s</string>

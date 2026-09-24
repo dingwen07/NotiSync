@@ -52,6 +52,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -120,7 +121,7 @@ fun RunScreen(
     val selectedKey = selectedEncoded?.let(RunKey::decode)
     var selected by remember(selectedKey) { mutableStateOf<StoredRun?>(null) }
     var selectedLoadError by remember(selectedKey) { mutableStateOf(false) }
-    var detailRetry by remember { mutableStateOf(0) }
+    var detailRetry by remember { mutableIntStateOf(0) }
 
     RefreshRunHistoryOnResume(store, history)
 
@@ -478,9 +479,9 @@ private fun RunDetail(
     deviceName: String?,
     refreshing: Boolean,
     onBack: () -> Unit,
+    modifier: Modifier = Modifier,
     readOnly: Boolean = false,
     onShowRevisions: (() -> Unit)? = null,
-    modifier: Modifier = Modifier,
 ) {
     val state = run.state
     val scope = rememberCoroutineScope()

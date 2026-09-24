@@ -179,6 +179,7 @@ class MirrorMediaSessions(
         val step = direction.coerceIn(-1, 1)
         if (step == 0) return
         when (provider.volumeControl) {
+            VolumeProvider.VOLUME_CONTROL_FIXED -> Unit
             VolumeProvider.VOLUME_CONTROL_ABSOLUTE -> userSetVolume(entry, provider.currentVolume + step)
             VolumeProvider.VOLUME_CONTROL_RELATIVE -> {
                 entry.lastUserVolumeAt = SystemClock.elapsedRealtime()

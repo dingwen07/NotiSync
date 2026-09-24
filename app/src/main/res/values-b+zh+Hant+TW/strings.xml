@@ -10,7 +10,6 @@
     <!-- Navigation tabs / screen titles -->
     <string name="tab_devices">裝置</string>
     <string name="tab_apps">應用程式</string>
-    <string name="features_title">工具</string>
     <string name="menu_title">選單</string>
     <string name="menu_manage">管理選單</string>
     <string name="menu_description">未顯示在導覽列中的頁面會顯示在選單中。</string>
@@ -56,7 +55,6 @@
     <string name="ssh_key_provider_generate">產生</string>
     <string name="ssh_key_provider_generate_title">產生 SSH 金鑰</string>
     <string name="ssh_key_provider_generate_default_name">NotiSync SSH 金鑰</string>
-    <string name="ssh_key_provider_import_file">匯入檔案</string>
     <string name="ssh_key_provider_import_title">匯入 SSH 私密金鑰</string>
     <string name="ssh_key_provider_review_key">檢查金鑰</string>
     <string name="ssh_key_provider_ssh_key">SSH 金鑰</string>
@@ -66,7 +64,6 @@
     <string name="ssh_key_provider_passphrase">通關密語</string>
     <string name="ssh_key_provider_import_passphrase_prompt">此私密金鑰受到保護。請輸入通關密語以檢視金鑰。</string>
     <string name="ssh_key_provider_import_storage_help">支援 OpenSSH 和 PuTTY PPK v2/v3 私密金鑰。</string>
-    <string name="ssh_key_provider_import_text">貼上金鑰</string>
     <string name="ssh_key_provider_export">匯出私密金鑰</string>
     <string name="ssh_key_provider_export_title">匯出 SSH 私密金鑰</string>
     <string name="ssh_key_provider_export_password">匯出通關密語（選填）</string>
@@ -86,7 +83,6 @@
     <string name="ssh_key_provider_export_complete">SSH 私密金鑰已匯出</string>
     <string name="ssh_key_provider_export_failed">SSH 私密金鑰匯出失敗</string>
     <string name="ssh_key_provider_export_open_failed">無法開啟所選匯出檔案</string>
-    <string name="ssh_key_provider_import_text_title">貼上 SSH 私密金鑰</string>
     <string name="ssh_key_provider_private_key_text">私密金鑰文字</string>
     <string name="ssh_key_provider_clipboard_key_too_large">剪貼簿內容過大，無法作為 SSH 私密金鑰匯入。</string>
     <string name="ssh_key_provider_key_name">金鑰名稱</string>
@@ -630,7 +626,9 @@
     <string name="diagnostics_ssh_key_storage_reset_title">重設 SSH 金鑰儲存？</string>
     <string name="diagnostics_ssh_key_storage_reset_body">NotiSync 管理的所有 SSH 金鑰、待處理要求、要求歷史記錄、已記住的授權以及已儲存的主機指紋和主機名稱都將被永久刪除。此操作無法復原。</string>
     <string name="diagnostics_ssh_key_storage_reset_confirm">重設 SSH 金鑰儲存</string>
-    <string name="diagnostics_ssh_key_storage_reset_done">SSH 金鑰儲存已重設，已移除 %1$d 個金鑰。</string>
+    <plurals name="diagnostics_ssh_key_storage_reset_done">
+        <item quantity="other">SSH 金鑰儲存已重設，已移除 %1$d 個金鑰。</item>
+    </plurals>
     <string name="diagnostics_ssh_key_storage_reset_failed">SSH 金鑰儲存重設失敗：%1$s</string>
     <plurals name="diagnostics_channels_reset_done">
         <item quantity="other">已刪除 %1$d 個管道。</item>
@@ -833,7 +831,6 @@
     <string name="pair_broker_trust_body">已透過 Secure Exchange 驗證此裝置的身分。</string>
     <string name="pair_broker_address">中繼伺服器：%1$s</string>
     <string name="pair_broker_failed">無法驗證配對、工作階段已過期，或中繼伺服器無法使用。請重新開始配對並掃描新的 QR code。</string>
-    <string name="pair_intro">在另一部裝置上，使用 NotiSync 或相機應用程式掃描此 QR code。</string>
     <string name="pair_intro_nfc">將兩部裝置的背面相互輕觸即可配對。請確認另一部裝置已解鎖，且未開啟此配對畫面。</string>
     <string name="pair_qr_code_desc">配對 QR code</string>
     <string name="pair_signed_card_time">建立時間：%1$s</string>

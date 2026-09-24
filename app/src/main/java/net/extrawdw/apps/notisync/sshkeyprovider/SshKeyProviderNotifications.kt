@@ -8,10 +8,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
-import android.net.Uri
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.net.toUri
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.NotiSyncApp
@@ -196,7 +196,7 @@ class SshKeyProviderNotificationPresenter(
         }.joinToString("\n")
         val reviewIntent = Intent(context, MainActivity::class.java).apply {
             action = MainActivity.ACTION_OPEN_SSH_HISTORY
-            data = Uri.parse("notisync://ssh-history/${stored.requestId}")
+            data = "notisync://ssh-history/${stored.requestId}".toUri()
             putExtra(MainActivity.EXTRA_SSH_REQUEST_ID, stored.requestId)
         }
         val review = PendingIntent.getActivity(
@@ -322,7 +322,7 @@ class SshKeyProviderActionReceiver : BroadcastReceiver() {
             processMemoryOnly: Boolean,
         ) = Intent(context, SshKeyProviderActionReceiver::class.java)
             .setAction(ACTION_FORGET_AUTHORIZATION)
-            .setData(Uri.parse("notisync://ssh-authorization/$authorizationId"))
+            .setData("notisync://ssh-authorization/$authorizationId".toUri())
             .putExtra(EXTRA_REQUEST_ID, requestId)
             .putExtra(EXTRA_AUTHORIZATION_ID, authorizationId)
             .putExtra(EXTRA_PROCESS_MEMORY_ONLY, processMemoryOnly)

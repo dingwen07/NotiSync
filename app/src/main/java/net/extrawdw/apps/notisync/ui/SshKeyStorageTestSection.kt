@@ -44,6 +44,7 @@ import net.extrawdw.apps.notisync.ui.theme.SecurityRedLight
 fun ColumnScope.SshKeyStorageTestSection() {
     val graph = rememberGraph()
     val context = LocalContext.current
+    val authUnavailableMessage = stringResource(R.string.ssh_key_provider_storage_auth_unavailable)
     val scope = rememberCoroutineScope()
     var state by remember { mutableStateOf<SshKeyStorageTestState>(SshKeyStorageTestState.Idle) }
 
@@ -52,7 +53,7 @@ fun ColumnScope.SshKeyStorageTestSection() {
         val activity = context as? Activity
         if (activity == null) {
             state = SshKeyStorageTestState.Failed(
-                context.getString(R.string.ssh_key_provider_storage_auth_unavailable),
+                authUnavailableMessage,
             )
             return
         }

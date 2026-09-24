@@ -67,6 +67,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.boundsInRoot
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
@@ -369,6 +370,8 @@ fun NotiSyncRoot(
     onOpenSshHistoryConsumed: () -> Unit = {},
 ) {
     val context = LocalContext.current
+    // Pairing callbacks can finish after the configuration changes without restarting the operation.
+    val resources by rememberUpdatedState(LocalResources.current)
     val graph = rememberGraph()
     val menuConfiguration by graph.settings.menuConfiguration.collectAsStateWithLifecycle()
     val orderedDestinations = menuConfiguration.destinations().map(AppDestination::fromMenu)
@@ -471,13 +474,13 @@ fun NotiSyncRoot(
                     pairingReview = null
                     Toast.makeText(
                         context,
-                        context.getString(R.string.pair_paired_with, card.displayName),
+                        resources.getString(R.string.pair_paired_with, card.displayName),
                         Toast.LENGTH_LONG,
                     ).show()
                 },
                 onFailure = {
                     pairingApprovalError =
-                        context.getString(R.string.pair_could_not_pair, it.message)
+                        resources.getString(R.string.pair_could_not_pair, it.message)
                 },
             )
             pairingApprovalOwnDevice = null
@@ -518,9 +521,9 @@ fun NotiSyncRoot(
             },
             onFailure = {
                 val message = if (fromDeepLink) {
-                    context.getString(R.string.pair_could_not_open_link, it.message)
+                    resources.getString(R.string.pair_could_not_open_link, it.message)
                 } else {
-                    context.getString(R.string.pair_could_not_pair, it.message)
+                    resources.getString(R.string.pair_could_not_pair, it.message)
                 }
                 Toast.makeText(context, message, Toast.LENGTH_LONG).show()
             },

@@ -208,6 +208,9 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         if (hasFocus) applySystemChrome()
     }
 
+    // This is the public Activity callback; lint inherits the restriction on AndroidX's internal
+    // core ComponentActivity base class. Intercept before window dispatch consumes volume keys.
+    @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
             event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN

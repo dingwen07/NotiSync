@@ -13,7 +13,6 @@
     <string name="tab_ios" translatable="false">iPhone</string>
     <string name="tab_run" translatable="false">Run</string>
     <string name="tab_seal" translatable="false">Seal</string>
-    <string name="features_title">Tools</string>
     <string name="menu_title">Menu</string>
     <string name="menu_manage">Manage menu</string>
     <string name="menu_description">Pages not included in the navigation bar will appear in Menu.</string>
@@ -62,7 +61,6 @@
     <string name="ssh_key_provider_generate">Generate</string>
     <string name="ssh_key_provider_generate_title">Generate SSH Key</string>
     <string name="ssh_key_provider_generate_default_name">NotiSync SSH Key</string>
-    <string name="ssh_key_provider_import_file">Import file</string>
     <string name="ssh_key_provider_import_title">Import SSH private key</string>
     <string name="ssh_key_provider_review_key">Review key</string>
     <string name="ssh_key_provider_ssh_key">SSH Key</string>
@@ -72,7 +70,6 @@
     <string name="ssh_key_provider_passphrase">Passphrase</string>
     <string name="ssh_key_provider_import_passphrase_prompt">This private key is protected. Enter its passphrase to review it.</string>
     <string name="ssh_key_provider_import_storage_help">Supports OpenSSH and PuTTY PPK v2/v3 private keys.</string>
-    <string name="ssh_key_provider_import_text">Paste key</string>
     <string name="ssh_key_provider_export">Export private key</string>
     <string name="ssh_key_provider_export_title">Export SSH private key</string>
     <string name="ssh_key_provider_export_password">Export passphrase (optional)</string>
@@ -92,7 +89,6 @@
     <string name="ssh_key_provider_export_complete">SSH private key exported</string>
     <string name="ssh_key_provider_export_failed">SSH private-key export failed</string>
     <string name="ssh_key_provider_export_open_failed">The selected export file could not be opened</string>
-    <string name="ssh_key_provider_import_text_title">Paste SSH private key</string>
     <string name="ssh_key_provider_private_key_text">Private-key text</string>
     <string name="ssh_key_provider_clipboard_key_too_large">The clipboard is too large to import as an SSH private key.</string>
     <string name="ssh_key_provider_key_name">Key Name</string>
@@ -671,7 +667,10 @@
     <string name="diagnostics_ssh_key_storage_reset_title">Reset SSH key storage?</string>
     <string name="diagnostics_ssh_key_storage_reset_body">All SSH keys managed by NotiSync, pending requests, request history, remembered approvals, and saved host fingerprints and hostnames on this device will be permanently deleted. This cannot be undone.</string>
     <string name="diagnostics_ssh_key_storage_reset_confirm">Reset SSH key storage</string>
-    <string name="diagnostics_ssh_key_storage_reset_done">SSH key storage reset. Removed %1$d keys.</string>
+    <plurals name="diagnostics_ssh_key_storage_reset_done">
+        <item quantity="one">SSH key storage reset. Removed %1$d key.</item>
+        <item quantity="other">SSH key storage reset. Removed %1$d keys.</item>
+    </plurals>
     <string name="diagnostics_ssh_key_storage_reset_failed">SSH key storage reset failed: %1$s</string>
     <plurals name="diagnostics_channels_reset_done">
         <item quantity="one">Deleted %1$d channel.</item>
@@ -886,7 +885,6 @@
     <string name="pair_broker_trust_body">This device’s identity was verified via Secure Exchange.</string>
     <string name="pair_broker_address">Broker: %1$s</string>
     <string name="pair_broker_failed">Pairing could not be authenticated, the session expired, or the broker is unavailable. Start pairing again and scan the new QR code.</string>
-    <string name="pair_intro">On the other device, scan this code using NotiSync or the Camera app.</string>
     <string name="pair_intro_nfc">Tap the backs of the two devices together to pair. Make sure the other device is unlocked and this pairing screen is not open.</string>
     <string name="pair_qr_code_desc">Pairing QR code</string>
     <string name="pair_signed_card_time">Created: %1$s</string>

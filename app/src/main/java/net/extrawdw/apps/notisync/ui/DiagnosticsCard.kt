@@ -308,7 +308,11 @@ fun DiagnosticsCard(
             }
             when (sshKeyStoreReset) {
                 is SshKeyStoreResetState.Done -> Text(
-                    stringResource(R.string.diagnostics_ssh_key_storage_reset_done, sshKeyStoreReset.removedKeyCount),
+                    pluralStringResource(
+                        R.plurals.diagnostics_ssh_key_storage_reset_done,
+                        sshKeyStoreReset.removedKeyCount,
+                        sshKeyStoreReset.removedKeyCount,
+                    ),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )

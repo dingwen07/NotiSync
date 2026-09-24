@@ -34,6 +34,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -100,7 +101,7 @@ fun SealScreen() {
     var selectedRecord by remember(selectedRequestId) { mutableStateOf<StoredOpenPgpRequest?>(null) }
     var selectedLoadError by remember(selectedRequestId) { mutableStateOf(false) }
     var selectedLoading by remember(selectedRequestId) { mutableStateOf(selectedRequestId != null) }
-    var detailRetry by remember { mutableStateOf(0) }
+    var detailRetry by remember { mutableIntStateOf(0) }
     val selected = selectedRecord?.takeIf { it.request.requestId == selectedRequestId }
     val enroll = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         providerAvailable = graph.openPgpProvider.isAvailable()

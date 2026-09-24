@@ -1,6 +1,5 @@
 package net.extrawdw.apps.notisync.ui
 
-import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.expandVertically
@@ -98,7 +97,6 @@ internal fun historySheetContentPadding(): PaddingValues {
 /** Keeps a Material modal sheet's own dialog window transparent behind three-button navigation. */
 @Composable
 internal fun DisableModalBottomSheetNavigationBarContrast() {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return
     val view = LocalView.current
     SideEffect {
         val dialogWindow = (view as? DialogWindowProvider)?.window

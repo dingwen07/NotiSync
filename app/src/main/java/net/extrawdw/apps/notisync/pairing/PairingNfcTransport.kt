@@ -21,6 +21,7 @@ import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
+import androidx.core.content.edit
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import java.io.Closeable
@@ -51,7 +52,7 @@ internal object PairingNfcInbox {
     /** Non-blocking commit path used by HostApduService.processCommandApdu on the main thread. */
     fun offer(context: Context, wirePayload: ByteArray) {
         val payload = PairingNfcPayloadCodec.encode(wirePayload)
-        pairingPreferences(context).edit().putString(KEY_INCOMING_PAYLOAD, payload).apply()
+        pairingPreferences(context).edit { putString(KEY_INCOMING_PAYLOAD, payload) }
         _pendingPayload.value = payload
         // Android's NFC service binds HostApduService with BIND_ALLOW_BACKGROUND_ACTIVITY_STARTS. Queue the
         // launch behind processCommandApdu's response, then fall back to a heads-up notification if the
@@ -63,7 +64,7 @@ internal object PairingNfcInbox {
 
     fun consume(context: Context, payload: String) {
         if (_pendingPayload.value != payload) return
-        pairingPreferences(context).edit().remove(KEY_INCOMING_PAYLOAD).apply()
+        pairingPreferences(context).edit { remove(KEY_INCOMING_PAYLOAD) }
         _pendingPayload.value = null
         dismissNotification(context)
     }
