@@ -1026,9 +1026,8 @@
     <string name="history_load_failed">無法載入歷史記錄。</string>
     <string name="history_retry">重試</string>
     <string name="run_revision_history_action">已儲存的修訂版本</string>
-    <string name="run_revision_history_title">已儲存的修訂版本</string>
     <string name="run_revision_history_empty">沒有已儲存的修訂版本</string>
     <string name="run_revision_item">修訂版本 %1$d</string>
     <string name="run_revision_received">接收時間：%1$s</string>
-    <string name="run_revision_back_to_current">返回目前執行</string>
+    <string name="run_revision_current">最新</string>
 </resources>

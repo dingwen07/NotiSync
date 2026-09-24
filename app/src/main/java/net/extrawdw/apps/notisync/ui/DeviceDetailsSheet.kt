@@ -3,11 +3,18 @@ package net.extrawdw.apps.notisync.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
@@ -78,16 +85,24 @@ internal fun DeviceDetailsSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val name = device.displayName ?: stringResource(R.string.device_unknown)
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.statusBarsPadding(),
+        sheetState = sheetState,
+        contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
+    ) {
+        DisableModalBottomSheetNavigationBarContrast()
+        val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
         LazyColumn(
             modifier = Modifier
                 .fillMaxWidth()
-                .fillMaxHeight(0.9f),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(
+                .fillMaxHeight(),
+            // Keep the viewport behind system navigation; inset only the scrollable content.
+            contentPadding = PaddingValues(
                 start = 20.dp,
                 top = 4.dp,
                 end = 20.dp,
-                bottom = 40.dp,
+                bottom = 40.dp + bottomInset,
             ),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {

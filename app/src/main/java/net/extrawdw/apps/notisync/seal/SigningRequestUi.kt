@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
-import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -58,6 +57,7 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 
@@ -200,33 +200,30 @@ internal fun SigningRequestDetail(
     val tag = stored.tag
     val formatter = rememberDateTimeFormatter()
 
-    LazyColumn(
+    HistorySheetLazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        if (showSheetHeader) {
-            stickyHeader(key = "history-header") {
-                CenteredDetailItem {
-                    Row(
-                        Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        IconButton(onClick = onBack) {
-                            Icon(
-                                ArrowBackIcon,
-                                contentDescription = stringResource(R.string.seal_back_to_history),
-                            )
-                        }
-                        Text(
-                            stringResource(R.string.seal_name),
-                            style = MaterialTheme.typography.headlineSmall,
+        header = if (showSheetHeader) ({
+            CenteredDetailItem {
+                Row(
+                    Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onBack) {
+                        Icon(
+                            ArrowBackIcon,
+                            contentDescription = stringResource(R.string.seal_back_to_history),
                         )
                     }
+                    Text(
+                        stringResource(R.string.seal_name),
+                        style = MaterialTheme.typography.headlineSmall,
+                    )
                 }
             }
-        }
-
+        }) else null,
+    ) {
         item {
             CenteredDetailItem {
                 SealHero(

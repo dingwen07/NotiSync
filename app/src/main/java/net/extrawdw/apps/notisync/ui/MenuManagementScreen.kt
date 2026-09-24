@@ -17,14 +17,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ToggleButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -55,7 +54,6 @@ import net.extrawdw.apps.notisync.navigation.label
 import sh.calvin.reorderable.ReorderableItem
 import sh.calvin.reorderable.rememberReorderableLazyListState
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.check as CheckIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.drag_handle as DragHandleIcon
 
 @Composable
@@ -176,42 +174,32 @@ internal fun MenuManagementScreen(navigationLimit: Int, onBack: () -> Unit) {
                                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                                     verticalArrangement = Arrangement.spacedBy(8.dp),
                                 ) {
-                                    FilterChip(
-                                        selected = selectedNavigation,
-                                        label = { Text(stringResource(R.string.menu_navigation)) },
+                                    ToggleButton(
+                                        checked = selectedNavigation,
                                         modifier = Modifier.semantics { contentDescription = navigationLabel },
                                         enabled = !reorderState.isAnyItemDragging &&
                                             (selectedNavigation || configuration.navigation.size < navigationLimit) &&
                                             (!selectedNavigation || (destination != MenuDestination.DEVICES &&
                                                 configuration.navigation.size > 1)),
-                                        onClick = {
-                                            save(configuration.copy(navigation = if (selectedNavigation)
-                                                configuration.navigation - destination.id else configuration.navigation + destination.id))
+                                        onCheckedChange = { checked ->
+                                            save(configuration.copy(navigation = if (checked)
+                                                configuration.navigation + destination.id else configuration.navigation - destination.id))
                                         },
-                                        leadingIcon = if (selectedNavigation) {
-                                            {
-                                                Icon(CheckIcon, contentDescription = null,
-                                                    modifier = Modifier.size(FilterChipDefaults.IconSize))
-                                            }
-                                        } else null,
-                                    )
-                                    FilterChip(
-                                        selected = selectedShortcut,
-                                        label = { Text(stringResource(R.string.menu_shortcut)) },
+                                    ) {
+                                        Text(stringResource(R.string.menu_navigation))
+                                    }
+                                    ToggleButton(
+                                        checked = selectedShortcut,
                                         modifier = Modifier.semantics { contentDescription = shortcutLabel },
                                         enabled = !reorderState.isAnyItemDragging &&
                                             (selectedShortcut || configuration.shortcuts.size < shortcutLimit),
-                                        onClick = {
-                                            save(configuration.copy(shortcuts = if (selectedShortcut)
-                                                configuration.shortcuts - destination.id else configuration.shortcuts + destination.id))
+                                        onCheckedChange = { checked ->
+                                            save(configuration.copy(shortcuts = if (checked)
+                                                configuration.shortcuts + destination.id else configuration.shortcuts - destination.id))
                                         },
-                                        leadingIcon = if (selectedShortcut) {
-                                            {
-                                                Icon(CheckIcon, contentDescription = null,
-                                                    modifier = Modifier.size(FilterChipDefaults.IconSize))
-                                            }
-                                        } else null,
-                                    )
+                                    ) {
+                                        Text(stringResource(R.string.menu_shortcut))
+                                    }
                                 }
                             }
                         }

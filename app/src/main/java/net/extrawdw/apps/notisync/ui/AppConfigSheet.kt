@@ -3,8 +3,14 @@ package net.extrawdw.apps.notisync.ui
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.HorizontalDivider
@@ -62,12 +68,20 @@ internal fun AppConfigSheet(
     val cfg = configs[app.packageName] ?: PerAppConfig()
     val channels = seen[app.packageName].orEmpty()
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        modifier = Modifier.statusBarsPadding(),
+        sheetState = sheetState,
+        contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
+    ) {
+        DisableModalBottomSheetNavigationBarContrast()
+        val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
         Column(
             Modifier
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
+                // Padding belongs inside the scroll viewport so rows can draw behind navigation.
+                .padding(start = 20.dp, end = 20.dp, bottom = 32.dp + bottomInset),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(app.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)

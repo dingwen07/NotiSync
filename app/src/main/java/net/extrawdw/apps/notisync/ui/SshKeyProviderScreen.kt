@@ -24,11 +24,16 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -862,7 +867,12 @@ fun SshKeyProviderScreen(
     }
 
     selectedKey?.let { key ->
-        ModalBottomSheet(onDismissRequest = { selectedKeyId = null }) {
+        ModalBottomSheet(
+            onDismissRequest = { selectedKeyId = null },
+            modifier = Modifier.statusBarsPadding(),
+            contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
+        ) {
+            DisableModalBottomSheetNavigationBarContrast()
             SshKeyDetailSheet(
                 key = key,
                 rememberedAuthorizations = rememberedAuthorizations.filter {
@@ -1619,9 +1629,11 @@ private fun SshKeyDetailSheet(
     onDelete: () -> Unit,
 ) {
     val isWebAuthn = key.webAuthn != null
+    val bottomInset = WindowInsets.safeDrawing.asPaddingValues().calculateBottomPadding()
     LazyColumn(
-        modifier = Modifier.fillMaxWidth().heightIn(max = 640.dp),
-        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp),
+        modifier = Modifier.fillMaxWidth(),
+        // Keep the viewport behind system navigation; inset only the scrollable content.
+        contentPadding = PaddingValues(start = 24.dp, end = 24.dp, bottom = 32.dp + bottomInset),
         verticalArrangement = Arrangement.spacedBy(16.dp),
     ) {
         item {

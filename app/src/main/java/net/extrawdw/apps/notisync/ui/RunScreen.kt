@@ -1,9 +1,11 @@
 package net.extrawdw.apps.notisync.ui
 
 import android.widget.Toast
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
@@ -16,12 +18,15 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.cancel as CancelIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.check as CheckIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.delete_sweep as DeleteSweepIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
@@ -29,19 +34,24 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.refresh as RefreshI
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.warning_amber as WarningAmberIcon
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.FilledTonalButton
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
@@ -52,6 +62,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -62,8 +73,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -176,7 +192,7 @@ fun RunScreen(
     }
 
     if (selectedKey != null && selected == null) {
-        ModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
+        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
             Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
                 if (selectedLoadError) {
                     Text(stringResource(R.string.history_load_failed))
@@ -340,7 +356,7 @@ private fun RunListItem(
     Surface(color = background) {
         ListItem(
             modifier = Modifier.fillMaxWidth().clickable { onSelect(run) },
-            leadingContent = { RunPhaseIcon(state.phase) },
+            leadingContent = { RunPhaseIcon(state) },
             supportingContent = {
                 Column {
                     Text(
@@ -374,33 +390,28 @@ private fun RunDetailSheet(
     refreshing: Boolean,
     onDismiss: () -> Unit,
 ) {
-    var browsingRevisions by remember(run.key) { mutableStateOf(false) }
     var selectedRevision by remember(run.key) { mutableStateOf<StoredRunRevision?>(null) }
-    ModalBottomSheet(
+    EdgeToEdgeHistoryModalBottomSheet(
         onDismissRequest = onDismiss,
     ) {
         val revision = selectedRevision
-        when {
-            revision != null -> RunDetail(
-                run = StoredRun(revision.state, revision.receivedAt, revision.state.revision),
+        // Switching snapshots resets scroll/input/dialog state without adding a navigation layer.
+        key(run.key, revision?.state?.revision) {
+            RunDetail(
+                run = revision?.let { StoredRun(it.state, it.receivedAt, it.state.revision) } ?: run,
                 engine = engine,
                 deviceName = deviceName,
-                refreshing = false,
-                onBack = { selectedRevision = null },
-                readOnly = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            browsingRevisions -> RunRevisionList(
-                key = run.key, store = store,
-                onSelect = { selectedRevision = it }, onBack = { browsingRevisions = false },
-            )
-            else -> RunDetail(
-                run = run,
-                engine = engine,
-                deviceName = deviceName,
-                refreshing = refreshing,
+                refreshing = revision == null && refreshing,
                 onBack = onDismiss,
-                onShowRevisions = { browsingRevisions = true },
+                readOnly = revision != null,
+                revisionMenu = {
+                    RunRevisionMenu(
+                        runKey = run.key,
+                        store = store,
+                        selectedRevision = revision?.state?.revision,
+                        onSelect = { selectedRevision = it },
+                    )
+                },
                 modifier = Modifier.fillMaxWidth(),
             )
         }
@@ -408,52 +419,116 @@ private fun RunDetailSheet(
 }
 
 @Composable
-private fun RunRevisionList(
-    key: RunKey,
+private fun RunRevisionMenu(
+    runKey: RunKey,
     store: RunStore,
-    onSelect: (StoredRunRevision) -> Unit,
-    onBack: () -> Unit,
+    selectedRevision: Long?,
+    onSelect: (StoredRunRevision?) -> Unit,
 ) {
-    val flow = remember(store, key) {
+    var expanded by remember { mutableStateOf(false) }
+    val menuLabel = stringResource(R.string.run_revision_history_action)
+    Box {
+        FilterChip(
+            selected = selectedRevision != null,
+            onClick = { expanded = true },
+            label = {
+                Text(
+                    selectedRevision?.let { stringResource(R.string.run_revision_item, it) }
+                        ?: stringResource(R.string.run_revision_current),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            },
+            modifier = Modifier
+                .widthIn(max = 160.dp)
+                .semantics { contentDescription = menuLabel },
+            trailingIcon = {
+                ExposedDropdownMenuDefaults.TrailingIcon(
+                    expanded = expanded,
+                    modifier = Modifier.size(FilterChipDefaults.IconSize),
+                )
+            },
+        )
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false },
+            modifier = Modifier.heightIn(max = 400.dp),
+        ) {
+            RunRevisionMenuItems(runKey, store, selectedRevision) { revision ->
+                expanded = false
+                onSelect(revision)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RunRevisionMenuItems(
+    runKey: RunKey,
+    store: RunStore,
+    selectedRevision: Long?,
+    onSelect: (StoredRunRevision?) -> Unit,
+) {
+    val flow = remember(store, runKey) {
         historyPager<StoredRunRevision, Long>(cursorOf = { it.state.revision }) { limit, cursor, direction, include ->
-            store.revisionPage(key, limit, cursor, direction, include)
+            store.revisionPage(runKey, limit, cursor, direction, include)
         }.flow
     }
     val revisions = flow.collectAsLazyPagingItems()
     RefreshRunHistoryOnResume(store, revisions)
-    LazyColumn(Modifier.fillMaxWidth(), contentPadding = PaddingValues(bottom = 96.dp)) {
-        item {
-            Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onBack) {
-                    Icon(ArrowBackIcon, contentDescription = stringResource(R.string.run_revision_back_to_current))
-                }
-                Text(stringResource(R.string.run_revision_history_title), style = MaterialTheme.typography.titleLarge)
+    DropdownMenuItem(
+        text = { Text(stringResource(R.string.run_revision_current)) },
+        onClick = { onSelect(null) },
+        modifier = Modifier.semantics { selected = selectedRevision == null },
+        trailingIcon = {
+            if (selectedRevision == null) {
+                Icon(CheckIcon, contentDescription = null)
             }
-        }
-        if (revisions.itemCount == 0 && revisions.loadState.refresh is LoadState.NotLoading) {
-            item { Text(stringResource(R.string.run_revision_history_empty), Modifier.padding(24.dp)) }
-        }
-        item { HistoryLoadStateFooter(revisions.loadState, revisions::retry, Modifier.fillMaxWidth(), prepend = true) }
-        items(count = revisions.itemCount, key = revisions.itemKey { it.state.revision }) { index ->
-            revisions[index]?.let { revision ->
-                ListItem(
-                    modifier = Modifier.clickable { onSelect(revision) },
-                    leadingContent = { RunPhaseIcon(revision.state.phase) },
-                    supportingContent = {
-                        Column {
-                            Text(commandLabel(revision.state), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                            Text(stringResource(
-                                R.string.run_revision_received,
-                                rememberDateTimeFormatter().format(Date(revision.receivedAt)),
-                            ))
+        },
+    )
+    HorizontalDivider()
+    if (revisions.itemCount == 0 && revisions.loadState.refresh is LoadState.NotLoading) {
+        DropdownMenuItem(
+            text = { Text(stringResource(R.string.run_revision_history_empty)) },
+            onClick = {},
+            enabled = false,
+        )
+    }
+    HistoryLoadStateFooter(revisions.loadState, revisions::retry, prepend = true)
+    repeat(revisions.itemCount) { index ->
+        val revision = revisions.peek(index) ?: return@repeat
+        key(revision.state.revision) {
+            DropdownMenuItem(
+                text = {
+                    Column {
+                        Text(stringResource(R.string.run_revision_item, revision.state.revision))
+                        Text(
+                            rememberDateTimeFormatter().format(Date(revision.receivedAt)),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                },
+                onClick = { onSelect(revision) },
+                modifier = Modifier
+                    .semantics { selected = selectedRevision == revision.state.revision }
+                    .onGloballyPositioned { coordinates ->
+                        // Material menus compose all rows. Only visible rows may hint Paging;
+                        // reading every row during composition would eagerly drain the history.
+                        if (!coordinates.boundsInWindow().isEmpty && index < revisions.itemCount) {
+                            revisions[index]
                         }
                     },
-                ) { Text(stringResource(R.string.run_revision_item, revision.state.revision)) }
-                HorizontalDivider()
-            }
+                leadingIcon = { RunPhaseIcon(revision.state) },
+                trailingIcon = {
+                    if (selectedRevision == revision.state.revision) {
+                        Icon(CheckIcon, contentDescription = null)
+                    }
+                },
+            )
         }
-        item { HistoryLoadStateFooter(revisions.loadState, revisions::retry, Modifier.fillMaxWidth()) }
     }
+    HistoryLoadStateFooter(revisions.loadState, revisions::retry)
 }
 
 @Composable
@@ -479,9 +554,9 @@ private fun RunDetail(
     deviceName: String?,
     refreshing: Boolean,
     onBack: () -> Unit,
+    revisionMenu: @Composable () -> Unit,
     modifier: Modifier = Modifier,
     readOnly: Boolean = false,
-    onShowRevisions: (() -> Unit)? = null,
 ) {
     val state = run.state
     val scope = rememberCoroutineScope()
@@ -492,14 +567,14 @@ private fun RunDetail(
     var showKill by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    LazyColumn(
+    HistorySheetLazyColumn(
         modifier,
-        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 96.dp),
+        contentPadding = historySheetContentPadding(),
         verticalArrangement = Arrangement.spacedBy(16.dp),
-    ) {
-        item {
+        header = {
             Row(
-                Modifier.fillMaxWidth().padding(top = 8.dp),
+                Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor)
+                    .padding(top = 8.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 IconButton(onClick = onBack) {
@@ -533,19 +608,16 @@ private fun RunDetail(
                         }
                     }
                 }
+                revisionMenu()
             }
-        }
-
+        },
+    ) {
         if (readOnly) {
             item {
                 Column {
                     Text(stringResource(R.string.run_revision_item, state.revision), style = MaterialTheme.typography.titleMedium)
                     Text(stringResource(R.string.run_revision_received, rememberDateTimeFormatter().format(Date(run.receivedAt))))
                 }
-            }
-        } else if (onShowRevisions != null) {
-            item {
-                TextButton(onClick = onShowRevisions) { Text(stringResource(R.string.run_revision_history_action)) }
             }
         }
 
@@ -849,11 +921,15 @@ private fun DetailField(label: String, value: String, monospace: Boolean = false
 }
 
 @Composable
-private fun RunPhaseIcon(phase: RunPhase) {
-    val (icon, tint) = when (phase) {
+private fun RunPhaseIcon(state: RunState) {
+    val (icon, tint) = when (state.phase) {
         RunPhase.RUNNING -> TerminalIcon to MaterialTheme.colorScheme.primary
         RunPhase.BLOCKED -> WarningAmberIcon to MaterialTheme.colorScheme.tertiary
-        RunPhase.COMPLETED -> CheckCircleIcon to MaterialTheme.colorScheme.primary
+        RunPhase.COMPLETED -> if (state.exitCode != null && state.exitCode != 0) {
+            CancelIcon to MaterialTheme.colorScheme.error
+        } else {
+            CheckCircleIcon to MaterialTheme.colorScheme.primary
+        }
         RunPhase.FAILED_TO_START -> ErrorOutlineIcon to MaterialTheme.colorScheme.error
     }
     Icon(icon, contentDescription = null, tint = tint)
