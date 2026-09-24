@@ -186,7 +186,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
                     sourceId = sourceId,
                     requesterLeaseId = requesterLeaseId,
                     onImeDismissed = ::applySystemChrome,
-                    onClose = ::closeSessionAndTask,
+                    onClose = ::finish,
                 )
             }
         }
@@ -335,7 +335,18 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         setPictureInPictureParams(builder.build())
     }
 
-    private fun closeSessionAndTask() {
+    override fun finish() {
+        // Default system Back reaches finish() through finishAfterTransition(). Clean up here
+        // without intercepting that gesture, and leave recreation/PiP dismissal as renderer-only
+        // lifecycle events. A terminated or replaced viewer has already marked itself closing.
+        if (::sourceId.isInitialized && ::requesterLeaseId.isInitialized) {
+            releaseSessionForFinish()
+        }
+        // Finish only this Activity generation, never a replacement viewer in the same task.
+        super.finish()
+    }
+
+    private fun releaseSessionForFinish() {
         if (explicitlyClosing) return
         explicitlyClosing = true
         pictureInPictureEligible = false
@@ -354,9 +365,6 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
             sourceId,
             requesterLeaseId,
         )
-        // Close only this Activity generation. A stale callback must not remove a replacement
-        // viewer task; the exact foreground-service command retires the matching host attempt.
-        finish()
     }
 
     /** Close only this stale renderer; the host/FGS already owns terminal session cleanup. */
@@ -670,9 +678,14 @@ private fun AndroidScreenMirrorViewer(
         showBrokerRelayFallback = false
     }
 
-    // System Back belongs to the controlled device. The explicit top-left close affordance is the
-    // only Activity action that terminates this authenticated session.
-    BackHandler { graph?.screenMirrorRequesterHost?.sendKeyPress(KeyEvent.KEYCODE_BACK) }
+    val controlsEnabled = control != null && phase == AndroidViewerUiPhase.CONNECTED
+    // Leave disconnected Back to Android so it can animate the predictive task transition.
+    // Activity.finish() releases the pending session after the system commits navigation.
+    BackHandler(enabled = controlsEnabled) {
+        if (control?.sendKeyPress(KeyEvent.KEYCODE_BACK) != true) {
+            closeViewer()
+        }
+    }
 
     BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(Color.Black),
@@ -807,7 +820,7 @@ private fun AndroidScreenMirrorViewer(
                 dragState = toolbarDragState,
                 selectedControls = toolbarPreferences.pinnedControls,
                 controlOrder = toolbarPreferences.controlOrder,
-                enabled = control != null && phase == AndroidViewerUiPhase.CONNECTED,
+                enabled = controlsEnabled,
                 control = control,
                 onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
                 onClose = closeViewer,
