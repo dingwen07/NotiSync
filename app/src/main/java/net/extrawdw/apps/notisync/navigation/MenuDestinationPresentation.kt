@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.navigation
 
+import android.os.Build
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -39,7 +40,11 @@ internal val MenuDestination.icon: ImageVector get() = when (this) {
 @get:DrawableRes
 internal val MenuDestination.shortcutIcon: Int get() = when (this) {
     MenuDestination.DEVICES -> R.drawable.ic_shortcut_devices
-    MenuDestination.APPS -> R.drawable.ic_shortcut_apps
+    MenuDestination.APPS -> if (Build.MANUFACTURER.equals("samsung", ignoreCase = true)) {
+        R.drawable.ic_shortcut_apps_samsung
+    } else {
+        R.drawable.ic_shortcut_apps
+    }
     MenuDestination.IPHONE -> R.drawable.ic_shortcut_iphone
     MenuDestination.ACTIVITY -> R.drawable.ic_shortcut_activity
     MenuDestination.SETTINGS -> R.drawable.ic_shortcut_settings
