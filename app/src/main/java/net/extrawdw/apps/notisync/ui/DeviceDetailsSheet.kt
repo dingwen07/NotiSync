@@ -531,7 +531,7 @@ private fun DeviceDetailsField(label: String, value: String, monospace: Boolean 
 }
 
 @Composable
-private fun platformLabel(platform: String?): String = when (platform?.trim()?.lowercase()) {
+internal fun platformLabel(platform: String?): String = when (platform?.trim()?.lowercase()) {
     "android" -> stringResource(R.string.device_details_platform_android)
     "ios" -> stringResource(R.string.device_details_platform_ios)
     "web" -> stringResource(R.string.device_details_platform_web)

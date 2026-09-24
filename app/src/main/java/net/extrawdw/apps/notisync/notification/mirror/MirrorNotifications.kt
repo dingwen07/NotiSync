@@ -133,7 +133,7 @@ internal fun normalizeLiveProgress(progress: NotificationProgress): NativeLivePr
  * group the per-device bucket. Shade bundling is a separate mechanism and stays per app (see
  * RemoteNotificationPoster.receiverGroupKey).
  *
- * IDs are "{type}:{sourceClientId}:…" with type = group / channel / conversation; the second
+ * IDs are "{type}:{sourceClientId}:…" with type = group / channel (legacy: conversation); the second
  * ':'-segment is always the source client id so [gc] can prune by peer. Android-origin ids are
  * "{type}:{client}:{package}[:{source}]", and the per-app group's display name carries the source
  * device — e.g. "WhatsApp (Pixel 10)" — so two devices running the same app stay distinct in system
@@ -160,9 +160,6 @@ object MirrorChannels {
 
     private fun channelId(client: ClientId, originId: String, pkg: String, src: String?) =
         if (originId.isEmpty()) "channel:${client.value}:$pkg:${src ?: "_default"}" else "channel:${client.value}:$originId:$pkg:${src ?: "_default"}"
-
-    private fun convChannelId(client: ClientId, originId: String, pkg: String, conv: String) =
-        if (originId.isEmpty()) "conversation:${client.value}:$pkg:$conv" else "conversation:${client.value}:$originId:$pkg:$conv"
 
     /** One settings group per bridged iPhone. The trailing sentinel keeps the shape mechanically distinct
      *  from the legacy per-app "group:{client}:{originId}:{package}" it replaces. */
@@ -201,7 +198,7 @@ object MirrorChannels {
     private fun ancsOriginId(notif: CapturedNotification) =
         originId(notif).ifEmpty { IOS_FALLBACK_ORIGIN }
 
-    /** The settings group this capture files under — shared by [ensure] and [ensureConversation]. */
+    /** The settings group this capture files under. */
     private fun groupIdFor(notif: CapturedNotification): String =
         if (isIosOrigin(notif)) iosDeviceGroupId(notif.sourceClientId, ancsOriginId(notif))
         else groupId(notif.sourceClientId, originId(notif), notif.packageName)
@@ -232,6 +229,13 @@ object MirrorChannels {
         val cid =
             if (ios) iosAppChannelId(notif.sourceClientId, ancsOriginId(notif), notif.packageName)
             else channelId(notif.sourceClientId, originId(notif), notif.packageName, notif.channelId)
+        // Keep receiver settings authoritative after creation. A source ranking downgrade or an older
+        // producer's quiet update must not permanently lower a shared message channel's importance.
+        mgr.getNotificationChannel(cid)?.let { existing ->
+            existing.name = channelName(context, notif)
+            mgr.createNotificationChannel(existing)
+            return cid
+        }
         // The first notification's importance fixes the channel: createNotificationChannel can only LOWER an
         // existing channel's importance, never raise it (OS contract), and a delete+recreate to force a raise
         // doesn't work either — the OS resurrects a same-id channel with its old importance (and the delete
@@ -253,34 +257,28 @@ object MirrorChannels {
         return cid
     }
 
-    /** Create a conversation child channel under [parentChannelId]; return its id. */
-    fun ensureConversation(
-        context: Context,
-        notif: CapturedNotification,
-        parentChannelId: String,
-        shortcutId: String
-    ): String {
-        val mgr = context.getSystemService(NotificationManager::class.java)
-        val conv = notif.shortcutId ?: notif.sourceKey
-        val cid = convChannelId(notif.sourceClientId, originId(notif), notif.packageName, conv)
-        mgr.createNotificationChannel(
-            NotificationChannel(cid, channelName(context, notif), importanceOf(notif)).apply {
-                // ANCS captures are never conversations today; groupIdFor keeps the group right if that changes.
-                group = groupIdFor(notif)
-                setConversationId(parentChannelId, shortcutId)
-                enableVibration(notif.shouldVibrate)
-                if (mirrorChannelSilent(notif)) setSound(null, null)
-            }
-        )
-        return cid
-    }
+    /** Resolve an OS-created conversation override back to the category used by group summaries. */
+    internal fun baseChannelId(context: Context, channelId: String): String =
+        context.getSystemService(NotificationManager::class.java).getNotificationChannel(channelId)
+            ?.parentChannelId?.takeIf(String::isNotBlank) ?: channelId
 
-    /** Prune mirrored groups/channels whose source client is no longer a trusted peer. */
+    private fun mirroredChannelId(channel: NotificationChannel): String? =
+        listOfNotNull(channel.parentChannelId, channel.id)
+            .firstOrNull { it.startsWith("channel:") || it.startsWith("conversation:") }
+
+    internal fun isLegacyConversationChannel(channel: NotificationChannel): Boolean =
+        channel.id.startsWith("conversation:") ||
+            (mirroredChannelId(channel) != null && channel.conversationId?.startsWith("noticonv:") == true)
+
+    /** Retire legacy conversation channels and prune mirrors for peers that are no longer trusted.
+     * New conversations use conversation shortcuts on the category channel; Android creates overrides
+     * only through its conversation settings. The old receiver conversation overrides are discarded. */
     fun gc(context: Context, validClientIds: Set<String>) {
         val mgr = context.getSystemService(NotificationManager::class.java)
         runCatching {
             mgr.notificationChannels.forEach { c ->
-                if ((c.id.startsWith("channel:") || c.id.startsWith("conversation:")) && clientOf(c.id) !in validClientIds) {
+                val mirrorId = mirroredChannelId(c)
+                if (isLegacyConversationChannel(c) || (mirrorId != null && clientOf(mirrorId) !in validClientIds)) {
                     mgr.deleteNotificationChannel(c.id)
                 }
             }
@@ -293,17 +291,15 @@ object MirrorChannels {
     }
 
     /**
-     * Delete every mirrored group + channel this app created (diagnostics recovery). The OS pins a channel's
-     * importance at creation and only ever lowers it, so a channel stranded at Silent (e.g. minted by an older
-     * build, or before the importance fix) can't be raised in code — deleting it is the only way to have it
-     * recreated at the right importance. They come back at HIGH on the next mirrored iPhone notification. Leaves
-     * the app's own service channels alone. Returns the number of channels removed.
+     * Delete mirrored groups/channels, including OS-created conversation overrides. Leaves the app's own
+     * service channels alone. Android restores the previous settings if the same ID is recreated; this
+     * operation does not reset importance. Returns the number of channels removed.
      */
     fun deleteAll(context: Context): Int {
         val mgr = context.getSystemService(NotificationManager::class.java)
         return runCatching {
             val mirrored =
-                mgr.notificationChannels.filter { it.id.startsWith("channel:") || it.id.startsWith("conversation:") }
+                mgr.notificationChannels.filter { mirroredChannelId(it) != null }
             mirrored.forEach { mgr.deleteNotificationChannel(it.id) }
             mgr.notificationChannelGroups.forEach {
                 if (it.id.startsWith("group:")) mgr.deleteNotificationChannelGroup(
@@ -381,6 +377,7 @@ object MirrorChannels {
 }
 
 private object MirrorNotificationExtras {
+    const val BASE_CHANNEL = "net.extrawdw.apps.notisync.mirror.BASE_CHANNEL"
     const val SOURCE_CLIENT = "net.extrawdw.apps.notisync.mirror.SOURCE_CLIENT"
     const val SOURCE_KEY = "net.extrawdw.apps.notisync.mirror.SOURCE_KEY"
     const val GROUP_KEY = "net.extrawdw.apps.notisync.mirror.GROUP_KEY"
@@ -393,8 +390,8 @@ private object MirrorNotificationExtras {
 
 /**
  * Posts mirrored notifications natively, reconstructing MessagingStyle / BigText and — for
- * conversation notifications — a long-lived shortcut + conversation channel so they file under the
- * Conversations section. A delete intent reports local swipes back for dismissal sync.
+ * conversation notifications — a long-lived shortcut on the shared category channel. Android resolves
+ * user-created conversation overrides. A delete intent reports local swipes back for dismissal sync.
  */
 class RemoteNotificationPoster(
     private val context: Context,
@@ -480,28 +477,8 @@ class RemoteNotificationPoster(
         span.metric("asset_count", assetRefs.size.toLong())
         span.metric("asset_hit_count", assetHits.toLong())
         span.metric("asset_miss_count", (assetRefs.size - assetHits).toLong())
-        var postChannelId = parentChannelId
-        var shortcutId: String? = null
-
-        if (notif.isConversation) {
-            val conv = notif.shortcutId ?: notif.sourceKey
-            val mirroredShortcut =
-                "noticonv:${notif.sourceClientId.value}:${notif.packageName}:$conv"
-            val published =
-                runCatching { publishConversationShortcut(notif, mirroredShortcut) }.getOrDefault(
-                    false
-                )
-            if (published) {
-                shortcutId = mirroredShortcut
-                postChannelId = runCatching {
-                    MirrorChannels.ensureConversation(
-                        context,
-                        notif,
-                        parentChannelId,
-                        mirroredShortcut
-                    )
-                }.getOrDefault(parentChannelId)
-            }
+        val shortcutId = mirroredConversationShortcutId(notif)?.takeIf { mirroredShortcut ->
+            runCatching { publishConversationShortcut(notif, mirroredShortcut) }.getOrDefault(false)
         }
 
         val tag = tagOf(notif.sourceClientId, notif.sourceKey)
@@ -544,7 +521,7 @@ class RemoteNotificationPoster(
             )
         } else null
 
-        val builder = NotificationCompat.Builder(context, postChannelId)
+        val builder = NotificationCompat.Builder(context, parentChannelId)
             .setSmallIcon(smallIconFor(notif.packageName, notif.channelId))
             .setSubText(
                 context.getString(
@@ -583,7 +560,7 @@ class RemoteNotificationPoster(
             // lockstep with uidToKey) and covers every dismissal path, so the delete intent stays plain — clearable
             // just follows the source's own flag.
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id, notif.isClearable))
-            .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle))
+            .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle, parentChannelId))
         if (notif.hasContentIntent) {
             builder.setContentIntent(tapIntent(notif, id, originLabel))
         }
@@ -805,7 +782,7 @@ class RemoteNotificationPoster(
         }
 
         applyLargeIcon(builder, notif)
-        applyPublicLockScreenIdentity(builder, notif, postChannelId, receiverGroupKey)
+        applyPublicLockScreenIdentity(builder, notif, parentChannelId, receiverGroupKey)
 
         // The platform launches a full-screen intent only when the notification is ADDED — refreshing an
         // existing row never re-fires it. A fresh ringing call can land on an occupied tag: dialers reuse one
@@ -880,7 +857,7 @@ class RemoteNotificationPoster(
         val summaryStartNanos = System.nanoTime()
         updateGroupSummary(
             receiverGroupKey,
-            postChannelId,
+            parentChannelId,
             receiverGroupTitle,
             notif.packageName,
             notif.iosBundleId,
@@ -895,9 +872,11 @@ class RemoteNotificationPoster(
     private fun mirrorExtras(
         notif: CapturedNotification,
         receiverGroupKey: String,
-        receiverGroupTitle: String
+        receiverGroupTitle: String,
+        baseChannelId: String,
     ) =
         Bundle().apply {
+            putString(MirrorNotificationExtras.BASE_CHANNEL, baseChannelId)
             putString(MirrorNotificationExtras.SOURCE_CLIENT, notif.sourceClientId.value)
             putString(MirrorNotificationExtras.SOURCE_KEY, notif.sourceKey)
             putString(MirrorNotificationExtras.GROUP_KEY, receiverGroupKey)
@@ -977,7 +956,9 @@ class RemoteNotificationPoster(
             sourceSummary?.iosBundleId ?: extras?.getString(MirrorNotificationExtras.IOS_BUNDLE_ID) ?: fallbackIosBundleId
         val appIconHash =
             sourceSummary?.appIcon?.assetHash ?: extras?.getString(MirrorNotificationExtras.APP_ICON_HASH) ?: fallbackAppIconHash
-        val channelId = if (sourceSummary != null) fallbackChannelId else latest?.notification?.channelId ?: fallbackChannelId
+        val channelId = if (sourceSummary != null) fallbackChannelId else
+            extras?.getString(MirrorNotificationExtras.BASE_CHANNEL)
+                ?: MirrorChannels.baseChannelId(context, latest?.notification?.channelId ?: fallbackChannelId)
         val text = sourceSummary?.text ?: context.resources.getQuantityString(
             R.plurals.mirror_group_summary_count,
             children.size,

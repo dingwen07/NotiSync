@@ -557,7 +557,7 @@ internal fun PairingApprovalSheet(
                         color = MaterialTheme.colorScheme.secondary,
                     )
                     DeviceInfo(stringResource(R.string.pair_field_name), candidate.displayName)
-                    DeviceInfo(stringResource(R.string.pair_field_platform), candidate.platform)
+                    DeviceInfo(stringResource(R.string.pair_field_platform), platformLabel(candidate.platform))
                     DeviceInfo(
                         stringResource(R.string.pair_field_verification_number),
                         candidate.safetyNumber

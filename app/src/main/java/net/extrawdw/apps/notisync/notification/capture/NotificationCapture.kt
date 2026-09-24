@@ -131,8 +131,11 @@ class NotificationNormalizer(private val pm: PackageManager) {
 
         // Source channel + conversation metadata (best-effort; redacted/absent for a plain listener).
         val channel = runCatching { ranking?.channel }.getOrNull()
+        // Ranking importance can describe one quiet/demoted post. Persist the channel's policy on
+        // receivers, not that transient ranking; older/unavailable metadata still has a fallback.
         val channelImportance =
-            runCatching { ranking?.importance }.getOrNull()?.let(::mapImportance)
+            (runCatching { channel?.importance }.getOrNull()
+                ?: runCatching { ranking?.importance }.getOrNull())?.let(::mapImportance)
         val shortcutId = runCatching { n.shortcutId }.getOrNull()
         val conversation = runCatching { ranking?.isConversation == true }.getOrDefault(false)
 

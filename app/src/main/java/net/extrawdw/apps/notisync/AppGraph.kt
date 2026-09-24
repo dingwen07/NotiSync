@@ -787,7 +787,7 @@ class AppGraph(private val app: Application) {
             scope.launch { runCatching { settings.seedSelfEpochActivatedAt(System.currentTimeMillis()) } }
         }
 
-        // Prune mirrored channels/groups for devices that are no longer trusted peers — at startup and
+        // Retire eager legacy conversation channels and prune mirrors for untrusted devices — at startup and
         // again on every trust change (a revoke drops the peer from activePeers). StateFlow re-emits its
         // current value on subscription, so this also performs the launch-time sweep.
         trust.activePeers
