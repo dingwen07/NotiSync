@@ -290,6 +290,10 @@ fun DiagnosticsCard(
                 style = MaterialTheme.typography.titleSmall,
             )
             Text(
+                stringResource(R.string.diagnostics_ssh_key_storage_reset),
+                style = MaterialTheme.typography.titleSmall,
+            )
+            Text(
                 stringResource(R.string.diagnostics_ssh_key_storage_hint),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

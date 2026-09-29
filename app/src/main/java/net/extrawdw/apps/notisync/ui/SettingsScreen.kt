@@ -16,8 +16,10 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ListItem
@@ -48,10 +50,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.net.toUri
 import androidx.core.content.ContextCompat
@@ -66,11 +70,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.info as InfoIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.edit as EditIcon
 
 @Composable
-fun SettingsScreen(onOpenAbout: () -> Unit, onOpenMenu: () -> Unit = {}) {
+fun SettingsScreen(onOpenAbout: () -> Unit) {
     val graph = rememberGraph()
     var showDesktopApplications by rememberSaveable { mutableStateOf(false) }
     if (showDesktopApplications) {
@@ -153,16 +155,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit, onOpenMenu: () -> Unit = {}) {
             contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
-            item {
-                ListItem(
-                    modifier = Modifier.clickable(onClick = onOpenMenu),
-                    leadingContent = { Icon(EditIcon, contentDescription = null) },
-                    trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
-                ) {
-                    Text(stringResource(R.string.menu_manage))
-                }
-            }
-            item { SettingsSectionHeader(R.string.settings_section_connection) }
+            item { SettingsSectionHeader(R.string.settings_section_connection, topPadding = 0.dp) }
             item {
                 SettingsTextField(
                     value = deviceName,
@@ -275,16 +268,15 @@ fun SettingsScreen(onOpenAbout: () -> Unit, onOpenMenu: () -> Unit = {}) {
                     },
                 ) { Text(stringResource(R.string.desktop_applications_title)) }
             }
+            item { SettingsSectionHeader(R.string.settings_section_others) }
             item {
                 ListItem(
                     modifier = Modifier.clickable(onClick = onOpenAbout),
                     contentPadding = PaddingValues(vertical = 8.dp),
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
-                    leadingContent = { Icon(InfoIcon, contentDescription = null) },
                     trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
                 ) { Text(stringResource(R.string.about_title)) }
             }
-            item { SettingsSectionHeader(R.string.settings_section_diagnostics) }
             item {
                 ToggleRow(
                     stringResource(R.string.settings_analytics),
@@ -500,12 +492,12 @@ private fun FullScreenIntentBlockedRow() {
 }
 
 @Composable
-private fun SettingsSectionHeader(@StringRes title: Int) {
+private fun SettingsSectionHeader(@StringRes title: Int, topPadding: Dp = 8.dp) {
     Text(
         stringResource(title),
         modifier = Modifier
             .fillMaxWidth()
-            .padding(top = 8.dp),
+            .padding(top = topPadding),
         style = MaterialTheme.typography.titleMedium,
         color = MaterialTheme.colorScheme.primary,
     )
@@ -516,7 +508,9 @@ private fun ToggleRow(label: String, checked: Boolean, onChange: (Boolean) -> Un
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(vertical = 2.dp),
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onChange)
+            .padding(vertical = 2.dp)
+            .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -548,7 +542,9 @@ private fun ScreenMirrorSettingsRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
+                .toggleable(value = enabled, role = Role.Switch, onValueChange = onChange)
+                .padding(vertical = 4.dp)
+                .heightIn(min = 48.dp),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {

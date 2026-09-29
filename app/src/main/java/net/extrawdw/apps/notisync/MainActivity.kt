@@ -757,7 +757,7 @@ fun NotiSyncRoot(
                     )
                 }
                 composable<Route.Activity> { ActivityScreen() }
-                composable<Route.Settings> { SettingsScreen(onOpenAbout = openAbout, onOpenMenu = openMenu) }
+                composable<Route.Settings> { SettingsScreen(onOpenAbout = openAbout) }
                 composable<Route.Menu> {
                     MenuManagementScreen(
                         navigationLimit = navigationLimit,

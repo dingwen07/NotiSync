@@ -10,12 +10,14 @@ import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.filled.delete as FilledDeleteIcon
@@ -43,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -177,6 +180,7 @@ internal fun DeviceDetailsSheet(
                 item {
                     ScreenControlAuthorization(
                         masterEnabled = screenMirroringEnabled,
+                        enabled = screenMirroringEnabled && trustActionsEnabled,
                         authorized = screenControlAuthorized,
                         onAuthorizedChange = onScreenControlAuthorizedChange,
                     )
@@ -338,23 +342,33 @@ private fun ScreenMirrorCodecSelector(
 @Composable
 private fun ScreenControlAuthorization(
     masterEnabled: Boolean,
+    enabled: Boolean,
     authorized: Boolean,
     onAuthorizedChange: (Boolean) -> Unit,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .heightIn(min = 48.dp)
+                .toggleable(
+                    value = authorized,
+                    enabled = enabled,
+                    role = Role.Switch,
+                    onValueChange = onAuthorizedChange,
+                ),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
                 stringResource(R.string.screen_mirror_device_title),
+                modifier = Modifier.weight(1f).padding(end = 16.dp),
                 style = MaterialTheme.typography.labelLarge,
             )
             Switch(
                 checked = authorized,
                 onCheckedChange = onAuthorizedChange,
-                enabled = masterEnabled,
+                enabled = enabled,
             )
         }
         Text(

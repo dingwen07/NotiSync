@@ -18,17 +18,18 @@ import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -60,6 +61,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.LayoutDirection
@@ -419,9 +421,8 @@ fun IosScreen() {
         AppListMode.MIRRORING -> buildList {
             val on = matching.filter { it.bundleId in effectiveEnabled }
                 .sortedBy { norm(it.displayName) }
-            val off = matching.filter { it.bundleId !in effectiveEnabled }.sortedWith(byRecency)
             if (on.isNotEmpty()) add(AppSection("on", mirroringTitle, on))
-            add(AppSection("iphone", iphoneTitle, off))
+            add(AppSection("iphone", iphoneTitle, matching.sortedWith(byRecency)))
         }
         AppListMode.NAME ->
             listOf(AppSection("iphone", iphoneTitle, matching.sortedBy { norm(it.displayName) }))
@@ -544,8 +545,9 @@ private fun ConnectionCard(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable { onToggle(!bridgeEnabled) }
-                .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 14.dp),
+                .toggleable(value = bridgeEnabled, role = Role.Switch, onValueChange = onToggle)
+                .padding(start = 16.dp, top = 14.dp, end = 16.dp, bottom = 14.dp)
+                .heightIn(min = 48.dp),
             horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
@@ -644,8 +646,9 @@ private fun CompactSwitchRow(label: String, checked: Boolean, onCheckedChange: (
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .clickable { onCheckedChange(!checked) }
-            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 4.dp),
+            .toggleable(value = checked, role = Role.Switch, onValueChange = onCheckedChange)
+            .padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 4.dp)
+            .heightIn(min = 48.dp),
         horizontalArrangement = Arrangement.spacedBy(16.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -668,7 +671,12 @@ private fun IosAppRow(
     onForget: () -> Unit,
 ) {
     ListItem(
-        modifier = if (canToggle) Modifier.clickable { onToggle(!isOn) } else Modifier,
+        modifier = Modifier.toggleable(
+            value = isOn,
+            enabled = canToggle,
+            role = Role.Switch,
+            onValueChange = onToggle,
+        ),
         leadingContent = { AppIconSquare(icon) },
         supportingContent = {
             Text(

@@ -416,7 +416,7 @@ internal class RoomStorageMigration(
                 database.execSQL(
                     "INSERT INTO incoming_notification_filters" +
                         "(requester_client_id, filter_json, updated_at) VALUES(?, ?, ?)",
-                    arrayOf(requesterClientId, ProtocolCodec.encodeToJson(filter), filter.updatedAt),
+                    arrayOf<Any?>(requesterClientId, ProtocolCodec.encodeToJson(filter), filter.updatedAt),
                 )
             }
 

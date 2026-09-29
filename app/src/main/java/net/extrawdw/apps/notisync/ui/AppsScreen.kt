@@ -21,6 +21,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ListItem
@@ -41,6 +42,7 @@ import androidx.compose.ui.graphics.asImageBitmap
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.AndroidViewModel
@@ -196,13 +198,11 @@ fun AppsScreen() {
     val mirroringTitle = stringResource(R.string.apps_section_mirroring)
     val recentTitle = stringResource(R.string.apps_section_recent)
     val allTitle = stringResource(R.string.apps_section_all)
-    val otherResultsTitle = stringResource(R.string.apps_section_other_results)
     val sections: List<AppSection<InstalledApp>> = when (mode) {
         AppListMode.MIRRORING -> buildList {
             val on = matching.filter { it.packageName in enabled }.sortedBy { norm(it.label) }
-            val off = matching.filter { it.packageName !in enabled }.sortedWith(byRecency)
             if (on.isNotEmpty()) add(AppSection("on", mirroringTitle, on))
-            add(AppSection("all", if (q.isEmpty()) allTitle else otherResultsTitle, off))
+            add(AppSection("all", allTitle, matching.sortedWith(byRecency)))
         }
         AppListMode.NAME ->
             listOf(AppSection("all", allTitle, matching.sortedBy { norm(it.label) }))
@@ -265,7 +265,9 @@ fun AppsScreen() {
                                 lastSeen[app.packageName],
                                 fmt,
                                 selection,
-                                onOpenConfig = { configFor = it },
+                                onOpenConfig = if (section.key == "on") {
+                                    { configFor = it }
+                                } else null,
                             )
                         }
                     }
@@ -282,13 +284,18 @@ private fun AppRow(
     lastSeen: Long?,
     fmt: SimpleDateFormat,
     selection: net.extrawdw.apps.notisync.data.AppSelectionRepository,
-    onOpenConfig: (InstalledApp) -> Unit,
+    onOpenConfig: ((InstalledApp) -> Unit)?,
 ) {
     ListItem(
-        // Tapping an enabled app opens its per-app config sheet; tapping a disabled one enables it. The
-        // trailing Switch still toggles mirroring on/off either way.
-        modifier = Modifier.clickable {
-            if (isOn) onOpenConfig(app) else selection.setEnabled(app.packageName, true)
+        // Only Mirroring section rows open per-app configuration. All other rows toggle mirroring.
+        modifier = if (isOn && onOpenConfig != null) {
+            Modifier.clickable { onOpenConfig(app) }
+        } else {
+            Modifier.toggleable(
+                value = isOn,
+                role = Role.Switch,
+                onValueChange = { on -> selection.setEnabled(app.packageName, on) },
+            )
         },
         leadingContent = { AppIcon(app.icon) },
         supportingContent = {
@@ -317,7 +324,7 @@ private fun AppIcon(icon: ImageBitmap?) {
         Image(
             bitmap = icon,
             contentDescription = null,
-            modifier = Modifier.size(40.dp).clip(CircleShape)
+            modifier = Modifier.size(40.dp)
         )
     } else {
         Box(

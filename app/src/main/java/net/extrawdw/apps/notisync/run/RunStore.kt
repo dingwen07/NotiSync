@@ -405,11 +405,11 @@ class RunStore(
 
     private fun checkpointAndCompact(db: SQLiteDatabase) {
         db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray()).use { cursor ->
-            while (cursor.moveToNext()) Unit
+            while (cursor.moveToNext()) {}
         }
         db.execSQL("VACUUM")
         db.rawQuery("PRAGMA wal_checkpoint(TRUNCATE)", emptyArray()).use { cursor ->
-            while (cursor.moveToNext()) Unit
+            while (cursor.moveToNext()) {}
         }
     }
 

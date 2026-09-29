@@ -115,7 +115,6 @@ internal fun CoroutineScope.launchAtomicScreenMirrorSession(
     }
     return ScreenMirrorAtomicSession(job) {
         installationGate.complete(Unit)
-        Unit
     }
 }
 

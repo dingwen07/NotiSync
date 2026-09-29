@@ -40,7 +40,7 @@ import net.extrawdw.apps.notisync.R
  * title of the mode's leading section, so they reuse the section strings.
  */
 internal enum class AppListMode(@param:StringRes val labelRes: Int) {
-    /** Enabled apps grouped into a "Mirroring" section; everything else below. The default. */
+    /** Enabled apps grouped into a "Mirroring" section; the full app list below. The default. */
     MIRRORING(R.string.apps_section_mirroring),
 
     /** The [RECENT_APP_COUNT] most recently active apps in a "Recents" section; everything else below. */

@@ -23,15 +23,17 @@ val localProperties = Properties().apply {
 android {
     namespace = "net.extrawdw.apps.notisync"
     compileSdk {
-        version = release(37)
+        version = release(37)  {
+            minorApiLevel = 2
+        }
     }
 
     defaultConfig {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 77
-        versionName = "2.6.1"
+        versionCode = 78
+        versionName = "2.6.2"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"

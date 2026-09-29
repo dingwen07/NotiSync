@@ -40,7 +40,6 @@ class TicketStore(baseDir: File) {
     suspend fun put(assetHash: String, ticket: AssetTicket): Unit = mutex.withLock {
         map[assetHash] = ticket
         runCatching { file.writeText(ProtocolCodec.encodeToJson(map)) }
-        Unit
     }
 }
 
