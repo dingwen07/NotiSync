@@ -268,7 +268,7 @@ class NotisyncCli(
     private fun pairingInput(arguments: List<String>): String {
         if (arguments.size != 1) throw CliError("pairing command requires one link, payload, or '-' for stdin")
         return if (arguments[0] == "-") {
-            generateSequence(::readLine).joinToString("\n").trim().takeIf(String::isNotEmpty)
+            generateSequence(::readlnOrNull).joinToString("\n").trim().takeIf(String::isNotEmpty)
                 ?: throw CliError("stdin contained no pairing link")
         } else {
             arguments[0]

@@ -76,7 +76,7 @@ class RunReporterTest {
         val daemon = FakeDaemon().apply {
             completeBehaviors += { _, _ -> throw IOException("first response lost") }
             completeBehaviors += { _, _ -> throw IOException("retry unavailable") }
-            completeBehaviors += { _, _ -> Unit }
+            completeBehaviors += { _, _ -> }
             sendBehaviors += { _ -> throw IOException("deferred publication unavailable") }
         }
         val reporter = reporter(daemon)

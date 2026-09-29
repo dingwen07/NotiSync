@@ -110,7 +110,6 @@ class NotisyncGpgCommand(
                         config,
                         onRequestSubmitted = {
                             notice.show(it)
-                            Unit
                         },
                     ).sign(payload, certificate, gitPayload.objectKind)
                 ) {

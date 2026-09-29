@@ -38,6 +38,7 @@ class UnixSignalBridge private constructor(
                                 "toString" -> "NSRunSignalHandler($name)"
                                 "hashCode" -> System.identityHashCode(proxy)
                                 "equals" -> proxy === arguments?.firstOrNull()
+                                else -> null
                             }
                         }
                         registrations += Registration(signal, handle.invoke(null, signal, handler))

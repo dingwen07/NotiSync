@@ -227,10 +227,10 @@ class DesktopPeerRuntime(
                 trustMessage.set(message)
                 logger.warn(message)
             },
-            onAsset = { _, _ -> Unit },
-            onFilter = { _, _ -> Unit },
-            onNotificationSync = { _, _ -> Unit },
-            onRunSync = { _, _ -> Unit },
+            onAsset = { _, _ -> },
+            onFilter = { _, _ -> },
+            onNotificationSync = { _, _ -> },
+            onRunSync = { _, _ -> },
             onDecodedDataSync = ::routeDecodedDataSync,
             onMalformedDataSync = ::routeInbound,
             incomingTrustPolicy = IncomingTrustPolicy { change ->
