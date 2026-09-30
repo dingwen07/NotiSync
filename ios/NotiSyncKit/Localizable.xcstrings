@@ -904,15 +904,8 @@
       }
     },
     "Build" : {
-      "comment" : "The installed app bundle build number in Settings > About.",
-      "localizations" : {
-        "zh-Hans" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "构建号"
-          }
-        }
-      }
+      "comment" : "The installed app bundle build number in Settings > About. Keep this label in English.",
+      "shouldTranslate" : false
     },
     "Cancel" : {
       "localizations" : {
