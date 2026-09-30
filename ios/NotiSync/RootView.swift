@@ -1421,6 +1421,12 @@ struct SettingsView: View {
                 } footer: {
                     Text("Forces a key rotation immediately. Normally rotates ~monthly. The old epoch's keys are retained through the overlap so in-flight notifications still decrypt.")
                 }
+                Section("About") {
+                    LabeledContent("Version", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                        ?? String(localized: "Unknown"))
+                    LabeledContent("Build", value: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String
+                        ?? String(localized: "Unknown"))
+                }
             }
             .navigationTitle("Settings")
             .onAppear { loadSettings(); runtime.refreshRotationInfo() }
