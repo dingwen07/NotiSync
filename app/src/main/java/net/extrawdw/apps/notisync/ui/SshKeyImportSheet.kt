@@ -74,7 +74,11 @@ internal fun SshKeyImportSheet(
 ) {
     val step = sshKeyImportSheetStep(privateKeyText, encrypted, preview)
     val busy = previewing || importing
-    val sheetState = rememberBottomSheetState(initialValue = SheetValue.Hidden)
+    // The form must keep its editor and actions reachable after recreation in short windows.
+    val sheetState = rememberBottomSheetState(
+        initialValue = SheetValue.Hidden,
+        enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
+    )
     val scope = rememberCoroutineScope()
     ModalBottomSheet(
         onDismissRequest = { if (!busy) onDismiss() },

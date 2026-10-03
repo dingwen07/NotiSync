@@ -58,6 +58,7 @@ import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffo
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
+import androidx.lifecycle.viewModelScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -358,6 +359,35 @@ private data class PairingReview(
     val existingTrustedDevice: RosterDevice?,
 )
 
+/** Pending trust decisions stay in memory across Activity recreation, never in saved-state Bundles. */
+private class PairingUiState : androidx.lifecycle.ViewModel() {
+    val review = mutableStateOf<PairingReview?>(null)
+    val brokerLink = mutableStateOf<BrokerPairingLink?>(null)
+    val approvingOwnDevice = mutableStateOf<Boolean?>(null)
+    val error = mutableStateOf<String?>(null)
+    val completed = mutableStateOf<Pair<PairingReview, String>?>(null)
+
+    fun approve(graph: AppGraph, pairing: PairingManager, context: android.content.Context, decision: PairingReview, ownDevice: Boolean) {
+        if (approvingOwnDevice.value != null || completed.value != null) return
+        approvingOwnDevice.value = ownDevice
+        error.value = null
+        viewModelScope.launch {
+            try {
+                val card = graph.durableTrustMutations.run {
+                    pairing.accept(decision.candidate.payload, ownDevice).getOrThrow()
+                }
+                completed.value = decision to card.displayName
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (failure: Exception) {
+                error.value = context.getString(R.string.pair_could_not_pair, failure.message)
+            } finally {
+                approvingOwnDevice.value = null
+            }
+        }
+    }
+}
+
 // Every tab glyph is centered in a 24dp box, but PhoneIphone fills 22/24 of its viewBox (vs 16–20
 // for the others), so its taller silhouette reads as raised. Render just the iOS glyph slightly
 // smaller, inside the same 24dp box, so its visual height matches the rest of the set.
@@ -388,7 +418,7 @@ fun NotiSyncRoot(
     val menuConfiguration by graph.settings.menuConfiguration.collectAsStateWithLifecycle()
     val orderedDestinations = menuConfiguration.destinations().map(AppDestination::fromMenu)
     val pairing = remember { PairingManager(graph) }
-    val pairingScope = rememberCoroutineScope()
+    val pairingUi = androidx.lifecycle.viewmodel.compose.viewModel { PairingUiState() }
     val navController = rememberNavController()
     val openMenu = { navController.navigate(Route.Menu) { launchSingleTop = true } }
     val openAbout = {
@@ -416,10 +446,10 @@ fun NotiSyncRoot(
     // whole navigation suite so the Devices tab (and bar) stay visible as the page folds away.
     var showPairing by rememberSaveable { mutableStateOf(false) }
     var pairButtonBounds by remember { mutableStateOf<Rect?>(null) }
-    var pairingReview by remember { mutableStateOf<PairingReview?>(null) }
-    var brokerPairingLink by remember { mutableStateOf<BrokerPairingLink?>(null) }
-    var pairingApprovalOwnDevice by remember { mutableStateOf<Boolean?>(null) }
-    var pairingApprovalError by remember { mutableStateOf<String?>(null) }
+    var pairingReview by pairingUi.review
+    var brokerPairingLink by pairingUi.brokerLink
+    val pairingApprovalOwnDevice by pairingUi.approvingOwnDevice
+    var pairingApprovalError by pairingUi.error
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     var foregroundResumeGeneration by remember { mutableIntStateOf(0) }
     var foregroundPairingUrl by remember {
@@ -470,32 +500,18 @@ fun NotiSyncRoot(
     }
 
     fun approvePairing(review: PairingReview, ownDevice: Boolean) {
-        if (pairingApprovalOwnDevice != null) return
-        pairingApprovalOwnDevice = ownDevice
-        pairingApprovalError = null
-        pairingScope.launch {
-            runCatching {
-                graph.durableTrustMutations.run {
-                    pairing.accept(review.candidate.payload, ownDevice).getOrThrow()
-                }
-            }.fold(
-                onSuccess = { card ->
-                    if (review.source == PairingReviewSource.HCE) {
-                        onPendingHcePairingPayloadConsumed(review.candidate.payload)
-                    }
-                    pairingReview = null
-                    Toast.makeText(
-                        context,
-                        resources.getString(R.string.pair_paired_with, card.displayName),
-                        Toast.LENGTH_LONG,
-                    ).show()
-                },
-                onFailure = {
-                    pairingApprovalError =
-                        resources.getString(R.string.pair_could_not_pair, it.message)
-                },
-            )
-            pairingApprovalOwnDevice = null
+        pairingUi.approve(graph, pairing, context.applicationContext, review, ownDevice)
+    }
+
+    val completedPairing by pairingUi.completed
+    LaunchedEffect(completedPairing) {
+        completedPairing?.let { (review, name) ->
+            if (review.source == PairingReviewSource.HCE) {
+                onPendingHcePairingPayloadConsumed(review.candidate.payload)
+            }
+            Toast.makeText(context, resources.getString(R.string.pair_paired_with, name), Toast.LENGTH_LONG).show()
+            pairingUi.review.value = null
+            pairingUi.completed.value = null
         }
     }
 
@@ -761,6 +777,8 @@ fun NotiSyncRoot(
                     ) {
                         DevicesDestination(
                             onPair = { if (!quarantined) showPairing = true },
+                            pairingOpen = showPairing,
+                            onDetailSelected = { showPairing = false },
                             openDeviceDetails = latestOpenDeviceDetails.value,
                             onOpenDeviceDetailsConsumed = latestOnOpenDeviceDetailsConsumed.value,
                             // Keep the compact overlay's animation anchored to the pairing button.
@@ -877,6 +895,7 @@ private fun AppNavigationScaffold(
                     // The default rail padding positions a FAB below the app bar. Our menu
                     // button instead shares the app bar's 64 dp row and the rail items' center.
                     contentPadding = PaddingValues(top = 8.dp),
+                    arrangement = Arrangement.Center,
                     header = {
                         Box(Modifier.width(96.dp), contentAlignment = Alignment.Center) {
                             railHeader()
@@ -1009,6 +1028,8 @@ private fun NavDestination?.isOn(dest: AppDestination): Boolean =
 @Composable
 private fun DevicesDestination(
     onPair: () -> Unit,
+    pairingOpen: Boolean = false,
+    onDetailSelected: () -> Unit = {},
     pairButtonModifier: Modifier = Modifier,
     openDeviceDetails: String? = null,
     onOpenDeviceDetailsConsumed: () -> Unit = {},
@@ -1029,6 +1050,8 @@ private fun DevicesDestination(
 
     DevicesScreen(
         permissions = permissions,
+        pairingOpen = pairingOpen,
+        onDetailSelected = onDetailSelected,
         openDeviceDetails = openDeviceDetails,
         onOpenDeviceDetailsConsumed = onOpenDeviceDetailsConsumed,
         onPair = onPair,

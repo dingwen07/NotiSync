@@ -14,6 +14,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.consumeWindowInsets
@@ -31,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +40,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
@@ -184,9 +187,11 @@ fun AppsScreen(
     val lastSeen by selection.lastSeen.collectAsStateWithLifecycle()
     val loaded by viewModel<AppsViewModel>().apps.collectAsStateWithLifecycle()
     var query by rememberSaveable { mutableStateOf("") }
-    // The app whose per-app config sheet is open (null = none). Transient, so plain remember (InstalledApp
-    // isn't Parcelable); re-tapping the row reopens it.
-    var configFor by remember { mutableStateOf<InstalledApp?>(null) }
+    var configPackage by rememberSaveable { mutableStateOf<String?>(null) }
+    val configFor = loaded?.firstOrNull { it.packageName == configPackage }
+    LaunchedEffect(loaded, configPackage) {
+        if (loaded != null && configPackage != null && configFor == null) configPackage = null
+    }
 
     val loading = loaded == null
     val apps = loaded.orEmpty()
@@ -223,75 +228,96 @@ fun AppsScreen(
     val allEnabled = matching.isNotEmpty() && matching.all { it.packageName in enabled }
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
-    NotiScaffold(stringResource(R.string.tab_apps)) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
-            if (!permissions.listenerEnabled) {
-                PermissionCard(
-                    title = stringResource(R.string.devices_enable_access_title),
-                    body = stringResource(R.string.devices_enable_access_body),
-                    action = stringResource(R.string.devices_open_settings),
-                    onClick = onOpenListenerSettings,
-                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
-                )
-            }
-            AppListSearchBar(
-                query = query,
-                onQueryChange = { query = it },
-                placeholder = stringResource(R.string.apps_search_hint),
-                mode = mode,
-                onModeChange = { mode = it },
-                allEnabled = allEnabled,
-                canToggleAll = matching.isNotEmpty(),
-                onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
-            )
+    AdaptiveDetailLayout(
+        selectedKey = configPackage,
+        onDismiss = { configPackage = null },
+        paneTitle = configFor?.label.orEmpty(),
+        detail = {
             configFor?.let { app ->
-                AppConfigSheet(app = app, appConfig = appConfig, onDismiss = { configFor = null })
-            }
-            when {
-                loading -> Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) { CircularProgressIndicator() }
-
-                matching.isEmpty() -> Box(
-                    Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Text(
-                        if (q.isEmpty()) stringResource(R.string.apps_empty) else stringResource(
-                            R.string.apps_no_match,
-                            query
-                        ),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                AppConfigSheet(app = app, appConfig = appConfig, onDismiss = { configPackage = null })
+            } ?: AdaptiveDetailSheet(onDismissRequest = { configPackage = null }) {
+                Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
                 }
-
-                else -> LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),
-                ) {
-                    sections.forEach { section ->
-                        stickyHeader(key = "header:${section.key}") {
-                            SectionHeader(section.title, section.items.size)
+            }
+        },
+    ) {
+        NotiScaffold(stringResource(R.string.tab_apps), contentMaxWidth = 960.dp) { padding ->
+            BoxWithConstraints(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
+                val scrollAccessNotice = maxHeight < 480.dp
+                Column(Modifier.fillMaxSize()) {
+                    if (!permissions.listenerEnabled && !scrollAccessNotice) {
+                        AppNotificationAccessCard(onOpenListenerSettings)
+                    }
+                    AppListSearchBar(
+                        query = query,
+                        onQueryChange = { query = it },
+                        placeholder = stringResource(R.string.apps_search_hint),
+                        mode = mode,
+                        onModeChange = { mode = it },
+                        allEnabled = allEnabled,
+                        canToggleAll = matching.isNotEmpty(),
+                        onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
+                    )
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize().testTag("apps-list"),
+                        contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),
+                    ) {
+                        if (!permissions.listenerEnabled && scrollAccessNotice) {
+                            item(key = "notification-access") { AppNotificationAccessCard(onOpenListenerSettings) }
                         }
-                        items(section.items, key = { "${section.key}:${it.packageName}" }) { app ->
-                            AppRow(
-                                app,
-                                app.packageName in enabled,
-                                lastSeen[app.packageName],
-                                fmt,
-                                selection,
-                                onOpenConfig = if (section.key == "on") {
-                                    { configFor = it }
-                                } else null,
-                            )
+                        when {
+                            loading -> item {
+                                Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                                    CircularProgressIndicator()
+                                }
+                            }
+                            matching.isEmpty() -> item {
+                                Box(Modifier.fillParentMaxSize(), contentAlignment = Alignment.Center) {
+                                    Text(
+                                        if (q.isEmpty()) stringResource(R.string.apps_empty) else stringResource(
+                                            R.string.apps_no_match,
+                                            query,
+                                        ),
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
+                            else -> sections.forEach { section ->
+                                stickyHeader(key = "header:${section.key}") {
+                                    SectionHeader(section.title, section.items.size)
+                                }
+                                items(section.items, key = { "${section.key}:${it.packageName}" }) { app ->
+                                    AppRow(
+                                        app,
+                                        app.packageName in enabled,
+                                        lastSeen[app.packageName],
+                                        fmt,
+                                        selection,
+                                        onOpenConfig = if (section.key == "on") {
+                                            { configPackage = it.packageName }
+                                        } else null,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun AppNotificationAccessCard(onOpenSettings: () -> Unit) {
+    PermissionCard(
+        title = stringResource(R.string.devices_enable_access_title),
+        body = stringResource(R.string.devices_enable_access_body),
+        action = stringResource(R.string.devices_open_settings),
+        onClick = onOpenSettings,
+        modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
+    )
 }
 
 @Composable

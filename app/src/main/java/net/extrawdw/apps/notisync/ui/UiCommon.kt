@@ -3,12 +3,14 @@ package net.extrawdw.apps.notisync.ui
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.calculateEndPadding
 import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
@@ -23,6 +25,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLayoutDirection
@@ -87,7 +90,11 @@ internal fun FeatureDrawerNavigationIcon() {
 
 /** Shared scaffold with a standard Material 3 top app bar (pinned, does not collapse on scroll). */
 @Composable
-internal fun NotiScaffold(title: String, content: @Composable (PaddingValues) -> Unit) {
+internal fun NotiScaffold(
+    title: String,
+    contentMaxWidth: Dp = Dp.Unspecified,
+    content: @Composable (PaddingValues) -> Unit,
+) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -97,7 +104,13 @@ internal fun NotiScaffold(title: String, content: @Composable (PaddingValues) ->
             )
         },
     ) { padding ->
-        content(padding)
+        if (contentMaxWidth == Dp.Unspecified) {
+            content(padding)
+        } else {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+                Box(Modifier.widthIn(max = contentMaxWidth).fillMaxSize()) { content(padding) }
+            }
+        }
     }
 }
 

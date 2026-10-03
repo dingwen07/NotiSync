@@ -155,7 +155,7 @@ internal fun SshRequestListItem(
             },
             trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
         ) {
-            Text(request.headline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(request.sshRequestHeadline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }
     HorizontalDivider()
@@ -375,7 +375,7 @@ internal fun SshRequestDetail(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp),
-        header = if (showSheetHeader) ({
+        header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
             CenteredRequestItem {
                 Row(
                     Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
@@ -645,7 +645,7 @@ private fun SshRequestHero(
                     Text(statusLabel(status), style = MaterialTheme.typography.labelLarge)
                 }
                 Text(
-                    request.headline(knownHostname, approvalPresentation),
+                    request.sshRequestHeadline(knownHostname, approvalPresentation),
                     style = MaterialTheme.typography.titleLarge,
                 )
                 Text(
@@ -917,7 +917,7 @@ private fun statusContainer(status: SshRequestDisplayStatus): Color = when (stat
 }
 
 @Composable
-private fun StoredSshProviderRequest.headline(
+internal fun StoredSshProviderRequest.sshRequestHeadline(
     knownHostname: String? = null,
     approvalPresentation: Boolean = false,
 ): String = when (kind) {

@@ -4,6 +4,8 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -30,7 +32,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -93,7 +94,7 @@ internal fun DevicesPairingLayout(
     onBrokerPairingCandidate: (PairingCandidate) -> Unit,
     devicesContent: @Composable () -> Unit,
 ) {
-    val paneState = remember { PairingPaneState() }
+    val paneState = remember { SupportingPaneMotionState() }
     val paneExpansion = rememberPaneExpansionState()
     val paneOpen = directive.maxHorizontalPartitions > 1 && showPairing
     LaunchedEffect(paneOpen) {
@@ -157,6 +158,8 @@ fun DevicesScreen(
     pairButtonModifier: Modifier = Modifier,
     openDeviceDetails: String? = null,
     onOpenDeviceDetailsConsumed: () -> Unit = {},
+    pairingOpen: Boolean = false,
+    onDetailSelected: () -> Unit = {},
 ) {
     val graph = rememberGraph()
     val context = LocalContext.current
@@ -169,12 +172,26 @@ fun DevicesScreen(
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
     // The own device whose received notification-filters sheet is open (null = closed).
-    var filterSheetFor by remember { mutableStateOf<RosterDevice?>(null) }
+    var filterDeviceId by rememberSaveable { mutableStateOf<String?>(null) }
+    val filterSheetFor = roster.firstOrNull { it.clientId.value == filterDeviceId }
     // Device details are keyed by id so a live profile/key-epoch update refreshes the open sheet.
     var detailsSheetFor by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(roster, detailsSheetFor, filterDeviceId) {
+        if (detailsSheetFor != null && roster.none { it.clientId.value == detailsSheetFor }) detailsSheetFor = null
+        if (filterDeviceId != null && roster.none { it.clientId.value == filterDeviceId }) filterDeviceId = null
+    }
+    LaunchedEffect(pairingOpen) {
+        if (pairingOpen) {
+            filterDeviceId = null
+            detailsSheetFor = null
+        }
+    }
+    LaunchedEffect(detailsSheetFor, filterDeviceId) {
+        if (detailsSheetFor != null || filterDeviceId != null) onDetailSelected()
+    }
     LaunchedEffect(openDeviceDetails) {
         if (openDeviceDetails != null) {
-            filterSheetFor = null
+            filterDeviceId = null
             detailsSheetFor = openDeviceDetails
             onOpenDeviceDetailsConsumed()
         }
@@ -194,190 +211,204 @@ fun DevicesScreen(
         }
     }
 
-    NotiScaffold(stringResource(R.string.tab_devices)) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
-            contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            if (quarantined) {
-                item {
-                    QuarantineCard(
-                        // Approve re-signs the current roster as-is; broadcast it so peers re-converge once
-                        // we're active again. Clear wipes it (nothing left to announce — they'll re-pair).
-                        onApprove = {
-                            graph.launchDurableTrustAction(context) {
-                                graph.trust.approveQuarantine()
-                                graph.broadcastTrust()
-                            }
-                        },
-                        onClear = {
-                            graph.launchDurableTrustAction(context) {
-                                graph.trust.clearQuarantine()
-                            }
-                        },
-                    )
-                }
-            }
-            if (!permissions.postNotificationsGranted) {
-                item {
-                    PermissionCard(
-                        title = stringResource(R.string.devices_allow_posting_title),
-                        body = stringResource(R.string.devices_allow_posting_body),
-                        action = stringResource(R.string.devices_grant),
-                        onClick = onRequestPostNotifications,
-                    )
-                }
-            }
-            item {
-                ThisDeviceCard(
-                    name = deviceName,
-                    safetyNumber = graph.identity.clientId.value,
-                    backing = graph.identity.backing,
+    AdaptiveDetailLayout(
+        selectedKey = detailsSheetFor?.let { "device:$it" } ?: filterDeviceId?.let { "filter:$it" },
+        onDismiss = { detailsSheetFor = null; filterDeviceId = null },
+        paneTitle = filterSheetFor?.let {
+            stringResource(R.string.device_filters_title, it.displayName ?: stringResource(R.string.device_unknown))
+        } ?: roster.firstOrNull { it.clientId.value == detailsSheetFor }?.displayName
+            ?: stringResource(R.string.device_unknown),
+        detail = {
+            filterSheetFor?.let { device ->
+                val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
+                NotificationFilterSheet(
+                    deviceName = device.displayName ?: stringResource(R.string.device_unknown),
+                    filter = filters[device.clientId.value],
+                    onClear = { graph.notificationFilters.remove(device.clientId) },
+                    onDismiss = { filterDeviceId = null },
                 )
             }
-            item {
-                Button(
-                    onClick = onPair,
-                    enabled = !quarantined,
-                    modifier = Modifier.fillMaxWidth().then(pairButtonModifier)
-                ) {
-                    Icon(
-                        QrCode2Icon,
-                        contentDescription = null,
-                        modifier = Modifier.size(ButtonDefaults.IconSize)
-                    )
-                    Spacer(Modifier.size(4.dp))
-                    Icon(
-                        ContactlessIcon,
-                        contentDescription = null,
-                        modifier = Modifier.size(ButtonDefaults.IconSize)
-                    )
-                    Spacer(Modifier.size(ButtonDefaults.IconSpacing))
-                    Text(stringResource(R.string.pair_a_device))
-                }
-            }
-            item {
-                Text(
-                    stringResource(R.string.devices_my_devices, ownDevices.size),
-                    style = MaterialTheme.typography.titleMedium,
-                    modifier = Modifier.padding(top = 4.dp),
-                )
-            }
-            if (ownDevices.isEmpty()) {
-                item {
-                    Text(
-                        stringResource(R.string.devices_my_devices_empty),
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                }
-            } else {
-                item {
-                    DeviceListCard(
-                        ownDevices, graph, enabled = !quarantined,
-                        onShowFilters = {
+
+            detailsSheetFor?.let { clientId ->
+                roster.firstOrNull { it.clientId.value == clientId }?.let { device ->
+                    DeviceDetailsSheet(
+                        device = device,
+                        nowMillis = now,
+                        screenMirroringEnabled = screenMirroringEnabled,
+                        screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
+                        screenMirrorRequestEnabled = !quarantined,
+                        trustActionsEnabled = !quarantined,
+                        screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
+                        screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
+                        onScreenControlAuthorizedChange = { authorized ->
+                            graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
+                        },
+                        onScreenMirrorCodecOverrideChange = { codec ->
+                            graph.scope.launch {
+                                graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
+                            }
+                        },
+                        onStartScreenMirror = {
                             detailsSheetFor = null
-                            filterSheetFor = it
+                            onStartScreenMirror(device.clientId)
                         },
-                        onShowDetails = {
-                            filterSheetFor = null
-                            detailsSheetFor = it.clientId.value
+                        onRemove = {
+                            detailsSheetFor = null
+                            graph.launchDurableTrustAction(context) {
+                                if (graph.trust.revokeLocal(
+                                        device.clientId,
+                                        System.currentTimeMillis(),
+                                    )
+                                ) graph.broadcastTrust()
+                            }
                         },
-                        onStartScreenMirror = { onStartScreenMirror(it.clientId) },
+                        onRestore = {
+                            detailsSheetFor = null
+                            graph.launchDurableTrustAction(context) {
+                                if (graph.trust.restoreTrust(device.clientId, System.currentTimeMillis())) {
+                                    graph.broadcastTrust()
+                                }
+                            }
+                        },
+                        onPurge = {
+                            detailsSheetFor = null
+                            graph.launchDurableTrustAction(context) {
+                                graph.trust.purgeRevoked(device.clientId)
+                                // Forget this peer's filter only after its trust-store removal was durable.
+                                graph.notificationFilters.remove(device.clientId)
+                            }
+                        },
+                        onDismiss = { detailsSheetFor = null },
                     )
                 }
             }
-            if (otherDevices.isNotEmpty()) {
+        },
+    ) {
+        NotiScaffold(stringResource(R.string.tab_devices)) { padding ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+                contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                if (quarantined) {
+                    item {
+                        QuarantineCard(
+                            // Approve re-signs the current roster as-is; broadcast it so peers re-converge once
+                            // we're active again. Clear wipes it (nothing left to announce — they'll re-pair).
+                            onApprove = {
+                                graph.launchDurableTrustAction(context) {
+                                    graph.trust.approveQuarantine()
+                                    graph.broadcastTrust()
+                                }
+                            },
+                            onClear = {
+                                graph.launchDurableTrustAction(context) {
+                                    graph.trust.clearQuarantine()
+                                }
+                            },
+                        )
+                    }
+                }
+                if (!permissions.postNotificationsGranted) {
+                    item {
+                        PermissionCard(
+                            title = stringResource(R.string.devices_allow_posting_title),
+                            body = stringResource(R.string.devices_allow_posting_body),
+                            action = stringResource(R.string.devices_grant),
+                            onClick = onRequestPostNotifications,
+                        )
+                    }
+                }
+                item {
+                    ThisDeviceCard(
+                        name = deviceName,
+                        safetyNumber = graph.identity.clientId.value,
+                        backing = graph.identity.backing,
+                    )
+                }
+                item {
+                    Button(
+                        onClick = {
+                            filterDeviceId = null
+                            detailsSheetFor = null
+                            onPair()
+                        },
+                        enabled = !quarantined,
+                        modifier = Modifier.fillMaxWidth().then(pairButtonModifier)
+                    ) {
+                        Icon(
+                            QrCode2Icon,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize)
+                        )
+                        Spacer(Modifier.size(4.dp))
+                        Icon(
+                            ContactlessIcon,
+                            contentDescription = null,
+                            modifier = Modifier.size(ButtonDefaults.IconSize)
+                        )
+                        Spacer(Modifier.size(ButtonDefaults.IconSpacing))
+                        Text(stringResource(R.string.pair_a_device))
+                    }
+                }
                 item {
                     Text(
-                        stringResource(R.string.devices_other_devices, otherDevices.size),
+                        stringResource(R.string.devices_my_devices, ownDevices.size),
                         style = MaterialTheme.typography.titleMedium,
                         modifier = Modifier.padding(top = 4.dp),
                     )
                 }
-                item {
-                    Text(
-                        stringResource(R.string.devices_other_devices_desc),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
+                if (ownDevices.isEmpty()) {
+                    item {
+                        Text(
+                            stringResource(R.string.devices_my_devices_empty),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                } else {
+                    item {
+                        DeviceListCard(
+                            ownDevices, graph, enabled = !quarantined,
+                            onShowFilters = {
+                                detailsSheetFor = null
+                                filterDeviceId = it.clientId.value
+                            },
+                            onShowDetails = {
+                                filterDeviceId = null
+                                detailsSheetFor = it.clientId.value
+                            },
+                            onStartScreenMirror = { onStartScreenMirror(it.clientId) },
+                        )
+                    }
                 }
-                item {
-                    DeviceListCard(
-                        otherDevices,
-                        graph,
-                        enabled = !quarantined,
-                        onShowDetails = {
-                            filterSheetFor = null
-                            detailsSheetFor = it.clientId.value
-                        },
-                    )
+                if (otherDevices.isNotEmpty()) {
+                    item {
+                        Text(
+                            stringResource(R.string.devices_other_devices, otherDevices.size),
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                    }
+                    item {
+                        Text(
+                            stringResource(R.string.devices_other_devices_desc),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    item {
+                        DeviceListCard(
+                            otherDevices,
+                            graph,
+                            enabled = !quarantined,
+                            onShowDetails = {
+                                filterDeviceId = null
+                                detailsSheetFor = it.clientId.value
+                            },
+                        )
+                    }
                 }
-            }
-        }
-
-        filterSheetFor?.let { device ->
-            val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
-            NotificationFilterSheet(
-                deviceName = device.displayName ?: stringResource(R.string.device_unknown),
-                filter = filters[device.clientId.value],
-                onClear = { graph.notificationFilters.remove(device.clientId) },
-                onDismiss = { filterSheetFor = null },
-            )
-        }
-
-        detailsSheetFor?.let { clientId ->
-            roster.firstOrNull { it.clientId.value == clientId }?.let { device ->
-                DeviceDetailsSheet(
-                    device = device,
-                    nowMillis = now,
-                    screenMirroringEnabled = screenMirroringEnabled,
-                    screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
-                    screenMirrorRequestEnabled = !quarantined,
-                    trustActionsEnabled = !quarantined,
-                    screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
-                    screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
-                    onScreenControlAuthorizedChange = { authorized ->
-                        graph.screenMirrorAuthorizations.setAuthorized(device.clientId, authorized)
-                    },
-                    onScreenMirrorCodecOverrideChange = { codec ->
-                        graph.scope.launch {
-                            graph.screenMirrorCodecPreferences.setPreferredCodec(device.clientId, codec)
-                        }
-                    },
-                    onStartScreenMirror = {
-                        detailsSheetFor = null
-                        onStartScreenMirror(device.clientId)
-                    },
-                    onRemove = {
-                        detailsSheetFor = null
-                        graph.launchDurableTrustAction(context) {
-                            if (graph.trust.revokeLocal(
-                                    device.clientId,
-                                    System.currentTimeMillis(),
-                                )
-                            ) graph.broadcastTrust()
-                        }
-                    },
-                    onRestore = {
-                        detailsSheetFor = null
-                        graph.launchDurableTrustAction(context) {
-                            if (graph.trust.restoreTrust(device.clientId, System.currentTimeMillis())) {
-                                graph.broadcastTrust()
-                            }
-                        }
-                    },
-                    onPurge = {
-                        detailsSheetFor = null
-                        graph.launchDurableTrustAction(context) {
-                            graph.trust.purgeRevoked(device.clientId)
-                            // Forget this peer's filter only after its trust-store removal was durable.
-                            graph.notificationFilters.remove(device.clientId)
-                        }
-                    },
-                    onDismiss = { detailsSheetFor = null },
-                )
             }
         }
     }
@@ -681,14 +712,15 @@ private fun NotificationFilterSheet(
     onDismiss: () -> Unit,
 ) {
     val sheetState = rememberModalBottomSheetState()
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    AdaptiveDetailSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
         Column(
             Modifier
                 .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            Text(
+            if (!LocalIsDetailPane.current) Text(
                 stringResource(R.string.device_filters_title, deviceName),
                 style = MaterialTheme.typography.titleMedium,
             )

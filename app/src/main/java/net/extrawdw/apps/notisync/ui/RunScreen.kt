@@ -77,6 +77,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.boundsInWindow
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.selected
@@ -85,6 +86,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -113,6 +115,33 @@ import net.extrawdw.notisync.protocol.RunPhase
 import net.extrawdw.notisync.protocol.RunPromptKind
 import net.extrawdw.notisync.protocol.RunState
 
+/** Command drafts can contain secrets: keep them in memory, never in a Bundle. */
+private class RunDetailUiState : androidx.lifecycle.ViewModel() {
+    private var draftKey: Triple<RunKey, Long?, Long?>? = null
+    var draft = RunInputDraft()
+        private set
+
+    fun draftFor(key: RunKey, generation: Long?, revision: Long?): RunInputDraft {
+        val next = Triple(key, generation, revision)
+        if (draftKey != next) {
+            draftKey = next
+            draft = RunInputDraft()
+        }
+        return draft
+    }
+
+    fun clearDraft() {
+        draft.input.value = ""
+        draftKey = null
+    }
+}
+
+private class RunInputDraft {
+    val input = mutableStateOf("")
+    val submitting = mutableStateOf(false)
+    val markingInactive = mutableStateOf(false)
+}
+
 @Composable
 fun RunScreen(
     initialSelection: RunKey? = null,
@@ -122,8 +151,9 @@ fun RunScreen(
     val context = LocalContext.current
     val engine = graph.runEngine ?: return
     val store = graph.runStore
+    val detailUiState = androidx.lifecycle.viewmodel.compose.viewModel { RunDetailUiState() }
     val runs by engine.runs.collectAsStateWithLifecycle()
-    val changeVersion by store.changeVersion.collectAsStateWithLifecycle(minActiveState = Lifecycle.State.RESUMED)
+    val changeVersion by store.changeVersion.collectAsStateWithLifecycle(minActiveState = Lifecycle.State.STARTED)
     val historyFlow = remember(store) {
         historyPager<StoredRun, RunHistoryCursor>(cursorOf = { RunHistoryCursor.after(it) }) { limit, cursor, direction, include ->
             store.historyPage(limit, cursor, direction, include)
@@ -140,7 +170,11 @@ fun RunScreen(
     var selectedLoadError by remember(selectedKey) { mutableStateOf(false) }
     var detailRetry by remember { mutableIntStateOf(0) }
 
-    RefreshRunHistoryOnResume(store, history)
+    LaunchedEffect(selectedEncoded) {
+        if (selectedEncoded == null) detailUiState.clearDraft()
+    }
+
+    RefreshRunHistoryWhileVisible(store, history)
 
     LaunchedEffect(initialSelection) {
         if (initialSelection != null) {
@@ -161,48 +195,55 @@ fun RunScreen(
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.run_screen_title)) },
-                navigationIcon = { FeatureDrawerNavigationIcon() },
-            )
-        },
-    ) { padding ->
-        RunList(
-            active = runs.filter { it.active },
-            history = history,
-            selectedKey = selectedKey,
-            deviceNameOf = { id -> graph.trust.displayName(id) },
-            onSelect = { run -> selectedEncoded = run.key.encoded() },
-            onClearHistory = { showClearHistory = true },
-            scaffoldPadding = padding,
-        )
-    }
-
-    selected?.let { run ->
-        RunDetailSheet(
-            run = run,
-            engine = engine,
-            store = store,
-            deviceName = graph.trust.displayName(run.state.hostClientId),
-            refreshing = run.key in pendingRefreshes,
-            onDismiss = { selectedEncoded = null },
-        )
-    }
-
-    if (selectedKey != null && selected == null) {
-        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
-            Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
-                if (selectedLoadError) {
-                    Text(stringResource(R.string.history_load_failed))
-                    TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
-                } else CircularProgressIndicator()
+    AdaptiveDetailLayout(
+        selectedKey = selectedEncoded,
+        onDismiss = { selectedEncoded = null },
+        paneTitle = selected?.state?.let(::commandLabel).orEmpty(),
+        detail = {
+            selected?.let { run ->
+                RunDetailSheet(
+                    uiState = detailUiState,
+                    run = run,
+                    engine = engine,
+                    store = store,
+                    deviceName = graph.trust.displayName(run.state.hostClientId),
+                    refreshing = run.key in pendingRefreshes,
+                    onDismiss = { selectedEncoded = null },
+                )
             }
+
+            if (selectedKey != null && selected == null) {
+                EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedEncoded = null }) {
+                    Column(Modifier.fillMaxWidth().padding(24.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+                        if (selectedLoadError) {
+                            Text(stringResource(R.string.history_load_failed))
+                            TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
+                        } else CircularProgressIndicator()
+                    }
+                }
+            }
+        },
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.run_screen_title)) },
+                    navigationIcon = { FeatureDrawerNavigationIcon() },
+                )
+            },
+        ) { padding ->
+            RunList(
+                active = runs.filter { it.active },
+                history = history,
+                selectedKey = selectedKey,
+                deviceNameOf = { id -> graph.trust.displayName(id) },
+                onSelect = { run -> selectedEncoded = run.key.encoded() },
+                onClearHistory = { showClearHistory = true },
+                scaffoldPadding = padding,
+            )
         }
     }
-
     if (showClearHistory) {
         AlertDialog(
             onDismissRequest = {
@@ -385,6 +426,7 @@ private fun RunListItem(
 
 @Composable
 private fun RunDetailSheet(
+    uiState: RunDetailUiState,
     run: StoredRun,
     engine: RunEngine,
     store: RunStore,
@@ -392,14 +434,35 @@ private fun RunDetailSheet(
     refreshing: Boolean,
     onDismiss: () -> Unit,
 ) {
+    var selectedRevisionId by rememberSaveable(run.key) { mutableStateOf<Long?>(null) }
     var selectedRevision by remember(run.key) { mutableStateOf<StoredRunRevision?>(null) }
+    LaunchedEffect(run.key, selectedRevisionId) {
+        val id = selectedRevisionId
+        if (id == null) {
+            selectedRevision = null
+        } else if (selectedRevision?.state?.revision != id) {
+            selectedRevision = withContext(Dispatchers.IO) {
+                store.revisionPage(run.key, limit = 1, cursor = id, includeCursor = true)
+                    .items.firstOrNull { it.state.revision == id }
+            }
+            if (selectedRevision == null) selectedRevisionId = null
+        }
+    }
     EdgeToEdgeHistoryModalBottomSheet(
         onDismissRequest = onDismiss,
+        showPaneHeader = false,
     ) {
-        val revision = selectedRevision
+        val revision = selectedRevision?.takeIf { it.state.revision == selectedRevisionId }
+        if (selectedRevisionId != null && revision == null) {
+            Box(Modifier.fillMaxWidth().padding(32.dp), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator()
+            }
+            return@EdgeToEdgeHistoryModalBottomSheet
+        }
         // Switching snapshots resets scroll/input/dialog state without adding a navigation layer.
         key(run.key, revision?.state?.revision) {
             RunDetail(
+                uiState = uiState,
                 run = revision?.let { StoredRun(it.state, it.receivedAt, it.state.revision) } ?: run,
                 engine = engine,
                 deviceName = deviceName,
@@ -411,7 +474,7 @@ private fun RunDetailSheet(
                         runKey = run.key,
                         store = store,
                         selectedRevision = revision?.state?.revision,
-                        onSelect = { selectedRevision = it },
+                        onSelect = { selectedRevision = it; selectedRevisionId = it?.state?.revision },
                     )
                 },
                 modifier = Modifier.fillMaxWidth(),
@@ -477,7 +540,7 @@ private fun RunRevisionMenuItems(
         }.flow
     }
     val revisions = flow.collectAsLazyPagingItems()
-    RefreshRunHistoryOnResume(store, revisions)
+    RefreshRunHistoryWhileVisible(store, revisions)
     DropdownMenuItem(
         text = { Text(stringResource(R.string.run_revision_current)) },
         onClick = { onSelect(null) },
@@ -534,14 +597,14 @@ private fun RunRevisionMenuItems(
 }
 
 @Composable
-private fun <T : Any> RefreshRunHistoryOnResume(store: RunStore, items: LazyPagingItems<T>) {
+private fun <T : Any> RefreshRunHistoryWhileVisible(store: RunStore, items: LazyPagingItems<T>) {
     val initialVersion = remember(items) { store.changeVersion.value }
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(store, items, lifecycleOwner) {
         var observed = false
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             store.changeVersion.collect { version ->
-                // Paging performs the initial load. Changes and subsequent resumes refresh its window.
+                // Paging performs the initial load. Changes and subsequent visible starts refresh its window.
                 if (observed || version != initialVersion) items.refresh()
                 observed = true
             }
@@ -551,6 +614,7 @@ private fun <T : Any> RefreshRunHistoryOnResume(store: RunStore, items: LazyPagi
 
 @Composable
 private fun RunDetail(
+    uiState: RunDetailUiState,
     run: StoredRun,
     engine: RunEngine,
     deviceName: String?,
@@ -561,13 +625,18 @@ private fun RunDetail(
     readOnly: Boolean = false,
 ) {
     val state = run.state
-    val scope = rememberCoroutineScope()
-    var input by remember(run.key, state.interactionGeneration) { mutableStateOf("") }
-    var inputSubmitting by remember(run.key, state.interactionGeneration) { mutableStateOf(false) }
-    var markingInactive by remember(run.key) { mutableStateOf(false) }
-    var showSignal by remember { mutableStateOf(false) }
-    var showKill by remember { mutableStateOf(false) }
+    val scope = uiState.viewModelScope
+    val draft = remember(run.key, state.interactionGeneration, readOnly, state.revision.takeIf { readOnly }) {
+        uiState.draftFor(run.key, state.interactionGeneration, state.revision.takeIf { readOnly })
+    }
+    var input by draft.input
+    var inputSubmitting by draft.submitting
+    var markingInactive by draft.markingInactive
+    var showSignal by rememberSaveable { mutableStateOf(false) }
+    var showKill by rememberSaveable { mutableStateOf(false) }
     val context = LocalContext.current
+    val isPane = LocalIsDetailPane.current
+    val close = LocalDetailPaneBack.current ?: onBack
 
     HistorySheetLazyColumn(
         modifier,
@@ -575,16 +644,22 @@ private fun RunDetail(
         verticalArrangement = Arrangement.spacedBy(16.dp),
         header = {
             Row(
-                Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor)
+                Modifier.fillMaxWidth().background(
+                    if (isPane) MaterialTheme.colorScheme.surfaceContainerLow else BottomSheetDefaults.ContainerColor,
+                )
                     .padding(top = 8.dp, bottom = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                IconButton(onClick = onBack) {
+                IconButton(
+                    onClick = close,
+                    modifier = if (isPane) Modifier.testTag("detail-pane-back") else Modifier,
+                ) {
                     Icon(ArrowBackIcon, contentDescription = stringResource(R.string.run_back))
                 }
                 Column(Modifier.weight(1f)) {
                     Text(
                         commandLabel(state),
+                        modifier = Modifier.testTag("run-detail-title"),
                         style = MaterialTheme.typography.headlineSmall,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -841,7 +916,7 @@ private fun RunDetail(
 
 @Composable
 private fun SignalDialog(onDismiss: () -> Unit, onSend: (String) -> Unit) {
-    var signal by remember { mutableStateOf("") }
+    var signal by rememberSaveable { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.run_signal_title)) },

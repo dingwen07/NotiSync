@@ -1,5 +1,7 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -34,6 +36,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import androidx.core.net.toUri
 import net.extrawdw.apps.notisync.BuildConfig
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.android as AndroidIcon
@@ -47,6 +50,8 @@ internal fun AboutScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val configuration = LocalConfiguration.current
     val uriHandler = LocalUriHandler.current
+    val playStoreUrl = "https://play.google.com/store/apps/details?id=${BuildConfig.APPLICATION_ID}"
+
     val iconSize = 128.dp
     val iconSizePx = with(LocalDensity.current) { iconSize.roundToPx() }
     val appIcon = remember(context, configuration, iconSizePx) {
@@ -91,6 +96,16 @@ internal fun AboutScreen(onBack: () -> Unit) {
             ) {
                 ListItem(
                     colors = optionColors,
+                    modifier = Modifier.clickable {
+                        try {
+                            context.startActivity(
+                                Intent(Intent.ACTION_VIEW, playStoreUrl.toUri())
+                                    .setPackage("com.android.vending"),
+                            )
+                        } catch (_: ActivityNotFoundException) {
+                            uriHandler.openUri(playStoreUrl)
+                        }
+                    },
                     leadingContent = { Icon(AndroidIcon, contentDescription = null) },
                     trailingContent = {
                         Text(

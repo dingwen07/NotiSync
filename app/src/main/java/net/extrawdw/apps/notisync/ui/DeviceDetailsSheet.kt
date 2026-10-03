@@ -29,7 +29,6 @@ import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
@@ -88,7 +87,7 @@ internal fun DeviceDetailsSheet(
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val name = device.displayName ?: stringResource(R.string.device_unknown)
 
-    ModalBottomSheet(
+    AdaptiveDetailSheet(
         onDismissRequest = onDismiss,
         modifier = Modifier.statusBarsPadding(),
         sheetState = sheetState,
@@ -405,7 +404,7 @@ private fun DeviceDetailsHeader(name: String, platform: String, verified: Boolea
             )
         }
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Text(
+            if (!LocalIsDetailPane.current) Text(
                 name,
                 style = MaterialTheme.typography.titleLarge,
                 maxLines = 2,

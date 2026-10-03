@@ -83,7 +83,6 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.credentials.exceptions.CreateCredentialCancellationException
@@ -100,6 +99,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.repeatOnLifecycle
@@ -120,6 +120,7 @@ import net.extrawdw.apps.notisync.sshkeyprovider.SshWebAuthnOpenSshIdentityExpor
 import net.extrawdw.apps.notisync.sshkeyprovider.PreparedSshKeyStorage
 import net.extrawdw.apps.notisync.sshkeyprovider.PendingSshWebAuthnKeyRecovery
 import net.extrawdw.apps.notisync.sshkeyprovider.SshRequestListItem
+import net.extrawdw.apps.notisync.sshkeyprovider.sshRequestHeadline
 import net.extrawdw.apps.notisync.sshkeyprovider.SshPrivateKeyFileParser
 import net.extrawdw.apps.notisync.sshkeyprovider.SshKeyStorageResult
 import net.extrawdw.apps.notisync.sshkeyprovider.SshWebAuthnCredential
@@ -152,6 +153,50 @@ import java.security.interfaces.RSAPublicKey
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.crypto.Cipher
 
+/** Sensitive drafts and active operations survive recreation only in memory. */
+private class SshProviderUiState(private val graph: net.extrawdw.apps.notisync.AppGraph) : androidx.lifecycle.ViewModel() {
+    val loading = mutableStateOf(false)
+    val error = mutableStateOf<String?>(null)
+    val generating = mutableStateOf(false)
+    val webAuthnSheetStep = mutableStateOf<WebAuthnSheetStep?>(null)
+    val webAuthnFlowBusy = mutableStateOf(false)
+    val webAuthnRecoveryName = mutableStateOf("")
+    val pendingWebAuthnKeyRecovery = mutableStateOf<PendingSshWebAuthnKeyRecovery?>(null)
+    val webAuthnRecoveryPayload = mutableStateOf("")
+    val webAuthnFlowError = mutableStateOf<String?>(null)
+    val pendingWebAuthnRecoverySelection = mutableStateOf<PendingWebAuthnRecoverySelection?>(null)
+    val webAuthnRecoveryActions = mutableStateOf<WebAuthnRecoveryActions?>(null)
+    val privateKeyText = mutableStateOf<String?>(null)
+    val validatingImportSource = mutableStateOf(false)
+    val pendingImport = mutableStateOf<PendingSshKeyImport?>(null)
+    val importError = mutableStateOf<String?>(null)
+    val previewingImport = mutableStateOf(false)
+    val importingKey = mutableStateOf(false)
+    val importName = mutableStateOf("")
+    val importPassphrase = mutableStateOf("")
+    val importStorage = mutableStateOf(SshKeyStorageSelection(allowExport = true))
+    val renaming = mutableStateOf<SshKeyDescriptor?>(null)
+    val selectedKnownHost = mutableStateOf<SshKnownHost?>(null)
+    val deletingHost = mutableStateOf<SshKnownHost?>(null)
+    val deletingAuthorization = mutableStateOf<SshRememberedAuthorization?>(null)
+    val deleting = mutableStateOf<SshKeyDescriptor?>(null)
+    val pendingStorageAuthentication = mutableStateOf<PreparedSshKeyStorage?>(null)
+    val completingStorage = mutableStateOf(false)
+
+    override fun onCleared() {
+        pendingImport.value?.bytes?.fill(0)
+        pendingStorageAuthentication.value?.let { prepared ->
+            graph.scope.launch(Dispatchers.IO) {
+                graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared)
+            }
+        }
+        privateKeyText.value = null
+        importPassphrase.value = ""
+        pendingImport.value = null
+        pendingStorageAuthentication.value = null
+    }
+}
+
 /** In-app SSH key-provider management and durable request history. */
 @Composable
 fun SshKeyProviderScreen(
@@ -164,14 +209,15 @@ fun SshKeyProviderScreen(
     val storageAuthUnavailable = stringResource(R.string.ssh_key_provider_storage_auth_unavailable)
     val defaultImportedKeyName = stringResource(R.string.ssh_key_provider_imported_key_default)
     val clipboardKeyTooLarge = stringResource(R.string.ssh_key_provider_clipboard_key_too_large)
-    val scope = rememberCoroutineScope()
+    val uiState = androidx.lifecycle.viewmodel.compose.viewModel { SshProviderUiState(graph) }
+    val scope = uiState.viewModelScope
     val roster by graph.trust.roster.collectAsStateWithLifecycle()
     val activePeers by graph.trust.activePeers.collectAsStateWithLifecycle()
     val managementState by graph.sshKeyProviderManagement.state.collectAsStateWithLifecycle(
-        minActiveState = Lifecycle.State.RESUMED,
+        minActiveState = Lifecycle.State.STARTED,
     )
     val requestVersion by graph.sshKeyProviderStore.changeVersion.collectAsStateWithLifecycle(
-        minActiveState = Lifecycle.State.RESUMED,
+        minActiveState = Lifecycle.State.STARTED,
     )
     val historyFlow = remember(graph.sshKeyProviderStore) {
         historyPager<StoredSshProviderRequest, SshHistoryCursor>(
@@ -185,7 +231,7 @@ fun SshKeyProviderScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     LaunchedEffect(historyItems, lifecycleOwner) {
         var observed = false
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             graph.sshKeyProviderStore.changeVersion.collect { version ->
                 // Pager performs the initial load; later changes and every return refresh the window.
                 if (observed || version != initialHistoryVersion) historyItems.refresh()
@@ -206,36 +252,32 @@ fun SshKeyProviderScreen(
     var selectedKeyId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistoryRequestId by rememberSaveable { mutableStateOf<String?>(null) }
     var selectedHistory by remember { mutableStateOf<StoredSshProviderRequest?>(null) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var generating by remember { mutableStateOf(false) }
-    var webAuthnSheetStep by remember { mutableStateOf<WebAuthnSheetStep?>(null) }
-    var webAuthnFlowBusy by remember { mutableStateOf(false) }
-    var webAuthnRecoveryName by remember { mutableStateOf("") }
-    var pendingWebAuthnKeyRecovery by remember { mutableStateOf<PendingSshWebAuthnKeyRecovery?>(null) }
-    var webAuthnRecoveryPayload by remember { mutableStateOf("") }
-    var webAuthnFlowError by remember { mutableStateOf<String?>(null) }
-    var pendingWebAuthnRecoverySelection by remember {
-        mutableStateOf<PendingWebAuthnRecoverySelection?>(null)
-    }
-    var webAuthnRecoveryActions by remember { mutableStateOf<WebAuthnRecoveryActions?>(null) }
-    var privateKeyText by remember { mutableStateOf<String?>(null) }
-    var validatingImportSource by remember { mutableStateOf(false) }
-    var pendingImport by remember { mutableStateOf<PendingSshKeyImport?>(null) }
-    val latestPendingImport by rememberUpdatedState(pendingImport)
-    var importError by remember { mutableStateOf<String?>(null) }
-    var previewingImport by remember { mutableStateOf(false) }
-    var importingKey by remember { mutableStateOf(false) }
-    var importName by remember { mutableStateOf("") }
-    var importPassphrase by remember { mutableStateOf("") }
-    var importStorage by remember { mutableStateOf(SshKeyStorageSelection(allowExport = true)) }
-    var renaming by remember { mutableStateOf<SshKeyDescriptor?>(null) }
-    var selectedKnownHost by remember { mutableStateOf<SshKnownHost?>(null) }
-    var deletingHost by remember { mutableStateOf<SshKnownHost?>(null) }
-    var deletingAuthorization by remember { mutableStateOf<SshRememberedAuthorization?>(null) }
-    var deleting by remember { mutableStateOf<SshKeyDescriptor?>(null) }
-    var pendingStorageAuthentication by remember { mutableStateOf<PreparedSshKeyStorage?>(null) }
-    val latestPendingStorageAuthentication by rememberUpdatedState(pendingStorageAuthentication)
+    var loading by uiState.loading
+    var error by uiState.error
+    var generating by uiState.generating
+    var webAuthnSheetStep by uiState.webAuthnSheetStep
+    var webAuthnFlowBusy by uiState.webAuthnFlowBusy
+    var webAuthnRecoveryName by uiState.webAuthnRecoveryName
+    var pendingWebAuthnKeyRecovery by uiState.pendingWebAuthnKeyRecovery
+    var webAuthnRecoveryPayload by uiState.webAuthnRecoveryPayload
+    var webAuthnFlowError by uiState.webAuthnFlowError
+    var pendingWebAuthnRecoverySelection by uiState.pendingWebAuthnRecoverySelection
+    var webAuthnRecoveryActions by uiState.webAuthnRecoveryActions
+    var privateKeyText by uiState.privateKeyText
+    var validatingImportSource by uiState.validatingImportSource
+    var pendingImport by uiState.pendingImport
+    var importError by uiState.importError
+    var previewingImport by uiState.previewingImport
+    var importingKey by uiState.importingKey
+    var importName by uiState.importName
+    var importPassphrase by uiState.importPassphrase
+    var importStorage by uiState.importStorage
+    var renaming by uiState.renaming
+    var selectedKnownHost by uiState.selectedKnownHost
+    var deletingHost by uiState.deletingHost
+    var deletingAuthorization by uiState.deletingAuthorization
+    var deleting by uiState.deleting
+    var pendingStorageAuthentication by uiState.pendingStorageAuthentication
     val importLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             loading = true
@@ -290,62 +332,71 @@ fun SshKeyProviderScreen(
         when (result) {
             is SshKeyStorageResult.Stored -> committed()
             is SshKeyStorageResult.AuthenticationRequired -> {
-                val activity = context as? Activity
-                if (activity == null) {
-                    scope.launch {
-                        withContext(Dispatchers.IO) {
-                            graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
-                        }
-                        error = storageAuthUnavailable
-                        loading = false
-                    }
-                    return
-                }
                 pendingStorageAuthentication = result.prepared
-                authenticatePreparedStorage(
-                    activity,
-                    result.prepared,
-                    onAuthenticated = { cipher, signature ->
-                        if (pendingStorageAuthentication !== result.prepared) return@authenticatePreparedStorage
+            }
+        }
+    }
+
+    val completingStorage by uiState.completingStorage
+    DisposableEffect(pendingStorageAuthentication, completingStorage, context) {
+        val prepared = pendingStorageAuthentication
+        val activity = context as? Activity
+        var attached = true
+        val cancellation = if (prepared != null && !completingStorage && activity != null) {
+            authenticatePreparedStorage(
+                activity,
+                prepared,
+                onAuthenticated = { cipher, signature ->
+                    if (attached && pendingStorageAuthentication === prepared) {
+                        uiState.completingStorage.value = true
                         scope.launch {
-                            runCatching {
-                                withContext(Dispatchers.IO) {
-                                    graph.sshKeyProviderStore.completePreparedKeyStorage(
-                                        result.prepared,
-                                        cipher,
-                                        signature,
-                                    )
+                            try {
+                                val next = withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.completePreparedKeyStorage(prepared, cipher, signature)
                                 }
-                            }.onSuccess { next ->
                                 pendingStorageAuthentication = null
                                 finishStorage(next)
-                            }
-                                .onFailure {
-                                    withContext(Dispatchers.IO) {
-                                        graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
-                                    }
-                                    pendingStorageAuthentication = null
-                                    error = context.reportSshKeyStorageFailure(
-                                        it,
-                                        R.string.ssh_key_provider_storage_auth_failed,
-                                    )
-                                    loading = false
+                            } catch (cancelled: CancellationException) {
+                                throw cancelled
+                            } catch (failure: Exception) {
+                                withContext(Dispatchers.IO) {
+                                    graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared)
                                 }
-                        }
-                    },
-                    onCancelled = { message ->
-                        if (pendingStorageAuthentication !== result.prepared) return@authenticatePreparedStorage
-                        scope.launch {
-                            withContext(Dispatchers.IO) {
-                                graph.sshKeyProviderStore.cancelPreparedKeyStorage(result.prepared)
+                                pendingStorageAuthentication = null
+                                error = context.reportSshKeyStorageFailure(
+                                    failure, R.string.ssh_key_provider_storage_auth_failed,
+                                )
+                                loading = false
+                            } finally {
+                                uiState.completingStorage.value = false
                             }
-                            pendingStorageAuthentication = null
-                            error = message
-                            loading = false
                         }
-                    },
-                )
+                    }
+                },
+                onCancelled = { message ->
+                    if (attached && !activity.isChangingConfigurations && pendingStorageAuthentication === prepared) {
+                        pendingStorageAuthentication = null
+                        scope.launch(Dispatchers.IO) {
+                            graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared)
+                        }
+                        error = message
+                        loading = false
+                    }
+                },
+            )
+        } else {
+            if (prepared != null && activity == null) {
+                pendingStorageAuthentication = null
+                scope.launch(Dispatchers.IO) { graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared) }
+                error = storageAuthUnavailable
+                loading = false
             }
+            null
+        }
+        onDispose {
+            // The prepared operation stays in the ViewModel; the new Activity binds a fresh prompt.
+            attached = false
+            cancellation?.cancel()
         }
     }
 
@@ -666,17 +717,6 @@ fun SshKeyProviderScreen(
         }
     }
 
-    DisposableEffect(Unit) {
-        onDispose {
-            latestPendingImport?.bytes?.fill(0)
-            latestPendingStorageAuthentication?.let { prepared ->
-                graph.scope.launch(Dispatchers.IO) {
-                    graph.sshKeyProviderStore.cancelPreparedKeyStorage(prepared)
-                }
-            }
-        }
-    }
-
     LaunchedEffect(managementState.errorMessage) {
         managementState.errorMessage?.let { error = it }
     }
@@ -714,250 +754,270 @@ fun SshKeyProviderScreen(
     }
     LaunchedEffect(initialHistoryRequestId) {
         if (initialHistoryRequestId != null) {
+            selectedKeyId = null
             selectedHistoryRequestId = initialHistoryRequestId
             onInitialHistoryRequestConsumed()
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.ssh_key_provider_screen_title)) },
-                navigationIcon = { FeatureDrawerNavigationIcon() },
-            )
-        },
-    ) { padding ->
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
-            contentPadding = padding.withContentSpacing(top = 12.dp, bottom = 96.dp),
-        ) {
-            item {
-                CenteredSshItem(padded = true) {
-                    ProviderCard(
-                        ready = graph.sshKeyProviderEngine != null,
-                        keyCount = keys.size,
-                        onGenerate = {
-                            error = null
-                            generating = true
-                        },
-                        onWebAuthn = {
-                            error = null
-                            webAuthnSheetStep = WebAuthnSheetStep.OPTIONS
-                            webAuthnFlowBusy = false
-                            webAuthnFlowError = null
-                            webAuthnRecoveryPayload = ""
-                            pendingWebAuthnRecoverySelection = null
-                        },
-                        onImport = {
-                            error = null
-                            // Key files are commonly exposed by document providers with vendor-specific,
-                            // extension-derived, or no MIME type. The bounded parser is the authority.
-                            importLauncher.launch(arrayOf("*/*"))
-                        },
-                        onPaste = {
-                            error = null
-                            pendingImport?.bytes?.fill(0)
-                            pendingImport = null
-                            importError = null
-                            importName = defaultImportedKeyName
-                            importPassphrase = ""
-                            importStorage = SshKeyStorageSelection(allowExport = true)
-                            privateKeyText = ""
-                            pasteClipboardIntoImport(requirePrivateKey = true)
-                        },
-                    )
-                }
-            }
-            error?.let { message ->
-                item {
-                    CenteredSshItem(padded = true) {
-                        SshKeyProviderErrorCard(message, onDismiss = { error = null })
-                    }
-                }
-            }
-            if (showLoading) {
-                item {
-                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                        CircularProgressIndicator()
-                    }
-                }
-            }
-            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_keys)) } }
-            if (!showLoading && keys.isEmpty()) {
-                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_keys)) } }
-            }
-            items(keys, key = SshKeyDescriptor::providerKeyId) { key ->
-                CenteredSshItem(padded = true) {
-                    SshKeyCard(
+    AdaptiveDetailLayout(
+        selectedKey = selectedKeyId?.let { "key:$it" } ?: selectedHistoryRequestId?.let { "history:$it" },
+        onDismiss = { selectedKeyId = null; selectedHistoryRequestId = null },
+        paneTitle = selectedKey?.displayName ?: selectedHistory
+            ?.takeIf { it.requestId == selectedHistoryRequestId }
+            ?.sshRequestHeadline(
+                knownHostname = selectedHistory?.history?.destinationHostKeyFingerprint?.let(knownHostnames::get),
+            ).orEmpty(),
+        detail = {
+            selectedKey?.let { key ->
+                AdaptiveDetailSheet(
+                    onDismissRequest = { selectedKeyId = null },
+                    modifier = Modifier.statusBarsPadding(),
+                    contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
+                ) {
+                    DisableModalBottomSheetNavigationBarContrast()
+                    SshKeyDetailSheet(
                         key = key,
-                        onClick = { selectedKeyId = key.providerKeyId },
-                    )
-                }
-            }
-            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_hosts)) } }
-            if (!showLoading && knownHosts.isEmpty()) {
-                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_hosts)) } }
-            }
-            items(knownHosts, key = { it.fingerprint() }) { host ->
-                CenteredSshItem(padded = true) {
-                    SshKnownHostCard(
-                        host = host,
-                        onEdit = { selectedKnownHost = host },
-                        onDelete = { deletingHost = host },
-                    )
-                }
-            }
-            if (activeRequests.isNotEmpty()) {
-                item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_active)) } }
-                items(activeRequests, key = { "active-${it.requestId}" }) { request ->
-                    CenteredSshItem {
-                        SshRequestListItem(
-                            request = request,
-                            requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
-                                ?: request.requesterClientId.shortForm(),
-                            knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
-                            onClick = {
-                                context.startActivity(SshKeyProviderReviewActivity.intent(context, request.requestId))
-                            },
-                        )
-                    }
-                }
-            }
-            item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_history)) } }
-            if (historyItems.loadState.refresh is LoadState.NotLoading && historyItems.itemCount == 0) {
-                item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_history)) } }
-            }
-            item(key = "history_prepend") {
-                CenteredSshItem {
-                    HistoryLoadStateFooter(historyItems.loadState, historyItems::retry, prepend = true)
-                }
-            }
-            items(
-                count = historyItems.itemCount,
-                key = historyItems.itemKey { "history-${it.requestId}" },
-                contentType = { "ssh-history-request" },
-            ) { index ->
-                // Indexed access informs Paging of viewport demand and automatically loads the next page.
-                historyItems[index]?.takeUnless { it.requestId in activeRequestIds }?.let { request ->
-                    CenteredSshItem {
-                        SshRequestListItem(
-                            request = request,
-                            requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
-                                ?: request.requesterClientId.shortForm(),
-                            knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
-                            onClick = {
-                                selectedHistoryRequestId = request.requestId
-                            },
-                        )
-                    }
-                }
-            }
-            item {
-                CenteredSshItem(padded = true) {
-                    HistoryLoadStateFooter(
-                        loadState = historyItems.loadState,
-                        onRetry = { historyItems.retry() },
-                    )
-                }
-            }
-        }
-    }
-
-    selectedKey?.let { key ->
-        ModalBottomSheet(
-            onDismissRequest = { selectedKeyId = null },
-            modifier = Modifier.statusBarsPadding(),
-            contentWindowInsets = { WindowInsets.safeDrawing.only(WindowInsetsSides.Top) },
-        ) {
-            DisableModalBottomSheetNavigationBarContrast()
-            SshKeyDetailSheet(
-                key = key,
-                rememberedAuthorizations = rememberedAuthorizations.filter {
-                    it.providerKeyId == key.providerKeyId
-                },
-                requesterName = { requester ->
-                    roster.firstOrNull { it.clientId == requester }?.displayName ?: requester.shortForm()
-                },
-                policyChangeBusy = showLoading,
-                onCopy = { copyPublicKey(context, key) },
-                onExport = when {
-                    key.webAuthn?.backupEligible == false -> {
-                        {
-                            context.startActivity(
-                                SshWebAuthnOpenSshIdentityExportActivity.intent(context, key.providerKeyId),
-                            )
-                        }
-                    }
-                    key.exportCopy != null -> {
-                        {
-                            context.startActivity(
-                                SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName),
-                            )
-                        }
-                    }
-                    else -> null
-                },
-                onWebAuthnRecovery = if (key.webAuthn != null) {
-                    {
-                        selectedKeyId = null
-                        openWebAuthnRecoveryActions(key)
-                    }
-                } else {
-                    null
-                },
-                onSend = if (key.exportCopy != null && transferPeers.isNotEmpty()) {
-                    {
-                        context.startActivity(
-                            SshKeySendActivity.intent(context, key.providerKeyId, key.displayName),
-                        )
-                    }
-                } else {
-                    null
-                },
-                onRename = {
-                    renaming = key
-                },
-                onApprovalPolicyChange = { approvalPolicy ->
-                    loading = true
-                    scope.launch {
-                        runCatching {
-                            withContext(Dispatchers.IO) {
-                                graph.sshKeyProviderStore.updateKeyMetadata(
-                                    key.providerKeyId,
-                                    key.displayName,
-                                    approvalPolicy,
+                        rememberedAuthorizations = rememberedAuthorizations.filter {
+                            it.providerKeyId == key.providerKeyId
+                        },
+                        requesterName = { requester ->
+                            roster.firstOrNull { it.clientId == requester }?.displayName ?: requester.shortForm()
+                        },
+                        policyChangeBusy = showLoading,
+                        onCopy = { copyPublicKey(context, key) },
+                        onExport = when {
+                            key.webAuthn?.backupEligible == false -> {
+                                {
+                                    context.startActivity(
+                                        SshWebAuthnOpenSshIdentityExportActivity.intent(context, key.providerKeyId),
+                                    )
+                                }
+                            }
+                            key.exportCopy != null -> {
+                                {
+                                    context.startActivity(
+                                        SshKeyExportActivity.intent(context, key.providerKeyId, key.displayName),
+                                    )
+                                }
+                            }
+                            else -> null
+                        },
+                        onWebAuthnRecovery = if (key.webAuthn != null) {
+                            {
+                                selectedKeyId = null
+                                openWebAuthnRecoveryActions(key)
+                            }
+                        } else {
+                            null
+                        },
+                        onSend = if (key.exportCopy != null && transferPeers.isNotEmpty()) {
+                            {
+                                context.startActivity(
+                                    SshKeySendActivity.intent(context, key.providerKeyId, key.displayName),
                                 )
                             }
-                        }.onSuccess { changed ->
-                            if (changed) graph.sshKeyProviderEngine?.publishInventory()
-                        }.onFailure { error = it.message ?: it.javaClass.simpleName }
-                        refresh()
+                        } else {
+                            null
+                        },
+                        onRename = {
+                            renaming = key
+                        },
+                        onApprovalPolicyChange = { approvalPolicy ->
+                            loading = true
+                            scope.launch {
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        graph.sshKeyProviderStore.updateKeyMetadata(
+                                            key.providerKeyId,
+                                            key.displayName,
+                                            approvalPolicy,
+                                        )
+                                    }
+                                }.onSuccess { changed ->
+                                    if (changed) graph.sshKeyProviderEngine?.publishInventory()
+                                }.onFailure { error = it.message ?: it.javaClass.simpleName }
+                                refresh()
+                            }
+                        },
+                        onDeleteAuthorization = { deletingAuthorization = it },
+                        onDelete = {
+                            selectedKeyId = null
+                            deleting = key
+                        },
+                    )
+                }
+            }
+
+            if (selectedHistoryRequestId != null) {
+                val request = selectedHistory?.takeIf { it.requestId == selectedHistoryRequestId }
+                // Keep the sheet/pane surface in place while the newly selected record loads.
+                EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
+                    if (request == null) {
+                        Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator()
+                        }
+                    } else {
+                        val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
+                        SshHistoryRequestDetail(
+                            request = request,
+                            requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
+                            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                            knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                            contentPadding = historySheetContentPadding(),
+                            onBack = { selectedHistoryRequestId = null },
+                        )
                     }
-                },
-                onDeleteAuthorization = { deletingAuthorization = it },
-                onDelete = {
-                    selectedKeyId = null
-                    deleting = key
-                },
-            )
+                }
+            }
+        },
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.ssh_key_provider_screen_title)) },
+                    navigationIcon = { FeatureDrawerNavigationIcon() },
+                )
+            },
+        ) { padding ->
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+                contentPadding = padding.withContentSpacing(top = 12.dp, bottom = 96.dp),
+            ) {
+                item {
+                    CenteredSshItem(padded = true) {
+                        ProviderCard(
+                            ready = graph.sshKeyProviderEngine != null,
+                            keyCount = keys.size,
+                            onGenerate = {
+                                error = null
+                                generating = true
+                            },
+                            onWebAuthn = {
+                                error = null
+                                webAuthnSheetStep = WebAuthnSheetStep.OPTIONS
+                                webAuthnFlowBusy = false
+                                webAuthnFlowError = null
+                                webAuthnRecoveryPayload = ""
+                                pendingWebAuthnRecoverySelection = null
+                            },
+                            onImport = {
+                                error = null
+                                // Key files are commonly exposed by document providers with vendor-specific,
+                                // extension-derived, or no MIME type. The bounded parser is the authority.
+                                importLauncher.launch(arrayOf("*/*"))
+                            },
+                            onPaste = {
+                                error = null
+                                pendingImport?.bytes?.fill(0)
+                                pendingImport = null
+                                importError = null
+                                importName = defaultImportedKeyName
+                                importPassphrase = ""
+                                importStorage = SshKeyStorageSelection(allowExport = true)
+                                privateKeyText = ""
+                                pasteClipboardIntoImport(requirePrivateKey = true)
+                            },
+                        )
+                    }
+                }
+                error?.let { message ->
+                    item {
+                        CenteredSshItem(padded = true) {
+                            SshKeyProviderErrorCard(message, onDismiss = { error = null })
+                        }
+                    }
+                }
+                if (showLoading) {
+                    item {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
+                item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_keys)) } }
+                if (!showLoading && keys.isEmpty()) {
+                    item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_keys)) } }
+                }
+                items(keys, key = SshKeyDescriptor::providerKeyId) { key ->
+                    CenteredSshItem(padded = true) {
+                        SshKeyCard(
+                            key = key,
+                            onClick = { selectedHistoryRequestId = null; selectedKeyId = key.providerKeyId },
+                        )
+                    }
+                }
+                item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_hosts)) } }
+                if (!showLoading && knownHosts.isEmpty()) {
+                    item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_hosts)) } }
+                }
+                items(knownHosts, key = { it.fingerprint() }) { host ->
+                    CenteredSshItem(padded = true) {
+                        SshKnownHostCard(
+                            host = host,
+                            onEdit = { selectedKnownHost = host },
+                            onDelete = { deletingHost = host },
+                        )
+                    }
+                }
+                if (activeRequests.isNotEmpty()) {
+                    item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_active)) } }
+                    items(activeRequests, key = { "active-${it.requestId}" }) { request ->
+                        CenteredSshItem {
+                            SshRequestListItem(
+                                request = request,
+                                requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
+                                    ?: request.requesterClientId.shortForm(),
+                                knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                                onClick = {
+                                    context.startActivity(SshKeyProviderReviewActivity.intent(context, request.requestId))
+                                },
+                            )
+                        }
+                    }
+                }
+                item { CenteredSshItem(padded = true) { SectionTitle(stringResource(R.string.ssh_key_provider_section_history)) } }
+                if (historyItems.loadState.refresh is LoadState.NotLoading && historyItems.itemCount == 0) {
+                    item { CenteredSshItem(padded = true) { EmptyCard(stringResource(R.string.ssh_key_provider_no_history)) } }
+                }
+                item(key = "history_prepend") {
+                    CenteredSshItem {
+                        HistoryLoadStateFooter(historyItems.loadState, historyItems::retry, prepend = true)
+                    }
+                }
+                items(
+                    count = historyItems.itemCount,
+                    key = historyItems.itemKey { "history-${it.requestId}" },
+                    contentType = { "ssh-history-request" },
+                ) { index ->
+                    // Indexed access informs Paging of viewport demand and automatically loads the next page.
+                    historyItems[index]?.takeUnless { it.requestId in activeRequestIds }?.let { request ->
+                        CenteredSshItem {
+                            SshRequestListItem(
+                                request = request,
+                                requesterName = roster.firstOrNull { it.clientId == request.requesterClientId }?.displayName
+                                    ?: request.requesterClientId.shortForm(),
+                                knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
+                                onClick = {
+                                    selectedKeyId = null
+                                    selectedHistoryRequestId = request.requestId
+                                },
+                            )
+                        }
+                    }
+                }
+                item {
+                    CenteredSshItem(padded = true) {
+                        HistoryLoadStateFooter(
+                            loadState = historyItems.loadState,
+                            onRetry = { historyItems.retry() },
+                        )
+                    }
+                }
+            }
         }
     }
-
-    selectedHistory?.takeIf { it.requestId == selectedHistoryRequestId }?.let { request ->
-        val peer = roster.firstOrNull { it.clientId == request.requesterClientId }
-        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedHistoryRequestId = null }) {
-            SshHistoryRequestDetail(
-                request = request,
-                requesterName = peer?.displayName ?: request.requesterClientId.shortForm(),
-                requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                knownHostname = request.history.destinationHostKeyFingerprint?.let(knownHostnames::get),
-                contentPadding = historySheetContentPadding(),
-                onBack = { selectedHistoryRequestId = null },
-            )
-        }
-    }
-
     if (generating) {
         GenerateKeyDialog(
             onDismiss = { generating = false },
@@ -1384,7 +1444,7 @@ private fun SshKnownHostDetailSheet(
     onDelete: () -> Unit,
     onSaveHostname: (String) -> Unit,
 ) {
-    var hostname by remember(host.fingerprint()) { mutableStateOf(host.hostname.orEmpty()) }
+    var hostname by rememberSaveable(host.fingerprint()) { mutableStateOf(host.hostname.orEmpty()) }
     Column(
         modifier = Modifier.fillMaxWidth().padding(start = 24.dp, end = 24.dp, bottom = 32.dp),
         verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -1640,12 +1700,14 @@ private fun SshKeyDetailSheet(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Column(Modifier.weight(1f)) {
-                    Text(
-                        key.displayName,
-                        style = MaterialTheme.typography.titleLarge,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+                    if (!LocalIsDetailPane.current) {
+                        Text(
+                            key.displayName,
+                            style = MaterialTheme.typography.titleLarge,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
                     Text(
                         key.algorithmDisplayLabel(),
                         style = MaterialTheme.typography.bodyMedium,
@@ -2017,7 +2079,7 @@ private fun WebAuthnFlowSheet(
     onDismiss: () -> Unit,
 ) {
     val defaultName = stringResource(R.string.ssh_key_provider_webauthn_default_name)
-    var name by remember { mutableStateOf(defaultName) }
+    var name by rememberSaveable { mutableStateOf(defaultName) }
     ModalBottomSheet(onDismissRequest = { if (!busy) onDismiss() }) {
         Column(
             modifier = Modifier
@@ -2282,11 +2344,11 @@ private fun GenerateKeyDialog(
     onDismiss: () -> Unit,
     onGenerate: (SshKeyAlgorithm, Int, String, SshKeyStorageSelection) -> Unit,
 ) {
-    var algorithm by remember { mutableStateOf(SshKeyAlgorithm.ECDSA_NISTP256) }
-    var rsaKeySizeBits by remember { mutableIntStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
+    var algorithm by rememberSaveable { mutableStateOf(SshKeyAlgorithm.ECDSA_NISTP256) }
+    var rsaKeySizeBits by rememberSaveable { mutableIntStateOf(DEFAULT_RSA_KEY_SIZE_BITS) }
     val defaultName = stringResource(R.string.ssh_key_provider_generate_default_name)
-    var name by remember { mutableStateOf(defaultName) }
-    var storage by remember { mutableStateOf(SshKeyStorageSelection()) }
+    var name by rememberSaveable { mutableStateOf(defaultName) }
+    var storage by rememberSaveable(stateSaver = SshKeyStorageSelectionSaver) { mutableStateOf(SshKeyStorageSelection()) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ssh_key_provider_generate_title)) },
@@ -2353,7 +2415,7 @@ private fun RenameKeyDialog(
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
 ) {
-    var name by remember(key.providerKeyId) { mutableStateOf(key.displayName) }
+    var name by rememberSaveable(key.providerKeyId) { mutableStateOf(key.displayName) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(stringResource(R.string.ssh_key_provider_key_settings_title)) },
@@ -2416,8 +2478,8 @@ private fun EmptyCard(message: String) {
 private fun CenteredSshItem(padded: Boolean = false, content: @Composable () -> Unit) {
     Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
         Box(
-            Modifier.fillMaxWidth()
-                .widthIn(max = 720.dp)
+            Modifier.widthIn(max = 720.dp)
+                .fillMaxWidth()
                 .then(if (padded) Modifier.padding(horizontal = 20.dp, vertical = 6.dp) else Modifier),
         ) { content() }
     }
@@ -2537,7 +2599,8 @@ private fun authenticatePreparedStorage(
     prepared: PreparedSshKeyStorage,
     onAuthenticated: (Cipher?, java.security.Signature?) -> Unit,
     onCancelled: (String) -> Unit,
-) {
+): CancellationSignal {
+    val cancellation = CancellationSignal()
     val handled = AtomicBoolean(false)
     val allowsDeviceCredential = prepared.promptAuthenticators and
         BiometricManager.Authenticators.DEVICE_CREDENTIAL != 0
@@ -2558,7 +2621,7 @@ private fun authenticatePreparedStorage(
     try {
         prompt.authenticate(
             cryptoObject,
-            CancellationSignal(),
+            cancellation,
             activity.mainExecutor,
             object : BiometricPrompt.AuthenticationCallback() {
                 override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
@@ -2584,6 +2647,7 @@ private fun authenticatePreparedStorage(
             onCancelled(failure.message ?: activity.getString(R.string.ssh_key_provider_storage_auth_failed))
         }
     }
+    return cancellation
 }
 
 private data class CreatedWebAuthnKey(

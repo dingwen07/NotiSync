@@ -72,6 +72,7 @@ import net.extrawdw.apps.notisync.seal.SigningRequestListItem
 import net.extrawdw.apps.notisync.seal.StoredOpenPgpRequest
 import net.extrawdw.apps.notisync.seal.isSealActive
 import net.extrawdw.apps.notisync.seal.opensSealReview
+import net.extrawdw.apps.notisync.seal.sealRequestHeadline
 
 /** Branded setup, active approvals, and durable decision history for NotiSync Seal. */
 @Composable
@@ -83,7 +84,7 @@ fun SealScreen() {
     val enrollment by graph.openPgpEnrollment.enrollment.collectAsStateWithLifecycle()
     val requests by graph.openPgpSignStore.requests.collectAsStateWithLifecycle()
     val changeVersion by graph.openPgpSignStore.changeVersion.collectAsStateWithLifecycle(
-        minActiveState = Lifecycle.State.RESUMED,
+        minActiveState = Lifecycle.State.STARTED,
     )
     val historyFlow = remember(graph.openPgpSignStore) {
         historyPager<StoredOpenPgpRequest, OpenPgpHistoryCursor>(
@@ -114,7 +115,7 @@ fun SealScreen() {
     }
     LaunchedEffect(history, lifecycleOwner) {
         var observed = false
-        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             graph.openPgpSignStore.changeVersion.collect { version ->
                 // Pager owns the first load; every later change or return refreshes the window.
                 if (observed || version != initialHistoryVersion) history.refresh()
@@ -138,74 +139,82 @@ fun SealScreen() {
         }
     }
 
-    Scaffold(
-        modifier = Modifier.fillMaxSize(),
-        topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.seal_name)) },
-                navigationIcon = { FeatureDrawerNavigationIcon() },
-            )
+    AdaptiveDetailLayout(
+        selectedKey = selectedRequestId,
+        onDismiss = { selectedRequestId = null },
+        paneTitle = selected?.sealRequestHeadline().orEmpty(),
+        detail = {
+            if (selectedRequestId != null) {
+                EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
+                    if (selectedLoadError || (selectedLoading && selected == null)) {
+                        Column(
+                            Modifier.fillMaxWidth().padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            if (selectedLoadError) {
+                                Text(stringResource(R.string.history_load_failed))
+                                TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
+                            } else CircularProgressIndicator()
+                        }
+                    }
+                    selected?.takeUnless { it.opensSealReview() }?.let { stored ->
+                        val peer = roster.firstOrNull { it.clientId == stored.senderClientId }
+                        val requesterName = peer?.displayName ?: stored.senderClientId.shortForm()
+                        val identity = enrollment.displayIdentity
+                            ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
+                            ?: stringResource(R.string.seal_openpgp_identity)
+                        SigningRequestDetail(
+                            stored = stored,
+                            requesterName = requesterName,
+                            requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
+                            signingIdentity = identity,
+                            modifier = Modifier.fillMaxWidth().weight(1f),
+                            contentPadding = historySheetContentPadding(),
+                            showSheetHeader = true,
+                            onBack = { selectedRequestId = null },
+                        )
+                    }
+                }
+            }
         },
-    ) { padding ->
-        SealRequestList(
-            active = activeRequests,
-            history = history,
-            requesterNameOf = { request ->
-                roster.firstOrNull { it.clientId == request.senderClientId }?.displayName
-                    ?: request.senderClientId.shortForm()
-            },
-            enrollmentEnabled = enrollment.enabled,
-            enrollmentIdentity = enrollment.displayIdentity,
-            enrollmentKeyId = enrollment.primaryKeyId,
-            providerAvailable = providerAvailable,
-            scaffoldPadding = padding,
-            onEnroll = { enroll.launch(OpenPgpEnrollmentActivity.intent(context)) },
-            onRemoveEnrollment = { scope.launch { graph.openPgpEnrollment.clear() } },
-            onSelect = { stored ->
-                if (stored.opensSealReview()) {
-                    context.startActivity(
-                        OpenPgpSignReviewActivity.intent(context, stored.request.requestId)
-                    )
-                } else {
-                    selectedRequestId = stored.request.requestId
-                }
-            },
-        )
-    }
-
-    if (selectedRequestId != null) {
-        EdgeToEdgeHistoryModalBottomSheet(onDismissRequest = { selectedRequestId = null }) {
-            if (selectedLoadError || (selectedLoading && selected == null)) {
-                Column(
-                    Modifier.fillMaxWidth().padding(24.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    if (selectedLoadError) {
-                        Text(stringResource(R.string.history_load_failed))
-                        TextButton(onClick = { detailRetry++ }) { Text(stringResource(R.string.history_retry)) }
-                    } else CircularProgressIndicator()
-                }
-            }
-            selected?.takeUnless { it.opensSealReview() }?.let { stored ->
-                val peer = roster.firstOrNull { it.clientId == stored.senderClientId }
-                val requesterName = peer?.displayName ?: stored.senderClientId.shortForm()
-                val identity = enrollment.displayIdentity
-                    ?.takeIf { enrollment.primaryKeyId == stored.request.primaryKeyId }
-                    ?: stringResource(R.string.seal_openpgp_identity)
-                SigningRequestDetail(
-                    stored = stored,
-                    requesterName = requesterName,
-                    requesterIdentityKeyFingerprint = peer?.identityKeyFingerprint,
-                    signingIdentity = identity,
-                    modifier = Modifier.fillMaxWidth().weight(1f),
-                    contentPadding = historySheetContentPadding(),
-                    showSheetHeader = true,
-                    onBack = { selectedRequestId = null },
+    ) {
+        Scaffold(
+            modifier = Modifier.fillMaxSize(),
+            topBar = {
+                TopAppBar(
+                    title = { Text(stringResource(R.string.seal_name)) },
+                    navigationIcon = { FeatureDrawerNavigationIcon() },
                 )
-            }
+            },
+        ) { padding ->
+            SealRequestList(
+                active = activeRequests,
+                history = history,
+                requesterNameOf = { request ->
+                    roster.firstOrNull { it.clientId == request.senderClientId }?.displayName
+                        ?: request.senderClientId.shortForm()
+                },
+                enrollmentEnabled = enrollment.enabled,
+                enrollmentIdentity = enrollment.displayIdentity,
+                enrollmentKeyId = enrollment.primaryKeyId,
+                providerAvailable = providerAvailable,
+                scaffoldPadding = padding,
+                onEnroll = { enroll.launch(OpenPgpEnrollmentActivity.intent(context)) },
+                onRemoveEnrollment = { scope.launch { graph.openPgpEnrollment.clear() } },
+                onSelect = { stored ->
+                    if (stored.opensSealReview()) {
+                        context.startActivity(
+                            OpenPgpSignReviewActivity.intent(context, stored.request.requestId)
+                        )
+                    } else {
+                        selectedRequestId = stored.request.requestId
+                    }
+                },
+            )
         }
     }
+
 }
 
 @Composable

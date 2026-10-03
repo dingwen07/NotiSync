@@ -19,7 +19,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
@@ -71,7 +70,7 @@ internal fun AppConfigSheet(
     val cfg = configs[app.packageName] ?: PerAppConfig()
     val channels = seen[app.packageName].orEmpty()
 
-    ModalBottomSheet(
+    AdaptiveDetailSheet(
         onDismissRequest = onDismiss,
         modifier = Modifier.statusBarsPadding(),
         sheetState = sheetState,
@@ -87,7 +86,9 @@ internal fun AppConfigSheet(
                 .padding(start = 20.dp, end = 20.dp, bottom = 32.dp + bottomInset),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Text(app.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            if (!LocalIsDetailPane.current) {
+                Text(app.label, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
 
             // --- Incoming: how a call RECEIVED from this app is alerted on THIS device. Kept at the top and
             // separated from the capture (outgoing) settings below, so its opposite direction isn't confused. ---

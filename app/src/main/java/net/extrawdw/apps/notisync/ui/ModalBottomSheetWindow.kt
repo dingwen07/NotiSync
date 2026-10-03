@@ -47,8 +47,10 @@ import kotlin.math.roundToInt
 @Composable
 internal fun EdgeToEdgeHistoryModalBottomSheet(
     onDismissRequest: () -> Unit,
+    showPaneHeader: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    if (InlineHistoryDetailOrNull(onDismissRequest, showPaneHeader, content)) return
     val sheetState = rememberModalBottomSheetState()
     val windowWidth = LocalWindowInfo.current.containerSize.width
     val sheetMaxWidth = with(LocalDensity.current) { BottomSheetDefaults.SheetMaxWidth.roundToPx() }

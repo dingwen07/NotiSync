@@ -28,6 +28,18 @@ data class SshKeyStorageSelection(
     val userVerificationPolicy: SshUserVerificationPolicy = SshUserVerificationPolicy.NONE,
 )
 
+// Only non-secret generation preferences belong in saved state.
+internal val SshKeyStorageSelectionSaver = androidx.compose.runtime.saveable.listSaver<SshKeyStorageSelection, Any>(
+    save = { listOf(it.allowExport, it.exportCopyBackendPolicy.name, it.userVerificationPolicy.name) },
+    restore = {
+        SshKeyStorageSelection(
+            it[0] as Boolean,
+            SshExportCopyBackendPolicy.valueOf(it[1] as String),
+            SshUserVerificationPolicy.valueOf(it[2] as String),
+        )
+    },
+)
+
 /** Shared generation/import storage selector. Unsupported choices remain visible but disabled. */
 @Composable
 fun SshKeyStorageOptions(

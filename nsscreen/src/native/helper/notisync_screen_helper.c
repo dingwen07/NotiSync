@@ -1508,6 +1508,7 @@ ns_activate_function_button(struct ns_app *app,
         case NS_FUNCTION_RECENTS: keycode = 187; break;
         case NS_FUNCTION_POWER: return ns_send_power_toggle(app);
         case NS_FUNCTION_NONE: return false;
+        default: return false;
     }
     bool down = ns_send_key(app, true, keycode, false, 0);
     bool up = ns_send_key(app, false, keycode, false, 0);

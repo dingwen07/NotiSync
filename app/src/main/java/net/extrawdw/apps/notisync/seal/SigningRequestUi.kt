@@ -127,6 +127,16 @@ internal fun sealStatusLabel(status: SealDisplayStatus): String = stringResource
 )
 
 @Composable
+internal fun StoredOpenPgpRequest.sealRequestHeadline(): String = when (request.objectKind) {
+    OpenPgpObjectKind.GIT_COMMIT -> (summary?.title ?: commit?.message?.commitSubject()).orEmpty().ifBlank {
+        stringResource(R.string.seal_commit_untitled)
+    }
+    OpenPgpObjectKind.GIT_TAG -> (summary?.title ?: tag?.tagName).orEmpty().ifBlank {
+        stringResource(R.string.seal_tag_untitled)
+    }
+}
+
+@Composable
 internal fun SigningRequestListItem(
     stored: StoredOpenPgpRequest,
     requesterName: String,
@@ -135,14 +145,7 @@ internal fun SigningRequestListItem(
     val status = stored.sealDisplayStatus()
     val commit = stored.commit
     val tag = stored.tag
-    val headline = when (stored.request.objectKind) {
-        OpenPgpObjectKind.GIT_COMMIT -> (stored.summary?.title ?: commit?.message?.commitSubject()).orEmpty().ifBlank {
-            stringResource(R.string.seal_commit_untitled)
-        }
-        OpenPgpObjectKind.GIT_TAG -> (stored.summary?.title ?: tag?.tagName).orEmpty().ifBlank {
-            stringResource(R.string.seal_tag_untitled)
-        }
-    }
+    val headline = stored.sealRequestHeadline()
     val time = rememberShortTimeFormatter().format(Date(stored.updatedAt))
     val base = stored.summary?.reference?.shortObjectId() ?: commit?.parentIds?.firstOrNull()?.shortObjectId()
         ?: commit?.treeId?.shortObjectId()
@@ -204,7 +207,7 @@ internal fun SigningRequestDetail(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
         verticalArrangement = Arrangement.spacedBy(16.dp),
-        header = if (showSheetHeader) ({
+        header = if (showSheetHeader && !net.extrawdw.apps.notisync.ui.LocalIsDetailPane.current) ({
             CenteredDetailItem {
                 Row(
                     Modifier.fillMaxWidth().background(BottomSheetDefaults.ContainerColor),
