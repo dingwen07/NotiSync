@@ -680,7 +680,7 @@
     <string name="device_delete_desc">删除 %1$s</string>
     <string name="device_restore_desc">恢复 %1$s</string>
     <string name="device_restore_explanation">恢复后将重新信任此设备，并向您的其他设备同步该决定。</string>
-    <string name="device_permanently_delete_explanation">永久删除会清除此设备的本地信任记录、已保存的卡片和密钥以及通知过滤规则。</string>
+    <string name="device_permanently_delete_explanation">永久删除会清除此设备的本地信任记录、已保存的设备信息和密钥以及通知过滤规则。</string>
     <string name="device_purge_waiting">将在 %1$s 后可用。在此之前，NotiSync 会保留移除记录，以便您的其他设备接收并遵循该移除决定。</string>
     <string name="device_purge_ready">安全等待期已结束。现在删除将清除本地记录，之后无法再使用“恢复”撤销。</string>
     <string name="device_purge_timestamp_missing">此移除记录没有时间戳，因此无法永久删除。</string>
@@ -819,15 +819,15 @@
     <string name="pair_nfc_exchange_failed">无法完成 NFC 数据交换。请重试。</string>
     <string name="pair_paired_with">已与 %1$s 配对</string>
     <string name="pair_could_not_open_link">无法打开配对链接：%1$s</string>
-    <string name="pair_broker_intro">在另一台设备上使用 NotiSync 扫描此二维码，即可安全交换设备配对卡。二维码会自动刷新。</string>
+    <string name="pair_broker_intro">在另一台设备上扫描此二维码，即可开始配对。二维码会自动刷新。</string>
     <string name="pair_broker_qr">Secure Exchange 二维码</string>
     <string name="pair_broker_connecting">正在准备 Secure Exchange…</string>
     <string name="pair_broker_reconnecting">正在准备 Secure Exchange…</string>
     <string name="pair_legacy_qr_title">二维码</string>
-    <string name="pair_legacy_qr_intro">此二维码包含您的设备配对卡，无需连接中继服务器。请在两台设备上分别扫描对方的二维码。</string>
+    <string name="pair_legacy_qr_intro">此二维码包含本机的配对信息，无需连接中继服务器。请在两台设备上分别扫描对方的二维码。</string>
     <string name="pair_invalid_link">此配对链接无效或不受支持。请扫描 NotiSync 中的新二维码。</string>
     <string name="pair_broker_title">Secure Exchange</string>
-    <string name="pair_broker_instruction">正在安全交换设备配对卡。请保持另一台设备上的设备配对页面开启。</string>
+    <string name="pair_broker_instruction">正在安全地交换配对信息。请保持另一台设备上的设备配对页面开启。</string>
     <string name="pair_broker_trust_body">已通过 Secure Exchange 验证此设备的身份。</string>
     <string name="pair_broker_address">中继服务器：%1$s</string>
     <string name="pair_broker_failed">无法验证配对、会话已过期，或中继服务器不可用。请重新开始配对并扫描新的二维码。</string>
@@ -849,7 +849,7 @@
     <string name="pair_checking">正在检查设备…</string>
     <string name="pair_scan_button">扫描另一台设备的二维码</string>
     <string name="pair_auto_time_warning_title">自动日期和时间已关闭</string>
-    <string name="pair_auto_time_warning_body">配对卡中包含当前时间。如果设备时钟不准确，另一台设备可能会拒绝此配对卡。</string>
+    <string name="pair_auto_time_warning_body">如果此设备的日期或时间不准确，配对可能会失败。请在设置中开启自动日期和时间。</string>
     <string name="pair_auto_time_open_settings">设置</string>
     <string name="pair_trust_title">设备配对</string>
     <string name="pair_trust_body">此配对卡的数字签名有效。</string>

@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
@@ -28,7 +29,6 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.share as ShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCodeIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -45,7 +45,6 @@ import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -57,7 +56,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
-import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -536,12 +534,6 @@ internal fun PairingApprovalSheet(
         initialValue = SheetValue.Hidden,
         enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
     )
-    val reachesTop by remember(sheetState) {
-        derivedStateOf {
-            // Expanded can still stop below the top when the confirmation content is short.
-            sheetState.hasExpandedState && sheetState.requireOffset() <= 0.5f
-        }
-    }
     val existingDeviceName = existingTrustedDevice?.displayName ?: candidate.displayName
 
     // This confirmation used to inherit protection from PairingOverlay. It now lives above Devices, so keep
@@ -549,8 +541,8 @@ internal fun PairingApprovalSheet(
     TapjackingProtectionEffect()
     ModalBottomSheet(
         onDismissRequest = { if (!approving) onDismiss() },
+        modifier = Modifier.statusBarsPadding(),
         sheetState = sheetState,
-        shape = if (reachesTop) RectangleShape else BottomSheetDefaults.ExpandedShape,
     ) {
         Column(
             modifier = Modifier
