@@ -5,6 +5,7 @@ import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -119,11 +120,11 @@ internal fun MenuManagementScreen(navigationLimit: Int, onBack: () -> Unit) {
             )
         },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.TopCenter) {
+        Box(Modifier.fillMaxSize().consumeWindowInsets(padding), contentAlignment = Alignment.TopCenter) {
             LazyColumn(
                 state = list,
                 modifier = Modifier.widthIn(max = 840.dp).fillMaxWidth(),
-                contentPadding = androidx.compose.foundation.layout.PaddingValues(16.dp),
+                contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 16.dp),
                 verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 item(key = "menu-description") {

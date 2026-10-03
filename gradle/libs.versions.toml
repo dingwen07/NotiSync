@@ -11,7 +11,7 @@ coroutines = "1.11.0"
 tink = "1.23.0"
 clikt = "5.1.0"
 junixsocket = "2.11.1"
-pty4j = "0.13.13"
+pty4j = "0.14.0"
 jna = "5.19.1"
 slf4j = "2.0.20"
 bouncyCastle = "1.86" # provider, PKIX, and utility artifacts
@@ -22,13 +22,13 @@ jmdns = "3.6.3"
 # Server
 ktor = "3.6.0"
 exposed = "1.5.0"
-flyway = "13.8.0"
+flyway = "13.9.0"
 sqliteJdbc = "3.53.4.0"
 postgresql = "42.7.13"
 hikari = "7.1.0"
-logback = "1.6.4"
+logback = "1.6.5"
 firebaseAdmin = "9.9.0"
-googleAuth = "1.53.0"
+googleAuth = "1.54.0"
 
 # Android core
 coreKtx = "1.19.1"
@@ -53,7 +53,7 @@ hiltExt = "1.4.0"
 room = "2.8.5"
 room3 = "3.0.3"
 sqlite = "2.7.1"
-sqlcipher = "4.19.0"
+sqlcipher = "4.19.1"
 datastore = "1.2.1"
 work = "2.12.0"
 shizuku = "13.1.5"
@@ -147,6 +147,7 @@ androidx-compose-ui-test-junit4 = { group = "androidx.compose.ui", name = "ui-te
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3", version.ref = "material3" }
 androidx-compose-material3-adaptive-navigation-suite = { group = "androidx.compose.material3", name = "material3-adaptive-navigation-suite", version.ref = "material3" }
 androidx-compose-material3-adaptive = { group = "androidx.compose.material3.adaptive", name = "adaptive", version.ref = "material3Adaptive" }
+androidx-compose-material3-adaptive-navigation3 = { group = "androidx.compose.material3.adaptive", name = "adaptive-navigation3", version.ref = "material3Adaptive" }
 reorderable = { module = "sh.calvin.reorderable:reorderable", version.ref = "reorderable" }
 androidx-navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationCompose" }
 androidx-paging-compose = { group = "androidx.paging", name = "paging-compose", version.ref = "paging" }

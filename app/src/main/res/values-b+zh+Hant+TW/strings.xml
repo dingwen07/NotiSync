@@ -941,7 +941,7 @@
     <string name="ios_apps_search_hint">搜尋 iPhone 應用程式</string>
     <string name="ios_apps_section_mirroring">鏡像中</string>
     <string name="ios_apps_section">iPhone 應用程式</string>
-    <string name="ios_apps_empty">iPhone 傳送通知時，應用程式就會顯示在這裡；iOS 無法預先列出所有應用程式。開啟某個應用程式的鏡像功能，即可開始鏡像其通知。</string>
+    <string name="ios_apps_empty">ANCS 無法預先列出所有應用程式。iPhone 傳送通知時，應用程式就會顯示在這裡。開啟某個應用程式的鏡像功能，即可開始鏡像其通知。</string>
     <string name="ios_apps_no_match">沒有符合「%1$s」的 iPhone 應用程式</string>
     <string name="ios_apps_forget_app">清除應用程式記錄</string>
     <string name="ios_status_off">已關閉</string>

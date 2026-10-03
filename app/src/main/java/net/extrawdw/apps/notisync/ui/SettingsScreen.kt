@@ -13,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -149,10 +150,10 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
         probe = probeServer(graph)
     }
 
-    NotiScaffold(stringResource(R.string.tab_settings)) { modifier ->
+    NotiScaffold(stringResource(R.string.tab_settings)) { padding ->
         LazyColumn(
-            modifier = modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(4.dp),
         ) {
             item { SettingsSectionHeader(R.string.settings_section_connection, topPadding = 0.dp) }

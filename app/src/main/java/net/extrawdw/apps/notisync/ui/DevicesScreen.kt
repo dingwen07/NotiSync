@@ -1,8 +1,13 @@
 package net.extrawdw.apps.notisync.ui
 
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.snap
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -29,8 +34,15 @@ import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
+import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
+import androidx.compose.material3.adaptive.layout.PaneScaffoldDirective
+import androidx.compose.material3.adaptive.layout.calculatePaneScaffoldDirective
+import androidx.compose.material3.adaptive.layout.rememberPaneExpansionState
+import androidx.compose.material3.adaptive.navigation3.SupportingPaneSceneStrategy
+import androidx.compose.material3.adaptive.navigation3.rememberSupportingPaneSceneStrategy
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -41,22 +53,97 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.navigation3.runtime.NavEntry
+import androidx.navigation3.ui.NavDisplay
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.pairing.PairingCandidate
+import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.NotificationFilterRule
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.TrustStatus
+
+@Composable
+internal fun rememberDevicesPairingDirective(): PaneScaffoldDirective =
+    calculatePaneScaffoldDirective(currentWindowAdaptiveInfoV2())
+        .copy(horizontalPartitionSpacerSize = 0.dp, verticalPartitionSpacerSize = 0.dp)
+
+private enum class DevicesPane { DEVICES, PAIRING }
+
+/** Owns the tablet's supporting pane and its coordinated Devices/pairing motion. */
+@Composable
+internal fun DevicesPairingLayout(
+    directive: PaneScaffoldDirective,
+    showPairing: Boolean,
+    onClosePairing: () -> Unit,
+    onPairingCandidate: (PairingCandidate) -> Unit,
+    onBrokerPairing: (BrokerPairingLink) -> Unit,
+    onBrokerPairingCandidate: (PairingCandidate) -> Unit,
+    devicesContent: @Composable () -> Unit,
+) {
+    val paneState = remember { PairingPaneState() }
+    val paneExpansion = rememberPaneExpansionState()
+    val paneOpen = directive.maxHorizontalPartitions > 1 && showPairing
+    LaunchedEffect(paneOpen) {
+        if (paneOpen) paneState.open() else paneState.reset()
+    }
+    val sceneStrategy = rememberSupportingPaneSceneStrategy<DevicesPane>(
+        shouldHandleSinglePaneLayout = true,
+        directive = directive,
+        paneExpansionState = paneExpansion,
+    )
+    val paneMotion = remember {
+        SupportingPaneSceneStrategy.paneAnimation(
+            enterTransition = EnterTransition.None,
+            exitTransition = ExitTransition.None,
+            boundsAnimationSpec = snap(),
+        )
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val pairingWidth = directive.defaultPanePreferredWidth.coerceAtMost(maxWidth / 2)
+        val density = LocalDensity.current
+        val mainWidthPx = with(density) {
+            (maxWidth - pairingWidth * paneState.progress.value).roundToPx()
+        }
+        // Resize Devices and move pairing with the same progress, including Back.
+        SideEffect { paneExpansion.setFirstPaneWidth(mainWidthPx) }
+        NavDisplay(
+            entries = buildList {
+                add(NavEntry(DevicesPane.DEVICES, metadata = SupportingPaneSceneStrategy.mainPane() + paneMotion) {
+                    devicesContent()
+                })
+                if (paneOpen) {
+                    add(NavEntry(DevicesPane.PAIRING, metadata = SupportingPaneSceneStrategy.supportingPane() + paneMotion) {
+                        // Retain pairing until the slide-out or Back cancellation settles.
+                        PairingPane(
+                            state = paneState,
+                            width = pairingWidth,
+                            onClose = onClosePairing,
+                            onPairingCandidate = onPairingCandidate,
+                            onBrokerPairingCandidate = onBrokerPairingCandidate,
+                            onBrokerPairing = onBrokerPairing,
+                        )
+                    })
+                }
+            },
+            sceneStrategy = sceneStrategy,
+            onBack = onClosePairing,
+            modifier = Modifier.fillMaxSize(),
+        )
+    }
+}
 
 // pairButtonModifier targets the pair button specifically, not the composable root (which takes its modifier
 // from NotiScaffold), so the "first Modifier param must be named modifier" convention doesn't apply here.
@@ -66,7 +153,6 @@ fun DevicesScreen(
     permissions: PermissionState,
     onPair: () -> Unit,
     onRequestPostNotifications: () -> Unit,
-    onOpenListenerSettings: () -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
     pairButtonModifier: Modifier = Modifier,
     openDeviceDetails: String? = null,
@@ -108,11 +194,10 @@ fun DevicesScreen(
         }
     }
 
-    NotiScaffold(stringResource(R.string.tab_devices)) { modifier ->
+    NotiScaffold(stringResource(R.string.tab_devices)) { padding ->
         LazyColumn(
-            modifier = modifier.fillMaxSize(),
-            // Bottom inset clears the app's bottom navigation bar (this inner scaffold has no bottom bar).
-            contentPadding = PaddingValues(start = 16.dp, top = 16.dp, end = 16.dp, bottom = 96.dp),
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             if (quarantined) {
@@ -131,16 +216,6 @@ fun DevicesScreen(
                                 graph.trust.clearQuarantine()
                             }
                         },
-                    )
-                }
-            }
-            if (!permissions.listenerEnabled) {
-                item {
-                    PermissionCard(
-                        title = stringResource(R.string.devices_enable_access_title),
-                        body = stringResource(R.string.devices_enable_access_body),
-                        action = stringResource(R.string.devices_open_settings),
-                        onClick = onOpenListenerSettings,
                     )
                 }
             }
@@ -440,23 +515,6 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, backing: KeyBacki
                     color = keyBackingColor(backing),
                 )
             }
-        }
-    }
-}
-
-@Composable
-private fun PermissionCard(title: String, body: String, action: String, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-        ),
-    ) {
-        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium)
-            Text(body, style = MaterialTheme.typography.bodyMedium)
-            OutlinedButton(onClick = onClick) { Text(action) }
         }
     }
 }

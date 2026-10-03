@@ -15,6 +15,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -171,7 +173,10 @@ private fun canPostNotifications(pm: PackageManager, info: ApplicationInfo): Boo
 }
 
 @Composable
-fun AppsScreen() {
+fun AppsScreen(
+    permissions: PermissionState,
+    onOpenListenerSettings: () -> Unit,
+) {
     val graph = rememberGraph()
     val selection = graph.appSelection!!
     val appConfig = graph.appConfig!!
@@ -218,8 +223,17 @@ fun AppsScreen() {
     val allEnabled = matching.isNotEmpty() && matching.all { it.packageName in enabled }
     val fmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
 
-    NotiScaffold(stringResource(R.string.tab_apps)) { modifier ->
-        Column(modifier.fillMaxSize()) {
+    NotiScaffold(stringResource(R.string.tab_apps)) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
+            if (!permissions.listenerEnabled) {
+                PermissionCard(
+                    title = stringResource(R.string.devices_enable_access_title),
+                    body = stringResource(R.string.devices_enable_access_body),
+                    action = stringResource(R.string.devices_open_settings),
+                    onClick = onOpenListenerSettings,
+                    modifier = Modifier.padding(start = 16.dp, top = 16.dp, end = 16.dp),
+                )
+            }
             AppListSearchBar(
                 query = query,
                 onQueryChange = { query = it },
@@ -253,7 +267,10 @@ fun AppsScreen() {
                     )
                 }
 
-                else -> LazyColumn(Modifier.fillMaxSize()) {
+                else -> LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),
+                ) {
                     sections.forEach { section ->
                         stickyHeader(key = "header:${section.key}") {
                             SectionHeader(section.title, section.items.size)

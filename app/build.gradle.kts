@@ -32,8 +32,8 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 78
-        versionName = "2.6.2"
+        versionCode = 79
+        versionName = "2.6.3"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation
         val enableRotation = localProperties.getProperty("ENABLE_ROTATION")?.trim()?.lowercase() == "true"
@@ -103,6 +103,7 @@ dependencies {
     implementation(libs.androidx.compose.material3)
     implementation(libs.androidx.compose.material3.adaptive.navigation.suite)
     implementation(libs.androidx.compose.material3.adaptive)
+    implementation(libs.androidx.compose.material3.adaptive.navigation3)
     implementation(libs.reorderable)
     implementation(libs.androidx.navigation.compose)
 

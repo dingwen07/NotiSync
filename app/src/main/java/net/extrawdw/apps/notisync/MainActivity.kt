@@ -22,10 +22,14 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
@@ -43,8 +47,14 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.Text
+import androidx.compose.material3.Surface
+import androidx.compose.material3.WideNavigationRail
+import androidx.compose.material3.WideNavigationRailDefaults
+import androidx.compose.material3.WideNavigationRailValue
+import androidx.compose.material3.rememberWideNavigationRailState
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffold
+import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldLayout
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteItem
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteScaffoldDefaults
 import androidx.compose.material3.adaptive.navigationsuite.NavigationSuiteType
@@ -112,6 +122,8 @@ import net.extrawdw.apps.notisync.ui.IosScreen
 import net.extrawdw.apps.notisync.ui.LocalFeatureDrawerOpener
 import net.extrawdw.apps.notisync.ui.OnboardingScreen
 import net.extrawdw.apps.notisync.ui.PairingOverlay
+import net.extrawdw.apps.notisync.ui.DevicesPairingLayout
+import net.extrawdw.apps.notisync.ui.rememberDevicesPairingDirective
 import net.extrawdw.apps.notisync.ui.PairingApprovalSheet
 import net.extrawdw.apps.notisync.ui.PermissionState
 import net.extrawdw.apps.notisync.ui.SettingsScreen
@@ -568,6 +580,13 @@ fun NotiSyncRoot(
     }
 
     val adaptiveInfo = currentWindowAdaptiveInfoV2()
+    val pairingPaneDirective = rememberDevicesPairingDirective()
+    val usePairingPane = pairingPaneDirective.maxHorizontalPartitions > 1
+    LaunchedEffect(currentDestination, usePairingPane) {
+        if (usePairingPane && currentDestination != null && !currentDestination.isOn(AppDestination.DEVICES)) {
+            showPairing = false
+        }
+    }
     val layoutType = NavigationSuiteScaffoldDefaults.navigationSuiteType(adaptiveInfo)
     val suiteIsDrawer = layoutType == NavigationSuiteType.NavigationDrawer
     val suiteIsRail = layoutType == NavigationSuiteType.WideNavigationRailCollapsed ||
@@ -694,9 +713,9 @@ fun NotiSyncRoot(
                 drawerScope.launch { featureDrawerState.open() }
             })
         ) {
-        NavigationSuiteScaffold(
+        AppNavigationScaffold(
             navigationSuiteType = layoutType,
-            primaryActionContent = {
+            railHeader = {
                 if (suiteIsRail) {
                     IconButton(onClick = { drawerScope.launch { featureDrawerState.open() } }) {
                         Icon(MenuIcon, stringResource(R.string.open_features))
@@ -729,19 +748,29 @@ fun NotiSyncRoot(
                 popExitTransition = { ExitTransition.None },
             ) {
                 composable<Route.Devices> {
-                    DevicesDestination(
-                        onPair = { if (!quarantined) showPairing = true },
-                        openDeviceDetails = latestOpenDeviceDetails.value,
-                        onOpenDeviceDetailsConsumed = latestOnOpenDeviceDetailsConsumed.value,
-                        // Sample the stripe's bounds (root coordinates, shared with the overlay) so the
-                        // container transform knows where to grow from / fold back into. It moves as the
-                        // list scrolls; the last value before opening is what the collapse animates to.
-                        pairButtonModifier = Modifier.onGloballyPositioned {
-                            pairButtonBounds = it.boundsInRoot()
+                    DevicesPairingLayout(
+                        directive = pairingPaneDirective,
+                        showPairing = showPairing && !quarantined,
+                        onClosePairing = { showPairing = false },
+                        onPairingCandidate = { openPairingCandidate(it) },
+                        onBrokerPairingCandidate = { openPairingCandidate(it, PairingReviewSource.BROKER) },
+                        onBrokerPairing = {
+                            showPairing = false
+                            brokerPairingLink = it
                         },
-                    )
+                    ) {
+                        DevicesDestination(
+                            onPair = { if (!quarantined) showPairing = true },
+                            openDeviceDetails = latestOpenDeviceDetails.value,
+                            onOpenDeviceDetailsConsumed = latestOnOpenDeviceDetailsConsumed.value,
+                            // Keep the compact overlay's animation anchored to the pairing button.
+                            pairButtonModifier = Modifier.onGloballyPositioned {
+                                pairButtonBounds = it.boundsInRoot()
+                            },
+                        )
+                    }
                 }
-                composable<Route.Apps> { AppsScreen() }
+                composable<Route.Apps> { AppsDestination() }
                 composable<Route.Ios> { IosScreen() }
                 composable<Route.Run> {
                     RunScreen(
@@ -772,7 +801,7 @@ fun NotiSyncRoot(
         }
         }
 
-        if (showPairing && !quarantined) {
+        if (showPairing && !quarantined && !usePairingPane) {
             PairingOverlay(
                 pairButtonBounds = pairButtonBounds,
                 onClose = { showPairing = false },
@@ -814,6 +843,52 @@ fun NotiSyncRoot(
                     pairingReview = null
                 },
             )
+        }
+    }
+}
+
+@Composable
+private fun AppNavigationScaffold(
+    navigationSuiteType: NavigationSuiteType,
+    railHeader: @Composable () -> Unit,
+    navigationItems: @Composable () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val isRail = navigationSuiteType == NavigationSuiteType.WideNavigationRailCollapsed ||
+        navigationSuiteType == NavigationSuiteType.WideNavigationRailExpanded
+    if (!isRail) {
+        NavigationSuiteScaffold(
+            navigationSuiteType = navigationSuiteType,
+            navigationItems = navigationItems,
+            content = content,
+        )
+        return
+    }
+
+    Surface {
+        NavigationSuiteScaffoldLayout(
+            navigationSuiteType = navigationSuiteType,
+            navigationSuite = {
+                WideNavigationRail(
+                    state = rememberWideNavigationRailState(
+                        initialValue = if (navigationSuiteType == NavigationSuiteType.WideNavigationRailExpanded)
+                            WideNavigationRailValue.Expanded else WideNavigationRailValue.Collapsed,
+                    ),
+                    // The default rail padding positions a FAB below the app bar. Our menu
+                    // button instead shares the app bar's 64 dp row and the rail items' center.
+                    contentPadding = PaddingValues(top = 8.dp),
+                    header = {
+                        Box(Modifier.width(96.dp), contentAlignment = Alignment.Center) {
+                            railHeader()
+                        }
+                    },
+                    content = navigationItems,
+                )
+            },
+        ) {
+            Box(Modifier.consumeWindowInsets(WideNavigationRailDefaults.windowInsets.only(WindowInsetsSides.Start))) {
+                content()
+            }
         }
     }
 }
@@ -909,10 +984,19 @@ private fun TopLevelNavLabel(dest: AppDestination) {
  * destination (and from the start destination, exits).
  */
 private fun NavController.navigateToTopLevel(dest: AppDestination) {
+    // Utility pages belong to their caller for Back, but must not become a saved tab stack.
+    while (currentDestination?.hasRoute<Route.Menu>() == true ||
+        currentDestination?.hasRoute<Route.About>() == true
+    ) {
+        if (!popBackStack()) break
+    }
+    if (currentDestination.isOn(dest)) return
     navigate(dest.route) {
         popUpTo(graph.findStartDestination().id) { saveState = true }
         launchSingleTop = true
-        restoreState = true
+        // Devices already stays on the stack. Restoring its popUpTo alias can reopen
+        // the outgoing page instead of returning to the start destination.
+        restoreState = dest != AppDestination.DEVICES
     }
 }
 
@@ -952,11 +1036,26 @@ private fun DevicesDestination(
         onRequestPostNotifications = {
             postNotifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
         },
-        onOpenListenerSettings = {
-            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
-        },
         onStartScreenMirror = { sourceId ->
             context.startActivity(AndroidScreenMirrorActivity.intent(context, sourceId))
+        },
+    )
+}
+
+@Composable
+private fun AppsDestination() {
+    val context = LocalContext.current
+    var refresh by remember { mutableIntStateOf(0) }
+    LifecycleResumeEffect(Unit) {
+        refresh++
+        onPauseOrDispose { }
+    }
+    val permissions = remember(refresh) { readPermissions(context) }
+
+    AppsScreen(
+        permissions = permissions,
+        onOpenListenerSettings = {
+            context.startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS))
         },
     )
 }

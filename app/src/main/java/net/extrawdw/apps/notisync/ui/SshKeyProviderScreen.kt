@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -728,11 +729,8 @@ fun SshKeyProviderScreen(
         },
     ) { padding ->
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(
-                top = padding.calculateTopPadding() + 12.dp,
-                bottom = padding.calculateBottomPadding() + 96.dp,
-            ),
+            modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+            contentPadding = padding.withContentSpacing(top = 12.dp, bottom = 96.dp),
         ) {
             item {
                 CenteredSshItem(padded = true) {

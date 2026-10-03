@@ -1000,7 +1000,7 @@
     <string name="ios_apps_search_hint">Search iPhone apps</string>
     <string name="ios_apps_section_mirroring">Mirroring</string>
     <string name="ios_apps_section">iPhone apps</string>
-    <string name="ios_apps_empty">Apps appear here as your iPhone sends notifications — iOS can\'t list them all in advance. Turn one on to start mirroring it.</string>
+    <string name="ios_apps_empty">ANCS can\'t list all apps in advance. Apps appear here as your iPhone sends notifications. Turn one on to start mirroring it.</string>
     <string name="ios_apps_no_match">No iPhone apps match \"%1$s\"</string>
     <string name="ios_apps_forget_app">Forget app</string>
     <string name="ios_status_off">Off</string>

@@ -1,8 +1,18 @@
 package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -15,7 +25,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.Dp
 import net.extrawdw.apps.notisync.AppGraph
 import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
@@ -31,6 +44,29 @@ data class PermissionState(
     val listenerEnabled: Boolean = false,
     val postNotificationsGranted: Boolean = false,
 )
+
+@Composable
+internal fun PermissionCard(
+    title: String,
+    body: String,
+    action: String,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Card(
+        modifier = modifier.fillMaxWidth(),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer,
+            contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
+        ),
+    ) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Text(body, style = MaterialTheme.typography.bodyMedium)
+            OutlinedButton(onClick = onClick) { Text(action) }
+        }
+    }
+}
 
 @Composable
 fun rememberGraph(): AppGraph {
@@ -51,7 +87,7 @@ internal fun FeatureDrawerNavigationIcon() {
 
 /** Shared scaffold with a standard Material 3 top app bar (pinned, does not collapse on scroll). */
 @Composable
-internal fun NotiScaffold(title: String, content: @Composable (Modifier) -> Unit) {
+internal fun NotiScaffold(title: String, content: @Composable (PaddingValues) -> Unit) {
     Scaffold(
         modifier = Modifier.fillMaxSize(),
         topBar = {
@@ -61,8 +97,35 @@ internal fun NotiScaffold(title: String, content: @Composable (Modifier) -> Unit
             )
         },
     ) { padding ->
-        content(Modifier.padding(padding))
+        content(padding)
     }
+}
+
+/** Add spacing inside a scrolling viewport while preserving every scaffold inset. */
+@Composable
+internal fun PaddingValues.withContentSpacing(
+    horizontal: Dp = 0.dp,
+    top: Dp = 0.dp,
+    bottom: Dp = 0.dp,
+): PaddingValues {
+    val direction = LocalLayoutDirection.current
+    return PaddingValues(
+        start = calculateStartPadding(direction) + horizontal,
+        top = calculateTopPadding() + top,
+        end = calculateEndPadding(direction) + horizontal,
+        bottom = calculateBottomPadding() + bottom,
+    )
+}
+
+/** Fixed headers stay below the app bar; their lists keep the bottom inset in content padding. */
+@Composable
+internal fun PaddingValues.topAndSides(): PaddingValues {
+    val direction = LocalLayoutDirection.current
+    return PaddingValues(
+        start = calculateStartPadding(direction),
+        top = calculateTopPadding(),
+        end = calculateEndPadding(direction),
+    )
 }
 
 @Composable

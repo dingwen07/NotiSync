@@ -17,6 +17,8 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -26,6 +28,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.share as ShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCodeIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -42,6 +45,7 @@ import androidx.compose.material3.rememberBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -53,6 +57,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.FilterQuality
+import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalResources
@@ -280,6 +285,9 @@ fun PairingScreen(
             Modifier
                 .fillMaxSize()
                 .padding(padding)
+                .wrapContentWidth(Alignment.CenterHorizontally)
+                .widthIn(max = 480.dp)
+                .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
                 .padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp),
@@ -302,7 +310,11 @@ fun PairingScreen(
                 )
             }
 
-            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(
+                Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
                 Text(
                     stringResource(R.string.pair_broker_title),
                     style = MaterialTheme.typography.labelLarge,
@@ -314,10 +326,10 @@ fun PairingScreen(
                         bitmap = bitmap.asImageBitmap(),
                         contentDescription = stringResource(R.string.pair_broker_qr),
                         filterQuality = FilterQuality.None,
-                        modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                        modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().aspectRatio(1f),
                     )
                 } else {
-                    Box(Modifier.fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
+                    Box(Modifier.widthIn(max = 360.dp).fillMaxWidth().aspectRatio(1f), contentAlignment = Alignment.Center) {
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             verticalArrangement = Arrangement.spacedBy(12.dp),
@@ -445,7 +457,7 @@ private fun LegacyPairingQrSheet(state: PairingCodeState.Ready, onDismiss: () ->
                 bitmap = state.bitmap.asImageBitmap(),
                 contentDescription = stringResource(R.string.pair_qr_code_desc),
                 filterQuality = FilterQuality.None,
-                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+                modifier = Modifier.widthIn(max = 360.dp).fillMaxWidth().aspectRatio(1f),
             )
             Text(
                 stringResource(
@@ -524,6 +536,12 @@ internal fun PairingApprovalSheet(
         initialValue = SheetValue.Hidden,
         enabledValues = setOf(SheetValue.Hidden, SheetValue.Expanded),
     )
+    val reachesTop by remember(sheetState) {
+        derivedStateOf {
+            // Expanded can still stop below the top when the confirmation content is short.
+            sheetState.hasExpandedState && sheetState.requireOffset() <= 0.5f
+        }
+    }
     val existingDeviceName = existingTrustedDevice?.displayName ?: candidate.displayName
 
     // This confirmation used to inherit protection from PairingOverlay. It now lives above Devices, so keep
@@ -532,6 +550,7 @@ internal fun PairingApprovalSheet(
     ModalBottomSheet(
         onDismissRequest = { if (!approving) onDismiss() },
         sheetState = sheetState,
+        shape = if (reachesTop) RectangleShape else BottomSheetDefaults.ExpandedShape,
     ) {
         Column(
             modifier = Modifier

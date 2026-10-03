@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -176,7 +177,7 @@ fun RunScreen(
             deviceNameOf = { id -> graph.trust.displayName(id) },
             onSelect = { run -> selectedEncoded = run.key.encoded() },
             onClearHistory = { showClearHistory = true },
-            modifier = Modifier.fillMaxSize().padding(padding),
+            scaffoldPadding = padding,
         )
     }
 
@@ -264,11 +265,12 @@ private fun RunList(
     deviceNameOf: (net.extrawdw.notisync.protocol.ClientId) -> String?,
     onSelect: (StoredRun) -> Unit,
     onClearHistory: () -> Unit,
+    scaffoldPadding: PaddingValues,
     modifier: Modifier = Modifier,
 ) {
     if (active.isEmpty() && history.itemCount == 0 && history.loadState.refresh is LoadState.NotLoading) {
         Column(
-            modifier.fillMaxSize().padding(24.dp),
+            modifier.fillMaxSize().padding(scaffoldPadding).consumeWindowInsets(scaffoldPadding).padding(24.dp),
             verticalArrangement = Arrangement.Center,
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
@@ -290,8 +292,8 @@ private fun RunList(
     }
 
     LazyColumn(
-        modifier.fillMaxSize(),
-        contentPadding = PaddingValues(bottom = 96.dp),
+        modifier.fillMaxSize().consumeWindowInsets(scaffoldPadding),
+        contentPadding = scaffoldPadding.withContentSpacing(bottom = 96.dp),
     ) {
         if (active.isNotEmpty()) {
             item { RunSectionHeader(stringResource(R.string.run_section_active)) }

@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.ui
 
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -37,10 +38,10 @@ fun ActivityScreen() {
     val events by graph.activityLog.events.collectAsStateWithLifecycle()
     val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
-    NotiScaffold(stringResource(R.string.tab_activity)) { modifier ->
+    NotiScaffold(stringResource(R.string.tab_activity)) { padding ->
         if (events.isEmpty()) {
             Column(
-                modifier.fillMaxSize().padding(24.dp),
+                Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).padding(24.dp),
                 verticalArrangement = Arrangement.Center,
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
@@ -62,7 +63,10 @@ fun ActivityScreen() {
                 )
             }
         } else {
-            LazyColumn(modifier.fillMaxSize()) {
+            LazyColumn(
+                modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
+                contentPadding = padding,
+            ) {
                 items(events) { e ->
                     ListItem(
                         // Override the default three-line minimum without constraining wrapped text.

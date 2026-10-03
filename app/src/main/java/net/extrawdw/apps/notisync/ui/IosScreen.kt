@@ -21,6 +21,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -438,8 +440,8 @@ fun IosScreen() {
     }
     val toggleable = matching.filterNot { IosBundleIdExclusions.isExcluded(it.bundleId) }
     val allEnabled = toggleable.isNotEmpty() && toggleable.all { it.bundleId in effectiveEnabled }
-    NotiScaffold(stringResource(R.string.tab_ios)) { modifier ->
-        Column(modifier.fillMaxSize()) {
+    NotiScaffold(stringResource(R.string.tab_ios)) { padding ->
+        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
             AppListSearchBar(
                 query = query,
                 onQueryChange = { query = it },
@@ -450,7 +452,10 @@ fun IosScreen() {
                 canToggleAll = toggleable.isNotEmpty(),
                 onToggleAll = { on -> registry.setEnabled(toggleable.map { it.bundleId }, on) },
             )
-            LazyColumn(Modifier.weight(1f)) {
+            LazyColumn(
+                modifier = Modifier.weight(1f),
+                contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),
+            ) {
                 item("connection") {
                     ConnectionCard(
                         status = status,
