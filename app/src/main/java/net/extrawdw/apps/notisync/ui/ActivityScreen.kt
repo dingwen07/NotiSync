@@ -38,7 +38,7 @@ fun ActivityScreen() {
     val events by graph.activityLog.events.collectAsStateWithLifecycle()
     val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
-    NotiScaffold(stringResource(R.string.tab_activity), contentMaxWidth = 960.dp) { padding ->
+    NotiScaffold(stringResource(R.string.tab_activity)) { padding ->
         if (events.isEmpty()) {
             Column(
                 Modifier.fillMaxSize().padding(padding).consumeWindowInsets(padding).padding(24.dp),

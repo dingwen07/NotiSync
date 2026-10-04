@@ -55,11 +55,9 @@ import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -224,15 +222,7 @@ fun RunScreen(
             }
         },
     ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.run_screen_title)) },
-                    navigationIcon = { FeatureDrawerNavigationIcon() },
-                )
-            },
-        ) { padding ->
+        NotiScaffold(stringResource(R.string.run_screen_title)) { padding ->
             RunList(
                 active = runs.filter { it.active },
                 history = history,

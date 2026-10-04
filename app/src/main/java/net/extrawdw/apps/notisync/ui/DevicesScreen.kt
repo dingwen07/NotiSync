@@ -13,10 +13,15 @@ import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.contactless as ContactlessIcon
@@ -112,7 +117,11 @@ internal fun DevicesPairingLayout(
             boundsAnimationSpec = snap(),
         )
     }
-    BoxWithConstraints(Modifier.fillMaxSize()) {
+    // Pairing and the nested device-detail layout share the same horizontal safe region.
+    val paneInsets = if (directive.maxHorizontalPartitions > 1) {
+        WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)
+    } else WindowInsets(0)
+    BoxWithConstraints(Modifier.fillMaxSize().windowInsetsPadding(paneInsets)) {
         val pairingWidth = directive.defaultPanePreferredWidth.coerceAtMost(maxWidth / 2)
         val density = LocalDensity.current
         val mainWidthPx = with(density) {

@@ -92,7 +92,6 @@ internal fun FeatureDrawerNavigationIcon() {
 @Composable
 internal fun NotiScaffold(
     title: String,
-    contentMaxWidth: Dp = Dp.Unspecified,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
@@ -104,13 +103,15 @@ internal fun NotiScaffold(
             )
         },
     ) { padding ->
-        if (contentMaxWidth == Dp.Unspecified) {
-            content(padding)
-        } else {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
-                Box(Modifier.widthIn(max = contentMaxWidth).fillMaxSize()) { content(padding) }
-            }
-        }
+        TabContent { content(padding) }
+    }
+}
+
+/** Shared content limit for tabs and their detail panes; app bars and backgrounds fill the pane. */
+@Composable
+internal fun TabContent(content: @Composable () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.TopCenter) {
+        Box(Modifier.widthIn(max = 1280.dp).fillMaxSize()) { content() }
     }
 }
 

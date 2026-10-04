@@ -36,7 +36,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -67,14 +66,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SegmentedButton
 import androidx.compose.material3.SegmentedButtonDefaults
 import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -872,15 +869,7 @@ fun SshKeyProviderScreen(
             }
         },
     ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.ssh_key_provider_screen_title)) },
-                    navigationIcon = { FeatureDrawerNavigationIcon() },
-                )
-            },
-        ) { padding ->
+        NotiScaffold(stringResource(R.string.ssh_key_provider_screen_title)) { padding ->
             LazyColumn(
                 modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
                 contentPadding = padding.withContentSpacing(top = 12.dp, bottom = 96.dp),
@@ -2476,13 +2465,10 @@ private fun EmptyCard(message: String) {
 
 @Composable
 private fun CenteredSshItem(padded: Boolean = false, content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-        Box(
-            Modifier.widthIn(max = 720.dp)
-                .fillMaxWidth()
-                .then(if (padded) Modifier.padding(horizontal = 20.dp, vertical = 6.dp) else Modifier),
-        ) { content() }
-    }
+    Box(
+        Modifier.fillMaxWidth()
+            .then(if (padded) Modifier.padding(horizontal = 20.dp, vertical = 6.dp) else Modifier),
+    ) { content() }
 }
 
 private fun SshKeyDescriptor.algorithmDisplayLabel(): String = when (algorithm) {

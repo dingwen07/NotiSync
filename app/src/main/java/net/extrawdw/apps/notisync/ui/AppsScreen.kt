@@ -242,7 +242,7 @@ fun AppsScreen(
             }
         },
     ) {
-        NotiScaffold(stringResource(R.string.tab_apps), contentMaxWidth = 960.dp) { padding ->
+        NotiScaffold(stringResource(R.string.tab_apps)) { padding ->
             BoxWithConstraints(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
                 val scrollAccessNotice = maxHeight < 480.dp
                 Column(Modifier.fillMaxSize()) {

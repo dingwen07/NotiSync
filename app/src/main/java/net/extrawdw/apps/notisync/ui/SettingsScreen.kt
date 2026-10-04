@@ -150,7 +150,7 @@ fun SettingsScreen(onOpenAbout: () -> Unit) {
         probe = probeServer(graph)
     }
 
-    NotiScaffold(stringResource(R.string.tab_settings), contentMaxWidth = 840.dp) { padding ->
+    NotiScaffold(stringResource(R.string.tab_settings)) { padding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().consumeWindowInsets(padding),
             contentPadding = padding.withContentSpacing(horizontal = 16.dp, top = 16.dp, bottom = 96.dp),

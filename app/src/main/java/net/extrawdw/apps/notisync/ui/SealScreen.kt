@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
@@ -27,11 +26,9 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -179,15 +176,7 @@ fun SealScreen() {
             }
         },
     ) {
-        Scaffold(
-            modifier = Modifier.fillMaxSize(),
-            topBar = {
-                TopAppBar(
-                    title = { Text(stringResource(R.string.seal_name)) },
-                    navigationIcon = { FeatureDrawerNavigationIcon() },
-                )
-            },
-        ) { padding ->
+        NotiScaffold(stringResource(R.string.seal_name)) { padding ->
             SealRequestList(
                 active = activeRequests,
                 history = history,
@@ -236,25 +225,23 @@ private fun SealRequestList(
         contentPadding = scaffoldPadding.withContentSpacing(top = 8.dp, bottom = 96.dp),
     ) {
         item {
-            CenteredSealItem {
-                Column(
-                    Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    Text(
-                        stringResource(R.string.seal_intro),
-                        style = MaterialTheme.typography.bodyLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    SealIdentityCard(
-                        enabled = enrollmentEnabled,
-                        identity = enrollmentIdentity,
-                        keyId = enrollmentKeyId,
-                        providerAvailable = providerAvailable,
-                        onEnroll = onEnroll,
-                        onRemove = onRemoveEnrollment,
-                    )
-                }
+            Column(
+                Modifier.fillMaxWidth().padding(horizontal = 20.dp, vertical = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Text(
+                    stringResource(R.string.seal_intro),
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                SealIdentityCard(
+                    enabled = enrollmentEnabled,
+                    identity = enrollmentIdentity,
+                    keyId = enrollmentKeyId,
+                    providerAvailable = providerAvailable,
+                    onEnroll = onEnroll,
+                    onRemove = onRemoveEnrollment,
+                )
             }
         }
 
@@ -408,11 +395,4 @@ private fun SealSectionHeader(title: String) {
         style = MaterialTheme.typography.titleSmall,
         color = MaterialTheme.colorScheme.primary,
     )
-}
-
-@Composable
-private fun CenteredSealItem(content: @Composable () -> Unit) {
-    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
-        Box(Modifier.fillMaxWidth().widthIn(max = 720.dp)) { content() }
-    }
 }

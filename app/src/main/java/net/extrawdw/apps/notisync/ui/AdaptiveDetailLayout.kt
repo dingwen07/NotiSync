@@ -7,8 +7,12 @@ import androidx.compose.animation.EnterTransition
 import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsDraggedAsState
@@ -79,7 +83,12 @@ internal fun AdaptiveDetailLayout(
     detail: @Composable () -> Unit,
     list: @Composable () -> Unit,
 ) {
-    BoxWithConstraints(modifier.fillMaxSize()) {
+    // Own horizontal safety once for the whole split, including the divider's end anchors.
+    // Otherwise each pane repeats a landscape cutout inset at its interior edge as well.
+    val paneInsets = if (directive.maxHorizontalPartitions > 1) {
+        WindowInsets.safeDrawing.only(WindowInsetsSides.Horizontal)
+    } else WindowInsets(0)
+    BoxWithConstraints(modifier.fillMaxSize().windowInsetsPadding(paneInsets)) {
         // A parent pane (Devices/Pairing) can be narrower than the activity window.
         val wide = directive.maxHorizontalPartitions > 1 &&
             maxWidth >= directive.defaultPanePreferredWidth * 2 + directive.horizontalPartitionSpacerSize
@@ -288,9 +297,11 @@ private fun InlineDetailSurface(
             )
         },
     ) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
-            // Nested confirmations still open in their own modal window.
-            CompositionLocalProvider(LocalInlineDetailSheet provides false) { content() }
+        TabContent {
+            Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
+                // Nested confirmations still open in their own modal window.
+                CompositionLocalProvider(LocalInlineDetailSheet provides false) { content() }
+            }
         }
     }
 }

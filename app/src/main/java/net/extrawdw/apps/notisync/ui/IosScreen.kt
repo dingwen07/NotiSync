@@ -440,7 +440,7 @@ fun IosScreen() {
     }
     val toggleable = matching.filterNot { IosBundleIdExclusions.isExcluded(it.bundleId) }
     val allEnabled = toggleable.isNotEmpty() && toggleable.all { it.bundleId in effectiveEnabled }
-    NotiScaffold(stringResource(R.string.tab_ios), contentMaxWidth = 960.dp) { padding ->
+    NotiScaffold(stringResource(R.string.tab_ios)) { padding ->
         Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
             AppListSearchBar(
                 query = query,
