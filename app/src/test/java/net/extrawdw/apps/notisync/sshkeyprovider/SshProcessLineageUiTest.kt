@@ -10,6 +10,15 @@ import org.junit.Test
 
 class SshProcessLineageUiTest {
     @Test
+    fun processTreeShowsEachOwnerWithoutChangingApplicationSelection() {
+        val root = DesktopProcessIdentity(1, "/sbin/launchd", username = "root", uid = 0)
+        val git = DesktopProcessIdentity(42, "/usr/bin/git", username = "alice", uid = 501)
+        assertEquals("launchd (1) · root (0)\n└─ git (42) · alice (501)", listOf(root, git).toProcessTreeText())
+        assertEquals("Git", listOf(git, root).mainCallerLabel())
+        assertEquals("PID 42 · SID S-1-5-18", listOf(DesktopProcessIdentity(42, sid = "S-1-5-18")).toProcessTreeText())
+    }
+
+    @Test
     fun sshLeafUsesItsDirectParentAsMainCaller() {
         val ssh = process(30, "C:\\Windows\\System32\\OpenSSH\\ssh.exe", "ssh.exe")
         val terminal = process(20, "C:\\Program Files\\WindowsApps\\wt.exe", "Windows Terminal")

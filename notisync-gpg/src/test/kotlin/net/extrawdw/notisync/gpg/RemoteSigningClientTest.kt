@@ -19,6 +19,7 @@ import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
@@ -27,6 +28,7 @@ import net.extrawdw.notisync.protocol.ProtocolCodec
 import net.extrawdw.notisync.protocol.Urgency
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RemoteSigningClientTest {
@@ -76,8 +78,14 @@ class RemoteSigningClientTest {
         )
         assertEquals(Urgency.HIGH, api.sends.first().urgency)
         assertEquals("C:\\work\\NotiSync", api.decodeRequest(api.sends.first()).workingDirectory)
+        val process = requireNotNull(api.decodeRequest(api.sends.first()).processContext)
+        assertEquals(DesktopProcessContextSource.CURRENT_PROCESS, process.source)
+        assertEquals(ProcessHandle.current().pid(), process.leaf?.pid)
+        assertNull(process.validationError())
         assertEquals(Urgency.HIGH, api.sends.last().urgency)
         assertEquals(OpenPgpSignAction.CANCEL, api.decodeRequest(api.sends.last()).action)
+        assertNull(api.decodeRequest(api.sends.last()).processContext)
+        assertNull(api.decodeRequest(api.sends.last()).validationError { java.security.MessageDigest.getInstance("SHA-256").digest(it) })
         val cancelScope = api.sends.last().scope as Recipients.OwnMeshFiltered
         assertTrue(Capability.PUSH_FILTERING in cancelScope.requiredCapabilities)
         assertTrue(cancelScope.requireCapabilityRoutingV1)
@@ -104,6 +112,7 @@ class RemoteSigningClientTest {
         assertEquals(RemoteSigningOutcome.Rejected(OpenPgpRejectReason.USER_REJECTED.name), outcome)
         val request = api.decodeRequest(api.sends.first())
         assertEquals(OpenPgpObjectKind.GIT_TAG, request.objectKind)
+        assertEquals(DesktopProcessContextSource.CURRENT_PROCESS, request.processContext?.source)
         assertTrue(request.requiredSignerCapabilities().contains(Capability.OPENPGP_SIGN_GIT_TAG_V1))
     }
 
@@ -155,6 +164,7 @@ class RemoteSigningClientTest {
                         rejectReason = OpenPgpRejectReason.USER_REJECTED,
                         actionAt = 1_100,
                         workingDirectory = null,
+                        processContext = null,
                     )
                     return ReceiveRecord(
                         recordType = ReceiveRecordType.MESSAGE,

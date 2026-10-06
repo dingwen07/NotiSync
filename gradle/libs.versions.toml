@@ -84,6 +84,7 @@ clikt = { group = "com.github.ajalt.clikt", name = "clikt", version.ref = "clikt
 junixsocket-core = { group = "com.kohlschutter.junixsocket", name = "junixsocket-core", version.ref = "junixsocket" }
 pty4j = { group = "org.jetbrains.pty4j", name = "pty4j", version.ref = "pty4j" }
 jna = { group = "net.java.dev.jna", name = "jna", version.ref = "jna" }
+jna-platform = { group = "net.java.dev.jna", name = "jna-platform", version.ref = "jna" }
 slf4j-nop = { group = "org.slf4j", name = "slf4j-nop", version.ref = "slf4j" }
 bouncycastle-tls = { group = "org.bouncycastle", name = "bctls-jdk18on", version.ref = "bouncyCastleTls" }
 bouncycastle-provider = { group = "org.bouncycastle", name = "bcprov-jdk18on", version.ref = "bouncyCastle" }

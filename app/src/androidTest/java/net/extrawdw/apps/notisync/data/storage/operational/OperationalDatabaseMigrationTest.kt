@@ -226,6 +226,7 @@ class OperationalDatabaseMigrationTest {
                 OperationalDatabase.MIGRATION_2_3,
                 OperationalDatabase.MIGRATION_3_4,
                 OperationalDatabase.MIGRATION_4_5,
+                OperationalDatabase.MIGRATION_5_6,
             ),
         ).close()
     }

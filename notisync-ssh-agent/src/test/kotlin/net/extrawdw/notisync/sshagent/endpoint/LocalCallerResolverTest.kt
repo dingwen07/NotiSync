@@ -120,6 +120,8 @@ class LocalCallerResolverTest {
             resolved.processLineage.take(2).map { it.pid },
         )
         assertEquals("/usr/bin/login", resolved.processLineage[0].executablePath)
+        assertEquals("root", resolved.processLineage[0].username)
+        assertEquals(0L, resolved.processLineage[0].uid)
         assertNotNull(resolved.processLineage[1].executablePath)
     }
 }

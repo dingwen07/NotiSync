@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.serialization.Serializable
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.GitCommitPayloadParser
 import net.extrawdw.notisync.protocol.GitTagPayloadParser
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
@@ -170,6 +171,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
             rejectReason = null,
             actionAt = now,
             workingDirectory = null,
+            processContext = null,
         )
         if (response.validationError(::sha256) != null) return false
         return storeTerminal(
@@ -197,6 +199,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
             rejectReason = reason,
             actionAt = now,
             workingDirectory = null,
+            processContext = null,
         )
         if (response.validationError(::sha256) != null) return false
         return storeTerminal(
@@ -352,6 +355,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
         put("state", state.name)
         put("updated_at", now)
         put("working_directory", request.workingDirectory)
+        put("process_context_json", request.processContext?.let { ProtocolCodec.encodeToJson(it) })
         put("summary_title", summary.title)
         put("summary_reference", summary.reference)
         put("summary_identity", summary.identity)
@@ -435,6 +439,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
             objectKind = objectKind,
             payload = getBlobOrNull(9),
             workingDirectory = getStringOrNull(17),
+            processContext = getStringOrNull(22)?.let { ProtocolCodec.decodeFromJson<DesktopProcessContext>(it) },
         )
         val response = getStringOrNull(11)?.let { action ->
             base.copy(
@@ -444,6 +449,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
                 rejectReason = getStringOrNull(13)?.let(OpenPgpRejectReason::valueOf),
                 actionAt = if (isNull(14)) null else getLong(14),
                 workingDirectory = null,
+                processContext = null,
             )
         }
         // No parsed-field tables: selected records are rendered directly from the retained payload.
@@ -488,6 +494,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
             this.request.primaryKeyId == request.primaryKeyId &&
             this.request.objectKind == request.objectKind &&
             this.request.workingDirectory == request.workingDirectory &&
+            this.request.processContext == request.processContext &&
             MessageDigest.isEqual(this.request.payloadSha256, request.payloadSha256) &&
             // Only pre-v5 terminal rows can lack the raw payload. Their authenticated digest still
             // identifies replays without inventing the bytes erased by an older release.
@@ -499,7 +506,7 @@ class OpenPgpSignStore(context: Context) : OperationalSQLiteOpenHelper(context) 
         const val COLUMNS = "request_id,protocol_version,requester_client_id,sender_client_id,primary_key_id," +
             "issued_at,expires_at,payload_sha256,object_kind,payload,state,response_action," +
             "response_signature_armor,response_reject_reason,response_action_at,updated_at,result,working_directory," +
-            "summary_title,summary_reference,summary_identity,legacy_details_json"
+            "summary_title,summary_reference,summary_identity,legacy_details_json,process_context_json"
         // Live notifications display the short digest; terminal list pages do not need it.
         val SUMMARY_COLUMNS = summaryColumns(includeDigest = true)
         val HISTORY_SUMMARY_COLUMNS = summaryColumns(includeDigest = false)

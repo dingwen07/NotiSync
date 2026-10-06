@@ -63,6 +63,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.pluralStringResource
@@ -699,11 +700,12 @@ private fun SignRequestCard(
 }
 
 @Composable
-private fun ProcessLineageLine(
+internal fun ProcessLineageLine(
     processLineage: List<DesktopProcessIdentity>,
     unavailable: String,
     reportedByRequester: String,
 ) {
+    val context = LocalContext.current
     var showFullPaths by remember(processLineage) { mutableStateOf(false) }
     Row(
         Modifier.fillMaxWidth(),
@@ -729,7 +731,8 @@ private fun ProcessLineageLine(
                         .clickable(enabled = processLineage.isNotEmpty()) { showFullPaths = !showFullPaths },
                 ) {
                     Text(
-                        text = processLineage.toProcessTreeText(showFullPaths).ifEmpty { unavailable },
+                        text = processLineage.toProcessTreeText(showFullPaths) { context.windowsTokenInfoLabel(it) }
+                            .ifEmpty { unavailable },
                         fontFamily = FontFamily.Monospace,
                         softWrap = false,
                     )
@@ -969,7 +972,10 @@ internal fun StoredSshProviderRequest.processLineageForDisplay(): List<DesktopPr
 private fun StoredSshProviderRequest.processLineageLeafFirst(): List<DesktopProcessIdentity> =
     signRequest?.processContext?.processLineage ?: history.processLineage
 
-internal fun List<DesktopProcessIdentity>.toProcessTreeText(showFullPaths: Boolean = false): String =
+internal fun List<DesktopProcessIdentity>.toProcessTreeText(
+    showFullPaths: Boolean = false,
+    tokenLabel: (net.extrawdw.notisync.protocol.DesktopWindowsTokenInfo) -> String = { "" },
+): String =
     mapIndexed { index, process ->
         val branch = if (index == 0) "" else "  ".repeat(index - 1) + "└─ "
         val name = if (showFullPaths) {
@@ -977,11 +983,22 @@ internal fun List<DesktopProcessIdentity>.toProcessTreeText(showFullPaths: Boole
         } else {
             process.shortProcessName()
         }
-        if (name == null || name == "PID ${process.pid}") {
+        val identity = if (name == null || name == "PID ${process.pid}") {
             "${branch}PID ${process.pid}"
         } else {
             "$branch$name (${process.pid})"
         }
+        val account = when {
+            process.username != null && process.uid != null -> "${process.username} (${process.uid})"
+            process.username != null -> process.username
+            else -> process.uid?.let { "UID $it" }
+        }
+        val owner = listOfNotNull(
+            account, process.sid?.let { "SID $it" },
+            process.windowsTokenInfo?.let(tokenLabel)?.takeIf(String::isNotEmpty),
+        )
+            .joinToString(" · ")
+        if (owner.isEmpty()) identity else "$identity · $owner"
     }.joinToString("\n")
 
 private fun StoredSshProviderRequest.requestedAt(): Long = history.requestedAt

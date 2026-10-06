@@ -489,7 +489,8 @@ object OpenPgpSignLimits {
  * Flat, action-discriminated OpenPGP signing message. Every field is inside the authenticated,
  * end-to-end encrypted DATA_SYNC body. [workingDirectory] is optional, requester-reported review
  * context: it is authenticated as coming from the trusted device but is not part of the signed Git
- * object payload.
+ * object payload. [processContext] is likewise optional requester-reported review context; older
+ * senders and saved requests omit it.
  */
 @Serializable
 data class OpenPgpSignSync(
@@ -507,6 +508,7 @@ data class OpenPgpSignSync(
     @CborLabel(11) val rejectReason: OpenPgpRejectReason? = null,
     @CborLabel(12) val actionAt: Long? = null,
     @CborLabel(13) val workingDirectory: String? = null,
+    @CborLabel(14) val processContext: DesktopProcessContext? = null,
 ) {
     fun requiredSignerCapabilities(): Set<Capability> = when (objectKind) {
         OpenPgpObjectKind.GIT_COMMIT -> OPENPGP_SIGNER_CAPABILITIES
@@ -531,6 +533,10 @@ data class OpenPgpSignSync(
                     workingDirectory.any(Char::isISOControl)
             )
         ) return "workingDirectory is outside the allowed bounds"
+        processContext?.validationError()?.let { return it }
+        if (action != OpenPgpSignAction.REQUEST && processContext != null) {
+            return "$action must omit processContext"
+        }
 
         return when (action) {
             OpenPgpSignAction.REQUEST -> when {

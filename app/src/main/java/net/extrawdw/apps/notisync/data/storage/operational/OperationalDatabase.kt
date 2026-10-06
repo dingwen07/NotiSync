@@ -51,7 +51,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 5
+        const val VERSION = 6
 
         val MIGRATION_1_2 = Migration(1, 2) { connection ->
             connection.execSQL(
@@ -113,6 +113,10 @@ internal abstract class OperationalDatabase : RoomDatabase() {
             connection.execSQL("CREATE INDEX IF NOT EXISTS mirror_lifecycle_updated_at_idx ON mirror_lifecycle(updated_at)")
         }
 
+        val MIGRATION_5_6 = Migration(5, 6) { connection ->
+            connection.execSQL("ALTER TABLE seal_requests ADD COLUMN process_context_json TEXT")
+        }
+
         fun create(context: Context): OperationalDatabase =
             Room.databaseBuilder<OperationalDatabase>(context.applicationContext, DATABASE_NAME)
                 .setDriver(OperationalDatabaseEncryption.driver(context))
@@ -122,7 +126,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
                         installSshAuthorizationGuards(connection)
                     }
                 })
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
     }
 }

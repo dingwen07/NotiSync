@@ -37,4 +37,5 @@ internal data class OpenPgpSignRequestEntity(
     @ColumnInfo(name = "summary_reference") val summaryReference: String?,
     @ColumnInfo(name = "summary_identity") val summaryIdentity: String?,
     @ColumnInfo(name = "legacy_details_json") val legacyDetailsJson: String?,
+    @ColumnInfo(name = "process_context_json") val processContextJson: String?,
 )

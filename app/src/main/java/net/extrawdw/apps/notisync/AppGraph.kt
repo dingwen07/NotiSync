@@ -376,10 +376,12 @@ class AppGraph(private val app: Application) {
         openPgpProvider = OpenKeychainSigningProvider(app)
         openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
-        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app) {
+        desktopApplications = DesktopApplicationRepository(app)
+        openPgpSignNotifications = OpenPgpSignNotificationPresenter(
+            app, desktopApplicationRegistry = { desktopApplications.snapshot.value.registry },
+        ) {
             settings.autoOpenOpenPgpRequest.value
         }
-        desktopApplications = DesktopApplicationRepository(app)
         sshKeyProviderStore = SshKeyProviderStore(app) { desktopApplications.snapshot.value.registry }
         sshKeyProviderNotifications = SshKeyProviderNotificationPresenter(app, sshKeyProviderStore) {
             settings.autoOpenSshRequest.value
@@ -687,7 +689,10 @@ class AppGraph(private val app: Application) {
         sshKeyProviderEngine = sshProvider
         scope.launch { sshProvider.reconcile() }
         scope.launch {
-            desktopApplications.snapshot.drop(1).collect { sshProvider.refreshPendingNotifications() }
+            desktopApplications.snapshot.drop(1).collect {
+                sshProvider.refreshPendingNotifications()
+                openPgpSigning.refreshPendingNotifications()
+            }
         }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
