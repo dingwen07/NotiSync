@@ -345,12 +345,21 @@ class DesktopPeerRuntime(
             val rosterDevice = trustStore.roster.value.first { it.clientId == id }
             require(
                 request.action in rosterDevice.allowedActions(clock.millis()) ||
-                    (before == TrustStatus.PENDING_REVOKE && request.action == DeviceAction.DECLINE_REVOKE),
+                    (before == TrustStatus.PENDING_REVOKE && request.action in
+                        setOf(DeviceAction.CONFIRM_REVOKE, DeviceAction.DECLINE_REVOKE)),
             ) { "${request.action} is not valid for a $before device" }
             val shouldBroadcast = when (request.action) {
-                DeviceAction.APPROVE -> trustStore.approveTrust(id, clock.millis())
+                DeviceAction.APPROVE -> if (before == TrustStatus.PENDING_REVOKE) {
+                    trustStore.keepTrusted(id, clock.millis())
+                } else {
+                    trustStore.approveTrust(id, clock.millis())
+                }
                 DeviceAction.REJECT -> trustStore.rejectTrust(id, clock.millis())
-                DeviceAction.REVOKE -> trustStore.revokeLocal(id, clock.millis())
+                DeviceAction.REVOKE -> if (before == TrustStatus.PENDING_REVOKE) {
+                    trustStore.confirmRevoke(id, clock.millis())
+                } else {
+                    trustStore.revokeLocal(id, clock.millis())
+                }
                 DeviceAction.CONFIRM_REVOKE -> trustStore.confirmRevoke(id, clock.millis())
                 DeviceAction.DECLINE_REVOKE, DeviceAction.KEEP -> trustStore.keepTrusted(id, clock.millis())
                 DeviceAction.RESTORE -> trustStore.restoreTrust(id, clock.millis())
@@ -706,7 +715,7 @@ class DesktopPeerRuntime(
     private fun RosterDevice.allowedActions(now: Long): Set<DeviceAction> = when (status) {
         TrustStatus.PENDING_TRUST -> setOf(DeviceAction.APPROVE, DeviceAction.REJECT)
         TrustStatus.TRUSTED -> setOf(DeviceAction.REVOKE)
-        TrustStatus.PENDING_REVOKE -> setOf(DeviceAction.CONFIRM_REVOKE, DeviceAction.KEEP)
+        TrustStatus.PENDING_REVOKE -> setOf(DeviceAction.APPROVE, DeviceAction.REVOKE, DeviceAction.KEEP)
         TrustStatus.REVOKED -> buildSet {
             add(DeviceAction.RESTORE)
             val revoked = this@allowedActions.revokedAt

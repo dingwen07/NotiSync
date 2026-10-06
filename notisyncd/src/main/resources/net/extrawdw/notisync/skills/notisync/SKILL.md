@@ -37,6 +37,8 @@ notisync skills [add|remove|list]
 
 Device actions take the action first and device ID second. `approve --all` is deliberately limited to pending approvals; never substitute it for a targeted action unless the user asked to approve every pending device.
 
+Use `revoke` for both trusted devices and pending revocations. For a pending revocation, it confirms the revocation proposed by another device; `approve` or `keep` rejects that proposal and keeps the device trusted. `confirm-revoke` and `decline-revoke` remain accepted aliases for those pending decisions.
+
 Pairing is mutual. `devices pair` starts Secure Exchange to exchange CARDs through the broker using a QR with a secret and host identity pin. Scanning authenticates the exchange automatically, then each device asks for trust approval; there is no manual code entry. Keep the complete QR/link private. `devices pair show` preserves the legacy CARD QR; for that flow, inspect the phone's returned link with `pair inspect` before `pair accept`. Use `--own` only for a device controlled by the same user. Read [references/setup-and-platforms.md](references/setup-and-platforms.md) for installation, platform paths, pairing, and skill-management details.
 
 ## Failure handling

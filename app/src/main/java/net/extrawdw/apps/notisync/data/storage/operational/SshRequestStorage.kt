@@ -6,7 +6,7 @@ import net.zetetic.database.sqlcipher.SQLiteDatabase
 import net.extrawdw.apps.notisync.sshkeyprovider.*
 import net.extrawdw.notisync.protocol.*
 
-/** Scalar request data plus ordered JSON context, shared by live storage and legacy migration. */
+/** Scalar request data plus JSON context, shared by live storage and legacy migration. */
 internal object SshRequestStorage {
     // List views read no BLOBs; public keys and signing/import/result data load only when opening a record.
     val summaryColumns = listOf(
@@ -14,7 +14,7 @@ internal object SshRequestStorage {
         "updated_at", "requested_at", "expires_at", "key_name", "suggested_name",
         "import_source_type", "encrypted_import", "signature_algorithm", "destination_username",
         "destination_host", "destination_host_key_fingerprint", "payload_size", "approval_kind",
-        "remembered_authorization_id", "remembered_scope", "process_lineage_json",
+        "remembered_authorization_id", "remembered_scope", "process_context_json",
     ).joinToString(", ")
 
     fun values(stored: StoredSshProviderRequest): LinkedHashMap<String, Any?> = linkedMapOf<String, Any?>(
@@ -26,6 +26,7 @@ internal object SshRequestStorage {
         "outcome" to stored.outcome?.name,
         "result_at" to stored.resultAt,
         "updated_at" to stored.updatedAt,
+        "process_context_json" to stored.signRequest?.processContext?.let { ProtocolCodec.encodeToJson(it) },
         "request_complete" to if (stored.signRequest != null ||
             stored.importRequest != null && stored.state == SshProviderRequestState.PENDING_REVIEW) 1 else 0,
     ).apply {
@@ -35,8 +36,6 @@ internal object SshRequestStorage {
             put("sign_flags", request.flags)
             put("authorization_generation", request.authorizationGeneration)
             put("authorization_epoch", request.authorizationEpoch)
-            put("process_source", request.processContext.source.name)
-            put("process_boot_id", request.processContext.bootId)
             put("eligible_provider_client_ids_json", ProtocolCodec.encodeToJson(request.eligibleProviderClientIds))
             put("host_aliases_json", ProtocolCodec.encodeToJson(request.destinationContext.hostAliases))
             put("binding_chain_json", ProtocolCodec.encodeToJson(request.destinationContext.bindingChain))
@@ -67,6 +66,7 @@ internal object SshRequestStorage {
         }
     }
 
+    // Completion updates only mutable history fields; the original process context stays intact.
     fun historyValues(history: SshRequestHistorySnapshot): Map<String, Any?> = linkedMapOf(
         "requested_at" to history.requestedAt,
         "expires_at" to history.expiresAt,
@@ -83,7 +83,6 @@ internal object SshRequestStorage {
         "approval_kind" to history.approvalKind?.name,
         "remembered_authorization_id" to history.rememberedAuthorizationId,
         "remembered_scope" to history.rememberedScope?.name,
-        "process_lineage_json" to ProtocolCodec.encodeToJson(history.processLineage),
     )
 
     fun responseValues(response: Any): Map<String, Any?> = when (response) {
@@ -155,14 +154,14 @@ internal object SshRequestStorage {
         val requestedAt = requireNotNull(number("requested_at"))
         val expiresAt = requireNotNull(number("expires_at"))
         val kind = SshProviderRequestKind.valueOf(requireNotNull(text("kind")))
-        val lineage = ProtocolCodec.decodeFromJson<List<DesktopProcessIdentity>>(requireNotNull(text("process_lineage_json")))
+        val processContext = text("process_context_json")?.let { ProtocolCodec.decodeFromJson<DesktopProcessContext>(it) }
         val history = SshRequestHistorySnapshot(
             requestedAt = requestedAt, expiresAt = expiresAt,
             publicKeyBlob = bytes("public_key_blob"), keyName = text("key_name"),
             suggestedName = text("suggested_name"), importSourceType = text("import_source_type")?.let(SshImportSourceType::valueOf),
             encryptedImport = number("encrypted_import") == 1L,
             signatureAlgorithm = text("signature_algorithm")?.let(SshSignatureAlgorithm::valueOf),
-            processLineage = lineage, destinationUsername = text("destination_username"),
+            processLineage = processContext?.processLineage.orEmpty(), destinationUsername = text("destination_username"),
             destinationHost = text("destination_host"), destinationHostKeyFingerprint = text("destination_host_key_fingerprint"),
             payloadSize = requireNotNull(number("payload_size")).toInt(),
             approvalKind = text("approval_kind")?.let(SshRequestApprovalKind::valueOf),
@@ -176,9 +175,7 @@ internal object SshRequestStorage {
             requireNotNull(number("sign_flags")), requireNotNull(history.signatureAlgorithm),
             ProtocolCodec.decodeFromJson<List<ClientId>>(requireNotNull(text("eligible_provider_client_ids_json"))),
             requireNotNull(text("authorization_generation")), requireNotNull(number("authorization_epoch")),
-            DesktopProcessContext(
-                DesktopProcessContextSource.valueOf(requireNotNull(text("process_source"))), lineage, text("process_boot_id"),
-            ),
+            requireNotNull(processContext),
             SshDestinationContext(
                 provenance = SshDestinationProvenance.valueOf(requireNotNull(text("destination_provenance"))),
                 connectionDirection = SshConnectionDirection.valueOf(requireNotNull(text("connection_direction"))),

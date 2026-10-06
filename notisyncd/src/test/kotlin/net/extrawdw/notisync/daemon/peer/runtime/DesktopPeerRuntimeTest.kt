@@ -32,6 +32,7 @@ import net.extrawdw.notisync.peer.ports.AuthTokenRepository
 import net.extrawdw.notisync.peer.ports.MessageDedupRepository
 import net.extrawdw.notisync.peer.ports.TrustPersistence
 import net.extrawdw.notisync.peer.pairing.PairingPayloadCodec
+import net.extrawdw.notisync.peer.trust.TrustStore
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.DataSync
@@ -39,6 +40,9 @@ import net.extrawdw.notisync.protocol.DataSyncKind
 import net.extrawdw.notisync.protocol.IntegrityVerificationResponse
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.ProtocolCodec
+import net.extrawdw.notisync.protocol.TrustStatus
+import net.extrawdw.notisync.protocol.TrustTable
+import net.extrawdw.notisync.protocol.TrustTableEntry
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.protocol.crypto.EnvelopeCrypto
 import net.extrawdw.notisync.protocol.crypto.RecipientKey
@@ -375,6 +379,68 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
     }
 
     @Test
+    fun `pending revocation accepts approve revoke and existing decision aliases`() {
+        val second = runtime("pending-revoke-peer", "Laptop")
+        try {
+            for ((action, expectedStatus) in listOf(
+                DeviceAction.REVOKE to DeviceTrustStatus.REVOKED,
+                DeviceAction.CONFIRM_REVOKE to DeviceTrustStatus.REVOKED,
+                DeviceAction.APPROVE to DeviceTrustStatus.TRUSTED,
+                DeviceAction.KEEP to DeviceTrustStatus.TRUSTED,
+                DeviceAction.DECLINE_REVOKE to DeviceTrustStatus.TRUSTED,
+            )) {
+                val directory = "pending-revoke-${action.name}"
+                val persistence = MemoryTrustPersistence()
+                val keys = FileKeyMaterialProvider(DaemonStorageLayout(temporaryDirectory.resolve(directory)))
+                val store = TrustStore(persistence, keys.identity)
+                val delivery = PairingPayloadCodec(keys.identity.clientId)
+                    .decode(second.pairingPayload().payload).getOrThrow()
+                val now = System.currentTimeMillis()
+                assertTrue(store.addLocal(delivery.cardBlob, now))
+                assertTrue(store.applyKeyEpoch(delivery.card.clientId, requireNotNull(delivery.epochBlob)))
+                store.applyIncomingTable(
+                    ClientId("revoker"),
+                    TrustTable(listOf(TrustTableEntry(
+                        delivery.card.clientId,
+                        TrustStatus.REVOKED,
+                        now + 1,
+                        keyAvailable = true,
+                    ))),
+                )
+
+                val first = runtimeHarness(directory, name = "Workstation", trustPersistence = persistence)
+                try {
+                    val pending = first.runtime.devices().devices.single()
+                    assertEquals(DeviceTrustStatus.REVOKE_PENDING, pending.trustStatus)
+                    assertEquals(
+                        setOf(DeviceAction.APPROVE, DeviceAction.REVOKE, DeviceAction.KEEP),
+                        pending.allowedActions,
+                    )
+                    assertThrows(IllegalArgumentException::class.java) {
+                        first.runtime.deviceAction(pending.clientId, DeviceActionRequest(DeviceAction.REJECT))
+                    }
+
+                    val decided = first.runtime.deviceAction(pending.clientId, DeviceActionRequest(action))
+                        .devices.single()
+                    assertEquals(expectedStatus, decided.trustStatus)
+                    assertEquals(pending.classification, decided.classification)
+                    assertEquals(pending.identityFingerprint, decided.identityFingerprint)
+                    assertEquals(pending.currentEpoch, decided.currentEpoch)
+                    assertTrue(decided.verified)
+                    assertEquals(
+                        if (expectedStatus == DeviceTrustStatus.REVOKED) TrustStatus.REVOKED else TrustStatus.TRUSTED,
+                        TrustStore(persistence, keys.identity).statusOf(delivery.card.clientId),
+                    )
+                } finally {
+                    first.close()
+                }
+            }
+        } finally {
+            second.close()
+        }
+    }
+
+    @Test
     fun `concurrent administration reads stay coherent during a transition`() {
         val first = runtime("concurrent-first", "Workstation")
         val second = runtime("concurrent-second", "Laptop")
@@ -424,6 +490,7 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         capabilitiesProvider: () -> List<Capability> = { EXACT_CAPABILITY_ENUMS },
         profileState: ApplicationProfilePublicationStateStore = MemoryProfileState(),
         logger: DaemonLogger = DaemonLogger("WARN"),
+        trustPersistence: TrustPersistence = MemoryTrustPersistence(),
     ): RuntimeHarness {
         val layout = DaemonStorageLayout(temporaryDirectory.resolve(directory))
         val keys = FileKeyMaterialProvider(layout)
@@ -434,7 +501,7 @@ class DesktopPeerRuntimeTest : StorageTestSupport() {
         val runtime = DesktopPeerRuntime(
             configProvider = configProvider ?: { testConfig(requireNotNull(name)) },
             keyMaterial = keys,
-            trustPersistence = MemoryTrustPersistence(),
+            trustPersistence = trustPersistence,
             authTokens = MemoryAuthTokens(),
             deduplication = MemoryDeduplication(),
             receiveRouter = router,

@@ -115,6 +115,19 @@ internal abstract class OperationalDatabase : RoomDatabase() {
 
         val MIGRATION_5_6 = Migration(5, 6) { connection ->
             connection.execSQL("ALTER TABLE seal_requests ADD COLUMN process_context_json TEXT")
+            connection.execSQL("ALTER TABLE ssh_requests ADD COLUMN process_context_json TEXT")
+            connection.execSQL(
+                """
+                UPDATE ssh_requests SET process_context_json = json_object(
+                    'source', process_source,
+                    'bootId', process_boot_id,
+                    'processLineage', json(process_lineage_json)
+                ) WHERE process_source IS NOT NULL
+                """.trimIndent(),
+            )
+            connection.execSQL("ALTER TABLE ssh_requests DROP COLUMN process_lineage_json")
+            connection.execSQL("ALTER TABLE ssh_requests DROP COLUMN process_source")
+            connection.execSQL("ALTER TABLE ssh_requests DROP COLUMN process_boot_id")
         }
 
         fun create(context: Context): OperationalDatabase =

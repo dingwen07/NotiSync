@@ -2,7 +2,7 @@
   "formatVersion": 1,
   "database": {
     "version": 6,
-    "identityHash": "855cbeee0321dfb6093615046a288811",
+    "identityHash": "09934206a9b9921472520bd5491d064a",
     "entities": [
       {
         "tableName": "mirror_message",
@@ -1240,7 +1240,7 @@
       },
       {
         "tableName": "ssh_requests",
-        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `requester_client_id` TEXT NOT NULL, `request_fingerprint` BLOB NOT NULL, `state` TEXT NOT NULL, `outcome` TEXT, `result_at` INTEGER, `updated_at` INTEGER NOT NULL, `request_complete` INTEGER NOT NULL, `requested_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `public_key_blob` BLOB, `key_name` TEXT, `suggested_name` TEXT, `import_source_type` TEXT, `encrypted_import` INTEGER NOT NULL, `signature_algorithm` TEXT, `destination_username` TEXT, `destination_host` TEXT, `destination_host_key_fingerprint` TEXT, `payload_size` INTEGER NOT NULL, `approval_kind` TEXT, `remembered_authorization_id` TEXT, `remembered_scope` TEXT, `sign_data` BLOB, `sign_flags` INTEGER, `authorization_generation` TEXT, `authorization_epoch` INTEGER, `process_lineage_json` TEXT NOT NULL, `eligible_provider_client_ids_json` TEXT, `host_aliases_json` TEXT, `binding_chain_json` TEXT, `process_source` TEXT, `process_boot_id` TEXT, `destination_provenance` TEXT, `connection_direction` TEXT, `destination_service` TEXT, `destination_authentication_method` TEXT, `session_id_sha256` BLOB, `server_host_key_blob` BLOB, `server_host_key_blob_sha256` BLOB, `connection_id` TEXT, `confirmation_required` INTEGER, `import_file_bytes` BLOB, `import_agent_identity` BLOB, `import_lifetime_seconds` INTEGER, `import_confirmation_required` INTEGER, `response_kind` TEXT, `response_provider_client_id` TEXT, `response_public_key_sha256` BLOB, `response_signature_blob` BLOB, `response_remember_disposition` TEXT, `response_authorization_generation` TEXT, `response_authorization_epoch` INTEGER, `response_rejection_reason` TEXT, `response_failure_code` TEXT, `response_failure_retryable` INTEGER, `response_failure_message` TEXT, `response_provider_key_id` TEXT, `response_public_key_blob` BLOB, `response_message` TEXT, PRIMARY KEY(`request_id`))",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`request_id` TEXT NOT NULL, `kind` TEXT NOT NULL, `requester_client_id` TEXT NOT NULL, `request_fingerprint` BLOB NOT NULL, `state` TEXT NOT NULL, `outcome` TEXT, `result_at` INTEGER, `updated_at` INTEGER NOT NULL, `request_complete` INTEGER NOT NULL, `requested_at` INTEGER NOT NULL, `expires_at` INTEGER NOT NULL, `public_key_blob` BLOB, `key_name` TEXT, `suggested_name` TEXT, `import_source_type` TEXT, `encrypted_import` INTEGER NOT NULL, `signature_algorithm` TEXT, `destination_username` TEXT, `destination_host` TEXT, `destination_host_key_fingerprint` TEXT, `payload_size` INTEGER NOT NULL, `approval_kind` TEXT, `remembered_authorization_id` TEXT, `remembered_scope` TEXT, `sign_data` BLOB, `sign_flags` INTEGER, `authorization_generation` TEXT, `authorization_epoch` INTEGER, `process_context_json` TEXT, `eligible_provider_client_ids_json` TEXT, `host_aliases_json` TEXT, `binding_chain_json` TEXT, `destination_provenance` TEXT, `connection_direction` TEXT, `destination_service` TEXT, `destination_authentication_method` TEXT, `session_id_sha256` BLOB, `server_host_key_blob` BLOB, `server_host_key_blob_sha256` BLOB, `connection_id` TEXT, `confirmation_required` INTEGER, `import_file_bytes` BLOB, `import_agent_identity` BLOB, `import_lifetime_seconds` INTEGER, `import_confirmation_required` INTEGER, `response_kind` TEXT, `response_provider_client_id` TEXT, `response_public_key_sha256` BLOB, `response_signature_blob` BLOB, `response_remember_disposition` TEXT, `response_authorization_generation` TEXT, `response_authorization_epoch` INTEGER, `response_rejection_reason` TEXT, `response_failure_code` TEXT, `response_failure_retryable` INTEGER, `response_failure_message` TEXT, `response_provider_key_id` TEXT, `response_public_key_blob` BLOB, `response_message` TEXT, PRIMARY KEY(`request_id`))",
         "fields": [
           {
             "fieldPath": "requestId",
@@ -1394,10 +1394,9 @@
             "affinity": "INTEGER"
           },
           {
-            "fieldPath": "processLineageJson",
-            "columnName": "process_lineage_json",
-            "affinity": "TEXT",
-            "notNull": true
+            "fieldPath": "processContextJson",
+            "columnName": "process_context_json",
+            "affinity": "TEXT"
           },
           {
             "fieldPath": "eligibleProviderClientIdsJson",
@@ -1412,16 +1411,6 @@
           {
             "fieldPath": "bindingChainJson",
             "columnName": "binding_chain_json",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "processSource",
-            "columnName": "process_source",
-            "affinity": "TEXT"
-          },
-          {
-            "fieldPath": "processBootId",
-            "columnName": "process_boot_id",
             "affinity": "TEXT"
           },
           {
@@ -1901,7 +1890,7 @@
     ],
     "setupQueries": [
       "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
-      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '855cbeee0321dfb6093615046a288811')"
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '09934206a9b9921472520bd5491d064a')"
     ]
   }
 }
