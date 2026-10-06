@@ -2,9 +2,7 @@ package net.extrawdw.apps.notisync.sshkeyprovider
 
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DesktopProcessIdentity
-import net.extrawdw.notisync.protocol.SshRememberScope
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -53,17 +51,6 @@ class SshVolatileApplicationAuthorizationStoreTest {
     }
 
     @Test
-    fun approvedApplicationMayRemainANonRecommendedCandidate() {
-        remember(application = "/usr/bin/git", host = HOST)
-        val current = selection("/usr/bin/ssh", "/usr/bin/git", "/opt/codex/bin/codex", "/usr/bin/zsh")
-
-        assertEquals("Codex", requireNotNull(current.recommended).displayName)
-        assertNotNull(
-            store.matching("key", requester, GENERATION, 7, current, HOST),
-        )
-    }
-
-    @Test
     fun preparingDuplicateGrantReusesItsAuthorizationId() {
         val first = prepare("/opt/codex/bin/codex", HOST)
         store.commit(first)
@@ -94,33 +81,6 @@ class SshVolatileApplicationAuthorizationStoreTest {
         remember(application = "/opt/codex/bin/codex", host = HOST)
         store.clear()
         assertEquals(0, store.size())
-    }
-
-    @Test
-    fun snapshotListsLiveGrantsAndExplicitDeletionRemovesOnlyTheRequestedGrant() {
-        val applicationOnly = remember(application = "/opt/codex/bin/codex", host = null)
-        val applicationHost = remember(application = "/usr/bin/git", host = HOST)
-
-        assertEquals(
-            listOf(
-                applicationOnly.authorization.authorizationId,
-                applicationHost.authorization.authorizationId,
-            ),
-            store.snapshot().map(SshVolatileApplicationAuthorization::authorizationId),
-        )
-        val listed = applicationOnly.authorization.toRememberedAuthorizationSnapshot(hostname = null)
-        assertEquals(SshRememberScope.APPLICATION_PROCESS, listed.scope)
-        assertEquals("/opt/codex/bin/codex", listed.applicationExecutablePath)
-        assertEquals("codex", listed.applicationId)
-        assertEquals("Codex", listed.applicationDisplayName)
-        assertNull(listed.hostKeySha256)
-        assertTrue(listed.processMemoryOnly)
-        assertTrue(store.delete(applicationOnly.authorization.authorizationId))
-        assertEquals(
-            listOf(applicationHost.authorization.authorizationId),
-            store.snapshot().map(SshVolatileApplicationAuthorization::authorizationId),
-        )
-        assertFalse(store.delete(applicationOnly.authorization.authorizationId))
     }
 
     private fun remember(

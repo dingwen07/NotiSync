@@ -308,7 +308,7 @@
     <string name="ssh_key_provider_notification_key">SSH 金鑰：%1$s</string>
     <string name="ssh_key_provider_notification_source">來源：%1$s</string>
     <string name="ssh_key_provider_notification_request">要求：%1$s</string>
-    <string name="ssh_key_provider_notification_channel">SSH 金鑰提供程式要求</string>
+    <string name="ssh_key_provider_notification_channel">NotiSync SSH 金鑰提供程式</string>
     <string name="ssh_key_provider_notification_channel_description">SSH 金鑰匯入和簽章要求</string>
     <string name="ssh_key_provider_notification_public_content">有待審核的 SSH 要求。</string>
 
@@ -457,7 +457,6 @@
     <string name="apps_no_match">沒有符合「%1$s」的應用程式</string>
     <string name="apps_section_mirroring">鏡像中</string>
     <string name="apps_section_all">所有應用程式</string>
-    <string name="apps_section_other_results">其他結果</string>
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">最近通知 %1$s</string>
     <string name="apps_section_recent">最近使用</string>

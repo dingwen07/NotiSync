@@ -322,7 +322,7 @@
     <string name="ssh_key_provider_notification_key">SSH Key: %1$s</string>
     <string name="ssh_key_provider_notification_source">Source: %1$s</string>
     <string name="ssh_key_provider_notification_request">Request: %1$s</string>
-    <string name="ssh_key_provider_notification_channel">SSH Key Provider Requests</string>
+    <string name="ssh_key_provider_notification_channel">NotiSync SSH Key Provider</string>
     <string name="ssh_key_provider_notification_channel_description">SSH key import and signing requests</string>
     <string name="ssh_key_provider_notification_public_content">An SSH request is waiting for review.</string>
 
@@ -484,7 +484,6 @@
     <string name="apps_no_match">No apps match \"%1$s\"</string>
     <string name="apps_section_mirroring">Mirroring</string>
     <string name="apps_section_all">All apps</string>
-    <string name="apps_section_other_results">Other results</string>
     <!-- Title/count order and punctuation can vary by locale. -->
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">Last notification %1$s</string>
