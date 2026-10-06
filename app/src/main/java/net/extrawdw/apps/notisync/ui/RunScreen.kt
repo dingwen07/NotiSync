@@ -51,7 +51,6 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
@@ -387,7 +386,7 @@ private fun RunListItem(
     val state = run.state
     val background = if (selected) MaterialTheme.colorScheme.secondaryContainer else Color.Transparent
     Surface(color = background) {
-        ListItem(
+        RequestHistoryListItem(
             modifier = Modifier.fillMaxWidth().clickable { onSelect(run) },
             leadingContent = { RunPhaseIcon(state) },
             supportingContent = {
@@ -508,6 +507,7 @@ private fun RunRevisionMenu(
             expanded = expanded,
             onDismissRequest = { expanded = false },
             modifier = Modifier.heightIn(max = 400.dp),
+            shape = MaterialTheme.shapes.large,
         ) {
             RunRevisionMenuItems(runKey, store, selectedRevision) { revision ->
                 expanded = false
@@ -683,7 +683,7 @@ private fun RunDetail(
             item {
                 Column {
                     Text(stringResource(R.string.run_revision_item, state.revision), style = MaterialTheme.typography.titleMedium)
-                    Text(stringResource(R.string.run_revision_received, rememberDateTimeFormatter().format(Date(run.receivedAt))))
+                    Text(stringResource(R.string.run_revision_received, rememberDetailedDateTimeFormatter().format(Date(run.receivedAt))))
                 }
             }
         }
@@ -851,7 +851,7 @@ private fun RunDetail(
                     stringResource(R.string.run_detail_host),
                     deviceName ?: state.hostClientId.value,
                 )
-                val formatter = rememberDateTimeFormatter()
+                val formatter = rememberDetailedDateTimeFormatter()
                 DetailField(stringResource(R.string.run_detail_started), formatter.format(Date(state.startedAt)))
                 DetailField(stringResource(R.string.run_detail_updated), formatter.format(Date(state.updatedAt)))
                 state.endedAt?.let {
@@ -1073,4 +1073,4 @@ private fun rememberTimeFormatter(): DateFormat = remember { DateFormat.getTimeI
 
 @Composable
 private fun rememberDateTimeFormatter(): DateFormat =
-    remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
+    remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.MEDIUM) }

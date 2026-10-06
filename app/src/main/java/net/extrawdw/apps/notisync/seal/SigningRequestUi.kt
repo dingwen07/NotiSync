@@ -22,7 +22,6 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.label as LabelIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.account_tree as AccountTreeIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.cancel as CancelIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.commit as CommitIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.fingerprint as FingerprintIcon
@@ -39,7 +38,6 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -59,6 +57,8 @@ import java.util.Date
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
+import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
+import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 
 internal enum class SealDisplayStatus {
@@ -153,7 +153,7 @@ internal fun SigningRequestListItem(
     val workingDirectory = stored.request.workingDirectory?.workingDirectoryName()
 
     Surface {
-        ListItem(
+        RequestHistoryListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SealStatusIcon(status) },
             supportingContent = {
@@ -177,9 +177,6 @@ internal fun SigningRequestListItem(
                     )
                 }
             },
-            trailingContent = {
-                Icon(ChevronRightIcon, contentDescription = null)
-            },
         ) {
             Text(headline, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -201,7 +198,7 @@ internal fun SigningRequestDetail(
     val status = stored.sealDisplayStatus()
     val commit = stored.commit
     val tag = stored.tag
-    val formatter = rememberDateTimeFormatter()
+    val formatter = rememberDetailedDateTimeFormatter()
 
     HistorySheetLazyColumn(
         modifier = modifier.fillMaxSize(),

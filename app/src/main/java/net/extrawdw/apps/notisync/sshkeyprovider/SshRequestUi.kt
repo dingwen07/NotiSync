@@ -26,7 +26,6 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.arrow_back as ArrowBackIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.cancel as CancelIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.check_circle as CheckCircleIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.computer as ComputerIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.error_outline as ErrorOutlineIcon
@@ -47,7 +46,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.ListItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
@@ -78,6 +76,8 @@ import java.util.Date
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
+import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
+import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
 import net.extrawdw.apps.notisync.ui.SignatureIcon
 import net.extrawdw.apps.notisync.ui.SshKeyPreviewCard
 import net.extrawdw.notisync.protocol.DesktopProcessIdentity
@@ -134,7 +134,7 @@ internal fun SshRequestListItem(
     val status = request.displayStatus()
     val time = rememberShortTimeFormatter().format(Date(request.resultAt ?: request.updatedAt))
     Surface {
-        ListItem(
+        RequestHistoryListItem(
             modifier = Modifier.fillMaxWidth().clickable(onClick = onClick),
             leadingContent = { SshStatusIcon(status) },
             supportingContent = {
@@ -153,7 +153,6 @@ internal fun SshRequestListItem(
                     )
                 }
             },
-            trailingContent = { Icon(ChevronRightIcon, contentDescription = null) },
         ) {
             Text(request.sshRequestHeadline(knownHostname), maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
@@ -370,7 +369,7 @@ internal fun SshRequestDetail(
     val request = details.request
     val status = request.displayStatus()
     val pending = request.state == SshProviderRequestState.PENDING_REVIEW
-    val formatter = rememberDateTimeFormatter()
+    val formatter = rememberDetailedDateTimeFormatter()
     HistorySheetLazyColumn(
         modifier = modifier.fillMaxSize(),
         contentPadding = contentPadding,
@@ -993,9 +992,5 @@ private fun ByteArray.toHex(): String = joinToString("") { "%02x".format(it) }
 
 @Composable
 private fun rememberShortTimeFormatter(): DateFormat = remember { DateFormat.getTimeInstance(DateFormat.SHORT) }
-
-@Composable
-private fun rememberDateTimeFormatter(): DateFormat =
-    remember { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT) }
 
 private fun formatTime(epochMillis: Long): String = DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(epochMillis))
