@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
@@ -186,7 +187,8 @@ fun AppsScreen(
     val enabled by selection.enabled.collectAsStateWithLifecycle()
     val lastSeen by selection.lastSeen.collectAsStateWithLifecycle()
     val loaded by viewModel<AppsViewModel>().apps.collectAsStateWithLifecycle()
-    var query by rememberSaveable { mutableStateOf("") }
+    val searchState = rememberTextFieldState()
+    val query = searchState.text.toString()
     var configPackage by rememberSaveable { mutableStateOf<String?>(null) }
     val configFor = loaded?.firstOrNull { it.packageName == configPackage }
     LaunchedEffect(loaded, configPackage) {
@@ -242,23 +244,29 @@ fun AppsScreen(
             }
         },
     ) {
-        NotiScaffold(stringResource(R.string.tab_apps)) { padding ->
+        AppListScaffold(
+            title = stringResource(R.string.tab_apps),
+            searchBar = { modifier, compact ->
+                AppListSearchBar(
+                    state = searchState,
+                    placeholder = stringResource(R.string.apps_search_hint),
+                    mode = mode,
+                    onModeChange = { mode = it },
+                    allEnabled = allEnabled,
+                    canToggleAll = matching.isNotEmpty(),
+                    onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
+                    modifier = modifier,
+                    compact = compact,
+                )
+            },
+        ) { padding, searchBar ->
             BoxWithConstraints(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
                 val scrollAccessNotice = maxHeight < 480.dp
                 Column(Modifier.fillMaxSize()) {
                     if (!permissions.listenerEnabled && !scrollAccessNotice) {
                         AppNotificationAccessCard(onOpenListenerSettings)
                     }
-                    AppListSearchBar(
-                        query = query,
-                        onQueryChange = { query = it },
-                        placeholder = stringResource(R.string.apps_search_hint),
-                        mode = mode,
-                        onModeChange = { mode = it },
-                        allEnabled = allEnabled,
-                        canToggleAll = matching.isNotEmpty(),
-                        onToggleAll = { on -> selection.setEnabled(matching.map { it.packageName }, on) },
-                    )
+                    searchBar()
                     LazyColumn(
                         modifier = Modifier.fillMaxSize().testTag("apps-list"),
                         contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),
