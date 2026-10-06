@@ -701,6 +701,10 @@
     <string name="device_purge_timestamp_missing">此移除记录没有时间戳，因此无法永久删除。</string>
     <string name="device_actions_quarantined">解决已隔离的信任状态前，设备操作将保持禁用。</string>
     <!-- 对端设备通过 DATA_SYNC FILTER 请求本设备应用的通知过滤。 -->
+    <string name="device_forward_notifications_title">转发通知</string>
+    <string name="device_forward_notifications_body">选择要发送到此设备的通知。</string>
+    <string name="device_forward_notifications_local">本机通知</string>
+    <string name="device_forward_notifications_iphone">iPhone 通知</string>
     <string name="device_filters_button_desc">对 %1$s 隐藏的通知</string>
     <string name="device_filters_title">对 %1$s 隐藏</string>
     <string name="device_filters_desc">本设备不会向其转发以下通知：</string>

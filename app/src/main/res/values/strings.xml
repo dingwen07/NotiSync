@@ -745,6 +745,10 @@
     <string name="device_purge_timestamp_missing">Permanent deletion is unavailable because this removal record has no timestamp.</string>
     <string name="device_actions_quarantined">Device actions are disabled until the quarantined trust state is resolved.</string>
     <!-- Notification filters a peer device asked this device to apply (DATA_SYNC FILTER). -->
+    <string name="device_forward_notifications_title">Forward notifications</string>
+    <string name="device_forward_notifications_body">Choose which notifications to send to this device.</string>
+    <string name="device_forward_notifications_local">Local notifications</string>
+    <string name="device_forward_notifications_iphone">iPhone notifications</string>
     <string name="device_filters_button_desc">Notifications hidden from %1$s</string>
     <string name="device_filters_title">Hidden from %1$s</string>
     <string name="device_filters_desc">This device won\'t forward these notifications to it:</string>
