@@ -2,11 +2,36 @@ package net.extrawdw.apps.notisync.sshkeyprovider
 
 import net.extrawdw.notisync.protocol.ClientId
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class SshRequestUiTest {
+    @Test
+    fun pendingAndHistoricalDestinationsResolveTheSameHostKeyWithoutAnActivePayload() {
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        val pending = stored(SshProviderRequestState.PENDING_REVIEW).let {
+            it.copy(history = it.history.copy(destinationHostKeyFingerprint = hostKeySha256.toSshHostKeyFingerprint()))
+        }
+        val history = pending.copy(state = SshProviderRequestState.SENT, outcome = SshProviderRequestOutcome.REJECTED)
+
+        assertArrayEquals(hostKeySha256, pending.destinationHostKeySha256())
+        assertArrayEquals(hostKeySha256, history.destinationHostKeySha256())
+    }
+
+    @Test
+    fun missingOrInvalidHostKeyFingerprintsCannotIdentifyASavedHost() {
+        val request = stored(SshProviderRequestState.SENT)
+        assertNull(request.destinationHostKeySha256())
+        listOf("SHA256:!", "SHA256:AQ", "MD5:00:11", "").forEach { fingerprint ->
+            assertNull(request.copy(
+                history = request.history.copy(destinationHostKeyFingerprint = fingerprint),
+            ).destinationHostKeySha256())
+        }
+    }
+
     @Test
     fun cancelledRequestRendersAsTerminalAndCannotKeepApprovalActions() {
         val cancelled = stored(

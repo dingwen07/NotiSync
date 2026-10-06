@@ -219,6 +219,8 @@ class SshKeyProviderReviewActivity : ComponentActivity() {
             withContext(Dispatchers.IO) {
                 graph.sshKeyProviderStore.knownHostHostname(destination)
             }
+        } ?: stored.takeIf { it.signRequest == null }?.destinationHostKeySha256()?.let { hostKeySha256 ->
+            withContext(Dispatchers.IO) { graph.sshKeyProviderStore.knownHostHostname(hostKeySha256) }
         }
         val importInspection = runCatching {
             withContext(Dispatchers.Default) {

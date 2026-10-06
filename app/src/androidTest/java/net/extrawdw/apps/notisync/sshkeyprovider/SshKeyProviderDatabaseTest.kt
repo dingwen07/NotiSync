@@ -260,6 +260,52 @@ class SshKeyProviderDatabaseTest {
     }
 
     @Test
+    fun savingHostnameCreatesAnUnknownHostAndPreservesExistingHostMetadata() {
+        store = SshKeyProviderStore(context)
+        val activeStore = requireNotNull(store)
+        val hostKeySha256 = ByteArray(32) { it.toByte() }
+        val versionBeforeSave = activeStore.changeVersion.value
+
+        activeStore.saveKnownHostHostname(hostKeySha256, "first hostname", 1_000)
+
+        assertTrue(activeStore.changeVersion.value > versionBeforeSave)
+        assertEquals("first hostname", activeStore.knownHostHostname(hostKeySha256))
+        assertEquals(1_000L, activeStore.knownHosts().single().firstApprovedAt)
+        assertEquals(1_000L, activeStore.knownHosts().single().lastApprovedAt)
+
+        val hostname = " renamed / deliberately unvalidated "
+        activeStore.saveKnownHostHostname(hostKeySha256, hostname, 2_000)
+        assertEquals(hostname, activeStore.knownHosts().single().hostname)
+        assertEquals(1_000L, activeStore.knownHosts().single().firstApprovedAt)
+        assertEquals(1_000L, activeStore.knownHosts().single().lastApprovedAt)
+
+        activeStore.close()
+        store = SshKeyProviderStore(context)
+        assertEquals(hostname, requireNotNull(store).knownHostHostname(hostKeySha256))
+    }
+
+    @Test
+    fun savingBlankHostnameCreatesAnUnnamedHostWithoutChangingOtherHosts() {
+        store = SshKeyProviderStore(context)
+        val activeStore = requireNotNull(store)
+        val first = ByteArray(32) { it.toByte() }
+        val second = first.copyOf().apply { this[0] = 99 }
+
+        activeStore.saveKnownHostHostname(first, "existing", 1_000)
+        activeStore.saveKnownHostHostname(second, "  ", 2_000)
+
+        assertEquals(2, activeStore.knownHosts().size)
+        assertEquals("existing", activeStore.knownHostHostname(first))
+        assertNull(activeStore.knownHostHostname(second))
+        activeStore.saveKnownHostHostname(first, "", 3_000)
+        assertNull(activeStore.knownHostHostname(first))
+        assertEquals(2, activeStore.knownHosts().size)
+        assertThrows(IllegalArgumentException::class.java) {
+            activeStore.saveKnownHostHostname(ByteArray(31), "invalid", 4_000)
+        }
+    }
+
+    @Test
     fun knownHostHostnameIsStoredAsAnUnvalidatedString() {
         store = SshKeyProviderStore(context)
         val hostKeySha256 = ByteArray(32) { it.toByte() }
@@ -545,4 +591,3 @@ class SshKeyProviderDatabaseTest {
         const val DATABASE_NAME = OperationalDatabase.DATABASE_NAME
     }
 }
-

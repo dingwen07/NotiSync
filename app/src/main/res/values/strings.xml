@@ -44,6 +44,7 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_continue">Continue</string>
     <string name="action_save">Save</string>
+    <string name="action_edit">Edit</string>
     <string name="action_back">Back</string>
     <string name="action_paste">Paste</string>
     <string name="error_unknown">Unknown error</string>

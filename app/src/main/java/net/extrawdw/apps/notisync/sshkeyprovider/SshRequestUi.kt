@@ -37,6 +37,7 @@ import net.extrawdw.apps.notisync.ui.icons.material.outlined.schedule as Schedul
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.sync as SyncIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.terminal as TerminalIcon
 import androidx.compose.material3.BottomAppBar
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -49,10 +50,12 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.ProvideTextStyle
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.ui.rememberGraph
@@ -60,6 +63,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -73,7 +78,12 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.semantics.Role
 import java.text.DateFormat
+import java.util.Base64
 import java.util.Date
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
@@ -116,6 +126,14 @@ internal fun StoredSshProviderRequest.displayStatus(): SshRequestDisplayStatus =
 
 internal fun StoredSshProviderRequest.isActiveRequest(): Boolean =
     state == SshProviderRequestState.PENDING_REVIEW || state == SshProviderRequestState.RESPONSE_PENDING_SEND
+
+internal fun StoredSshProviderRequest.destinationHostKeySha256(): ByteArray? {
+    val fingerprint = history.destinationHostKeyFingerprint ?: return null
+    if (!fingerprint.startsWith("SHA256:")) return null
+    return runCatching { Base64.getDecoder().decode(fingerprint.removePrefix("SHA256:")) }
+        .getOrNull()
+        ?.takeIf { it.size == net.extrawdw.notisync.protocol.SshAgentLimits.DIGEST_BYTES }
+}
 
 internal fun StoredSshProviderRequest.shouldCloseAutoOpenedReview(autoLaunchOwned: Boolean): Boolean =
     autoLaunchOwned && displayStatus() in setOf(
@@ -751,12 +769,95 @@ internal fun ProcessLineageLine(
 private fun DestinationDetailLine(
     details: SshReviewScreenState.Details,
 ) {
-    DetailLine(
-        ComputerIcon,
-        stringResource(R.string.ssh_key_provider_destination),
-        details.request.approvalDestinationLabel(details.destinationHostname)
-            ?: stringResource(R.string.ssh_key_provider_unknown),
-        true,
+    val graph = rememberGraph()
+    val hostKeySha256 = remember(details.request.history.destinationHostKeyFingerprint) {
+        details.request.destinationHostKeySha256()
+    }
+    var editingHostname by rememberSaveable(details.request.requestId) { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Box(Modifier.weight(1f)) {
+            DetailLine(
+                ComputerIcon,
+                stringResource(R.string.ssh_key_provider_destination),
+                details.request.approvalDestinationLabel(details.destinationHostname)
+                    ?: stringResource(R.string.ssh_key_provider_unknown),
+                true,
+            )
+        }
+        TextButton(onClick = { editingHostname = true }, enabled = hostKeySha256 != null) {
+            Text(stringResource(R.string.action_edit))
+        }
+    }
+    if (editingHostname && hostKeySha256 != null) {
+        SshHostHostnameDialog(
+            fingerprint = hostKeySha256.toSshHostKeyFingerprint(),
+            initialHostname = details.destinationHostname.orEmpty(),
+            onDismiss = { editingHostname = false },
+            onSave = { hostname ->
+                withContext(Dispatchers.IO) {
+                    graph.sshKeyProviderStore.saveKnownHostHostname(hostKeySha256, hostname)
+                }
+                graph.sshKeyProviderEngine?.refreshPendingNotifications()
+            },
+        )
+    }
+}
+
+@Composable
+private fun SshHostHostnameDialog(
+    fingerprint: String,
+    initialHostname: String,
+    onDismiss: () -> Unit,
+    onSave: suspend (String) -> Unit,
+) {
+    var hostname by rememberSaveable(fingerprint) { mutableStateOf(initialHostname) }
+    var saving by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+    val unknownError = stringResource(R.string.error_unknown)
+    AlertDialog(
+        onDismissRequest = { if (!saving) onDismiss() },
+        title = { Text(stringResource(R.string.ssh_key_provider_host_set_hostname)) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+                Text(fingerprint, fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+                OutlinedTextField(
+                    value = hostname,
+                    onValueChange = { hostname = it },
+                    label = { Text(stringResource(R.string.ssh_key_provider_host_hostname)) },
+                    singleLine = true,
+                    enabled = !saving,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                error?.let { Text(it, color = MaterialTheme.colorScheme.error) }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = !saving,
+                onClick = {
+                    saving = true
+                    error = null
+                    scope.launch {
+                        try {
+                            onSave(hostname)
+                            onDismiss()
+                        } catch (cancelled: CancellationException) {
+                            throw cancelled
+                        } catch (failure: Exception) {
+                            error = failure.message ?: unknownError
+                        } finally {
+                            saving = false
+                        }
+                    }
+                },
+            ) { Text(stringResource(R.string.action_save)) }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss, enabled = !saving) {
+                Text(stringResource(R.string.action_cancel))
+            }
+        },
     )
 }
 

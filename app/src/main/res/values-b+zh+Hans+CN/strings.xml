@@ -40,6 +40,7 @@
     <string name="action_cancel">取消</string>
     <string name="action_continue">继续</string>
     <string name="action_save">保存</string>
+    <string name="action_edit">编辑</string>
     <string name="action_back">返回</string>
     <string name="action_paste">粘贴</string>
     <string name="error_unknown">未知错误</string>

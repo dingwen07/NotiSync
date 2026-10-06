@@ -566,6 +566,22 @@ class SshKeyProviderStore internal constructor(
         SshRememberAuthorizationPolicy.verifiedHostKeySha256(destination)?.let(::knownHostHostname)
 
     @Synchronized
+    fun saveKnownHostHostname(hostKeySha256: ByteArray, hostname: String, now: Long = System.currentTimeMillis()) {
+        require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
+        writableDatabase.compileStatement(
+            "INSERT INTO ssh_known_hosts(host_key_sha256, hostname, first_approved_at, last_approved_at) " +
+                "VALUES (?, ?, ?, ?) ON CONFLICT(host_key_sha256) DO UPDATE SET hostname=excluded.hostname",
+        ).use { statement ->
+            statement.bindBlob(1, hostKeySha256)
+            if (hostname.isBlank()) statement.bindNull(2) else statement.bindString(2, hostname)
+            statement.bindLong(3, now)
+            statement.bindLong(4, now)
+            statement.execute()
+        }
+        notifyChanged()
+    }
+
+    @Synchronized
     fun updateKnownHostHostname(hostKeySha256: ByteArray, hostname: String): Boolean {
         require(hostKeySha256.size == SshAgentLimits.DIGEST_BYTES) { "invalid SSH host-key fingerprint" }
         val changed = writableDatabase.compileStatement(
