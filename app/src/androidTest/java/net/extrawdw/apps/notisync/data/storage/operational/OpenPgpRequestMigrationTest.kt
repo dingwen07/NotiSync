@@ -42,6 +42,33 @@ class OpenPgpRequestMigrationTest {
     }
 
     @Test
+    fun versionFiveHistoryGainsNullableContextWithoutChangingSavedDetails() = runBlocking {
+        migrationHelper.createDatabase(5).use { connection ->
+            connection.execSQL(
+                "INSERT INTO seal_requests (request_id,protocol_version,requester_client_id,sender_client_id," +
+                    "primary_key_id,issued_at,expires_at,payload_sha256,object_kind,state,updated_at," +
+                    "result,working_directory,summary_title,legacy_details_json) VALUES " +
+                    "('legacy',1,'desktop','desktop','89ABCDEF01234567',1000,2000,X'00','GIT_COMMIT','SENT',1500," +
+                    "'APPROVED','/repo','Saved commit','saved details')",
+            )
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 6, migrations = listOf(OperationalDatabase.MIGRATION_5_6),
+        ).use { connection ->
+            connection.prepare(
+                "SELECT process_context_json,working_directory,summary_title,legacy_details_json,result FROM seal_requests",
+            ).use { row ->
+                assertTrue(row.step())
+                assertTrue(row.isNull(0))
+                assertEquals("/repo", row.getText(1))
+                assertEquals("Saved commit", row.getText(2))
+                assertEquals("saved details", row.getText(3))
+                assertEquals("APPROVED", row.getText(4))
+            }
+        }
+    }
+
+    @Test
     fun migrationRecoversFullCommitFromPayloadAndKeepsResponseInTypedColumns() = runBlocking {
         val message = "Untruncated body\n\n" + "b".repeat(20_000) + "\n"
         val payload = (

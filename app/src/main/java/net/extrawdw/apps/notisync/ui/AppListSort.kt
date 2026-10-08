@@ -6,12 +6,20 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.clearText
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.sort as SortIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.check as CheckIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.close as CloseIcon
@@ -23,14 +31,18 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.movableContentOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
@@ -56,6 +68,41 @@ internal const val RECENT_APP_COUNT = 8
 /** One pinned group of app rows: a stable [key] prefix, a resolved [title], and its [items]. */
 internal class AppSection<T>(val key: String, val title: String, val items: List<T>)
 
+/** Search shares the title row when the current pane is wide enough, including phone landscape. */
+@Composable
+internal fun AppListScaffold(
+    title: String,
+    searchBar: @Composable (Modifier, Boolean) -> Unit,
+    content: @Composable (PaddingValues, @Composable () -> Unit) -> Unit,
+) {
+    val currentSearchBar by rememberUpdatedState(searchBar)
+    // Keep the field's cursor/focus and the open menu when resizing moves the controls.
+    val controls = remember {
+        movableContentOf<Modifier, Boolean> { modifier, compact -> currentSearchBar(modifier, compact) }
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        // Use this pane's constraints, not the activity width: Apps can share a window with details.
+        val inlineSearch = maxWidth >= 600.dp
+        NotiScaffold(
+            title = title,
+            titleTrailingContent = if (inlineSearch) {
+                { controls(Modifier.weight(1f).padding(start = 24.dp, end = 4.dp), true) }
+            } else null,
+        ) { padding ->
+            content(padding) {
+                if (!inlineSearch) {
+                    controls(
+                        Modifier.fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.background)
+                            .padding(start = 16.dp, top = 16.dp, end = 4.dp, bottom = 8.dp),
+                        false,
+                    )
+                }
+            }
+        }
+    }
+}
+
 /**
  * The search field shared by the Apps and iPhone tabs, with the sort/group control ([AppSortMenu])
  * pinned at its trailing edge — so it stays reachable no matter which section is scrolled into view,
@@ -63,31 +110,33 @@ internal class AppSection<T>(val key: String, val title: String, val items: List
  */
 @Composable
 internal fun AppListSearchBar(
-    query: String,
-    onQueryChange: (String) -> Unit,
+    state: TextFieldState,
     placeholder: String,
     mode: AppListMode,
     onModeChange: (AppListMode) -> Unit,
     allEnabled: Boolean,
     canToggleAll: Boolean,
     onToggleAll: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    compact: Boolean = false,
 ) {
+    val textStyle = MaterialTheme.typography.bodyLarge
+    // A slimmer inline pill, with enough room for larger accessibility text sizes.
+    val inlineHeight = with(LocalDensity.current) { textStyle.lineHeight.toDp() + 8.dp }
+        .coerceAtLeast(40.dp)
     Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(start = 16.dp, top = 16.dp, end = 4.dp, bottom = 8.dp),
+        modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
     ) {
         OutlinedTextField(
-            value = query,
-            onValueChange = onQueryChange,
+            state = state,
+            textStyle = textStyle,
             placeholder = { Text(placeholder) },
             leadingIcon = { Icon(SearchIcon, contentDescription = null) },
             trailingIcon = {
-                if (query.isNotEmpty()) {
-                    IconButton(onClick = { onQueryChange("") }) {
+                if (state.text.isNotEmpty()) {
+                    IconButton(onClick = { state.clearText() }) {
                         Icon(
                             CloseIcon,
                             contentDescription = stringResource(R.string.apps_clear_search),
@@ -95,9 +144,13 @@ internal fun AppListSearchBar(
                     }
                 }
             },
-            singleLine = true,
+            lineLimits = TextFieldLineLimits.SingleLine,
             shape = CircleShape,
-            modifier = Modifier.weight(1f),
+            contentPadding = if (compact) PaddingValues(horizontal = 16.dp, vertical = 4.dp)
+                else OutlinedTextFieldDefaults.contentPaddingWithoutLabel(),
+            modifier = Modifier.weight(1f, fill = !compact).then(
+                if (compact) Modifier.widthIn(max = 480.dp).height(inlineHeight) else Modifier,
+            ),
         )
         AppSortMenu(mode, onModeChange, allEnabled, canToggleAll, onToggleAll)
     }

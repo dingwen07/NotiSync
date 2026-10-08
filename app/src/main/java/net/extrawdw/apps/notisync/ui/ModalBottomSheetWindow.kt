@@ -50,7 +50,7 @@ internal fun EdgeToEdgeHistoryModalBottomSheet(
     showPaneHeader: Boolean = true,
     content: @Composable ColumnScope.() -> Unit,
 ) {
-    if (InlineHistoryDetailOrNull(onDismissRequest, showPaneHeader, content)) return
+    if (inlineHistoryDetailOrNull(onDismissRequest, showPaneHeader, content)) return
     val sheetState = rememberModalBottomSheetState()
     val windowWidth = LocalWindowInfo.current.containerSize.width
     val sheetMaxWidth = with(LocalDensity.current) { BottomSheetDefaults.SheetMaxWidth.roundToPx() }

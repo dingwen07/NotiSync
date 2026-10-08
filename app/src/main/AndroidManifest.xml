@@ -75,6 +75,7 @@
         <package android:name="android" />                          <!-- Android System (framework) -->
         <package android:name="com.android.systemui" />             <!-- System UI -->
         <package android:name="com.android.phone" />                <!-- Telephony / Phone services -->
+        <package android:name="com.android.server.telecom" />       <!-- Telecom services -->
         <package android:name="com.google.android.gms" />           <!-- Google Play services -->
         <package android:name="net.extrawdw.notifly" />             <!-- Notifly diagnostic source -->
         <package android:name="moe.shizuku.privileged.api" />       <!-- External Shizuku Manager setup -->

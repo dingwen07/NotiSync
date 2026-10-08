@@ -63,7 +63,7 @@ import java.util.Date
 
 /**
  * Details for a paired device. Identity values come from the individually verified card and key-epoch held
- * by the trust store; the only mutable field is the local screen-control grant.
+ * by the trust store; forwarding and screen preferences are local to this Android device.
  */
 @Suppress("DEPRECATION") // Stable M3 factory is deprecated only by the Expressive artifact in use.
 @Composable
@@ -74,6 +74,10 @@ internal fun DeviceDetailsSheet(
     screenControlAuthorized: Boolean,
     screenMirrorRequestEnabled: Boolean = true,
     trustActionsEnabled: Boolean = true,
+    forwardLocalNotifications: Boolean,
+    forwardIphoneNotifications: Boolean,
+    onForwardLocalNotificationsChange: (Boolean) -> Unit,
+    onForwardIphoneNotificationsChange: (Boolean) -> Unit,
     screenMirrorCodecOverride: ScreenMirrorCodec?,
     screenMirrorDecoderSupport: AndroidScreenDecoderSupport,
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
@@ -141,6 +145,33 @@ internal fun DeviceDetailsSheet(
             }
             item {
                 DeviceCapabilities(device.capabilities)
+            }
+            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            stringResource(R.string.device_forward_notifications_title),
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                        Text(
+                            stringResource(R.string.device_forward_notifications_body),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        NotificationForwardingSwitch(
+                            label = stringResource(R.string.device_forward_notifications_local),
+                            checked = forwardLocalNotifications,
+                            enabled = trustActionsEnabled,
+                            onCheckedChange = onForwardLocalNotificationsChange,
+                        )
+                        NotificationForwardingSwitch(
+                            label = stringResource(R.string.device_forward_notifications_iphone),
+                            checked = forwardIphoneNotifications,
+                            enabled = trustActionsEnabled,
+                            onCheckedChange = onForwardIphoneNotificationsChange,
+                        )
+                    }
+                }
             }
             if (device.supportsScreenMirrorRequest()) {
                 val availableCodecs = availableAndroidScreenCodecs(
@@ -221,6 +252,34 @@ internal fun DeviceDetailsSheet(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun NotificationForwardingSwitch(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Switch,
+                onValueChange = onCheckedChange,
+            ),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            label,
+            modifier = Modifier.weight(1f).padding(end = 16.dp),
+            style = MaterialTheme.typography.bodyLarge,
+        )
+        Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 

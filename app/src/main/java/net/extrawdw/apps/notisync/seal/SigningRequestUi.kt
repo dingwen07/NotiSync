@@ -42,7 +42,9 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -55,10 +57,13 @@ import androidx.compose.ui.unit.dp
 import java.text.DateFormat
 import java.util.Date
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.sshkeyprovider.DesktopApplicationIcon
+import net.extrawdw.apps.notisync.sshkeyprovider.ProcessLineageLine
 import net.extrawdw.apps.notisync.ui.HistorySheetLazyColumn
 import net.extrawdw.apps.notisync.ui.RequestDeviceSubCard
 import net.extrawdw.apps.notisync.ui.RequestHistoryListItem
 import net.extrawdw.apps.notisync.ui.rememberDetailedDateTimeFormatter
+import net.extrawdw.apps.notisync.ui.rememberGraph
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 
 internal enum class SealDisplayStatus {
@@ -151,6 +156,8 @@ internal fun SigningRequestListItem(
         ?: commit?.treeId?.shortObjectId()
         ?: tag?.objectId?.shortObjectId()
     val workingDirectory = stored.request.workingDirectory?.workingDirectoryName()
+    val applications by rememberGraph().desktopApplications.snapshot.collectAsStateWithLifecycle()
+    val process = remember(stored, applications) { stored.processLabel(applications.registry) }
 
     Surface {
         RequestHistoryListItem(
@@ -166,6 +173,7 @@ internal fun SigningRequestListItem(
                     Text(
                         listOfNotNull(
                             requesterName,
+                            process,
                             workingDirectory,
                             base,
                             time,
@@ -199,6 +207,9 @@ internal fun SigningRequestDetail(
     val commit = stored.commit
     val tag = stored.tag
     val formatter = rememberDetailedDateTimeFormatter()
+    val applications by rememberGraph().desktopApplications.snapshot.collectAsStateWithLifecycle()
+    val application = remember(stored, applications) { stored.applicationAnchor(applications.registry) }
+    val process = remember(stored, applications) { stored.processLabel(applications.registry) }
 
     HistorySheetLazyColumn(
         modifier = modifier.fillMaxSize(),
@@ -237,6 +248,8 @@ internal fun SigningRequestDetail(
                         }
                     },
                     requesterName = requesterName,
+                    process = process,
+                    applicationIcon = applications.icon(application?.applicationId),
                     workingDirectory = stored.request.workingDirectory,
                     reference = commit?.parentIds?.firstOrNull()?.shortObjectId()
                         ?: commit?.treeId?.shortObjectId()
@@ -314,6 +327,12 @@ internal fun SigningRequestDetail(
                     title = stringResource(R.string.seal_approval_section),
                     icon = VerifiedUserIcon,
                 ) {
+                    ProcessLineageLine(
+                        processLineage = stored.processLineageForDisplay(),
+                        unavailable = stringResource(R.string.ssh_key_provider_unavailable),
+                        reportedByRequester = stringResource(R.string.ssh_key_provider_process_reported_by_requester),
+                    )
+                    HorizontalDivider()
                     stored.request.workingDirectory?.let { workingDirectory ->
                         SealDetailLine(
                             icon = FolderIcon,
@@ -383,6 +402,8 @@ private fun SealHero(
     status: SealDisplayStatus,
     subject: String,
     requesterName: String,
+    process: String?,
+    applicationIcon: ByteArray?,
     workingDirectory: String?,
     reference: String?,
     shortHash: String,
@@ -394,41 +415,48 @@ private fun SealHero(
         contentColor = content,
         shape = RoundedCornerShape(28.dp),
     ) {
-        Column(
+        Row(
             Modifier.fillMaxWidth().padding(20.dp),
-            verticalArrangement = Arrangement.spacedBy(4.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            Row(
-                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                SealStatusIcon(status, Modifier.size(18.dp))
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    SealStatusIcon(status, Modifier.size(18.dp))
+                    Text(
+                        sealStatusLabel(status),
+                        style = MaterialTheme.typography.labelLarge,
+                    )
+                }
+                SelectionContainer {
+                    Text(
+                        subject,
+                        style = MaterialTheme.typography.titleLarge,
+                        maxLines = 3,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
                 Text(
-                    sealStatusLabel(status),
+                    listOfNotNull(
+                        requesterName,
+                        process,
+                        workingDirectory?.workingDirectoryName(),
+                        reference,
+                    ).joinToString(" · "),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Text(
+                    stringResource(R.string.seal_hash, shortHash),
                     style = MaterialTheme.typography.labelLarge,
+                    fontFamily = FontFamily.Monospace,
                 )
             }
-            SelectionContainer {
-                Text(
-                    subject,
-                    style = MaterialTheme.typography.titleLarge,
-                    maxLines = 3,
-                    overflow = TextOverflow.Ellipsis,
-                )
+            if (applicationIcon != null) {
+                DesktopApplicationIcon(applicationIcon, Modifier.size(64.dp))
             }
-            Text(
-                listOfNotNull(
-                    requesterName,
-                    workingDirectory?.workingDirectoryName(),
-                    reference,
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.bodyMedium,
-            )
-            Text(
-                stringResource(R.string.seal_hash, shortHash),
-                style = MaterialTheme.typography.labelLarge,
-                fontFamily = FontFamily.Monospace,
-            )
         }
     }
 }

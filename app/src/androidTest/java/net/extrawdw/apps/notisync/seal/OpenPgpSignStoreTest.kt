@@ -10,6 +10,10 @@ import net.extrawdw.apps.notisync.testsupport.RoomStorageTestContext
 import net.extrawdw.apps.notisync.testsupport.initializeOperationalTestDatabase
 import java.security.MessageDigest
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.DesktopProcessContext
+import net.extrawdw.notisync.protocol.DesktopProcessContextSource
+import net.extrawdw.notisync.protocol.DesktopProcessIdentity
+import net.extrawdw.notisync.protocol.DesktopWindowsTokenInfo
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
@@ -43,6 +47,39 @@ class OpenPgpSignStoreTest {
     @After
     fun clearAfter() {
         context.deleteDatabase(DB_NAME)
+    }
+
+    @Test
+    fun lineageSurvivesReopenAndHistoryButIsNotEchoedInResponses() {
+        val context = DesktopProcessContext(
+            DesktopProcessContextSource.CURRENT_PROCESS,
+            listOf(DesktopProcessIdentity(
+                42, "C:\\Git\\git.exe", username = "PC\\alice", sid = "S-1-5-21-1-2-3-1001",
+                windowsTokenInfo = DesktopWindowsTokenInfo(elevated = false, integrityLevel = 8192, appContainer = false),
+            )),
+        )
+        val request = request().copy(processContext = context)
+        OpenPgpSignStore(this.context).use { store ->
+            assertEquals(OpenPgpAcceptResult.STORED, store.accept(request, request.requesterClientId, 1_100))
+            assertEquals(context, store.requests.value.single().request.processContext)
+            assertEquals(OpenPgpAcceptResult.CONFLICT, store.accept(request.copy(processContext = null), request.requesterClientId, 1_101))
+            assertTrue(store.approve(request.requestId, 1_200))
+            assertTrue(store.storeResult(request.requestId, ARMOR, 1_300))
+        }
+        OpenPgpSignStore(this.context).use { store ->
+            val restored = requireNotNull(store.find(request.requestId))
+            assertEquals(context, restored.request.processContext)
+            assertNull(restored.response?.processContext)
+            assertNull(restored.response?.validationError { MessageDigest.getInstance("SHA-256").digest(it) })
+            assertTrue(store.markSent(request.requestId, 1_400))
+            assertEquals(context, store.historyPage().items.single().request.processContext)
+        }
+        val rejection = request.copy(requestId = "2".repeat(32))
+        OpenPgpSignStore(this.context).use { store ->
+            store.accept(rejection, rejection.requesterClientId, 1_100)
+            assertTrue(store.storeReject(rejection.requestId, OpenPgpRejectReason.USER_REJECTED, 1_200))
+            assertNull(store.find(rejection.requestId)?.response?.processContext)
+        }
     }
 
     @Test
@@ -448,4 +485,3 @@ class OpenPgpSignStoreTest {
         const val ARMOR = "-----BEGIN PGP SIGNATURE-----\nfixture\n-----END PGP SIGNATURE-----\n"
     }
 }
-

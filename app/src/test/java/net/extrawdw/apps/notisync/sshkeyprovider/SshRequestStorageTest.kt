@@ -78,16 +78,27 @@ class SshRequestStorageTest {
             outcome = SshProviderRequestOutcome.EXPIRED)
         val actual = roundTrip(original)
         assertNull(actual.signRequest)
-        assertEquals(original.history.processLineage, actual.history.processLineage)
+        assertTrue(actual.history.processLineage.isEmpty())
         assertEquals(original.history.destinationHost, actual.history.destinationHost)
         assertArrayEquals(original.history.publicKeyBlob, actual.history.publicKeyBlob)
         assertEquals(original.outcome, actual.outcome)
         val values = SshRequestStorage.values(original)
-        assertNull(values["process_source"])
-        assertNull(values["process_boot_id"])
+        assertNull(values["process_context_json"])
         assertNull(values["eligible_provider_client_ids_json"])
         assertNull(values["host_aliases_json"])
         assertNull(values["binding_chain_json"])
+    }
+
+    @Test
+    fun completingRequestPreservesOriginalProcessContext() {
+        val original = stored(signRequest())
+        val row = SshRequestStorage.values(original)
+        row.putAll(SshRequestStorage.historyValues(original.history.copy(
+            approvalKind = SshRequestApprovalKind.MANUAL,
+        )))
+        val restored = SshRequestStorage.reconstruct(row, true)
+        assertEquals(original.signRequest!!.processContext, restored.signRequest!!.processContext)
+        assertEquals(original.history.processLineage, restored.history.processLineage)
     }
 
     @Test
@@ -105,7 +116,7 @@ class SshRequestStorageTest {
         assertFalse(SshRequestStorage.summaryColumns.split(", ").contains("sign_data"))
         assertFalse(SshRequestStorage.summaryColumns.contains("import_file_bytes"))
         assertFalse(SshRequestStorage.summaryColumns.contains("import_agent_identity"))
-        assertTrue(SshRequestStorage.summaryColumns.contains("process_lineage_json"))
+        assertTrue(SshRequestStorage.summaryColumns.contains("process_context_json"))
         assertFalse(SshRequestStorage.summaryColumns.contains("eligible_provider_client_ids_json"))
         assertFalse(SshRequestStorage.summaryColumns.contains("host_aliases_json"))
         assertFalse(SshRequestStorage.summaryColumns.contains("binding_chain_json"))

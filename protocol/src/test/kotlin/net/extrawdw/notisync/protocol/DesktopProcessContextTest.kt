@@ -28,6 +28,44 @@ class DesktopProcessContextTest {
     }
 
     @Test
+    fun optionalOwnersRoundTripWhileLegacyIdentitiesRemainReadable() {
+        listOf(
+            DesktopProcessIdentity(42, username = "root", uid = 0),
+            DesktopProcessIdentity(42, username = "DOMAIN\\user", sid = "S-1-5-21-100-200-300-1001"),
+            DesktopProcessIdentity(42, uid = 501),
+            DesktopProcessIdentity(42, sid = "S-1-5-18", windowsTokenInfo = DesktopWindowsTokenInfo(
+                elevated = true, elevationType = DesktopWindowsElevationType.DEFAULT,
+                integrityLevel = 16384, appContainer = false,
+            )),
+            DesktopProcessIdentity(42),
+        ).forEach { identity ->
+            assertNull(identity.validationError())
+            assertEquals(identity, ProtocolCodec.decodeFromCbor<DesktopProcessIdentity>(ProtocolCodec.encodeToCbor(identity)))
+            assertEquals(identity, ProtocolCodec.decodeFromJson<DesktopProcessIdentity>(ProtocolCodec.encodeToJson(identity)))
+        }
+        val legacy = ProtocolCodec.decodeFromJson<DesktopProcessIdentity>("{\"pid\":42,\"executablePath\":\"/usr/bin/git\"}")
+        assertNull(legacy.username)
+        assertNull(legacy.uid)
+        assertNull(legacy.sid)
+    }
+
+    @Test
+    fun ownerBoundsRejectMalformedContext() {
+        listOf(
+            DesktopProcessIdentity(42, username = "bad\nname"),
+            DesktopProcessIdentity(42, username = "x".repeat(257)),
+            DesktopProcessIdentity(42, username = " "),
+            DesktopProcessIdentity(42, uid = -1),
+            DesktopProcessIdentity(42, uid = 0x1_0000_0000),
+            DesktopProcessIdentity(42, sid = "not-a-sid"),
+            DesktopProcessIdentity(42, uid = 0, sid = "S-1-5-18"),
+            DesktopProcessIdentity(42, windowsTokenInfo = DesktopWindowsTokenInfo()),
+            DesktopProcessIdentity(42, windowsTokenInfo = DesktopWindowsTokenInfo(integrityLevel = -1)),
+            DesktopProcessIdentity(42, uid = 0, windowsTokenInfo = DesktopWindowsTokenInfo(elevated = true)),
+        ).forEach { assertNotNull(it.validationError()) }
+    }
+
+    @Test
     fun availabilityAndLineageMustAgree() {
         val process = process(10, "C:\\Windows\\System32\\OpenSSH\\ssh.exe", "ssh.exe")
 

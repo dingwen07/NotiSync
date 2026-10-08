@@ -77,8 +77,8 @@ internal val LocalDetailPaneBack = compositionLocalOf<(() -> Unit)?> { null }
 internal fun AdaptiveDetailLayout(
     selectedKey: String?,
     onDismiss: () -> Unit,
-    paneTitle: String = "",
     modifier: Modifier = Modifier,
+    paneTitle: String = "",
     directive: PaneScaffoldDirective = calculatePaneScaffoldDirective(currentWindowAdaptiveInfoV2()),
     detail: @Composable () -> Unit,
     list: @Composable () -> Unit,
@@ -264,7 +264,7 @@ internal fun AdaptiveDetailSheet(
 }
 
 @Composable
-internal fun InlineHistoryDetailOrNull(
+internal fun inlineHistoryDetailOrNull(
     onDismiss: () -> Unit,
     showPaneHeader: Boolean,
     content: @Composable ColumnScope.() -> Unit,

@@ -10,6 +10,7 @@ import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.apps.notisync.data.ActivityLog
 import net.extrawdw.apps.notisync.data.ActivityText
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
+import net.extrawdw.apps.notisync.data.NotificationForwardingStore
 import net.extrawdw.notisync.peer.foundation.SendPolicy
 import net.extrawdw.notisync.peer.transport.ifKnown
 import net.extrawdw.notisync.protocol.ActionEvent
@@ -140,8 +141,10 @@ class MirrorEngine(
     /** Restart-surviving post watermark + dismissal tombstone store. */
     private val lifecycleStore: MirrorLifecycleStore? = null,
     /** Peer notification-suppression filters: consulted when forwarding a capture (drop a peer that asked not
-     *  to receive it) and updated by an inbound `FILTER` ([onFilterSync]). Null disables filtering entirely. */
+     *  to receive it) and updated by an inbound `FILTER` ([onFilterSync]). Null skips remote filters. */
     private val notificationFilters: NotificationFilterStore? = null,
+    /** Local per-destination forwarding controls; never applied to filter sync or other features. */
+    private val notificationForwarding: NotificationForwardingStore? = null,
 ) {
     @Volatile
     var originalCanceler: OriginalCanceler? = null
@@ -255,7 +258,7 @@ class MirrorEngine(
         excludeIos: Boolean = false,
         span: PerfSpan? = null,
     ): Int {
-        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val excluded = excludedNotificationRecipients(notif)
         val scope = notificationRecipients(notif, excluded, excludeIos)
         val payload = ProtocolCodec.encodeToCbor(notif)
         span?.metric("payload_bytes", payload.size.toLong())
@@ -273,6 +276,11 @@ class MirrorEngine(
         )
         return n
     }
+
+    /** A remote filter update can never override a local forwarding opt-out. */
+    private fun excludedNotificationRecipients(notif: CapturedNotification): Set<ClientId> =
+        notificationForwarding?.recipientsToExclude(notif.originPlatform).orEmpty() +
+            notificationFilters?.recipientsToExclude(notif).orEmpty()
 
     private fun notificationRecipients(
         notif: CapturedNotification,
@@ -324,7 +332,7 @@ class MirrorEngine(
      * a matching notification is still dropped, exactly as in [captureLocal].
      */
     suspend fun sendNotificationQuiet(notif: CapturedNotification): Int {
-        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val excluded = excludedNotificationRecipients(notif)
         val payload = ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.NOTIFICATION, notification = notif))
         val n = channel.send(
             MessageType.DATA_SYNC,
@@ -358,7 +366,7 @@ class MirrorEngine(
      * Returns the recipient count.
      */
     suspend fun sendOngoingUpdatePrompt(notif: CapturedNotification, allowIos: Boolean): Int {
-        val excluded = notificationFilters?.recipientsToExclude(notif).orEmpty()
+        val excluded = excludedNotificationRecipients(notif)
         val marked = notif.copy(silentUpdate = true)
         val recipients = Recipients.OwnMeshFiltered(
             excluded = excluded,

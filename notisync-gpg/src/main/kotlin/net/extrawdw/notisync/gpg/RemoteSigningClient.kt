@@ -8,6 +8,7 @@ import java.time.Duration
 import java.util.Base64
 import kotlinx.serialization.json.JsonPrimitive
 import net.extrawdw.notisync.desktop.DesktopPaths
+import net.extrawdw.notisync.desktop.DesktopProcessContextResolver
 import net.extrawdw.notisync.desktop.api.DaemonAutostarter
 import net.extrawdw.notisync.desktop.api.DaemonLocalApi
 import net.extrawdw.notisync.desktop.api.LocalApiDeadline
@@ -20,6 +21,7 @@ import net.extrawdw.notisync.peer.channel.Recipients
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.DesktopProcessContext
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
@@ -41,6 +43,7 @@ class RemoteSigningClient(
     private val now: () -> Long = System::currentTimeMillis,
     private val onRequestSubmitted: (OpenPgpSignSync) -> Unit = {},
     private val workingDirectory: () -> String? = ::currentWorkingDirectoryContext,
+    private val processContext: () -> DesktopProcessContext = { DesktopProcessContextResolver().current() },
 ) {
     fun sign(
         payload: ByteArray,
@@ -72,6 +75,7 @@ class RemoteSigningClient(
             objectKind = objectKind,
             payload = payload,
             workingDirectory = workingDirectory(),
+            processContext = processContext(),
         )
         require(request.validationError(::sha256) == null) { "refusing to send an invalid signing request" }
         val interest = ReceiveRequest(
@@ -168,6 +172,7 @@ class RemoteSigningClient(
         rejectReason = null,
         actionAt = actionAt,
         workingDirectory = null,
+        processContext = null,
     )
 
     private fun OpenPgpSignSync.toSendRequest(urgency: Urgency): SendRequest = SendRequest(

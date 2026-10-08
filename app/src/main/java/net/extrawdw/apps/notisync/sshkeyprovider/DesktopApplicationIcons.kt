@@ -25,6 +25,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.nio.ByteBuffer
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -86,13 +87,7 @@ internal object DesktopApplicationIconDrafts {
     }
 
     internal fun normalize(source: ByteArray): ByteArray {
-        val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(ByteBuffer.wrap(source))) { decoder, info, _ ->
-            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
-            decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
-            val size = info.size
-            val ratio = minOf(1.0, MAX_EDGE.toDouble() / maxOf(size.width, size.height))
-            decoder.setTargetSize(maxOf(1, (size.width * ratio).toInt()), maxOf(1, (size.height * ratio).toInt()))
-        }
+        val bitmap = decode(source)
         return try {
             ByteArrayOutputStream().use { output ->
                 // For lossless WebP, quality controls compression effort, not pixel fidelity.
@@ -103,6 +98,29 @@ internal object DesktopApplicationIconDrafts {
             bitmap.recycle()
         }
     }
+
+    private fun decode(source: ByteArray): Bitmap {
+        val images = IcnsIconReader.pngImages(source) ?: return decodeImage(ByteBuffer.wrap(source))
+        var failure: ImageDecoder.DecodeException? = null
+        for (image in images) {
+            try {
+                return decodeImage(image)
+            } catch (invalidImage: ImageDecoder.DecodeException) {
+                // A damaged larger representation must not hide a usable smaller one.
+                failure = invalidImage
+            }
+        }
+        throw IOException("ICNS contains no decodable PNG representation", failure)
+    }
+
+    private fun decodeImage(source: ByteBuffer): Bitmap =
+        ImageDecoder.decodeBitmap(ImageDecoder.createSource(source)) { decoder, info, _ ->
+            decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            decoder.setTargetColorSpace(ColorSpace.get(ColorSpace.Named.SRGB))
+            val size = info.size
+            val ratio = minOf(1.0, MAX_EDGE.toDouble() / maxOf(size.width, size.height))
+            decoder.setTargetSize(maxOf(1, (size.width * ratio).toInt()), maxOf(1, (size.height * ratio).toInt()))
+        }
 
     suspend fun read(context: Context, token: String): ByteArray = withContext(Dispatchers.IO) {
         file(context, token).inputStream().use {

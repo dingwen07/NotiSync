@@ -44,6 +44,7 @@
     <string name="action_cancel">Cancel</string>
     <string name="action_continue">Continue</string>
     <string name="action_save">Save</string>
+    <string name="action_edit">Edit</string>
     <string name="action_back">Back</string>
     <string name="action_paste">Paste</string>
     <string name="error_unknown">Unknown error</string>
@@ -253,6 +254,21 @@
     <string name="ssh_key_provider_destination">Destination</string>
     <string name="ssh_key_provider_destination_username">Username</string>
     <string name="ssh_key_provider_destination_host_key_fingerprint">Host Key Fingerprint</string>
+    <string name="desktop_process_elevated">Elevated</string>
+    <string name="desktop_process_not_elevated">Not elevated</string>
+    <string name="desktop_process_token_default">Default token</string>
+    <string name="desktop_process_token_full">Full token</string>
+    <string name="desktop_process_token_limited">Limited token</string>
+    <string name="desktop_process_integrity">Integrity: %1$s</string>
+    <string name="desktop_process_integrity_untrusted">Untrusted</string>
+    <string name="desktop_process_integrity_low">Low</string>
+    <string name="desktop_process_integrity_medium">Medium</string>
+    <string name="desktop_process_integrity_medium_plus">Medium plus</string>
+    <string name="desktop_process_integrity_high">High</string>
+    <string name="desktop_process_integrity_system">System</string>
+    <string name="desktop_process_integrity_protected">Protected process</string>
+    <string name="desktop_process_app_container">AppContainer</string>
+    <string name="desktop_process_no_app_container">No AppContainer</string>
     <string name="ssh_key_provider_process">Process</string>
     <string name="ssh_key_provider_process_reported_by_requester">Reported by the requesting computer</string>
     <string name="ssh_key_provider_signature_algorithm">Signature Algorithm</string>
@@ -306,7 +322,7 @@
     <string name="ssh_key_provider_notification_key">SSH Key: %1$s</string>
     <string name="ssh_key_provider_notification_source">Source: %1$s</string>
     <string name="ssh_key_provider_notification_request">Request: %1$s</string>
-    <string name="ssh_key_provider_notification_channel">SSH Key Provider Requests</string>
+    <string name="ssh_key_provider_notification_channel">NotiSync SSH Key Provider</string>
     <string name="ssh_key_provider_notification_channel_description">SSH key import and signing requests</string>
     <string name="ssh_key_provider_notification_public_content">An SSH request is waiting for review.</string>
 
@@ -468,7 +484,6 @@
     <string name="apps_no_match">No apps match \"%1$s\"</string>
     <string name="apps_section_mirroring">Mirroring</string>
     <string name="apps_section_all">All apps</string>
-    <string name="apps_section_other_results">Other results</string>
     <!-- Title/count order and punctuation can vary by locale. -->
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">Last notification %1$s</string>
@@ -730,6 +745,10 @@
     <string name="device_purge_timestamp_missing">Permanent deletion is unavailable because this removal record has no timestamp.</string>
     <string name="device_actions_quarantined">Device actions are disabled until the quarantined trust state is resolved.</string>
     <!-- Notification filters a peer device asked this device to apply (DATA_SYNC FILTER). -->
+    <string name="device_forward_notifications_title">Forward notifications</string>
+    <string name="device_forward_notifications_body">Choose which notifications to send to this device.</string>
+    <string name="device_forward_notifications_local">Local notifications</string>
+    <string name="device_forward_notifications_iphone">iPhone notifications</string>
     <string name="device_filters_button_desc">Notifications hidden from %1$s</string>
     <string name="device_filters_title">Hidden from %1$s</string>
     <string name="device_filters_desc">This device won\'t forward these notifications to it:</string>

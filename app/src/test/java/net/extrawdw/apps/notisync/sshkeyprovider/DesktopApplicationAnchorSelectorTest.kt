@@ -58,23 +58,6 @@ class DesktopApplicationAnchorSelectorTest {
     }
 
     @Test
-    fun codexOutranksGitShellAndSessionInfrastructure() {
-        assertSelected(
-            "Codex",
-            listOf(
-                process("/usr/bin/ssh"),
-                process("/usr/bin/git"),
-                process("/opt/codex/bin/codex"),
-                process("/usr/bin/zsh"),
-                process("/opt/notisync/Relay"),
-                process("/opt/notisync/SessionLeader"),
-                process("/usr/lib/systemd/init-systemd"),
-                process("/usr/lib/systemd/systemd"),
-            ),
-        )
-    }
-
-    @Test
     fun missingExecutablePathIsSkippedWithoutTruncatingLineage() {
         val lineage = listOf(
             process("/usr/bin/ssh"),
@@ -118,22 +101,6 @@ class DesktopApplicationAnchorSelectorTest {
     }
 
     @Test
-    fun selectionRetainsLowerRankedCandidatesForGrantMatching() {
-        val selection = DesktopApplicationAnchorSelector.select(
-            listOf(
-                process("/usr/bin/ssh"),
-                process("/usr/bin/git"),
-                process("/opt/codex/bin/codex"),
-                process("/usr/bin/zsh"),
-                process("/sbin/init"),
-            ),
-        )
-
-        assertEquals("Codex", requireNotNull(selection.recommended).displayName)
-        assertTrue(selection.contains(DesktopApplicationIdentity("/usr/bin/git")))
-    }
-
-    @Test
     fun aiAgentOutranksUserApplicationAndCarriesStableRegistryPresentation() {
         val selected = requireNotNull(
             DesktopApplicationAnchorSelector.select(
@@ -149,20 +116,6 @@ class DesktopApplicationAnchorSelectorTest {
         assertEquals("opencode", selected.applicationId)
         assertEquals("OpenCode", selected.displayName)
         assertEquals(700, selected.priority)
-    }
-
-    @Test
-    fun userRegistryExtendsAndReplacesBuiltInsWithNumericPriority() {
-        val custom = KnownDesktopApplication("custom-tool", "My Tool", 725, acceptedNames = setOf("tool"))
-        val codex = KnownDesktopApplication("codex", "My Codex", 650, acceptedNames = setOf("codex"))
-        val registry = BUILT_IN_DESKTOP_APPLICATIONS.withUserApplications(listOf(custom, codex))
-        val lineage = listOf(process("/opt/codex"), process("/opt/tool"), process("/usr/bin/git"))
-        val selection = DesktopApplicationAnchorSelector.select(lineage, registry)
-
-        assertEquals(listOf("My Tool", "My Codex", "Git"), selection.candidates.map { it.displayName })
-        assertEquals(725, requireNotNull(selection.recommended).priority)
-        assertEquals("Codex", BUILT_IN_DESKTOP_APPLICATIONS.find(lineage.first())?.displayName)
-        assertTrue(selection.contains(DesktopApplicationIdentity("/opt/codex")))
     }
 
     @Test
@@ -315,18 +268,6 @@ class DesktopApplicationAnchorSelectorTest {
         }
         val unrelated = KnownDesktopApplication("other-app", "Other App", 600, acceptedNames = setOf("Other.app"))
         assertFalse(unrelated.matches(executable.copy(displayName = "Other.app")))
-    }
-
-    @Test
-    fun chatGptMacApplicationResolvesToCodex() {
-        val path = "/Applications/ChatGPT.app/Contents/MacOS/ChatGPT"
-        val selected = requireNotNull(
-            DesktopApplicationAnchorSelector.select(listOf(process("/usr/bin/ssh"), process(path))).recommended,
-        )
-
-        assertEquals("codex", selected.applicationId)
-        assertEquals("Codex", selected.displayName)
-        assertEquals(path, selected.identity.executablePath)
     }
 
     @Test

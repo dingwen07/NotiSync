@@ -75,6 +75,19 @@ nonisolated struct DesktopProcessIdentity: Codable, Sendable {
     var pid: Int64
     var executablePath: String?
     var displayName: String?
+    var username: String?
+    var uid: Int64?
+    var sid: String?
+    var windowsTokenInfo: DesktopWindowsTokenInfo?
+}
+
+nonisolated enum DesktopWindowsElevationType: String, Codable, Sendable { case DEFAULT, FULL, LIMITED }
+
+nonisolated struct DesktopWindowsTokenInfo: Codable, Sendable {
+    var elevated: Bool?
+    var elevationType: DesktopWindowsElevationType?
+    var integrityLevel: Int64?
+    var appContainer: Bool?
 }
 
 nonisolated struct DesktopProcessContext: Codable, Sendable {
@@ -349,7 +362,23 @@ nonisolated extension KMPProtocolBridge {
         NotiSyncProtocol.DesktopProcessIdentity(
             pid: value.pid,
             executablePath: value.executablePath,
-            displayName: value.displayName
+            displayName: value.displayName,
+            username: value.username,
+            uid: value.uid.map { KotlinLong(longLong: $0) },
+            sid: value.sid,
+            windowsTokenInfo: value.windowsTokenInfo.map(toKmp)
+        )
+    }
+
+    static func toKmp(_ value: DesktopWindowsTokenInfo) -> NotiSyncProtocol.DesktopWindowsTokenInfo {
+        NotiSyncProtocol.DesktopWindowsTokenInfo(
+            elevated: value.elevated.map { KotlinBoolean(bool: $0) },
+            elevationType: value.elevationType.map {
+                strictKmpEnum($0, entries: NotiSyncProtocol.DesktopWindowsElevationType.entries,
+                              field: "windowsTokenInfo.elevationType", name: { $0.name })
+            },
+            integrityLevel: value.integrityLevel.map { KotlinLong(longLong: $0) },
+            appContainer: value.appContainer.map { KotlinBoolean(bool: $0) }
         )
     }
 
@@ -741,14 +770,29 @@ nonisolated extension KMPProtocolBridge {
 
     // MARK: KMP -> Swift
 
-    static func fromKmp(_ value: NotiSyncProtocol.DesktopProcessIdentity) -> DesktopProcessIdentity {
-        DesktopProcessIdentity(pid: value.pid, executablePath: value.executablePath, displayName: value.displayName)
+    static func fromKmp(_ value: NotiSyncProtocol.DesktopProcessIdentity) throws -> DesktopProcessIdentity {
+        DesktopProcessIdentity(
+            pid: value.pid, executablePath: value.executablePath, displayName: value.displayName,
+            username: value.username, uid: value.uid?.int64Value, sid: value.sid,
+            windowsTokenInfo: try value.windowsTokenInfo.map(fromKmp)
+        )
+    }
+
+    static func fromKmp(_ value: NotiSyncProtocol.DesktopWindowsTokenInfo) throws -> DesktopWindowsTokenInfo {
+        DesktopWindowsTokenInfo(
+            elevated: value.elevated?.boolValue,
+            elevationType: try value.elevationType.map {
+                try strictNativeEnum($0.name, as: DesktopWindowsElevationType.self, field: "windowsTokenInfo.elevationType")
+            },
+            integrityLevel: value.integrityLevel?.int64Value,
+            appContainer: value.appContainer?.boolValue
+        )
     }
 
     static func fromKmp(_ value: NotiSyncProtocol.DesktopProcessContext) throws -> DesktopProcessContext {
         DesktopProcessContext(
             source: try strictNativeEnum(value.source.name, as: DesktopProcessContextSource.self, field: "processContext.source"),
-            processLineage: value.processLineage.map(fromKmp),
+            processLineage: try value.processLineage.map(fromKmp),
             bootId: value.bootId
         )
     }

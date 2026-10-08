@@ -19,12 +19,15 @@ import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.apps.notisync.notification.requestPagePendingIntentOptions
 import net.extrawdw.apps.notisync.notification.tryOpenRequestPageWhileUnlocked
+import net.extrawdw.apps.notisync.sshkeyprovider.BUILT_IN_DESKTOP_APPLICATIONS
+import net.extrawdw.apps.notisync.sshkeyprovider.KnownDesktopApplicationRegistry
 import net.extrawdw.notisync.protocol.OpenPgpObjectKind
 import net.extrawdw.notisync.protocol.OpenPgpRejectReason
 
 /** Private notification-shade presentation for a pending signing decision. */
-class OpenPgpSignNotificationPresenter(
+class OpenPgpSignNotificationPresenter internal constructor(
     private val context: Context,
+    private val desktopApplicationRegistry: () -> KnownDesktopApplicationRegistry = { BUILT_IN_DESKTOP_APPLICATIONS },
     private val openRequestPageAutomatically: () -> Boolean = { false },
 ) {
     fun post(
@@ -86,7 +89,10 @@ class OpenPgpSignNotificationPresenter(
                     it,
                 )
             }
-        val expandedText = listOfNotNull(requestText, identityText, identifiersText).joinToString("\n")
+        val processText = stored.processLabel(desktopApplicationRegistry())?.take(MAX_CONTEXT_CHARS)?.let {
+            context.getString(R.string.ssh_key_provider_notification_process, it)
+        }
+        val expandedText = listOfNotNull(requestText, processText, identityText, identifiersText).joinToString("\n")
         val contentTitle = context.getString(
             if (stored.request.objectKind == OpenPgpObjectKind.GIT_TAG) {
                 R.string.seal_notification_title_with_tag

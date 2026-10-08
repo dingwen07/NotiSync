@@ -4,6 +4,7 @@ import java.security.MessageDigest
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -34,6 +35,7 @@ class OpenPgpSignProtocolTest {
                 signatureArmor = armor(),
                 actionAt = 1_050,
                 workingDirectory = null,
+                processContext = null,
             ),
             request.copy(
                 action = OpenPgpSignAction.REJECT,
@@ -41,12 +43,14 @@ class OpenPgpSignProtocolTest {
                 rejectReason = OpenPgpRejectReason.USER_REJECTED,
                 actionAt = 1_050,
                 workingDirectory = null,
+                processContext = null,
             ),
             request.copy(
                 action = OpenPgpSignAction.CANCEL,
                 payload = null,
                 actionAt = 1_050,
                 workingDirectory = null,
+                processContext = null,
             ),
         )
 
@@ -62,6 +66,43 @@ class OpenPgpSignProtocolTest {
             assertEquals(value.signatureArmor, decoded.signatureArmor)
             assertEquals(value.rejectReason, decoded.rejectReason)
             assertEquals(value.workingDirectory, decoded.workingDirectory)
+            assertEquals(value.processContext, decoded.processContext)
+        }
+    }
+
+    @Test
+    fun legacyRequestsWithoutProcessContextStillDecodeAndValidate() {
+        val legacy = request().copy(processContext = null)
+        // A null default is omitted from CBOR, preserving the pre-lineage request shape.
+        val decoded = ProtocolCodec.decodeFromCbor<OpenPgpSignSync>(ProtocolCodec.encodeToCbor(legacy))
+        assertNull(decoded.processContext)
+        assertNull(decoded.validationError(::sha256))
+        assertArrayEquals(legacy.payload, decoded.payload)
+        val legacyJson = ProtocolCodec.encodeToJson(legacy).replace(",\"processContext\":null", "")
+        assertNull(ProtocolCodec.decodeFromJson<OpenPgpSignSync>(legacyJson).processContext)
+    }
+
+    @Test
+    fun processContextIsBoundedAndOnlyAllowedOnRequests() {
+        val context = requireNotNull(request().processContext)
+        listOf(
+            context.copy(processLineage = emptyList()),
+            context.copy(processLineage = List(17) { DesktopProcessIdentity((it + 1).toLong()) }),
+            context.copy(processLineage = listOf(DesktopProcessIdentity(0))),
+            context.copy(processLineage = listOf(DesktopProcessIdentity(1, "relative/path"))),
+            context.copy(processLineage = listOf(context.leaf!!, context.leaf!!)),
+        ).forEach { assertNotNull(request().copy(processContext = it).validationError(::sha256)) }
+        assertNull(request().copy(
+            processContext = DesktopProcessContext(DesktopProcessContextSource.UNAVAILABLE),
+        ).validationError(::sha256))
+        listOf(OpenPgpSignAction.RESULT, OpenPgpSignAction.REJECT, OpenPgpSignAction.CANCEL).forEach { action ->
+            val terminal = request().copy(
+                action = action, payload = null, workingDirectory = null, actionAt = 1_100,
+                signatureArmor = if (action == OpenPgpSignAction.RESULT) armor() else null,
+                rejectReason = if (action == OpenPgpSignAction.REJECT) OpenPgpRejectReason.USER_REJECTED else null,
+            )
+            assertNotNull(terminal.validationError(::sha256))
+            assertNull(terminal.copy(processContext = null).validationError(::sha256))
         }
     }
 
@@ -93,6 +134,7 @@ class OpenPgpSignProtocolTest {
                 payload = null,
                 actionAt = 1_100,
                 workingDirectory = null,
+                processContext = null,
             )
                 .validationError(::sha256)!!.contains("signature")
         )
@@ -187,6 +229,10 @@ class OpenPgpSignProtocolTest {
         objectKind = OpenPgpObjectKind.GIT_COMMIT,
         payload = commit,
         workingDirectory = "/work/notisync",
+        processContext = DesktopProcessContext(
+            DesktopProcessContextSource.CURRENT_PROCESS,
+            listOf(DesktopProcessIdentity(123, "/opt/notisync/bin/notisync-gpg"), DesktopProcessIdentity(100, "/usr/bin/git")),
+        ),
     )
 
     private fun armor() = "-----BEGIN PGP SIGNATURE-----\nAA==\n-----END PGP SIGNATURE-----\n"

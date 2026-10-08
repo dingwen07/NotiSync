@@ -130,7 +130,14 @@ internal fun migrateSshRequests4To5(
                     updatedAt = source.getLong(13),
                 )
                 validateLegacySshRecord(stored)
-                connection.insertSshRow("ssh_requests", SshRequestStorage.values(stored))
+                // This migration still produces the historical v5 schema. 5->6 combines its context columns.
+                val values = SshRequestStorage.values(stored).apply {
+                    remove("process_context_json")
+                    put("process_lineage_json", ProtocolCodec.encodeToJson(stored.history.processLineage))
+                    put("process_source", stored.signRequest?.processContext?.source?.name)
+                    put("process_boot_id", stored.signRequest?.processContext?.bootId)
+                }
+                connection.insertSshRow("ssh_requests", values)
             } catch (failure: Exception) {
                 connection.execSQL("ROLLBACK TO SAVEPOINT ssh_request_row")
                 // Legacy decryption is deliberately best-effort, including unavailable Keystore

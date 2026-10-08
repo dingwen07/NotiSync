@@ -57,6 +57,7 @@ import net.extrawdw.apps.notisync.data.AndroidActivityText
 import net.extrawdw.apps.notisync.data.AppConfigRepository
 import net.extrawdw.apps.notisync.data.AppSelectionRepository
 import net.extrawdw.apps.notisync.data.NotificationFilterStore
+import net.extrawdw.apps.notisync.data.NotificationForwardingStore
 import net.extrawdw.apps.notisync.data.SettingsRepository
 import net.extrawdw.apps.notisync.data.TrustPrompt
 import net.extrawdw.apps.notisync.data.TrustStore
@@ -258,6 +259,8 @@ class AppGraph(private val app: Application) {
     /** Notification-suppression filters peers asked this device to apply (DATA_SYNC FILTER), keyed by requester. */
     lateinit var notificationFilters: NotificationFilterStore
         private set
+    lateinit var notificationForwarding: NotificationForwardingStore
+        private set
     lateinit var transport: BrokerClient
         private set
     lateinit var poster: RemoteNotificationPoster
@@ -376,10 +379,12 @@ class AppGraph(private val app: Application) {
         openPgpProvider = OpenKeychainSigningProvider(app)
         openPgpEnrollment = OpenPgpEnrollmentStore(operationalApplicationState)
         openPgpSignStore = OpenPgpSignStore(app)
-        openPgpSignNotifications = OpenPgpSignNotificationPresenter(app) {
+        desktopApplications = DesktopApplicationRepository(app)
+        openPgpSignNotifications = OpenPgpSignNotificationPresenter(
+            app, desktopApplicationRegistry = { desktopApplications.snapshot.value.registry },
+        ) {
             settings.autoOpenOpenPgpRequest.value
         }
-        desktopApplications = DesktopApplicationRepository(app)
         sshKeyProviderStore = SshKeyProviderStore(app) { desktopApplications.snapshot.value.registry }
         sshKeyProviderNotifications = SshKeyProviderNotificationPresenter(app, sshKeyProviderStore) {
             settings.autoOpenSshRequest.value
@@ -405,6 +410,7 @@ class AppGraph(private val app: Application) {
         appSelection = AppSelectionRepository(scope, operationalApplicationState)
         appConfig = AppConfigRepository(scope, operationalApplicationState)
         notificationFilters = NotificationFilterStore(scope, operationalApplicationState)
+        notificationForwarding = NotificationForwardingStore(ds)
         screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(operationalApplicationState)
         screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(operationalApplicationState)
         screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
@@ -417,6 +423,7 @@ class AppGraph(private val app: Application) {
         )
         trust.roster
             .onEach { roster ->
+                notificationForwarding.retainPeers(roster.mapTo(mutableSetOf()) { it.clientId.value })
                 screenMirrorAuthorizations.retainTrustedOwnPeers(roster)
                 runCatching { screenMirrorCodecPreferences.retainTrustedOwnPeers(roster) }
             }
@@ -687,7 +694,10 @@ class AppGraph(private val app: Application) {
         sshKeyProviderEngine = sshProvider
         scope.launch { sshProvider.reconcile() }
         scope.launch {
-            desktopApplications.snapshot.drop(1).collect { sshProvider.refreshPendingNotifications() }
+            desktopApplications.snapshot.drop(1).collect {
+                sshProvider.refreshPendingNotifications()
+                openPgpSigning.refreshPendingNotifications()
+            }
         }
         // Notification-mirroring application: NOTIFICATION/DISMISSAL + private-asset repair.
         val mirror = MirrorEngine(
@@ -702,6 +712,7 @@ class AppGraph(private val app: Application) {
             ackIndex = messageStore, // dismissing a mirror queues its relay copy for ack
             lifecycleStore = messageStore,
             notificationFilters = notificationFilters, // honor peers' suppression requests when forwarding
+            notificationForwarding = notificationForwarding,
         )
         mirrorEngine = mirror
         // iOS notification bridge (ANCS over BLE): a discovered-app registry (per-bundle-id opt-in) and the

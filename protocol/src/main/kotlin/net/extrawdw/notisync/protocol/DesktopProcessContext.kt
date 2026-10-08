@@ -8,6 +8,8 @@ object DesktopProcessContextLimits {
     const val MAX_LINEAGE = 16
     const val MAX_DISPLAY_NAME_UTF8_BYTES = 256
     const val MAX_EXECUTABLE_PATH_UTF8_BYTES = 1_024
+    const val MAX_USERNAME_UTF8_BYTES = 256
+    const val MAX_SID_LENGTH = 192
 }
 
 /** How the requesting desktop learned the process at the leaf of [DesktopProcessContext.processLineage]. */
@@ -28,6 +30,26 @@ enum class DesktopProcessContextSource {
     UNAVAILABLE,
 }
 
+@Serializable
+enum class DesktopWindowsElevationType { DEFAULT, FULL, LIMITED }
+
+/** Descriptive fields from a Windows process's primary token; no token handles or credentials. */
+@Serializable
+data class DesktopWindowsTokenInfo(
+    @CborLabel(0) val elevated: Boolean? = null,
+    @CborLabel(1) val elevationType: DesktopWindowsElevationType? = null,
+    /** Mandatory integrity SID's final RID, retained numerically for uncommon integrity levels. */
+    @CborLabel(2) val integrityLevel: Long? = null,
+    @CborLabel(3) val appContainer: Boolean? = null,
+) {
+    fun validationError(): String? = when {
+        elevated == null && elevationType == null && integrityLevel == null && appContainer == null ->
+            "empty Windows token context must be omitted"
+        integrityLevel != null && integrityLevel !in 0..0xffff_ffffL -> "invalid Windows integrity level"
+        else -> null
+    }
+}
+
 /**
  * A requester-reported snapshot of one desktop process. Other peers may render this as review context,
  * but must not treat it as independently verified identity or as an authorization boundary.
@@ -38,6 +60,13 @@ data class DesktopProcessIdentity(
     /** Best-effort executable path. Some platforms restrict this for processes owned by another user. */
     @CborLabel(1) val executablePath: String? = null,
     @CborLabel(2) val displayName: String? = null,
+    /** Best-effort account name for this process's effective user (token user on Windows). */
+    @CborLabel(3) val username: String? = null,
+    /** POSIX effective user ID, local to the requesting computer's user namespace. */
+    @CborLabel(4) val uid: Long? = null,
+    /** Windows token user SID. Mutually exclusive with [uid]. */
+    @CborLabel(5) val sid: String? = null,
+    @CborLabel(6) val windowsTokenInfo: DesktopWindowsTokenInfo? = null,
 ) {
     fun validationError(): String? = when {
         pid <= 0 -> "process pid must be positive"
@@ -46,6 +75,15 @@ data class DesktopProcessIdentity(
         displayName != null && !displayName.isBoundedDesktopProcessText(
             DesktopProcessContextLimits.MAX_DISPLAY_NAME_UTF8_BYTES,
         ) -> "process display name is invalid"
+        username != null && (username.isBlank() || !username.isBoundedDesktopProcessText(
+            DesktopProcessContextLimits.MAX_USERNAME_UTF8_BYTES,
+        )) -> "process username is invalid"
+        uid != null && uid !in 0..0xffff_ffffL -> "process uid is invalid"
+        sid != null && (sid.length > DesktopProcessContextLimits.MAX_SID_LENGTH || !DESKTOP_SID.matches(sid)) ->
+            "process sid is invalid"
+        uid != null && sid != null -> "process must not carry both uid and sid"
+        uid != null && windowsTokenInfo != null -> "POSIX process must not carry Windows token context"
+        windowsTokenInfo?.validationError() != null -> windowsTokenInfo.validationError()
         else -> null
     }
 }
@@ -80,6 +118,7 @@ data class DesktopProcessContext(
 }
 
 private val DESKTOP_BOOT_ID = Regex("[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+private val DESKTOP_SID = Regex("S-1-[0-9]+(?:-[0-9]+){1,15}")
 
 private fun String.isBoundedDesktopProcessText(maxUtf8Bytes: Int): Boolean =
     encodeToByteArray().size <= maxUtf8Bytes && none(Char::isISOControl)

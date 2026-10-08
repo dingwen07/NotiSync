@@ -166,6 +166,13 @@ class OpenPgpSignEngine(
         }
     }
 
+    fun refreshPendingNotifications() {
+        val currentTime = now()
+        store.requests.value.filter {
+            it.state == OpenPgpRequestState.PENDING_REVIEW && it.request.expiresAt > currentTime
+        }.forEach { postNotification(it) }
+    }
+
     private fun postNotification(
         stored: StoredOpenPgpRequest,
         openImmediately: Boolean = false,

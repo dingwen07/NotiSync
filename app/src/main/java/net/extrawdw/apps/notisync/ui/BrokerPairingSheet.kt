@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.ui
 
+import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -17,7 +18,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -42,7 +42,7 @@ internal fun BrokerPairingSheet(
 ) {
     TapjackingProtectionEffect()
     val exchange = viewModel { BrokerPairingExchange() }
-    val activity = LocalContext.current as? android.app.Activity
+    val activity = LocalActivity.current
     LaunchedEffect(link) { exchange.start(link, pairing) }
     LaunchedEffect(exchange.candidate) {
         exchange.candidate?.let { candidate ->

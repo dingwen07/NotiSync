@@ -144,6 +144,7 @@ internal val BUILT_IN_DESKTOP_APPLICATIONS = KnownDesktopApplicationRegistry(
         knownDesktopApplication("opencode", "OpenCode", DesktopApplicationProcessRole.AI_AGENT, "opencode"),
 
         knownDesktopApplication("com.microsoft.VSCode", "Visual Studio Code", DesktopApplicationProcessRole.USER_APPLICATION, "code", "Visual Studio Code.app"),
+        knownDesktopApplication("com.github.GitHubClient", "GitHub Desktop", DesktopApplicationProcessRole.USER_APPLICATION, "GitHub Desktop", "GitHubDesktop", "GitHubDesktop.exe", "GitHub Desktop.app"),
 
         knownDesktopApplication("git", "Git", DesktopApplicationProcessRole.OPERATION_CLIENT, "git"),
 

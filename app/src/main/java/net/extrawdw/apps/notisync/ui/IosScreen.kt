@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.material3.Button
@@ -245,7 +246,8 @@ fun IosScreen() {
     val enabled by registry.enabled.collectAsStateWithLifecycle()
     val discovered by registry.discovered.collectAsStateWithLifecycle()
     val icons by viewModel<IosAppsViewModel>().icons.collectAsStateWithLifecycle()
-    var query by rememberSaveable { mutableStateOf("") }
+    val searchState = rememberTextFieldState()
+    val query = searchState.text.toString()
     var mode by rememberSaveable { mutableStateOf(AppListMode.MIRRORING) }
 
     // A runtime permission can be revoked in system settings while the persisted bridge preference remains on.
@@ -440,18 +442,24 @@ fun IosScreen() {
     }
     val toggleable = matching.filterNot { IosBundleIdExclusions.isExcluded(it.bundleId) }
     val allEnabled = toggleable.isNotEmpty() && toggleable.all { it.bundleId in effectiveEnabled }
-    NotiScaffold(stringResource(R.string.tab_ios)) { padding ->
-        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
+    AppListScaffold(
+        title = stringResource(R.string.tab_ios),
+        searchBar = { modifier, compact ->
             AppListSearchBar(
-                query = query,
-                onQueryChange = { query = it },
+                state = searchState,
                 placeholder = stringResource(R.string.ios_apps_search_hint),
                 mode = mode,
                 onModeChange = { mode = it },
                 allEnabled = allEnabled,
                 canToggleAll = toggleable.isNotEmpty(),
                 onToggleAll = { on -> registry.setEnabled(toggleable.map { it.bundleId }, on) },
+                modifier = modifier,
+                compact = compact,
             )
+        },
+    ) { padding, searchBar ->
+        Column(Modifier.fillMaxSize().padding(padding.topAndSides()).consumeWindowInsets(padding)) {
+            searchBar()
             LazyColumn(
                 modifier = Modifier.weight(1f),
                 contentPadding = PaddingValues(bottom = padding.calculateBottomPadding()),

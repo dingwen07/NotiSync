@@ -13,6 +13,7 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.junixsocket.core)
     implementation(libs.jna)
+    implementation(libs.jna.platform)
 
     testImplementation(libs.junit)
 }

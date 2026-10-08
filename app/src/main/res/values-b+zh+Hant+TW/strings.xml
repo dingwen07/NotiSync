@@ -40,6 +40,7 @@
     <string name="action_cancel">取消</string>
     <string name="action_continue">繼續</string>
     <string name="action_save">儲存</string>
+    <string name="action_edit">編輯</string>
     <string name="action_back">返回</string>
     <string name="action_paste">貼上</string>
     <string name="error_unknown">未知錯誤</string>
@@ -242,6 +243,21 @@
     <string name="ssh_key_provider_destination">目標</string>
     <string name="ssh_key_provider_destination_username">使用者名稱</string>
     <string name="ssh_key_provider_destination_host_key_fingerprint">主機金鑰指紋</string>
+    <string name="desktop_process_elevated">已提高權限</string>
+    <string name="desktop_process_not_elevated">未提高權限</string>
+    <string name="desktop_process_token_default">預設權杖</string>
+    <string name="desktop_process_token_full">完整權杖</string>
+    <string name="desktop_process_token_limited">受限權杖</string>
+    <string name="desktop_process_integrity">完整性：%1$s</string>
+    <string name="desktop_process_integrity_untrusted">不受信任</string>
+    <string name="desktop_process_integrity_low">低</string>
+    <string name="desktop_process_integrity_medium">中</string>
+    <string name="desktop_process_integrity_medium_plus">中高</string>
+    <string name="desktop_process_integrity_high">高</string>
+    <string name="desktop_process_integrity_system">系統</string>
+    <string name="desktop_process_integrity_protected">受保護的處理程序</string>
+    <string name="desktop_process_app_container">AppContainer</string>
+    <string name="desktop_process_no_app_container">無 AppContainer</string>
     <string name="ssh_key_provider_process">處理程序</string>
     <string name="ssh_key_provider_process_reported_by_requester">由提出要求的電腦回報</string>
     <string name="ssh_key_provider_signature_algorithm">簽章演算法</string>
@@ -292,7 +308,7 @@
     <string name="ssh_key_provider_notification_key">SSH 金鑰：%1$s</string>
     <string name="ssh_key_provider_notification_source">來源：%1$s</string>
     <string name="ssh_key_provider_notification_request">要求：%1$s</string>
-    <string name="ssh_key_provider_notification_channel">SSH 金鑰提供程式要求</string>
+    <string name="ssh_key_provider_notification_channel">NotiSync SSH 金鑰提供程式</string>
     <string name="ssh_key_provider_notification_channel_description">SSH 金鑰匯入和簽章要求</string>
     <string name="ssh_key_provider_notification_public_content">有待審核的 SSH 要求。</string>
 
@@ -441,7 +457,6 @@
     <string name="apps_no_match">沒有符合「%1$s」的應用程式</string>
     <string name="apps_section_mirroring">鏡像中</string>
     <string name="apps_section_all">所有應用程式</string>
-    <string name="apps_section_other_results">其他結果</string>
     <string name="section_header">%1$s (%2$d)</string>
     <string name="apps_last_notification">最近通知 %1$s</string>
     <string name="apps_section_recent">最近使用</string>
@@ -686,6 +701,10 @@
     <string name="device_purge_timestamp_missing">此移除記錄沒有時間戳，因此無法永久刪除。</string>
     <string name="device_actions_quarantined">解決已隔離的信任狀態前，裝置操作將保持停用。</string>
     <!-- Notification filters a peer device asked this device to apply (DATA_SYNC FILTER). -->
+    <string name="device_forward_notifications_title">轉送通知</string>
+    <string name="device_forward_notifications_body">選擇要傳送到此裝置的通知。</string>
+    <string name="device_forward_notifications_local">本機通知</string>
+    <string name="device_forward_notifications_iphone">iPhone 通知</string>
     <string name="device_filters_button_desc">對 %1$s 隱藏的通知</string>
     <string name="device_filters_title">對 %1$s 隱藏</string>
     <string name="device_filters_desc">本裝置不會向其轉送以下通知：</string>

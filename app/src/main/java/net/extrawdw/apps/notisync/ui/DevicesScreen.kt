@@ -178,6 +178,7 @@ fun DevicesScreen(
     val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
     val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
     val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
+    val notificationForwarding by graph.notificationForwarding.preferences.collectAsStateWithLifecycle()
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
     // The own device whose received notification-filters sheet is open (null = closed).
@@ -247,6 +248,26 @@ fun DevicesScreen(
                         screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
                         screenMirrorRequestEnabled = !quarantined,
                         trustActionsEnabled = !quarantined,
+                        forwardLocalNotifications = notificationForwarding.isEnabled(
+                            device.clientId, OriginPlatform.ANDROID_LOCAL,
+                        ),
+                        forwardIphoneNotifications = notificationForwarding.isEnabled(
+                            device.clientId, OriginPlatform.IOS_ANCS,
+                        ),
+                        onForwardLocalNotificationsChange = { enabled ->
+                            graph.scope.launch {
+                                graph.notificationForwarding.setEnabled(
+                                    device.clientId, OriginPlatform.ANDROID_LOCAL, enabled,
+                                )
+                            }
+                        },
+                        onForwardIphoneNotificationsChange = { enabled ->
+                            graph.scope.launch {
+                                graph.notificationForwarding.setEnabled(
+                                    device.clientId, OriginPlatform.IOS_ANCS, enabled,
+                                )
+                            }
+                        },
                         screenMirrorCodecOverride = screenCodecPreferences[device.clientId.value],
                         screenMirrorDecoderSupport = graph.screenMirrorDecoderSupport,
                         onScreenControlAuthorizedChange = { authorized ->

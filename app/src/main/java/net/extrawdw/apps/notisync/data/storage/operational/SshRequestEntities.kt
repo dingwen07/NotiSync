@@ -43,12 +43,10 @@ internal data class SshProviderRequestEntity(
     @ColumnInfo(name = "sign_flags") val signFlags: Long?,
     @ColumnInfo(name = "authorization_generation") val authorizationGeneration: String?,
     @ColumnInfo(name = "authorization_epoch") val authorizationEpoch: Long?,
-    @ColumnInfo(name = "process_lineage_json") val processLineageJson: String,
+    @ColumnInfo(name = "process_context_json") val processContextJson: String?,
     @ColumnInfo(name = "eligible_provider_client_ids_json") val eligibleProviderClientIdsJson: String?,
     @ColumnInfo(name = "host_aliases_json") val hostAliasesJson: String?,
     @ColumnInfo(name = "binding_chain_json") val bindingChainJson: String?,
-    @ColumnInfo(name = "process_source") val processSource: String?,
-    @ColumnInfo(name = "process_boot_id") val processBootId: String?,
     @ColumnInfo(name = "destination_provenance") val destinationProvenance: String?,
     @ColumnInfo(name = "connection_direction") val connectionDirection: String?,
     @ColumnInfo(name = "destination_service") val destinationService: String?,
@@ -77,4 +75,3 @@ internal data class SshProviderRequestEntity(
     @ColumnInfo(name = "response_public_key_blob", typeAffinity = ColumnInfo.BLOB) val responsePublicKeyBlob: ByteArray?,
     @ColumnInfo(name = "response_message") val responseMessage: String?,
 )
-
