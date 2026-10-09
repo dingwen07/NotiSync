@@ -28,6 +28,13 @@ public final class DisplayMonitor {
         this.displayId = displayId;
         displayWindowListener = new DisplayWindowListener() {
             @Override
+            public void onDisplayRemoved(int eventDisplayId) {
+                if (eventDisplayId == displayId) {
+                    checkDisplayPropertiesChanged();
+                }
+            }
+
+            @Override
             public void onDisplayConfigurationChanged(int eventDisplayId, Configuration newConfig) {
                 if (eventDisplayId == displayId) {
                     checkDisplayPropertiesChanged();

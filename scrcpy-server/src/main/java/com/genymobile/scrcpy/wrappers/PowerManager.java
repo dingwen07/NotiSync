@@ -7,6 +7,7 @@ import android.os.IInterface;
 import android.os.SystemClock;
 
 import java.lang.reflect.Method;
+import java.util.function.LongSupplier;
 
 public final class PowerManager {
 
@@ -18,9 +19,13 @@ public final class PowerManager {
     private static final long POWER_STATE_VERIFY_INTERVAL_MS = 50;
 
     private final IInterface manager;
+    private final DisplayManager displayManager;
+    private final LongSupplier uptimeMillis;
     private Method isScreenOnMethod;
     private Method wakeUpMethod;
     private Method goToSleepMethod;
+    private Method userActivityMethod;
+    private Method wakeUpWithDisplayIdMethod;
 
     static PowerManager create() {
         IInterface manager = ServiceManager.getService("power", "android.os.IPowerManager");
@@ -28,7 +33,50 @@ public final class PowerManager {
     }
 
     private PowerManager(IInterface manager) {
+        this(manager, ServiceManager.getDisplayManager(), SystemClock::uptimeMillis);
+    }
+
+    PowerManager(IInterface manager, DisplayManager displayManager, LongSupplier uptimeMillis) {
         this.manager = manager;
+        this.displayManager = displayManager;
+        this.uptimeMillis = uptimeMillis;
+    }
+
+    /** Session-scoped activity; a shared power group intentionally keeps the phone awake too. */
+    public boolean keepDisplayActive(int displayId) {
+        if (displayId <= 0) return false;
+        try {
+            if (displayManager.getDisplayGroupId(displayId) < 0) return false;
+            if (userActivityMethod == null) {
+                userActivityMethod = manager.getClass().getMethod("userActivity", int.class, long.class, int.class, int.class);
+            }
+            userActivityMethod.invoke(manager, displayId, uptimeMillis.getAsLong(), 0, 0);
+            return true;
+        } catch (ReflectiveOperationException error) { return false; }
+    }
+
+    /** Wake the session's assigned power group, preserving keyguard. Some ROMs share the phone's group. */
+    public boolean wakeVirtualDisplay(int displayId) {
+        if (displayId <= 0) return false;
+        try {
+            int groupId = displayManager.getDisplayGroupId(displayId);
+            int primaryGroupId = displayManager.getDisplayGroupId(PRIMARY_DISPLAY_ID);
+            if (groupId < 0 || primaryGroupId < 0) return false;
+            if (isScreenOn(displayId)) return true;
+            if (groupId == primaryGroupId) {
+                return wakePrimaryDisplay() && waitUntilScreenOn(displayId, POWER_STATE_VERIFY_TIMEOUT_MS);
+            }
+            if (wakeUpWithDisplayIdMethod == null) {
+                wakeUpWithDisplayIdMethod = manager.getClass().getMethod("wakeUpWithDisplayId",
+                        long.class, int.class, String.class, String.class, int.class);
+            }
+            wakeUpWithDisplayIdMethod.invoke(manager, uptimeMillis.getAsLong(), WAKE_REASON_APPLICATION,
+                    "notisync:virtual_display", FakeContext.PACKAGE_NAME, displayId);
+            return waitUntilScreenOn(displayId, POWER_STATE_VERIFY_TIMEOUT_MS);
+        } catch (ReflectiveOperationException | RuntimeException error) {
+            Ln.w("Could not wake the virtual display's power group", error);
+            return false;
+        }
     }
 
     private Method getIsScreenOnMethod() throws NoSuchMethodException {
@@ -86,7 +134,7 @@ public final class PowerManager {
         try {
             getWakeUpMethod().invoke(
                     manager,
-                    SystemClock.uptimeMillis(),
+                    uptimeMillis.getAsLong(),
                     WAKE_REASON_APPLICATION,
                     "notisync:screen_mirroring",
                     FakeContext.PACKAGE_NAME
@@ -106,7 +154,7 @@ public final class PowerManager {
         try {
             getGoToSleepMethod().invoke(
                     manager,
-                    SystemClock.uptimeMillis(),
+                    uptimeMillis.getAsLong(),
                     GO_TO_SLEEP_REASON_POWER_BUTTON,
                     GO_TO_SLEEP_FLAGS_NONE
             );
@@ -118,12 +166,12 @@ public final class PowerManager {
     }
 
     public boolean waitUntilScreenOn(int displayId, long timeoutMs) {
-        long deadline = SystemClock.uptimeMillis() + Math.max(0, timeoutMs);
+        long deadline = uptimeMillis.getAsLong() + Math.max(0, timeoutMs);
         do {
             if (isScreenOn(displayId)) {
                 return true;
             }
-            long remaining = deadline - SystemClock.uptimeMillis();
+            long remaining = deadline - uptimeMillis.getAsLong();
             if (remaining <= 0) {
                 return false;
             }
@@ -132,12 +180,12 @@ public final class PowerManager {
     }
 
     public boolean waitUntilScreenOff(int displayId, long timeoutMs) {
-        long deadline = SystemClock.uptimeMillis() + Math.max(0, timeoutMs);
+        long deadline = uptimeMillis.getAsLong() + Math.max(0, timeoutMs);
         do {
             if (!isScreenOn(displayId)) {
                 return true;
             }
-            long remaining = deadline - SystemClock.uptimeMillis();
+            long remaining = deadline - uptimeMillis.getAsLong();
             if (remaining <= 0) {
                 return false;
             }

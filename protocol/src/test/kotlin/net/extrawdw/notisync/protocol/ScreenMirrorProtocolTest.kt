@@ -8,6 +8,48 @@ import org.junit.Test
 
 class ScreenMirrorProtocolTest {
     @Test
+    fun virtualDisplayDenialRoundTripsWithoutBecomingGeneralUnauthorized() {
+        val response = request().copy(
+            action = ScreenMirrorAction.STATUS,
+            protocolVersion = 2,
+            status = ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED,
+            routingToken = null,
+            masterPsk = null,
+        )
+        val decoded = ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(ProtocolCodec.encodeToCbor(response))
+        assertEquals(ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED, decoded.status)
+        assertEquals(2, decoded.protocolVersion)
+    }
+
+    @Test
+    fun virtualDisplayRoundTripsWithDistinctRoutingAndVersion() {
+        val defaultDisplay = request().copy(protocolVersion = 2, virtualDisplay = ScreenVirtualDisplay())
+        assertEquals(ScreenVirtualDisplay(), ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(
+            ProtocolCodec.encodeToCbor(defaultDisplay)).virtualDisplay)
+        val request = request().copy(protocolVersion = 2, virtualDisplay = ScreenVirtualDisplay(
+            width = 1600, height = 900, densityDpi = 240,
+            launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "notification-key",
+        ))
+        val decoded = ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(ProtocolCodec.encodeToCbor(request))
+        assertEquals(2, decoded.protocolVersion)
+        assertEquals(request.virtualDisplay, decoded.virtualDisplay)
+        assertTrue(Capability.SCREEN_VIRTUAL_DISPLAY_V1 in decoded.requiredSourceCapabilities())
+        assertEquals(null, ProtocolCodec.decodeFromCbor<ScreenMirrorSync>(ProtocolCodec.encodeToCbor(request())).virtualDisplay)
+    }
+
+    @Test
+    fun virtualDisplayRejectsAmbiguousAndUnboundedTargets() {
+        val valid = ScreenVirtualDisplay()
+        assertTrue(valid.isValid())
+        listOf(valid.copy(width = Int.MAX_VALUE), valid.copy(width = 4096, height = 4096),
+            valid.copy(densityDpi = 0), valid.copy(packageName = "com.example.app"),
+            valid.copy(launchKind = "future-launch"),
+            valid.copy(launchKind = ScreenVirtualDisplay.APP, packageName = "com.example;command"),
+            valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = ""),
+            valid.copy(launchKind = ScreenVirtualDisplay.NOTIFICATION, notificationKey = "key", packageName = "com.example.app"),
+        ).forEach { assertEquals(it.toString(), false, it.isValid()) }
+    }
+    @Test
     fun screenMirrorRequest_roundTripsThroughCompactCbor() {
         val request = request()
         val body = DataSync(DataSyncKind.SCREEN_MIRRORING, screenMirror = request)

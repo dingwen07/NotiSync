@@ -59,6 +59,8 @@ import net.extrawdw.apps.notisync.domain.isFreshCall
 import net.extrawdw.apps.notisync.domain.isRingingCall
 import net.extrawdw.apps.notisync.screen.AndroidScreenMirrorActivity
 import net.extrawdw.notisync.protocol.CapturedNotification
+import net.extrawdw.notisync.protocol.Capability
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.GroupAlertBehavior
 import net.extrawdw.notisync.protocol.MirrorCategory
@@ -562,7 +564,11 @@ class RemoteNotificationPoster(
             .setDeleteIntent(deleteIntent(notif.sourceClientId, notif.sourceKey, id, notif.isClearable))
             .addExtras(mirrorExtras(notif, receiverGroupKey, receiverGroupTitle, parentChannelId))
         if (notif.hasContentIntent) {
-            builder.setContentIntent(tapIntent(notif, id, originLabel))
+            builder.setContentIntent(if (virtualDisplayNotificationEligible(notif)) {
+                virtualDisplayTapIntent(notif, id, tag)
+            } else {
+                tapIntent(notif, id, originLabel)
+            })
         }
         liveUpdate?.shortCriticalText?.let(builder::setShortCriticalText)
         // Promotion is only requested when this mirror can satisfy Android's promoted-ongoing shape.
@@ -1311,6 +1317,29 @@ class RemoteNotificationPoster(
     private fun isMediaStyle(notif: CapturedNotification): Boolean =
         notif.style == NotificationStyle.MEDIA || notif.style == NotificationStyle.DECORATED_MEDIA_CUSTOM_VIEW
 
+    private fun virtualDisplayNotificationEligible(notif: CapturedNotification): Boolean {
+        val graph = (context.applicationContext as? NotiSyncApp)?.graphIfReady ?: return false
+        val device = graph.trust.roster.value.firstOrNull { it.clientId == notif.sourceClientId } ?: return false
+        return mirrorNotificationVirtualDisplay(true,
+            mirrorNotificationOpenRoute(notif.sourceClientId, graph.clientId, device, notif.originPlatform,
+                graph.trust.quarantined.value), device.capabilities, notif.sourceKey) != null
+    }
+
+    /** The source resolves the content intent only after authorizing and creating the display.
+     * Do not also send TAP: that would race this request and open the app on the physical phone. */
+    private fun virtualDisplayTapIntent(notif: CapturedNotification, id: Int, tag: String): PendingIntent {
+        val display = ScreenVirtualDisplay(
+            launchKind = ScreenVirtualDisplay.NOTIFICATION,
+            notificationKey = notif.sourceKey,
+        )
+        val launch = AndroidScreenMirrorActivity.intent(context, notif.sourceClientId, display).apply {
+            net.extrawdw.apps.notisync.screen.ScreenVirtualDisplayIntents.fitToViewer(this)
+            data = "notisync://virtual-display-notification/${Uri.encode(tag)}".toUri()
+        }
+        return PendingIntent.getActivity(context, id, launch,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
+    }
+
     /** Non-visual FSI anchor for an ONGOING CallStyle: required structurally, never a reason to open call UI. */
     private fun callStyleAnchorIntent(id: Int, tag: String): PendingIntent {
         val launch = Intent(context, MirrorTapActivity::class.java).apply {
@@ -1675,9 +1704,9 @@ class MirrorActionReceiver : BroadcastReceiver() {
 }
 
 /**
- * Notification-tap trampoline. The real PendingIntent is still fired on the origin. When that
- * origin is a trusted own Android screen source, a content tap also opens its authenticated screen
- * viewer. [ACTION_PERFORM_UI] remains accepted only for already-posted notifications created by an
+ * Notification-tap trampoline, including already-posted notifications. A compatible virtual
+ * display request owns the content launch; ordinary remote TAP is sent only for other routes.
+ * [ACTION_PERFORM_UI] remains accepted only for already-posted notifications created by an
  * older build; it relays the action without opening screen sharing.
  */
 class MirrorTapActivity : Activity() {
@@ -1702,12 +1731,12 @@ class MirrorTapActivity : Activity() {
             } else null
 
             val graph = app.graphIfReady
+            val sourceDevice = graph?.trust?.roster?.value?.firstOrNull { it.clientId == sourceClientId }
             val route = graph?.let { readyGraph ->
                 mirrorNotificationOpenRoute(
                     sourceClientId = sourceClientId,
                     ownClientId = readyGraph.clientId,
-                    sourceDevice = readyGraph.trust.roster.value
-                        .firstOrNull { it.clientId == sourceClientId },
+                    sourceDevice = sourceDevice,
                     originPlatform = originPlatform,
                     trustQuarantined = readyGraph.trust.quarantined.value,
                 )
@@ -1721,8 +1750,18 @@ class MirrorTapActivity : Activity() {
                 eligibleFallback = graph == null &&
                     intent.getBooleanExtra(EXTRA_SCREEN_MIRROR_FALLBACK, false),
             )
+            val virtualDisplay = mirrorNotificationVirtualDisplay(
+                isContentTap = action == ACTION_TAP,
+                route = route,
+                capabilities = sourceDevice?.capabilities.orEmpty(),
+                notificationKey = sourceKey,
+            )
             val opened = openScreen && runCatching {
-                startActivity(AndroidScreenMirrorActivity.intent(this, sourceClientId))
+                startActivity(AndroidScreenMirrorActivity.intent(this, sourceClientId, virtualDisplay).apply {
+                    if (virtualDisplay != null) {
+                        net.extrawdw.apps.notisync.screen.ScreenVirtualDisplayIntents.fitToViewer(this)
+                    }
+                })
             }.isSuccess
             if (!opened) {
                 intent.getStringExtra(EXTRA_DEVICE_NAME)?.takeIf(String::isNotBlank)?.let { label ->
@@ -1733,6 +1772,9 @@ class MirrorTapActivity : Activity() {
                     ).show()
                 }
             }
+
+            // Never also open the physical phone, including if the virtual viewer could not start.
+            if (virtualDisplay != null) return
 
             if (action == ACTION_PERFORM_UI) {
                 IncomingCallActivity.requestFinish(this, sourceClient, sourceKey)

@@ -92,6 +92,7 @@ public final class NotiSyncCaptureBackendLifecycleTest {
                 boolean.class,
                 ParcelFileDescriptor.class,
                 ParcelFileDescriptor.class,
+                VirtualDisplayConfig.class,
                 Consumer.class
         );
         constructor.setAccessible(true);
@@ -104,6 +105,7 @@ public final class NotiSyncCaptureBackendLifecycleTest {
                 8_000_000,
                 true,
                 true,
+                null,
                 null,
                 null,
                 finished

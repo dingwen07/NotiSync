@@ -17,7 +17,7 @@ public final class Threads {
         T[] resultRef = (T[]) new Object[1];
         Throwable[] throwableRef = new Throwable[1];
 
-        handler.post(() -> {
+        if (!handler.post(() -> {
             try {
                 resultRef[0] = callable.call();
             } catch (Throwable throwable) {
@@ -25,14 +25,8 @@ public final class Threads {
             } finally {
                 sem.release();
             }
-        });
-
-        try {
-            sem.acquire();
-        } catch (InterruptedException e) {
-            // Behave as if this method call was synchronous
-            Thread.currentThread().interrupt();
-        }
+        })) throw new IllegalStateException("Handler is stopped");
+        sem.acquireUninterruptibly();
 
         if (throwableRef[0] != null) {
             throw throwableRef[0];

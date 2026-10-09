@@ -17,12 +17,10 @@ public final class MinimalPrivilegedSurfaceTest {
     public void sourceClosureContainsNoRemovedPrivilegedFeatures() throws IOException {
         Path sourceRoot = locateSourceRoot();
         assertFalse(containsJavaSource(sourceRoot.resolve("com/genymobile/scrcpy/audio")));
-        assertFalse(containsJavaSource(sourceRoot.resolve("com/genymobile/scrcpy/opengl")));
 
         List<String> forbiddenFiles = List.of(
                 "control/UhidManager.java",
                 "video/CameraCapture.java",
-                "video/NewDisplayCapture.java",
                 "wrappers/ActivityManager.java",
                 "wrappers/ContentProvider.java",
                 "util/Command.java",

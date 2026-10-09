@@ -23,9 +23,14 @@ object ScreenMirrorRequestValidator {
         now: Long,
         authorized: Boolean,
         codecAvailable: Boolean,
+        virtualDisplayAuthorized: Boolean = false,
+        virtualDisplayAvailable: Boolean = false,
     ): ScreenMirrorValidationFailure? {
         if (request.action != ScreenMirrorAction.REQUEST) return invalid("not a request")
-        if (request.protocolVersion != SCREEN_PROTOCOL_VERSION) return invalid("unsupported protocol version")
+        if (request.protocolVersion != if (request.virtualDisplay == null) SCREEN_PROTOCOL_VERSION else 2) {
+            return invalid("unsupported display protocol version")
+        }
+        if (request.virtualDisplay?.isValid() == false) return invalid("invalid virtual display options")
         if (request.requesterPeerId != authenticatedSender || request.sourcePeerId != ownClientId) {
             return ScreenMirrorValidationFailure(ScreenMirrorStatus.UNAUTHORIZED, "peer identity mismatch")
         }
@@ -63,6 +68,14 @@ object ScreenMirrorRequestValidator {
         )
         if (!codecAvailable) {
             return ScreenMirrorValidationFailure(ScreenMirrorStatus.CODEC_UNAVAILABLE, "hardware codec unavailable")
+        }
+        if (request.virtualDisplay != null) {
+            if (!virtualDisplayAuthorized) return ScreenMirrorValidationFailure(
+                ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED, "virtual display access has not been allowed on this device",
+            )
+            if (!virtualDisplayAvailable) return ScreenMirrorValidationFailure(
+                ScreenMirrorStatus.SHIZUKU_UNAVAILABLE, "virtual display is unavailable",
+            )
         }
         return null
     }

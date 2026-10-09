@@ -113,7 +113,10 @@ class ScreenRelayHub(
 
 object ScreenRelayAdmissionPolicy {
     private val RELAY_ID = Regex("[A-Za-z0-9_-]{32}")
-    private const val MAX_FUTURE_MS = 5L * 60 * 1_000
+    private const val MAX_REQUEST_LIFETIME_MS = 5L * 60 * 1_000
+    // Android creates a full five-minute request using its own clock. Match its
+    // ScreenMirrorRequestValidator skew allowance instead of requiring synchronized clocks.
+    private const val MAX_CLOCK_SKEW_MS = 2L * 60 * 1_000
 
     fun rejection(
         join: ScreenRelayJoin,
@@ -123,7 +126,9 @@ object ScreenRelayAdmissionPolicy {
     ): String? {
         if (!join.relayId.matches(RELAY_ID)) return "bad_relay_id"
         if (join.requesterPeerId == join.sourcePeerId) return "same_peer"
-        if (join.expiresAt <= now || join.expiresAt > now + MAX_FUTURE_MS) return "bad_expiry"
+        if (join.expiresAt <= now ||
+            join.expiresAt > now + MAX_REQUEST_LIFETIME_MS + MAX_CLOCK_SKEW_MS
+        ) return "bad_expiry"
         if (!securityEnabled) return null
         val expected = when (join.role) {
             ScreenRelayRole.REQUESTER -> join.requesterPeerId
@@ -131,4 +136,8 @@ object ScreenRelayAdmissionPolicy {
         }
         return if (principal == expected) null else "client_mismatch"
     }
+
+    /** Clock skew may widen admission, but must not extend an unmatched connection's wait. */
+    fun rendezvousTimeoutMillis(expiresAt: Long, now: Long): Long =
+        (expiresAt - now).coerceIn(1L, MAX_REQUEST_LIFETIME_MS)
 }

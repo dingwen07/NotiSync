@@ -72,6 +72,9 @@ internal fun DeviceDetailsSheet(
     nowMillis: Long,
     screenMirroringEnabled: Boolean,
     screenControlAuthorized: Boolean,
+    virtualDisplayAuthorized: Boolean = false,
+    virtualDisplayAvailable: Boolean = false,
+    onVirtualDisplayAuthorizedChange: (Boolean) -> Unit = {},
     screenMirrorRequestEnabled: Boolean = true,
     trustActionsEnabled: Boolean = true,
     forwardLocalNotifications: Boolean,
@@ -189,20 +192,33 @@ internal fun DeviceDetailsSheet(
                     )
                 }
                 item {
-                    Button(
-                        onClick = { onStartScreenMirror(device.clientId) },
-                        enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
+                    Row(
                         modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        Icon(
-                            ScreenShareIcon,
-                            contentDescription = null,
-                            modifier = Modifier.size(ButtonDefaults.IconSize),
-                        )
-                        androidx.compose.foundation.layout.Spacer(
-                            Modifier.size(ButtonDefaults.IconSpacing)
-                        )
-                        Text(stringResource(R.string.screen_mirror_device_start))
+                        Button(
+                            onClick = { onStartScreenMirror(device.clientId) },
+                            enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                        ) {
+                            Icon(
+                                ScreenShareIcon,
+                                contentDescription = null,
+                                modifier = Modifier.size(ButtonDefaults.IconSize),
+                            )
+                            androidx.compose.foundation.layout.Spacer(
+                                Modifier.size(ButtonDefaults.IconSpacing)
+                            )
+                            Text(stringResource(R.string.screen_mirror_device_start))
+                        }
+                        if (Capability.SCREEN_VIRTUAL_DISPLAY_V1 in device.capabilities) {
+                            ScreenVirtualDisplayButton(
+                                sourceId = device.clientId,
+                                enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
+                                onLaunch = onDismiss,
+                            )
+                        }
                     }
                 }
             }
@@ -213,6 +229,21 @@ internal fun DeviceDetailsSheet(
                         enabled = screenMirroringEnabled && trustActionsEnabled,
                         authorized = screenControlAuthorized,
                         onAuthorizedChange = onScreenControlAuthorizedChange,
+                    )
+                }
+                item {
+                    ScreenControlAuthorization(
+                        masterEnabled = screenMirroringEnabled,
+                        enabled = trustActionsEnabled && (virtualDisplayAuthorized ||
+                            (screenMirroringEnabled && screenControlAuthorized && virtualDisplayAvailable)),
+                        authorized = virtualDisplayAuthorized,
+                        onAuthorizedChange = onVirtualDisplayAuthorizedChange,
+                        title = R.string.screen_virtual_allow_title,
+                        body = R.string.screen_virtual_allow_body,
+                    )
+                    if (!virtualDisplayAvailable) Text(
+                        stringResource(R.string.screen_virtual_unavailable),
+                        style = MaterialTheme.typography.bodySmall,
                     )
                 }
             }
@@ -403,6 +434,8 @@ private fun ScreenControlAuthorization(
     enabled: Boolean,
     authorized: Boolean,
     onAuthorizedChange: (Boolean) -> Unit,
+    title: Int = R.string.screen_mirror_device_title,
+    body: Int = R.string.screen_mirror_device_body,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -419,7 +452,7 @@ private fun ScreenControlAuthorization(
             verticalAlignment = Alignment.CenterVertically,
         ) {
             Text(
-                stringResource(R.string.screen_mirror_device_title),
+                stringResource(title),
                 modifier = Modifier.weight(1f).padding(end = 16.dp),
                 style = MaterialTheme.typography.labelLarge,
             )
@@ -430,7 +463,7 @@ private fun ScreenControlAuthorization(
             )
         }
         Text(
-            stringResource(R.string.screen_mirror_device_body),
+            stringResource(body),
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -652,6 +685,7 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.SCREEN_MIRROR_BROKER_RELAY_V1 -> R.string.device_capability_screen_broker_relay
         Capability.OPENPGP_SIGN_V1 -> R.string.device_capability_openpgp_sign
         Capability.OPENPGP_SIGN_GIT_TAG_V1 -> R.string.device_capability_openpgp_tag_sign
+        Capability.SCREEN_VIRTUAL_DISPLAY_V1 -> R.string.screen_virtual_title
         Capability.SSH_KEY_PROVIDER_V1 -> R.string.device_capability_ssh_key_provider
         Capability.SSH_AGENT_V1 -> R.string.device_capability_ssh_agent
     },

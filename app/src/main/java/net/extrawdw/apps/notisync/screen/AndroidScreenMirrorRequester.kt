@@ -40,6 +40,7 @@ import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorConnectionCandidate
 import net.extrawdw.notisync.protocol.ScreenMirrorStatus
 import net.extrawdw.notisync.protocol.ScreenMirrorSync
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.screen.GeneratedSessionSecrets
 import net.extrawdw.notisync.screen.LanSessionListener
@@ -149,10 +150,14 @@ internal class AndroidScreenMirrorRequester(
         sourceId: ClientId,
         ownerToken: String,
         connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+        virtualDisplay: ScreenVirtualDisplay? = null,
     ): AndroidViewerSession = withContext(Dispatchers.IO) {
         require(ownerToken.isNotBlank() && ownerToken.length <= 128) { "invalid viewer owner token" }
         val source = requireNotNull(sourceResolver.resolve(sourceId)) {
             "screen source is not a trusted own device"
+        }
+        require(virtualDisplay == null || (virtualDisplay.isValid() && Capability.SCREEN_VIRTUAL_DISPLAY_V1 in source.capabilities)) {
+            "virtual display is unavailable or its options are invalid"
         }
         if (connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
             require(Capability.SCREEN_MIRROR_BROKER_RELAY_V1 in source.capabilities) {
@@ -180,7 +185,7 @@ internal class AndroidScreenMirrorRequester(
             maxFps = DEFAULT_MAX_FPS,
             videoBitrateBps = DEFAULT_BITRATE_BPS,
         )
-        val requestContext = RequestContext(source, descriptor, codec, ownerToken, connectionMode)
+        val requestContext = RequestContext(source, descriptor, codec, ownerToken, connectionMode, virtualDisplay)
         synchronized(lock) {
             check(active == null) { "another Android screen viewer is already active" }
             active = requestContext
@@ -292,7 +297,8 @@ internal class AndroidScreenMirrorRequester(
                     )
                     val request = ScreenMirrorSync(
                         action = ScreenMirrorAction.REQUEST,
-                        protocolVersion = ScreenSessionProtocol.VERSION,
+                        protocolVersion = if (virtualDisplay == null) 1 else 2,
+                        virtualDisplay = virtualDisplay,
                         sessionId = descriptor.sessionId,
                         requesterPeerId = ownClientId,
                         sourcePeerId = source.clientId,
@@ -422,6 +428,11 @@ internal class AndroidScreenMirrorRequester(
             if (locallyClosed && error !is CancellationException) {
                 throw AndroidScreenRequesterClosedException()
             }
+            if (!locallyClosed && error !is CancellationException) {
+                requestContext.rejectionStatus?.let {
+                    throw AndroidScreenRequestRejectedException(it, requestContext.remoteDetail)
+                }
+            }
             throw error
         } finally {
             if (!transferred) {
@@ -457,6 +468,7 @@ internal class AndroidScreenMirrorRequester(
                 expectedSourceId = context.source.clientId,
                 ownClientId = ownClientId,
                 now = clock.millis(),
+                expectedProtocolVersion = if (context.virtualDisplay == null) 1 else 2,
             )
         ) return
 
@@ -469,6 +481,9 @@ internal class AndroidScreenMirrorRequester(
         } ?: return
         context.remoteDetail = screen.detail?.take(DETAIL_LIMIT)
             ?: terminalStatus.name.lowercase().replace('_', ' ')
+        if (screen.action == ScreenMirrorAction.STATUS && !context.connected.get()) {
+            context.rejectionStatus = terminalStatus
+        }
         context.remoteClosed.set(true)
         synchronized(lock) {
             if (active === context) {
@@ -518,7 +533,7 @@ internal class AndroidScreenMirrorRequester(
         val status = ScreenMirrorStatus.ENDED.takeIf { action == ScreenMirrorAction.END }
         val terminal = ScreenMirrorSync(
             action = action,
-            protocolVersion = ScreenSessionProtocol.VERSION,
+            protocolVersion = if (context.virtualDisplay == null) 1 else 2,
             sessionId = context.descriptor.sessionId,
             requesterPeerId = ownClientId,
             sourcePeerId = context.source.clientId,
@@ -567,6 +582,7 @@ internal class AndroidScreenMirrorRequester(
         val codec: ScreenMirrorCodec,
         val ownerToken: String,
         val connectionMode: AndroidScreenConnectionMode,
+        val virtualDisplay: ScreenVirtualDisplay?,
     ) {
         val requestSent = AtomicBoolean()
         val connected = AtomicBoolean()
@@ -576,6 +592,7 @@ internal class AndroidScreenMirrorRequester(
         val cleanupStarted = AtomicBoolean()
         @Volatile var closeDetail: String? = null
         @Volatile var remoteDetail: String? = null
+        @Volatile var rejectionStatus: ScreenMirrorStatus? = null
         @Volatile var lan: AndroidScreenRequesterLan? = null
         @Volatile var lanListener: LanSessionListener? = null
         @Volatile var awareListener: AndroidWifiAwareScreenListener? = null
@@ -805,11 +822,12 @@ internal object AndroidScreenRequesterStatusPolicy {
         expectedSourceId: ClientId,
         ownClientId: ClientId,
         now: Long,
+        expectedProtocolVersion: Int = ScreenSessionProtocol.VERSION,
     ): Boolean =
         senderOwnDevice &&
             senderId == expectedSourceId &&
             screen.action != ScreenMirrorAction.REQUEST &&
-            screen.protocolVersion == ScreenSessionProtocol.VERSION &&
+            screen.protocolVersion == expectedProtocolVersion &&
             screen.sessionId == expectedSessionId &&
             screen.sourcePeerId == expectedSourceId &&
             screen.requesterPeerId == ownClientId &&
@@ -823,6 +841,11 @@ internal object AndroidScreenRequesterStatusPolicy {
 }
 
 internal class AndroidScreenRequesterClosedException : Exception("Android screen viewer was closed")
+
+internal class AndroidScreenRequestRejectedException(
+    val status: ScreenMirrorStatus,
+    detail: String? = null,
+) : Exception(detail ?: status.name)
 
 private fun ScreenConnectionCandidate.toProtocolCandidate(): ScreenMirrorConnectionCandidate =
     ScreenMirrorConnectionCandidate(kind, host, port, serviceName, interfaceName)

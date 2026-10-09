@@ -501,6 +501,7 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
     private val lastMediaSignature = ConcurrentHashMap<String, MediaSignature>()
 
     override fun onListenerConnected() {
+        virtualDisplayListener.set(this)
         registerVolumeReceiver()
         app.runWhenGraphReady { graph ->
             graph.mirrorEngine?.originalCanceler = this
@@ -517,10 +518,12 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
     }
 
     override fun onListenerDisconnected() {
+        virtualDisplayListener.compareAndSet(this, null)
         cleanupMediaTracking()
     }
 
     override fun onDestroy() {
+        virtualDisplayListener.compareAndSet(this, null)
         cleanupMediaTracking()
         super.onDestroy()
     }
@@ -580,8 +583,17 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
         pendingDismissals.put(sbn.key, job)?.cancel()
     }
 
-    private companion object {
-        const val TAG = "NotiSyncListener"
+    companion object {
+        private val virtualDisplayListener = java.util.concurrent.atomic.AtomicReference<NotiSyncListenerService?>()
+
+        /** Called only after session authorization and display creation. The original intent stays local. */
+        internal fun resolveVirtualDisplayNotification(key: String): NotificationContentTap<PendingIntent>? = runCatching {
+            val listener = virtualDisplayListener.get() ?: return@runCatching null
+            val notification = listener.getActiveNotifications(arrayOf(key))?.firstOrNull() ?: return@runCatching null
+            listener.contentTap(notification)?.takeIf { it.contentIntent.isActivity }
+        }.getOrNull()
+
+        private const val TAG = "NotiSyncListener"
         const val DISMISS_DEBOUNCE_MS = 400L
         const val GROUP_SUMMARY_CHILD_WAIT_MS = 1_000L
 
@@ -768,15 +780,34 @@ class NotiSyncListenerService : NotificationListenerService(), OriginalCanceler,
      * carries the sync instead).
      */
     private fun openOriginal(sbn: StatusBarNotification) {
-        val n = sbn.notification
-        val pi = n.contentIntent ?: return
-        sendAllowingBackgroundStart(pi, fillIn = null)
-        if (n.flags and Notification.FLAG_AUTO_CANCEL == 0) return
+        val tap = contentTap(sbn) ?: return
+        sendAllowingBackgroundStart(tap.contentIntent, fillIn = null)
+        tap.onSent()
+    }
+
+    private fun contentTap(sbn: StatusBarNotification): NotificationContentTap<PendingIntent>? {
+        val pi = sbn.notification.contentIntent ?: return null
+        return NotificationContentTap(
+            snapshot = NotificationTapSnapshot(sbn.postTime, pi, sbn.notification.flags),
+            current = {
+                runCatching {
+                    getActiveNotifications(arrayOf(sbn.key))?.firstOrNull()?.let { current ->
+                        current.notification.contentIntent?.let { intent ->
+                            NotificationTapSnapshot(current.postTime, intent, current.notification.flags)
+                        }
+                    }
+                }.getOrNull()
+            },
+            dismiss = { dismissAfterContentTap(sbn.key) },
+        )
+    }
+
+    private fun dismissAfterContentTap(key: String) {
         val graph = app.graphIfReady ?: return
         val eng = graph.mirrorEngine ?: return
         val clientId = graph.clientId ?: return
-        graph.scope.launch { runCatching { eng.dismissLocal(clientId, sbn.key) } }
-        runCatching { cancelNotification(sbn.key) }
+        graph.scope.launch { runCatching { eng.dismissLocal(clientId, key) } }
+        runCatching { cancelNotification(key) }
     }
 
     private fun performOriginalAction(sbn: StatusBarNotification, event: ActionEvent) {

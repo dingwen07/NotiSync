@@ -4,11 +4,32 @@ import net.extrawdw.notisync.peer.trust.RosterDevice
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.OriginPlatform
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 import net.extrawdw.notisync.protocol.TrustStatus
 import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class MirrorNotificationOpenPolicyTest {
+    @Test
+    fun `previously posted tap upgrades to virtual display when current peer supports it`() {
+        val source = device(capabilities = FULL_CAPABILITIES + Capability.SCREEN_VIRTUAL_DISPLAY_V1)
+        val route = mirrorNotificationOpenRoute(source.clientId, ClientId("this-device"), source)
+        val display = mirrorNotificationVirtualDisplay(true, route, source.capabilities, "source-key")
+        assertEquals(ScreenVirtualDisplay.NOTIFICATION, display?.launchKind)
+        assertEquals("source-key", display?.notificationKey)
+    }
+
+    @Test
+    fun `independent tap requires content tap current trust capability and a valid key`() {
+        val capabilities = FULL_CAPABILITIES + Capability.SCREEN_VIRTUAL_DISPLAY_V1
+        assertEquals(null, mirrorNotificationVirtualDisplay(false, MirrorNotificationOpenRoute.SCREEN_MIRROR, capabilities, "key"))
+        assertEquals(null, mirrorNotificationVirtualDisplay(true, MirrorNotificationOpenRoute.SCREEN_MIRROR, FULL_CAPABILITIES, "key"))
+        assertEquals(null, mirrorNotificationVirtualDisplay(true, MirrorNotificationOpenRoute.SCREEN_MIRROR, capabilities, ""))
+        for (route in listOf(null, MirrorNotificationOpenRoute.LOCAL_ORIGIN, MirrorNotificationOpenRoute.REMOTE_ONLY)) {
+            assertEquals(null, mirrorNotificationVirtualDisplay(true, route, capabilities, "key"))
+        }
+    }
+
     @Test
     fun `only a notification content tap opens screen sharing`() {
         assertEquals(

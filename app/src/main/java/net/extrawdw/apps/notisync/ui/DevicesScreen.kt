@@ -36,6 +36,7 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -76,6 +77,7 @@ import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.FilterSync
 import net.extrawdw.notisync.protocol.NotificationFilterRule
 import net.extrawdw.notisync.protocol.OriginPlatform
@@ -177,6 +179,8 @@ fun DevicesScreen(
     val deviceName by graph.settings.deviceName.collectAsStateWithLifecycle()
     val screenMirroringEnabled by graph.settings.screenMirroringEnabled.collectAsStateWithLifecycle()
     val screenAuthorizedPeers by graph.screenMirrorAuthorizations.authorizedPeerIds.collectAsStateWithLifecycle()
+    val virtualDisplayPeers by graph.screenMirrorAuthorizations.virtualDisplayPeerIds.collectAsStateWithLifecycle()
+    val virtualDisplaySupported by graph.screenMirrorShizuku.virtualDisplaySupported.collectAsStateWithLifecycle()
     val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
     val notificationForwarding by graph.notificationForwarding.preferences.collectAsStateWithLifecycle()
     val ownDevices = roster.filter { it.ownDevice }
@@ -245,6 +249,21 @@ fun DevicesScreen(
                         device = device,
                         nowMillis = now,
                         screenMirroringEnabled = screenMirroringEnabled,
+                        virtualDisplayAuthorized = device.clientId.value in virtualDisplayPeers,
+                        virtualDisplayAvailable = virtualDisplaySupported,
+                        onVirtualDisplayAuthorizedChange = rememberVirtualDisplayAuthorizationChange(
+                            peerId = device.clientId,
+                            peerName = device.displayName ?: device.clientId.shortForm(),
+                            authorizations = graph.screenMirrorAuthorizations,
+                            isEligible = {
+                                !graph.trust.quarantined.value && graph.settings.screenMirroringEnabled.value &&
+                                    graph.screenMirrorShizuku.virtualDisplaySupported.value &&
+                                    graph.trust.roster.value.any {
+                                        it.clientId == device.clientId && it.ownDevice && it.verified &&
+                                            it.status == TrustStatus.TRUSTED
+                                    }
+                            },
+                        ),
                         screenControlAuthorized = device.clientId.value in screenAuthorizedPeers,
                         screenMirrorRequestEnabled = !quarantined,
                         trustActionsEnabled = !quarantined,
@@ -650,14 +669,22 @@ private fun DeviceRow(
                 // FILTER) — what this device won't forward to that peer. Removal lives in device details.
                 TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (device.supportsScreenMirrorRequest()) {
-                        IconButton(onClick = onStartScreenMirror, enabled = enabled) {
-                            Icon(
-                                ScreenShareIcon,
-                                contentDescription = stringResource(
-                                    R.string.screen_mirror_device_start_desc,
-                                    name,
-                                ),
+                        if (Capability.SCREEN_VIRTUAL_DISPLAY_V1 in device.capabilities) {
+                            ScreenVirtualDisplayButton(
+                                sourceId = device.clientId,
+                                enabled = enabled,
+                                colors = IconButtonDefaults.iconButtonColors(),
                             )
+                        } else {
+                            IconButton(onClick = onStartScreenMirror, enabled = enabled) {
+                                Icon(
+                                    ScreenShareIcon,
+                                    contentDescription = stringResource(
+                                        R.string.screen_mirror_device_start_desc,
+                                        name,
+                                    ),
+                                )
+                            }
                         }
                     }
                     // Only own devices send filters; disabled when this device is hiding nothing from them.

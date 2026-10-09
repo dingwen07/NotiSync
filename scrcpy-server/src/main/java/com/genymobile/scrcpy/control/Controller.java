@@ -30,7 +30,7 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>Only direct input, primary-display power control, session-local video flow control, and text
  * clipboard synchronization are compiled into the privileged process. Generic scrcpy actions
- * (UHID, app launch, settings-panel/collapse actions, display mutation, camera, file scan, and
+ * (UHID, app launch, settings-panel/collapse actions, arbitrary display mutation, camera, file scan, and
  * arbitrary commands) have no handler here. Notification-panel expansion is the sole bounded panel
  * action.</p>
  */
@@ -50,9 +50,12 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     }
 
     private final int displayId;
+    private final boolean virtualDisplay;
+    private final android.app.PendingIntent launcherIntent;
     private final boolean supportsInputEvents;
     private final ControlChannel controlChannel;
     private final CaptureControl captureControl;
+    private com.genymobile.scrcpy.video.NewDisplayCapture virtualDisplayCapture;
     private final DeviceMessageSender sender;
     private final ClipboardManager clipboardManager;
     private final android.content.ClipboardManager.OnPrimaryClipChangedListener clipboardListener;
@@ -70,9 +73,15 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     private Thread thread;
 
     public Controller(ControlChannel controlChannel, Options options, CaptureControl captureControl) {
+        this(controlChannel, options, captureControl, null);
+    }
+
+    public Controller(ControlChannel controlChannel, Options options, CaptureControl captureControl, android.app.PendingIntent launcherIntent) {
         this.controlChannel = controlChannel;
         this.captureControl = captureControl;
         this.displayId = options.getDisplayId();
+        this.virtualDisplay = options.isVirtualDisplay();
+        this.launcherIntent = launcherIntent;
         this.supportsInputEvents = Device.supportsInputEvents(displayId);
         initPointers();
 
@@ -216,6 +225,11 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
         }
     }
 
+    /** Bound before starting the control loop; never accepts a caller-selected display. */
+    public void setVirtualDisplayCapture(com.genymobile.scrcpy.video.NewDisplayCapture capture) {
+        virtualDisplayCapture = capture;
+    }
+
     private boolean handleEvent() throws IOException {
         final ControlMessage msg;
         try {
@@ -226,6 +240,18 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
         }
 
         switch (msg.getType()) {
+            case ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY:
+                if (virtualDisplayCapture != null) {
+                    virtualDisplayCapture.requestResize(msg.getDisplayWidth(), msg.getDisplayHeight(), msg.getDisplayDensityDpi());
+                }
+                return true;
+            case ControlMessage.TYPE_OPEN_LAUNCHER:
+                int targetDisplayId = getActionDisplayId();
+                if (!virtualDisplay || launcherIntent == null || targetDisplayId <= 0) return true;
+                if (!ServiceManager.getPowerManager().wakeVirtualDisplay(targetDisplayId)) return true;
+                try { com.genymobile.scrcpy.wrappers.DisplayActivityLauncher.launchLauncher(launcherIntent, targetDisplayId); }
+                catch (Exception error) { Ln.w("Could not open the virtual display launcher", error); }
+                return true;
             case ControlMessage.TYPE_INJECT_KEYCODE:
                 if (supportsInputEvents) {
                     injectKeyEvent(msg.getAction(), msg.getKeycode(), msg.getRepeat(), msg.getMetaState(), Device.INJECT_MODE_ASYNC);
@@ -252,11 +278,13 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
                 }
                 return true;
             case ControlMessage.TYPE_TOGGLE_POWER:
+                if (virtualDisplay) return true;
                 if (!Device.togglePrimaryDisplayPower()) {
                     Ln.w("Could not toggle primary display power");
                 }
                 return true;
             case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
+                if (virtualDisplay) return true;
                 if (!ServiceManager.getStatusBarManager().expandNotificationsPanel()) {
                     Ln.w("Could not expand notification panel");
                 }
@@ -286,6 +314,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     }
 
     private void injectText(String text) {
+        if (virtualDisplay && !ServiceManager.getPowerManager().wakeVirtualDisplay(getActionDisplayId())) return;
         for (char c : text.toCharArray()) {
             String decomposed = KeyComposition.decompose(c);
             char[] chars = decomposed != null ? decomposed.toCharArray() : new char[]{c};
@@ -340,13 +369,13 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             return true;
         }
 
-        long now = SystemClock.uptimeMillis();
         int pointerIndex;
         if (action == MotionEvent.ACTION_DOWN) {
             if (pointersState.getActivePointerIndex(pointerId) != -1) {
                 // A pointer lifecycle must begin exactly once.
                 return false;
             }
+            if (virtualDisplay && !ServiceManager.getPowerManager().wakeVirtualDisplay(pair.second)) return false;
             pointerIndex = pointersState.getOrCreatePointerIndex(pointerId);
         } else {
             // Never synthesize a pointer from a delayed MOVE/UP received after a global cancel.
@@ -358,6 +387,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
                     : "Ignoring orphan touch event without a fresh down");
             return false;
         }
+        long now = SystemClock.uptimeMillis();
         Pointer pointer = pointersState.get(pointerIndex);
         pointer.setPoint(pair.first);
         pointer.setPressure(pressure);
@@ -435,6 +465,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
         if (pair == null) {
             return false;
         }
+        if (virtualDisplay && !ServiceManager.getPowerManager().wakeVirtualDisplay(pair.second)) return false;
         long now = SystemClock.uptimeMillis();
         MotionEvent.PointerProperties props = pointerProperties[0];
         props.id = 0;
@@ -454,6 +485,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     }
 
     private boolean pressBackOrTurnScreenOn(int action) {
+        if (virtualDisplay) return injectKeyEvent(action, KeyEvent.KEYCODE_BACK, 0, 0, Device.INJECT_MODE_ASYNC);
         int actionDisplayId = getActionDisplayId();
         boolean screenOn = actionDisplayId == Device.DISPLAY_ID_NONE || Device.isScreenOn(actionDisplayId);
         if (screenOn) {
@@ -484,7 +516,24 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     }
 
     private boolean injectKeyEvent(int action, int keyCode, int repeat, int metaState, int injectMode) {
+        if (virtualDisplay && (keyCode == KeyEvent.KEYCODE_POWER || keyCode == KeyEvent.KEYCODE_SLEEP
+                || keyCode == KeyEvent.KEYCODE_WAKEUP || keyCode == KeyEvent.KEYCODE_SOFT_SLEEP)) return false;
         int actionDisplayId = getActionDisplayId();
+        if (virtualDisplay && action == KeyEvent.ACTION_DOWN
+                && !ServiceManager.getPowerManager().wakeVirtualDisplay(actionDisplayId)) return false;
+        if (virtualDisplay && keyCode == KeyEvent.KEYCODE_HOME) {
+            if (actionDisplayId <= 0) return false;
+            // Android's HOME-key policy can wake the physical power group and then refuse HOME
+            // because the phone is locked. Launch the authorized display's secondary Home directly.
+            if (action != KeyEvent.ACTION_UP) return true;
+            try {
+                com.genymobile.scrcpy.wrappers.DisplayActivityLauncher.launch(null, actionDisplayId);
+                return true;
+            } catch (Exception error) {
+                Ln.w("Could not open secondary Home", error);
+                return false;
+            }
+        }
         return actionDisplayId != Device.DISPLAY_ID_NONE
                 && Device.injectKeyEvent(action, keyCode, repeat, metaState, actionDisplayId, injectMode);
     }

@@ -2,6 +2,8 @@ package com.genymobile.scrcpy.wrappers;
 
 import com.genymobile.scrcpy.display.DisplayInfo;
 import com.genymobile.scrcpy.model.Size;
+import com.genymobile.scrcpy.FakeContext;
+import android.content.Context;
 
 import android.annotation.SuppressLint;
 import android.hardware.display.VirtualDisplay;
@@ -55,6 +57,12 @@ public final class DisplayManager {
         }
     }
 
+    /** Read the assigned group; requesting OWN_DISPLAY_GROUP does not prove the ROM honored it. */
+    public int getDisplayGroupId(int displayId) throws ReflectiveOperationException {
+        Object info = getGetDisplayInfoMethod().invoke(manager, displayId);
+        return info == null ? -1 : info.getClass().getField("displayGroupId").getInt(info);
+    }
+
     /**
      * Hidden framework entry point used by scrcpy 4.1 to mirror an existing display. This is not
      * NotiSync's out-of-scope "new display" mode: {@code displayIdToMirror} is always the primary
@@ -84,6 +92,14 @@ public final class DisplayManager {
                 displayIdToMirror,
                 surface
         );
+    }
+
+    /** Pinned scrcpy 4.1 shell-context creation, without its generic option/command surface. */
+    public VirtualDisplay createNewDisplay(String name, int width, int height, int dpi, Surface surface, int flags) throws Exception {
+        java.lang.reflect.Constructor<android.hardware.display.DisplayManager> ctor =
+                android.hardware.display.DisplayManager.class.getDeclaredConstructor(Context.class);
+        ctor.setAccessible(true);
+        return ctor.newInstance(FakeContext.get()).createVirtualDisplay(name, width, height, dpi, surface, flags);
     }
 
 }

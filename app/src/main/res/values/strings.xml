@@ -1109,4 +1109,21 @@
     <string name="run_revision_item">Revision %1$d</string>
     <string name="run_revision_received">Received %1$s</string>
     <string name="run_revision_current">Latest</string>
+    <string name="screen_virtual_title">Virtual Display</string>
+    <string name="screen_virtual_configure">Configure Virtual Display</string>
+    <string name="screen_virtual_allow_title">Allow virtual display access</string>
+    <string name="screen_virtual_allow_body">Allow this device to open and control apps on a virtual display, including while this phone is locked or its screen is off. Apps may move existing tasks.</string>
+    <string name="screen_virtual_unavailable">Virtual display is unavailable. Enable screen sharing and connect Shizuku in ADB mode on a compatible device.</string>
+    <string name="screen_virtual_launch_body">Open apps on a virtual display. This device must have virtual display access on the source phone.</string>
+    <string name="screen_virtual_density">Density in DPI (120–640)</string>
+    <string name="screen_virtual_density_auto">%1$d</string>
+    <string name="screen_virtual_launcher">Launcher</string>
+    <string name="screen_virtual_launcher_search">Search apps</string>
+    <string name="screen_virtual_launcher_clear">Clear search</string>
+    <string name="screen_virtual_launcher_empty">No matching apps</string>
+    <string name="screen_virtual_launcher_open_failed">Could not open this app on the virtual display</string>
+    <string name="screen_virtual_toolbar_controls">Virtual display controls</string>
+    <string name="screen_virtual_auth_title">Allow virtual display access</string>
+    <string name="screen_virtual_auth_subtitle">Authenticate to allow %1$s to open apps even while this phone is locked.</string>
+    <string name="screen_virtual_auth_unavailable">Set up a screen lock to permit virtual display access. Use a strong biometric or your device PIN, pattern, or password to authenticate.</string>
 </resources>

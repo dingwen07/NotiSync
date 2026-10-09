@@ -7,6 +7,8 @@ import android.system.Os
 import android.util.Log
 import androidx.annotation.Keep
 import com.genymobile.scrcpy.NotiSyncCaptureBackend
+import com.genymobile.scrcpy.VirtualDisplayConfig
+import android.os.Binder
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
@@ -21,6 +23,7 @@ data class PrivilegedCaptureConfig(
     val bitrateBps: Int,
     val allowControl: Boolean,
     val allowClipboard: Boolean,
+    val virtualDisplay: VirtualDisplayConfig? = null,
 )
 
 /**
@@ -65,6 +68,7 @@ private class ScrcpyCaptureBackend : PrivilegedCaptureBackend {
             config.allowClipboard,
             videoWriteFd,
             controlFd,
+            config.virtualDisplay,
         )
         if (result != NotiSyncCaptureBackend.STARTED) {
             // Upstream closes most rejected descriptors itself; BUSY deliberately returns early, so the
@@ -149,8 +153,37 @@ class ScreenMirrorUserService() : IScreenMirrorUserService.Stub() {
         if (destroyLifecycle.isDestroyed || Os.getuid() != Process.SHELL_UID) {
             0
         } else {
-            backend.get().probeCapabilities()
+            val identity = Binder.clearCallingIdentity()
+            try { backend.get().probeCapabilities() } finally { Binder.restoreCallingIdentity(identity) }
         }
+
+    override fun startVirtualSession(
+        ownerToken: String, codecId: Int, maxDimension: Int, maxFps: Int, bitrateBps: Int,
+        allowControl: Boolean, allowClipboard: Boolean, width: Int, height: Int, densityDpi: Int,
+        launchPackage: String?, notificationResolver: IScreenNotificationResolver?, launcherIntent: android.app.PendingIntent?,
+        videoWriteFd: ParcelFileDescriptor, controlFd: ParcelFileDescriptor,
+    ): Int {
+        if (destroyLifecycle.isDestroyed || Os.getuid() != Process.SHELL_UID || !validOwnerToken(ownerToken)) {
+            videoWriteFd.closeQuietly()
+            controlFd.closeQuietly()
+            return ScreenMirrorBackendStatus.BACKEND_UNAVAILABLE
+        }
+        return runCatching {
+            val display = VirtualDisplayConfig(width, height, densityDpi, launchPackage,
+                notificationResolver?.let { resolver -> object : VirtualDisplayConfig.NotificationResolver {
+                    override fun resolve(): android.app.PendingIntent? = resolver.resolve(ownerToken)
+                    override fun onSent() = resolver.onSent(ownerToken)
+                } }, launcherIntent)
+            backend.get().start(
+                PrivilegedCaptureConfig(ownerToken, codecId, maxDimension, maxFps, bitrateBps, allowControl, allowClipboard, display),
+                videoWriteFd, controlFd,
+            )
+        }.getOrElse {
+            videoWriteFd.closeQuietly()
+            controlFd.closeQuietly()
+            ScreenMirrorBackendStatus.START_FAILED
+        }
+    }
 
     override fun startSession(
         ownerToken: String,
@@ -249,6 +282,7 @@ object ScreenMirrorCodecBits {
 object ScreenMirrorProbeBits {
     const val DISPLAY_CAPTURE = 1
     const val INPUT_INJECTION = 1 shl 1
+    const val VIRTUAL_DISPLAY = 1 shl 2
     const val REQUIRED = DISPLAY_CAPTURE or INPUT_INJECTION
 }
 

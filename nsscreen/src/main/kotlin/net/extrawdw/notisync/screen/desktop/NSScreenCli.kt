@@ -2,6 +2,7 @@ package net.extrawdw.notisync.screen.desktop
 
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
 import net.extrawdw.notisync.protocol.ScreenMirrorQualityLimits
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 
 internal sealed interface ScreenInvocation {
     data object Devices : ScreenInvocation
@@ -17,6 +18,7 @@ internal data class ConnectOptions(
     val bitrateBps: Int = 8_000_000,
     val control: Boolean = true,
     val clipboard: Boolean = true,
+    val virtualDisplay: ScreenVirtualDisplay? = null,
 )
 
 internal object NSScreenCli {
@@ -40,9 +42,22 @@ internal object NSScreenCli {
         var bitrate = 8_000_000
         var control = true
         var clipboard = true
+        var display: ScreenVirtualDisplay? = null
+        var launchPackage: String? = null
+        var notificationKey: String? = null
         var index = 0
         while (index < arguments.size) {
             when (val argument = arguments[index]) {
+                "--new-display" -> {
+                    val parts = arguments.valueAfter(index, argument).split('x', '/')
+                    if (parts.size != 3) throw ScreenCliException("--new-display requires WIDTHxHEIGHT/DPI")
+                    display = ScreenVirtualDisplay(
+                        parts[0].toIntOrNull() ?: 0, parts[1].toIntOrNull() ?: 0, parts[2].toIntOrNull() ?: 0,
+                    )
+                    index += 2
+                }
+                "--start-app" -> { launchPackage = arguments.valueAfter(index, argument); index += 2 }
+                "--notification" -> { notificationKey = arguments.valueAfter(index, argument); index += 2 }
                 "--codec" -> {
                     codec = when (val value = arguments.valueAfter(index, argument).lowercase()) {
                         "h264" -> ScreenMirrorCodec.H264
@@ -99,7 +114,17 @@ internal object NSScreenCli {
         if (!control && clipboard) {
             throw ScreenCliException("clipboard requires the control channel; add --no-clipboard")
         }
-        return ConnectOptions(deviceId, codec, maxDimension, maxFps, bitrate, control, clipboard)
+        if (launchPackage != null && notificationKey != null) throw ScreenCliException("Choose --start-app or --notification")
+        if (display == null && (launchPackage != null || notificationKey != null)) {
+            throw ScreenCliException("App and notification launch require --new-display")
+        }
+        display = display?.copy(
+            launchKind = when { launchPackage != null -> ScreenVirtualDisplay.APP
+                notificationKey != null -> ScreenVirtualDisplay.NOTIFICATION; else -> ScreenVirtualDisplay.HOME },
+            packageName = launchPackage, notificationKey = notificationKey,
+        )
+        if (display?.isValid() == false) throw ScreenCliException("Invalid display: dimensions 240..4096, at most 8388608 pixels, DPI 120..640, and a valid launch target required")
+        return ConnectOptions(deviceId, codec, maxDimension, maxFps, bitrate, control, clipboard, display)
     }
 
     fun usage(): String = """
@@ -114,6 +139,9 @@ internal object NSScreenCli {
           --bitrate BPS          Video bitrate in bits/second (default: 8000000)
           --no-control           View only
           --no-clipboard         Disable text clipboard synchronization
+          --new-display WxH/DPI  Virtual display (requires a separate local grant on the phone)
+          --start-app PACKAGE    Open an app on the new display (default: secondary Home)
+          --notification KEY     Open an active notification activity on the new display
     """.trimIndent()
 
     private fun List<String>.valueAfter(index: Int, option: String): String =

@@ -17,6 +17,29 @@ import org.junit.Test
 
 class ScreenViewerToolbarPreferenceStoreTest {
     @Test
+    fun `virtual controls have independent defaults visibility order and edge`() = runBlocking {
+        val dataStore = dataStore("toolbar-separate-modes")
+        val physical = ScreenViewerToolbarPreferenceStore(dataStore)
+        val virtual = ScreenViewerToolbarPreferenceStore(dataStore, virtualDisplay = true)
+        assertTrue(ScreenViewerControl.LAUNCHER in virtual.preferences.value.pinnedControls)
+        assertFalse(ScreenViewerControl.LAUNCHER in physical.preferences.value.controlOrder)
+        assertFalse(ScreenViewerControl.POWER in virtual.preferences.value.controlOrder)
+        assertFalse(ScreenViewerControl.NOTIFICATION_PANEL in virtual.preferences.value.controlOrder)
+        virtual.setEdge(ScreenViewerToolbarEdge.BOTTOM)
+        virtual.setControlPinned(ScreenViewerControl.HOME, false)
+        virtual.setControlOrder(listOf(ScreenViewerControl.LAUNCHER, ScreenViewerControl.BACK))
+        physical.setControlPinned(ScreenViewerControl.POWER, true)
+        physical.setControlPinned(ScreenViewerControl.LAUNCHER, true)
+        val reloaded = ScreenViewerToolbarPreferenceStore(dataStore, virtualDisplay = true).preferences.value
+        assertEquals(ScreenViewerToolbarEdge.BOTTOM, reloaded.edge)
+        assertEquals(ScreenViewerControl.LAUNCHER, reloaded.controlOrder.first())
+        assertFalse(ScreenViewerControl.HOME in reloaded.pinnedControls)
+        assertEquals(ScreenViewerToolbarEdge.TOP, physical.preferences.value.edge)
+        assertTrue(ScreenViewerControl.HOME in physical.preferences.value.pinnedControls)
+        assertFalse(ScreenViewerControl.LAUNCHER in physical.preferences.value.pinnedControls)
+    }
+
+    @Test
     fun `defaults to the top edge with navigation controls visible`() {
         val preferences = ScreenViewerToolbarPreferenceStore(dataStore("toolbar-defaults")).preferences.value
 

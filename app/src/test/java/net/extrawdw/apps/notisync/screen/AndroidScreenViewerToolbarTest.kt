@@ -17,6 +17,7 @@ class AndroidScreenViewerToolbarTest {
         assertEquals(3, screenViewerDirectControlSlots(360f))
         assertEquals(4, screenViewerDirectControlSlots(425f))
         assertEquals(6, screenViewerDirectControlSlots(600f))
+        assertEquals(5, screenViewerDirectControlSlots(600f, virtualDisplay = true))
     }
 
     @Test

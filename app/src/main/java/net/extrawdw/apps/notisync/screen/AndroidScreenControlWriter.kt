@@ -81,6 +81,15 @@ internal class AndroidScreenControlWriter(
         writeFrames(byteArrayOf(TYPE_EXPAND_NOTIFICATION_PANEL.toByte()))
     }
 
+    fun openLauncher() { writeFrames(byteArrayOf(TYPE_OPEN_LAUNCHER.toByte())) }
+
+    fun resizeVirtualDisplay(width: Int, height: Int, densityDpi: Int) {
+        require(com.genymobile.scrcpy.VirtualDisplayConfig.isValidSize(width, height, densityDpi))
+        writeFrames(ByteBuffer.allocate(7).order(ByteOrder.BIG_ENDIAN)
+            .put(TYPE_RESIZE_VIRTUAL_DISPLAY.toByte())
+            .putShort(width.toShort()).putShort(height.toShort()).putShort(densityDpi.toShort()).array())
+    }
+
     /** Pause/resume source video production without closing either authenticated channel. */
     @Throws(IOException::class)
     fun setVideoVisible(visible: Boolean) {
@@ -160,6 +169,8 @@ internal class AndroidScreenControlWriter(
         private const val TYPE_TOGGLE_POWER = 64
         private const val TYPE_SET_VIDEO_VISIBILITY = 65
         private const val TYPE_EXPAND_NOTIFICATION_PANEL = 66
+        private const val TYPE_OPEN_LAUNCHER = 67
+        private const val TYPE_RESIZE_VIRTUAL_DISPLAY = 68
         private const val VIDEO_HIDDEN: Byte = 0
         private const val VIDEO_VISIBLE: Byte = 1
         private const val KEY_FRAME_BYTES = 14
@@ -222,8 +233,16 @@ internal class AndroidScreenControlDispatcher(
             override fun write(writer: AndroidScreenControlWriter) = writer.expandNotificationPanel()
         }
 
+        data object Launcher : Command {
+            override fun write(writer: AndroidScreenControlWriter) = writer.openLauncher()
+        }
+
         data class VideoVisibility(val visible: Boolean) : Command {
             override fun write(writer: AndroidScreenControlWriter) = writer.setVideoVisible(visible)
+        }
+
+        data class Resize(val width: Int, val height: Int, val densityDpi: Int) : Command {
+            override fun write(writer: AndroidScreenControlWriter) = writer.resizeVirtualDisplay(width, height, densityDpi)
         }
 
         data class Touches(val touches: List<AndroidScreenTouch>) : Command {
@@ -268,6 +287,12 @@ internal class AndroidScreenControlDispatcher(
     fun togglePower(): Boolean = enqueue(Command.Power)
 
     fun expandNotificationPanel(): Boolean = enqueue(Command.ExpandNotificationPanel)
+    fun openLauncher(): Boolean = enqueue(Command.Launcher)
+
+    fun resizeVirtualDisplay(width: Int, height: Int, densityDpi: Int): Boolean {
+        if (!com.genymobile.scrcpy.VirtualDisplayConfig.isValidSize(width, height, densityDpi)) return false
+        return enqueue(Command.Resize(width, height, densityDpi))
+    }
 
     fun setVideoVisible(visible: Boolean): Boolean = enqueue(Command.VideoVisibility(visible))
 
@@ -284,6 +309,11 @@ internal class AndroidScreenControlDispatcher(
                 queue.removeAll { it.coalescibleMove }
             }
             if (command.coalescibleMove && queue.peekLast()?.coalescibleMove == true) {
+                queue.removeLast()
+                queue.addLast(command)
+                return true
+            }
+            if (command is Command.Resize && queue.peekLast() is Command.Resize) {
                 queue.removeLast()
                 queue.addLast(command)
                 return true

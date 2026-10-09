@@ -1049,4 +1049,21 @@
     <string name="run_revision_item">修訂版本 %1$d</string>
     <string name="run_revision_received">接收時間：%1$s</string>
     <string name="run_revision_current">最新</string>
+    <string name="screen_virtual_title">虛擬顯示器</string>
+    <string name="screen_virtual_configure">設定虛擬顯示器</string>
+    <string name="screen_virtual_allow_title">允許存取虛擬顯示器</string>
+    <string name="screen_virtual_allow_body">允許此裝置在虛擬顯示器上開啟和控制應用程式，包括本機鎖定或螢幕關閉時。應用程式可能會移動現有工作。</string>
+    <string name="screen_virtual_unavailable">虛擬顯示器無法使用。請在相容裝置上啟用螢幕分享，並以 ADB 模式連接 Shizuku。</string>
+    <string name="screen_virtual_launch_body">在虛擬顯示器上開啟應用程式。來源手機必須允許此裝置存取虛擬顯示器。</string>
+    <string name="screen_virtual_density">密度（120–640 DPI）</string>
+    <string name="screen_virtual_density_auto">%1$d</string>
+    <string name="screen_virtual_launcher">啟動器</string>
+    <string name="screen_virtual_launcher_search">搜尋應用程式</string>
+    <string name="screen_virtual_launcher_clear">清除搜尋</string>
+    <string name="screen_virtual_launcher_empty">沒有相符的應用程式</string>
+    <string name="screen_virtual_launcher_open_failed">無法在虛擬顯示器上開啟此應用程式</string>
+    <string name="screen_virtual_toolbar_controls">虛擬顯示器控制項</string>
+    <string name="screen_virtual_auth_title">允許虛擬顯示器存取</string>
+    <string name="screen_virtual_auth_subtitle">請驗證身分，以允許 %1$s 在本機鎖定時也能開啟應用程式。</string>
+    <string name="screen_virtual_auth_unavailable">請設定螢幕鎖定後再允許虛擬顯示器存取。使用強式生物辨識或裝置 PIN 碼、圖案或密碼驗證身分。</string>
 </resources>

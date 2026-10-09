@@ -22,6 +22,7 @@ import net.extrawdw.apps.notisync.NotiSyncApp
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.analytics.crashGuard
 import net.extrawdw.notisync.protocol.ClientId
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 
 /**
  * Requester-side owner of one authenticated Android screen session.
@@ -41,6 +42,8 @@ class ScreenMirrorRequesterForegroundService : Service() {
     private val ownership = ScreenMirrorRequesterForegroundOwnership()
     private var stateJob: Job? = null
     private var activeAttemptId: String? = null
+    private var activeVirtualDisplay: ScreenVirtualDisplay? = null
+    private var activeCustomDensity = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -81,6 +84,13 @@ class ScreenMirrorRequesterForegroundService : Service() {
         } else {
             AndroidScreenConnectionMode.DIRECT
         }
+        val requestedDisplay = try {
+            ScreenVirtualDisplayIntents.read(intent)
+        } catch (_: IllegalArgumentException) {
+            // Malformed virtual-display requests must never turn into physical mirroring.
+            if (ownership.noteCommand(startId) == null) stopSelf(startId)
+            return START_NOT_STICKY
+        }
 
         val startDecision = ownership.onStart(
             sourceId = rawSourceId,
@@ -90,7 +100,9 @@ class ScreenMirrorRequesterForegroundService : Service() {
         val leaseId = startDecision.leaseId
         when (startDecision) {
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Duplicate -> {
-                if (connectionMode == AndroidScreenConnectionMode.DIRECT) return START_NOT_STICKY
+                if (connectionMode == AndroidScreenConnectionMode.DIRECT &&
+                    requestedDisplay == activeVirtualDisplay && ScreenVirtualDisplayIntents.hasCustomDensity(intent) == activeCustomDensity
+                ) return START_NOT_STICKY
                 stateJob?.cancel()
             }
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Transferred -> {
@@ -112,6 +124,9 @@ class ScreenMirrorRequesterForegroundService : Service() {
             }
             is ScreenMirrorRequesterForegroundOwnership.StartDecision.Acquired -> Unit
         }
+        // Keep the reopen intent correct even before host.start() publishes its first state.
+        activeVirtualDisplay = requestedDisplay
+        activeCustomDensity = requestedDisplay != null && ScreenVirtualDisplayIntents.hasCustomDensity(intent)
 
         val foregroundStarted = runCatching {
             ServiceCompat.startForeground(
@@ -144,7 +159,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
                 finishOwned(rawSourceId, leaseId)
                 return@launch
             }
-            val attemptId = runCatching { host.start(ClientId(rawSourceId), connectionMode) }
+            val attemptId = runCatching { host.start(ClientId(rawSourceId), connectionMode, requestedDisplay) }
                 .onFailure { Log.e(TAG, "Could not start requester screen session", it) }
                 .getOrElse {
                     finishOwned(rawSourceId, leaseId)
@@ -198,6 +213,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
         val abandoned = ownership.abandon()
         val attemptId = activeAttemptId
         activeAttemptId = null
+        activeVirtualDisplay = null
         if (abandoned != null && attemptId != null) {
             (application as? NotiSyncApp)?.graphIfReady?.screenMirrorRequesterHost
                 ?.stopIfAttempt(attemptId, "requester foreground service stopped")
@@ -215,6 +231,7 @@ class ScreenMirrorRequesterForegroundService : Service() {
         val finished = ownership.finish(sourceId, leaseId) ?: return
         val attemptId = activeAttemptId
         activeAttemptId = null
+        activeVirtualDisplay = null
         if (attemptId != null) {
             (application as? NotiSyncApp)?.graphIfReady?.screenMirrorRequesterHost
                 ?.stopIfAttempt(attemptId)
@@ -259,7 +276,9 @@ class ScreenMirrorRequesterForegroundService : Service() {
         val openIntent = PendingIntent.getActivity(
             this,
             ("requester-open:$sourceId").hashCode(),
-            AndroidScreenMirrorActivity.intent(this, ClientId(sourceId)),
+            ScreenVirtualDisplayIntents.setCustomDensity(
+                AndroidScreenMirrorActivity.intent(this, ClientId(sourceId), activeVirtualDisplay), activeCustomDensity,
+            ),
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val body = when {
@@ -301,6 +320,8 @@ class ScreenMirrorRequesterForegroundService : Service() {
             sourceName: String,
             leaseId: String,
             connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+            virtualDisplay: net.extrawdw.notisync.protocol.ScreenVirtualDisplay? = null,
+            customDensity: Boolean = false,
         ): Boolean = runCatching {
             require(leaseId.isNotBlank() && leaseId.length <= MAX_LEASE_ID_LENGTH) {
                 "invalid requester foreground lease id"
@@ -309,6 +330,8 @@ class ScreenMirrorRequesterForegroundService : Service() {
                 context,
                 Intent(context, ScreenMirrorRequesterForegroundService::class.java).apply {
                     action = ACTION_START
+                    ScreenVirtualDisplayIntents.put(this, virtualDisplay)
+                    ScreenVirtualDisplayIntents.setCustomDensity(this, virtualDisplay != null && customDensity)
                     putExtra(EXTRA_SOURCE_ID, sourceId.value)
                     putExtra(EXTRA_SOURCE_NAME, sourceName)
                     putExtra(EXTRA_LEASE_ID, leaseId)

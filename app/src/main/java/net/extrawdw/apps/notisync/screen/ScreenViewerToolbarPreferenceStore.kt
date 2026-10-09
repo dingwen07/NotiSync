@@ -26,18 +26,30 @@ internal enum class ScreenViewerControl {
     KEYBOARD,
     POWER,
     NOTIFICATION_PANEL,
+    LAUNCHER,
 }
+
+internal fun screenViewerAvailableControls(virtualDisplay: Boolean = false): List<ScreenViewerControl> =
+    if (virtualDisplay) listOf(ScreenViewerControl.BACK, ScreenViewerControl.HOME, ScreenViewerControl.LAUNCHER,
+        ScreenViewerControl.RECENTS, ScreenViewerControl.KEYBOARD)
+    else ScreenViewerControl.entries.filter { it != ScreenViewerControl.LAUNCHER }
 
 internal data class ScreenViewerToolbarPreferences(
     val edge: ScreenViewerToolbarEdge = ScreenViewerToolbarEdge.TOP,
     val pinnedControls: Set<ScreenViewerControl> = defaultPinnedControls(),
-    val controlOrder: List<ScreenViewerControl> = ScreenViewerControl.entries,
+    val controlOrder: List<ScreenViewerControl> = screenViewerAvailableControls(),
 )
 
 /** Durable viewer chrome preferences shared by every Android-to-Android screen session. */
 internal class ScreenViewerToolbarPreferenceStore(
     private val store: DataStore<Preferences>,
+    private val virtualDisplay: Boolean = false,
 ) {
+    private val availableControls = screenViewerAvailableControls(virtualDisplay)
+    private val prefix = if (virtualDisplay) "screen_virtual_viewer_toolbar" else "screen_viewer_toolbar"
+    private val edgeKey = stringPreferencesKey("${prefix}_edge_v1")
+    private val controlsKey = stringSetPreferencesKey("${prefix}_controls_v1")
+    private val orderKey = stringPreferencesKey("${prefix}_order_v1")
     private val mutex = Mutex()
     private val _preferences = MutableStateFlow(load())
     val preferences: StateFlow<ScreenViewerToolbarPreferences> = _preferences.asStateFlow()
@@ -62,39 +74,45 @@ internal class ScreenViewerToolbarPreferenceStore(
     private suspend fun update(
         transform: (ScreenViewerToolbarPreferences) -> ScreenViewerToolbarPreferences,
     ) {
-        var next = ScreenViewerToolbarPreferences()
+        var next = defaults()
         store.edit { persisted ->
             next = transform(decode(persisted))
-            persisted[EDGE_KEY] = next.edge.name.lowercase()
-            persisted[CONTROLS_KEY] = next.pinnedControls.mapTo(linkedSetOf()) {
+            persisted[edgeKey] = next.edge.name.lowercase()
+            persisted[controlsKey] = next.pinnedControls.mapTo(linkedSetOf()) {
                 it.name.lowercase()
             }
-            persisted[ORDER_KEY] = next.controlOrder.joinToString(",") { it.name.lowercase() }
+            persisted[orderKey] = next.controlOrder.joinToString(",") { it.name.lowercase() }
         }
         _preferences.value = next
     }
 
     private fun load(): ScreenViewerToolbarPreferences = runCatching {
         runBlocking { decode(store.data.first()) }
-    }.getOrDefault(ScreenViewerToolbarPreferences())
+    }.getOrDefault(defaults())
+
+    private fun defaults() = ScreenViewerToolbarPreferences(
+        pinnedControls = if (virtualDisplay) linkedSetOf(ScreenViewerControl.BACK, ScreenViewerControl.HOME,
+            ScreenViewerControl.LAUNCHER, ScreenViewerControl.RECENTS) else defaultPinnedControls(),
+        controlOrder = availableControls,
+    )
 
     private fun decode(persisted: Preferences): ScreenViewerToolbarPreferences {
-        val edge = persisted[EDGE_KEY]
+        val edge = persisted[edgeKey]
             ?.let { name ->
                 ScreenViewerToolbarEdge.entries.firstOrNull {
                     it.name.equals(name, ignoreCase = true)
                 }
             }
             ?: ScreenViewerToolbarEdge.TOP
-        val controls = persisted[CONTROLS_KEY]
+        val controls = persisted[controlsKey]
             ?.mapNotNull { name ->
                 ScreenViewerControl.entries.firstOrNull {
                     it.name.equals(name, ignoreCase = true)
                 }
             }
             ?.let(::canonicalControls)
-            ?: defaultPinnedControls()
-        val controlOrder = persisted[ORDER_KEY]
+            ?: defaults().pinnedControls
+        val controlOrder = persisted[orderKey]
             ?.split(',')
             ?.mapNotNull { name ->
                 ScreenViewerControl.entries.firstOrNull {
@@ -102,7 +120,7 @@ internal class ScreenViewerToolbarPreferenceStore(
                 }
             }
             ?.let(::canonicalOrder)
-            ?: ScreenViewerControl.entries
+            ?: availableControls
         return ScreenViewerToolbarPreferences(
             edge = edge,
             pinnedControls = controls,
@@ -111,19 +129,13 @@ internal class ScreenViewerToolbarPreferenceStore(
     }
 
     private fun canonicalControls(controls: Collection<ScreenViewerControl>): Set<ScreenViewerControl> =
-        ScreenViewerControl.entries.filterTo(linkedSetOf(), controls::contains)
+        availableControls.filterTo(linkedSetOf(), controls::contains)
 
     private fun canonicalOrder(controls: Collection<ScreenViewerControl>): List<ScreenViewerControl> =
         buildList {
-            controls.forEach { control -> if (control !in this) add(control) }
-            ScreenViewerControl.entries.forEach { control -> if (control !in this) add(control) }
+            controls.forEach { control -> if (control in availableControls && control !in this) add(control) }
+            availableControls.forEach { control -> if (control !in this) add(control) }
         }
-
-    private companion object {
-        val EDGE_KEY = stringPreferencesKey("screen_viewer_toolbar_edge_v1")
-        val CONTROLS_KEY = stringSetPreferencesKey("screen_viewer_toolbar_controls_v1")
-        val ORDER_KEY = stringPreferencesKey("screen_viewer_toolbar_order_v1")
-    }
 }
 
 private fun defaultPinnedControls(): Set<ScreenViewerControl> = linkedSetOf(

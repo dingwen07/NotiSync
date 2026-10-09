@@ -31,6 +31,20 @@ import org.junit.Test
 
 class ScreenApplicationBridgeTest {
     @Test
+    fun `virtual display request and terminal retain version two`() {
+        val daemon = RecordingDaemon()
+        val bridge = ScreenApplicationBridge(daemon)
+        val request = request().copy(protocolVersion = 2,
+            virtualDisplay = net.extrawdw.notisync.protocol.ScreenVirtualDisplay())
+        bridge.sendRequest(request)
+        bridge.sendEnd(request)
+        assertEquals(2, decodeScreen(daemon.sends[0]).protocolVersion)
+        assertEquals(request.virtualDisplay, decodeScreen(daemon.sends[0]).virtualDisplay)
+        assertEquals(2, decodeScreen(daemon.sends[1]).protocolVersion)
+        assertEquals(null, decodeScreen(daemon.sends[1]).virtualDisplay)
+        assertTrue(Capability.SCREEN_VIRTUAL_DISPLAY_V1 in request.requiredSourceCapabilities())
+    }
+    @Test
     fun `request uses high exact capable unicast and opaque CBOR body`() {
         val daemon = RecordingDaemon()
         val bridge = ScreenApplicationBridge(daemon)

@@ -20,6 +20,8 @@ import kotlinx.coroutines.withContext
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
+import net.extrawdw.notisync.protocol.ScreenMirrorStatus
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 
 internal enum class AndroidScreenHostPhase {
     IDLE,
@@ -42,6 +44,9 @@ internal data class AndroidScreenHostState(
     val detail: String? = null,
     val surfaceAttached: Boolean = false,
     val connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+    val virtualDisplay: ScreenVirtualDisplay? = null,
+    // Keep the original request for Activity/FGS ownership; this records the effective mode.
+    val physicalDisplayFallback: Boolean = false,
 )
 
 /**
@@ -58,6 +63,7 @@ internal class AndroidScreenRequesterSessionHost(
     private val openRelaySession: suspend (ClientId, String) -> AndroidScreenViewerSession = openSession,
     private val closeOwner: (String, String) -> Unit,
     private val requesterState: () -> AndroidScreenRequesterState,
+    private val openVirtualSession: (suspend (ClientId, String, AndroidScreenConnectionMode, ScreenVirtualDisplay) -> AndroidScreenViewerSession)? = null,
 ) : Closeable {
     constructor(
         requester: AndroidScreenMirrorRequester,
@@ -72,6 +78,7 @@ internal class AndroidScreenRequesterSessionHost(
         },
         closeOwner = requester::closeOwner,
         requesterState = { requester.state.value },
+        openVirtualSession = { sourceId, token, mode, display -> requester.open(sourceId, token, mode, display) },
     )
 
     private data class SurfaceLease(val viewerToken: String, val surface: Surface)
@@ -80,6 +87,7 @@ internal class AndroidScreenRequesterSessionHost(
         val id: String,
         val sourceId: ClientId,
         val connectionMode: AndroidScreenConnectionMode,
+        val virtualDisplay: ScreenVirtualDisplay?,
     ) {
         val cleanupStarted = AtomicBoolean()
         val ownerCloseStarted = AtomicBoolean()
@@ -92,6 +100,7 @@ internal class AndroidScreenRequesterSessionHost(
         var relayReconnectAttempts = 0
         var relayConnectedAtNanos = Long.MIN_VALUE
         var stopping = false
+        var physicalDisplayFallback = false
 
         @Volatile
         var closeDetail = DEFAULT_CLOSE_DETAIL
@@ -110,42 +119,47 @@ internal class AndroidScreenRequesterSessionHost(
     fun start(
         sourceId: ClientId,
         connectionMode: AndroidScreenConnectionMode = AndroidScreenConnectionMode.DIRECT,
+        virtualDisplay: ScreenVirtualDisplay? = null,
     ): String {
+        require(virtualDisplay == null || virtualDisplay.isValid())
         while (true) {
+            var created: Attempt? = null
             val switchAttempt = synchronized(lock) {
-                active?.let { current ->
+                check(!closed) { "screen requester session host is closed" }
+                val current = active
+                if (current != null) {
                     check(current.sourceId == sourceId) {
                         "another Android screen viewer is already active"
                     }
-                    if (current.connectionMode == connectionMode) {
+                    if (current.connectionMode == connectionMode && current.virtualDisplay == virtualDisplay) {
                         return current.id
                     }
                     current.id
+                } else {
+                    // Claim the slot in the same critical section as the display-mode check.
+                    // A competing start must never return an attempt for a different display.
+                    val attempt = Attempt(UUID.randomUUID().toString(), sourceId, connectionMode, virtualDisplay)
+                    _state.value = AndroidScreenHostState(
+                        phase = AndroidScreenHostPhase.PREPARING,
+                        attemptId = attempt.id,
+                        sourceId = sourceId,
+                        connectionMode = connectionMode,
+                        virtualDisplay = virtualDisplay,
+                    )
+                    attempt.job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
+                        runAttempt(attempt)
+                    }
+                    active = attempt
+                    created = attempt
+                    null
                 }
             }
-            if (switchAttempt == null) break
-            stopIfAttempt(switchAttempt, "switching screen transport")
-        }
-        val attempt: Attempt
-        val job: Job
-        synchronized(lock) {
-            check(!closed) { "screen requester session host is closed" }
-            active?.let { current -> return current.id }
-            attempt = Attempt(UUID.randomUUID().toString(), sourceId, connectionMode)
-            _state.value = AndroidScreenHostState(
-                phase = AndroidScreenHostPhase.PREPARING,
-                attemptId = attempt.id,
-                sourceId = sourceId,
-                connectionMode = connectionMode,
-            )
-            job = scope.launch(Dispatchers.IO, start = CoroutineStart.LAZY) {
-                runAttempt(attempt)
+            created?.let {
+                it.job?.start()
+                return it.id
             }
-            attempt.job = job
-            active = attempt
+            stopIfAttempt(requireNotNull(switchAttempt), "switching screen session")
         }
-        job.start()
-        return attempt.id
     }
 
     /** Attach or replace the Surface for one Activity/view generation. */
@@ -233,6 +247,8 @@ internal class AndroidScreenRequesterSessionHost(
                 detail = detail,
                 surfaceAttached = false,
                 connectionMode = current.connectionMode,
+                virtualDisplay = current.virtualDisplay,
+                physicalDisplayFallback = current.physicalDisplayFallback,
             )
         } ?: return false
         return terminateAttempt(
@@ -263,11 +279,7 @@ internal class AndroidScreenRequesterSessionHost(
             updateCurrent(attempt.id) {
                 it.copy(phase = AndroidScreenHostPhase.CONNECTING, detail = null)
             }
-            session = if (attempt.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
-                openRelaySession(attempt.sourceId, attempt.id)
-            } else {
-                openSession(attempt.sourceId, attempt.id)
-            }
+            session = openAttemptSession(attempt)
             val connectedSession = session
             val writer = AndroidScreenControlWriter(connectedSession.controlOutput)
             dispatcher = AndroidScreenControlDispatcher(writer) { error ->
@@ -349,6 +361,8 @@ internal class AndroidScreenRequesterSessionHost(
                         dimensions = state.value.dimensions,
                         detail = terminalRequesterState.detail,
                         connectionMode = attempt.connectionMode,
+                        virtualDisplay = attempt.virtualDisplay,
+                        physicalDisplayFallback = attempt.physicalDisplayFallback,
                     ),
                 )
             }
@@ -477,6 +491,33 @@ internal class AndroidScreenRequesterSessionHost(
         return true
     }
 
+    private suspend fun openAttemptSession(attempt: Attempt): AndroidScreenViewerSession {
+        if (attempt.virtualDisplay != null && !attempt.physicalDisplayFallback) {
+            try {
+                return requireNotNull(openVirtualSession)(
+                    attempt.sourceId, attempt.id, attempt.connectionMode, attempt.virtualDisplay,
+                )
+            } catch (rejected: AndroidScreenRequestRejectedException) {
+                if (rejected.status != ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED) throw rejected
+                currentCoroutineContext().ensureActive()
+                synchronized(lock) {
+                    check(active === attempt && !attempt.stopping) { "screen viewer attempt was replaced" }
+                    attempt.physicalDisplayFallback = true
+                    _state.value = _state.value.copy(physicalDisplayFallback = true)
+                }
+            }
+        }
+        currentCoroutineContext().ensureActive()
+        check(isCurrent(attempt.id)) { "screen viewer attempt was replaced" }
+        // The rejected request has already closed its listeners and secrets. The normal requester
+        // creates a new session and repeats the source's regular screen-control authorization.
+        return if (attempt.connectionMode == AndroidScreenConnectionMode.BROKER_RELAY) {
+            openRelaySession(attempt.sourceId, attempt.id)
+        } else {
+            openSession(attempt.sourceId, attempt.id)
+        }
+    }
+
     private fun failAttempt(attemptId: String, detail: String) {
         val snapshot = synchronized(lock) {
             val current = active?.takeIf { it.id == attemptId } ?: return
@@ -491,6 +532,8 @@ internal class AndroidScreenRequesterSessionHost(
                 dimensions = _state.value.dimensions,
                 detail = detail,
                 connectionMode = current.connectionMode,
+                virtualDisplay = current.virtualDisplay,
+                physicalDisplayFallback = current.physicalDisplayFallback,
             )
         }
         terminateAttempt(attemptId, snapshot, detail)

@@ -165,7 +165,11 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         // This Activity is a separate Recents task; never retain a thumbnail of the remote screen.
         setRecentsScreenshotEnabled(false)
         val rawSourceId = intent.getStringExtra(EXTRA_SOURCE_ID)?.takeIf(String::isNotBlank)
-        if (rawSourceId == null) {
+        if (rawSourceId == null || runCatching {
+                ScreenVirtualDisplayIntents.resolveViewerSize(this, intent)
+                ScreenVirtualDisplayIntents.read(intent)
+            }.isFailure
+        ) {
             finish()
             return
         }
@@ -394,8 +398,8 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         private const val MAX_REQUESTER_LEASE_ID_LENGTH = 128
         private const val PICTURE_IN_PICTURE_TRANSITION_TIMEOUT_MS = 1_000L
 
-        fun intent(context: Context, sourceId: ClientId): Intent =
-            Intent(context, AndroidScreenMirrorActivity::class.java)
+        fun intent(context: Context, sourceId: ClientId, virtualDisplay: net.extrawdw.notisync.protocol.ScreenVirtualDisplay? = null): Intent =
+            ScreenVirtualDisplayIntents.put(Intent(context, AndroidScreenMirrorActivity::class.java), virtualDisplay)
                 .putExtra(EXTRA_SOURCE_ID, sourceId.value)
                 // The viewer is the root of its own task. CLEAR_TOP replaces an older viewer
                 // instance instead of stacking two Activities which would contend for one session.
@@ -431,18 +435,22 @@ private fun AndroidScreenMirrorViewer(
     var phase by remember { mutableStateOf(AndroidViewerUiPhase.PREPARING) }
     var detail by remember { mutableStateOf<String?>(null) }
     var observedAttemptId by rememberSaveable(sourceId.value) { mutableStateOf<String?>(null) }
+    val requestedDisplay = remember(activity) { ScreenVirtualDisplayIntents.read(activity.intent) }
+    val customDisplayDensity = remember(activity) { ScreenVirtualDisplayIntents.hasCustomDensity(activity.intent) }
+    var physicalDisplayFallback by remember { mutableStateOf(false) }
     var retryGeneration by remember { mutableIntStateOf(0) }
     var brokerRelayRequested by activity.relayOptedIn
     var brokerRelaySupported by remember { mutableStateOf(false) }
     var showBrokerRelayFallback by remember { mutableStateOf(false) }
     var imeView by remember { mutableStateOf<AndroidScreenImeView?>(null) }
-    var toolbarPreferences by remember {
+    val toolbarPreferenceStore = if (requestedDisplay != null && !physicalDisplayFallback) graph?.virtualScreenViewerToolbarPreferences
+        else graph?.screenViewerToolbarPreferences
+    var toolbarPreferences by remember(toolbarPreferenceStore) {
         mutableStateOf(
-            graph?.screenViewerToolbarPreferences?.preferences?.value
+            toolbarPreferenceStore?.preferences?.value
                 ?: ScreenViewerToolbarPreferences(),
         )
     }
-    val toolbarPreferenceStore = graph?.screenViewerToolbarPreferences
     val pipChromeHidden by activity.pictureInPictureChromeHidden
     val renderingAllowed by activity.renderingAllowed
     val statusBarVisible by activity.statusBarVisible
@@ -550,6 +558,8 @@ private fun AndroidScreenMirrorViewer(
                 } else {
                     AndroidScreenConnectionMode.DIRECT
                 },
+                virtualDisplay = requestedDisplay,
+                customDensity = customDisplayDensity,
             )
         ) {
             phase = AndroidViewerUiPhase.ERROR
@@ -561,7 +571,7 @@ private fun AndroidScreenMirrorViewer(
         delay(REQUESTER_SERVICE_START_TIMEOUT_MS)
         val hostState = readyGraph.screenMirrorRequesterHost?.state?.value
         if (
-            hostState?.sourceId != sourceId &&
+            (hostState?.sourceId != sourceId || hostState.virtualDisplay != requestedDisplay) &&
             phase !in setOf(AndroidViewerUiPhase.ERROR, AndroidViewerUiPhase.ENDED)
         ) {
             phase = AndroidViewerUiPhase.ERROR
@@ -579,7 +589,7 @@ private fun AndroidScreenMirrorViewer(
         val host = graph?.screenMirrorRequesterHost ?: return@LaunchedEffect
         host.state.collect { state ->
             if (
-                state.sourceId == sourceId && state.attemptId != null &&
+                state.sourceId == sourceId && state.virtualDisplay == requestedDisplay && state.attemptId != null &&
                 state.phase in LIVE_SCREEN_HOST_PHASES
             ) {
                 observedAttemptId = state.attemptId
@@ -599,7 +609,8 @@ private fun AndroidScreenMirrorViewer(
                 activity.finishTerminatedViewer()
                 return@collect
             }
-            if (state.sourceId != null && state.sourceId != sourceId) {
+            if (state.sourceId != null && (state.sourceId != sourceId || state.virtualDisplay != requestedDisplay)) {
+                host.detachSurface(activity.viewerToken)
                 control = null
                 phase = AndroidViewerUiPhase.ENDED
                 detail = activity.getString(R.string.screen_viewer_ended)
@@ -622,6 +633,7 @@ private fun AndroidScreenMirrorViewer(
                 host.attachSurface(activity.viewerToken, outputSurface)
             }
             state.sourceName?.let { sourceName = it }
+            physicalDisplayFallback = state.physicalDisplayFallback
             state.codec?.let { codecName = it.name.lowercase() }
             connectionType = state.connectionType
             dimensions = state.dimensions
@@ -701,6 +713,20 @@ private fun AndroidScreenMirrorViewer(
                 WindowInsets.navigationBarsIgnoringVisibility.only(WindowInsetsSides.Bottom),
             )
         val density = LocalDensity.current
+        val viewerDensityDpi = androidx.compose.ui.platform.LocalConfiguration.current.densityDpi
+        val resizeAllowed = requestedDisplay != null && !physicalDisplayFallback &&
+            controlsEnabled && renderingAllowed && !pipChromeHidden && !activity.isInPictureInPictureMode
+        val requestedSize = if (constraints.maxWidth > 0 && constraints.maxHeight > 0) {
+            ScreenVirtualDisplaySizing.forViewport(constraints.maxWidth, constraints.maxHeight, viewerDensityDpi,
+                fixedDensityDpi = requestedDisplay?.densityDpi?.takeIf { customDisplayDensity })
+        } else null
+        LaunchedEffect(control, requestedSize, resizeAllowed) {
+            if (resizeAllowed && requestedSize != null) {
+                // Wait for the window to settle; intermediate drag sizes do not need separate encoders.
+                delay(200)
+                control?.resizeVirtualDisplay(requestedSize.width, requestedSize.height, requestedSize.densityDpi)
+            }
+        }
         val toolbarOuterHeightPx = toolbarInsets.getTop(density) +
             toolbarInsets.getBottom(density) +
             with(density) {
@@ -821,6 +847,7 @@ private fun AndroidScreenMirrorViewer(
                 selectedControls = toolbarPreferences.pinnedControls,
                 controlOrder = toolbarPreferences.controlOrder,
                 enabled = controlsEnabled,
+                virtualDisplay = requestedDisplay != null && !physicalDisplayFallback,
                 control = control,
                 onShowKeyboard = { imeView?.showKeyboardWhenWindowFocused() },
                 onClose = closeViewer,
@@ -879,6 +906,7 @@ private fun AndroidScreenViewerToolbar(
     selectedControls: Set<ScreenViewerControl>,
     controlOrder: List<ScreenViewerControl>,
     enabled: Boolean,
+    virtualDisplay: Boolean,
     control: AndroidScreenControlDispatcher?,
     onShowKeyboard: () -> Unit,
     onClose: () -> Unit,
@@ -895,11 +923,13 @@ private fun AndroidScreenViewerToolbar(
     val edge = dragState.settledValue
 
     BoxWithConstraints(modifier = modifier.widthIn(max = 720.dp).fillMaxWidth()) {
-        val directControlSlots = screenViewerDirectControlSlots(maxWidth.value)
+        val directControlSlots = screenViewerDirectControlSlots(maxWidth.value, virtualDisplay)
+        val unavailableControls = ScreenViewerControl.entries.toSet() - screenViewerAvailableControls(virtualDisplay).toSet()
         val controlLayout = screenViewerControlLayout(
             selectedControls,
             directControlSlots,
             controlOrder,
+            unavailableControls,
         )
         val directControls = controlLayout.direct
         val overflowControls = controlLayout.overflow
@@ -1080,8 +1110,9 @@ private fun AndroidScreenViewerToolbar(
         if (customizeControls) {
             ScreenViewerControlDialog(
                 selectedControls = selectedControls,
-                controlOrder = controlOrder,
+                controlOrder = controlOrder.filterNot { it in unavailableControls },
                 maximumControls = directControlSlots,
+                virtualDisplay = virtualDisplay,
                 onControlVisibilityChanged = onControlVisibilityChanged,
                 onControlOrderChanged = onControlOrderChanged,
                 onDismissRequest = { customizeControls = false },
@@ -1095,6 +1126,7 @@ private fun ScreenViewerControlDialog(
     selectedControls: Set<ScreenViewerControl>,
     controlOrder: List<ScreenViewerControl>,
     maximumControls: Int,
+    virtualDisplay: Boolean,
     onControlVisibilityChanged: (ScreenViewerControl, Boolean) -> Unit,
     onControlOrderChanged: (List<ScreenViewerControl>) -> Unit,
     onDismissRequest: () -> Unit,
@@ -1127,7 +1159,7 @@ private fun ScreenViewerControlDialog(
 
     AlertDialog(
         onDismissRequest = onDismissRequest,
-        title = { Text(stringResource(R.string.screen_viewer_toolbar_controls)) },
+        title = { Text(stringResource(if (virtualDisplay) R.string.screen_virtual_toolbar_controls else R.string.screen_viewer_toolbar_controls)) },
         text = {
             LazyColumn(
                 state = listState,
@@ -1230,7 +1262,8 @@ private fun ScreenViewerControlDialog(
 private fun ScreenViewerControl.icon(): androidx.compose.ui.graphics.vector.ImageVector = when (this) {
     ScreenViewerControl.BACK -> ArrowBackIcon
     ScreenViewerControl.HOME -> HomeIcon
-    ScreenViewerControl.RECENTS -> AppsIcon
+    ScreenViewerControl.RECENTS -> net.extrawdw.apps.notisync.ui.icons.material.outlined.grid_view
+    ScreenViewerControl.LAUNCHER -> AppsIcon
     ScreenViewerControl.KEYBOARD -> KeyboardIcon
     ScreenViewerControl.POWER -> PowerSettingsNewIcon
     ScreenViewerControl.NOTIFICATION_PANEL -> NotificationsIcon
@@ -1240,6 +1273,7 @@ private fun ScreenViewerControl.labelResource(): Int = when (this) {
     ScreenViewerControl.BACK -> R.string.screen_viewer_back
     ScreenViewerControl.HOME -> R.string.screen_viewer_home
     ScreenViewerControl.RECENTS -> R.string.screen_viewer_recents
+    ScreenViewerControl.LAUNCHER -> R.string.screen_virtual_launcher
     ScreenViewerControl.KEYBOARD -> R.string.screen_viewer_keyboard
     ScreenViewerControl.POWER -> R.string.screen_viewer_power
     ScreenViewerControl.NOTIFICATION_PANEL -> R.string.screen_viewer_notification_panel
@@ -1254,6 +1288,7 @@ private fun performScreenViewerControl(
         ScreenViewerControl.BACK -> control?.sendKeyPress(KeyEvent.KEYCODE_BACK)
         ScreenViewerControl.HOME -> control?.sendKeyPress(KeyEvent.KEYCODE_HOME)
         ScreenViewerControl.RECENTS -> control?.sendKeyPress(KeyEvent.KEYCODE_APP_SWITCH)
+        ScreenViewerControl.LAUNCHER -> control?.openLauncher()
         ScreenViewerControl.KEYBOARD -> if (control != null) onShowKeyboard()
         ScreenViewerControl.POWER -> control?.togglePower()
         ScreenViewerControl.NOTIFICATION_PANEL -> control?.expandNotificationPanel()
@@ -1265,10 +1300,10 @@ internal fun screenViewerToolbarTravelDistance(
     toolbarHeightPx: Int,
 ): Float = (viewportHeightPx - toolbarHeightPx).coerceAtLeast(1).toFloat()
 
-internal fun screenViewerDirectControlSlots(widthDp: Float): Int =
+internal fun screenViewerDirectControlSlots(widthDp: Float, virtualDisplay: Boolean = false): Int =
     ((widthDp - TOOLBAR_FIXED_WIDTH_DP) / TOOLBAR_CONTROL_WIDTH_DP)
         .toInt()
-        .coerceIn(1, ScreenViewerControl.entries.size)
+        .coerceIn(1, screenViewerAvailableControls(virtualDisplay).size)
 
 internal data class ScreenViewerControlLayout(
     val direct: List<ScreenViewerControl>,
@@ -1278,12 +1313,13 @@ internal data class ScreenViewerControlLayout(
 internal fun screenViewerControlLayout(
     selectedControls: Set<ScreenViewerControl>,
     directControlSlots: Int,
-    controlOrder: List<ScreenViewerControl> = ScreenViewerControl.entries,
+    controlOrder: List<ScreenViewerControl> = screenViewerAvailableControls(),
+    unavailableControls: Set<ScreenViewerControl> = setOf(ScreenViewerControl.LAUNCHER),
 ): ScreenViewerControlLayout {
     val ordered = buildList {
         controlOrder.forEach { control -> if (control !in this) add(control) }
         ScreenViewerControl.entries.forEach { control -> if (control !in this) add(control) }
-    }
+    }.filterNot(unavailableControls::contains)
     val pinned = ordered
         .filter(selectedControls::contains)
     val direct = pinned.take(directControlSlots.coerceAtLeast(0))

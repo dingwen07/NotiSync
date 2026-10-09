@@ -392,6 +392,16 @@
             android:taskAffinity=""
             android:theme="@android:style/Theme.NoDisplay" />
 
+        <activity
+            android:name=".screen.ScreenVirtualLauncherActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity="${applicationId}.virtualLauncher"
+            android:launchMode="singleTop"
+            android:resizeableActivity="true"
+            android:theme="@style/Theme.NotiSync"
+            android:windowSoftInputMode="adjustResize" />
+
         <!-- Shares decrypted private-asset blobs with System UI for MessagingStyle inline media. -->
         <provider
             android:name="androidx.core.content.FileProvider"

@@ -216,6 +216,31 @@ class OperationalDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationSixToSevenDoesNotGrantVirtualDisplayAccess() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(6).use { connection ->
+            connection.execSQL("""
+                INSERT INTO screen_mirror_state VALUES (1, 1, '["peer"]', '{"digest":123}', 0, NULL, NULL)
+            """.trimIndent())
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 7,
+            migrations = listOf(OperationalDatabase.MIGRATION_6_7),
+        ).use { connection ->
+            connection.prepare("""
+                SELECT enabled, authorized_peer_ids_json, request_replay_json, virtual_display_peer_ids_json
+                FROM screen_mirror_state WHERE singleton_id=1
+            """.trimIndent()).use {
+                assertTrue(it.step())
+                assertEquals(1L, it.getLong(0))
+                assertEquals("[\"peer\"]", it.getText(1))
+                assertEquals("{\"digest\":123}", it.getText(2))
+                assertEquals("[]", it.getText(3))
+            }
+        }
+    }
+
+    @Test
     fun migrationFromOriginalRoomReleaseReachesCurrentSchema() = runBlocking {
         context.deleteDatabase(DATABASE_NAME)
         migrationHelper.createDatabase(1).close()
@@ -227,6 +252,7 @@ class OperationalDatabaseMigrationTest {
                 OperationalDatabase.MIGRATION_3_4,
                 OperationalDatabase.MIGRATION_4_5,
                 OperationalDatabase.MIGRATION_5_6,
+                OperationalDatabase.MIGRATION_6_7,
             ),
         ).close()
     }

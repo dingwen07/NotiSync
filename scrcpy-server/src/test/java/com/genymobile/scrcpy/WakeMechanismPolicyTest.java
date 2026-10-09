@@ -23,7 +23,7 @@ public final class WakeMechanismPolicyTest {
         assertTrue(powerManager.contains("\"wakeUp\""));
         assertTrue(powerManager.contains("WAKE_REASON_APPLICATION = 2"));
         assertTrue(powerManager.contains("FakeContext.PACKAGE_NAME"));
-        assertTrue(powerManager.contains("SystemClock.uptimeMillis()"));
+        assertTrue(powerManager.contains("SystemClock::uptimeMillis"));
         assertTrue(powerManager.contains("waitUntilScreenOn"));
         assertTrue(powerManager.contains("\"goToSleep\""));
         assertTrue(powerManager.contains("GO_TO_SLEEP_REASON_POWER_BUTTON = 4"));
@@ -46,7 +46,7 @@ public final class WakeMechanismPolicyTest {
 
         assertFalse(device.contains("KeyEvent.KEYCODE_POWER"));
         assertFalse(backend.contains("KeyEvent.KEYCODE_POWER"));
-        assertFalse(controller.contains("KeyEvent.KEYCODE_POWER"));
+        assertTrue(controller.contains("virtualDisplay && (keyCode == KeyEvent.KEYCODE_POWER"));
     }
 
     private static String source(Path root, String relative) throws IOException {

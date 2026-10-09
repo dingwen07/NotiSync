@@ -53,6 +53,10 @@ public class ControlMessageReader {
                 return parseSetVideoVisibility();
             case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
                 return ControlMessage.createExpandNotificationPanel();
+            case ControlMessage.TYPE_OPEN_LAUNCHER:
+                return ControlMessage.createOpenLauncher();
+            case ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY:
+                return ControlMessage.createResizeVirtualDisplay(dis.readUnsignedShort(), dis.readUnsignedShort(), dis.readUnsignedShort());
             default:
                 throw new ControlProtocolException("Unsupported NotiSync control message type: " + type);
         }

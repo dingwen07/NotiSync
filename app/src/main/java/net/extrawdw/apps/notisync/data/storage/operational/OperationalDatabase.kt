@@ -51,7 +51,11 @@ internal abstract class OperationalDatabase : RoomDatabase() {
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 6
+        const val VERSION = 7
+
+        val MIGRATION_6_7 = Migration(6, 7) { connection ->
+            connection.execSQL("ALTER TABLE screen_mirror_state ADD COLUMN virtual_display_peer_ids_json TEXT NOT NULL DEFAULT '[]'")
+        }
 
         val MIGRATION_1_2 = Migration(1, 2) { connection ->
             connection.execSQL(
@@ -139,7 +143,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
                         installSshAuthorizationGuards(connection)
                     }
                 })
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
                 .build()
     }
 }

@@ -1,6 +1,8 @@
 package net.extrawdw.apps.notisync.screen;
 
 import android.os.ParcelFileDescriptor;
+import net.extrawdw.apps.notisync.screen.IScreenNotificationResolver;
+import android.app.PendingIntent;
 
 /** Narrow Binder boundary into the shell-uid screen-capture process. */
 interface IScreenMirrorUserService {
@@ -47,4 +49,12 @@ interface IScreenMirrorUserService {
 
     /** Recreates only the exact owner's video encoder; capture and control remain active. */
     boolean restartVideo(String ownerToken) = 7;
+
+    /** No externally supplied display ID or Intent. Null launch package/resolver selects secondary Home. */
+    int startVirtualSession(
+        String ownerToken, int codecId, int maxDimension, int maxFps, int bitrateBps,
+        boolean allowControl, boolean allowClipboard, int width, int height, int densityDpi,
+        String launchPackage, IScreenNotificationResolver notificationResolver, in PendingIntent launcherIntent,
+        in ParcelFileDescriptor videoWriteFd, in ParcelFileDescriptor controlFd
+    ) = 8;
 }

@@ -210,6 +210,8 @@ class ScreenMirrorSessionController(
             now = now(),
             authorized = enabled && message.senderOwnDevice && authorizations.isAuthorized(message.senderId),
             codecAvailable = request.codec?.let(capabilities::supports) == true,
+            virtualDisplayAuthorized = authorizations.isVirtualDisplayAuthorized(message.senderId),
+            virtualDisplayAvailable = shizuku.virtualDisplaySupported.value,
         )
         if (failure != null) {
             if (failure.needsPeerAuthorization && enabled && message.senderOwnDevice &&
@@ -607,6 +609,8 @@ class ScreenMirrorSessionController(
         !settings.screenMirroringEnabled.value -> ScreenMirrorStatus.UNAUTHORIZED to "screen sharing disabled"
         !authorizations.isAuthorized(holder.request.requesterPeerId) ->
             ScreenMirrorStatus.UNAUTHORIZED to "requester authorization changed"
+        holder.request.virtualDisplay != null && !authorizations.isVirtualDisplayAuthorized(holder.request.requesterPeerId) ->
+            ScreenMirrorStatus.UNAUTHORIZED to "virtual display authorization changed"
         shizuku.status.value != ShizukuScreenStatus.READY ->
             ScreenMirrorStatus.SHIZUKU_UNAVAILABLE to shizuku.status.value.name
         holder.request.codec?.let(capabilities::supports) != true ->
@@ -699,9 +703,20 @@ class ScreenMirrorSessionController(
                         transport.run(
                             request = holder.request,
                             startCapture = {
+                                check(settings.screenMirroringEnabled.value && authorizations.isAuthorized(holder.request.requesterPeerId)) {
+                                    "screen sharing authorization changed"
+                                }
+                                check(holder.request.virtualDisplay == null || authorizations.isVirtualDisplayAuthorized(holder.request.requesterPeerId)) {
+                                    "virtual display authorization changed"
+                                }
                                 shizuku.startPrivilegedSession(
                                     holder.request,
                                     holder.foregroundLeaseId,
+                                    authorizeNotification = {
+                                        synchronized(lock) { pending === holder && !holder.stopRequested } &&
+                                            settings.screenMirroringEnabled.value &&
+                                            authorizations.isVirtualDisplayAuthorized(holder.request.requesterPeerId)
+                                    },
                                 ).getOrThrow().also { pipes = it }
                             },
                             onReady = {
@@ -960,6 +975,11 @@ class ScreenMirrorSessionController(
     }
 
     fun onAuthorizationPolicyChanged() {
+        val virtualGrantRevoked = synchronized(lock) {
+            listOfNotNull(pending, sessions.replacement).any {
+                it.request.virtualDisplay != null && !authorizations.isVirtualDisplayAuthorized(it.request.requesterPeerId)
+            }
+        }
         val requesters = synchronized(lock) {
             listOfNotNull(
                 pending?.request?.requesterPeerId,
@@ -967,7 +987,7 @@ class ScreenMirrorSessionController(
             )
         }
         if (
-            !settings.screenMirroringEnabled.value ||
+            virtualGrantRevoked || !settings.screenMirroringEnabled.value ||
             shizuku.status.value.invalidatesActiveScreenSession() ||
             requesters.any { !authorizations.isAuthorized(it) }
         ) {

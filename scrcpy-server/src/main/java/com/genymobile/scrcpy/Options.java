@@ -4,7 +4,7 @@ package com.genymobile.scrcpy;
  * Immutable capture settings for the NotiSync screen-mirroring entry point.
  *
  * <p>This is intentionally not scrcpy's command-line option parser. The privileged service has no
- * generic option surface: it always mirrors the primary display and only accepts the bounded
+ * generic option surface: it accepts only a locally selected display mode and bounded
  * quality values selected by {@link NotiSyncCaptureBackend}.</p>
  */
 public final class Options {
@@ -16,8 +16,9 @@ public final class Options {
     private final float maxFps;
     private final String videoEncoder;
     private final boolean clipboardAutosync;
+    private final boolean virtualDisplay;
 
-    private Options(int maxSize, int maxFps, int videoBitRate, String videoEncoder, boolean clipboardAutosync) {
+    private Options(int maxSize, int maxFps, int videoBitRate, String videoEncoder, boolean clipboardAutosync, boolean virtualDisplay) {
         if (maxSize <= 0 || maxSize > 8192 || maxFps <= 0 || maxFps > 240
                 || videoBitRate <= 0 || videoBitRate > 100_000_000
                 || videoEncoder == null || videoEncoder.isEmpty()) {
@@ -28,11 +29,17 @@ public final class Options {
         this.videoBitRate = videoBitRate;
         this.videoEncoder = videoEncoder;
         this.clipboardAutosync = clipboardAutosync;
+        this.virtualDisplay = virtualDisplay;
     }
 
     public static Options forScreenMirror(int maxSize, int maxFps, int videoBitRate, String videoEncoder,
             boolean clipboardAutosync) {
-        return new Options(maxSize, maxFps, videoBitRate, videoEncoder, clipboardAutosync);
+        return forScreenMirror(maxSize, maxFps, videoBitRate, videoEncoder, clipboardAutosync, false);
+    }
+
+    public static Options forScreenMirror(int maxSize, int maxFps, int videoBitRate, String videoEncoder,
+            boolean clipboardAutosync, boolean virtualDisplay) {
+        return new Options(maxSize, maxFps, videoBitRate, videoEncoder, clipboardAutosync, virtualDisplay);
     }
 
     public int getMaxSize() {
@@ -58,5 +65,7 @@ public final class Options {
     public int getDisplayId() {
         return PRIMARY_DISPLAY_ID;
     }
+
+    public boolean isVirtualDisplay() { return virtualDisplay; }
 
 }

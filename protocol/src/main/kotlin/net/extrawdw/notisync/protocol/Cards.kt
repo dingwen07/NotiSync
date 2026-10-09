@@ -42,6 +42,7 @@ enum class Capability {
     SSH_KEY_PROVIDER_V1,               // owns SSH keys and handles SSH Agent protocol v1 requests
     SSH_AGENT_V1,                      // consumes provider inventory/results and exposes a local SSH agent
     OPENPGP_SIGN_GIT_TAG_V1,           // extends OpenPGP signing with annotated Git tag requests
+    SCREEN_VIRTUAL_DISPLAY_V1,        // accepts version 2 virtual-display requests
 }
 
 /**
@@ -101,6 +102,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         Capability.SSH_KEY_PROVIDER_V1 -> 21
         Capability.SSH_AGENT_V1 -> 22
         Capability.OPENPGP_SIGN_GIT_TAG_V1 -> 23
+        Capability.SCREEN_VIRTUAL_DISPLAY_V1 -> 24
     }
 
     private fun capabilityForWireId(id: Int): Capability? = when (id) {
@@ -128,6 +130,7 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         21 -> Capability.SSH_KEY_PROVIDER_V1
         22 -> Capability.SSH_AGENT_V1
         23 -> Capability.OPENPGP_SIGN_GIT_TAG_V1
+        24 -> Capability.SCREEN_VIRTUAL_DISPLAY_V1
         else -> null
     }
 }

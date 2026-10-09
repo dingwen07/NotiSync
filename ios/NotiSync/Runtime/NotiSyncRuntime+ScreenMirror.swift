@@ -338,6 +338,7 @@ extension NotiSyncRuntime {
     private func screenStatusDescription(_ status: ScreenMirrorStatus?) -> String {
         switch status {
         case .UNAUTHORIZED: "Authorize this iPhone for screen sharing on the source device."
+        case .VIRTUAL_DISPLAY_UNAUTHORIZED: "Virtual Display access is not authorized on the source device."
         case .EXPIRED: "The screen-sharing request expired."
         case .BUSY: "The source device is already sharing its screen."
         case .SHIZUKU_UNAVAILABLE: "Screen sharing is not ready in Shizuku on the source device."

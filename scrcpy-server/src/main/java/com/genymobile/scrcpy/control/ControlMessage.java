@@ -21,6 +21,10 @@ public final class ControlMessage {
     public static final int TYPE_SET_VIDEO_VISIBILITY = 65;
     /** NotiSync screen protocol v1 extension: open the source device's notification shade. */
     public static final int TYPE_EXPAND_NOTIFICATION_PANEL = 66;
+    /** Open only this virtual session's app-owned launcher; no caller-supplied destination. */
+    public static final int TYPE_OPEN_LAUNCHER = 67;
+    /** Resize only this session's virtual display; payload has no display ID. */
+    public static final int TYPE_RESIZE_VIRTUAL_DISPLAY = 68;
 
     public static final long SEQUENCE_INVALID = 0;
 
@@ -45,6 +49,9 @@ public final class ControlMessage {
     private int repeat;
     private long sequence;
     private boolean videoVisible;
+    private int displayWidth;
+    private int displayHeight;
+    private int displayDensityDpi;
 
     private ControlMessage() {
     }
@@ -130,6 +137,25 @@ public final class ControlMessage {
         msg.type = TYPE_EXPAND_NOTIFICATION_PANEL;
         return msg;
     }
+
+    public static ControlMessage createOpenLauncher() {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_OPEN_LAUNCHER;
+        return msg;
+    }
+
+    public static ControlMessage createResizeVirtualDisplay(int width, int height, int densityDpi) {
+        ControlMessage msg = new ControlMessage();
+        msg.type = TYPE_RESIZE_VIRTUAL_DISPLAY;
+        msg.displayWidth = width;
+        msg.displayHeight = height;
+        msg.displayDensityDpi = densityDpi;
+        return msg;
+    }
+
+    public int getDisplayWidth() { return displayWidth; }
+    public int getDisplayHeight() { return displayHeight; }
+    public int getDisplayDensityDpi() { return displayDensityDpi; }
 
     public int getType() {
         return type;

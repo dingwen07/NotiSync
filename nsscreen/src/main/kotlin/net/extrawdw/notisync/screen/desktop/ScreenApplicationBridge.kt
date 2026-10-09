@@ -88,6 +88,7 @@ internal class ScreenApplicationBridge(
         require(action == ScreenMirrorAction.CANCEL || action == ScreenMirrorAction.END)
         val terminal = ScreenMirrorSync(
             action = action,
+            protocolVersion = request.protocolVersion,
             sessionId = request.sessionId,
             requesterPeerId = request.requesterPeerId,
             sourcePeerId = request.sourcePeerId,
@@ -148,7 +149,7 @@ internal class SessionReceiveStream(
         val screen = sync.takeIf { it.kind == DataSyncKind.SCREEN_MIRRORING }?.screenMirror ?: return null
         val envelopeCreatedAt = record.envelopeCreatedAtEpochMillis ?: return null
         if (
-            screen.action == ScreenMirrorAction.REQUEST || screen.protocolVersion != 1 ||
+            screen.action == ScreenMirrorAction.REQUEST || screen.protocolVersion !in 1..2 ||
             screen.issuedAt <= 0 || envelopeCreatedAt <= 0 ||
             abs(screen.issuedAt - envelopeCreatedAt) > MAX_SIGNED_TIMESTAMP_DELTA_MS
         ) return null

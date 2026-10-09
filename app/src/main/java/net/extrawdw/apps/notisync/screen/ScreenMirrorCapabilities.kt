@@ -49,6 +49,7 @@ object HardwareScreenEncoderProbe {
 internal fun screenMirrorCapabilitiesFor(
     enabled: Boolean,
     hardwareCodecs: Set<ScreenMirrorCodec>,
+    virtualDisplayAvailable: Boolean = false,
 ): List<Capability> {
     if (!enabled || hardwareCodecs.isEmpty()) return emptyList()
 
@@ -58,6 +59,7 @@ internal fun screenMirrorCapabilitiesFor(
         add(Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1)
         add(Capability.SCREEN_MIRROR_VIDEO_VISIBILITY_V1)
         add(Capability.SCREEN_MIRROR_BROKER_RELAY_V1)
+        if (virtualDisplayAvailable) add(Capability.SCREEN_VIRTUAL_DISPLAY_V1)
         hardwareCodecs.sortedBy { it.ordinal }
             .forEach { add(it.requiredEncoderCapability()) }
     }
@@ -75,12 +77,15 @@ internal fun screenMirrorCapabilitiesFor(
  * Hardware codecs are deliberately reprobed on every app-process start instead of persisting a last-known
  * positive result. This keeps an OTA or codec-service change from leaving stale routing authority behind,
  * while the immutable set below keeps the declaration sticky for the lifetime of the process.
+ * Virtual displays additionally require a successful shell create/release probe in this process;
+ * that evidence survives idle UserService teardown, and each session rechecks display permissions.
  */
 class ScreenMirrorCapabilityProvider(
     settings: SettingsRepository,
     authorizations: ScreenMirrorAuthorizationStore,
     scope: CoroutineScope,
     private val hardwareCodecs: Set<ScreenMirrorCodec> = HardwareScreenEncoderProbe.probe(),
+    virtualDisplayProbe: StateFlow<Boolean> = MutableStateFlow(false),
 ) {
     private val _advertisedCapabilities = MutableStateFlow(emptyList<Capability>())
     val advertisedCapabilities: StateFlow<List<Capability>> = _advertisedCapabilities.asStateFlow()
@@ -90,12 +95,14 @@ class ScreenMirrorCapabilityProvider(
             settings.screenMirroringEnabled,
             authorizations.replayStateHealth,
             authorizations.authorizationStateHealth,
-        ) { enabled, replayHealth, authorizationHealth ->
+            virtualDisplayProbe,
+        ) { enabled, replayHealth, authorizationHealth, probe ->
             screenMirrorCapabilitiesFor(
                 enabled = enabled &&
                     replayHealth == ScreenReplayStateHealth.HEALTHY &&
                     authorizationHealth == ScreenAuthorizationStateHealth.HEALTHY,
                 hardwareCodecs = hardwareCodecs,
+                virtualDisplayAvailable = probe,
             )
         }.onEach { _advertisedCapabilities.value = it }.launchIn(scope)
     }

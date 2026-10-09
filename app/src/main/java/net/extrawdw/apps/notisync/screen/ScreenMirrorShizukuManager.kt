@@ -117,6 +117,9 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     val availableCodecBits: StateFlow<Int> = _availableCodecBits.asStateFlow()
     private val _probeBits = MutableStateFlow(0)
     val probeBits: StateFlow<Int> = _probeBits.asStateFlow()
+    private val _virtualDisplaySupported = MutableStateFlow(false)
+    /** Process-lifetime capability evidence. Normal idle UserService removal must not remove routing. */
+    val virtualDisplaySupported: StateFlow<Boolean> = _virtualDisplaySupported.asStateFlow()
 
     @Volatile
     private var service: IScreenMirrorUserService? = null
@@ -254,6 +257,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
     suspend fun startPrivilegedSession(
         request: ScreenMirrorSync,
         ownerToken: String,
+        authorizeNotification: () -> Boolean = { false },
     ): Result<PrivilegedSessionPipes> = runCatching {
         if (service == null) refreshAndBind()
         val remote = service ?: withTimeout(SERVICE_BIND_TIMEOUT_MS) {
@@ -304,7 +308,42 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
                     }
                 },
             )
-            val result = remote.startSession(
+            val display = request.virtualDisplay
+            val result = if (display != null) {
+                require(display.isValid() && request.protocolVersion == 2)
+                val resolver = display.notificationKey?.let { key ->
+                    object : IScreenNotificationResolver.Stub() {
+                        private val resolved = java.util.concurrent.atomic.AtomicReference<
+                            net.extrawdw.apps.notisync.notification.capture.NotificationContentTap<android.app.PendingIntent>?>()
+
+                        override fun resolve(token: String): android.app.PendingIntent? {
+                            if (token != ownerToken || !authorizeNotification()) return null
+                            val identity = android.os.Binder.clearCallingIdentity()
+                            return try {
+                                val tap = net.extrawdw.apps.notisync.notification.capture.NotiSyncListenerService
+                                    .resolveVirtualDisplayNotification(key) ?: return null
+                                resolved.compareAndSet(null, tap)
+                                resolved.get()?.contentIntent
+                            } finally { android.os.Binder.restoreCallingIdentity(identity) }
+                        }
+
+                        override fun onSent(token: String) {
+                            if (token != ownerToken || !authorizeNotification()) return
+                            val identity = android.os.Binder.clearCallingIdentity()
+                            try { resolved.getAndSet(null)?.onSent() }
+                            finally { android.os.Binder.restoreCallingIdentity(identity) }
+                        }
+                    }
+                }
+                remote.startVirtualSession(
+                    ownerToken, codec.codecId(), request.maxDimension ?: DEFAULT_MAX_DIMENSION,
+                    request.maxFps ?: DEFAULT_MAX_FPS, request.videoBitrateBps ?: DEFAULT_BITRATE_BPS,
+                    request.requestControl, request.requestClipboard, display.width, display.height, display.densityDpi,
+                    display.packageName, resolver,
+                    ScreenVirtualLauncherSessions.register(appContext, ownerToken, authorizeNotification),
+                    createdVideoPair[1], createdControlPair[1],
+                )
+            } else remote.startSession(
                 ownerToken,
                 codec.codecId(),
                 (request.maxDimension ?: DEFAULT_MAX_DIMENSION).coerceIn(240, 8192),
@@ -325,6 +364,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             videoPair?.getOrNull(1)?.closeQuietly()
             controlPair?.getOrNull(1)?.closeQuietly()
             if (!transferLocalOwnership) {
+                ScreenVirtualLauncherSessions.remove(ownerToken)
                 videoPair?.getOrNull(0)?.closeQuietly()
                 controlPair?.getOrNull(0)?.closeQuietly()
             }
@@ -336,6 +376,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
      * all capture workers and descriptors are gone. A missing binder means its process is already gone.
      */
     fun stopPrivilegedSession(ownerToken: String): Boolean {
+        ScreenVirtualLauncherSessions.remove(ownerToken)
         val remote = service ?: return true
         return runScreenTeardownWithTimeout(PRIVILEGED_STOP_TIMEOUT_MS) {
             remote.stopSession(ownerToken)
@@ -344,6 +385,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     /** Removes the non-daemon user service after a session; the next request receives a fresh process. */
     fun removeUserService() {
+        ScreenVirtualLauncherSessions.clear()
         val connection = synchronized(bindLock) {
             bindGeneration++
             activeConnection.also { activeConnection = null }
@@ -446,6 +488,7 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
             // transient zero bitmask while the privileged binder calls are still in flight.
             _availableCodecBits.value = snapshot.availableCodecBits
             _probeBits.value = snapshot.probeBits
+            _virtualDisplaySupported.value = snapshot.probeBits and ScreenMirrorProbeBits.VIRTUAL_DISPLAY != 0
             _status.value = ShizukuScreenStatus.READY
             return
         }
@@ -468,8 +511,8 @@ class ScreenMirrorShizukuManager(private val context: Context) : Closeable {
 
     private companion object {
         const val MIN_SHIZUKU_API = 13
-        // Increment per Release Candidate, NOT during development
-        const val USER_SERVICE_REVISION = 2
+        // Increment for a release candidate or an incompatible Binder/backend contract change.
+        const val USER_SERVICE_REVISION = 3
         const val PERMISSION_REQUEST_CODE = 0x5343
         const val SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
         const val DEFAULT_MAX_DIMENSION = 1920

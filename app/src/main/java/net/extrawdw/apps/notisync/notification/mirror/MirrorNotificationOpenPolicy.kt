@@ -4,6 +4,7 @@ import net.extrawdw.notisync.peer.trust.RosterDevice
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.OriginPlatform
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 import net.extrawdw.notisync.protocol.TrustStatus
 
 /** Where a mirrored notification's UI-opening tap should leave the user. */
@@ -28,6 +29,20 @@ internal fun mirrorNotificationInteractionOpensScreen(
         route == MirrorNotificationOpenRoute.SCREEN_MIRROR ||
             (route == null && eligibleFallback)
     )
+
+/** Re-evaluate at tap time too: notifications can predate discovery of virtual-display support. */
+internal fun mirrorNotificationVirtualDisplay(
+    isContentTap: Boolean,
+    route: MirrorNotificationOpenRoute?,
+    capabilities: Collection<Capability>,
+    notificationKey: String,
+): ScreenVirtualDisplay? {
+    if (!isContentTap || route != MirrorNotificationOpenRoute.SCREEN_MIRROR ||
+        Capability.SCREEN_VIRTUAL_DISPLAY_V1 !in capabilities
+    ) return null
+    return ScreenVirtualDisplay(launchKind = ScreenVirtualDisplay.NOTIFICATION,
+        notificationKey = notificationKey).takeIf { it.isValid() }
+}
 
 /**
  * Chooses the local UI fallback without weakening the screen requester's own trust checks.

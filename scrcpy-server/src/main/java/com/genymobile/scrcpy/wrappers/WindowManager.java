@@ -20,6 +20,11 @@ public final class WindowManager {
         this.manager = manager;
     }
 
+    /** Keep the virtual display keyboard on that display. Failure must not put it on the phone. */
+    public void setDisplayImePolicyLocal(int displayId) throws ReflectiveOperationException {
+        manager.getClass().getMethod("setDisplayImePolicy", int.class, int.class).invoke(manager, displayId, 0);
+    }
+
     @TargetApi(AndroidVersions.API_30_ANDROID_11)
     public void registerDisplayWindowListener(IDisplayWindowListener listener) {
         try {

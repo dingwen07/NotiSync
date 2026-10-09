@@ -12,6 +12,7 @@ public final class ControlChannel implements java.io.Closeable {
     private final DeviceMessageWriter writer;
     private final boolean allowControl;
     private final boolean allowClipboard;
+    private final boolean virtualDisplay;
 
     /**
      * NotiSync transport adapter: the app owns a private full-duplex socket pair and passes the
@@ -23,12 +24,17 @@ public final class ControlChannel implements java.io.Closeable {
     }
 
     public ControlChannel(InputStream input, OutputStream output, boolean allowControl, boolean allowClipboard) {
+        this(input, output, allowControl, allowClipboard, false);
+    }
+
+    public ControlChannel(InputStream input, OutputStream output, boolean allowControl, boolean allowClipboard, boolean virtualDisplay) {
         this.input = input;
         this.output = output;
         reader = new ControlMessageReader(input);
         writer = new DeviceMessageWriter(output);
         this.allowControl = allowControl;
         this.allowClipboard = allowClipboard;
+        this.virtualDisplay = virtualDisplay;
     }
 
     public ControlMessage recv() throws IOException {
@@ -64,6 +70,9 @@ public final class ControlChannel implements java.io.Closeable {
 
     private boolean isAllowed(int type) {
         switch (type) {
+            case ControlMessage.TYPE_OPEN_LAUNCHER:
+            case ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY:
+                return allowControl && virtualDisplay;
             case ControlMessage.TYPE_INJECT_KEYCODE:
             case ControlMessage.TYPE_INJECT_TEXT:
             case ControlMessage.TYPE_INJECT_TOUCH_EVENT:
@@ -108,6 +117,11 @@ public final class ControlChannel implements java.io.Closeable {
             case ControlMessage.TYPE_EXPAND_NOTIFICATION_PANEL:
             case ControlMessage.TYPE_SET_VIDEO_VISIBILITY:
                 return true;
+            case ControlMessage.TYPE_OPEN_LAUNCHER:
+                return virtualDisplay;
+            case ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY:
+                return virtualDisplay && com.genymobile.scrcpy.VirtualDisplayConfig.isValidSize(
+                        message.getDisplayWidth(), message.getDisplayHeight(), message.getDisplayDensityDpi());
             case ControlMessage.TYPE_GET_CLIPBOARD:
                 // COPY/CUT inject keys and must not bypass a view/clipboard-only session.
                 return message.getCopyKey() == ControlMessage.COPY_KEY_NONE;

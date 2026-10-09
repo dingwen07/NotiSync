@@ -56,6 +56,7 @@ internal class NSScreenRunner(
             val features = buildList {
                 if (Capability.SCREEN_MIRROR_CONTROL_V1.name in device.capabilities) add("control")
                 if (Capability.SCREEN_MIRROR_CLIPBOARD_TEXT_V1.name in device.capabilities) add("clipboard")
+                if (Capability.SCREEN_VIRTUAL_DISPLAY_V1.name in device.capabilities) add("virtual-display")
             }.joinToString(",").ifBlank { "view-only" }
             output.appendLine("${device.clientId}\t${device.name}\tcodecs=$codecs\t$features")
         }
@@ -74,7 +75,27 @@ internal class NSScreenRunner(
         val source = selectSource(sources, options.deviceId, output, input, interactive)
         val codec = selectCodec(source, options.codec, output, input, interactive)
         validateFeatures(source, options)
+        if (options.virtualDisplay != null && Capability.SCREEN_VIRTUAL_DISPLAY_V1.name !in source.capabilities) {
+            throw ScreenCliException("Source does not advertise virtual display support")
+        }
 
+        try {
+            connectSession(options, output, bridge, requesterId, source, codec)
+        } catch (rejected: ScreenRequestRejectedException) {
+            if (options.virtualDisplay == null || rejected.status != ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED) throw rejected
+            output.appendLine("Virtual Display access is not granted; connecting with regular screen sharing.")
+            connectSession(options.copy(virtualDisplay = null), output, bridge, requesterId, source, codec)
+        }
+    }
+
+    private fun connectSession(
+        options: ConnectOptions,
+        output: Appendable,
+        bridge: ScreenApplicationBridge,
+        requesterId: ClientId,
+        source: DeviceView,
+        codec: ScreenMirrorCodec,
+    ) {
         val issuedAt = clock.millis()
         val expiresAt = issuedAt + REQUEST_LIFETIME.toMillis()
         val sessionId = "screen:${UUID.randomUUID()}"
@@ -103,6 +124,8 @@ internal class NSScreenRunner(
                         registry.register(descriptor, token, masterPsk)
                         val request = ScreenMirrorSync(
                             action = ScreenMirrorAction.REQUEST,
+                            protocolVersion = if (options.virtualDisplay == null) 1 else 2,
+                            virtualDisplay = options.virtualDisplay,
                             sessionId = sessionId,
                             requesterPeerId = requesterId,
                             sourcePeerId = ClientId(source.clientId),
@@ -187,6 +210,7 @@ internal class NSScreenRunner(
                     if (status.sessionId != request.sessionId ||
                         status.requesterPeerId != request.requesterPeerId ||
                         status.sourcePeerId != request.sourcePeerId
+                        || status.protocolVersion != request.protocolVersion
                     ) continue
                     when (status.action) {
                         ScreenMirrorAction.STATUS -> if (
@@ -207,7 +231,11 @@ internal class NSScreenRunner(
                             ?: throw IOException("screen source closed its response stream")
                         listener.close()
                         val detail = status.detail?.takeIf(String::isNotBlank)?.let { ": $it" }.orEmpty()
-                        throw IOException("screen source rejected the session (${status.status ?: status.action})$detail")
+                        val message = "screen source rejected the session (${status.status ?: status.action})$detail"
+                        if (status.action == ScreenMirrorAction.STATUS) {
+                            throw ScreenRequestRejectedException(status.status, message)
+                        }
+                        throw IOException(message)
                     }
                 } catch (error: ExecutionException) {
                     throw (error.cause as? Exception ?: error)
@@ -219,6 +247,8 @@ internal class NSScreenRunner(
             runCatching { executor.awaitTermination(1, TimeUnit.SECONDS) }
         }
     }
+
+    private class ScreenRequestRejectedException(val status: ScreenMirrorStatus?, message: String) : IOException(message)
 
     private fun selectSource(
         sources: List<DeviceView>,

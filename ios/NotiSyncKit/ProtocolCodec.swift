@@ -443,7 +443,8 @@ nonisolated enum KMPProtocolBridge {
             videoBitrateBps: value.videoBitrateBps.map { KotlinInt(int: Int32($0)) },
             candidates: value.candidates.map(toKmp),
             status: value.status.map(kmp),
-            detail: value.detail
+            detail: value.detail,
+            virtualDisplay: nil
         )
     }
 

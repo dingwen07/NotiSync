@@ -34,6 +34,7 @@ nonisolated enum ScreenMirrorCodec: String, Sendable { case H264, H265, AV1 }
 nonisolated enum ScreenMirrorStatus: String, Sendable {
     case CONNECTING, READY, UNAUTHORIZED, EXPIRED, BUSY, SHIZUKU_UNAVAILABLE
     case CODEC_UNAVAILABLE, CODEC_START_FAILED, TRANSPORT_FAILED, ENDED
+    case VIRTUAL_DISPLAY_UNAUTHORIZED
 }
 nonisolated enum Capability: String, Codable, Sendable {
     case CAPTURE, DISPLAY, DISMISS_SYNC, PROVIDE_ASSETS, BACKGROUND_WAKE, FOREGROUND_CONNECTION
@@ -43,6 +44,7 @@ nonisolated enum Capability: String, Codable, Sendable {
     case SCREEN_MIRROR_ENCODER_H264_HW, SCREEN_MIRROR_ENCODER_H265_HW, SCREEN_MIRROR_ENCODER_AV1_HW
     case SCREEN_MIRROR_VIDEO_VISIBILITY_V1
     case SCREEN_MIRROR_BROKER_RELAY_V1
+    case SCREEN_VIRTUAL_DISPLAY_V1
     case SSH_KEY_PROVIDER_V1, SSH_AGENT_V1
 }
 

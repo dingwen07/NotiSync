@@ -12,6 +12,24 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenMirrorRequestValidatorTest {
+    @Test
+    fun virtualDisplayDenialIsDistinctFromInvalidOrUnavailableRequests() {
+        val virtual = request().copy(protocolVersion = 2,
+            virtualDisplay = net.extrawdw.notisync.protocol.ScreenVirtualDisplay())
+        fun validate(req: ScreenMirrorSync, grant: Boolean = false, available: Boolean = false) =
+            ScreenMirrorRequestValidator.validate(req, requester, source, now, now, true, true, grant, available)
+        assertEquals(ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED, validate(virtual)?.status)
+        assertEquals(false, validate(virtual)?.needsPeerAuthorization)
+        assertEquals(ScreenMirrorStatus.SHIZUKU_UNAVAILABLE, validate(virtual, grant = true)?.status)
+        assertNull(validate(virtual, grant = true, available = true))
+        assertEquals(ScreenMirrorStatus.TRANSPORT_FAILED, validate(virtual.copy(protocolVersion = 1), true, true)?.status)
+        assertEquals(ScreenMirrorStatus.TRANSPORT_FAILED, validate(virtual.copy(virtualDisplay = virtual.virtualDisplay!!.copy(width = 0)), true, true)?.status)
+        assertNull(validate(request()))
+        assertEquals(ScreenMirrorStatus.UNAUTHORIZED, ScreenMirrorRequestValidator.validate(
+            virtual, requester, source, now, now, authorized = false, codecAvailable = true,
+        )?.status)
+        assertEquals(ScreenMirrorStatus.EXPIRED, validate(virtual.copy(expiresAt = now))?.status)
+    }
     private val source = ClientId("source-peer")
     private val requester = ClientId("requester-peer")
     private val now = 1_000_000L

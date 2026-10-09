@@ -22,6 +22,8 @@ import kotlinx.coroutines.cancel
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.ScreenMirrorCodec
+import net.extrawdw.notisync.protocol.ScreenMirrorStatus
+import net.extrawdw.notisync.protocol.ScreenVirtualDisplay
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -31,6 +33,110 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AndroidScreenRequesterSessionHostTest {
+    @Test
+    fun missingVirtualGrantRetriesPhysicalSharingInTheSameTransportMode() {
+        for (mode in AndroidScreenConnectionMode.entries) {
+            val fixture = HostFixture(emptySet(), virtualRejection = ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED)
+            val display = ScreenVirtualDisplay()
+            try {
+                val attempt = fixture.host.start(SOURCE, mode, display)
+                waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+                assertTrue(fixture.host.state.value.physicalDisplayFallback)
+                assertEquals(display, fixture.host.state.value.virtualDisplay)
+                assertEquals(attempt, fixture.host.start(SOURCE, mode, display))
+                assertEquals(listOf(mode to display), fixture.virtualOpens)
+                assertEquals(if (mode == AndroidScreenConnectionMode.DIRECT) 1 else 0, fixture.directOpens.get())
+                assertEquals(if (mode == AndroidScreenConnectionMode.BROKER_RELAY) 1 else 0, fixture.relayOpens.get())
+                fixture.host.stopIfAttempt(attempt)
+                assertTrue(fixture.host.state.value.physicalDisplayFallback)
+            } finally { fixture.close() }
+        }
+    }
+
+    @Test
+    fun otherRejectionsNeverFallBackToPhysicalSharing() {
+        for (status in listOf(ScreenMirrorStatus.UNAUTHORIZED, ScreenMirrorStatus.EXPIRED,
+            ScreenMirrorStatus.SHIZUKU_UNAVAILABLE, ScreenMirrorStatus.CODEC_START_FAILED)) {
+            val fixture = HostFixture(emptySet(), virtualRejection = status)
+            try {
+                fixture.host.start(SOURCE, virtualDisplay = ScreenVirtualDisplay())
+                waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.ERROR }
+                assertFalse(fixture.host.state.value.physicalDisplayFallback)
+                assertEquals(0, fixture.directOpens.get())
+                assertEquals(0, fixture.relayOpens.get())
+            } finally { fixture.close() }
+        }
+    }
+
+    @Test
+    fun physicalFallbackRejectionStopsWithoutAnotherRetry() {
+        val fixture = HostFixture(emptySet(),
+            virtualRejection = ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED,
+            physicalRejection = ScreenMirrorStatus.UNAUTHORIZED)
+        try {
+            fixture.host.start(SOURCE, virtualDisplay = ScreenVirtualDisplay())
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.ERROR }
+            assertTrue(fixture.host.state.value.physicalDisplayFallback)
+            assertEquals(1, fixture.virtualOpens.size)
+            assertEquals(1, fixture.directOpens.get())
+        } finally { fixture.close() }
+    }
+
+    @Test
+    fun stoppedViewerCannotStartPhysicalFallbackAfterLateVirtualRejection() {
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val fixture = HostFixture(emptySet(),
+            virtualRejection = ScreenMirrorStatus.VIRTUAL_DISPLAY_UNAUTHORIZED,
+            beforeVirtualRejection = { entered.countDown(); release.await(3, TimeUnit.SECONDS) })
+        try {
+            val attempt = fixture.host.start(SOURCE, virtualDisplay = ScreenVirtualDisplay())
+            assertTrue(entered.await(3, TimeUnit.SECONDS))
+            fixture.host.stopIfAttempt(attempt)
+            release.countDown()
+            waitUntil { fixture.scope.coroutineContext[kotlinx.coroutines.Job]!!.children.none() }
+            assertEquals(AndroidScreenHostPhase.ENDED, fixture.host.state.value.phase)
+            assertEquals(0, fixture.directOpens.get())
+        } finally { release.countDown(); fixture.close() }
+    }
+
+    @Test
+    fun virtualDisplayConfigSurvivesRelayReplacementAndTerminalState() {
+        val fixture = HostFixture(emptySet())
+        val display = ScreenVirtualDisplay(width = 800, height = 1280, densityDpi = 240)
+        try {
+            val direct = fixture.host.start(SOURCE, virtualDisplay = display)
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+            assertEquals(direct, fixture.host.start(SOURCE, virtualDisplay = display))
+            val relay = fixture.host.start(SOURCE, AndroidScreenConnectionMode.BROKER_RELAY, display)
+            assertNotEquals(direct, relay)
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.CONNECTED }
+            assertEquals(display, fixture.host.state.value.virtualDisplay)
+            assertEquals(0, fixture.directOpens.get())
+            assertEquals(0, fixture.relayOpens.get())
+            assertEquals(listOf(AndroidScreenConnectionMode.DIRECT to display,
+                AndroidScreenConnectionMode.BROKER_RELAY to display), fixture.virtualOpens)
+            fixture.host.stopIfAttempt(relay)
+            assertEquals(display, fixture.host.state.value.virtualDisplay)
+        } finally {
+            fixture.close()
+        }
+    }
+
+    @Test
+    fun failedVirtualDisplayDoesNotOpenPhysicalSession() {
+        val fixture = HostFixture(emptySet(), virtualFailure = true)
+        try {
+            fixture.host.start(SOURCE, virtualDisplay = ScreenVirtualDisplay())
+            waitUntil { fixture.host.state.value.phase == AndroidScreenHostPhase.ERROR }
+            assertEquals(0, fixture.directOpens.get())
+            assertEquals(0, fixture.relayOpens.get())
+            assertEquals(ScreenVirtualDisplay(), fixture.host.state.value.virtualDisplay)
+        } finally {
+            fixture.close()
+        }
+    }
+
     @Test
     fun sameSourceIsIdempotentAndStaleStopCannotCloseCurrentAttempt() {
         val fixture = HostFixture(emptySet())
@@ -303,12 +409,19 @@ class AndroidScreenRequesterSessionHostTest {
         capabilities: Set<Capability>,
         private val physicalCloseStarted: CountDownLatch? = null,
         private val physicalCloseGate: CountDownLatch? = null,
+        private val virtualFailure: Boolean = false,
+        private val virtualRejection: ScreenMirrorStatus? = null,
+        private val physicalRejection: ScreenMirrorStatus? = null,
+        private val beforeVirtualRejection: (() -> Unit)? = null,
     ) : AutoCloseable {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
         val control = RecordingOutputStream()
         val relayControl = RecordingOutputStream()
         val directOpens = AtomicInteger()
         val relayOpens = AtomicInteger()
+        val virtualOpens = java.util.Collections.synchronizedList(
+            mutableListOf<Pair<AndroidScreenConnectionMode, ScreenVirtualDisplay>>(),
+        )
         val session = FakeSession(
             sourceCapabilities = capabilities,
             controlOutput = control,
@@ -326,11 +439,22 @@ class AndroidScreenRequesterSessionHostTest {
             hardwareDecoderName = { null },
             openSession = { _, _ ->
                 directOpens.incrementAndGet()
+                physicalRejection?.let { throw AndroidScreenRequestRejectedException(it) }
                 session
             },
             openRelaySession = { _, _ ->
                 relayOpens.incrementAndGet()
+                physicalRejection?.let { throw AndroidScreenRequestRejectedException(it) }
                 relaySession
+            },
+            openVirtualSession = { _, _, mode, display ->
+                virtualOpens += mode to display
+                virtualRejection?.let {
+                    beforeVirtualRejection?.invoke()
+                    throw AndroidScreenRequestRejectedException(it)
+                }
+                if (virtualFailure) error("Virtual display is unavailable")
+                if (mode == AndroidScreenConnectionMode.DIRECT) session else relaySession
             },
             closeOwner = { owner, detail ->
                 synchronized(ownerCloses) { ownerCloses += owner to detail }

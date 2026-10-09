@@ -1,6 +1,7 @@
 package net.extrawdw.apps.notisync.screen
 
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.data.storage.operational.ScreenMirrorStateEntity
 import net.extrawdw.apps.notisync.testsupport.InMemoryOperationalApplicationState
 import net.extrawdw.notisync.protocol.ClientId
@@ -13,6 +14,90 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ScreenMirrorAuthorizationStoreTest {
+    @Test
+    fun virtualDisplayGrantIsSeparateDurableAndRemovedWithScreenGrant() = runBlocking {
+        val state = InMemoryOperationalApplicationState()
+        val peer = ClientId("virtual-peer")
+        val store = ScreenMirrorAuthorizationStore(state)
+        store.authorizeVirtualDisplay(peer, { true }, { true })
+        assertFalse(store.isVirtualDisplayAuthorized(peer))
+        store.setAuthorized(peer, true)
+        assertFalse(store.isVirtualDisplayAuthorized(peer))
+        store.authorizeVirtualDisplay(peer, { true }, { true })
+        assertTrue(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+        store.setAuthorized(peer, false)
+        store.setAuthorized(peer, true)
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+    }
+
+    @Test
+    fun failedVirtualDisplayGrantOrRevocationFailsClosed() = runBlocking {
+        val state = InMemoryOperationalApplicationState()
+        val peer = ClientId("virtual-peer")
+        val store = ScreenMirrorAuthorizationStore(state)
+        store.setAuthorized(peer, true)
+        state.failWrites = true
+        store.authorizeVirtualDisplay(peer, { true }, { true })
+        assertFalse(store.isVirtualDisplayAuthorized(peer))
+        state.failWrites = false
+        store.setAuthorized(peer, true)
+        store.authorizeVirtualDisplay(peer, { true }, { true })
+        assertTrue(store.isVirtualDisplayAuthorized(peer))
+        state.failWrites = true
+        store.revokeVirtualDisplay(peer)
+        assertFalse(store.isAuthorized(peer))
+        state.failWrites = false
+        store.setAuthorized(peer, true)
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+    }
+
+    @Test
+    fun virtualDisplayRequiresSuccessfulFreshAuthenticationForEachGrant() = runBlocking {
+        val state = InMemoryOperationalApplicationState()
+        val store = ScreenMirrorAuthorizationStore(state)
+        val peer = ClientId("virtual-peer")
+        store.setAuthorized(peer, true)
+        assertFalse(store.authorizeVirtualDisplay(peer, { true }, { false }))
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+        assertTrue(store.authorizeVirtualDisplay(peer, { true }, { true }))
+        store.revokeVirtualDisplay(peer)
+        assertFalse(store.authorizeVirtualDisplay(peer, { true }, { false }))
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+    }
+
+    @Test
+    fun authenticationCannotGrantAfterTrustOrScreenPermissionChanges() = runBlocking {
+        val state = InMemoryOperationalApplicationState()
+        val store = ScreenMirrorAuthorizationStore(state)
+        val peer = ClientId("virtual-peer")
+        store.setAuthorized(peer, true)
+        var eligible = true
+        assertFalse(store.authorizeVirtualDisplay(peer, { eligible }) {
+            eligible = false
+            true
+        })
+        assertFalse(store.authorizeVirtualDisplay(peer, { true }) {
+            store.setAuthorized(peer, false)
+            true
+        })
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+    }
+
+    @Test
+    fun cancelledAuthenticationCannotPersistAGrant() = runBlocking {
+        val state = InMemoryOperationalApplicationState()
+        val store = ScreenMirrorAuthorizationStore(state)
+        val peer = ClientId("virtual-peer")
+        store.setAuthorized(peer, true)
+        val job = launch(start = kotlinx.coroutines.CoroutineStart.UNDISPATCHED) {
+            store.authorizeVirtualDisplay(peer, { true }) {
+                kotlinx.coroutines.currentCoroutineContext()[kotlinx.coroutines.Job]!!.cancel()
+                true // Even a late success callback cannot save authority after cancellation.
+            }
+        }
+        job.join()
+        assertFalse(ScreenMirrorAuthorizationStore(state).isVirtualDisplayAuthorized(peer))
+    }
     @Test
     fun authorizationAndReplayAreLocalAndReplayStoresOnlyDigest() = runBlocking {
         val state = InMemoryOperationalApplicationState()

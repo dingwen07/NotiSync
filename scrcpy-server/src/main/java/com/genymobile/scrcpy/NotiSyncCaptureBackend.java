@@ -7,6 +7,7 @@ import com.genymobile.scrcpy.device.Streamer;
 import com.genymobile.scrcpy.util.Ln;
 import com.genymobile.scrcpy.video.CaptureControl;
 import com.genymobile.scrcpy.video.ScreenCapture;
+import com.genymobile.scrcpy.video.NewDisplayCapture;
 import com.genymobile.scrcpy.video.SurfaceCapture;
 import com.genymobile.scrcpy.video.SurfaceEncoder;
 import com.genymobile.scrcpy.video.VideoCodec;
@@ -40,6 +41,7 @@ public final class NotiSyncCaptureBackend {
 
     public static final int PROBE_DISPLAY_CAPTURE = 1;
     public static final int PROBE_INPUT_INJECTION = 2;
+    public static final int PROBE_VIRTUAL_DISPLAY = 4;
 
     public static final int STARTED = 0;
     public static final int BUSY = 1;
@@ -95,6 +97,11 @@ public final class NotiSyncCaptureBackend {
         } catch (Throwable error) {
             Ln.w("Input injection probe failed", error);
         }
+        try {
+            if (NewDisplayCapture.probe()) result |= PROBE_VIRTUAL_DISPLAY;
+        } catch (Throwable error) {
+            Ln.w("Virtual display probe failed");
+        }
         return result;
     }
 
@@ -107,6 +114,13 @@ public final class NotiSyncCaptureBackend {
 
     public synchronized int startSession(String ownerToken, int codecId, int maxDimension, int maxFps, int bitrateBps,
             boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoWriteFd, ParcelFileDescriptor controlFd) {
+        return startSession(ownerToken, codecId, maxDimension, maxFps, bitrateBps, allowControl, allowClipboard,
+                videoWriteFd, controlFd, null);
+    }
+
+    public synchronized int startSession(String ownerToken, int codecId, int maxDimension, int maxFps, int bitrateBps,
+            boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoWriteFd, ParcelFileDescriptor controlFd,
+            VirtualDisplayConfig virtualDisplay) {
         if (session != null) {
             closeQuietly(videoWriteFd);
             closeQuietly(controlFd);
@@ -162,6 +176,7 @@ public final class NotiSyncCaptureBackend {
                     allowClipboard,
                     ownedVideo,
                     ownedControl,
+                    virtualDisplay,
                     this::onSessionFinished
             );
             session = next;
@@ -307,6 +322,7 @@ public final class NotiSyncCaptureBackend {
         private final boolean allowClipboard;
         private final ParcelFileDescriptor videoFd;
         private final ParcelFileDescriptor controlFd;
+        private final VirtualDisplayConfig virtualDisplay;
         private final java.util.function.Consumer<Session> finished;
         private final AtomicBoolean stopping = new AtomicBoolean();
         private final CountDownLatch stopped = new CountDownLatch(1);
@@ -317,6 +333,7 @@ public final class NotiSyncCaptureBackend {
 
         Session(String ownerToken, VideoCodec codec, String encoderName, int maxDimension, int maxFps, int bitrateBps,
                 boolean allowControl, boolean allowClipboard, ParcelFileDescriptor videoFd, ParcelFileDescriptor controlFd,
+                VirtualDisplayConfig virtualDisplay,
                 java.util.function.Consumer<Session> finished) {
             this.ownerToken = ownerToken;
             this.codec = codec;
@@ -328,6 +345,7 @@ public final class NotiSyncCaptureBackend {
             this.allowClipboard = allowClipboard;
             this.videoFd = videoFd;
             this.controlFd = controlFd;
+            this.virtualDisplay = virtualDisplay;
             this.finished = finished;
         }
 
@@ -354,7 +372,7 @@ public final class NotiSyncCaptureBackend {
                     }
                     Workarounds.apply();
                     Ln.initLogLevel(Ln.Level.INFO);
-                    Options options = Options.forScreenMirror(maxDimension, maxFps, bitrateBps, encoderName, allowClipboard);
+                    Options options = Options.forScreenMirror(maxDimension, maxFps, bitrateBps, encoderName, allowClipboard, virtualDisplay != null);
 
                     captureControl = new CaptureControl();
                     ParcelFileDescriptor readFd = null;
@@ -366,7 +384,8 @@ public final class NotiSyncCaptureBackend {
                                 new ParcelFileDescriptor.AutoCloseInputStream(readFd),
                                 new ParcelFileDescriptor.AutoCloseOutputStream(writeFd),
                                 allowControl,
-                                allowClipboard
+                                allowClipboard,
+                                virtualDisplay != null
                         );
                         readFd = null;
                         writeFd = null;
@@ -376,11 +395,14 @@ public final class NotiSyncCaptureBackend {
                     }
                     // The controller always exists because video visibility is session flow
                     // control, independent from Android input and clipboard authorization.
-                    Controller controller = new Controller(controlChannel, options, captureControl);
+                    Controller controller = new Controller(controlChannel, options, captureControl,
+                            virtualDisplay == null ? null : virtualDisplay.launcherIntent);
                     processors.add(controller);
 
                     Streamer streamer = new Streamer(videoFd.getFileDescriptor(), codec);
-                    SurfaceCapture capture = new ScreenCapture(controller, options);
+                    SurfaceCapture capture = virtualDisplay == null ? new ScreenCapture(controller, options)
+                            : new NewDisplayCapture(controller, virtualDisplay, () -> !stopping.get());
+                    if (capture instanceof NewDisplayCapture) controller.setVirtualDisplayCapture((NewDisplayCapture) capture);
                     SurfaceEncoder encoder = new SurfaceEncoder(capture, streamer, options, captureControl);
                     processors.add(encoder);
 

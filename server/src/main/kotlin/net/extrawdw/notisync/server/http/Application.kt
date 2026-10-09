@@ -647,7 +647,9 @@ fun Application.brokerModule(appCheckJwks: AppCheckJwks? = null) {
                     ),
                 )
                 handle.markReady()
-                peer = withTimeoutOrNull((join.expiresAt - System.currentTimeMillis()).coerceAtLeast(1L)) {
+                peer = withTimeoutOrNull(
+                    ScreenRelayAdmissionPolicy.rendezvousTimeoutMillis(join.expiresAt, System.currentTimeMillis()),
+                ) {
                     handle.awaitPeer()
                 } ?: return@webSocket close(
                     CloseReason(CloseReason.Codes.NORMAL, "relay_expired"),

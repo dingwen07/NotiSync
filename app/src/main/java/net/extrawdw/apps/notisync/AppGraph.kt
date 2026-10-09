@@ -337,6 +337,8 @@ class AppGraph(private val app: Application) {
         private set
     internal lateinit var screenViewerToolbarPreferences: ScreenViewerToolbarPreferenceStore
         private set
+    internal lateinit var virtualScreenViewerToolbarPreferences: ScreenViewerToolbarPreferenceStore
+        private set
     internal lateinit var screenMirrorDecoderSupport: AndroidScreenDecoderSupport
         private set
     lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
@@ -414,12 +416,14 @@ class AppGraph(private val app: Application) {
         screenMirrorAuthorizations = ScreenMirrorAuthorizationStore(operationalApplicationState)
         screenMirrorCodecPreferences = ScreenMirrorCodecPreferenceStore(operationalApplicationState)
         screenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds)
+        virtualScreenViewerToolbarPreferences = ScreenViewerToolbarPreferenceStore(ds, virtualDisplay = true)
         screenMirrorDecoderSupport = AndroidScreenDecoderCapabilities.detect()
         screenMirrorShizuku = ScreenMirrorShizukuManager(app)
         screenMirrorCapabilities = ScreenMirrorCapabilityProvider(
             settings = settings,
             authorizations = screenMirrorAuthorizations,
             scope = scope,
+            virtualDisplayProbe = screenMirrorShizuku.virtualDisplaySupported,
         )
         trust.roster
             .onEach { roster ->
@@ -642,6 +646,12 @@ class AppGraph(private val app: Application) {
             }
             .launchIn(scope)
         screenMirrorAuthorizations.authorizedPeerIds
+            .onEach { screenController.onAuthorizationPolicyChanged() }
+            .launchIn(scope)
+        screenMirrorAuthorizations.virtualDisplayPeerIds
+            .onEach { screenController.onAuthorizationPolicyChanged() }
+            .launchIn(scope)
+        screenMirrorAuthorizations.authorizationStateHealth
             .onEach { screenController.onAuthorizationPolicyChanged() }
             .launchIn(scope)
         screenMirrorShizuku.status

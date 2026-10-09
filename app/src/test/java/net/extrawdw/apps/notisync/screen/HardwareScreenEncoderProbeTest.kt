@@ -8,6 +8,14 @@ import org.junit.Test
 
 class HardwareScreenEncoderProbeTest {
     @Test
+    fun virtualDisplayAdvertisementRequiresSuccessfulShellProbe() {
+        val codecs = setOf(ScreenMirrorCodec.H264)
+        assertEquals(false, Capability.SCREEN_VIRTUAL_DISPLAY_V1 in screenMirrorCapabilitiesFor(true, codecs))
+        assertTrue(Capability.SCREEN_VIRTUAL_DISPLAY_V1 in screenMirrorCapabilitiesFor(true, codecs, true))
+        assertTrue(screenMirrorCapabilitiesFor(false, codecs, true).isEmpty())
+        assertTrue(screenMirrorCapabilitiesFor(true, emptySet(), true).isEmpty())
+    }
+    @Test
     fun onlyHardwareEncodersAreReported() {
         val result = HardwareScreenEncoderProbe.codecsFrom(
             listOf(

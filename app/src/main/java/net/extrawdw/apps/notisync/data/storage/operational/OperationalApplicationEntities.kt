@@ -61,6 +61,8 @@ internal data class ScreenMirrorStateEntity(
     @ColumnInfo(name = "replay_blocked") val replayBlocked: Boolean,
     @ColumnInfo(name = "replay_quarantine_digest") val replayQuarantineDigest: String?,
     @ColumnInfo(name = "replay_quarantined_at") val replayQuarantinedAt: Long?,
+    @ColumnInfo(name = "virtual_display_peer_ids_json", defaultValue = "'[]'")
+    val virtualDisplayPeerIdsJson: String = "[]",
 )
 
 @Entity(tableName = "screen_codec_preferences")

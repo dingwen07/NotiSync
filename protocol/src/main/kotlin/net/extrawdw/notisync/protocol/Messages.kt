@@ -627,6 +627,8 @@ enum class ScreenMirrorStatus {
     CODEC_START_FAILED,
     TRANSPORT_FAILED,
     ENDED,
+    /** Initial virtual request denied its extra grant; a fresh physical request may be tried. */
+    VIRTUAL_DISPLAY_UNAUTHORIZED,
 }
 
 /**
@@ -680,6 +682,8 @@ data class ScreenMirrorSync(
     @CborLabel(16) val status: ScreenMirrorStatus? = null,
     /** Bounded human-readable diagnostic; never use it for protocol control flow. */
     @CborLabel(17) val detail: String? = null,
+    /** Version 2 only. Null retains physical-display mirroring; never downgrade this request to v1. */
+    @CborLabel(18) val virtualDisplay: ScreenVirtualDisplay? = null,
 ) {
     /** Exact declarations required from the source for this request. */
     fun requiredSourceCapabilities(): Set<Capability> {
@@ -688,6 +692,7 @@ data class ScreenMirrorSync(
         return buildSet {
             add(Capability.CAPABILITY_ROUTING_V1)
             add(Capability.SCREEN_MIRROR_SOURCE_V1)
+            if (virtualDisplay != null) add(Capability.SCREEN_VIRTUAL_DISPLAY_V1)
             // Screen protocol v1 is routed only to the complete MVP source implementation.
             // Per-session feature flags may disable use, but never weaken routing authority.
             add(Capability.SCREEN_MIRROR_CONTROL_V1)

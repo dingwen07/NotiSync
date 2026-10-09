@@ -943,7 +943,7 @@ class BrokerFlowTest {
     }
 
     @Test
-    fun screenRelayForwardsFramedVideoAndDeliveryFeedback() = testApplication {
+    fun screenRelayForwardsFramedVideoAndDeliveryFeedbackWithRequesterClockAhead() = testApplication {
         val tmp = File.createTempFile("notisync-screen-relay", ".db").also { it.deleteOnExit() }
         System.setProperty("NOTISYNC_DB_PATH", tmp.absolutePath)
         System.setProperty("NOTISYNC_FCM_ENABLED", "false")
@@ -955,7 +955,8 @@ class BrokerFlowTest {
         val source = SoftwareIdentitySigner.generate()
         http.register(requester, Hpke.generateKeyPair())
         http.register(source, Hpke.generateKeyPair())
-        val expiresAt = System.currentTimeMillis() + 60_000
+        // A full five-minute request from a clock 30 seconds ahead must still rendezvous.
+        val expiresAt = System.currentTimeMillis() + 5 * 60_000 + 30_000
         val relayId = "abcdefghijklmnopqrstuvwxABCDEFGH"
         val requesterRegistered = CompletableDeferred<Unit>()
         val videoHeader = ScreenRelayVideoWire.encodeHeader(

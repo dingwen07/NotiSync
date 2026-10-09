@@ -2,6 +2,8 @@ package net.extrawdw.apps.notisync.screen
 
 import java.security.MessageDigest
 import java.util.Base64
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -34,6 +36,54 @@ class ScreenMirrorAuthorizationStore internal constructor(
 
     private val _authorizedPeerIds = MutableStateFlow(loadAuthorized())
     val authorizedPeerIds: StateFlow<Set<String>> = _authorizedPeerIds.asStateFlow()
+    private val _virtualDisplayPeerIds = MutableStateFlow(runBlocking {
+        decodeAuthorized(operationalState.screenMirrorState().virtualDisplayPeerIdsJson)
+            .intersect(_authorizedPeerIds.value)
+    })
+    val virtualDisplayPeerIds: StateFlow<Set<String>> = _virtualDisplayPeerIds.asStateFlow()
+
+    fun isVirtualDisplayAuthorized(peerId: ClientId): Boolean =
+        isAuthorized(peerId) && peerId.value in _virtualDisplayPeerIds.value
+
+    /**
+     * Grants access only after a fresh local strong-biometric/device-credential prompt succeeds.
+     * The UI owns the prompt lifetime; cancellation and policy changes cannot grant access late.
+     */
+    internal suspend fun authorizeVirtualDisplay(
+        peerId: ClientId,
+        isEligible: () -> Boolean,
+        authenticate: suspend () -> Boolean,
+    ): Boolean {
+        if (!isAuthorized(peerId) || !isEligible()) return false
+        if (!authenticate()) return false
+        currentCoroutineContext().ensureActive()
+        return synchronized(lock) {
+            if (!isAuthorized(peerId) || !isEligible()) return@synchronized false
+            persistVirtualDisplayPeers(_virtualDisplayPeerIds.value + peerId.value)
+            isVirtualDisplayAuthorized(peerId)
+        }
+    }
+
+    /** Revocation never requires authentication. */
+    fun revokeVirtualDisplay(peerId: ClientId) = synchronized(lock) {
+        persistVirtualDisplayPeers(_virtualDisplayPeerIds.value - peerId.value)
+    }
+
+    private fun persistVirtualDisplayPeers(next: Set<String>) {
+        // Remove authority before a revocation write; publish new authority only after a durable grant.
+        _virtualDisplayPeerIds.value = _virtualDisplayPeerIds.value.intersect(next)
+        try {
+            runBlocking {
+                operationalState.updateScreenMirrorState {
+                    it.copy(virtualDisplayPeerIdsJson = ProtocolCodec.encodeToJson(next.sorted().toSet()))
+                }
+            }
+            _virtualDisplayPeerIds.value = next
+        } catch (_: Throwable) {
+            _virtualDisplayPeerIds.value = emptySet()
+            _authorizationStateHealth.value = ScreenAuthorizationStateHealth.PERSISTENCE_UNAVAILABLE
+        }
+    }
     private val _authorizationStateHealth = MutableStateFlow(ScreenAuthorizationStateHealth.HEALTHY)
     val authorizationStateHealth: StateFlow<ScreenAuthorizationStateHealth> =
         _authorizationStateHealth.asStateFlow()
@@ -49,6 +99,7 @@ class ScreenMirrorAuthorizationStore internal constructor(
             peerId.value in _authorizedPeerIds.value
 
     fun setAuthorized(peerId: ClientId, authorized: Boolean) = synchronized(lock) {
+        if (!authorized) persistVirtualDisplayPeers(_virtualDisplayPeerIds.value - peerId.value)
         val current = _authorizedPeerIds.value
         val next = if (authorized) current + peerId.value else current - peerId.value
         if (next == current && _authorizationStateHealth.value == ScreenAuthorizationStateHealth.HEALTHY) {
@@ -73,6 +124,8 @@ class ScreenMirrorAuthorizationStore internal constructor(
             .toSet()
         val current = _authorizedPeerIds.value
         val next = current.intersect(allowed)
+        val virtualNext = _virtualDisplayPeerIds.value.intersect(allowed)
+        if (virtualNext != _virtualDisplayPeerIds.value) persistVirtualDisplayPeers(virtualNext)
         if (next == current && _authorizationStateHealth.value == ScreenAuthorizationStateHealth.HEALTHY) {
             return@synchronized
         }
@@ -157,7 +210,10 @@ class ScreenMirrorAuthorizationStore internal constructor(
 
     private suspend fun persistAuthorized(value: Set<String>) {
         val encoded = ProtocolCodec.encodeToJson(value.sorted().toSet())
-        operationalState.updateScreenMirrorState { it.copy(authorizedPeerIdsJson = encoded) }
+        operationalState.updateScreenMirrorState { it.copy(
+            authorizedPeerIdsJson = encoded,
+            virtualDisplayPeerIdsJson = ProtocolCodec.encodeToJson(_virtualDisplayPeerIds.value.intersect(value).sorted().toSet()),
+        ) }
     }
 
     /**
@@ -172,6 +228,7 @@ class ScreenMirrorAuthorizationStore internal constructor(
             true
         } catch (_: Throwable) {
             _authorizedPeerIds.value = emptySet()
+            _virtualDisplayPeerIds.value = emptySet()
             val cleared = runCatching { runBlocking { persistAuthorized(emptySet()) } }.isSuccess
             _authorizationStateHealth.value = if (cleared) {
                 ScreenAuthorizationStateHealth.HEALTHY

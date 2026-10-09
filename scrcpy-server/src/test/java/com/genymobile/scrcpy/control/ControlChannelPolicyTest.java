@@ -12,6 +12,66 @@ import java.io.DataOutputStream;
 import org.junit.Test;
 
 public final class ControlChannelPolicyTest {
+    @Test
+    public void resizeRequiresVirtualDisplayAndControlBeforeReadingPayload() {
+        for (boolean control : new boolean[] {false, true}) {
+            for (boolean virtual : new boolean[] {false, true}) {
+                if (control && virtual) continue;
+                ControlChannel channel = new ControlChannel(new ByteArrayInputStream(
+                        new byte[] {ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY}), new ByteArrayOutputStream(), control, false, virtual);
+                assertThrows(ControlProtocolException.class, channel::recv);
+            }
+        }
+    }
+
+    @Test
+    public void resizeParsesGeometryWithoutConsumingNextControlMessage() throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream data = new DataOutputStream(bytes);
+        data.write(resizeFrame(1200, 1000, 408));
+        data.writeByte(ControlMessage.TYPE_OPEN_LAUNCHER);
+        ControlChannel channel = new ControlChannel(new ByteArrayInputStream(bytes.toByteArray()),
+                new ByteArrayOutputStream(), true, false, true);
+        ControlMessage resize = channel.recv();
+        assertEquals(1200, resize.getDisplayWidth());
+        assertEquals(1000, resize.getDisplayHeight());
+        assertEquals(408, resize.getDisplayDensityDpi());
+        assertEquals(ControlMessage.TYPE_OPEN_LAUNCHER, channel.recv().getType());
+    }
+
+    @Test
+    public void resizeRejectsInvalidDimensionsDpiAndPixelBudget() throws Exception {
+        for (int[] values : new int[][] {{0, 1200, 320}, {4097, 1200, 320}, {1200, 239, 320},
+                {4096, 4096, 320}, {1200, 1000, 119}, {1200, 1000, 641}}) {
+            ControlChannel channel = new ControlChannel(new ByteArrayInputStream(resizeFrame(values[0], values[1], values[2])),
+                    new ByteArrayOutputStream(), true, false, true);
+            assertThrows(ControlProtocolException.class, channel::recv);
+        }
+    }
+
+    private static byte[] resizeFrame(int width, int height, int densityDpi) throws Exception {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream data = new DataOutputStream(bytes);
+        data.writeByte(ControlMessage.TYPE_RESIZE_VIRTUAL_DISPLAY);
+        data.writeShort(width);
+        data.writeShort(height);
+        data.writeShort(densityDpi);
+        return bytes.toByteArray();
+    }
+
+    @org.junit.Test
+    public void launcherRequiresVirtualDisplayAndControlAuthority() throws Exception {
+        for (boolean control : new boolean[] {false, true}) {
+            for (boolean virtual : new boolean[] {false, true}) {
+                ControlChannel channel = new ControlChannel(
+                        new java.io.ByteArrayInputStream(new byte[] {ControlMessage.TYPE_OPEN_LAUNCHER}),
+                        new java.io.ByteArrayOutputStream(), control, false, virtual);
+                if (control && virtual) assertEquals(ControlMessage.TYPE_OPEN_LAUNCHER, channel.recv().getType());
+                else org.junit.Assert.assertThrows(ControlProtocolException.class, channel::recv);
+            }
+        }
+    }
+
 
     @Test
     public void rejectsEveryNonMvpScrcpyCommandBeforeItsPayload() {

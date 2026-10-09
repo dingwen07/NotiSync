@@ -28,6 +28,69 @@ import org.junit.Test
 
 class AndroidScreenControlWriterTest {
     @Test
+    fun `virtual resize frame round trips through the source control parser`() {
+        val output = ByteArrayOutputStream()
+        AndroidScreenControlWriter(output).resizeVirtualDisplay(1200, 1000, 408)
+        assertArrayEquals(byteArrayOf(68, 4, 0xb0.toByte(), 3, 0xe8.toByte(), 1, 0x98.toByte()), output.toByteArray())
+        val parsed = ControlMessageReader(ByteArrayInputStream(output.toByteArray())).read { true }
+        assertEquals(1200, parsed.displayWidth)
+        assertEquals(1000, parsed.displayHeight)
+        assertEquals(408, parsed.displayDensityDpi)
+    }
+
+    @Test
+    fun `invalid resize does not write or poison the dispatcher`() {
+        val output = ByteArrayOutputStream()
+        val failures = AtomicInteger()
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) { failures.incrementAndGet() }
+        try {
+            assertFalse(dispatcher.resizeVirtualDisplay(4096, 4096, 320))
+            assertFalse(dispatcher.resizeVirtualDisplay(1200, 1000, 641))
+            assertEquals(0, output.size())
+            assertEquals(0, failures.get())
+        } finally { dispatcher.close() }
+    }
+
+    @Test
+    fun `pending resize events coalesce without moving across input`() {
+        val writes = Collections.synchronizedList(mutableListOf<ByteArray>())
+        val entered = CountDownLatch(1)
+        val release = CountDownLatch(1)
+        val completed = CountDownLatch(4)
+        val failures = AtomicInteger()
+        val output = object : OutputStream() {
+            override fun write(value: Int) = Unit
+            override fun write(buffer: ByteArray, offset: Int, length: Int) {
+                if (writes.isEmpty()) {
+                    entered.countDown()
+                    check(release.await(5, TimeUnit.SECONDS))
+                }
+                writes += buffer.copyOfRange(offset, offset + length)
+                completed.countDown()
+            }
+        }
+        val dispatcher = AndroidScreenControlDispatcher(AndroidScreenControlWriter(output)) { failures.incrementAndGet() }
+        try {
+            dispatcher.sendKeyPress(KeyEvent.KEYCODE_BACK)
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            dispatcher.resizeVirtualDisplay(1200, 1000, 408)
+            dispatcher.resizeVirtualDisplay(1200, 1300, 408)
+            dispatcher.sendKeyPress(KeyEvent.KEYCODE_HOME)
+            dispatcher.resizeVirtualDisplay(1200, 1700, 408)
+            release.countDown()
+            assertTrue(completed.await(5, TimeUnit.SECONDS))
+            assertEquals(4, writes.size)
+            assertEquals(1300, ControlMessageReader(ByteArrayInputStream(writes[1])).read { true }.displayHeight)
+            assertEquals(1700, ControlMessageReader(ByteArrayInputStream(writes[3])).read { true }.displayHeight)
+            assertKeyFrame(writes[2].copyOfRange(0, 14), KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HOME)
+            assertEquals(0, failures.get())
+        } finally {
+            release.countDown()
+            dispatcher.close()
+        }
+    }
+
+    @Test
     fun `navigation press writes an adjacent big-endian down and up pair`() {
         val output = ByteArrayOutputStream()
         AndroidScreenControlWriter(output).sendKeyPress(KeyEvent.KEYCODE_HOME)
@@ -138,6 +201,15 @@ class AndroidScreenControlWriterTest {
         assertArrayEquals(byteArrayOf(64), output.toByteArray())
         writer.close()
         assertThrows(IOException::class.java) { writer.togglePower() }
+    }
+
+    @Test
+    fun `launcher is a payload-free virtual session extension`() {
+        val output = ByteArrayOutputStream()
+        AndroidScreenControlWriter(output).openLauncher()
+        assertArrayEquals(byteArrayOf(67), output.toByteArray())
+        val parsed = ControlMessageReader(ByteArrayInputStream(output.toByteArray())).read { true }
+        assertEquals(ControlMessage.TYPE_OPEN_LAUNCHER, parsed.type)
     }
 
     @Test
