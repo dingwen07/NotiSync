@@ -32,7 +32,7 @@ android {
         applicationId = "net.extrawdw.apps.notisync"
         minSdk = 34
         targetSdk = 37
-        versionCode = 85
+        versionCode = 86
         versionName = "2.8.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         // Key Epoch rotation

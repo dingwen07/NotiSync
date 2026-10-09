@@ -98,9 +98,9 @@ public final class ControlChannel implements java.io.Closeable {
         switch (message.getType()) {
             case ControlMessage.TYPE_INJECT_KEYCODE:
                 return isAction(message.getAction())
-                        && message.getRepeat() >= 0 && message.getRepeat() <= MAX_KEY_REPEAT
-                        && (message.getMetaState() & ~ALLOWED_META_STATE_MASK) == 0
-                        && isAllowedKeycode(message.getKeycode());
+                        && message.getRepeat() >= 0 && message.getRepeat() <= ControlKeyPolicy.MAX_REPEAT
+                        && (message.getMetaState() & ~ControlKeyPolicy.META_STATE_MASK) == 0
+                        && ControlKeyPolicy.isAllowed(message.getKeycode());
             case ControlMessage.TYPE_INJECT_TEXT:
                 return utf8Length(message.getText()) <= ControlMessageReader.INJECT_TEXT_MAX_LENGTH;
             case ControlMessage.TYPE_INJECT_TOUCH_EVENT:
@@ -152,35 +152,6 @@ public final class ControlChannel implements java.io.Closeable {
         return text.getBytes(java.nio.charset.StandardCharsets.UTF_8).length;
     }
 
-    private static boolean isAllowedKeycode(int keycode) {
-        if (keycode >= 7 && keycode <= 16) return true; // 0..9
-        if (keycode >= 29 && keycode <= 54) return true; // A..Z
-        switch (keycode) {
-            case 3:   // HOME (system navigation)
-            case 4:   // BACK
-            case 19:  // DPAD_UP
-            case 20:  // DPAD_DOWN
-            case 21:  // DPAD_LEFT
-            case 22:  // DPAD_RIGHT
-            case 24:  // VOLUME_UP
-            case 25:  // VOLUME_DOWN
-            case 61:  // TAB
-            case 66:  // ENTER
-            case 67:  // DEL/backspace
-            case 92:  // PAGE_UP
-            case 93:  // PAGE_DOWN
-            case 112: // FORWARD_DEL
-            case 122: // MOVE_HOME
-            case 123: // MOVE_END
-            case 187: // APP_SWITCH/Recents (system navigation)
-                return true;
-            default:
-                return false;
-        }
-    }
-
-    private static final int MAX_KEY_REPEAT = 1_000;
     private static final int MAX_SCREEN_DIMENSION = 8_192;
     private static final int ALLOWED_BUTTON_MASK = 0x1f;
-    private static final int ALLOWED_META_STATE_MASK = 0x000770f3;
 }

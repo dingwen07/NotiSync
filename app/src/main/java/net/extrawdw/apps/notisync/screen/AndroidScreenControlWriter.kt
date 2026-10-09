@@ -2,6 +2,7 @@ package net.extrawdw.apps.notisync.screen
 
 import android.view.KeyEvent
 import android.view.MotionEvent
+import com.genymobile.scrcpy.control.ControlKeyPolicy
 import java.io.Closeable
 import java.io.IOException
 import java.io.OutputStream
@@ -34,7 +35,20 @@ private val ANDROID_SCREEN_CONTROL_KEYS = setOf(
     KeyEvent.KEYCODE_FORWARD_DEL,
     KeyEvent.KEYCODE_VOLUME_UP,
     KeyEvent.KEYCODE_VOLUME_DOWN,
+    KeyEvent.KEYCODE_TAB,
+    KeyEvent.KEYCODE_DPAD_UP,
+    KeyEvent.KEYCODE_DPAD_DOWN,
+    KeyEvent.KEYCODE_DPAD_LEFT,
+    KeyEvent.KEYCODE_DPAD_RIGHT,
+    KeyEvent.KEYCODE_PAGE_UP,
+    KeyEvent.KEYCODE_PAGE_DOWN,
+    KeyEvent.KEYCODE_MOVE_HOME,
+    KeyEvent.KEYCODE_MOVE_END,
 )
+
+// The source and viewer deliberately share one policy; expanded input requires updated peers.
+internal fun isAndroidScreenControlKey(keyCode: Int): Boolean =
+    ControlKeyPolicy.isAllowed(keyCode)
 
 /**
  * Serialized scrcpy-v1 control writer. One public operation becomes one OutputStream write so
@@ -52,6 +66,11 @@ internal class AndroidScreenControlWriter(
             keyFrame(KeyEvent.ACTION_DOWN, keyCode),
             keyFrame(KeyEvent.ACTION_UP, keyCode),
         )
+    }
+
+    @Throws(IOException::class)
+    fun sendKeyEvent(action: Int, keyCode: Int, repeat: Int, metaState: Int) {
+        writeFrames(keyFrame(action, keyCode, repeat, metaState))
     }
 
     /**
@@ -126,13 +145,13 @@ internal class AndroidScreenControlWriter(
         }
     }
 
-    private fun keyFrame(action: Int, keyCode: Int): ByteArray =
+    private fun keyFrame(action: Int, keyCode: Int, repeat: Int = 0, metaState: Int = 0): ByteArray =
         ByteBuffer.allocate(KEY_FRAME_BYTES).order(ByteOrder.BIG_ENDIAN)
             .put(TYPE_INJECT_KEYCODE.toByte())
             .put(action.toByte())
             .putInt(keyCode)
-            .putInt(0) // repeat
-            .putInt(0) // meta state
+            .putInt(repeat)
+            .putInt(metaState)
             .array()
 
     private fun touchFrame(touch: AndroidScreenTouch): ByteArray {
@@ -220,6 +239,17 @@ internal class AndroidScreenControlDispatcher(
             override fun write(writer: AndroidScreenControlWriter) = writer.sendKeyPress(keyCode)
         }
 
+        // Do not generate a toString() containing a user's keystrokes.
+        class HardwareKey(
+            private val action: Int,
+            private val keyCode: Int,
+            private val repeat: Int,
+            private val metaState: Int,
+        ) : Command {
+            override fun write(writer: AndroidScreenControlWriter) =
+                writer.sendKeyEvent(action, keyCode, repeat, metaState)
+        }
+
         // Intentionally not a data class: its generated toString() would expose typed secrets.
         class Text(private val text: String) : Command {
             override fun write(writer: AndroidScreenControlWriter) = writer.sendText(text)
@@ -275,6 +305,15 @@ internal class AndroidScreenControlDispatcher(
     fun sendKeyPress(keyCode: Int): Boolean {
         if (keyCode !in ANDROID_SCREEN_CONTROL_KEYS) return false
         return enqueue(Command.Key(keyCode))
+    }
+
+    fun sendKeyEvent(action: Int, keyCode: Int, repeat: Int, metaState: Int): Boolean {
+        if (action != KeyEvent.ACTION_DOWN && action != KeyEvent.ACTION_UP) return false
+        if (!isAndroidScreenControlKey(keyCode) || repeat < 0) return false
+        return enqueue(Command.HardwareKey(
+            action, keyCode, repeat.coerceAtMost(ControlKeyPolicy.MAX_REPEAT),
+            metaState and ControlKeyPolicy.META_STATE_MASK,
+        ))
     }
 
     /** Reject malformed/oversized IME commits before they can fail the control session. */

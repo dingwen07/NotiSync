@@ -62,6 +62,11 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     private final KeyCharacterMap charMap = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
     private final AtomicReference<DisplayData> displayData = new AtomicReference<>();
     private final Object inputStateLock = new Object();
+    private final KeyInputState keyInputState = new KeyInputState(
+            (downTime, eventTime, action, keyCode, repeat, metaState, flags, targetDisplayId, injectMode) ->
+                    Device.injectEvent(new KeyEvent(downTime, eventTime, action, keyCode, repeat, metaState,
+                            KeyCharacterMap.VIRTUAL_KEYBOARD, 0, flags, InputDevice.SOURCE_KEYBOARD),
+                            targetDisplayId, injectMode));
     private final ClipboardEchoSuppressor clipboardEchoSuppressor = new ClipboardEchoSuppressor();
     private final AtomicBoolean stopped = new AtomicBoolean();
 
@@ -122,6 +127,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             DisplayData previous = displayData.get();
             if (previous != null) {
                 cancelActivePointers(previous.inputDisplayId);
+                releasePressedKeys();
             }
             displayData.set(new DisplayData(inputDisplayId, positionMapper));
         }
@@ -152,6 +158,12 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
         }
     }
 
+    private void releasePressedKeys() {
+        if (!keyInputState.releaseAll(SystemClock.uptimeMillis())) {
+            Ln.w("Could not release all remote keyboard input");
+        }
+    }
+
     private void initPointers() {
         for (int i = 0; i < PointersState.MAX_POINTERS; ++i) {
             MotionEvent.PointerProperties props = new MotionEvent.PointerProperties();
@@ -177,6 +189,9 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
                     Ln.e("Controller error", error);
                 }
             } finally {
+                synchronized (inputStateLock) {
+                    releasePressedKeys();
+                }
                 listener.onTerminated(true);
             }
         }, "control-recv");
@@ -192,6 +207,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             return;
         }
         synchronized (inputStateLock) {
+            releasePressedKeys();
             DisplayData current = displayData.get();
             if (current != null) {
                 cancelActivePointers(current.inputDisplayId);
@@ -293,6 +309,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
                 captureControl.setVideoVisible(msg.isVideoVisible());
                 if (!msg.isVideoVisible()) {
                     synchronized (inputStateLock) {
+                        releasePressedKeys();
                         DisplayData current = displayData.get();
                         if (current != null) {
                             cancelActivePointers(current.inputDisplayId);
@@ -516,6 +533,13 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
     }
 
     private boolean injectKeyEvent(int action, int keyCode, int repeat, int metaState, int injectMode) {
+        synchronized (inputStateLock) {
+            if (stopped.get()) return false;
+            return injectKeyEventLocked(action, keyCode, repeat, metaState, injectMode);
+        }
+    }
+
+    private boolean injectKeyEventLocked(int action, int keyCode, int repeat, int metaState, int injectMode) {
         if (virtualDisplay && (keyCode == KeyEvent.KEYCODE_POWER || keyCode == KeyEvent.KEYCODE_SLEEP
                 || keyCode == KeyEvent.KEYCODE_WAKEUP || keyCode == KeyEvent.KEYCODE_SOFT_SLEEP)) return false;
         int actionDisplayId = getActionDisplayId();
@@ -535,7 +559,7 @@ public final class Controller implements AsyncProcessor, CaptureDisplayListener 
             }
         }
         return actionDisplayId != Device.DISPLAY_ID_NONE
-                && Device.injectKeyEvent(action, keyCode, repeat, metaState, actionDisplayId, injectMode);
+                && keyInputState.inject(action, keyCode, repeat, metaState, actionDisplayId, injectMode, SystemClock.uptimeMillis());
     }
 
     private int getActionDisplayId() {

@@ -23,6 +23,26 @@ permission as **Allow screen control** in Device Details.
 Shizuku Manager is installed separately. It is not bundled with NotiSync. The capture/input
 service runs for the screen session; codec and control availability depend on the device.
 
+## Mobile viewer keyboard
+
+On Android, iPhone, and iPad, a physical keyboard can type and send shortcuts while a remote screen
+is connected and focused, without opening **Keyboard**. The Keyboard action remains available for the viewer's on-screen
+keyboard. Physical input includes navigation, punctuation, F1–F12, numpad keys, and combinations
+with Shift, Ctrl, Alt, and Meta (Windows/Command). Escape is sent as Escape; use Back for Android
+Back navigation. Shortcuts intercepted by the viewer device's system or input method may not reach
+the remote screen.
+
+Keep both devices updated for the expanded keyboard support. Ordinary text follows the viewer's
+keyboard layout, but insertion still depends on the source's Android character map; full Unicode
+text input is not supported.
+
+On iPhone and iPad, the video surface receives physical keyboard presses without opening the text
+input sheet. Option maps to Android Alt; Command/Windows maps to Android Meta. Held keys are
+released when the viewer loses focus, opens the text input sheet, enters Picture in Picture, or
+changes sessions. The text input sheet continues to use the local keyboard normally.
+Direct iOS input currently forwards physical press/release events; it does not synthesize held-key
+auto-repeat.
+
 ## Desktop viewer
 
 After [installing and pairing NotiSync Desktop](desktop.md), list eligible devices and connect:

@@ -30,8 +30,14 @@ actor IOSScreenControlWriter {
 
     func sendKeyPress(_ keyCode: Int32) async throws {
         var frames = Data()
-        frames.append(keyFrame(action: 0, keyCode: keyCode))
-        frames.append(keyFrame(action: 1, keyCode: keyCode))
+        frames.append(IOSScreenKeyboardCommand.key(action: 0, code: keyCode, repeatCount: 0, metaState: 0).frame)
+        frames.append(IOSScreenKeyboardCommand.key(action: 1, code: keyCode, repeatCount: 0, metaState: 0).frame)
+        try await connection.send(frames)
+    }
+
+    func sendKeyboardCommands(_ commands: [IOSScreenKeyboardCommand]) async throws {
+        let frames = commands.reduce(into: Data()) { $0.append($1.frame) }
+        guard !frames.isEmpty else { return }
         try await connection.send(frames)
     }
 
@@ -91,14 +97,6 @@ actor IOSScreenControlWriter {
         frame.appendScreenUInt16(fixedPressure)
         frame.appendScreenUInt32(0) // action button
         frame.appendScreenUInt32(0) // buttons
-        return frame
-    }
-
-    private func keyFrame(action: UInt8, keyCode: Int32) -> Data {
-        var frame = Data([0, action])
-        frame.appendScreenUInt32(UInt32(bitPattern: keyCode))
-        frame.appendScreenUInt32(0) // repeat
-        frame.appendScreenUInt32(0) // meta state
         return frame
     }
 }
@@ -586,8 +584,9 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var control: IOSScreenControlWriter?
     private var activeTouchIds: Set<UInt64> = []
     private var lastTouchLocations: [UInt64: CGPoint] = [:]
-    private var touchSendTask: Task<Void, Never>?
-    private var videoVisibilityTask: Task<Void, Never>?
+    private var controlSendTask: Task<Void, Never>?
+    private var keyboardInput = IOSScreenKeyboardInput()
+    private var keyboardIsActive = false
     private var relayFallbackTask: Task<Void, Never>?
     private var resizeTask: Task<Void, Never>?
     private var lastRequestedDisplay: ScreenVirtualDisplay?
@@ -599,6 +598,10 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var relayAvailableForSource = false
     private var attemptGeneration = 0
 
+    var keyboardSessionID: ObjectIdentifier? {
+        connected && !stopped ? control.map(ObjectIdentifier.init) : nil
+    }
+
     init() {
         displayLayer.videoGravity = .resizeAspect
         displayLayer.backgroundColor = UIColor.black.cgColor
@@ -609,6 +612,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         }
         pictureInPicture.onActiveChange = { [weak self] active in
             guard let self else { return }
+            if active { self.releaseKeyboardInput() }
             self.pictureInPictureActive = active
             self.reconcilePlaybackActivity()
         }
@@ -621,6 +625,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 
     func start(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
         guard !pageClosed, let viewport else { return }
+        releaseKeyboardInput()
         attemptGeneration += 1
         let attempt = attemptGeneration
         stopped = false
@@ -682,6 +687,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
                 },
                 onFailure: { [weak self] error in
                     guard let self, !self.stopped, self.attemptGeneration == attempt else { return }
+                    self.releaseKeyboardInput()
                     self.connected = false
                     let failure = runtime.screenMirrorRemoteError(sessionId: session.sessionId) ?? error
                     if self.connectionMode == .direct, self.relayAvailableForSource,
@@ -749,16 +755,15 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
 
     private func tearDownTransport(runtime: NotiSyncRuntime) async {
         guard !stopped else { return }
+        releaseKeyboardInput()
         attemptGeneration += 1
         stopped = true
         pictureInPicture?.shutdown()
         pictureInPictureActive = false
         decoder?.cancel()
         decoder = nil
-        touchSendTask?.cancel()
-        touchSendTask = nil
-        videoVisibilityTask?.cancel()
-        videoVisibilityTask = nil
+        controlSendTask?.cancel()
+        controlSendTask = nil
         relayFallbackTask?.cancel()
         relayFallbackTask = nil
         resizeTask?.cancel()
@@ -784,7 +789,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         resizeTask?.cancel()
         resizeTask = nil
         guard connected, virtualDisplayActive, appIsActive, !pictureInPictureActive,
-              let display = viewport, display != lastRequestedDisplay, let control else { return }
+              let display = viewport, display != lastRequestedDisplay, control != nil else { return }
         let attempt = attemptGeneration
         resizeTask = Task { [weak self] in
             do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
@@ -794,7 +799,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             // Only cancel the debounce, never an in-flight TLS write (which would close the channel).
             self.resizeTask = nil
             self.lastRequestedDisplay = display
-            try? await control.resizeVirtualDisplay(display)
+            self.releaseKeyboardInput()
+            self.queueControlOperation { try await $0.resizeVirtualDisplay(display) }
         }
     }
 
@@ -818,6 +824,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         }
 
         guard !playbackSuspended else { return }
+        releaseKeyboardInput()
         playbackSuspended = true
         activeTouchIds.removeAll()
         lastTouchLocations.removeAll()
@@ -826,43 +833,61 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     private func queueVideoVisibility(_ visible: Bool) {
-        guard let control else { return }
-        let preceding = videoVisibilityTask
-        videoVisibilityTask = Task {
-            await preceding?.value
-            guard !Task.isCancelled else { return }
-            try? await control.setVideoVisible(visible)
-        }
+        queueControlOperation { try await $0.setVideoVisible(visible) }
     }
 
     private func queueVideoRestart() {
+        queueControlOperation { try await $0.restartVideo() }
+    }
+
+    /// Preserve DOWN/UP order, including releases before hiding or replacing the source display.
+    private func queueControlOperation(
+        _ operation: @escaping @Sendable (IOSScreenControlWriter) async throws -> Void
+    ) {
         guard let control else { return }
-        let preceding = videoVisibilityTask
-        videoVisibilityTask = Task {
+        let preceding = controlSendTask
+        controlSendTask = Task {
             await preceding?.value
             guard !Task.isCancelled else { return }
-            try? await control.restartVideo()
+            try? await operation(control)
         }
     }
 
+    func updateKeyboardActivity(isActive: Bool) {
+        keyboardIsActive = isActive
+        if !isActive { releaseKeyboardInput() }
+    }
+
+    func handleKeyEvent(_ event: IOSScreenKeyEvent) -> Bool {
+        guard connected, !stopped, keyboardIsActive, !showsTextInput,
+              !pictureInPictureActive, pictureInPictureErrorMessage == nil,
+              let commands = keyboardInput.handle(event) else { return false }
+        if !commands.isEmpty { queueControlOperation { try await $0.sendKeyboardCommands(commands) } }
+        return true
+    }
+
+    func releaseKeyboardInput() {
+        let commands = keyboardInput.releaseAll()
+        if !commands.isEmpty { queueControlOperation { try await $0.sendKeyboardCommands(commands) } }
+    }
+
     func sendKey(_ keyCode: Int32) {
-        guard let control else { return }
-        Task { try? await control.sendKeyPress(keyCode) }
+        queueControlOperation { try await $0.sendKeyPress(keyCode) }
     }
 
     func togglePower() {
-        guard !virtualDisplayActive, let control else { return }
-        Task { try? await control.togglePower() }
+        guard !virtualDisplayActive else { return }
+        queueControlOperation { try await $0.togglePower() }
     }
 
     func expandNotificationPanel() {
-        guard !virtualDisplayActive, let control else { return }
-        Task { try? await control.expandNotificationPanel() }
+        guard !virtualDisplayActive else { return }
+        queueControlOperation { try await $0.expandNotificationPanel() }
     }
 
     func showLauncher() {
-        guard virtualDisplayActive, let control else { return }
-        Task { try? await control.showLauncher() }
+        guard virtualDisplayActive else { return }
+        queueControlOperation { try await $0.showLauncher() }
     }
 
     func sendInputText(returnAfter: Bool = false) {
@@ -872,16 +897,14 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         inputText = ""
         showsTextInput = false
         showsInputText = false
-        guard let control else { return }
-        Task {
-            do {
-                if !text.isEmpty { try await control.sendText(text) }
-                if returnAfter { try await control.sendKeyPress(66) }
-            } catch { }
+        queueControlOperation { control in
+            if !text.isEmpty { try await control.sendText(text) }
+            if returnAfter { try await control.sendKeyPress(66) }
         }
     }
 
     func beginTextInput() {
+        releaseKeyboardInput()
         inputText = ""
         showsInputText = false
         showsTextInput = true
@@ -907,7 +930,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     fileprivate func handleTouches(_ samples: [IOSScreenTouchSample], in viewSize: CGSize) {
-        guard let control, dimensions.width > 0, dimensions.height > 0 else { return }
+        guard control != nil, dimensions.width > 0, dimensions.height > 0 else { return }
         var commands: [IOSScreenTouchCommand] = []
 
         for sample in samples {
@@ -949,12 +972,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             }
         }
         guard !commands.isEmpty else { return }
-        let precedingSend = touchSendTask
-        touchSendTask = Task {
-            await precedingSend?.value
-            guard !Task.isCancelled else { return }
-            try? await control.sendTouches(commands)
-        }
+        let batch = commands
+        queueControlOperation { try await $0.sendTouches(batch) }
     }
 
     private func touchCommand(
@@ -1036,6 +1055,7 @@ struct ScreenMirrorPlayerView: View {
     private var virtualControlsStorage = "back,home,recents,launcher"
     @FocusState private var inputIsFocused: Bool
     @State private var fullScreen = false
+    @State private var keyboardFocusRequest = 0
     let sourceId: String
     let sourceName: String
 
@@ -1055,6 +1075,12 @@ struct ScreenMirrorPlayerView: View {
                     layer: model.displayLayer,
                     sourceSize: model.dimensions,
                     zoomedOut: model.zoomedOut,
+                    keyboardEnabled: model.connected && scenePhase == .active && !model.showsTextInput &&
+                        !model.pictureInPictureActive && model.pictureInPictureErrorMessage == nil,
+                    keyboardSessionID: model.keyboardSessionID,
+                    keyboardFocusRequest: keyboardFocusRequest,
+                    onKeyEvent: model.handleKeyEvent,
+                    onKeyboardFocusLost: model.releaseKeyboardInput,
                     onTouches: { samples, size in model.handleTouches(samples, in: size) }
                 )
                     .allowsHitTesting(model.connected)
@@ -1109,8 +1135,12 @@ struct ScreenMirrorPlayerView: View {
         .ignoresSafeArea(.keyboard)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
-        .onAppear { model.updatePlaybackActivity(isActive: scenePhase != .background) }
+        .onAppear {
+            model.updateKeyboardActivity(isActive: scenePhase == .active)
+            model.updatePlaybackActivity(isActive: scenePhase != .background)
+        }
         .onChange(of: scenePhase) { _, phase in
+            model.updateKeyboardActivity(isActive: phase == .active)
             model.updatePlaybackActivity(isActive: phase != .background)
         }
         .onChange(of: fullScreen) { _, enabled in
@@ -1120,7 +1150,10 @@ struct ScreenMirrorPlayerView: View {
             guard model.viewport != nil else { return }
             await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName)
         }
-        .onDisappear { Task { await model.stop(runtime: runtime) } }
+        .onDisappear {
+            model.updateKeyboardActivity(isActive: false)
+            Task { await model.stop(runtime: runtime) }
+        }
         .alert(
             "Picture in Picture",
             isPresented: Binding(
@@ -1132,7 +1165,7 @@ struct ScreenMirrorPlayerView: View {
         } message: {
             Text(model.pictureInPictureErrorMessage ?? "Picture in Picture could not start.")
         }
-        .sheet(isPresented: $model.showsTextInput) {
+        .sheet(isPresented: $model.showsTextInput, onDismiss: { keyboardFocusRequest &+= 1 }) {
             NavigationStack {
                 Form {
                     Section {
@@ -1416,6 +1449,11 @@ private struct ScreenMirrorVideoSurface: UIViewRepresentable {
     let layer: AVSampleBufferDisplayLayer
     let sourceSize: CGSize
     let zoomedOut: Bool
+    let keyboardEnabled: Bool
+    let keyboardSessionID: ObjectIdentifier?
+    let keyboardFocusRequest: Int
+    let onKeyEvent: (IOSScreenKeyEvent) -> Bool
+    let onKeyboardFocusLost: () -> Void
     let onTouches: ([IOSScreenTouchSample], CGSize) -> Void
 
     func makeUIView(context: Context) -> ScreenMirrorLayerHostView {
@@ -1423,6 +1461,7 @@ private struct ScreenMirrorVideoSurface: UIViewRepresentable {
         view.backgroundColor = .black
         view.hostedLayer = layer
         view.configure(sourceSize: sourceSize, zoomedOut: zoomedOut)
+        configureKeyboard(view)
         view.onTouches = onTouches
         return view
     }
@@ -1430,11 +1469,26 @@ private struct ScreenMirrorVideoSurface: UIViewRepresentable {
     func updateUIView(_ uiView: ScreenMirrorLayerHostView, context: Context) {
         uiView.hostedLayer = layer
         uiView.configure(sourceSize: sourceSize, zoomedOut: zoomedOut)
+        configureKeyboard(uiView)
         uiView.onTouches = onTouches
+    }
+
+    private func configureKeyboard(_ view: ScreenMirrorLayerHostView) {
+        view.onKeyEvent = onKeyEvent
+        view.onKeyboardFocusLost = onKeyboardFocusLost
+        view.keyboardSessionID = keyboardSessionID
+        view.keyboardEnabled = keyboardEnabled
+        view.keyboardFocusRequest = keyboardFocusRequest
+    }
+
+    static func dismantleUIView(_ uiView: ScreenMirrorLayerHostView, coordinator: ()) {
+        uiView.keyboardEnabled = false
+        uiView.onKeyEvent = nil
+        uiView.onKeyboardFocusLost = nil
     }
 }
 
-private final class ScreenMirrorLayerHostView: UIView {
+private final class ScreenMirrorLayerHostView: IOSScreenKeyboardCaptureView {
     private static let zoomedOutScale: CGFloat = 0.76
     private static let zoomedOutVerticalOffset: CGFloat = 20
     private static let zoomDuration: CFTimeInterval = 0.24
@@ -1575,6 +1629,7 @@ private final class ScreenMirrorLayerHostView: UIView {
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        acquireKeyboardFocus()
         deliver(touches, action: 0, createsPointers: true, removesPointers: false)
     }
 

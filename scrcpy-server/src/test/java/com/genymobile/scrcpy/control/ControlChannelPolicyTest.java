@@ -10,6 +10,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.DataOutputStream;
 
 import org.junit.Test;
+import android.view.KeyEvent;
 
 public final class ControlChannelPolicyTest {
     @Test
@@ -251,6 +252,35 @@ public final class ControlChannelPolicyTest {
     public void acceptsVolumeKeys() throws Exception {
         assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(24), true, false).recv().getType());
         assertEquals(ControlMessage.TYPE_INJECT_KEYCODE, channel(keyMessage(25), true, false).recv().getType());
+    }
+
+    @Test
+    public void expandedKeyboardKeysRequireControlAuthority() throws Exception {
+        int[] keys = {KeyEvent.KEYCODE_SPACE, KeyEvent.KEYCODE_SLASH, KeyEvent.KEYCODE_LEFT_BRACKET,
+                KeyEvent.KEYCODE_F12, KeyEvent.KEYCODE_NUMPAD_7, KeyEvent.KEYCODE_ALT_RIGHT,
+                KeyEvent.KEYCODE_META_LEFT, KeyEvent.KEYCODE_NUM_LOCK, KeyEvent.KEYCODE_ESCAPE};
+        for (int key : keys) {
+            assertEquals(key, channel(keyMessage(key), true, false).recv().getKeycode());
+            assertThrows(ControlProtocolException.class, channel(keyMessage(key), false, true)::recv);
+        }
+    }
+
+    @Test
+    public void expandedModifiersRemainBounded() throws Exception {
+        for (int meta : new int[] {ControlKeyPolicy.META_STATE_MASK, 0x80000000}) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DataOutputStream output = new DataOutputStream(bytes);
+            output.writeByte(ControlMessage.TYPE_INJECT_KEYCODE);
+            output.writeByte(KeyEvent.ACTION_DOWN);
+            output.writeInt(KeyEvent.KEYCODE_SPACE);
+            output.writeInt(0);
+            output.writeInt(meta);
+            if (meta == ControlKeyPolicy.META_STATE_MASK) {
+                assertEquals(meta, channel(bytes.toByteArray(), true, false).recv().getMetaState());
+            } else {
+                assertThrows(ControlProtocolException.class, channel(bytes.toByteArray(), true, false)::recv);
+            }
+        }
     }
 
     @Test

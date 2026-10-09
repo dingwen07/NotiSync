@@ -159,6 +159,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
     private var pictureInPictureSourceRect: Rect? = null
     private var enteringPictureInPicture = false
     private var explicitlyClosing = false
+    internal val keyboardInput = AndroidScreenKeyboardInput()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -207,22 +208,36 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) keyboardInput.releasePressedKeys()
         // Transient system bars can reappear after dialogs or the software keyboard. Restore the
         // viewer's selected status-bar visibility and always-hidden navigation chrome.
         if (hasFocus) applySystemChrome()
     }
 
     // This is the public Activity callback; lint inherits the restriction on AndroidX's internal
-    // core ComponentActivity base class. Intercept before window dispatch consumes volume keys.
+    // core ComponentActivity base class. Route keyboard input before local UI focus navigation.
     @SuppressLint("RestrictedApi")
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
-        val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
-            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
-        if (!::sourceId.isInitialized || !isVolumeKey) return super.dispatchKeyEvent(event)
-
         val host = (applicationContext as NotiSyncApp).graphIfReady?.screenMirrorRequesterHost
         val state = host?.state?.value
-        if (state?.sourceId == sourceId && state.phase == AndroidScreenHostPhase.CONNECTED) {
+        val connected = ::sourceId.isInitialized && state?.sourceId == sourceId &&
+            state.phase == AndroidScreenHostPhase.CONNECTED
+        // State collection/recomposition may lag a session replacement. Never send a key through
+        // a borrowed dispatcher that no longer belongs to the currently connected session.
+        if (!connected || keyboardInput.control !== host.controlDispatcher()) {
+            keyboardInput.control = null
+        }
+        if (window.decorView.hasWindowFocus() && !isInPictureInPictureMode &&
+            !pictureInPictureChromeHidden.value && !explicitlyClosing &&
+            isScreenHardwareKeyboardEvent(event.source, event.flags) &&
+            keyboardInput.dispatch(
+                event.action, event.keyCode, event.repeatCount, event.metaState,
+                event.unicodeChar, event.deviceId,
+            )
+        ) return true
+        val isVolumeKey = event.keyCode == KeyEvent.KEYCODE_VOLUME_UP ||
+            event.keyCode == KeyEvent.KEYCODE_VOLUME_DOWN
+        if (connected && isVolumeKey) {
             if (event.action == KeyEvent.ACTION_DOWN) host.sendKeyPress(event.keyCode)
             // Consume both halves so the viewer's own media volume does not change mid-session.
             if (event.action == KeyEvent.ACTION_DOWN || event.action == KeyEvent.ACTION_UP) return true
@@ -265,7 +280,13 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
         super.onStop()
     }
 
+    override fun onPause() {
+        keyboardInput.releasePressedKeys()
+        super.onPause()
+    }
+
     override fun onUserLeaveHint() {
+        keyboardInput.releasePressedKeys()
         // autoEnterEnabled performs the transition. Hide chrome before Android snapshots the PiP
         // surface so the toolbar and IME never flash inside the compact window.
         if (pictureInPictureEligible && !explicitlyClosing) {
@@ -352,6 +373,7 @@ class AndroidScreenMirrorActivity : ComponentActivity() {
 
     private fun releaseSessionForFinish() {
         if (explicitlyClosing) return
+        keyboardInput.control = null
         explicitlyClosing = true
         pictureInPictureEligible = false
         renderingAllowed.value = false
@@ -691,6 +713,14 @@ private fun AndroidScreenMirrorViewer(
     }
 
     val controlsEnabled = control != null && phase == AndroidViewerUiPhase.CONNECTED
+    SideEffect {
+        activity.keyboardInput.control = control.takeIf {
+            controlsEnabled && renderingAllowed && !pipChromeHidden
+        }
+    }
+    DisposableEffect(activity) {
+        onDispose { activity.keyboardInput.control = null }
+    }
     // Leave disconnected Back to Android so it can animate the predictive task transition.
     // Activity.finish() releases the pending session after the system commits navigation.
     BackHandler(enabled = controlsEnabled) {
