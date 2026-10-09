@@ -444,7 +444,13 @@ nonisolated enum KMPProtocolBridge {
             candidates: value.candidates.map(toKmp),
             status: value.status.map(kmp),
             detail: value.detail,
-            virtualDisplay: nil
+            virtualDisplay: value.virtualDisplay.map { display in
+                NotiSyncProtocol.ScreenVirtualDisplay(
+                    width: Int32(display.width), height: Int32(display.height),
+                    densityDpi: Int32(display.densityDpi), launchKind: display.launchKind,
+                    packageName: display.packageName, notificationKey: display.notificationKey
+                )
+            }
         )
     }
 
@@ -779,7 +785,14 @@ nonisolated enum KMPProtocolBridge {
             videoBitrateBps: value.videoBitrateBps?.intValue,
             candidates: value.candidates.map(fromKmp),
             status: value.status.flatMap { ScreenMirrorStatus(rawValue: $0.name) },
-            detail: value.detail
+            detail: value.detail,
+            virtualDisplay: value.virtualDisplay.map { display in
+                ScreenVirtualDisplay(
+                    width: Int(display.width), height: Int(display.height),
+                    densityDpi: Int(display.densityDpi), launchKind: display.launchKind,
+                    packageName: display.packageName, notificationKey: display.notificationKey
+                )
+            }
         )
     }
 

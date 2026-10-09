@@ -48,6 +48,13 @@ actor IOSScreenControlWriter {
 
     func expandNotificationPanel() async throws { try await connection.send(Data([66])) }
 
+    func showLauncher() async throws { try await connection.send(Data([67])) }
+
+    func resizeVirtualDisplay(_ display: ScreenVirtualDisplay) async throws {
+        guard let frame = IOSScreenVirtualDisplaySizing.resizeFrame(display) else { return }
+        try await connection.send(frame)
+    }
+
     func setVideoVisible(_ visible: Bool) async throws {
         try await connection.send(Data([65, visible ? 1 : 0]))
     }
@@ -561,6 +568,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     @Published var status = "Preparing secure LAN session…"
     @Published var errorMessage: String?
     @Published var connected = false
+    @Published private(set) var virtualDisplayActive = false
+    @Published private(set) var viewport: ScreenVirtualDisplay?
     @Published var showsTextInput = false
     @Published var showsInputText = false
     @Published var inputText = ""
@@ -580,6 +589,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     private var touchSendTask: Task<Void, Never>?
     private var videoVisibilityTask: Task<Void, Never>?
     private var relayFallbackTask: Task<Void, Never>?
+    private var resizeTask: Task<Void, Never>?
+    private var lastRequestedDisplay: ScreenVirtualDisplay?
     private var playbackSuspended = false
     private var appIsActive = true
     private var stopped = false
@@ -609,11 +620,12 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     func start(runtime: NotiSyncRuntime, sourceId: String, sourceName: String) async {
-        guard !pageClosed else { return }
+        guard !pageClosed, let viewport else { return }
         attemptGeneration += 1
         let attempt = attemptGeneration
         stopped = false
         connected = false
+        virtualDisplayActive = false
         errorMessage = nil
         dimensions = .zero
         relayAvailableForSource = runtime.supportsScreenMirrorBrokerRelay(sourceId: sourceId)
@@ -639,7 +651,8 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             let session = try await runtime.openScreenMirror(
                 sourceId: sourceId,
                 sourceName: sourceName,
-                connectionMode: connectionMode
+                connectionMode: connectionMode,
+                virtualDisplay: viewport
             )
             guard !stopped, attemptGeneration == attempt else {
                 session.cancelTransport()
@@ -649,10 +662,13 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
             relayFallbackTask?.cancel()
             relayFallbackTask = nil
             self.session = session
+            virtualDisplayActive = session.virtualDisplay != nil
+            lastRequestedDisplay = session.virtualDisplay
             control = IOSScreenControlWriter(connection: session.channels.control)
             await pictureInPicture?.prepareForAutomaticStart()
             guard !stopped, attemptGeneration == attempt else { return }
             connected = true
+            scheduleVirtualDisplayResize()
             if playbackSuspended { queueVideoVisibility(false) }
             status = session.connectionMode == .brokerRelay
                 ? "Connected through broker Relay"
@@ -667,7 +683,9 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
                 onFailure: { [weak self] error in
                     guard let self, !self.stopped, self.attemptGeneration == attempt else { return }
                     self.connected = false
-                    if self.connectionMode == .direct, self.relayAvailableForSource {
+                    let failure = runtime.screenMirrorRemoteError(sessionId: session.sessionId) ?? error
+                    if self.connectionMode == .direct, self.relayAvailableForSource,
+                       Self.isDirectTransportFailure(failure) {
                         self.status = "Local connection interrupted. Switching to broker Relay…"
                         Task { [weak self] in
                             await self?.switchToBrokerRelay(
@@ -677,7 +695,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
                             )
                         }
                     } else {
-                        self.errorMessage = error.localizedDescription
+                        self.errorMessage = failure.localizedDescription
                     }
                 }
             )
@@ -743,6 +761,9 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         videoVisibilityTask = nil
         relayFallbackTask?.cancel()
         relayFallbackTask = nil
+        resizeTask?.cancel()
+        resizeTask = nil
+        lastRequestedDisplay = nil
         session?.cancelTransport()
         await runtime.endScreenMirror(sessionId: session?.sessionId)
         session = nil
@@ -750,6 +771,31 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
         activeTouchIds.removeAll()
         lastTouchLocations.removeAll()
         connected = false
+        virtualDisplayActive = false
+    }
+
+    func updateViewport(_ display: ScreenVirtualDisplay?) {
+        guard let display, viewport != display else { return }
+        viewport = display
+        scheduleVirtualDisplayResize()
+    }
+
+    private func scheduleVirtualDisplayResize() {
+        resizeTask?.cancel()
+        resizeTask = nil
+        guard connected, virtualDisplayActive, appIsActive, !pictureInPictureActive,
+              let display = viewport, display != lastRequestedDisplay, let control else { return }
+        let attempt = attemptGeneration
+        resizeTask = Task { [weak self] in
+            do { try await Task.sleep(nanoseconds: 200_000_000) } catch { return }
+            guard let self, !Task.isCancelled, self.attemptGeneration == attempt,
+                  self.connected, self.virtualDisplayActive, self.appIsActive,
+                  !self.pictureInPictureActive else { return }
+            // Only cancel the debounce, never an in-flight TLS write (which would close the channel).
+            self.resizeTask = nil
+            self.lastRequestedDisplay = display
+            try? await control.resizeVirtualDisplay(display)
+        }
     }
 
     func updatePlaybackActivity(isActive: Bool) {
@@ -758,6 +804,7 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     private func reconcilePlaybackActivity() {
+        scheduleVirtualDisplayResize()
         let shouldPlay = appIsActive || pictureInPictureActive
         if shouldPlay {
             guard playbackSuspended else { return }
@@ -804,13 +851,18 @@ final class IOSScreenMirrorPlayerModel: ObservableObject {
     }
 
     func togglePower() {
-        guard let control else { return }
+        guard !virtualDisplayActive, let control else { return }
         Task { try? await control.togglePower() }
     }
 
     func expandNotificationPanel() {
-        guard let control else { return }
+        guard !virtualDisplayActive, let control else { return }
         Task { try? await control.expandNotificationPanel() }
+    }
+
+    func showLauncher() {
+        guard virtualDisplayActive, let control else { return }
+        Task { try? await control.showLauncher() }
     }
 
     func sendInputText(returnAfter: Bool = false) {
@@ -940,6 +992,7 @@ private enum IOSScreenViewerControl: String, CaseIterable, Identifiable {
     case back
     case home
     case recents
+    case launcher
     case keyboard
     case power
     case notificationPanel
@@ -951,6 +1004,7 @@ private enum IOSScreenViewerControl: String, CaseIterable, Identifiable {
         case .back: "Back"
         case .home: "Home"
         case .recents: "Recent Apps"
+        case .launcher: "Launcher"
         case .keyboard: "Type"
         case .power: "Power"
         case .notificationPanel: "Notification Panel"
@@ -962,6 +1016,7 @@ private enum IOSScreenViewerControl: String, CaseIterable, Identifiable {
         case .back: "chevron.backward"
         case .home: "circle"
         case .recents: "square.on.square"
+        case .launcher: "square.grid.2x2.fill"
         case .keyboard: "keyboard"
         case .power: "power"
         case .notificationPanel: "bell.badge"
@@ -973,75 +1028,98 @@ struct ScreenMirrorPlayerView: View {
     @EnvironmentObject private var runtime: NotiSyncRuntime
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.displayScale) private var displayScale
     @StateObject private var model = IOSScreenMirrorPlayerModel()
     @AppStorage("screenMirrorViewerVisibleControlsV1")
     private var visibleControlsStorage = "back,home,recents"
+    @AppStorage("screenVirtualDisplayViewerVisibleControlsV1")
+    private var virtualControlsStorage = "back,home,recents,launcher"
     @FocusState private var inputIsFocused: Bool
+    @State private var fullScreen = false
     let sourceId: String
     let sourceName: String
 
     var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            ScreenMirrorVideoSurface(
-                layer: model.displayLayer,
-                sourceSize: model.dimensions,
-                zoomedOut: model.zoomedOut,
-                onTouches: { samples, size in model.handleTouches(samples, in: size) }
+        GeometryReader { geometry in
+            let viewport = IOSScreenViewportLayout(
+                safeAreaSize: geometry.size,
+                horizontalInsets: geometry.safeAreaInsets.leading + geometry.safeAreaInsets.trailing,
+                verticalInsets: geometry.safeAreaInsets.top + geometry.safeAreaInsets.bottom,
+                fullScreen: fullScreen
             )
-                .allowsHitTesting(model.connected)
-                .ignoresSafeArea()
-            if !model.connected {
-                VStack(spacing: 14) {
-                    if let error = model.errorMessage {
-                        Image(systemName: "wifi.exclamationmark")
-                            .font(.largeTitle)
-                        Text(error).multilineTextAlignment(.center)
-                        HStack(spacing: 12) {
+            let videoEdges: Edge.Set = viewport.ignoresVerticalInsets ? .all
+                : (viewport.ignoresHorizontalInsets ? .horizontal : [])
+            ZStack {
+                Color.black.ignoresSafeArea()
+                ScreenMirrorVideoSurface(
+                    layer: model.displayLayer,
+                    sourceSize: model.dimensions,
+                    zoomedOut: model.zoomedOut,
+                    onTouches: { samples, size in model.handleTouches(samples, in: size) }
+                )
+                    .allowsHitTesting(model.connected)
+                    .ignoresSafeArea(.container, edges: model.virtualDisplayActive ? videoEdges : .all)
+                if !model.connected {
+                    VStack(spacing: 14) {
+                        if let error = model.errorMessage {
+                            Image(systemName: "wifi.exclamationmark")
+                                .font(.largeTitle)
+                            Text(error).multilineTextAlignment(.center)
+                            HStack(spacing: 12) {
+                                Button("Cancel", role: .cancel) { dismiss() }
+                                    .nativeGlassButton()
+                                Button("Retry") {
+                                    Task {
+                                        await model.retry(
+                                            runtime: runtime,
+                                            sourceId: sourceId,
+                                            sourceName: sourceName
+                                        )
+                                    }
+                                }
+                                .nativeGlassButton(prominent: true)
+                            }
+                        } else {
+                            ProgressView().tint(.white)
+                            Text(runtime.screenMirrorPhase ?? model.status)
+                                .multilineTextAlignment(.center)
                             Button("Cancel", role: .cancel) { dismiss() }
                                 .nativeGlassButton()
-                            Button("Retry") {
-                                Task {
-                                    await model.retry(
-                                        runtime: runtime,
-                                        sourceId: sourceId,
-                                        sourceName: sourceName
-                                    )
-                                }
-                            }
-                            .nativeGlassButton(prominent: true)
                         }
-                    } else {
-                        ProgressView().tint(.white)
-                        Text(runtime.screenMirrorPhase ?? model.status)
-                            .multilineTextAlignment(.center)
-                        Button("Cancel", role: .cancel) { dismiss() }
-                            .nativeGlassButton()
+                    }
+                    .foregroundStyle(.white)
+                    .padding(28)
+                    .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 20))
+                    .padding()
+                }
+
+                VStack(spacing: 0) {
+                    viewerHeader
+                    Spacer(minLength: 0)
+                    if model.connected {
+                        viewerControls
                     }
                 }
-                .foregroundStyle(.white)
-                .padding(28)
-                .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 20))
-                .padding()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
             }
-
-            VStack(spacing: 0) {
-                viewerHeader
-                Spacer(minLength: 0)
-                if model.connected {
-                    viewerControls
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
+            .onChange(of: IOSScreenVirtualDisplaySizing.forViewport(size: viewport.size, displayScale: displayScale),
+                      initial: true) { _, display in model.updateViewport(display) }
         }
+        .ignoresSafeArea(.keyboard)
         .statusBarHidden(true)
         .persistentSystemOverlays(.hidden)
         .onAppear { model.updatePlaybackActivity(isActive: scenePhase != .background) }
         .onChange(of: scenePhase) { _, phase in
             model.updatePlaybackActivity(isActive: phase != .background)
         }
-        .task { await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName) }
+        .onChange(of: fullScreen) { _, enabled in
+            if enabled { model.zoomedOut = false }
+        }
+        .task(id: model.viewport != nil) {
+            guard model.viewport != nil else { return }
+            await model.start(runtime: runtime, sourceId: sourceId, sourceName: sourceName)
+        }
         .onDisappear { Task { await model.stop(runtime: runtime) } }
         .alert(
             "Picture in Picture",
@@ -1219,6 +1297,12 @@ struct ScreenMirrorPlayerView: View {
 
     private var viewerOverflowMenu: some View {
         Menu {
+            if model.virtualDisplayActive {
+                Toggle(isOn: $fullScreen) {
+                    Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                }
+                Divider()
+            }
             ForEach(overflowControls) { control in
                 Button { performViewerControl(control) } label: {
                     Label(control.title, systemImage: control.systemImage)
@@ -1226,7 +1310,7 @@ struct ScreenMirrorPlayerView: View {
             }
             if !overflowControls.isEmpty { Divider() }
             Menu {
-                ForEach(IOSScreenViewerControl.allCases) { control in
+                ForEach(availableControls) { control in
                     Toggle(isOn: visibilityBinding(for: control)) {
                         Label(control.title, systemImage: control.systemImage)
                     }
@@ -1257,15 +1341,23 @@ struct ScreenMirrorPlayerView: View {
 
     private var visibleControls: [IOSScreenViewerControl] {
         var seen: Set<IOSScreenViewerControl> = []
-        return visibleControlsStorage.split(separator: ",").compactMap { rawValue in
+        let storage = model.virtualDisplayActive ? virtualControlsStorage : visibleControlsStorage
+        return storage.split(separator: ",").compactMap { rawValue in
             guard let control = IOSScreenViewerControl(rawValue: String(rawValue)),
+                  availableControls.contains(control),
                   seen.insert(control).inserted else { return nil }
             return control
         }.prefix(Self.maximumVisibleControls).map { $0 }
     }
 
     private var overflowControls: [IOSScreenViewerControl] {
-        IOSScreenViewerControl.allCases.filter { !visibleControlSet.contains($0) }
+        availableControls.filter { !visibleControlSet.contains($0) }
+    }
+
+    private var availableControls: [IOSScreenViewerControl] {
+        IOSScreenViewerControl.allCases.filter {
+            model.virtualDisplayActive ? $0 != .power && $0 != .notificationPanel : $0 != .launcher
+        }
     }
 
     private func visibilityBinding(for control: IOSScreenViewerControl) -> Binding<Bool> {
@@ -1280,8 +1372,9 @@ struct ScreenMirrorPlayerView: View {
                 } else {
                     ordered.removeAll { $0 == control }
                 }
-                visibleControlsStorage = ordered.map(\.rawValue)
-                    .joined(separator: ",")
+                let storage = ordered.map(\.rawValue).joined(separator: ",")
+                if model.virtualDisplayActive { virtualControlsStorage = storage }
+                else { visibleControlsStorage = storage }
             }
         )
     }
@@ -1291,6 +1384,7 @@ struct ScreenMirrorPlayerView: View {
         case .back: model.sendKey(4)
         case .home: model.sendKey(3)
         case .recents: model.sendKey(187)
+        case .launcher: model.showLauncher()
         case .keyboard: model.beginTextInput()
         case .power: model.togglePower()
         case .notificationPanel: model.expandNotificationPanel()
@@ -1411,7 +1505,7 @@ private final class ScreenMirrorLayerHostView: UIView {
         isOpaque = true
         layer.isOpaque = true
         videoContainerLayer.backgroundColor = UIColor.black.cgColor
-        videoContainerLayer.contentsScale = UIScreen.main.scale
+        videoContainerLayer.contentsScale = traitCollection.displayScale
         videoContainerLayer.allowsEdgeAntialiasing = true
         videoContainerLayer.isOpaque = true
         videoContainerLayer.masksToBounds = true

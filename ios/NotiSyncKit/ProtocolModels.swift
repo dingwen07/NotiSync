@@ -422,7 +422,21 @@ nonisolated enum ScreenRelaySignalKind {
     static let videoCongested = "video_congested"
 }
 
-/// Screen protocol v1 rendezvous/status body. Secrets are present only on REQUEST.
+nonisolated struct ScreenVirtualDisplay: Equatable, Sendable {
+    var width: Int
+    var height: Int
+    var densityDpi: Int
+    var launchKind: String = "HOME"
+    var packageName: String?
+    var notificationKey: String?
+
+    var hasValidSize: Bool {
+        (240...4096).contains(width) && (240...4096).contains(height) &&
+            width * height <= 8_388_608 && (120...640).contains(densityDpi)
+    }
+}
+
+/// Physical requests use v1; virtual-display requests use v2. Secrets appear only on REQUEST.
 nonisolated struct ScreenMirrorSync: Sendable {
     var action: ScreenMirrorAction
     var protocolVersion: Int = 1
@@ -442,6 +456,7 @@ nonisolated struct ScreenMirrorSync: Sendable {
     var candidates: [ScreenMirrorConnectionCandidate] = []
     var status: ScreenMirrorStatus?
     var detail: String?
+    var virtualDisplay: ScreenVirtualDisplay?
 }
 
 nonisolated struct DataSync: Sendable {

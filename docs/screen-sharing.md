@@ -66,6 +66,15 @@ View icon for Recents. Tapping a compatible mirrored notification opens its
 original activity destination in a virtual display sized for the viewer. It does not also send
 the ordinary tap action to the physical phone. The source still checks the separate access grant.
 
+On iPhone and iPad, the existing screen-sharing button requests Virtual Display when the source
+advertises support. The display follows rotation and iPad split-screen or window resizing.
+Portrait uses the window's safe area; landscape extends under the left and right cutouts while
+retaining top and bottom insets. **Full Screen** in the viewer menu uses the entire window in either
+orientation and resizes the virtual display to match. Controls remain within the safe area.
+Density follows the window's display scale so Android dp
+sizes correspond to iOS points. The virtual viewer includes Launcher and saves its control
+visibility separately; Power and Notification Panel remain available only in regular sharing.
+
 On Linux/macOS:
 
 ```bash
@@ -82,17 +91,16 @@ redirect its activity, and a successful send alone does not confirm placement on
 
 Width and height must be 240–4096 pixels, with at most 8,388,608 pixels total; DPI must be 120–640.
 The encoder's dimension limit scales the video independently of the Android display resolution.
-Android window changes are debounced before resizing the existing display; encoder and input mapping
+Android and iOS window changes are debounced before resizing the existing display; encoder and input mapping
 updates keep the same session and apps. Picture-in-picture and backgrounding retain the last display
-size. `nsscreen` uses its explicitly configured size. This mode is currently available from Android
-and `nsscreen` viewers; iOS continues to use physical-screen sharing.
+size. `nsscreen` uses its explicitly configured size.
 
 Availability requires a successful shell display-creation probe. Unsupported requests fail without
 switching to physical-screen mirroring. If regular screen control is allowed but the separate virtual
-display grant is missing, the source returns `VIRTUAL_DISPLAY_UNAUTHORIZED`. Android and `nsscreen`
+display grant is missing, the source returns `VIRTUAL_DISPLAY_UNAUTHORIZED`. Android, iOS, and `nsscreen`
 viewers close that request and retry once using a fresh version 1 physical-screen request, with new
 session secrets and the same transport selection. The source checks regular authorization again.
-Android then uses the regular screen-sharing controls and preferences. Other failures and revocation
+Android and iOS then use the regular screen-sharing controls and preferences. Other failures and revocation
 during an active virtual session do not trigger this fallback. Power and notification-shade commands
 are disabled for virtual displays. Home opens the secondary launcher directly, avoiding the physical keyguard's
 HOME-key policy. Keep-active calls are sent only after verifying that Android assigned a power group
