@@ -40,6 +40,7 @@ import androidx.sqlite.execSQL
         ScreenCodecPreferenceEntity::class,
         OpenPgpEnrollmentEntity::class,
         DesktopApplicationEntity::class,
+        HotspotCredentialsEntity::class,
     ],
     version = OperationalDatabase.VERSION,
     exportSchema = true,
@@ -48,10 +49,21 @@ internal abstract class OperationalDatabase : RoomDatabase() {
     abstract fun metadata(): OperationalMetadataDao
     abstract fun applicationState(): OperationalApplicationDao
     abstract fun desktopApplications(): DesktopApplicationDao
+    abstract fun hotspotCredentials(): HotspotCredentialsDao
 
     companion object {
         const val DATABASE_NAME = "notisync-operational.db"
-        const val VERSION = 7
+        const val VERSION = 8
+
+        val MIGRATION_7_8 = Migration(7, 8) { connection ->
+            connection.execSQL("""
+                CREATE TABLE IF NOT EXISTS hotspot_credentials (
+                    hotspot_device_id TEXT NOT NULL PRIMARY KEY,
+                    ssid TEXT NOT NULL, psk TEXT, security_type INTEGER NOT NULL,
+                    hidden_ssid INTEGER NOT NULL, updated_at INTEGER NOT NULL
+                )
+            """.trimIndent())
+        }
 
         val MIGRATION_6_7 = Migration(6, 7) { connection ->
             connection.execSQL("ALTER TABLE screen_mirror_state ADD COLUMN virtual_display_peer_ids_json TEXT NOT NULL DEFAULT '[]'")
@@ -143,7 +155,7 @@ internal abstract class OperationalDatabase : RoomDatabase() {
                         installSshAuthorizationGuards(connection)
                     }
                 })
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build()
     }
 }

@@ -20,6 +20,7 @@ class PeerSelectorSerializationTest {
                 requireCapabilityRoutingV1 = true,
             ),
             Recipients.Only(ClientId("tablet")),
+            Recipients.OnlySet(setOf(ClientId("phone"), ClientId("tablet"))),
             Recipients.OnlyCapable(
                 ClientId("screen-source"),
                 setOf(Capability.SCREEN_MIRROR_SOURCE_V1, Capability.SCREEN_MIRROR_ENCODER_H264_HW),

@@ -43,6 +43,8 @@ enum class Capability {
     SSH_AGENT_V1,                      // consumes provider inventory/results and exposes a local SSH agent
     OPENPGP_SIGN_GIT_TAG_V1,           // extends OpenPGP signing with annotated Git tag requests
     SCREEN_VIRTUAL_DISPLAY_V1,        // accepts version 2 virtual-display requests
+    HOTSPOT_PROVIDER_V1,             // Android Internet hotspot, gated by screen-sharing permission
+    HOTSPOT_CONTROL_V1,              // consumes hotspot status/credentials and sends desired-state requests
 }
 
 /**
@@ -103,6 +105,8 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         Capability.SSH_AGENT_V1 -> 22
         Capability.OPENPGP_SIGN_GIT_TAG_V1 -> 23
         Capability.SCREEN_VIRTUAL_DISPLAY_V1 -> 24
+        Capability.HOTSPOT_PROVIDER_V1 -> 25
+        Capability.HOTSPOT_CONTROL_V1 -> 26
     }
 
     private fun capabilityForWireId(id: Int): Capability? = when (id) {
@@ -131,6 +135,8 @@ object CapabilityListSerializer : KSerializer<List<Capability>> {
         22 -> Capability.SSH_AGENT_V1
         23 -> Capability.OPENPGP_SIGN_GIT_TAG_V1
         24 -> Capability.SCREEN_VIRTUAL_DISPLAY_V1
+        25 -> Capability.HOTSPOT_PROVIDER_V1
+        26 -> Capability.HOTSPOT_CONTROL_V1
         else -> null
     }
 }

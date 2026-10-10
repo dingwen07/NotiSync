@@ -450,7 +450,7 @@ data class AssetSyncItem(
 @Serializable
 enum class DataSyncKind {
     ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING, OPENPGP_SIGN,
-    SSH_AGENT,
+    SSH_AGENT, HOTSPOT,
 }
 
 /** Lifecycle operation for one byte-exact remote OpenPGP signing request. Append-only. */
@@ -781,6 +781,8 @@ data class DataSync(
     @CborLabel(9) val openPgpSign: OpenPgpSignSync? = null,
     /** SSH key inventory, signing, import, cancellation, and authorization traffic. */
     @CborLabel(10) val sshAgent: SshAgentSync? = null,
+    /** Android Internet hotspot control and permission-filtered status. */
+    @CborLabel(11) val hotspot: HotspotSync? = null,
 )
 
 /**

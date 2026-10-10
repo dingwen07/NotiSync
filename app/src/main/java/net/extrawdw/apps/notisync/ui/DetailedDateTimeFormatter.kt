@@ -6,9 +6,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.platform.LocalConfiguration
 
 @Composable
-internal fun rememberDetailedDateTimeFormatter(): DateFormat {
+internal fun rememberDetailedDateTimeFormatter(includeDate: Boolean = true): DateFormat {
     val locale = LocalConfiguration.current.locales[0]
-    return remember(locale) {
-        DateFormat.getInstanceForSkeleton("yMMMdjmsSSS", locale)
+    return remember(locale, includeDate) {
+        DateFormat.getInstanceForSkeleton(if (includeDate) "yMMMdjmsSSS" else "jmsSSS", locale)
     }
 }

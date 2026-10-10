@@ -39,6 +39,10 @@ sealed interface Recipients {
     @Serializable
     data class Only(val id: ClientId) : Recipients
 
+    /** An exact allow-list of own devices. The caller supplies feature authorization and capability policy. */
+    @Serializable
+    data class OnlySet(val ids: Set<ClientId>) : Recipients
+
     /**
      * A single own device, only if its complete capability declaration satisfies [requiredCapabilities].
      * Unlike [OwnMeshFiltered], this selector has no legacy platform fallback: it is for security-sensitive

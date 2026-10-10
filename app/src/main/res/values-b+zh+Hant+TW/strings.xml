@@ -487,6 +487,11 @@
     <!-- Activity screen -->
     <string name="activity_message_openpgp">OpenPGP 簽章</string>
     <string name="activity_message_screen">螢幕分享</string>
+    <string name="activity_message_hotspot">Wi-Fi 熱點</string>
+    <string name="activity_message_hotspot_refresh">重新整理</string>
+    <string name="activity_message_hotspot_enable">開啟要求</string>
+    <string name="activity_message_hotspot_disable">關閉要求</string>
+    <string name="activity_message_hotspot_status">狀態更新</string>
     <string name="activity_message_keys_request">金鑰清單要求</string>
     <string name="activity_message_keys_snapshot">金鑰清單回應</string>
     <string name="activity_message_sign_request">簽章要求</string>
@@ -705,7 +710,8 @@
     <string name="device_forward_notifications_body">選擇要傳送到此裝置的通知。</string>
     <string name="device_forward_notifications_local">本機通知</string>
     <string name="device_forward_notifications_iphone">iPhone 通知</string>
-    <string name="device_filters_button_desc">對 %1$s 隱藏的通知</string>
+    <string name="device_filters_label">通知篩選</string>
+    <string name="device_filters_manage">管理</string>
     <string name="device_filters_title">對 %1$s 隱藏</string>
     <string name="device_filters_desc">本裝置不會向其轉送以下通知：</string>
     <string name="device_filters_empty">本裝置沒有對其隱藏任何通知。</string>
@@ -720,6 +726,11 @@
     <string name="device_removed_by">由 %1$s 移除</string>
     <!-- 點選裝置行後顯示的唯讀密碼學詳細資料。 -->
     <string name="device_details_key_epoch">金鑰世代</string>
+    <string name="device_details_expanded">已展開</string>
+    <string name="device_details_collapsed">已收合</string>
+    <plurals name="device_details_capability_count">
+        <item quantity="other">已宣告 %1$d 項功能</item>
+    </plurals>
     <string name="device_details_verified">✓ 已驗證</string>
     <string name="device_details_not_verified">✗ 未驗證</string>
     <string name="device_details_operational_unavailable">操作金鑰 · 不可用</string>
@@ -762,6 +773,7 @@
     <string name="screen_mirror_open_shizuku">開啟 Shizuku</string>
     <string name="screen_mirror_device_title">允許螢幕控制</string>
     <string name="screen_mirror_device_body">此裝置可透過區域連線啟動經過身分驗證的螢幕工作階段，無需再次核准。</string>
+    <string name="screen_mirror_device_hotspot_body">它也能控制您的熱點並讀取網路名稱和密碼。</string>
     <string name="screen_mirror_device_master_off">請先在設定中啟用螢幕分享。</string>
     <string name="screen_mirror_device_start">鏡像並控制螢幕</string>
     <string name="screen_mirror_device_start_desc">鏡像並控制 %1$s</string>
@@ -1066,4 +1078,38 @@
     <string name="screen_virtual_auth_title">允許虛擬顯示器存取</string>
     <string name="screen_virtual_auth_subtitle">請驗證身分，以允許 %1$s 在本機鎖定時也能開啟應用程式。</string>
     <string name="screen_virtual_auth_unavailable">請設定螢幕鎖定後再允許虛擬顯示器存取。使用強式生物辨識或裝置 PIN 碼、圖案或密碼驗證身分。</string>
+    <string name="hotspot_title">Wi-Fi 熱點</string>
+    <string name="hotspot_status_unavailable">無法使用</string>
+    <string name="hotspot_network_name">網路名稱</string>
+    <string name="hotspot_saved_network">已儲存的網路</string>
+    <string name="hotspot_password_label">密碼</string>
+    <string name="hotspot_qr_action">QR 圖碼</string>
+    <string name="hotspot_control_capability">遠端熱點控制</string>
+    <string name="hotspot_waiting">正在等待裝置…</string>
+    <string name="hotspot_refresh_hint">重新整理以要求熱點資訊。</string>
+    <string name="hotspot_on">已開啟</string>
+    <string name="hotspot_off">已關閉</string>
+    <string name="hotspot_starting">正在開啟…</string>
+    <string name="hotspot_stopping">正在關閉…</string>
+    <string name="hotspot_unknown">熱點狀態不明</string>
+    <string name="hotspot_failed">熱點操作失敗。請重新整理以查看目前狀態。</string>
+    <string name="hotspot_unavailable">熱點無法使用。請檢查熱點裝置上的 Shizuku。</string>
+    <string name="hotspot_unauthorized">請在熱點裝置上為此裝置開啟「允許螢幕共享」，然後重新整理。</string>
+    <string name="hotspot_unsupported">遠端熱點需要 Android 16 或更新版本。</string>
+    <string name="hotspot_busy">熱點忙碌中。請重新整理後再試。</string>
+    <string name="hotspot_timeout">Wi-Fi 熱點資訊無法使用，請重新整理以檢查熱點狀態。</string>
+    <string name="hotspot_show_password">顯示密碼</string>
+    <string name="hotspot_hide_password">隱藏密碼</string>
+    <string name="hotspot_updated">上次更新：%1$s</string>
+    <string name="hotspot_turn_on">開啟</string>
+    <string name="hotspot_turn_off">關閉</string>
+    <string name="hotspot_start">啟動</string>
+    <string name="hotspot_stop">停止</string>
+    <string name="hotspot_connect">連線</string>
+    <string name="hotspot_refresh_action">重新整理熱點狀態</string>
+    <string name="hotspot_network_saved">網路已儲存。連線由 Android 管理。</string>
+    <string name="hotspot_network_save_failed">無法儲存 Wi-Fi 網路。</string>
+    <string name="hotspot_show_qr">顯示 Wi-Fi QR 圖碼</string>
+    <string name="hotspot_qr_hint">掃描此圖碼以加入網路。</string>
+    <string name="hotspot_qr_close">關閉</string>
 </resources>

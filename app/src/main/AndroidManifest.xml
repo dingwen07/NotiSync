@@ -61,6 +61,9 @@
     <!-- Scoped package visibility instead of QUERY_ALL_PACKAGES -->
     <queries>
         <intent>
+            <action android:name="android.settings.WIFI_ADD_NETWORKS" />
+        </intent>
+        <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>

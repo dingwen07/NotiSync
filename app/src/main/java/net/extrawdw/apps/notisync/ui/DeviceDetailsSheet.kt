@@ -1,5 +1,9 @@
 package net.extrawdw.apps.notisync.ui
 
+import android.os.Build
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
@@ -18,15 +22,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.filled.delete as FilledDeleteIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.restore as RestoreIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.wifi_notification as WifiNotificationIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.chevron_right as ChevronRightIcon
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -38,17 +45,27 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.res.pluralStringResource
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import net.extrawdw.apps.notisync.R
+import net.extrawdw.apps.notisync.hotspot.controller.RemoteHotspotState
+import net.extrawdw.apps.notisync.hotspot.controller.SavedHotspot
 import net.extrawdw.apps.notisync.data.RosterDevice
 import net.extrawdw.apps.notisync.data.RosterKeyEpoch
 import net.extrawdw.apps.notisync.data.TrustStore
@@ -86,6 +103,12 @@ internal fun DeviceDetailsSheet(
     onScreenControlAuthorizedChange: (Boolean) -> Unit,
     onScreenMirrorCodecOverrideChange: (ScreenMirrorCodec?) -> Unit,
     onStartScreenMirror: (ClientId) -> Unit = {},
+    hotspotState: RemoteHotspotState? = null,
+    savedHotspot: SavedHotspot? = null,
+    onRefreshHotspot: () -> Unit = {},
+    onSetHotspotEnabled: (Boolean) -> Unit = {},
+    hasNotificationFilters: Boolean = false,
+    onShowNotificationFilters: () -> Unit = {},
     onRemove: () -> Unit = {},
     onRestore: () -> Unit = {},
     onPurge: () -> Unit = {},
@@ -93,6 +116,8 @@ internal fun DeviceDetailsSheet(
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val name = device.displayName ?: stringResource(R.string.device_unknown)
+    var keyEpochExpanded by remember(device.clientId) { mutableStateOf(false) }
+    var capabilitiesExpanded by remember(device.clientId) { mutableStateOf(false) }
 
     AdaptiveDetailSheet(
         onDismissRequest = onDismiss,
@@ -130,121 +155,148 @@ internal fun DeviceDetailsSheet(
                 )
             }
             item {
-                DeviceDetailsField(
-                    label = stringResource(R.string.pair_field_identity_key),
-                    value = device.identityKeyFingerprint ?: EM_DASH,
-                    monospace = true,
-                )
-            }
-            item {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(
-                        stringResource(R.string.device_details_key_epoch),
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    DeviceDetailsField(
+                        label = stringResource(R.string.pair_field_identity_key),
+                        value = device.identityKeyFingerprint ?: EM_DASH,
+                        monospace = true,
                     )
-                    OperationalEpochCard(device.keyEpoch)
-                }
-            }
-            item {
-                DeviceCapabilities(device.capabilities)
-            }
-            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
-                item {
-                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                        Text(
-                            stringResource(R.string.device_forward_notifications_title),
-                            style = MaterialTheme.typography.labelLarge,
-                        )
-                        Text(
-                            stringResource(R.string.device_forward_notifications_body),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                        NotificationForwardingSwitch(
-                            label = stringResource(R.string.device_forward_notifications_local),
-                            checked = forwardLocalNotifications,
-                            enabled = trustActionsEnabled,
-                            onCheckedChange = onForwardLocalNotificationsChange,
-                        )
-                        NotificationForwardingSwitch(
-                            label = stringResource(R.string.device_forward_notifications_iphone),
-                            checked = forwardIphoneNotifications,
-                            enabled = trustActionsEnabled,
-                            onCheckedChange = onForwardIphoneNotificationsChange,
-                        )
+                    CollapsibleDeviceSection(
+                        title = stringResource(R.string.device_details_key_epoch),
+                        summary = device.keyEpoch?.let { stringResource(R.string.pair_operational_chip_title, it.epoch) }
+                            ?: stringResource(R.string.device_details_operational_unavailable),
+                        expanded = keyEpochExpanded,
+                        onToggle = { keyEpochExpanded = !keyEpochExpanded },
+                    ) {
+                        OperationalEpochDetails(device.keyEpoch)
+                    }
+                    CollapsibleDeviceSection(
+                        title = stringResource(R.string.device_details_capabilities),
+                        summary = pluralStringResource(R.plurals.device_details_capability_count,
+                            device.capabilities.size, device.capabilities.size),
+                        expanded = capabilitiesExpanded,
+                        onToggle = { capabilitiesExpanded = !capabilitiesExpanded },
+                    ) {
+                        DeviceCapabilities(device.capabilities)
                     }
                 }
             }
-            if (device.supportsScreenMirrorRequest()) {
+            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
+                if (Capability.HOTSPOT_PROVIDER_V1 in device.capabilities || savedHotspot != null) item {
+                    HotspotControls(
+                        hotspotState, savedHotspot,
+                        trustActionsEnabled && Capability.HOTSPOT_PROVIDER_V1 in device.capabilities,
+                        onRefreshHotspot, onSetHotspotEnabled,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 16.dp),
+                    )
+                }
+            }
+            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
+                val supportsScreenMirror = device.supportsScreenMirrorRequest()
                 val availableCodecs = availableAndroidScreenCodecs(
                     sourceCapabilities = device.capabilities.toSet(),
                     decoderSupport = screenMirrorDecoderSupport,
                 )
                 item {
-                    ScreenMirrorCodecSelector(
-                        // Preserve and display an unavailable durable override as selected+disabled;
-                        // the requester temporarily falls back to Auto until that codec returns.
-                        selectedCodec = screenMirrorCodecOverride,
-                        availableCodecs = availableCodecs,
-                        enabled = screenMirrorRequestEnabled,
-                        onSelected = onScreenMirrorCodecOverrideChange,
-                    )
-                }
-                item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                    ) {
-                        Button(
-                            onClick = { onStartScreenMirror(device.clientId) },
-                            enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
-                            modifier = Modifier.weight(1f).heightIn(min = 48.dp),
+                    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        ScreenSharingHeader(
+                            device = device,
+                            showConnect = supportsScreenMirror,
+                            connectEnabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
+                            onConnectMirror = { onStartScreenMirror(device.clientId) },
+                            onDismiss = onDismiss,
+                        )
+                        Surface(
+                            shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow,
                         ) {
-                            Icon(
-                                ScreenShareIcon,
-                                contentDescription = null,
-                                modifier = Modifier.size(ButtonDefaults.IconSize),
-                            )
-                            androidx.compose.foundation.layout.Spacer(
-                                Modifier.size(ButtonDefaults.IconSpacing)
-                            )
-                            Text(stringResource(R.string.screen_mirror_device_start))
-                        }
-                        if (Capability.SCREEN_VIRTUAL_DISPLAY_V1 in device.capabilities) {
-                            ScreenVirtualDisplayButton(
-                                sourceId = device.clientId,
-                                enabled = screenMirrorRequestEnabled && availableCodecs.isNotEmpty(),
-                                onLaunch = onDismiss,
-                            )
+                            Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                if (supportsScreenMirror) {
+                                    ScreenMirrorCodecSelector(
+                                        // Preserve an unavailable override; sessions temporarily fall back to Auto.
+                                        selectedCodec = screenMirrorCodecOverride,
+                                        availableCodecs = availableCodecs,
+                                        enabled = screenMirrorRequestEnabled,
+                                        onSelected = onScreenMirrorCodecOverrideChange,
+                                    )
+                                    HorizontalDivider(Modifier.padding(top = 8.dp))
+                                }
+                                ScreenControlAuthorization(
+                                    masterEnabled = screenMirroringEnabled,
+                                    enabled = screenMirroringEnabled && trustActionsEnabled,
+                                    authorized = screenControlAuthorized,
+                                    onAuthorizedChange = onScreenControlAuthorizedChange,
+                                    additionalBody = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA)
+                                        R.string.screen_mirror_device_hotspot_body else null,
+                                )
+                                HorizontalDivider(Modifier.padding(top = 8.dp))
+                                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                    ScreenControlAuthorization(
+                                        masterEnabled = screenMirroringEnabled,
+                                        enabled = trustActionsEnabled && (virtualDisplayAuthorized ||
+                                            (screenMirroringEnabled && screenControlAuthorized && virtualDisplayAvailable)),
+                                        authorized = virtualDisplayAuthorized,
+                                        onAuthorizedChange = onVirtualDisplayAuthorizedChange,
+                                        title = R.string.screen_virtual_allow_title,
+                                        body = R.string.screen_virtual_allow_body,
+                                    )
+                                    if (!virtualDisplayAvailable) Text(
+                                        stringResource(R.string.screen_virtual_unavailable),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    )
+                                }
+                            }
                         }
                     }
                 }
-            }
-            if (device.ownDevice && device.status == TrustStatus.TRUSTED && device.verified) {
                 item {
-                    ScreenControlAuthorization(
-                        masterEnabled = screenMirroringEnabled,
-                        enabled = screenMirroringEnabled && trustActionsEnabled,
-                        authorized = screenControlAuthorized,
-                        onAuthorizedChange = onScreenControlAuthorizedChange,
-                    )
-                }
-                item {
-                    ScreenControlAuthorization(
-                        masterEnabled = screenMirroringEnabled,
-                        enabled = trustActionsEnabled && (virtualDisplayAuthorized ||
-                            (screenMirroringEnabled && screenControlAuthorized && virtualDisplayAvailable)),
-                        authorized = virtualDisplayAuthorized,
-                        onAuthorizedChange = onVirtualDisplayAuthorizedChange,
-                        title = R.string.screen_virtual_allow_title,
-                        body = R.string.screen_virtual_allow_body,
-                    )
-                    if (!virtualDisplayAvailable) Text(
-                        stringResource(R.string.screen_virtual_unavailable),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+                    Column(Modifier.fillMaxWidth().padding(top = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer,
+                                contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+                                Icon(WifiNotificationIcon, contentDescription = null,
+                                    modifier = Modifier.padding(12.dp).size(24.dp))
+                            }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text(stringResource(R.string.device_forward_notifications_title),
+                                    style = MaterialTheme.typography.titleMedium)
+                                Text(stringResource(R.string.device_forward_notifications_body),
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        Surface(shape = MaterialTheme.shapes.large,
+                            color = MaterialTheme.colorScheme.surfaceContainerLow) {
+                            Column(Modifier.fillMaxWidth().padding(top = 8.dp, bottom = 16.dp),
+                                verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                NotificationForwardingSwitch(
+                                    label = stringResource(R.string.device_forward_notifications_local),
+                                    checked = forwardLocalNotifications,
+                                    enabled = trustActionsEnabled,
+                                    onCheckedChange = onForwardLocalNotificationsChange,
+                                )
+                                HorizontalDivider()
+                                NotificationForwardingSwitch(
+                                    label = stringResource(R.string.device_forward_notifications_iphone),
+                                    checked = forwardIphoneNotifications,
+                                    enabled = trustActionsEnabled,
+                                    onCheckedChange = onForwardIphoneNotificationsChange,
+                                )
+                                HorizontalDivider()
+                                Row(Modifier.fillMaxWidth().heightIn(min = 48.dp), verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+                                    Text(stringResource(R.string.device_filters_label), Modifier.weight(1f),
+                                        style = MaterialTheme.typography.bodyLarge)
+                                    OutlinedButton(onClick = onShowNotificationFilters,
+                                        enabled = trustActionsEnabled && hasNotificationFilters) {
+                                        Text(stringResource(R.string.device_filters_manage))
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             if (device.status == TrustStatus.TRUSTED) {
@@ -280,6 +332,42 @@ internal fun DeviceDetailsSheet(
                         onRestore = onRestore,
                         onPurge = onPurge,
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScreenSharingHeader(
+    device: RosterDevice,
+    showConnect: Boolean,
+    connectEnabled: Boolean,
+    onConnectMirror: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val virtualDisplay = Capability.SCREEN_VIRTUAL_DISPLAY_V1 in device.capabilities
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Surface(shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer,
+            contentColor = MaterialTheme.colorScheme.onPrimaryContainer) {
+            Icon(ScreenShareIcon, contentDescription = null, modifier = Modifier.padding(12.dp).size(24.dp))
+        }
+        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(stringResource(R.string.settings_section_screen_sharing), style = MaterialTheme.typography.titleMedium)
+            if (showConnect) Text(
+                stringResource(if (virtualDisplay) R.string.screen_virtual_title else R.string.screen_mirror_device_start),
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (showConnect) {
+            if (virtualDisplay) {
+                ScreenVirtualDisplayButton(sourceId = device.clientId, enabled = connectEnabled, onLaunch = onDismiss)
+            } else {
+                FilledTonalIconButton(onClick = onConnectMirror, enabled = connectEnabled) {
+                    Icon(ScreenShareIcon, contentDescription = stringResource(R.string.screen_mirror_device_start_desc,
+                        device.displayName ?: stringResource(R.string.device_unknown)))
                 }
             }
         }
@@ -436,6 +524,7 @@ private fun ScreenControlAuthorization(
     onAuthorizedChange: (Boolean) -> Unit,
     title: Int = R.string.screen_mirror_device_title,
     body: Int = R.string.screen_mirror_device_body,
+    additionalBody: Int? = null,
 ) {
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         Row(
@@ -467,6 +556,13 @@ private fun ScreenControlAuthorization(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        additionalBody?.let {
+            Text(
+                stringResource(it),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
         if (!masterEnabled) {
             Text(
                 stringResource(R.string.screen_mirror_device_master_off),
@@ -536,47 +632,71 @@ private fun VerificationBadge(verified: Boolean) {
 }
 
 @Composable
-private fun OperationalEpochCard(epoch: RosterKeyEpoch?) {
-    Card(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(
-            containerColor = MaterialTheme.colorScheme.secondaryContainer,
-            contentColor = MaterialTheme.colorScheme.onSecondaryContainer,
-        ),
-    ) {
-        Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text(
-                if (epoch == null) {
-                    stringResource(R.string.device_details_operational_unavailable)
-                } else {
-                    stringResource(R.string.pair_operational_chip_title, epoch.epoch)
-                },
-                style = MaterialTheme.typography.titleSmall,
-            )
-            EpochField(
-                stringResource(R.string.pair_field_signing_key),
-                epoch?.signingKeyFingerprint ?: EM_DASH,
-                monospace = true,
-            )
-            EpochField(
-                stringResource(R.string.pair_field_encryption_key),
-                epoch?.encryptionKeyFingerprint ?: EM_DASH,
-                monospace = true,
-            )
-            if (epoch != null) {
-                EpochField(
-                    stringResource(R.string.device_details_not_before),
-                    epochTimeLabel(epoch.notBefore),
-                )
-                EpochField(
-                    stringResource(R.string.device_details_not_after),
-                    epochTimeLabel(epoch.notAfter),
-                )
-                EpochField(
-                    stringResource(R.string.device_details_minimum_epoch),
-                    epoch.minEpoch.toString(),
-                )
+private fun CollapsibleDeviceSection(
+    title: String,
+    summary: String,
+    expanded: Boolean,
+    onToggle: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    val expansionState = stringResource(
+        if (expanded) R.string.device_details_expanded else R.string.device_details_collapsed,
+    )
+    val chevronRotation by animateFloatAsState(if (expanded) 270f else 90f, label = "sectionChevron")
+    Column(Modifier.fillMaxWidth()) {
+        Row(
+            modifier = Modifier.fillMaxWidth()
+                .clickable(role = Role.Button, onClick = onToggle)
+                .semantics { stateDescription = expansionState }
+                .heightIn(min = 48.dp)
+                .padding(vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(title, modifier = Modifier.weight(1f), style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(summary, modifier = Modifier.weight(1f), style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.End)
+            Icon(ChevronRightIcon, contentDescription = null,
+                modifier = Modifier.size(20.dp).rotate(chevronRotation),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        AnimatedVisibility(visible = expanded) {
+            Column(Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                HorizontalDivider()
+                content()
             }
+        }
+    }
+}
+
+@Composable
+private fun OperationalEpochDetails(epoch: RosterKeyEpoch?) {
+    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        EpochField(
+            stringResource(R.string.pair_field_signing_key),
+            epoch?.signingKeyFingerprint ?: EM_DASH,
+            monospace = true,
+        )
+        EpochField(
+            stringResource(R.string.pair_field_encryption_key),
+            epoch?.encryptionKeyFingerprint ?: EM_DASH,
+            monospace = true,
+        )
+        if (epoch != null) {
+            EpochField(
+                stringResource(R.string.device_details_not_before),
+                epochTimeLabel(epoch.notBefore),
+            )
+            EpochField(
+                stringResource(R.string.device_details_not_after),
+                epochTimeLabel(epoch.notAfter),
+            )
+            EpochField(
+                stringResource(R.string.device_details_minimum_epoch),
+                epoch.minEpoch.toString(),
+            )
         }
     }
 }
@@ -587,7 +707,7 @@ private fun EpochField(label: String, value: String, monospace: Boolean = false)
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSecondaryContainer.copy(alpha = 0.72f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         SelectionContainer {
             Text(
@@ -601,31 +721,24 @@ private fun EpochField(label: String, value: String, monospace: Boolean = false)
 
 @Composable
 private fun DeviceCapabilities(capabilities: List<Capability>) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(
-            stringResource(R.string.device_details_capabilities),
-            style = MaterialTheme.typography.labelLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        if (capabilities.isEmpty()) {
-            Text(EM_DASH, style = MaterialTheme.typography.bodyMedium)
-        } else {
-            FlowRow(
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                capabilities.forEach { capability ->
-                    Surface(
-                        shape = MaterialTheme.shapes.extraLarge,
-                        color = MaterialTheme.colorScheme.primaryContainer,
-                        contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
-                    ) {
-                        Text(
-                            capabilityLabel(capability),
-                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
-                            style = MaterialTheme.typography.labelMedium,
-                        )
-                    }
+    if (capabilities.isEmpty()) {
+        Text(EM_DASH, style = MaterialTheme.typography.bodyMedium)
+    } else {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            capabilities.forEach { capability ->
+                Surface(
+                    shape = MaterialTheme.shapes.extraLarge,
+                    color = MaterialTheme.colorScheme.primaryContainer,
+                    contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                ) {
+                    Text(
+                        capabilityLabel(capability),
+                        modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                        style = MaterialTheme.typography.labelMedium,
+                    )
                 }
             }
         }
@@ -688,6 +801,8 @@ private fun capabilityLabel(capability: Capability): String = stringResource(
         Capability.SCREEN_VIRTUAL_DISPLAY_V1 -> R.string.screen_virtual_title
         Capability.SSH_KEY_PROVIDER_V1 -> R.string.device_capability_ssh_key_provider
         Capability.SSH_AGENT_V1 -> R.string.device_capability_ssh_agent
+        Capability.HOTSPOT_PROVIDER_V1 -> R.string.hotspot_title
+        Capability.HOTSPOT_CONTROL_V1 -> R.string.hotspot_control_capability
     },
 )
 

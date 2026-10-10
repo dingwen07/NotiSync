@@ -1,7 +1,7 @@
 [versions]
 # Build toolchain
 agp = "9.4.1"
-kotlin = "2.4.20"
+kotlin = "2.4.21"
 ksp = "2.3.12"
 jvmTarget = "21"
 
@@ -15,16 +15,16 @@ pty4j = "0.14.0"
 jna = "5.19.1"
 slf4j = "2.0.20"
 bouncyCastle = "1.86" # provider, PKIX, and utility artifacts
-bouncyCastleTls = "1.86.1" # TLS-only patch; upstream still depends on bcutil 1.86
+bouncyCastleTls = "1.86.2" # TLS-only patch; upstream still depends on bcutil 1.86
 apacheSshd = "2.20.0"
 jmdns = "3.6.3"
 
 # Server
 ktor = "3.6.0"
-exposed = "1.5.0"
-flyway = "13.9.0"
+exposed = "1.5.1"
+flyway = "13.10.0"
 sqliteJdbc = "3.53.4.0"
-postgresql = "42.7.13"
+postgresql = "42.7.14"
 hikari = "7.1.0"
 logback = "1.6.5"
 firebaseAdmin = "9.9.0"
@@ -40,11 +40,11 @@ lifecycle = "2.11.0"
 activityCompose = "1.13.0"
 credentials = "1.6.0"
 composeBom = "2026.09.00"
-material3 = "1.5.0-alpha29"
-material3Adaptive = "1.4.0-alpha02"
+material3 = "1.5.0-beta01"
+material3Adaptive = "1.4.0-alpha03"
 reorderable = "3.1.0"
 navigationCompose = "2.10.2"
-paging = "3.5.1"
+paging = "3.5.2"
 coil = "3.6.3"
 
 # Android codegen / DI / persistence / work
@@ -64,7 +64,7 @@ playServicesCodeScanner = "16.1.0"
 zxing = "3.5.4"
 
 # Firebase (client)
-firebaseBom = "34.19.0"
+firebaseBom = "35.0.0"
 googleServices = "4.5.0"
 firebaseCrashlyticsPlugin = "3.0.8"
 firebasePerfPlugin = "2.0.2"

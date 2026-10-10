@@ -17,6 +17,32 @@ import java.util.Base64
 
 class TrustPeerDirectoryTest {
     @Test
+    fun exactSetIncludesOnlyListedActiveOwnPeersWithoutRequiringCapabilities() {
+        val requester = peer("requester-with-stale-profile", emptySet())
+        val viewer = peer("viewer", setOf(Capability.HOTSPOT_CONTROL_V1))
+        val unlisted = peer("unlisted", setOf(Capability.HOTSPOT_CONTROL_V1))
+        val other = peer("other", emptySet()).copy(ownDevice = false)
+        val trust = FakeTrustState(listOf(requester, viewer, unlisted, other))
+        val directory = TrustPeerDirectory(trust)
+        val scope = Recipients.OnlySet(setOf(requester.clientId, viewer.clientId, other.clientId, clientId("unknown")))
+        assertEquals(listOf(requester.clientId, viewer.clientId), directory.recipients(scope).map { it.clientId })
+        (trust.activePeers as MutableStateFlow).value = listOf(requester, unlisted, other)
+        assertEquals(listOf(requester.clientId), directory.recipients(scope).map { it.clientId })
+        assertEquals(emptyList<ClientId>(), directory.recipients(Recipients.OnlySet(emptySet())).map { it.clientId })
+    }
+
+    @Test
+    fun exactSetRepairsOnlyListedKeylessOwnPeers() {
+        val requested = keylessPeer("requested", ownDevice = true)
+        val unlisted = keylessPeer("unlisted", ownDevice = true)
+        val other = keylessPeer("other", ownDevice = false)
+        val directory = TrustPeerDirectory(FakeTrustState(emptyList(), listOf(requested, unlisted, other)))
+        assertEquals(setOf(requested.clientId), directory.unsealableRecipients(
+            Recipients.OnlySet(setOf(requested.clientId, other.clientId, clientId("unknown"))),
+        ))
+    }
+
+    @Test
     fun capableUnicastRequiresExactOwnPeerAndEveryDeclaredCapability() {
         val required = setOf(
             Capability.CAPABILITY_ROUTING_V1,

@@ -178,7 +178,7 @@ class SecureChannel(
         // Resolve the operational signer once per broadcast (stable across the batch); the identity root is
         // a fixed field. EnvelopeCrypto picks the overload by signer type, stamping signerEpoch accordingly.
         val op = if (signWith == SignerSelection.OPERATIONAL) operationalSigner() else null
-        var sentAny = false
+        val sentRecipients = mutableSetOf<ClientId>()
         for (body in bodies) {
             val messageId = UUID.randomUUID().toString()
             val seqN = seq.incrementAndGet()
@@ -210,9 +210,9 @@ class SecureChannel(
                 throw IllegalStateException("transport rejected $typ envelope $messageId")
             }
             runCatching { onSent(typ, body, envelope.recipients.size) }
-            sentAny = true
+            sentRecipients.addAll(envelope.recipientIds())
         }
-        return if (sentAny) recipients.size else 0
+        return sentRecipients.size
     }
 
     /**

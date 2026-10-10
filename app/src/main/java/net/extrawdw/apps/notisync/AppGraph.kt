@@ -139,6 +139,14 @@ import net.extrawdw.apps.notisync.screen.ScreenMirrorSessionController
 import net.extrawdw.apps.notisync.screen.ScreenMirrorShizukuManager
 import net.extrawdw.apps.notisync.screen.ScreenViewerToolbarPreferenceStore
 import net.extrawdw.apps.notisync.screen.ShizukuScreenStatus
+import net.extrawdw.apps.notisync.hotspot.controller.HotspotController
+import net.extrawdw.apps.notisync.hotspot.controller.HotspotCredentialRepository
+import net.extrawdw.apps.notisync.hotspot.provider.HotspotProvider
+import net.extrawdw.apps.notisync.hotspot.provider.HotspotShizukuManager
+import net.extrawdw.apps.notisync.hotspot.provider.HotspotRequestWorker
+import net.extrawdw.notisync.peer.channel.Recipients
+import net.extrawdw.notisync.protocol.HotspotAction
+import net.extrawdw.notisync.protocol.Urgency
 import net.extrawdw.notisync.peer.transport.BrokerClient
 import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.peer.transport.ifKnown
@@ -225,6 +233,7 @@ internal val ANDROID_SELF_CAPABILITIES = listOf(
     Capability.OPENPGP_SIGN_V1,
     Capability.OPENPGP_SIGN_GIT_TAG_V1,
     Capability.SSH_KEY_PROVIDER_V1,
+    Capability.HOTSPOT_CONTROL_V1,
 )
 
 class AppGraph(private val app: Application) {
@@ -342,6 +351,12 @@ class AppGraph(private val app: Application) {
     internal lateinit var screenMirrorDecoderSupport: AndroidScreenDecoderSupport
         private set
     lateinit var screenMirrorShizuku: ScreenMirrorShizukuManager
+        private set
+    internal lateinit var hotspotProvider: HotspotProvider
+        private set
+    internal lateinit var hotspotController: HotspotController
+        private set
+    internal lateinit var hotspotCredentials: HotspotCredentialRepository
         private set
     lateinit var screenMirrorCapabilities: ScreenMirrorCapabilityProvider
         private set
@@ -550,6 +565,85 @@ class AppGraph(private val app: Application) {
             },
         )
         secureChannel = channel
+        fun trustedHotspotPeer(id: ClientId): Boolean = !trust.quarantined.value && trust.roster.value.any {
+            it.clientId == id && it.ownDevice && it.verified && it.status == TrustStatus.TRUSTED
+        }
+        fun hotspotAuthorized(id: ClientId): Boolean = settings.screenMirroringEnabled.value &&
+            screenMirrorAuthorizations.isAuthorized(id)
+        val hotspotBackend = HotspotShizukuManager(app) {
+            if (::hotspotProvider.isInitialized) hotspotProvider.onPlatformChanged()
+        }
+        suspend fun sendHotspot(id: ClientId?, sync: net.extrawdw.notisync.protocol.HotspotSync, urgency: Urgency): Boolean =
+            withContext(Dispatchers.IO) {
+                if (trust.quarantined.value) return@withContext false
+                val audience = if (id == null) {
+                    if (sync.hotspotDeviceId != null || sync.action !in setOf(HotspotAction.REFRESH, HotspotAction.QUERY)) {
+                        return@withContext false
+                    }
+                    Recipients.OwnMeshFiltered(
+                        requiredCapabilities = setOf(Capability.HOTSPOT_PROVIDER_V1),
+                        requireCapabilityRoutingV1 = true,
+                    )
+                } else {
+                    if (!trustedHotspotPeer(id)) return@withContext false
+                    Recipients.OnlyCapable(id, setOf(Capability.HOTSPOT_PROVIDER_V1))
+                }
+                channel.send(
+                    MessageType.DATA_SYNC,
+                    ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.HOTSPOT, hotspot = sync)),
+                    audience,
+                    urgency,
+                ) > 0
+            }
+        suspend fun sendHotspotStatus(ids: Set<ClientId>, sync: net.extrawdw.notisync.protocol.HotspotSync, urgency: Urgency): Int =
+            withContext(Dispatchers.IO) {
+                // Recheck the exact audience after the dispatcher hop, immediately before sealing.
+                val allowed = ids.filterTo(mutableSetOf()) {
+                    trustedHotspotPeer(it) && (sync.snapshot == null || hotspotAuthorized(it))
+                }
+                if (allowed.isEmpty()) return@withContext 0
+                channel.send(
+                    MessageType.DATA_SYNC,
+                    ProtocolCodec.encodeToCbor(DataSync(DataSyncKind.HOTSPOT, hotspot = sync)),
+                    Recipients.OnlySet(allowed),
+                    urgency,
+                )
+            }
+        hotspotCredentials = HotspotCredentialRepository(app, scope)
+        hotspotProvider = HotspotProvider(
+            ownId = identity.clientId, scope = scope, backend = hotspotBackend,
+            trustedPeer = ::trustedHotspotPeer, authorized = ::hotspotAuthorized,
+            recipients = {
+                trust.roster.value.filter {
+                    Capability.HOTSPOT_CONTROL_V1 in it.capabilities && Capability.CAPABILITY_ROUTING_V1 in it.capabilities
+                }.map { it.clientId }
+            },
+            consumeCommand = { id, issuedAt -> settings.consumeHotspotCommand(id.value, issuedAt) },
+            scheduleRequest = { sender, request, createdAt -> HotspotRequestWorker.enqueue(app, sender, request, createdAt) },
+            send = ::sendHotspotStatus,
+        )
+        hotspotController = HotspotController(
+            scope = scope, trustedPeer = ::trustedHotspotPeer,
+            hotspotProvider = { id -> trust.roster.value.any {
+                it.clientId == id && Capability.HOTSPOT_PROVIDER_V1 in it.capabilities
+            } },
+            persistSnapshot = { id, snapshot, issuedAt ->
+                try {
+                    kotlinx.coroutines.runBlocking { hotspotCredentials.save(id, snapshot, issuedAt) }
+                } catch (_: Exception) {
+                    throw net.extrawdw.notisync.peer.channel.RetryableDeliveryException("Hotspot credentials could not be saved")
+                }
+            },
+            send = ::sendHotspot,
+        )
+        combine(
+            settings.screenMirroringEnabled, screenMirrorAuthorizations.authorizedPeerIds,
+            screenMirrorAuthorizations.authorizationStateHealth, trust.roster, trust.quarantined,
+        ) { enabled, _, _, _, _ -> enabled }
+            .onEach { enabled ->
+                hotspotController.onPolicyChanged()
+                hotspotBackend.setMonitoringEnabled(enabled && !trust.quarantined.value)
+            }.launchIn(scope)
         val screenPermissionNotifications = ScreenMirrorPermissionNotifications(app)
         fun needsScreenPermission(peerId: ClientId): Boolean = canAuthorizeScreenControl(
             trust.roster.value.firstOrNull { it.clientId == peerId },
@@ -790,6 +884,11 @@ class AppGraph(private val app: Application) {
                 screenRequester.onScreenMirrorSync(message, sync)
                 messageActivity.received(message, sync)
             },
+            onHotspotSync = { message, data ->
+                hotspotProvider.onSync(message, data)
+                hotspotController.onSync(message, data)
+                messageActivity.received(message, data)
+            },
             activityText = activityText,
             // Continue announcing our own epoch with the roster; material held for a third peer is returned
             // directly when the receiving peer advertises that gap.
@@ -948,6 +1047,8 @@ class AppGraph(private val app: Application) {
             // without an E2E round-trip or a re-pair (breaks the bootstrap deadlock; see convergeKeyEpochs).
             runCatching { foundationEngine?.convergeKeyEpochs() }
             registerFcmRoute()
+            // One normal-priority fanout per process start, after key convergence and starting FCM registration.
+            hotspotController.refreshProviders()
         }
     }
 
@@ -1364,13 +1465,14 @@ class AppGraph(private val app: Application) {
     }
 
     /** This device's advertised capabilities — shared by the published card and profile updates. */
-    private fun selfCapabilities(): List<Capability> =
-        ANDROID_SELF_CAPABILITIES +
-            if (::screenMirrorCapabilities.isInitialized) {
-                screenMirrorCapabilities.advertisedCapabilities.value
-            } else {
-                emptyList()
-            }
+    private fun selfCapabilities(): List<Capability> {
+        val screen = if (::screenMirrorCapabilities.isInitialized) {
+            screenMirrorCapabilities.advertisedCapabilities.value
+        } else emptyList()
+        return ANDROID_SELF_CAPABILITIES + screen +
+            if (android.os.Build.VERSION.SDK_INT >= 36 && Capability.SCREEN_MIRROR_SOURCE_V1 in screen)
+                listOf(Capability.HOTSPOT_PROVIDER_V1) else emptyList()
+    }
 
     private fun selfProfileFingerprint(): String = buildString {
         append(settings.deviceName.value)

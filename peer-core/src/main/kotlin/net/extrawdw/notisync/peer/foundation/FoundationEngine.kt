@@ -58,6 +58,8 @@ open class FoundationEngine(
     private val onOpenPgpSignSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     /** Hands authenticated own-mesh SSH inventory/sign/import traffic to the SSH provider or agent feature. */
     private val onSshAgentSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
+    /** Hotspot traffic follows the same own-mesh boundary as screen sharing. */
+    private val onHotspotSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
     /** Observes every successfully decoded DATA_SYNC before its sub-kind handler. Generic local bridges can
      *  reuse the exact decoded object without becoming a second decoder. */
     private val onDecodedDataSync: (InboundMessage, DataSync) -> Unit = { _, _ -> },
@@ -218,6 +220,10 @@ open class FoundationEngine(
             ?: return onMalformedDataSync(msg)
         onDecodedDataSync(msg, sync)
         when (sync.kind) {
+            DataSyncKind.HOTSPOT -> {
+                if (!SendPolicy.mayAccept(msg.typ, DataSyncKind.HOTSPOT, msg.senderOwnDevice)) return
+                onHotspotSync(msg, sync)
+            }
             // The notification app owns asset repair; forward unconditionally and let it apply its own gate.
             DataSyncKind.ASSET -> onAsset(msg, sync)
 

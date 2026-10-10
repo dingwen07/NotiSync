@@ -26,7 +26,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.screen_share as ScreenShareIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.contactless as ContactlessIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.computer as ComputerIcon
-import net.extrawdw.apps.notisync.ui.icons.material.outlined.notifications_off as NotificationsOffIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.wifi_tethering as HotspotIcon
+import net.extrawdw.apps.notisync.ui.icons.material.outlined.portable_wifi_off as HotspotOffIcon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.qr_code_2 as QrCode2Icon
 import net.extrawdw.apps.notisync.ui.icons.material.outlined.smartphone as SmartphoneIcon
 import androidx.compose.material3.Button
@@ -74,11 +75,13 @@ import kotlinx.coroutines.launch
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.crypto.KeyBacking
 import net.extrawdw.apps.notisync.data.RosterDevice
+import net.extrawdw.apps.notisync.hotspot.controller.RemoteHotspotState
 import net.extrawdw.apps.notisync.pairing.PairingCandidate
 import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.Capability
 import net.extrawdw.notisync.protocol.FilterSync
+import net.extrawdw.notisync.protocol.HotspotState
 import net.extrawdw.notisync.protocol.NotificationFilterRule
 import net.extrawdw.notisync.protocol.OriginPlatform
 import net.extrawdw.notisync.protocol.TrustStatus
@@ -183,6 +186,9 @@ fun DevicesScreen(
     val virtualDisplaySupported by graph.screenMirrorShizuku.virtualDisplaySupported.collectAsStateWithLifecycle()
     val screenCodecPreferences by graph.screenMirrorCodecPreferences.preferredCodecs.collectAsStateWithLifecycle()
     val notificationForwarding by graph.notificationForwarding.preferences.collectAsStateWithLifecycle()
+    val notificationFilters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
+    val hotspotStates by graph.hotspotController.remote.collectAsStateWithLifecycle()
+    val savedHotspots by graph.hotspotCredentials.saved.collectAsStateWithLifecycle()
     val ownDevices = roster.filter { it.ownDevice }
     val otherDevices = roster.filterNot { it.ownDevice }
     // The own device whose received notification-filters sheet is open (null = closed).
@@ -190,6 +196,9 @@ fun DevicesScreen(
     val filterSheetFor = roster.firstOrNull { it.clientId.value == filterDeviceId }
     // Device details are keyed by id so a live profile/key-epoch update refreshes the open sheet.
     var detailsSheetFor by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(detailsSheetFor) {
+        detailsSheetFor?.let { graph.hotspotController.refreshIfStale(ClientId(it)) }
+    }
     LaunchedEffect(roster, detailsSheetFor, filterDeviceId) {
         if (detailsSheetFor != null && roster.none { it.clientId.value == detailsSheetFor }) detailsSheetFor = null
         if (filterDeviceId != null && roster.none { it.clientId.value == filterDeviceId }) filterDeviceId = null
@@ -226,28 +235,33 @@ fun DevicesScreen(
     }
 
     AdaptiveDetailLayout(
-        selectedKey = detailsSheetFor?.let { "device:$it" } ?: filterDeviceId?.let { "filter:$it" },
-        onDismiss = { detailsSheetFor = null; filterDeviceId = null },
+        selectedKey = filterDeviceId?.let { "filter:$it" } ?: detailsSheetFor?.let { "device:$it" },
+        onDismiss = { if (filterDeviceId != null) filterDeviceId = null else detailsSheetFor = null },
         paneTitle = filterSheetFor?.let {
             stringResource(R.string.device_filters_title, it.displayName ?: stringResource(R.string.device_unknown))
         } ?: roster.firstOrNull { it.clientId.value == detailsSheetFor }?.displayName
             ?: stringResource(R.string.device_unknown),
         detail = {
             filterSheetFor?.let { device ->
-                val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
                 NotificationFilterSheet(
                     deviceName = device.displayName ?: stringResource(R.string.device_unknown),
-                    filter = filters[device.clientId.value],
+                    filter = notificationFilters[device.clientId.value],
                     onClear = { graph.notificationFilters.remove(device.clientId) },
                     onDismiss = { filterDeviceId = null },
                 )
             }
 
-            detailsSheetFor?.let { clientId ->
+            detailsSheetFor?.takeIf { filterSheetFor == null }?.let { clientId ->
                 roster.firstOrNull { it.clientId.value == clientId }?.let { device ->
                     DeviceDetailsSheet(
                         device = device,
                         nowMillis = now,
+                        hotspotState = hotspotStates[device.clientId],
+                        savedHotspot = savedHotspots[device.clientId],
+                        onRefreshHotspot = { graph.hotspotController.refresh(device.clientId) },
+                        onSetHotspotEnabled = { graph.hotspotController.setEnabled(device.clientId, it) },
+                        hasNotificationFilters = notificationFilters[device.clientId.value]?.rules?.isNotEmpty() == true,
+                        onShowNotificationFilters = { filterDeviceId = device.clientId.value },
                         screenMirroringEnabled = screenMirroringEnabled,
                         virtualDisplayAuthorized = device.clientId.value in virtualDisplayPeers,
                         virtualDisplayAvailable = virtualDisplaySupported,
@@ -325,6 +339,7 @@ fun DevicesScreen(
                                 graph.trust.purgeRevoked(device.clientId)
                                 // Forget this peer's filter only after its trust-store removal was durable.
                                 graph.notificationFilters.remove(device.clientId)
+                                kotlinx.coroutines.runBlocking { graph.hotspotCredentials.forget(device.clientId) }
                             }
                         },
                         onDismiss = { detailsSheetFor = null },
@@ -419,10 +434,7 @@ fun DevicesScreen(
                     item {
                         DeviceListCard(
                             ownDevices, graph, enabled = !quarantined,
-                            onShowFilters = {
-                                detailsSheetFor = null
-                                filterDeviceId = it.clientId.value
-                            },
+                            hotspotStates = hotspotStates,
                             onShowDetails = {
                                 filterDeviceId = null
                                 detailsSheetFor = it.clientId.value
@@ -468,22 +480,21 @@ private fun DeviceListCard(
     devices: List<RosterDevice>,
     graph: net.extrawdw.apps.notisync.AppGraph,
     enabled: Boolean = true,
-    onShowFilters: (RosterDevice) -> Unit = {},
+    hotspotStates: Map<ClientId, RemoteHotspotState> = emptyMap(),
     onShowDetails: (RosterDevice) -> Unit = {},
     onStartScreenMirror: (RosterDevice) -> Unit = {},
 ) {
     val context = LocalContext.current
-    val filters by graph.notificationFilters.filters.collectAsStateWithLifecycle()
     Card(Modifier.fillMaxWidth()) {
         Column {
             devices.forEachIndexed { index, device ->
                 DeviceRow(
                     device = device,
                     enabled = enabled,
-                    onShowFilters = { onShowFilters(device) },
+                    hotspotState = hotspotStates[device.clientId],
+                    onHotspotClick = { graph.hotspotController.toggleOrQuery(device.clientId) },
                     onShowDetails = { onShowDetails(device) },
                     onStartScreenMirror = { onStartScreenMirror(device) },
-                    hasFilters = filters[device.clientId.value]?.rules?.isNotEmpty() == true,
                     // Overturns (deny / keep) propagate now; agreements ride anti-entropy.
                     onApprove = {
                         graph.launchDurableTrustAction(context) {
@@ -603,10 +614,10 @@ private fun ThisDeviceCard(name: String, safetyNumber: String, backing: KeyBacki
 private fun DeviceRow(
     device: RosterDevice,
     enabled: Boolean = true,
-    onShowFilters: () -> Unit = {},
+    hotspotState: RemoteHotspotState? = null,
+    onHotspotClick: () -> Unit = {},
     onShowDetails: () -> Unit = {},
     onStartScreenMirror: () -> Unit = {},
-    hasFilters: Boolean = false,
     onApprove: (ClientId) -> Unit,
     onDeny: (ClientId) -> Unit,
     onRemoveConfirm: (ClientId) -> Unit,
@@ -665,8 +676,6 @@ private fun DeviceRow(
                 )
             }
             when (device.status) {
-                // Own devices expose the notification-filters this device received from them (DATA_SYNC
-                // FILTER) — what this device won't forward to that peer. Removal lives in device details.
                 TrustStatus.TRUSTED -> Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (device.supportsScreenMirrorRequest()) {
                         if (Capability.SCREEN_VIRTUAL_DISPLAY_V1 in device.capabilities) {
@@ -687,12 +696,27 @@ private fun DeviceRow(
                             }
                         }
                     }
-                    // Only own devices send filters; disabled when this device is hiding nothing from them.
-                    if (device.ownDevice) {
-                        IconButton(onClick = onShowFilters, enabled = enabled && hasFilters) {
+                    if (device.ownDevice && device.verified && Capability.HOTSPOT_PROVIDER_V1 in device.capabilities) {
+                        val apState = hotspotState?.status?.snapshot?.state
+                        val hotspotOn = apState == HotspotState.ENABLED
+                        val hotspotOff = apState == HotspotState.DISABLED
+                        val canToggle = enabled && hotspotState?.canToggle == true
+                        IconButton(onClick = onHotspotClick, enabled = enabled && hotspotState?.pendingRequest == null,
+                            colors = IconButtonDefaults.iconButtonColors(
+                                contentColor = when {
+                                    !canToggle -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.38f)
+                                    hotspotOn -> MaterialTheme.colorScheme.primary
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                            )) {
                             Icon(
-                                NotificationsOffIcon,
-                                contentDescription = stringResource(R.string.device_filters_button_desc, name)
+                                if (hotspotOff) HotspotOffIcon else HotspotIcon,
+                                contentDescription = stringResource(when {
+                                    hotspotState?.pendingRequest != null -> R.string.hotspot_waiting
+                                    !canToggle -> R.string.hotspot_refresh_action
+                                    hotspotOn -> R.string.hotspot_turn_off
+                                    else -> R.string.hotspot_turn_on
+                                }),
                             )
                         }
                     }

@@ -19,6 +19,21 @@ import java.io.File
 
 class SettingsRepositoryTest {
 
+    @Test
+    fun hotspotCommandWatermarksRejectReplaysAndSurviveRepositoryRecreation() = runBlocking {
+        val scope = CoroutineScope(Dispatchers.Unconfined)
+        val file = File.createTempFile("hotspot-replay", ".preferences_pb").also { it.delete() }
+        val ds = PreferenceDataStoreFactory.create(scope = scope) { file }
+        val first = SettingsRepository(ds, scope, InMemoryOperationalApplicationState())
+        assertTrue(first.consumeHotspotCommand("peer", 200))
+        assertFalse(first.consumeHotspotCommand("peer", 200))
+        assertFalse(first.consumeHotspotCommand("peer", 199))
+        val reopened = SettingsRepository(ds, scope, InMemoryOperationalApplicationState())
+        assertFalse(reopened.consumeHotspotCommand("peer", 200))
+        assertTrue(reopened.consumeHotspotCommand("peer", 201))
+        assertTrue(reopened.consumeHotspotCommand("other-peer", 100))
+    }
+
     private fun newRepository(
         initialBrokerUrl: String? = null,
         initialOnboardingCompleted: Boolean? = null,

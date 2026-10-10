@@ -7,6 +7,7 @@ import net.extrawdw.notisync.peer.transport.DeliveryMode
 import net.extrawdw.notisync.protocol.ClientId
 import net.extrawdw.notisync.protocol.DataSync
 import net.extrawdw.notisync.protocol.DataSyncKind
+import net.extrawdw.notisync.protocol.HotspotAction
 import net.extrawdw.notisync.protocol.MessageType
 import net.extrawdw.notisync.protocol.OpenPgpSignAction
 import net.extrawdw.notisync.protocol.ProtocolCodec
@@ -51,6 +52,17 @@ class MessageActivity(
 
 /** Only operation labels may reach the feed, never request content or peer-supplied diagnostics. */
 internal fun messageActivityLabels(sync: DataSync): Pair<Int, Int>? = when (sync.kind) {
+    DataSyncKind.HOTSPOT -> sync.hotspot?.let {
+        R.string.activity_message_hotspot to when (it.action) {
+            HotspotAction.QUERY, HotspotAction.REFRESH -> R.string.activity_message_hotspot_refresh
+            HotspotAction.SET_ENABLED -> when (it.enabled) {
+                true -> R.string.activity_message_hotspot_enable
+                false -> R.string.activity_message_hotspot_disable
+                null -> return@let null
+            }
+            HotspotAction.STATUS -> R.string.activity_message_hotspot_status
+        }
+    }
     DataSyncKind.SSH_AGENT -> sync.sshAgent?.let {
         R.string.activity_message_ssh to when (it.kind) {
             SshAgentSyncKind.KEYS_REQUEST -> R.string.activity_message_keys_request

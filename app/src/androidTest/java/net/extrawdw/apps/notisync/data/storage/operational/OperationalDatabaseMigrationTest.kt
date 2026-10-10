@@ -32,6 +32,28 @@ class OperationalDatabaseMigrationTest {
     }
 
     @Test
+    fun migrationSevenToEightAddsHotspotCredentialsWithoutChangingScreenGrants() = runBlocking {
+        context.deleteDatabase(DATABASE_NAME)
+        migrationHelper.createDatabase(7).use { connection ->
+            connection.execSQL("INSERT OR REPLACE INTO screen_mirror_state VALUES(1, 1, '[\"peer\"]', NULL, 0, NULL, NULL, '[]')")
+        }
+        migrationHelper.runMigrationsAndValidate(
+            version = 8, migrations = listOf(OperationalDatabase.MIGRATION_7_8),
+        ).use { connection ->
+            connection.prepare("SELECT enabled, authorized_peer_ids_json FROM screen_mirror_state WHERE singleton_id=1").use {
+                assertTrue(it.step())
+                assertEquals(1L, it.getLong(0))
+                assertEquals("[\"peer\"]", it.getText(1))
+            }
+            connection.execSQL("INSERT INTO hotspot_credentials VALUES('peer', 'Test Wi-Fi', 'test-password', 2, 0, 123)")
+            connection.prepare("SELECT COUNT(*) FROM hotspot_credentials").use {
+                assertTrue(it.step())
+                assertEquals(1L, it.getLong(0))
+            }
+        }
+    }
+
+    @Test
     fun migrationOneToTwoPreservesExistingSshKeysAndAddsWebAuthnCredentials() = runBlocking {
         context.deleteDatabase(DATABASE_NAME)
         migrationHelper.createDatabase(1).use { connection ->
@@ -253,6 +275,7 @@ class OperationalDatabaseMigrationTest {
                 OperationalDatabase.MIGRATION_4_5,
                 OperationalDatabase.MIGRATION_5_6,
                 OperationalDatabase.MIGRATION_6_7,
+                OperationalDatabase.MIGRATION_7_8,
             ),
         ).close()
     }

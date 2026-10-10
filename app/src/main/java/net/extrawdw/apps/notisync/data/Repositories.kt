@@ -169,6 +169,19 @@ class SettingsRepository internal constructor(
 
     suspend fun setScreenMirroringEnabled(on: Boolean) = operationalState.setScreenMirroringEnabled(on)
 
+    /** Non-secret replay watermark, committed before an external hotspot state change. */
+    internal suspend fun consumeHotspotCommand(peerId: String, issuedAt: Long): Boolean {
+        val key = longPreferencesKey("hotspot_command_issued_at_$peerId")
+        var accepted = false
+        store.edit { preferences ->
+            if (issuedAt > (preferences[key] ?: 0L)) {
+                preferences[key] = issuedAt
+                accepted = true
+            }
+        }
+        return accepted
+    }
+
     /** The PERSISTED switch, read directly from DataStore — use this (not [iosBridgeEnabled].value, which is
      *  still the default during early startup) when deciding whether to resume the bridge on a process start. */
     suspend fun iosBridgeEnabledNow(): Boolean = store.data.first()[iosBridgeKey] ?: false

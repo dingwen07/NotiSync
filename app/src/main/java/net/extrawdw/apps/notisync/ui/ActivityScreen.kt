@@ -19,7 +19,6 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
@@ -28,15 +27,13 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import net.extrawdw.apps.notisync.R
 import net.extrawdw.apps.notisync.data.ActivityEvent
 import net.extrawdw.notisync.peer.transport.DeliveryMode
-import java.text.SimpleDateFormat
 import java.util.Date
-import java.util.Locale
 
 @Composable
 fun ActivityScreen() {
     val graph = rememberGraph()
     val events by graph.activityLog.events.collectAsStateWithLifecycle()
-    val fmt = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
+    val fmt = rememberDetailedDateTimeFormatter(includeDate = false)
 
     NotiScaffold(stringResource(R.string.tab_activity)) { padding ->
         if (events.isEmpty()) {

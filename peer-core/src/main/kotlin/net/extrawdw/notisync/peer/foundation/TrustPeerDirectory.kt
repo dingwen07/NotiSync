@@ -54,6 +54,7 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
             // guard: a body-controlled id (e.g. a notification's sourceClientId) must never cause a send
             // to a trusted "other" (non-own) contact device.
             is Recipients.Only -> peers.filter { it.clientId == scope.id && it.ownDevice }
+            is Recipients.OnlySet -> peers.filter { it.clientId in scope.ids && it.ownDevice }
             is Recipients.OnlyCapable -> peers.filter {
                 it.clientId == scope.id &&
                     it.ownDevice &&
@@ -102,6 +103,9 @@ class TrustPeerDirectory(private val trust: TrustState) : PeerDirectory {
                 setOf(scope.id)
             } else {
                 emptySet()
+            }
+            is Recipients.OnlySet -> scope.ids.filterTo(mutableSetOf()) { id ->
+                id in needing && trust.peerOwnDevice(id) == true
             }
             is Recipients.OnlyCapable -> if (
                 scope.id in needing &&

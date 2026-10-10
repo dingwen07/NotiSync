@@ -516,6 +516,11 @@
     <string name="activity_message_ssh" translatable="false">SSH</string>
     <string name="activity_message_openpgp">OpenPGP signing</string>
     <string name="activity_message_screen">Screen sharing</string>
+    <string name="activity_message_hotspot">Wi-Fi hotspot</string>
+    <string name="activity_message_hotspot_refresh">Refresh</string>
+    <string name="activity_message_hotspot_enable">Turn-on request</string>
+    <string name="activity_message_hotspot_disable">Turn-off request</string>
+    <string name="activity_message_hotspot_status">Status update</string>
     <string name="activity_message_keys_request">Key list request</string>
     <string name="activity_message_keys_snapshot">Key list response</string>
     <string name="activity_message_sign_request">Signing request</string>
@@ -749,7 +754,8 @@
     <string name="device_forward_notifications_body">Choose which notifications to send to this device.</string>
     <string name="device_forward_notifications_local">Local notifications</string>
     <string name="device_forward_notifications_iphone">iPhone notifications</string>
-    <string name="device_filters_button_desc">Notifications hidden from %1$s</string>
+    <string name="device_filters_label">Notification filters</string>
+    <string name="device_filters_manage">Manage</string>
     <string name="device_filters_title">Hidden from %1$s</string>
     <string name="device_filters_desc">This device won\'t forward these notifications to it:</string>
     <string name="device_filters_empty">This device isn\'t hiding any notifications from it.</string>
@@ -765,6 +771,12 @@
     <string name="device_removed_by">Removed by %1$s</string>
     <!-- Read-only cryptographic details shown after tapping a device row. -->
     <string name="device_details_key_epoch">Key Epoch</string>
+    <string name="device_details_expanded">Expanded</string>
+    <string name="device_details_collapsed">Collapsed</string>
+    <plurals name="device_details_capability_count">
+        <item quantity="one">%1$d advertised capability</item>
+        <item quantity="other">%1$d advertised capabilities</item>
+    </plurals>
     <string name="device_details_verified">✓ Verified</string>
     <string name="device_details_not_verified">✗ Not verified</string>
     <string name="device_details_operational_unavailable">Operational Key · Not available</string>
@@ -809,6 +821,7 @@
     <string name="screen_mirror_open_shizuku">Open Shizuku</string>
     <string name="screen_mirror_device_title">Allow screen control</string>
     <string name="screen_mirror_device_body">This device may start an authenticated local screen session without another approval prompt.</string>
+    <string name="screen_mirror_device_hotspot_body">It may also control your hotspot and read its network name and password.</string>
     <string name="screen_mirror_device_master_off">Enable screen sharing in Settings first.</string>
     <string name="screen_mirror_device_start">Mirror and control screen</string>
     <string name="screen_mirror_device_start_desc">Mirror and control %1$s</string>
@@ -1126,4 +1139,38 @@
     <string name="screen_virtual_auth_title">Allow virtual display access</string>
     <string name="screen_virtual_auth_subtitle">Authenticate to allow %1$s to open apps even while this phone is locked.</string>
     <string name="screen_virtual_auth_unavailable">Set up a screen lock to permit virtual display access. Use a strong biometric or your device PIN, pattern, or password to authenticate.</string>
+    <string name="hotspot_title">Wi-Fi hotspot</string>
+    <string name="hotspot_status_unavailable">Unavailable</string>
+    <string name="hotspot_network_name">Network name</string>
+    <string name="hotspot_saved_network">Saved network</string>
+    <string name="hotspot_password_label">Password</string>
+    <string name="hotspot_qr_action">QR code</string>
+    <string name="hotspot_control_capability">Remote hotspot control</string>
+    <string name="hotspot_waiting">Waiting for device…</string>
+    <string name="hotspot_refresh_hint">Refresh to request hotspot information.</string>
+    <string name="hotspot_refresh_action">Refresh hotspot status</string>
+    <string name="hotspot_on">On</string>
+    <string name="hotspot_off">Off</string>
+    <string name="hotspot_starting">Turning on…</string>
+    <string name="hotspot_stopping">Turning off…</string>
+    <string name="hotspot_unknown">Hotspot state unknown</string>
+    <string name="hotspot_failed">The hotspot operation failed. Refresh to check its current state.</string>
+    <string name="hotspot_unavailable">Hotspot unavailable. Check Shizuku on the hotspot device.</string>
+    <string name="hotspot_unauthorized">Allow Screen Sharing for this device on the hotspot device, then refresh.</string>
+    <string name="hotspot_unsupported">Remote hotspot requires Android 16 or later.</string>
+    <string name="hotspot_busy">The hotspot is busy. Refresh and try again.</string>
+    <string name="hotspot_timeout">Wi-Fi hotspot information is unavailable; please refresh to check the hotspot status.</string>
+    <string name="hotspot_show_password">Show password</string>
+    <string name="hotspot_hide_password">Hide password</string>
+    <string name="hotspot_updated">Last update: %1$s</string>
+    <string name="hotspot_turn_on">Turn on</string>
+    <string name="hotspot_turn_off">Turn off</string>
+    <string name="hotspot_start">Start</string>
+    <string name="hotspot_stop">Stop</string>
+    <string name="hotspot_connect">Connect</string>
+    <string name="hotspot_network_saved">Network saved. Android manages the connection.</string>
+    <string name="hotspot_network_save_failed">Could not save the Wi-Fi network.</string>
+    <string name="hotspot_show_qr">Show Wi-Fi QR code</string>
+    <string name="hotspot_qr_hint">Scan this code to join the network.</string>
+    <string name="hotspot_qr_close">Close</string>
 </resources>

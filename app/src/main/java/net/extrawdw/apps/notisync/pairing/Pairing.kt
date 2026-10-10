@@ -22,11 +22,12 @@ import net.extrawdw.notisync.peer.pairing.BrokerPairingLink
 
 /** QR encode/decode helpers. */
 object QrCodes {
-    fun encode(content: String, size: Int = 720, marginModules: Int = 10): Bitmap {
-        val hints = mapOf(
+    fun encode(content: String, size: Int = 720, marginModules: Int = 10, characterSet: String? = null): Bitmap {
+        val hints = mutableMapOf<EncodeHintType, Any>(
             EncodeHintType.MARGIN to marginModules,
             EncodeHintType.ERROR_CORRECTION to ErrorCorrectionLevel.M,
         )
+        characterSet?.let { hints[EncodeHintType.CHARACTER_SET] = it }
         val matrix = QRCodeWriter().encode(content, BarcodeFormat.QR_CODE, 0, 0, hints)
         val moduleSize = ((size + matrix.width - 1) / matrix.width).coerceAtLeast(1)
         val bitmapSize = matrix.width * moduleSize

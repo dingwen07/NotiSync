@@ -9,6 +9,8 @@ import java.io.File
 import java.security.KeyStore
 import java.security.MessageDigest
 import java.util.UUID
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.runBlocking
 import net.zetetic.database.sqlcipher.SQLiteDatabase
 import net.zetetic.database.sqlcipher.driver.SQLCipherConnection
 import org.junit.After
@@ -133,6 +135,35 @@ class OperationalDatabaseEncryptionTest {
                 assertEquals("request", cursor.getString(0))
             }
         }
+    }
+
+    @Test
+    fun hotspotCredentialsRejectOlderUpdatesAndReopenWithExistingDatabaseKey() = runBlocking {
+        val room = OperationalDatabase.create(context)
+        try {
+            val dao = room.hotspotCredentials()
+            dao.save("peer", "Test hotspot", "test-hotspot-password", 2, true, 200)
+            dao.save("peer", "Old hotspot", "old-test-password", 1, false, 199)
+            val row = dao.observe().first().single()
+            assertEquals("Test hotspot", row.ssid)
+            assertEquals("test-hotspot-password", row.psk)
+            assertTrue(row.hiddenSsid)
+        } finally { room.close() }
+        for (suffix in listOf("", "-wal")) {
+            val file = File(databaseFile.path + suffix)
+            if (file.exists()) {
+                val bytes = file.readBytes().toString(Charsets.ISO_8859_1)
+                assertFalse(bytes.contains("Test hotspot"))
+                assertFalse(bytes.contains("test-hotspot-password"))
+            }
+        }
+        forgetCachedPassword()
+        val reopened = OperationalDatabase.create(context)
+        try {
+            assertEquals("test-hotspot-password", reopened.hotspotCredentials().observe().first().single().psk)
+            reopened.hotspotCredentials().delete("peer")
+            assertTrue(reopened.hotspotCredentials().observe().first().isEmpty())
+        } finally { reopened.close() }
     }
 
     @Test
