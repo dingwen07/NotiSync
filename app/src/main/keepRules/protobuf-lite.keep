@@ -1,0 +1,6 @@
+# Protobuf Lite reads generated message fields reflectively. Firebase Performance 23.0.0
+# no longer supplies this rule through protolite-well-known-types (firebase-android-sdk#8691).
+# Preserve field names and storage while allowing unused message classes to be removed.
+-keepclassmembers class * extends com.google.protobuf.GeneratedMessageLite {
+    <fields>;
+}
