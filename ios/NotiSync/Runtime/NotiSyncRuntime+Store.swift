@@ -307,6 +307,7 @@ extension NotiSyncRuntime {
     }
 
     private func applyPeerRows(_ peers: [TrustedPeerRecord]) {
+        replaceHotspotProviderIds(Set(peers.filter(AndroidProviderCapabilities.supportsHotspot).map(\.clientId)))
         replaceScreenMirrorSourceIds(Set(peers.compactMap { peer in
             guard ScreenMirrorSourceRecord.supports(peer) else { return nil }
             return peer.clientId

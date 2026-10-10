@@ -455,6 +455,8 @@ nonisolated enum KMPProtocolBridge {
     }
 
     static func toKmp(_ value: DataSync) -> NotiSyncProtocol.DataSync {
+        precondition((value.kind == .HOTSPOT) == (value.hotspot != nil),
+                     "HOTSPOT data-sync kind and payload must appear together")
         precondition(
             (value.kind == .SSH_AGENT) == (value.sshAgent != nil),
             "SSH_AGENT data-sync kind and payload must appear together"
@@ -470,7 +472,8 @@ nonisolated enum KMPProtocolBridge {
             run: nil,
             screenMirror: value.screenMirror.map(toKmp),
             openPgpSign: nil,
-            sshAgent: value.sshAgent.map(toKmp)
+            sshAgent: value.sshAgent.map(toKmp),
+            hotspot: value.hotspot.map(toKmp)
         )
     }
 
@@ -803,6 +806,9 @@ nonisolated enum KMPProtocolBridge {
         guard (kind == .SSH_AGENT) == (value.sshAgent != nil) else {
             throw CodecError.typeMismatch("SSH_AGENT data-sync kind and payload must appear together")
         }
+        guard (kind == .HOTSPOT) == (value.hotspot != nil) else {
+            throw CodecError.typeMismatch("HOTSPOT data-sync kind and payload must appear together")
+        }
         return DataSync(
             kind: kind,
             asset: value.asset.map(fromKmp),
@@ -811,7 +817,8 @@ nonisolated enum KMPProtocolBridge {
             card: value.card.map(fromKmp),
             filter: fromKmp(value.filter),
             screenMirror: fromKmp(value.screenMirror),
-            sshAgent: try fromKmp(value.sshAgent)
+            sshAgent: try fromKmp(value.sshAgent),
+            hotspot: try value.hotspot.map(fromKmp)
         )
     }
 

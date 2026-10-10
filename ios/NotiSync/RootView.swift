@@ -575,6 +575,7 @@ struct DevicesView: View {
     @State private var nfcError: String?
     @State private var preparingNfcPairing = false
     @State private var selectedFilterDevice: FilterDeviceSelection?
+    @State private var selectedHotspotDevice: TrustedDevice?
     /// Deliberately NOT live (no `@Query` on InboxNotification): the bridged-devices list is derived from
     /// Inbox history, and a live query re-fetched + rescanned on every inbound envelope while this page
     /// was up. Loaded on page entry / pull-to-refresh, and re-derived when the user edits a filter (so a
@@ -615,7 +616,9 @@ struct DevicesView: View {
                             device: device,
                             supportsNotificationFilters: !isIosPeer(device),
                             canMirrorScreen: runtime.screenMirrorSourceIds.contains(device.clientId),
+                            canControlHotspot: runtime.hotspotProviderIds.contains(device.clientId),
                             openFilters: { selectedFilterDevice = .android(device) },
+                            openHotspot: { selectedHotspotDevice = device },
                             mirrorScreen: {
                                 _ = runtime.presentScreenMirror(
                                     sourceId: device.clientId,
@@ -681,6 +684,9 @@ struct DevicesView: View {
                     title: selection.title(peerName: peerName),
                     selection: selection)
                     .environmentObject(runtime)
+            }
+            .sheet(item: $selectedHotspotDevice) { device in
+                HotspotView(deviceId: device.clientId, deviceName: device.displayName)
             }
             .alert(
                 "Pair via NFC",
@@ -811,7 +817,9 @@ private struct TrustedPeerRow: View {
     let device: TrustedDevice
     let supportsNotificationFilters: Bool
     let canMirrorScreen: Bool
+    let canControlHotspot: Bool
     let openFilters: () -> Void
+    let openHotspot: () -> Void
     let mirrorScreen: () -> Void
 
     var body: some View {
@@ -825,6 +833,18 @@ private struct TrustedPeerRow: View {
                             openFilters()
                         }
                     }
+                if canControlHotspot {
+                    let hotspot = runtime.remoteHotspots[device.clientId] ?? RemoteHotspotState()
+                    Button(action: openHotspot) {
+                        Image(systemName: "personalhotspot")
+                            .font(.body.weight(.semibold)).frame(width: 28, height: 28)
+                            .foregroundStyle(hotspot.failure == nil && hotspot.status?.result == .OK
+                                && hotspot.status?.snapshot?.state == .ENABLED ? .green : .primary)
+                    }
+                    .nativeGlassButton().buttonBorderShape(.circle).controlSize(.small)
+                    .accessibilityLabel(HotspotText.title)
+                    .accessibilityValue(HotspotText.state(hotspot.failure == nil ? hotspot.status?.snapshot?.state : nil))
+                }
                 if canMirrorScreen {
                     Button(action: mirrorScreen) {
                         Image(systemName: "rectangle.inset.filled.and.person.filled")

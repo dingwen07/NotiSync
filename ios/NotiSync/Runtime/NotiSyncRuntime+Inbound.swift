@@ -452,6 +452,9 @@ extension NotiSyncRuntime {
             // iOS does not currently provide OpenPGP signing. The strict codec still recognizes the kind so
             // a future protocol addition cannot silently fall through to another DATA_SYNC payload.
             break
+        case .HOTSPOT:
+            guard let hotspot = ds.hotspot else { return true }
+            return await handleHotspotStatus(hotspot, from: signerId, envelopeCreatedAt: envelopeCreatedAt)
         case .SSH_AGENT:
             guard let sshAgent = ds.sshAgent else { return true }
             return await handleSshKeyProviderSync(

@@ -251,6 +251,16 @@ enum LocalizedText {
             return String(localized: "activity.title.assetSync",
                           defaultValue: "Asset sync",
                           comment: "Activity title for syncing a notification asset.")
+        case .hotspotRefresh:
+            return String(localized: "hotspot.activity.refresh", defaultValue: "Hotspot refresh requested")
+        case .hotspotOn:
+            return String(localized: "hotspot.activity.on", defaultValue: "Hotspot on requested")
+        case .hotspotOff:
+            return String(localized: "hotspot.activity.off", defaultValue: "Hotspot off requested")
+        case .hotspotStatus:
+            return String(localized: "hotspot.activity.status", defaultValue: "Hotspot status received")
+        case .hotspotRequestFailed:
+            return String(localized: "hotspot.activity.failed", defaultValue: "Hotspot request failed")
         case .renamed:
             return String(localized: "activity.title.renamed",
                           defaultValue: "Renamed",

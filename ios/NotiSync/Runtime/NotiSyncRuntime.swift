@@ -68,6 +68,12 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
     @Published var incomingPairing: PairingCandidate?
     /// Trusted own Android peers that advertise the complete screen-v1 source stack and H.264 hardware.
     @Published private(set) var screenMirrorSourceIds: Set<String> = []
+    @Published var hotspotProviderIds: Set<String> = []
+    @Published var remoteHotspots: [String: RemoteHotspotState] = [:]
+    @Published var savedHotspots: [String: SavedHotspot] = [:]
+    @Published var hotspotStorageFailures: Set<String> = []
+    var hotspotRequestTasks: [String: Task<Void, Never>] = [:]
+    var lastHotspotIssuedAt: Int64 = 0
     @Published private(set) var screenMirrorPhase: String?
     @Published var screenMirrorPresentation: IOSScreenMirrorPresentation?
     /// A single root-owned sheet route shared by live SSH approvals, terminal history, and key workflows.
@@ -296,6 +302,10 @@ final class NotiSyncRuntime: NSObject, ObservableObject {
                 Set(engine.screenMirrorSources().map(\.clientId))
             }.value
             replaceScreenMirrorSourceIds(restoredScreenSourceIds)
+            let restoredHotspotIds = await Task.detached(priority: .utility) {
+                engine.hotspotProviderIds()
+            }.value
+            replaceHotspotProviderIds(restoredHotspotIds)
             self.broker = BrokerClient(
                 baseURL: { NotiSyncConfig.brokerURL },
                 identitySigner: engine.identitySigner,

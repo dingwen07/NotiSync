@@ -1,8 +1,9 @@
 import Foundation
 import CoreGraphics
 
-// Unused by these tests; lets the native screen DTOs compile without the iOS-only KMP SSH bridge.
+// Unused by these tests; lets the native screen DTOs compile without unrelated protocol adapters.
 nonisolated struct SshAgentSync: Sendable {}
+nonisolated struct HotspotSync: Sendable {}
 
 @main
 struct ScreenVirtualDisplayTests {

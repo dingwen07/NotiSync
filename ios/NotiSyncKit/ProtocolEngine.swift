@@ -81,6 +81,7 @@ private nonisolated let iosSelfCapabilities: [Capability] = [
     .FOREGROUND_CONNECTION,
     .CAPABILITY_ROUTING_V1,
     .SSH_KEY_PROVIDER_V1,
+    .HOTSPOT_CONTROL_V1,
 ]
 
 nonisolated enum KeyEpochStatus: Sendable { case verified, absent, invalid }
@@ -124,6 +125,25 @@ nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
         for peer: TrustedPeerRecord,
         now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
     ) -> Set<Capability>? {
+        guard let capabilities = AndroidProviderCapabilities.current(for: peer, now: now),
+              requiredCapabilities.isSubset(of: capabilities) else { return nil }
+        return capabilities
+    }
+
+    static func supports(
+        _ peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Bool {
+        sourceCapabilities(for: peer, now: now) != nil
+    }
+}
+
+/// Shared authenticated capability resolution for Android screen and hotspot providers.
+nonisolated enum AndroidProviderCapabilities {
+    static func current(
+        for peer: TrustedPeerRecord,
+        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
+    ) -> Set<Capability>? {
         guard peer.isTrusted,
               peer.ownDevice,
               peer.sealable(now: now) != nil,
@@ -137,16 +157,14 @@ nonisolated struct ScreenMirrorSourceRecord: Identifiable, Sendable {
         let hasNewerProfile = peer.profileRevision > card.createdAt
         let platform = hasNewerProfile ? peer.platform : card.platform
         let capabilities = Set(hasNewerProfile ? peer.announcedCapabilities : card.capabilities)
-        guard platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "android",
-              requiredCapabilities.isSubset(of: capabilities) else { return nil }
+        guard platform.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "android"
+        else { return nil }
         return capabilities
     }
 
-    static func supports(
-        _ peer: TrustedPeerRecord,
-        now: Int64 = Int64(Date().timeIntervalSince1970 * 1_000)
-    ) -> Bool {
-        sourceCapabilities(for: peer, now: now) != nil
+    static func supportsHotspot(_ peer: TrustedPeerRecord) -> Bool {
+        let required: Set<Capability> = [.CAPABILITY_ROUTING_V1, .HOTSPOT_PROVIDER_V1]
+        return current(for: peer).map { required.isSubset(of: $0) } ?? false
     }
 }
 
@@ -449,6 +467,31 @@ nonisolated final class NotiSyncEngine: Sendable {
             messageId: Self.newMessageId(),
             seq: Self.nextSeq(),
             createdAt: Self.nowMillis()
+        )
+    }
+
+    // MARK: Hotspot controller
+
+    func hotspotProviderIds() -> Set<String> {
+        Set(trust().peers.values.filter(AndroidProviderCapabilities.supportsHotspot).map(\.clientId))
+    }
+
+    func isHotspotProvider(_ clientId: String) -> Bool {
+        trust().peers[clientId].map(AndroidProviderCapabilities.supportsHotspot) ?? false
+    }
+
+    func sealHotspotSync(_ sync: HotspotSync) throws -> Envelope? {
+        let now = Self.nowMillis()
+        guard sync.action != .STATUS, sync.isValid(now: now, envelopeCreatedAt: now),
+              let deviceId = sync.hotspotDeviceId,
+              let peer = trust().peers[deviceId], AndroidProviderCapabilities.supportsHotspot(peer),
+              let epoch = peer.sealable(now: now) else { return nil }
+        return try EnvelopeCrypto.seal(
+            signer: operationalSigner, typ: .DATA_SYNC,
+            bodyPlaintext: ProtocolCodec.encode(DataSync(kind: .HOTSPOT, hotspot: sync)),
+            recipients: [EnvelopeCrypto.RecipientKey(clientId: peer.clientId,
+                hpkePublicKey: epoch.hpkePublicKey, recipientEpoch: epoch.epoch)],
+            messageId: Self.newMessageId(), seq: Self.nextSeq(), createdAt: now
         )
     }
 

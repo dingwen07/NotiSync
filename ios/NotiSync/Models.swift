@@ -69,6 +69,7 @@ enum ActivityTitleToken: String, Codable {
     case readAll
     case relayDrained
     case assetSync
+    case hotspotRefresh, hotspotOn, hotspotOff, hotspotStatus, hotspotRequestFailed
     case renamed
     case trustUpdated
     case rotationStarted

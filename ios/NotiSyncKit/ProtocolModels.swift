@@ -26,7 +26,7 @@ nonisolated enum OriginPlatform: String, Sendable { case ANDROID_LOCAL, IOS_ANCS
 nonisolated enum TrustStatus: String, Sendable { case PENDING_TRUST, TRUSTED, PENDING_REVOKE, REVOKED }
 nonisolated enum DataSyncKind: String, Sendable {
     case ASSET, PROFILE, TRUST, CARD, FILTER, NOTIFICATION, RUN, SCREEN_MIRRORING, OPENPGP_SIGN
-    case SSH_AGENT
+    case SSH_AGENT, HOTSPOT
 }
 nonisolated enum AssetSyncKind: String, Sendable { case ASSET_MISSING, ASSET_READY }
 nonisolated enum ScreenMirrorAction: String, Sendable { case REQUEST, STATUS, CANCEL, END }
@@ -46,6 +46,7 @@ nonisolated enum Capability: String, Codable, Sendable {
     case SCREEN_MIRROR_BROKER_RELAY_V1
     case SCREEN_VIRTUAL_DISPLAY_V1
     case SSH_KEY_PROVIDER_V1, SSH_AGENT_V1
+    case HOTSPOT_PROVIDER_V1, HOTSPOT_CONTROL_V1
 }
 
 nonisolated enum TransportType: String, Sendable { case FCM, WEBSOCKET, APNS, WEBPUSH }
@@ -468,6 +469,7 @@ nonisolated struct DataSync: Sendable {
     var filter: FilterSync?
     var screenMirror: ScreenMirrorSync?
     var sshAgent: SshAgentSync?
+    var hotspot: HotspotSync?
 }
 
 // MARK: - JSON control-plane DTOs (Decodable; the broker's REST layer)
