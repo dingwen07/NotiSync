@@ -138,13 +138,18 @@ internal fun AppNavigationShell(
     val navigationItems: @Composable () -> Unit = {
         val destinationItem: @Composable (AppDestination, NavigationSuiteType) -> Unit = { dest, type ->
             val selected = currentDestination.isOn(dest)
-            NavigationSuiteItem(
-                navigationSuiteType = type,
-                selected = selected,
-                onClick = { navigateFromNavigation { onNavigate(dest) } },
-                icon = { TopLevelNavIcon(dest, selected) },
-                label = { TopLevelNavLabel(dest) },
-            )
+            RailItemPlacement(animate = suiteIsRail && dest !in collapsedDestinations) {
+                NavigationSuiteItem(
+                    navigationSuiteType = type,
+                    modifier = if (suiteIsRail) Modifier.railItemHeight(
+                        expanded = type == NavigationSuiteType.WideNavigationRailExpanded,
+                    ) else Modifier,
+                    selected = selected,
+                    onClick = { navigateFromNavigation { onNavigate(dest) } },
+                    icon = { TopLevelNavIcon(dest, selected) },
+                    label = { TopLevelNavLabel(dest) },
+                )
+            }
         }
         val primaryDestinations = if (suiteIsRail) collapsedDestinations else navigationDestinations
         primaryDestinations.forEach { dest ->
@@ -152,6 +157,7 @@ internal fun AppNavigationShell(
                 if (suiteIsRail) {
                     AnimatedRailEntry(
                         visible = true,
+                        modifier = Modifier.animateRailItemPlacement(),
                         spacingAfter = if (!railExpanded && dest != collapsedDestinations.lastOrNull())
                             railItemSpacing else 0.dp,
                     ) { destinationItem(dest, itemLayoutType) }
@@ -160,30 +166,40 @@ internal fun AppNavigationShell(
         }
         val utilities: @Composable (NavigationSuiteType) -> Unit = { type ->
             if (suiteIsDrawer) HorizontalDivider() else Spacer(Modifier.height(12.dp))
-            NavigationSuiteItem(
-                navigationSuiteType = type,
-                selected = currentDestination?.hasRoute<Route.Menu>() == true,
-                onClick = { navigateFromNavigation(openMenu) },
-                icon = {
-                    NavigationSelectionIcon(
-                        EditIcon, R.drawable.avd_nav_edit,
-                        currentDestination?.hasRoute<Route.Menu>() == true, null,
-                    )
-                },
-                label = { Text(stringResource(R.string.menu_title)) },
-            )
-            NavigationSuiteItem(
-                navigationSuiteType = type,
-                selected = currentDestination?.hasRoute<Route.About>() == true,
-                onClick = { navigateFromNavigation(openAbout) },
-                icon = {
-                    NavigationSelectionIcon(
-                        InfoIcon, R.drawable.avd_nav_info,
-                        currentDestination?.hasRoute<Route.About>() == true, null,
-                    )
-                },
-                label = { Text(stringResource(R.string.about_title)) },
-            )
+            RailItemPlacement(animate = suiteIsRail) {
+                NavigationSuiteItem(
+                    navigationSuiteType = type,
+                    modifier = if (suiteIsRail) Modifier.railItemHeight(
+                        expanded = type == NavigationSuiteType.WideNavigationRailExpanded,
+                    ) else Modifier,
+                    selected = currentDestination?.hasRoute<Route.Menu>() == true,
+                    onClick = { navigateFromNavigation(openMenu) },
+                    icon = {
+                        NavigationSelectionIcon(
+                            EditIcon, R.drawable.avd_nav_edit,
+                            currentDestination?.hasRoute<Route.Menu>() == true, null,
+                        )
+                    },
+                    label = { Text(stringResource(R.string.menu_title)) },
+                )
+            }
+            RailItemPlacement(animate = suiteIsRail) {
+                NavigationSuiteItem(
+                    navigationSuiteType = type,
+                    modifier = if (suiteIsRail) Modifier.railItemHeight(
+                        expanded = type == NavigationSuiteType.WideNavigationRailExpanded,
+                    ) else Modifier,
+                    selected = currentDestination?.hasRoute<Route.About>() == true,
+                    onClick = { navigateFromNavigation(openAbout) },
+                    icon = {
+                        NavigationSelectionIcon(
+                            InfoIcon, R.drawable.avd_nav_info,
+                            currentDestination?.hasRoute<Route.About>() == true, null,
+                        )
+                    },
+                    label = { Text(stringResource(R.string.about_title)) },
+                )
+            }
         }
         if (suiteIsRail) {
             // Reveal the whole appended section together. Independent row-height animations

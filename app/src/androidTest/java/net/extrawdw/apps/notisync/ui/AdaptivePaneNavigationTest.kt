@@ -19,9 +19,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsNotDisplayed
 import androidx.compose.ui.test.getUnclippedBoundsInRoot
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
@@ -134,10 +138,14 @@ class AdaptivePaneNavigationTest {
         compose.onNodeWithText("Inline detail").assertIsDisplayed()
         val before = compose.onNodeWithTag("pane-region").getUnclippedBoundsInRoot()
         compose.onNodeWithContentDescription("Open menu").performClick()
-        compose.onNodeWithContentDescription("Close menu").assertIsDisplayed()
+        val closeButton = compose.onNode(
+            hasContentDescription("Close menu") and
+                SemanticsMatcher.expectValue(SemanticsProperties.Role, Role.Button),
+        )
+        closeButton.assertIsDisplayed()
         compose.onNodeWithText("Sheet detail").assertDoesNotExist()
         assertEquals(before, compose.onNodeWithTag("pane-region").getUnclippedBoundsInRoot())
-        compose.onNodeWithContentDescription("Close menu").performClick()
+        closeButton.performClick()
         compose.onNodeWithText("Inline detail").assertIsDisplayed()
         compose.onNodeWithTag("detail-pane-divider").assertIsDisplayed()
     }

@@ -1,5 +1,6 @@
 package net.extrawdw.apps.notisync.navigation
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.height
@@ -8,10 +9,15 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.WideNavigationRailItem
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.hasScrollAction
 import androidx.compose.ui.test.junit4.v2.createComposeRule
 import androidx.compose.ui.test.onNodeWithTag
@@ -82,6 +88,34 @@ class NavigationRailContentTest {
             }
             compose.mainClock.advanceTimeBy(800)
         }
+        compose.mainClock.autoAdvance = true
+    }
+
+    @Test
+    fun openingFadeDoesNotClipContentBeyondTheAnimatedRowWidth() {
+        val expanded = mutableStateOf(false)
+        compose.setContent {
+            NotiSyncTheme {
+                Box(Modifier.size(220.dp, 100.dp).background(Color.White).testTag("canvas")) {
+                    AnimatedRailEntry(visible = expanded.value) {
+                        // Native labels and selected indicators can draw beyond the row's
+                        // animated width. Only the outer rail should clip that overflow.
+                        Box(Modifier.size(96.dp, 56.dp).drawBehind {
+                            drawRect(Color.Red, size = Size(160.dp.toPx(), 48.dp.toPx()))
+                        })
+                    }
+                }
+            }
+        }
+        compose.mainClock.autoAdvance = false
+        compose.runOnIdle { expanded.value = true }
+        compose.mainClock.advanceTimeBy(96)
+        val pixels = compose.onNodeWithTag("canvas").captureToImage().toPixelMap()
+        val y = with(compose.density) { 20.dp.roundToPx() }
+        val inside = pixels[with(compose.density) { 40.dp.roundToPx() }, y]
+        val overflow = pixels[with(compose.density) { 130.dp.roundToPx() }, y]
+        assertTrue("Capture must be during the opening fade", inside.green > 0f && inside.green < 0.95f)
+        assertEquals("Opening fade must preserve the right side of the indicator", inside.green, overflow.green, 0.02f)
         compose.mainClock.autoAdvance = true
     }
 

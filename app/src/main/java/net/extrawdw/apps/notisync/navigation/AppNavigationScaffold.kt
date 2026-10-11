@@ -16,7 +16,6 @@ import androidx.compose.material3.DrawerDefaults
 import androidx.compose.material3.DrawerState
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.ModalWideNavigationRail
 import androidx.compose.material3.MotionScheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.WideNavigationRail
@@ -30,7 +29,6 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalDensity
@@ -71,22 +69,20 @@ internal fun AppNavigationScaffold(
     // measures the widest item with its own padding and animates up to its 360 dp maximum.
     val railModifier = Modifier.widthIn(min = 96.dp + horizontalRailInsets)
 
-    // ModalWideNavigationRail remembers its movable content by lambda identity. Keep that
-    // identity stable as the visible destinations change, so item animations are not recreated
-    // while the native rail moves content between its collapsed layout and modal window.
-    val currentNavigationItems by rememberUpdatedState(navigationItems)
-    val currentRailHeader by rememberUpdatedState(railHeader)
     // Reserve bottom safe space inside the scroll content, not around its viewport.
     val bottomInsets = railInsets.only(WindowInsetsSides.Bottom)
-    val currentBottomInsets by rememberUpdatedState(bottomInsets)
-    val railContent: @Composable () -> Unit = remember {
-        {
-            NavigationRailContent(
-                bottomInsets = currentBottomInsets,
-                header = { currentRailHeader() },
-                content = { currentNavigationItems() },
-            )
-        }
+    val railContent: @Composable () -> Unit = {
+        NavigationRailContent(bottomInsets, railHeader, navigationItems)
+    }
+
+    if (useModalRail) {
+        InWindowModalNavigationRail(
+            state = railState,
+            windowInsets = railInsets,
+            railContent = railContent,
+            content = content,
+        )
+        return
     }
 
     Surface {
@@ -95,24 +91,14 @@ internal fun AppNavigationScaffold(
             navigationSuite = {
                 // The content wrapper centers destinations and reserves header clearance
                 // so tall, scrollable lists cannot cover the menu button.
-                if (useModalRail) {
-                    ModalWideNavigationRail(
-                        state = railState,
-                        windowInsets = railInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Start),
-                        contentPadding = PaddingValues(top = 8.dp),
-                        arrangement = Arrangement.Top,
-                        content = railContent,
-                    )
-                } else {
-                    WideNavigationRail(
-                        modifier = railModifier,
-                        state = railState,
-                        windowInsets = railInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Start),
-                        contentPadding = PaddingValues(top = 8.dp),
-                        arrangement = Arrangement.Top,
-                        content = railContent,
-                    )
-                }
+                WideNavigationRail(
+                    modifier = railModifier,
+                    state = railState,
+                    windowInsets = railInsets.only(WindowInsetsSides.Top + WindowInsetsSides.Start),
+                    contentPadding = PaddingValues(top = 8.dp),
+                    arrangement = Arrangement.Top,
+                    content = railContent,
+                )
             },
         ) {
             Box(Modifier.consumeWindowInsets(WideNavigationRailDefaults.windowInsets.only(WindowInsetsSides.Start))) {
